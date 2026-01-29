@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Play, Pause, Square, Upload, ChevronLeft, ChevronRight,
   Volume2, SkipForward, SkipBack, Zap, Loader2, Moon, Sun,
-  ZoomIn, ZoomOut, Keyboard, Clock, VolumeX, Volume1
+  ZoomIn, ZoomOut, Keyboard, Clock, VolumeX, Volume1,
+  Maximize, Minimize, RotateCcw
 } from 'lucide-react';
 
 // Default voices available in Kokoro
@@ -70,6 +71,8 @@ export default function App() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [readingStartTime, setReadingStartTime] = useState(null);
   const [totalWordsRead, setTotalWordsRead] = useState(0);
+  const [fitMode, setFitMode] = useState('custom'); // 'custom', 'width', 'page'
+  const pdfContainerRef = useRef(null);
 
   // Buffer Management
   const audioCache = useRef(new Map());
@@ -452,7 +455,7 @@ export default function App() {
       {pdfDoc && (
         <div className="h-1 bg-slate-300/20 w-full fixed top-0 left-0 z-50">
           <div
-            className="h-full bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 transition-all duration-500 ease-out"
+            className="h-full bg-gradient-to-r from-blue-500 via-cyan-500 to-teal-500 transition-all duration-500 ease-out"
             style={{ width: `${calculateReadingProgress()}%` }}
           />
         </div>
@@ -461,7 +464,7 @@ export default function App() {
       {/* HEADER / CONTROL BAR */}
       <header className={`h-16 ${theme.bgSecondary} border-b ${theme.border} px-6 flex items-center justify-between z-20 sticky top-0 shadow-sm transition-colors duration-300`}>
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-500/30">
+          <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-cyan-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-500/30">
             <Volume2 size={22} />
           </div>
           <div className="hidden sm:block">
@@ -483,7 +486,7 @@ export default function App() {
             onClick={handlePlayPause}
             className={`px-6 py-2 rounded-lg font-bold flex items-center gap-2 transition-all min-w-[120px] justify-center ${isPlaying
               ? `${theme.bgSecondary} text-amber-500 shadow-sm`
-              : 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-md hover:shadow-lg hover:scale-[1.02]'
+              : 'bg-blue-600 text-white shadow-md hover:bg-blue-700 hover:shadow-lg'
               }`}
             title="Play/Pause (Space)"
           >
@@ -589,7 +592,7 @@ export default function App() {
             </div>
             <button
               onClick={() => setShowShortcuts(false)}
-              className="mt-6 w-full py-2 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-xl font-bold hover:shadow-lg transition-all"
+              className="mt-6 w-full py-2 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 hover:shadow-lg transition-all"
             >
               Got it!
             </button>
@@ -645,28 +648,6 @@ export default function App() {
                   <span className={`text-xs font-bold ${theme.textSecondary} w-8`}>{Math.round(volume * 100)}%</span>
                 </div>
               </div>
-
-              {/* Zoom Controls */}
-              <div className="space-y-1">
-                <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>ZOOM</span>
-                <div className={`flex items-center gap-2 p-2 rounded-lg border ${theme.border} ${theme.bgSecondary}`}>
-                  <button
-                    onClick={() => setScale(s => Math.max(0.5, s - 0.2))}
-                    className={`p-1.5 ${theme.hover} rounded-lg transition-colors ${theme.textSecondary}`}
-                  >
-                    <ZoomOut size={16} />
-                  </button>
-                  <div className="flex-1 text-center">
-                    <span className={`text-xs font-bold ${theme.text}`}>{Math.round(scale * 100)}%</span>
-                  </div>
-                  <button
-                    onClick={() => setScale(s => Math.min(3, s + 0.2))}
-                    className={`p-1.5 ${theme.hover} rounded-lg transition-colors ${theme.textSecondary}`}
-                  >
-                    <ZoomIn size={16} />
-                  </button>
-                </div>
-              </div>
             </div>
           </div>
 
@@ -699,7 +680,7 @@ export default function App() {
                 ref={el => sentenceRefs.current[i] = el}
                 onClick={() => { setCurrentSentenceIndex(i - 1); setIsPlaying(true); }}
                 className={`w-full text-left p-3 rounded-xl text-xs leading-relaxed transition-all ${currentSentenceIndex === i
-                  ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg scale-[1.02] font-medium'
+                  ? 'bg-blue-600 text-white shadow-lg scale-[1.02] font-medium'
                   : `${theme.hover} ${theme.textSecondary} hover:shadow-sm`
                   }`}
               >
@@ -716,51 +697,127 @@ export default function App() {
         </aside>
 
         {/* VIEWPORT: PDF CANVAS */}
-        <section className={`flex-1 overflow-auto p-8 ${theme.viewportBg} flex flex-col items-center custom-scrollbar transition-colors duration-300`}>
-          <div className={`relative shadow-[0_20px_50px_rgba(0,0,0,0.2)] rounded-lg overflow-hidden ${theme.canvasBg} group min-h-[500px] min-w-[400px]`}>
-            {pdfDoc ? (
-              <canvas ref={canvasRef} className="block" />
-            ) : (
-              <div className={`flex flex-col items-center justify-center h-full p-20 text-center gap-4 ${theme.canvasBg}`}>
-                <div className={`w-20 h-20 ${theme.bgTertiary} rounded-2xl flex items-center justify-center ${theme.textMuted} border-2 border-dashed ${theme.border}`}>
-                  <Upload size={36} />
-                </div>
-                <div>
-                  <p className={`${theme.textSecondary} font-medium mb-1`}>Drop a PDF or click upload</p>
-                  <p className={`text-xs ${theme.textMuted}`}>Supports any PDF document</p>
-                </div>
-              </div>
-            )}
+        <section className={`flex-1 flex flex-col overflow-hidden ${theme.viewportBg} transition-colors duration-300`}>
 
-            {pdfDoc && (
-              <div className="absolute top-4 right-4 bg-black/70 backdrop-blur-md text-white px-4 py-2 rounded-full text-[10px] font-black tracking-widest opacity-0 group-hover:opacity-100 transition-opacity">
-                PG {currentPage} / {numPages}
-              </div>
-            )}
-          </div>
-
-          {/* PAGINATION HUD */}
+          {/* PDF OPTIONS TOOLBAR */}
           {pdfDoc && (
-            <div className="mt-8 flex gap-3">
-              <button
-                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                className={`p-4 ${theme.bgSecondary} rounded-2xl shadow-sm hover:shadow-md transition-all ${theme.textMuted} hover:text-blue-500`}
-                title="Previous Page (Page Up)"
-              >
-                <ChevronLeft />
-              </button>
-              <div className={`px-8 flex items-center ${theme.bgSecondary} rounded-2xl font-black ${theme.text} shadow-sm text-sm`}>
-                {currentPage} <span className={`mx-3 ${theme.textMuted}`}>/</span> {numPages}
+            <div className={`flex items-center justify-between px-4 py-2 ${theme.bgSecondary} border-b ${theme.border} shrink-0`}>
+              {/* LEFT: Page Navigation */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  disabled={currentPage <= 1}
+                  className={`p-2 rounded-lg transition-all ${theme.hover} ${currentPage <= 1 ? 'opacity-30 cursor-not-allowed' : theme.textSecondary + ' hover:text-blue-500'}`}
+                  title="Previous Page"
+                >
+                  <ChevronLeft size={18} />
+                </button>
+                <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg ${theme.bgTertiary} border ${theme.border}`}>
+                  <input
+                    type="number"
+                    min="1"
+                    max={numPages}
+                    value={currentPage}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value);
+                      if (val >= 1 && val <= numPages) setCurrentPage(val);
+                    }}
+                    className={`w-12 text-center text-sm font-bold ${theme.bgTertiary} ${theme.text} outline-none`}
+                  />
+                  <span className={`text-sm ${theme.textMuted}`}>/ {numPages}</span>
+                </div>
+                <button
+                  onClick={() => setCurrentPage(p => Math.min(numPages, p + 1))}
+                  disabled={currentPage >= numPages}
+                  className={`p-2 rounded-lg transition-all ${theme.hover} ${currentPage >= numPages ? 'opacity-30 cursor-not-allowed' : theme.textSecondary + ' hover:text-blue-500'}`}
+                  title="Next Page"
+                >
+                  <ChevronRight size={18} />
+                </button>
               </div>
-              <button
-                onClick={() => setCurrentPage(p => Math.min(numPages, p + 1))}
-                className={`p-4 ${theme.bgSecondary} rounded-2xl shadow-sm hover:shadow-md transition-all ${theme.textMuted} hover:text-blue-500`}
-                title="Next Page (Page Down)"
-              >
-                <ChevronRight />
-              </button>
+
+              {/* CENTER: Zoom Controls */}
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setScale(s => Math.max(0.5, s - 0.2))}
+                  className={`p-2 rounded-lg transition-all ${theme.hover} ${theme.textSecondary} hover:text-blue-500`}
+                  title="Zoom Out (Ctrl+-)"
+                >
+                  <ZoomOut size={18} />
+                </button>
+                <div className={`px-3 py-1.5 rounded-lg ${theme.bgTertiary} border ${theme.border} min-w-[70px] text-center`}>
+                  <span className={`text-sm font-bold ${theme.text}`}>{Math.round(scale * 100)}%</span>
+                </div>
+                <button
+                  onClick={() => setScale(s => Math.min(3, s + 0.2))}
+                  className={`p-2 rounded-lg transition-all ${theme.hover} ${theme.textSecondary} hover:text-blue-500`}
+                  title="Zoom In (Ctrl++)"
+                >
+                  <ZoomIn size={18} />
+                </button>
+                <div className={`w-px h-6 ${theme.border} mx-2`}></div>
+                <button
+                  onClick={() => setScale(1.0)}
+                  className={`p-2 rounded-lg transition-all ${theme.hover} ${theme.textSecondary} hover:text-blue-500`}
+                  title="Reset Zoom"
+                >
+                  <RotateCcw size={16} />
+                </button>
+              </div>
+
+              {/* RIGHT: Fit Options */}
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setScale(0.8)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${theme.hover} ${scale === 0.8 ? 'bg-blue-600 text-white' : theme.textSecondary}`}
+                  title="Fit Page"
+                >
+                  <Minimize size={14} className="inline mr-1" />
+                  Fit
+                </button>
+                <button
+                  onClick={() => setScale(1.2)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${theme.hover} ${scale === 1.2 ? 'bg-blue-600 text-white' : theme.textSecondary}`}
+                  title="Fit Width"
+                >
+                  <Maximize size={14} className="inline mr-1" />
+                  Width
+                </button>
+              </div>
             </div>
           )}
+
+          {/* PDF CANVAS CONTAINER */}
+          <div
+            ref={pdfContainerRef}
+            className={`flex-1 overflow-auto p-6 flex justify-center custom-scrollbar ${darkMode ? 'bg-slate-900/50' : 'bg-slate-300/30'}`}
+          >
+            <div className={`relative ${theme.canvasBg} shadow-2xl rounded-sm border ${theme.border}`} style={{ height: 'fit-content' }}>
+              {pdfDoc ? (
+                <canvas ref={canvasRef} className="block" />
+              ) : (
+                <div className={`flex flex-col items-center justify-center p-24 text-center gap-6 ${theme.canvasBg} min-h-[600px] min-w-[450px]`}>
+                  <div
+                    className={`w-24 h-24 ${theme.bgTertiary} rounded-2xl flex items-center justify-center ${theme.textMuted} border-2 border-dashed ${theme.border} cursor-pointer hover:border-blue-400 hover:text-blue-500 transition-all`}
+                    onClick={() => fileInputRef.current.click()}
+                  >
+                    <Upload size={40} />
+                  </div>
+                  <div>
+                    <p className={`${theme.textSecondary} font-semibold mb-2 text-lg`}>Open a PDF Document</p>
+                    <p className={`text-sm ${theme.textMuted}`}>Click to browse or drag & drop</p>
+                  </div>
+                  <button
+                    onClick={() => fileInputRef.current.click()}
+                    className="px-6 py-2.5 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-md"
+                  >
+                    <Upload size={16} className="inline mr-2" />
+                    Choose File
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </section>
       </main>
 
@@ -776,7 +833,7 @@ export default function App() {
           width: 14px;
           height: 14px;
           border-radius: 50%;
-          background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+          background: linear-gradient(135deg, #3b82f6, #06b6d4);
           cursor: pointer;
           box-shadow: 0 2px 6px rgba(59, 130, 246, 0.4);
         }
