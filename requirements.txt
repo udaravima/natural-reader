@@ -1,0 +1,19 @@
+# Kokoro TTS Server Dependencies
+# For running server.py
+
+# Core server
+fastapi
+uvicorn
+
+# Kokoro TTS (ONNX version for CPU efficiency)
+kokoro-onnx>=0.3.9
+
+# Audio processing
+soundfile
+
+# Data validation (used by FastAPI)
+pydantic
+
+# Optional: torch is imported but may not be needed with ONNX model
+# Uncomment if required by your setup
+# torch
