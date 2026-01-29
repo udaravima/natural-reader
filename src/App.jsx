@@ -38,6 +38,7 @@ export default function App() {
   const canvasRef = useRef(null);
   const audioRef = useRef(new Audio());
   const fileInputRef = useRef(null);
+  const sentenceIndexRef = useRef(-1); // Track current index to avoid stale closures
 
   // --- PDF RENDERING ENGINE ---
 
@@ -138,21 +139,28 @@ export default function App() {
     }
   };
 
+  // Keep ref in sync with state for use in closures
+  useEffect(() => {
+    sentenceIndexRef.current = currentSentenceIndex;
+  }, [currentSentenceIndex]);
+
   // The "Game Loop" for reading
   useEffect(() => {
     if (!isPlaying) return;
 
+    let isCancelled = false; // Prevent race conditions on cleanup
+
     const playNextSentence = async () => {
-      // Check bounds
-      let nextIndex = currentSentenceIndex + 1;
+      if (isCancelled) return;
+
+      // Use ref to get the CURRENT index (avoids stale closure)
+      const currentIdx = sentenceIndexRef.current;
+      const nextIndex = currentIdx + 1;
 
       // If end of page, try next page
       if (nextIndex >= textItems.length) {
         if (currentPage < numPages) {
           setCurrentPage(p => p + 1);
-          // Wait for render to update textItems, then the effect will trigger again? 
-          // Actually, we need to pause, let the page render, then resume.
-          // For this simple demo, we'll stop at end of page.
           setIsPlaying(false);
           setStatus("Page Complete");
           return;
@@ -163,6 +171,8 @@ export default function App() {
         }
       }
 
+      // Update both state and ref
+      sentenceIndexRef.current = nextIndex;
       setCurrentSentenceIndex(nextIndex);
       const textToRead = textItems[nextIndex];
 
@@ -171,42 +181,42 @@ export default function App() {
         setStatus(`Generating: "${textToRead.substring(0, 20)}..."`);
         const url = await fetchAudioFromLocalhost(textToRead);
 
-        if (url) {
+        if (url && !isCancelled) {
           setStatus("Playing...");
           audioRef.current.src = url;
-          audioRef.current.playbackRate = 1.0; // Speed is handled by backend generation usually, or HTML audio
+          audioRef.current.playbackRate = 1.0;
           audioRef.current.onended = () => {
-            // Recursive step via effect dependency or direct call? 
-            // Best to use a state trigger or chain promises.
-            // We'll use a simple timeout loop for safety in this demo
-            playNextSentence();
+            if (!isCancelled) playNextSentence();
           };
           audioRef.current.play();
-        } else {
-          setIsPlaying(false); // Stop on error
+        } else if (!url) {
+          setIsPlaying(false);
         }
       } else {
         // --- BROWSER SIMULATION (Web Speech API) ---
         setStatus("Speaking (Simulated)...");
         const utterance = new SpeechSynthesisUtterance(textToRead);
         utterance.rate = playbackSpeed;
-        utterance.onend = () => playNextSentence();
+        utterance.onend = () => {
+          if (!isCancelled) playNextSentence();
+        };
         window.speechSynthesis.speak(utterance);
       }
     };
 
-    // If we just started playing (index was static), kick it off
-    // Note: This logic is simplified. A robust queue needs a dedicated useEffect for index changes.
+    // Kick off playback
     if (audioRef.current.paused && !window.speechSynthesis.speaking) {
       playNextSentence();
     }
 
     // Cleanup
     return () => {
+      isCancelled = true;
       window.speechSynthesis.cancel();
       audioRef.current.pause();
+      audioRef.current.onended = null;
     };
-  }, [isPlaying, isLocalhost]); // Dependency simplified for demo stability
+  }, [isPlaying, isLocalhost, textItems, currentPage, numPages, playbackSpeed]);
 
 
   // --- UI COMPONENTS ---
