@@ -51,27 +51,41 @@ const SHORTCUTS = {
 };
 
 export default function App() {
+  // Helper to safely get localStorage values
+  const getStoredValue = (key, defaultValue) => {
+    try {
+      const stored = localStorage.getItem(`neural-pdf-${key}`);
+      if (stored !== null) {
+        return JSON.parse(stored);
+      }
+    } catch (e) {
+      console.warn(`Failed to load ${key} from localStorage`, e);
+    }
+    return defaultValue;
+  };
+
   const [pdfDoc, setPdfDoc] = useState(null);
+  const [pdfFileName, setPdfFileName] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [numPages, setNumPages] = useState(0);
-  const [scale, setScale] = useState(1.2);
+  const [scale, setScale] = useState(() => getStoredValue('scale', 1.2));
   const [textItems, setTextItems] = useState([]);
   const [isLibLoaded, setIsLibLoaded] = useState(false);
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentSentenceIndex, setCurrentSentenceIndex] = useState(-1);
-  const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
-  const [selectedVoice, setSelectedVoice] = useState('af_heart');
-  const [isLocalhost, setIsLocalhost] = useState(true);
+  const [playbackSpeed, setPlaybackSpeed] = useState(() => getStoredValue('playbackSpeed', 1.0));
+  const [selectedVoice, setSelectedVoice] = useState(() => getStoredValue('selectedVoice', 'af_heart'));
+  const [isLocalhost, setIsLocalhost] = useState(() => getStoredValue('isLocalhost', true));
   const [status, setStatus] = useState('Initializing PDF Engine...');
 
-  // NEW: Enhanced Features State
-  const [darkMode, setDarkMode] = useState(false);
-  const [volume, setVolume] = useState(1.0);
+  // Enhanced Features State
+  const [darkMode, setDarkMode] = useState(() => getStoredValue('darkMode', false));
+  const [volume, setVolume] = useState(() => getStoredValue('volume', 1.0));
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [readingStartTime, setReadingStartTime] = useState(null);
   const [totalWordsRead, setTotalWordsRead] = useState(0);
-  const [fitMode, setFitMode] = useState('custom'); // 'custom', 'width', 'page'
+  const [fitMode, setFitMode] = useState('custom');
   const pdfContainerRef = useRef(null);
 
   // Buffer Management
@@ -82,19 +96,63 @@ export default function App() {
   const pdfjsLibRef = useRef(null);
   const sentenceRefs = useRef([]);
   const sidebarRef = useRef(null);
-  const playbackIndexRef = useRef(-1); // Track playback position to avoid stale closures
+  const playbackIndexRef = useRef(-1);
 
-  // --- DARK MODE PERSISTENCE ---
+  // --- SETTINGS PERSISTENCE ---
+  // Save settings to localStorage when they change
   useEffect(() => {
-    const savedDarkMode = localStorage.getItem('neural-pdf-dark-mode');
-    if (savedDarkMode !== null) {
-      setDarkMode(JSON.parse(savedDarkMode));
-    }
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem('neural-pdf-dark-mode', JSON.stringify(darkMode));
+    localStorage.setItem('neural-pdf-darkMode', JSON.stringify(darkMode));
   }, [darkMode]);
+
+  useEffect(() => {
+    localStorage.setItem('neural-pdf-volume', JSON.stringify(volume));
+  }, [volume]);
+
+  useEffect(() => {
+    localStorage.setItem('neural-pdf-scale', JSON.stringify(scale));
+  }, [scale]);
+
+  useEffect(() => {
+    localStorage.setItem('neural-pdf-playbackSpeed', JSON.stringify(playbackSpeed));
+  }, [playbackSpeed]);
+
+  useEffect(() => {
+    localStorage.setItem('neural-pdf-selectedVoice', JSON.stringify(selectedVoice));
+  }, [selectedVoice]);
+
+  useEffect(() => {
+    localStorage.setItem('neural-pdf-isLocalhost', JSON.stringify(isLocalhost));
+  }, [isLocalhost]);
+
+  // --- READING PROGRESS PERSISTENCE ---
+  // Save reading progress for the current PDF
+  useEffect(() => {
+    if (pdfFileName && currentPage > 0) {
+      const progress = {
+        page: currentPage,
+        sentenceIndex: currentSentenceIndex,
+        timestamp: Date.now(),
+      };
+      localStorage.setItem(`neural-pdf-progress-${pdfFileName}`, JSON.stringify(progress));
+    }
+  }, [pdfFileName, currentPage, currentSentenceIndex]);
+
+  // Load reading progress when opening a PDF
+  const loadReadingProgress = (fileName) => {
+    try {
+      const stored = localStorage.getItem(`neural-pdf-progress-${fileName}`);
+      if (stored) {
+        const progress = JSON.parse(stored);
+        // Only restore if less than 7 days old
+        if (Date.now() - progress.timestamp < 7 * 24 * 60 * 60 * 1000) {
+          return progress;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load reading progress', e);
+    }
+    return null;
+  };
 
   // --- VOLUME CONTROL ---
   useEffect(() => {
@@ -221,6 +279,7 @@ export default function App() {
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (file?.type === 'application/pdf' && isLibLoaded) {
+      const fileName = file.name;
       const reader = new FileReader();
       reader.onload = async (ev) => {
         try {
@@ -228,7 +287,26 @@ export default function App() {
           const doc = await loadingTask.promise;
           setPdfDoc(doc);
           setNumPages(doc.numPages);
-          setCurrentPage(1);
+          setPdfFileName(fileName);
+
+          // Check for saved reading progress
+          const savedProgress = loadReadingProgress(fileName);
+          if (savedProgress && savedProgress.page <= doc.numPages) {
+            setCurrentPage(savedProgress.page);
+            // Restore sentence index after a short delay (wait for page to render)
+            setTimeout(() => {
+              if (savedProgress.sentenceIndex >= 0) {
+                setCurrentSentenceIndex(savedProgress.sentenceIndex);
+                playbackIndexRef.current = savedProgress.sentenceIndex;
+              }
+            }, 500);
+            setStatus(`Resumed from page ${savedProgress.page}`);
+          } else {
+            setCurrentPage(1);
+            setCurrentSentenceIndex(-1);
+            playbackIndexRef.current = -1;
+          }
+
           setTotalWordsRead(0);
           setReadingStartTime(null);
         } catch (err) {
