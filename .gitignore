@@ -12,7 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Models
+kokoro-v1.0.onnx
+voices-v1.0.bin
+
 # Editor directories and files
+.venv/*
 .vscode/*
 !.vscode/extensions.json
 .idea
