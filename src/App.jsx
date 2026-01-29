@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Play, Pause, Square, Upload, ChevronLeft, ChevronRight, Settings, Volume2, Globe, Cpu } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 // --- CONFIGURATION ---
-// We use the CDN for the worker to avoid bundler complexity in this single-file demo.
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+// Configure PDF.js worker using the bundled worker from pdfjs-dist package
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 // Default voices available in Kokoro (map these to your UI)
 const KOKORO_VOICES = [
