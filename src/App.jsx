@@ -5,6 +5,13 @@ import {
   ZoomIn, ZoomOut, Keyboard, Clock, VolumeX, Volume1,
   Maximize, Minimize, RotateCcw
 } from 'lucide-react';
+import * as pdfjsLib from 'pdfjs-dist';
+
+// Configure PDF.js worker for offline use
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url
+).toString();
 
 // Default voices available in Kokoro
 const KOKORO_VOICES = [
@@ -226,17 +233,10 @@ export default function App() {
 
   // --- ENGINE INITIALIZATION ---
   useEffect(() => {
-    const script = document.createElement('script');
-    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-    script.async = true;
-    script.onload = () => {
-      const pdfjsLib = window['pdfjs-dist/build/pdf'];
-      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-      pdfjsLibRef.current = pdfjsLib;
-      setIsLibLoaded(true);
-      setStatus('Ready to Open PDF');
-    };
-    document.head.appendChild(script);
+    // PDF.js is now imported locally - no CDN needed
+    pdfjsLibRef.current = pdfjsLib;
+    setIsLibLoaded(true);
+    setStatus('Ready to Open PDF');
   }, []);
 
   // --- PDF LOGIC ---

@@ -4,7 +4,9 @@ A modern, feature-rich PDF reader with **neural text-to-speech** powered by **[K
 
 > 🎯 **This project is a web frontend for Kokoro TTS.** It provides an intuitive interface for reading PDF documents aloud using Kokoro's neural voice synthesis. A browser-based fallback mode is also available for testing without the backend.
 
-![Neural Reader](https://img.shields.io/badge/React-19.x-blue) ![PDF.js](https://img.shields.io/badge/PDF.js-3.x-orange) ![Kokoro TTS](https://img.shields.io/badge/Kokoro-TTS-green) ![Vite](https://img.shields.io/badge/Vite-Rolldown-purple)
+![Neural Reader](https://img.shields.io/badge/React-19.x-blue) ![PDF.js](https://img.shields.io/badge/PDF.js-5.x-orange) ![Kokoro TTS](https://img.shields.io/badge/Kokoro-TTS-green) ![Vite](https://img.shields.io/badge/Vite-Rolldown-purple) ![Offline](https://img.shields.io/badge/Offline-Ready-brightgreen)
+
+> 🔌 **Works 100% Offline!** Once installed, the app runs completely without internet. PDF.js is bundled locally, and Kokoro TTS runs on your machine.
 
 ---
 
@@ -54,10 +56,11 @@ A modern, feature-rich PDF reader with **neural text-to-speech** powered by **[K
 ## 🛠️ Tech Stack
 
 - **Frontend**: React 19, Vite (Rolldown)
-- **PDF Parsing**: PDF.js 3.x (CDN loaded)
+- **PDF Parsing**: PDF.js 5.x (bundled locally for offline use)
 - **Styling**: Tailwind CSS 4.x
 - **Icons**: Lucide React
 - **Storage**: localStorage for persistence
+- **Offline**: No internet required after installation
 
 ---
 
