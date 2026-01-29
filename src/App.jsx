@@ -1,13 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Play, Pause, Square, Upload, ChevronLeft, ChevronRight, Settings, Volume2, Globe, Cpu } from 'lucide-react';
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import {
+  Play, Pause, Square, Upload, ChevronLeft, ChevronRight,
+  Volume2, SkipForward, SkipBack, Zap, Loader2, Moon, Sun,
+  ZoomIn, ZoomOut, Keyboard, Clock, VolumeX, Volume1
+} from 'lucide-react';
 
-// --- CONFIGURATION ---
-// Configure PDF.js worker using the bundled worker from pdfjs-dist package
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
-
-// Default voices available in Kokoro (map these to your UI)
+// Default voices available in Kokoro
 const KOKORO_VOICES = [
   { id: 'af_heart', name: 'Heart (US Female)' },
   { id: 'af_bella', name: 'Bella (US Female)' },
@@ -38,64 +36,178 @@ const KOKORO_VOICES = [
   { id: 'bm_lewis', name: 'Lewis (UK Male)' },
 ];
 
+// Keyboard shortcuts config
+const SHORTCUTS = {
+  PLAY_PAUSE: ' ',
+  STOP: 'Escape',
+  PREV_SENTENCE: 'ArrowLeft',
+  NEXT_SENTENCE: 'ArrowRight',
+  PREV_PAGE: 'PageUp',
+  NEXT_PAGE: 'PageDown',
+  ZOOM_IN: '+',
+  ZOOM_OUT: '-',
+  TOGGLE_DARK: 'd',
+};
+
 export default function App() {
-  // State: PDF Data
   const [pdfDoc, setPdfDoc] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [numPages, setNumPages] = useState(0);
   const [scale, setScale] = useState(1.2);
-  const [textItems, setTextItems] = useState([]); // Extracted text for the current page
+  const [textItems, setTextItems] = useState([]);
+  const [isLibLoaded, setIsLibLoaded] = useState(false);
 
-  // State: Playback
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentSentenceIndex, setCurrentSentenceIndex] = useState(-1);
-  const [audioUrl, setAudioUrl] = useState(null);
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
   const [selectedVoice, setSelectedVoice] = useState('af_heart');
-  const [isLocalhost, setIsLocalhost] = useState(false); // Toggle between WebSpeech (Sim) and Localhost (Real)
-  const [status, setStatus] = useState('Ready');
+  const [isLocalhost, setIsLocalhost] = useState(true);
+  const [status, setStatus] = useState('Initializing PDF Engine...');
 
-  // Refs
-  const canvasRef = useRef(null);
+  // NEW: Enhanced Features State
+  const [darkMode, setDarkMode] = useState(false);
+  const [volume, setVolume] = useState(1.0);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [readingStartTime, setReadingStartTime] = useState(null);
+  const [totalWordsRead, setTotalWordsRead] = useState(0);
+
+  // Buffer Management
+  const audioCache = useRef(new Map());
   const audioRef = useRef(new Audio());
+  const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
-  const sentenceIndexRef = useRef(-1); // Track current index to avoid stale closures
+  const pdfjsLibRef = useRef(null);
+  const sentenceRefs = useRef([]);
+  const sidebarRef = useRef(null);
+  const playbackIndexRef = useRef(-1); // Track playback position to avoid stale closures
 
-  // --- PDF RENDERING ENGINE ---
+  // --- DARK MODE PERSISTENCE ---
+  useEffect(() => {
+    const savedDarkMode = localStorage.getItem('neural-pdf-dark-mode');
+    if (savedDarkMode !== null) {
+      setDarkMode(JSON.parse(savedDarkMode));
+    }
+  }, []);
 
+  useEffect(() => {
+    localStorage.setItem('neural-pdf-dark-mode', JSON.stringify(darkMode));
+  }, [darkMode]);
+
+  // --- VOLUME CONTROL ---
+  useEffect(() => {
+    audioRef.current.volume = volume;
+  }, [volume]);
+
+  // --- KEYBOARD SHORTCUTS ---
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Don't trigger shortcuts when typing in inputs
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+
+      switch (e.key) {
+        case SHORTCUTS.PLAY_PAUSE:
+          e.preventDefault();
+          handlePlayPause();
+          break;
+        case SHORTCUTS.STOP:
+          stopPlayback();
+          break;
+        case SHORTCUTS.PREV_SENTENCE:
+          if (e.shiftKey) {
+            setCurrentSentenceIndex(prev => Math.max(-1, prev - 1));
+          }
+          break;
+        case SHORTCUTS.NEXT_SENTENCE:
+          if (e.shiftKey) {
+            skipToNextSentence();
+          }
+          break;
+        case SHORTCUTS.PREV_PAGE:
+          setCurrentPage(p => Math.max(1, p - 1));
+          break;
+        case SHORTCUTS.NEXT_PAGE:
+          setCurrentPage(p => Math.min(numPages, p + 1));
+          break;
+        case SHORTCUTS.ZOOM_IN:
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            setScale(s => Math.min(3, s + 0.2));
+          }
+          break;
+        case SHORTCUTS.ZOOM_OUT:
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            setScale(s => Math.max(0.5, s - 0.2));
+          }
+          break;
+        case SHORTCUTS.TOGGLE_DARK:
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            setDarkMode(d => !d);
+          }
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [numPages, isPlaying]);
+
+  // --- AUTO-SCROLL TO CURRENT SENTENCE ---
+  useEffect(() => {
+    if (currentSentenceIndex >= 0 && sentenceRefs.current[currentSentenceIndex]) {
+      sentenceRefs.current[currentSentenceIndex].scrollIntoView({
+        behavior: 'smooth',
+        block: 'center',
+      });
+    }
+  }, [currentSentenceIndex]);
+
+  // --- ENGINE INITIALIZATION ---
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    script.async = true;
+    script.onload = () => {
+      const pdfjsLib = window['pdfjs-dist/build/pdf'];
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      pdfjsLibRef.current = pdfjsLib;
+      setIsLibLoaded(true);
+      setStatus('Ready to Open PDF');
+    };
+    document.head.appendChild(script);
+  }, []);
+
+  // --- PDF LOGIC ---
   const renderPage = async (pageNum, doc) => {
-    if (!doc) return;
+    if (!doc || !pdfjsLibRef.current) return;
     try {
+      setStatus("Rendering page...");
       const page = await doc.getPage(pageNum);
-
-      // 1. Render Visuals (Canvas)
       const viewport = page.getViewport({ scale });
       const canvas = canvasRef.current;
       const context = canvas.getContext('2d');
       canvas.height = viewport.height;
       canvas.width = viewport.width;
 
-      const renderContext = {
-        canvasContext: context,
-        viewport: viewport,
-      };
-      await page.render(renderContext).promise;
+      await page.render({ canvasContext: context, viewport }).promise;
 
-      // 2. Extract Text (for TTS)
       const textContent = await page.getTextContent();
-      // Simple heuristic: Join items, then split by periods/newlines to approximate sentences
       const rawText = textContent.items.map(item => item.str).join(' ');
-      // Clean up multiple spaces and split into "sentences" for chunking
+
+      // Clean up text and split into manageable sentences
       const sentences = rawText
         .replace(/\s+/g, ' ')
         .split(/(?<=[.!?])\s+/)
-        .filter(s => s.trim().length > 0);
+        .filter(s => s.trim().length > 5);
 
       setTextItems(sentences);
-      setCurrentSentenceIndex(-1); // Reset reading position
+      sentenceRefs.current = sentences.map(() => null);
+      clearCache();
+      setStatus(`Page ${pageNum} Ready`);
     } catch (err) {
-      console.error("Render error:", err);
-      setStatus("Error rendering page");
+      console.error(err);
+      setStatus("Render Error");
     }
   };
 
@@ -103,292 +215,572 @@ export default function App() {
     if (pdfDoc) renderPage(currentPage, pdfDoc);
   }, [pdfDoc, currentPage, scale]);
 
-  // --- FILE HANDLING ---
-
-  const handleFileUpload = (event) => {
-    const file = event.target.files[0];
-    if (file && file.type === 'application/pdf') {
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (file?.type === 'application/pdf' && isLibLoaded) {
       const reader = new FileReader();
-      reader.onload = async (e) => {
+      reader.onload = async (ev) => {
         try {
-          setStatus("Loading PDF...");
-          const loadingTask = pdfjsLib.getDocument({ data: e.target.result });
+          const loadingTask = pdfjsLibRef.current.getDocument({ data: ev.target.result });
           const doc = await loadingTask.promise;
           setPdfDoc(doc);
           setNumPages(doc.numPages);
           setCurrentPage(1);
-          setStatus("PDF Loaded");
+          setTotalWordsRead(0);
+          setReadingStartTime(null);
         } catch (err) {
-          setStatus("Error parsing PDF");
-          console.error(err);
+          setStatus("Error loading PDF");
         }
       };
       reader.readAsArrayBuffer(file);
     }
   };
 
-  // --- AUDIO ENGINE (THE BRIDGE) ---
+  // --- TTS ENGINE & BUFFERING ---
+  const clearCache = () => {
+    audioCache.current.forEach(url => URL.revokeObjectURL(url));
+    audioCache.current.clear();
+  };
 
-  const fetchAudioFromLocalhost = async (text) => {
+  const fetchAudio = async (index) => {
+    if (index < 0 || index >= textItems.length) return null;
+    if (audioCache.current.has(index)) return audioCache.current.get(index);
+
     try {
       const response = await fetch('http://localhost:8000/v1/synthesize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          text: text,
+          text: textItems[index],
           voice: selectedVoice,
           speed: playbackSpeed
         })
       });
 
-      if (!response.ok) throw new Error("Backend error");
+      if (!response.ok) throw new Error("TTS Fail");
       const data = await response.json();
 
-      // Convert Base64 to Blob URL
-      const byteCharacters = atob(data.audio_base64);
-      const byteNumbers = new Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray], { type: 'audio/wav' });
-      return URL.createObjectURL(blob);
+      // Handle potential different response shapes (base64 directly or nested)
+      const b64 = data.audio_base64 || data.audio;
+      const blob = await (await fetch(`data:audio/wav;base64,${b64}`)).blob();
+      const url = URL.createObjectURL(blob);
+      audioCache.current.set(index, url);
+      return url;
     } catch (err) {
-      console.error(err);
-      setStatus("Connection Failed: Ensure server.py is running on port 8000");
+      console.error("Inference Error:", err);
       return null;
     }
   };
 
-  // Keep ref in sync with state for use in closures
+  const prefetchBuffer = useCallback(async (currentIndex) => {
+    if (!isLocalhost) return;
+    // Look ahead 2 sentences
+    for (let i = 1; i <= 2; i++) {
+      const target = currentIndex + i;
+      if (target < textItems.length && !audioCache.current.has(target)) {
+        fetchAudio(target);
+      }
+    }
+  }, [textItems, selectedVoice, playbackSpeed, isLocalhost]);
+
+  const handlePlayPause = () => {
+    if (isPlaying) {
+      setIsPlaying(false);
+      audioRef.current.pause();
+      window.speechSynthesis.cancel();
+    } else {
+      setIsPlaying(true);
+      if (!readingStartTime) {
+        setReadingStartTime(Date.now());
+      }
+    }
+  };
+
+  const stopPlayback = () => {
+    setIsPlaying(false);
+    playbackIndexRef.current = -1;
+    setCurrentSentenceIndex(-1);
+    audioRef.current.pause();
+    window.speechSynthesis.cancel();
+    setStatus("Playback Stopped");
+  };
+
+  const skipToNextSentence = () => {
+    if (currentSentenceIndex < textItems.length - 1) {
+      audioRef.current.pause();
+      window.speechSynthesis.cancel();
+      setCurrentSentenceIndex(prev => prev + 1);
+    }
+  };
+
+  // --- READING STATISTICS ---
+  const calculateReadingProgress = () => {
+    if (textItems.length === 0) return 0;
+    return Math.round(((currentSentenceIndex + 1) / textItems.length) * 100);
+  };
+
+  const calculateEstimatedTimeRemaining = () => {
+    if (textItems.length === 0 || currentSentenceIndex < 0) return null;
+
+    const remainingSentences = textItems.slice(currentSentenceIndex + 1);
+    const remainingWords = remainingSentences.reduce((acc, s) => acc + s.split(' ').length, 0);
+
+    // Average reading speed: ~150 words per minute, adjusted by playback speed
+    const wordsPerMinute = 150 * playbackSpeed;
+    const minutesRemaining = remainingWords / wordsPerMinute;
+
+    if (minutesRemaining < 1) return 'Less than 1 min';
+    if (minutesRemaining < 60) return `~${Math.ceil(minutesRemaining)} min`;
+    const hours = Math.floor(minutesRemaining / 60);
+    const mins = Math.ceil(minutesRemaining % 60);
+    return `~${hours}h ${mins}m`;
+  };
+
+  // Track words read
   useEffect(() => {
-    sentenceIndexRef.current = currentSentenceIndex;
+    if (currentSentenceIndex >= 0 && textItems[currentSentenceIndex]) {
+      const words = textItems[currentSentenceIndex].split(' ').length;
+      setTotalWordsRead(prev => prev + words);
+    }
   }, [currentSentenceIndex]);
 
-  // The "Game Loop" for reading
+  // Sync ref with state when state changes externally (e.g., user clicks a sentence)
+  useEffect(() => {
+    playbackIndexRef.current = currentSentenceIndex;
+  }, [currentSentenceIndex]);
+
+  // MAIN PLAYBACK LOOP
   useEffect(() => {
     if (!isPlaying) return;
 
-    let isCancelled = false; // Prevent race conditions on cleanup
+    let active = true;
 
-    const playNextSentence = async () => {
-      if (isCancelled) return;
+    const playLoop = async () => {
+      // Use ref to get current position (avoids stale closure)
+      const nextIdx = playbackIndexRef.current + 1;
 
-      // Use ref to get the CURRENT index (avoids stale closure)
-      const currentIdx = sentenceIndexRef.current;
-      const nextIndex = currentIdx + 1;
-
-      // If end of page, try next page
-      if (nextIndex >= textItems.length) {
+      if (nextIdx >= textItems.length) {
         if (currentPage < numPages) {
+          setStatus("Changing Page...");
           setCurrentPage(p => p + 1);
-          setIsPlaying(false);
-          setStatus("Page Complete");
-          return;
+          playbackIndexRef.current = -1;
+          setCurrentSentenceIndex(-1);
         } else {
-          setIsPlaying(false);
-          setStatus("Finished");
-          return;
+          stopPlayback();
+          setStatus("End of Document");
         }
+        return;
       }
 
-      // Update both state and ref
-      sentenceIndexRef.current = nextIndex;
-      setCurrentSentenceIndex(nextIndex);
-      const textToRead = textItems[nextIndex];
+      const textToRead = textItems[nextIdx];
+      // Update both ref and state
+      playbackIndexRef.current = nextIdx;
+      setCurrentSentenceIndex(nextIdx);
+      prefetchBuffer(nextIdx);
 
       if (isLocalhost) {
-        // --- REAL KOKORO BACKEND ---
-        setStatus(`Generating: "${textToRead.substring(0, 20)}..."`);
-        const url = await fetchAudioFromLocalhost(textToRead);
+        setStatus("Generating Voice...");
+        const url = await fetchAudio(nextIdx);
+        if (!active) return;
 
-        if (url && !isCancelled) {
-          setStatus("Playing...");
+        if (url) {
+          setStatus("Reading...");
           audioRef.current.src = url;
-          audioRef.current.playbackRate = 1.0;
           audioRef.current.onended = () => {
-            if (!isCancelled) playNextSentence();
+            if (active) playLoop();
           };
-          audioRef.current.play();
-        } else if (!url) {
-          setIsPlaying(false);
+          audioRef.current.play().catch(e => {
+            console.error("Audio block", e);
+            setStatus("Wait for interaction...");
+          });
+        } else {
+          setStatus("Connection Error - Retrying...");
+          setTimeout(() => {
+            if (active) playLoop();
+          }, 2000);
         }
       } else {
-        // --- BROWSER SIMULATION (Web Speech API) ---
-        setStatus("Speaking (Simulated)...");
-        const utterance = new SpeechSynthesisUtterance(textToRead);
-        utterance.rate = playbackSpeed;
-        utterance.onend = () => {
-          if (!isCancelled) playNextSentence();
+        setStatus("Using System Voice...");
+        const ut = new SpeechSynthesisUtterance(textToRead);
+        ut.rate = playbackSpeed;
+        ut.onend = () => {
+          if (active) playLoop();
         };
-        window.speechSynthesis.speak(utterance);
+        window.speechSynthesis.speak(ut);
       }
     };
 
-    // Kick off playback
     if (audioRef.current.paused && !window.speechSynthesis.speaking) {
-      playNextSentence();
+      playLoop();
     }
 
-    // Cleanup
-    return () => {
-      isCancelled = true;
-      window.speechSynthesis.cancel();
-      audioRef.current.pause();
-      audioRef.current.onended = null;
-    };
-  }, [isPlaying, isLocalhost, textItems, currentPage, numPages, playbackSpeed]);
+    return () => { active = false; };
+  }, [isPlaying, textItems, currentPage]);
 
+  // --- THEME CLASSES ---
+  const theme = {
+    bg: darkMode ? 'bg-slate-900' : 'bg-slate-50',
+    bgSecondary: darkMode ? 'bg-slate-800' : 'bg-white',
+    bgTertiary: darkMode ? 'bg-slate-700' : 'bg-slate-100',
+    text: darkMode ? 'text-slate-100' : 'text-slate-900',
+    textSecondary: darkMode ? 'text-slate-400' : 'text-slate-500',
+    textMuted: darkMode ? 'text-slate-500' : 'text-slate-400',
+    border: darkMode ? 'border-slate-700' : 'border-slate-200',
+    borderSecondary: darkMode ? 'border-slate-600' : 'border-slate-100',
+    hover: darkMode ? 'hover:bg-slate-700' : 'hover:bg-white',
+    selection: darkMode ? 'selection:bg-blue-900' : 'selection:bg-blue-200',
+    canvasBg: darkMode ? 'bg-slate-800' : 'bg-white',
+    viewportBg: darkMode ? 'bg-slate-950/50' : 'bg-slate-200/50',
+  };
 
-  // --- UI COMPONENTS ---
+  // Volume icon based on level
+  const VolumeIcon = volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
+
+  if (!isLibLoaded) {
+    return (
+      <div className={`h-screen w-full flex flex-col items-center justify-center ${theme.bg} gap-4`}>
+        <Loader2 className="animate-spin text-blue-600" size={48} />
+        <p className={`${theme.textSecondary} font-medium`}>Booting Neural Engine...</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="flex flex-col h-screen bg-slate-100 text-slate-800 font-sans">
+    <div className={`flex flex-col h-screen ${theme.bg} ${theme.text} font-sans ${theme.selection} transition-colors duration-300`}>
 
-      {/* HEADER / RIBBON */}
-      <header className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between shadow-sm z-10">
-        <div className="flex items-center gap-4">
-          <div className="bg-blue-600 text-white p-2 rounded-lg">
-            <Volume2 size={24} />
-          </div>
-          <h1 className="text-xl font-bold tracking-tight text-slate-700">Neural Reader</h1>
-        </div>
-
-        <div className="flex items-center gap-3 bg-slate-100 p-1.5 rounded-full border border-slate-200">
-          {/* Controls */}
-          <button
-            onClick={() => {
-              if (isPlaying) {
-                setIsPlaying(false);
-                window.speechSynthesis.cancel();
-                audioRef.current.pause();
-              } else {
-                setIsPlaying(true);
-              }
-            }}
-            className={`p-3 rounded-full transition-all ${isPlaying ? 'bg-amber-100 text-amber-600' : 'bg-blue-600 text-white shadow-md hover:bg-blue-700'}`}
-          >
-            {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" className="ml-0.5" />}
-          </button>
-
-          <button onClick={() => { setIsPlaying(false); setCurrentSentenceIndex(-1); }} className="p-2 text-slate-500 hover:text-red-500 hover:bg-red-50 rounded-full">
-            <Square size={18} fill="currentColor" />
-          </button>
-
-          <div className="h-6 w-px bg-slate-300 mx-1"></div>
-
-          <button onClick={() => setCurrentPage(Math.max(1, currentPage - 1))} className="p-2 text-slate-600 hover:bg-white rounded-full"><ChevronLeft size={20} /></button>
-          <span className="text-sm font-medium w-16 text-center">{currentPage} / {numPages || '-'}</span>
-          <button onClick={() => setCurrentPage(Math.min(numPages, currentPage + 1))} className="p-2 text-slate-600 hover:bg-white rounded-full"><ChevronRight size={20} /></button>
-        </div>
-
-        <div className="flex items-center gap-4">
-          {/* Backend Toggle */}
-          <div className="flex items-center gap-2 text-xs font-medium bg-slate-50 border px-3 py-1.5 rounded-lg">
-            <span className={!isLocalhost ? "text-blue-600" : "text-slate-400"}>Browser Sim</span>
-            <button
-              onClick={() => setIsLocalhost(!isLocalhost)}
-              className={`w-8 h-4 rounded-full p-0.5 transition-colors ${isLocalhost ? 'bg-green-500' : 'bg-slate-300'}`}
-            >
-              <div className={`w-3 h-3 bg-white rounded-full shadow-sm transform transition-transform ${isLocalhost ? 'translate-x-4' : 'translate-x-0'}`} />
-            </button>
-            <span className={isLocalhost ? "text-green-600" : "text-slate-400"}>Localhost:8000</span>
-          </div>
-
-          <input
-            type="file"
-            ref={fileInputRef}
-            onChange={handleFileUpload}
-            accept="application/pdf"
-            className="hidden"
+      {/* READING PROGRESS BAR */}
+      {pdfDoc && (
+        <div className="h-1 bg-slate-300/20 w-full fixed top-0 left-0 z-50">
+          <div
+            className="h-full bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 transition-all duration-500 ease-out"
+            style={{ width: `${calculateReadingProgress()}%` }}
           />
+        </div>
+      )}
+
+      {/* HEADER / CONTROL BAR */}
+      <header className={`h-16 ${theme.bgSecondary} border-b ${theme.border} px-6 flex items-center justify-between z-20 sticky top-0 shadow-sm transition-colors duration-300`}>
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-500/30">
+            <Volume2 size={22} />
+          </div>
+          <div className="hidden sm:block">
+            <h1 className={`text-sm font-bold uppercase tracking-tighter ${theme.textSecondary}`}>Neural PDF</h1>
+            <p className="text-[10px] font-bold text-blue-500 truncate max-w-[200px]">{status}</p>
+          </div>
+        </div>
+
+        {/* PLAYBACK CONTROLS */}
+        <div className={`flex items-center gap-2 ${theme.bgTertiary} p-1 rounded-xl border ${theme.border} shadow-inner`}>
+          <button
+            onClick={() => setCurrentSentenceIndex(prev => Math.max(-1, prev - 2))}
+            className={`p-2 ${theme.hover} rounded-lg transition-colors ${theme.textSecondary}`}
+            title="Previous (Shift+←)"
+          >
+            <SkipBack size={18} />
+          </button>
+          <button
+            onClick={handlePlayPause}
+            className={`px-6 py-2 rounded-lg font-bold flex items-center gap-2 transition-all min-w-[120px] justify-center ${isPlaying
+              ? `${theme.bgSecondary} text-amber-500 shadow-sm`
+              : 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-md hover:shadow-lg hover:scale-[1.02]'
+              }`}
+            title="Play/Pause (Space)"
+          >
+            {isPlaying ? <><Pause size={18} fill="currentColor" /> Pause</> : <><Play size={18} fill="currentColor" /> Read</>}
+          </button>
+          <button
+            onClick={skipToNextSentence}
+            className={`p-2 ${theme.hover} rounded-lg transition-colors ${theme.textSecondary}`}
+            title="Next (Shift+→)"
+          >
+            <SkipForward size={18} />
+          </button>
+          <div className={`w-px h-6 ${theme.border} mx-1`}></div>
+          <button
+            onClick={stopPlayback}
+            className={`p-2 ${theme.hover} ${theme.textMuted} hover:text-red-500 rounded-lg`}
+            title="Stop (Esc)"
+          >
+            <Square size={16} fill="currentColor" />
+          </button>
+        </div>
+
+        {/* RIGHT CONTROLS */}
+        <div className="flex items-center gap-3">
+          {/* Estimated Time */}
+          {pdfDoc && calculateEstimatedTimeRemaining() && (
+            <div className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-lg border ${theme.border} text-[10px] font-bold ${theme.textSecondary}`}>
+              <Clock size={12} />
+              {calculateEstimatedTimeRemaining()}
+            </div>
+          )}
+
+          {/* TTS Mode Toggle */}
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[10px] font-black tracking-widest transition-colors ${isLocalhost
+            ? 'bg-green-500/10 border-green-500/30 text-green-500'
+            : `${theme.bgTertiary} ${theme.border} ${theme.textSecondary}`
+            }`}>
+            <Zap size={12} fill={isLocalhost ? "currentColor" : "none"} />
+            <button onClick={() => setIsLocalhost(!isLocalhost)}>
+              {isLocalhost ? "KOKORO" : "SYSTEM"}
+            </button>
+          </div>
+
+          {/* Dark Mode Toggle */}
+          <button
+            onClick={() => setDarkMode(!darkMode)}
+            className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-amber-500`}
+            title="Toggle Dark Mode (Ctrl+D)"
+          >
+            {darkMode ? <Sun size={20} /> : <Moon size={20} />}
+          </button>
+
+          {/* Keyboard Shortcuts */}
+          <button
+            onClick={() => setShowShortcuts(!showShortcuts)}
+            className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
+            title="Keyboard Shortcuts"
+          >
+            <Keyboard size={20} />
+          </button>
+
+          {/* Upload Button */}
           <button
             onClick={() => fileInputRef.current.click()}
-            className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white text-sm font-medium rounded-lg hover:bg-slate-700 transition-all"
+            className="p-2.5 bg-gradient-to-r from-slate-700 to-slate-800 text-white rounded-xl hover:from-slate-600 hover:to-slate-700 transition-all shadow-md"
           >
-            <Upload size={16} /> Open PDF
+            <Upload size={20} />
           </button>
+          <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".pdf" className="hidden" />
         </div>
       </header>
 
-      {/* MAIN CONTENT AREA */}
+      {/* KEYBOARD SHORTCUTS MODAL */}
+      {showShortcuts && (
+        <div
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center"
+          onClick={() => setShowShortcuts(false)}
+        >
+          <div
+            className={`${theme.bgSecondary} rounded-2xl p-6 max-w-md w-full mx-4 shadow-2xl border ${theme.border}`}
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 className={`text-lg font-bold mb-4 ${theme.text}`}>⌨️ Keyboard Shortcuts</h3>
+            <div className="space-y-3">
+              {[
+                ['Space', 'Play / Pause'],
+                ['Escape', 'Stop playback'],
+                ['Shift + ←', 'Previous sentence'],
+                ['Shift + →', 'Next sentence'],
+                ['Page Up', 'Previous page'],
+                ['Page Down', 'Next page'],
+                ['Ctrl + +', 'Zoom in'],
+                ['Ctrl + -', 'Zoom out'],
+                ['Ctrl + D', 'Toggle dark mode'],
+              ].map(([key, action]) => (
+                <div key={key} className={`flex justify-between items-center py-2 border-b ${theme.borderSecondary}`}>
+                  <span className={theme.textSecondary}>{action}</span>
+                  <kbd className={`px-3 py-1 ${theme.bgTertiary} rounded-lg text-sm font-mono font-bold ${theme.text}`}>
+                    {key}
+                  </kbd>
+                </div>
+              ))}
+            </div>
+            <button
+              onClick={() => setShowShortcuts(false)}
+              className="mt-6 w-full py-2 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-xl font-bold hover:shadow-lg transition-all"
+            >
+              Got it!
+            </button>
+          </div>
+        </div>
+      )}
+
       <main className="flex-1 flex overflow-hidden">
 
-        {/* SIDEBAR: Configuration */}
-        <aside className="w-72 bg-white border-r border-slate-200 p-6 flex flex-col gap-8 overflow-y-auto">
-          <div>
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Voice Settings</h3>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">Voice Model</label>
+        {/* SIDEBAR: NAVIGATION & SETTINGS */}
+        <aside className={`w-80 ${theme.bgSecondary} border-r ${theme.border} flex flex-col shadow-xl z-10 transition-colors duration-300`}>
+          <div className={`p-4 border-b ${theme.borderSecondary} ${darkMode ? 'bg-slate-800/50' : 'bg-slate-50/50'}`}>
+            <h3 className={`text-[10px] font-black ${theme.textMuted} uppercase tracking-widest mb-3`}>Settings</h3>
+            <div className="flex flex-col gap-3">
+              {/* Voice Selection */}
+              <div className="space-y-1">
+                <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>VOICE</span>
                 <select
                   value={selectedVoice}
-                  onChange={(e) => setSelectedVoice(e.target.value)}
-                  className="w-full text-sm border-slate-300 rounded-md shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 p-2 border"
+                  onChange={(e) => { setSelectedVoice(e.target.value); clearCache(); }}
+                  className={`w-full text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`}
                 >
-                  {KOKORO_VOICES.map(v => (
-                    <option key={v.id} value={v.id}>{v.name}</option>
-                  ))}
+                  {KOKORO_VOICES.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
                 </select>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">Speed ({playbackSpeed}x)</label>
-                <input
-                  type="range"
-                  min="0.5"
-                  max="2.0"
-                  step="0.1"
+
+              {/* Speed Selection */}
+              <div className="space-y-1">
+                <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>SPEED</span>
+                <select
                   value={playbackSpeed}
-                  onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))}
-                  className="w-full accent-blue-600"
-                />
+                  onChange={(e) => { setPlaybackSpeed(parseFloat(e.target.value)); clearCache(); }}
+                  className={`w-full text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`}
+                >
+                  {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map(s => <option key={s} value={s}>{s}x Speed</option>)}
+                </select>
+              </div>
+
+              {/* Volume Control */}
+              <div className="space-y-1">
+                <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>VOLUME</span>
+                <div className={`flex items-center gap-3 p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary}`}>
+                  <VolumeIcon size={16} className={theme.textSecondary} />
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.1"
+                    value={volume}
+                    onChange={(e) => setVolume(parseFloat(e.target.value))}
+                    className="flex-1 h-2 appearance-none bg-slate-300 dark:bg-slate-600 rounded-full cursor-pointer accent-blue-500"
+                  />
+                  <span className={`text-xs font-bold ${theme.textSecondary} w-8`}>{Math.round(volume * 100)}%</span>
+                </div>
+              </div>
+
+              {/* Zoom Controls */}
+              <div className="space-y-1">
+                <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>ZOOM</span>
+                <div className={`flex items-center gap-2 p-2 rounded-lg border ${theme.border} ${theme.bgSecondary}`}>
+                  <button
+                    onClick={() => setScale(s => Math.max(0.5, s - 0.2))}
+                    className={`p-1.5 ${theme.hover} rounded-lg transition-colors ${theme.textSecondary}`}
+                  >
+                    <ZoomOut size={16} />
+                  </button>
+                  <div className="flex-1 text-center">
+                    <span className={`text-xs font-bold ${theme.text}`}>{Math.round(scale * 100)}%</span>
+                  </div>
+                  <button
+                    onClick={() => setScale(s => Math.min(3, s + 0.2))}
+                    className={`p-1.5 ${theme.hover} rounded-lg transition-colors ${theme.textSecondary}`}
+                  >
+                    <ZoomIn size={16} />
+                  </button>
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="flex-1">
-            <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Status Log</h3>
-            <div className="bg-slate-900 text-green-400 text-xs font-mono p-3 rounded-lg h-full overflow-hidden">
-              <p className="opacity-50 mb-2">System initialized...</p>
-              <p> {status}</p>
-              {isPlaying && (
-                <div className="mt-2 flex gap-1">
-                  <span className="animate-pulse">●</span>
-                  <span className="animate-pulse delay-75">●</span>
-                  <span className="animate-pulse delay-150">●</span>
+          {/* Reading Stats */}
+          {pdfDoc && (
+            <div className={`px-4 py-3 border-b ${theme.borderSecondary} ${darkMode ? 'bg-slate-800/30' : 'bg-blue-50/50'}`}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center text-white text-xs font-black">
+                    {calculateReadingProgress()}%
+                  </div>
+                  <div>
+                    <p className={`text-[10px] font-black ${theme.textMuted} uppercase`}>Progress</p>
+                    <p className={`text-xs font-bold ${theme.text}`}>
+                      {currentSentenceIndex + 1} / {textItems.length} sentences
+                    </p>
+                  </div>
                 </div>
-              )}
-            </div>
-          </div>
-        </aside>
-
-        {/* PDF VIEWPORT */}
-        <section className="flex-1 bg-slate-100 overflow-auto flex justify-center p-8 relative">
-          <div className="relative shadow-2xl transition-all duration-300">
-            {/* Visual Canvas */}
-            <canvas ref={canvasRef} className="rounded-sm bg-white" />
-
-            {/* Immersive Reader Overlay (Dynamic Highlighting) */}
-            {/* In a full implementation, we would map specific coordinates. 
-                   For this "Mental Model" demo, we overlay the active text below the PDF or 
-                   in a floating card to show we are tracking state.
-                */}
-          </div>
-
-          {/* Active Sentence Display (The "Closed Caption" style reader) */}
-          {isPlaying && currentSentenceIndex >= 0 && (
-            <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-3/4 max-w-2xl bg-slate-900/90 backdrop-blur-sm text-white p-6 rounded-xl shadow-2xl border border-white/10 z-50 text-center transition-all">
-              <p className="text-lg leading-relaxed font-medium">
-                {textItems[currentSentenceIndex]}
-              </p>
-              <div className="text-xs text-slate-400 mt-3 font-mono">
-                Segment {currentSentenceIndex + 1} / {textItems.length}
               </div>
             </div>
           )}
-        </section>
 
+          {/* Sentence List */}
+          <div ref={sidebarRef} className={`flex-1 overflow-y-auto p-2 space-y-1 ${darkMode ? 'bg-slate-800/30' : 'bg-slate-50/30'} custom-scrollbar`}>
+            <h3 className={`px-3 py-2 text-[10px] font-black ${theme.textMuted} uppercase tracking-widest`}>Page Contents</h3>
+            {textItems.length === 0 && <p className={`text-xs ${theme.textMuted} p-3 italic`}>Upload a PDF to see text segments...</p>}
+            {textItems.map((text, i) => (
+              <button
+                key={i}
+                ref={el => sentenceRefs.current[i] = el}
+                onClick={() => { setCurrentSentenceIndex(i - 1); setIsPlaying(true); }}
+                className={`w-full text-left p-3 rounded-xl text-xs leading-relaxed transition-all ${currentSentenceIndex === i
+                  ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg scale-[1.02] font-medium'
+                  : `${theme.hover} ${theme.textSecondary} hover:shadow-sm`
+                  }`}
+              >
+                <span className={`inline-block w-5 h-5 rounded-full text-center text-[10px] font-bold mr-2 leading-5 ${currentSentenceIndex === i
+                  ? 'bg-white/20 text-white'
+                  : `${theme.bgTertiary} ${theme.textMuted}`
+                  }`}>
+                  {i + 1}
+                </span>
+                {text.length > 100 ? text.slice(0, 100) + '...' : text}
+              </button>
+            ))}
+          </div>
+        </aside>
+
+        {/* VIEWPORT: PDF CANVAS */}
+        <section className={`flex-1 overflow-auto p-8 ${theme.viewportBg} flex flex-col items-center custom-scrollbar transition-colors duration-300`}>
+          <div className={`relative shadow-[0_20px_50px_rgba(0,0,0,0.2)] rounded-lg overflow-hidden ${theme.canvasBg} group min-h-[500px] min-w-[400px]`}>
+            {pdfDoc ? (
+              <canvas ref={canvasRef} className="block" />
+            ) : (
+              <div className={`flex flex-col items-center justify-center h-full p-20 text-center gap-4 ${theme.canvasBg}`}>
+                <div className={`w-20 h-20 ${theme.bgTertiary} rounded-2xl flex items-center justify-center ${theme.textMuted} border-2 border-dashed ${theme.border}`}>
+                  <Upload size={36} />
+                </div>
+                <div>
+                  <p className={`${theme.textSecondary} font-medium mb-1`}>Drop a PDF or click upload</p>
+                  <p className={`text-xs ${theme.textMuted}`}>Supports any PDF document</p>
+                </div>
+              </div>
+            )}
+
+            {pdfDoc && (
+              <div className="absolute top-4 right-4 bg-black/70 backdrop-blur-md text-white px-4 py-2 rounded-full text-[10px] font-black tracking-widest opacity-0 group-hover:opacity-100 transition-opacity">
+                PG {currentPage} / {numPages}
+              </div>
+            )}
+          </div>
+
+          {/* PAGINATION HUD */}
+          {pdfDoc && (
+            <div className="mt-8 flex gap-3">
+              <button
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                className={`p-4 ${theme.bgSecondary} rounded-2xl shadow-sm hover:shadow-md transition-all ${theme.textMuted} hover:text-blue-500`}
+                title="Previous Page (Page Up)"
+              >
+                <ChevronLeft />
+              </button>
+              <div className={`px-8 flex items-center ${theme.bgSecondary} rounded-2xl font-black ${theme.text} shadow-sm text-sm`}>
+                {currentPage} <span className={`mx-3 ${theme.textMuted}`}>/</span> {numPages}
+              </div>
+              <button
+                onClick={() => setCurrentPage(p => Math.min(numPages, p + 1))}
+                className={`p-4 ${theme.bgSecondary} rounded-2xl shadow-sm hover:shadow-md transition-all ${theme.textMuted} hover:text-blue-500`}
+                title="Next Page (Page Down)"
+              >
+                <ChevronRight />
+              </button>
+            </div>
+          )}
+        </section>
       </main>
+
+      <style dangerouslySetInnerHTML={{
+        __html: `
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: ${darkMode ? '#475569' : '#cbd5e1'}; border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: ${darkMode ? '#64748b' : '#94a3b8'}; }
+        
+        input[type="range"]::-webkit-slider-thumb {
+          -webkit-appearance: none;
+          width: 14px;
+          height: 14px;
+          border-radius: 50%;
+          background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+          cursor: pointer;
+          box-shadow: 0 2px 6px rgba(59, 130, 246, 0.4);
+        }
+      `}} />
     </div>
   );
 }
