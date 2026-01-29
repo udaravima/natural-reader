@@ -15,7 +15,7 @@ MODEL_PATH = "kokoro-v1.0.onnx"
 VOICES_PATH = "voices-v1.0.bin"
 
 if not os.path.exists(MODEL_PATH) or not os.path.exists(VOICES_PATH):
-    print("Error: Model files not found. Ensure 'kokoro-v1.0.onnx' and 'voices-v1.0.bin' are present.")
+    print("Error: Model files not found. Ensure 'kokoro-v1.0.onnx' and 'voices-v1.0.bin' are present. \nmodel_path: https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/kokoro-v1.0.onnx,\nvoices_path: https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/voices-v1.0.bin")
     exit(1)
 
 print(f"Loading Kokoro ONNX model from {MODEL_PATH}...")

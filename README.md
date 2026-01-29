@@ -1,35 +1,73 @@
-# Neural Reader
+# Neural PDF Reader
 
-A modern PDF reader frontend designed for **[Kokoro TTS](https://github.com/hexgrad/kokoro)** - a high-quality neural text-to-speech engine. Upload PDFs and have them read aloud with natural-sounding neural voices.
+A modern, feature-rich PDF reader with **neural text-to-speech** powered by **[Kokoro TTS](https://github.com/hexgrad/kokoro)**. Upload PDFs and have them read aloud with natural-sounding neural voices.
 
 > 🎯 **This project is a web frontend for Kokoro TTS.** It provides an intuitive interface for reading PDF documents aloud using Kokoro's neural voice synthesis. A browser-based fallback mode is also available for testing without the backend.
 
-![Neural Reader](https://img.shields.io/badge/React-19.x-blue) ![PDF.js](https://img.shields.io/badge/PDF.js-5.x-orange) ![Kokoro TTS](https://img.shields.io/badge/Kokoro-TTS-green) ![Vite](https://img.shields.io/badge/Vite-Rolldown-purple)
+![Neural Reader](https://img.shields.io/badge/React-19.x-blue) ![PDF.js](https://img.shields.io/badge/PDF.js-3.x-orange) ![Kokoro TTS](https://img.shields.io/badge/Kokoro-TTS-green) ![Vite](https://img.shields.io/badge/Vite-Rolldown-purple)
 
-## Features
+---
 
-- 📄 **PDF Rendering** - View PDF documents with smooth page navigation
-- 🧠 **Kokoro TTS Integration** - High-quality neural text-to-speech via local Kokoro backend
-- 🎙️ **Dual TTS Modes**:
-  - **Kokoro Backend** (Recommended) - Connects to Kokoro TTS server for neural voices
-  - **Browser Fallback** - Uses Web Speech API for quick testing without backend
-- 🎨 **Immersive Reading** - Visual sentence highlighting during playback
-- ⚡ **Speed Control** - Adjust playback speed from 0.5x to 2x
-- 🎭 **Multiple Voices** - Choose from Kokoro's voice models (Heart, Bella, Michael, Emma, Alice, Lewis)
+## ✨ Features
 
-## Tech Stack
+### 📖 PDF Viewing
+- **PDF Rendering** - View PDF documents with smooth page navigation
+- **Zoom Controls** - Zoom in/out, fit to page, fit to width
+- **Page Jump** - Type any page number to jump directly
+- **Framed Viewer** - Professional document viewer layout with toolbar
+
+### 🎙️ Text-to-Speech
+- **Kokoro TTS Integration** - High-quality neural text-to-speech via local backend
+- **27 Voice Options** - Wide selection of US and UK male/female voices
+- **Speed Control** - Adjust playback speed from 0.5x to 2x
+- **Volume Control** - Adjustable audio volume slider
+- **Audio Buffering** - Pre-fetches upcoming sentences for seamless playback
+- **Browser Fallback** - Uses Web Speech API for quick testing without backend
+
+### 🎨 User Experience
+- **Dark Mode** - Beautiful dark/light theme toggle with smooth transitions
+- **Sentence Highlighting** - Visual highlighting of current sentence during playback
+- **Auto-Scroll** - Sidebar automatically scrolls to current sentence
+- **Reading Progress** - Visual progress bar showing completion percentage
+- **Estimated Time** - Shows remaining reading time
+
+### 💾 Memory & Persistence
+- **Settings Saved** - Voice, speed, volume, zoom, and theme persist across sessions
+- **Reading Progress** - Remembers your position in each PDF (page + sentence)
+- **Resume Reading** - Automatically resumes from where you left off
+
+### ⌨️ Keyboard Shortcuts
+| Key | Action |
+|-----|--------|
+| `Space` | Play / Pause |
+| `Escape` | Stop playback |
+| `Shift + ←` | Previous sentence |
+| `Shift + →` | Next sentence |
+| `Page Up` | Previous page |
+| `Page Down` | Next page |
+| `Ctrl + +` | Zoom in |
+| `Ctrl + -` | Zoom out |
+| `Ctrl + D` | Toggle dark mode |
+
+---
+
+## 🛠️ Tech Stack
 
 - **Frontend**: React 19, Vite (Rolldown)
-- **PDF Parsing**: PDF.js 5.x
+- **PDF Parsing**: PDF.js 3.x (CDN loaded)
 - **Styling**: Tailwind CSS 4.x
 - **Icons**: Lucide React
+- **Storage**: localStorage for persistence
 
-## Getting Started
+---
+
+## 🚀 Getting Started
 
 ### Prerequisites
 
 - Node.js 18+ 
 - npm or yarn
+- Python 3.8+ (for Kokoro TTS backend)
 
 ### Installation
 
@@ -47,29 +85,33 @@ npm run dev
 
 The app will be available at `http://localhost:5173`
 
-## Usage
+---
 
-### Browser Mode (Default)
+## 📖 Usage
 
-1. Click **"Open PDF"** to upload a PDF file
-2. Ensure **"Browser Sim"** is selected in the header toggle
+### Browser Mode (Testing)
+
+1. Click **Upload** button or the upload area to select a PDF
+2. Click the **"SYSTEM"** toggle in the header (uses browser's built-in TTS)
 3. Click the **Play** button to start reading
 4. Use the sidebar to adjust voice and speed settings
 
-### Localhost Mode (Kokoro TTS)
+### Kokoro Mode (High-Quality Neural TTS)
 
-For high-quality neural TTS, you'll need to run the Kokoro backend server:
+For high-quality neural TTS, run the Kokoro backend server:
 
-1. Set up and start the Kokoro TTS server on port 8000:
+1. **Start the Kokoro TTS server:**
    ```bash
-   # The server should expose POST /v1/synthesize
    python server.py
    ```
+   The server runs on port 8000.
 
-2. Toggle to **"Localhost:8000"** in the header
-3. Upload a PDF and click Play
+2. **Use the app:**
+   - Ensure **"KOKORO"** is shown in the header toggle (green)
+   - Upload a PDF and click Play
+   - Enjoy neural-quality voice synthesis!
 
-#### API Contract
+### API Contract
 
 The backend expects:
 ```json
@@ -88,18 +130,48 @@ Response:
 }
 ```
 
-## Available Voice Models
+---
 
-| Voice ID | Name | Description |
-|----------|------|-------------|
-| `af_heart` | Heart | US Female (default) |
-| `af_bella` | Bella | US Female |
-| `am_michael` | Michael | US Male |
-| `bf_emma` | Emma | UK Female |
-| `bf_alice` | Alice | UK Female |
-| `bm_lewis` | Lewis | UK Male |
+## 🎭 Available Voice Models
 
-## Scripts
+### US Voices
+| Voice ID | Name | Gender |
+|----------|------|--------|
+| `af_heart` | Heart | Female (default) |
+| `af_bella` | Bella | Female |
+| `af_alloy` | Alloy | Female |
+| `af_aoede` | Aoede | Female |
+| `af_jessica` | Jessica | Female |
+| `af_kore` | Kore | Female |
+| `af_nicole` | Nicole | Female |
+| `af_nova` | Nova | Female |
+| `af_river` | River | Male |
+| `af_sarah` | Sarah | Female |
+| `af_sky` | Sky | Female |
+| `am_michael` | Michael | Male |
+| `am_adam` | Adam | Male |
+| `am_echo` | Echo | Male |
+| `am_eric` | Eric | Male |
+| `am_fenrir` | Fenrir | Male |
+| `am_liam` | Liam | Male |
+| `am_onyx` | Onyx | Male |
+| `am_puck` | Puck | Male |
+
+### UK Voices
+| Voice ID | Name | Gender |
+|----------|------|--------|
+| `bf_emma` | Emma | Female |
+| `bf_alice` | Alice | Female |
+| `bf_isabella` | Isabella | Female |
+| `bf_lily` | Lily | Female |
+| `bm_daniel` | Daniel | Male |
+| `bm_fable` | Fable | Male |
+| `bm_george` | George | Male |
+| `bm_lewis` | Lewis | Male |
+
+---
+
+## 📜 Scripts
 
 ```bash
 npm run dev      # Start development server
@@ -108,20 +180,44 @@ npm run preview  # Preview production build
 npm run lint     # Run ESLint
 ```
 
-## Project Structure
+---
+
+## 📁 Project Structure
 
 ```
 natural-reader/
 ├── src/
 │   ├── App.jsx       # Main application component
 │   ├── main.jsx      # React entry point
-│   └── index.css     # Global styles
-├── public/           # Static assets
-├── vite.config.js    # Vite configuration
+│   └── index.css     # Global styles (Tailwind)
+├── dist/             # Production build output
+├── vite.config.js    # Vite configuration with chunk splitting
 ├── tailwind.config.js
+├── server.py         # Kokoro TTS backend server
 └── package.json
 ```
 
-## License
+---
+
+## 💡 Tips
+
+- **Resume Reading**: Open the same PDF file to automatically resume from your last position
+- **Keyboard Navigation**: Use keyboard shortcuts for faster control
+- **Prefetching**: The app pre-fetches the next 2 sentences for seamless playback
+- **Dark Mode**: Toggle with the moon/sun icon or press `Ctrl+D`
+- **Jump to Page**: Click on the page number in the toolbar and type any page
+
+---
+
+## 🔧 Build Optimization
+
+The project uses Rolldown (via rolldown-vite) with optimized chunk splitting:
+- React is split into a separate vendor chunk for better caching
+- PDF.js is loaded from CDN to reduce bundle size
+- Main app bundle is typically under 25KB (gzipped: ~7KB)
+
+---
+
+## 📄 License
 
 MIT
