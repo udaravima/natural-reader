@@ -3,9 +3,10 @@ import {
   Play, Pause, Square, Upload, ChevronLeft, ChevronRight,
   Volume2, SkipForward, SkipBack, Zap, Loader2, Moon, Sun,
   ZoomIn, ZoomOut, Keyboard, Clock, VolumeX, Volume1,
-  Maximize, Minimize, RotateCcw, Download, BookOpen, List
+  Maximize, Minimize, RotateCcw, Download, BookOpen, List, Trash2, Library
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
+import { saveBook, getBook, getRecentBooks, deleteBook, updateBookMeta } from './db';
 
 // Configure PDF.js worker for offline use
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -99,6 +100,8 @@ export default function App() {
   const [sidebarTab, setSidebarTab] = useState('sentences'); // 'sentences' or 'chapters'
   const [backendAvailable, setBackendAvailable] = useState(null); // null = checking, true/false
   const [toastMessage, setToastMessage] = useState(null);
+  const [recentBooks, setRecentBooks] = useState([]);
+  const [currentFileRef, setCurrentFileRef] = useState(null); // Store current file for saving
   const pdfContainerRef = useRef(null);
 
   // Buffer Management
@@ -276,6 +279,13 @@ export default function App() {
     };
 
     checkBackend();
+
+    // Load recent books from IndexedDB
+    const loadRecentBooks = async () => {
+      const books = await getRecentBooks();
+      setRecentBooks(books);
+    };
+    loadRecentBooks();
   }, []);
 
   // --- PDF LOGIC ---
@@ -319,6 +329,8 @@ export default function App() {
   const processFile = (file) => {
     if (file?.type === 'application/pdf' && isLibLoaded) {
       const fileName = file.name;
+      setCurrentFileRef(file); // Store reference for saving
+
       const reader = new FileReader();
       reader.onload = async (ev) => {
         try {
@@ -349,6 +361,12 @@ export default function App() {
           setTotalWordsRead(0);
           setReadingStartTime(null);
 
+          // Save to IndexedDB for library persistence
+          saveBook(file, { page: 1, sentenceIndex: -1 }).then(() => {
+            // Refresh recent books list
+            getRecentBooks().then(setRecentBooks);
+          });
+
           // Fetch PDF outline (Table of Contents)
           try {
             const outline = await doc.getOutline();
@@ -368,6 +386,76 @@ export default function App() {
       };
       reader.readAsArrayBuffer(file);
     }
+  };
+
+  // Open a book from the library (IndexedDB)
+  const openFromLibrary = async (fileName) => {
+    setStatus(`Loading ${fileName}...`);
+    try {
+      const bookData = await getBook(fileName);
+      if (!bookData) {
+        setStatus("Book not found in library");
+        setToastMessage("Book not found. Please re-upload.");
+        setTimeout(() => setToastMessage(null), 4000);
+        return;
+      }
+
+      const loadingTask = pdfjsLibRef.current.getDocument({ data: bookData.data });
+      const doc = await loadingTask.promise;
+
+      setPdfDoc(doc);
+      setNumPages(doc.numPages);
+      setPdfFileName(fileName);
+
+      // Restore reading position
+      const savedProgress = loadReadingProgress(fileName);
+      if (savedProgress && savedProgress.page <= doc.numPages) {
+        setCurrentPage(savedProgress.page);
+        setTimeout(() => {
+          if (savedProgress.sentenceIndex >= 0) {
+            setCurrentSentenceIndex(savedProgress.sentenceIndex);
+            playbackIndexRef.current = savedProgress.sentenceIndex;
+          }
+        }, 500);
+        setStatus(`Resumed "${fileName}" from page ${savedProgress.page}`);
+      } else {
+        setCurrentPage(1);
+        setCurrentSentenceIndex(-1);
+        playbackIndexRef.current = -1;
+        setStatus(`Opened "${fileName}"`);
+      }
+
+      // Update last opened time
+      updateBookMeta(fileName, {}).then(() => {
+        getRecentBooks().then(setRecentBooks);
+      });
+
+      // Fetch outline
+      try {
+        const outline = await doc.getOutline();
+        if (outline && outline.length > 0) {
+          setPdfOutline(outline);
+          setSidebarTab('chapters');
+        } else {
+          setPdfOutline([]);
+        }
+      } catch (e) {
+        setPdfOutline([]);
+      }
+    } catch (e) {
+      console.error("Failed to open from library:", e);
+      setStatus("Failed to load book");
+    }
+  };
+
+  // Delete a book from library
+  const removeFromLibrary = async (fileName, e) => {
+    e.stopPropagation(); // Don't trigger open
+    await deleteBook(fileName);
+    const books = await getRecentBooks();
+    setRecentBooks(books);
+    setToastMessage(`Removed "${fileName}" from library`);
+    setTimeout(() => setToastMessage(null), 3000);
   };
 
   const handleFileUpload = (e) => {
@@ -1131,12 +1219,12 @@ export default function App() {
               {pdfDoc ? (
                 <canvas ref={canvasRef} className="block" />
               ) : (
-                <div className={`flex flex-col items-center justify-center p-24 text-center gap-6 ${theme.canvasBg} min-h-[600px] min-w-[450px]`}>
+                <div className={`flex flex-col items-center justify-center p-12 text-center gap-6 ${theme.canvasBg} min-h-[600px] min-w-[500px]`}>
                   <div
-                    className={`w-24 h-24 ${theme.bgTertiary} rounded-2xl flex items-center justify-center ${theme.textMuted} border-2 border-dashed ${theme.border} cursor-pointer hover:border-blue-400 hover:text-blue-500 transition-all`}
+                    className={`w-20 h-20 ${theme.bgTertiary} rounded-2xl flex items-center justify-center ${theme.textMuted} border-2 border-dashed ${theme.border} cursor-pointer hover:border-blue-400 hover:text-blue-500 transition-all`}
                     onClick={() => fileInputRef.current.click()}
                   >
-                    <Upload size={40} />
+                    <Upload size={36} />
                   </div>
                   <div>
                     <p className={`${theme.textSecondary} font-semibold mb-2 text-lg`}>Open a PDF Document</p>
@@ -1149,6 +1237,49 @@ export default function App() {
                     <Upload size={16} className="inline mr-2" />
                     Choose File
                   </button>
+
+                  {/* LIBRARY - Recent Books */}
+                  {recentBooks.length > 0 && (
+                    <div className={`w-full max-w-md mt-4 border-t ${theme.borderSecondary} pt-6`}>
+                      <div className="flex items-center gap-2 mb-4 justify-center">
+                        <Library size={18} className={theme.textMuted} />
+                        <h3 className={`text-sm font-bold ${theme.textSecondary}`}>Your Library</h3>
+                      </div>
+                      <div className="space-y-2">
+                        {recentBooks.map((book) => (
+                          <button
+                            key={book.fileName}
+                            onClick={() => openFromLibrary(book.fileName)}
+                            className={`w-full flex items-center justify-between p-3 rounded-xl ${theme.bgTertiary} ${theme.hover} transition-all group border ${theme.border}`}
+                          >
+                            <div className="flex items-center gap-3 text-left">
+                              <div className={`w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-600 flex items-center justify-center text-white flex-shrink-0`}>
+                                <BookOpen size={18} />
+                              </div>
+                              <div className="overflow-hidden">
+                                <p className={`font-medium text-sm ${theme.text} truncate max-w-[200px]`}>
+                                  {book.fileName.replace('.pdf', '')}
+                                </p>
+                                <p className={`text-xs ${theme.textMuted}`}>
+                                  {(book.size / 1024 / 1024).toFixed(1)} MB • {new Date(book.lastOpened).toLocaleDateString()}
+                                </p>
+                              </div>
+                            </div>
+                            <button
+                              onClick={(e) => removeFromLibrary(book.fileName, e)}
+                              className={`p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity ${theme.hover} hover:text-red-500`}
+                              title="Remove from library"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </button>
+                        ))}
+                      </div>
+                      <p className={`text-[10px] ${theme.textMuted} mt-3 italic`}>
+                        Last {recentBooks.length} books saved for instant resume
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
