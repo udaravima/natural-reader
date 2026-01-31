@@ -24,8 +24,9 @@ def get_execution_providers():
     available_providers = ort.get_available_providers()
     print(f"Available ONNX Runtime providers: {available_providers}")
     
-    # Prefer CUDA, then DirectML (Windows), then CPU
-    preferred_order = ["CUDAExecutionProvider", "DmlExecutionProvider", "CPUExecutionProvider"]
+    # Prefer CUDA for GPU, fall back to CPU
+    # Note: DirectML is excluded as it doesn't support all ops used by Kokoro (ConvTranspose)
+    preferred_order = ["CUDAExecutionProvider", "CPUExecutionProvider"]
     providers = []
     
     for provider in preferred_order:
