@@ -112,6 +112,7 @@ export default function App() {
   const audioCache = useRef(new Map());
   const audioRef = useRef(new Audio());
   const canvasRef = useRef(null);
+  const textLayerRef = useRef(null); // For PDF text selection
   const fileInputRef = useRef(null);
   const pdfjsLibRef = useRef(null);
   const sentenceRefs = useRef([]);
@@ -306,7 +307,37 @@ export default function App() {
 
       await page.render({ canvasContext: context, viewport }).promise;
 
+      // Render text layer for text selection
       const textContent = await page.getTextContent();
+      const textLayerDiv = textLayerRef.current;
+      if (textLayerDiv) {
+        textLayerDiv.innerHTML = '';
+        textLayerDiv.style.width = `${viewport.width}px`;
+        textLayerDiv.style.height = `${viewport.height}px`;
+
+        // Manual text layer rendering (works across PDF.js versions)
+        textContent.items.forEach((item) => {
+          if (!item.str) return;
+
+          const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+          const fontHeight = Math.sqrt((tx[2] * tx[2]) + (tx[3] * tx[3]));
+          const angle = Math.atan2(tx[1], tx[0]);
+
+          const span = document.createElement('span');
+          span.textContent = item.str;
+          span.style.left = `${tx[4]}px`;
+          span.style.top = `${tx[5] - fontHeight}px`;
+          span.style.fontSize = `${fontHeight}px`;
+          span.style.fontFamily = item.fontName || 'sans-serif';
+
+          if (angle !== 0) {
+            span.style.transform = `rotate(${angle}rad)`;
+          }
+
+          textLayerDiv.appendChild(span);
+        });
+      }
+
       const rawText = textContent.items.map(item => item.str).join(' ');
 
       // Clean up text and split into manageable sentences
@@ -1377,7 +1408,14 @@ export default function App() {
           >
             <div className={`relative ${theme.canvasBg} shadow-2xl rounded-sm border ${theme.border}`} style={{ height: 'fit-content' }}>
               {pdfDoc ? (
-                <canvas ref={canvasRef} className="block" />
+                <>
+                  <canvas ref={canvasRef} className="block" />
+                  <div
+                    ref={textLayerRef}
+                    className="textLayer absolute top-0 left-0 overflow-hidden opacity-25 leading-none"
+                    style={{ pointerEvents: 'auto' }}
+                  />
+                </>
               ) : (
                 <div className={`flex flex-col items-center justify-center p-12 text-center gap-6 ${theme.canvasBg} min-h-[600px] min-w-[500px]`}>
                   <div
@@ -1462,6 +1500,32 @@ export default function App() {
           background: linear-gradient(135deg, #3b82f6, #06b6d4);
           cursor: pointer;
           box-shadow: 0 2px 6px rgba(59, 130, 246, 0.4);
+        }
+        
+        /* PDF.js Text Layer for selection */
+        .textLayer {
+          position: absolute;
+          left: 0;
+          top: 0;
+          right: 0;
+          bottom: 0;
+          overflow: hidden;
+          line-height: 1.0;
+          text-align: initial;
+          opacity: 0.2;
+        }
+        .textLayer > span {
+          color: transparent;
+          position: absolute;
+          white-space: pre;
+          cursor: text;
+          transform-origin: 0% 0%;
+        }
+        .textLayer ::selection {
+          background: rgba(59, 130, 246, 0.5);
+        }
+        .textLayer ::-moz-selection {
+          background: rgba(59, 130, 246, 0.5);
         }
       `}} />
     </div >
