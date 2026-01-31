@@ -3,7 +3,7 @@ import {
   Play, Pause, Square, Upload, ChevronLeft, ChevronRight,
   Volume2, SkipForward, SkipBack, Zap, Loader2, Moon, Sun,
   ZoomIn, ZoomOut, Keyboard, Clock, VolumeX, Volume1,
-  Maximize, Minimize, RotateCcw
+  Maximize, Minimize, RotateCcw, Download
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 
@@ -93,6 +93,8 @@ export default function App() {
   const [readingStartTime, setReadingStartTime] = useState(null);
   const [totalWordsRead, setTotalWordsRead] = useState(0);
   const [fitMode, setFitMode] = useState('custom');
+  const [isDragging, setIsDragging] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
   const pdfContainerRef = useRef(null);
 
   // Buffer Management
@@ -276,8 +278,8 @@ export default function App() {
     if (pdfDoc) renderPage(currentPage, pdfDoc);
   }, [pdfDoc, currentPage, scale]);
 
-  const handleFileUpload = (e) => {
-    const file = e.target.files[0];
+  // Process a PDF file (used by both file input and drag-and-drop)
+  const processFile = (file) => {
     if (file?.type === 'application/pdf' && isLibLoaded) {
       const fileName = file.name;
       const reader = new FileReader();
@@ -314,6 +316,94 @@ export default function App() {
         }
       };
       reader.readAsArrayBuffer(file);
+    }
+  };
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    processFile(file);
+  };
+
+  // Drag-and-drop handlers
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      const file = files[0];
+      if (file.type === 'application/pdf') {
+        processFile(file);
+      } else {
+        setStatus("Please drop a PDF file");
+      }
+    }
+  };
+
+  // Download page audio
+  const downloadPageAudio = async () => {
+    if (!textItems.length || !isLocalhost) {
+      setStatus(isLocalhost ? "No text to download" : "Download requires Kokoro backend");
+      return;
+    }
+
+    setIsDownloading(true);
+    setStatus("Generating audio for page...");
+
+    try {
+      const response = await fetch('http://localhost:8000/v1/batch_synthesize', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sentences: textItems,
+          voice: selectedVoice,
+          speed: playbackSpeed
+        })
+      });
+
+      if (!response.ok) throw new Error("Batch synthesis failed");
+
+      const data = await response.json();
+      const b64 = data.audio_base64;
+
+      // Convert base64 to blob and download
+      const byteCharacters = atob(b64);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: 'audio/wav' });
+
+      // Create download link
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${pdfFileName.replace('.pdf', '')}_page${currentPage}.wav`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      setStatus(`Downloaded page ${currentPage} audio (${Math.round(data.duration_seconds)}s)`);
+    } catch (err) {
+      console.error("Download error:", err);
+      setStatus("Failed to generate audio");
+    } finally {
+      setIsDownloading(false);
     }
   };
 
@@ -527,7 +617,22 @@ export default function App() {
   }
 
   return (
-    <div className={`flex flex-col h-screen ${theme.bg} ${theme.text} font-sans ${theme.selection} transition-colors duration-300`}>
+    <div
+      className={`flex flex-col h-screen ${theme.bg} ${theme.text} font-sans ${theme.selection} transition-colors duration-300`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+
+      {/* DRAG OVERLAY */}
+      {isDragging && (
+        <div className="fixed inset-0 z-[100] bg-blue-600/20 backdrop-blur-sm flex items-center justify-center pointer-events-none">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl p-12 shadow-2xl border-4 border-dashed border-blue-500 flex flex-col items-center gap-4">
+            <Upload size={64} className="text-blue-500 animate-bounce" />
+            <p className="text-xl font-bold text-blue-600 dark:text-blue-400">Drop PDF to Open</p>
+          </div>
+        </div>
+      )}
 
       {/* READING PROGRESS BAR */}
       {pdfDoc && (
@@ -616,6 +721,18 @@ export default function App() {
           >
             {darkMode ? <Sun size={20} /> : <Moon size={20} />}
           </button>
+
+          {/* Download Page Audio */}
+          {pdfDoc && isLocalhost && (
+            <button
+              onClick={downloadPageAudio}
+              disabled={isDownloading || textItems.length === 0}
+              className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${isDownloading ? 'opacity-50 cursor-wait' : theme.textSecondary + ' hover:text-green-500'}`}
+              title="Download Page Audio"
+            >
+              {isDownloading ? <Loader2 size={20} className="animate-spin" /> : <Download size={20} />}
+            </button>
+          )}
 
           {/* Keyboard Shortcuts */}
           <button
