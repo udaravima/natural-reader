@@ -3,7 +3,8 @@ import {
   Play, Pause, Square, Upload, ChevronLeft, ChevronRight,
   Volume2, SkipForward, SkipBack, Zap, Loader2, Moon, Sun,
   ZoomIn, ZoomOut, Keyboard, Clock, VolumeX, Volume1,
-  Maximize, Minimize, RotateCcw, Download, BookOpen, List, Trash2, Library
+  Maximize, Minimize, RotateCcw, Download, BookOpen, List, Trash2, Library,
+  PlayCircle, MousePointer2, X
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { saveBook, getBook, getRecentBooks, deleteBook, updateBookMeta } from './db';
@@ -102,6 +103,9 @@ export default function App() {
   const [toastMessage, setToastMessage] = useState(null);
   const [recentBooks, setRecentBooks] = useState([]);
   const [currentFileRef, setCurrentFileRef] = useState(null); // Store current file for saving
+  const [contextMenu, setContextMenu] = useState(null); // {x, y, sentenceIndex}
+  const [selectedText, setSelectedText] = useState(''); // For selective read
+  const [isReadingSelection, setIsReadingSelection] = useState(false);
   const pdfContainerRef = useRef(null);
 
   // Buffer Management
@@ -458,6 +462,100 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
+  // Context menu for sentences
+  const handleSentenceContextMenu = (e, sentenceIndex) => {
+    e.preventDefault();
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      sentenceIndex
+    });
+  };
+
+  // Close context menu when clicking elsewhere
+  useEffect(() => {
+    const handleClick = () => setContextMenu(null);
+    if (contextMenu) {
+      window.addEventListener('click', handleClick);
+      return () => window.removeEventListener('click', handleClick);
+    }
+  }, [contextMenu]);
+
+  // Continue reading from a specific sentence
+  const continueFromHere = (sentenceIndex) => {
+    setCurrentSentenceIndex(sentenceIndex - 1); // Will advance to sentenceIndex on play
+    playbackIndexRef.current = sentenceIndex - 1;
+    setIsPlaying(true);
+    setContextMenu(null);
+    setStatus(`Starting from sentence ${sentenceIndex + 1}`);
+  };
+
+  // Read only selected text (not sequential)
+  const readSelection = async () => {
+    const selection = window.getSelection().toString().trim();
+    if (!selection) {
+      setToastMessage("Select some text first");
+      setTimeout(() => setToastMessage(null), 3000);
+      return;
+    }
+
+    setSelectedText(selection);
+    setIsReadingSelection(true);
+    setStatus("Reading selection...");
+
+    if (isLocalhost) {
+      try {
+        const response = await fetch('http://localhost:8000/v1/synthesize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: selection,
+            voice: selectedVoice,
+            speed: playbackSpeed
+          })
+        });
+
+        if (!response.ok) throw new Error("TTS failed");
+        const data = await response.json();
+        const b64 = data.audio_base64;
+        const blob = await (await fetch(`data:audio/wav;base64,${b64}`)).blob();
+        const url = URL.createObjectURL(blob);
+
+        audioRef.current.src = url;
+        audioRef.current.onended = () => {
+          setIsReadingSelection(false);
+          setSelectedText('');
+          setStatus("Selection read complete");
+          URL.revokeObjectURL(url);
+        };
+        audioRef.current.play();
+      } catch (e) {
+        console.error("Selection read error:", e);
+        setIsReadingSelection(false);
+        setStatus("Failed to read selection");
+      }
+    } else {
+      // Browser TTS fallback
+      const utterance = new SpeechSynthesisUtterance(selection);
+      utterance.rate = playbackSpeed;
+      utterance.onend = () => {
+        setIsReadingSelection(false);
+        setSelectedText('');
+        setStatus("Selection read complete");
+      };
+      window.speechSynthesis.speak(utterance);
+    }
+  };
+
+  // Stop reading selection
+  const stopSelectionRead = () => {
+    audioRef.current.pause();
+    window.speechSynthesis.cancel();
+    setIsReadingSelection(false);
+    setSelectedText('');
+    setStatus("Selection stopped");
+  };
+
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     processFile(file);
@@ -799,6 +897,67 @@ export default function App() {
         </div>
       )}
 
+      {/* CONTEXT MENU - Continue From Here */}
+      {contextMenu && (
+        <div
+          className={`fixed z-[300] ${theme.bgSecondary} rounded-xl shadow-2xl border ${theme.border} py-2 min-w-[180px]`}
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button
+            onClick={() => continueFromHere(contextMenu.sentenceIndex)}
+            className={`w-full px-4 py-2.5 text-left text-sm flex items-center gap-3 ${theme.hover} ${theme.text} hover:text-blue-500`}
+          >
+            <PlayCircle size={16} className="text-blue-500" />
+            Continue from here
+          </button>
+          <button
+            onClick={() => {
+              const text = textItems[contextMenu.sentenceIndex];
+              if (text) {
+                window.getSelection().removeAllRanges();
+                navigator.clipboard.writeText(text);
+                setToastMessage("Copied to clipboard");
+                setTimeout(() => setToastMessage(null), 2000);
+              }
+              setContextMenu(null);
+            }}
+            className={`w-full px-4 py-2.5 text-left text-sm flex items-center gap-3 ${theme.hover} ${theme.text} hover:text-blue-500`}
+          >
+            <MousePointer2 size={16} className="text-slate-500" />
+            Copy sentence
+          </button>
+        </div>
+      )}
+
+      {/* READ SELECTION FLOATING BUTTON */}
+      {pdfDoc && !isReadingSelection && (
+        <button
+          onClick={readSelection}
+          className={`fixed bottom-6 right-6 z-[150] px-4 py-3 rounded-2xl shadow-xl flex items-center gap-2 transition-all hover:scale-105 ${darkMode ? 'bg-gradient-to-r from-blue-600 to-cyan-600 text-white' : 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white'}`}
+          title="Select text and click to read it aloud"
+        >
+          <MousePointer2 size={18} />
+          <span className="text-sm font-bold">Read Selection</span>
+        </button>
+      )}
+
+      {/* READING SELECTION INDICATOR */}
+      {isReadingSelection && (
+        <div className="fixed bottom-6 right-6 z-[150] flex items-center gap-3">
+          <div className={`px-4 py-3 rounded-2xl shadow-xl flex items-center gap-2 ${darkMode ? 'bg-green-700' : 'bg-green-500'} text-white`}>
+            <Loader2 size={18} className="animate-spin" />
+            <span className="text-sm font-bold">Reading...</span>
+          </div>
+          <button
+            onClick={stopSelectionRead}
+            className={`p-3 rounded-full shadow-xl ${darkMode ? 'bg-red-700' : 'bg-red-500'} text-white hover:scale-105 transition-all`}
+            title="Stop reading"
+          >
+            <Square size={16} />
+          </button>
+        </div>
+      )}
+
       {/* HEADER / CONTROL BAR */}
       <header className={`h-16 ${theme.bgSecondary} border-b ${theme.border} px-6 flex items-center justify-between z-20 sticky top-0 shadow-sm transition-colors duration-300`}>
         <div className="flex items-center gap-3">
@@ -1058,6 +1217,7 @@ export default function App() {
                   key={i}
                   ref={el => sentenceRefs.current[i] = el}
                   onClick={() => { setCurrentSentenceIndex(i - 1); setIsPlaying(true); }}
+                  onContextMenu={(e) => handleSentenceContextMenu(e, i)}
                   className={`w-full text-left p-3 rounded-xl text-xs leading-relaxed transition-all ${currentSentenceIndex === i
                     ? 'bg-blue-600 text-white shadow-lg scale-[1.02] font-medium'
                     : `${theme.hover} ${theme.textSecondary} hover:shadow-sm`
