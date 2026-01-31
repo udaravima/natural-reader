@@ -3,7 +3,7 @@ import {
   Play, Pause, Square, Upload, ChevronLeft, ChevronRight,
   Volume2, SkipForward, SkipBack, Zap, Loader2, Moon, Sun,
   ZoomIn, ZoomOut, Keyboard, Clock, VolumeX, Volume1,
-  Maximize, Minimize, RotateCcw, Download
+  Maximize, Minimize, RotateCcw, Download, BookOpen, List
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 
@@ -95,6 +95,10 @@ export default function App() {
   const [fitMode, setFitMode] = useState('custom');
   const [isDragging, setIsDragging] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [pdfOutline, setPdfOutline] = useState([]);
+  const [sidebarTab, setSidebarTab] = useState('sentences'); // 'sentences' or 'chapters'
+  const [backendAvailable, setBackendAvailable] = useState(null); // null = checking, true/false
+  const [toastMessage, setToastMessage] = useState(null);
   const pdfContainerRef = useRef(null);
 
   // Buffer Management
@@ -239,6 +243,39 @@ export default function App() {
     pdfjsLibRef.current = pdfjsLib;
     setIsLibLoaded(true);
     setStatus('Ready to Open PDF');
+
+    // Check backend health
+    const checkBackend = async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+        const response = await fetch('http://localhost:8000/v1/synthesize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: 'test', voice: 'af_heart', speed: 1.0 }),
+          signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+
+        if (response.ok) {
+          setBackendAvailable(true);
+        } else {
+          throw new Error('Backend error');
+        }
+      } catch (e) {
+        console.warn('Backend not available:', e.message);
+        setBackendAvailable(false);
+        setIsLocalhost(false); // Auto-switch to system voice
+        setToastMessage('Kokoro backend not detected. Using browser voice.');
+
+        // Auto-dismiss toast after 5 seconds
+        setTimeout(() => setToastMessage(null), 5000);
+      }
+    };
+
+    checkBackend();
   }, []);
 
   // --- PDF LOGIC ---
@@ -311,6 +348,20 @@ export default function App() {
 
           setTotalWordsRead(0);
           setReadingStartTime(null);
+
+          // Fetch PDF outline (Table of Contents)
+          try {
+            const outline = await doc.getOutline();
+            if (outline && outline.length > 0) {
+              setPdfOutline(outline);
+              setSidebarTab('chapters'); // Auto-switch to chapters if available
+            } else {
+              setPdfOutline([]);
+            }
+          } catch (e) {
+            console.warn('Could not load outline:', e);
+            setPdfOutline([]);
+          }
         } catch (err) {
           setStatus("Error loading PDF");
         }
@@ -644,6 +695,22 @@ export default function App() {
         </div>
       )}
 
+      {/* TOAST NOTIFICATION */}
+      {toastMessage && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[200] animate-pulse">
+          <div className={`px-6 py-3 rounded-xl shadow-2xl border ${darkMode ? 'bg-amber-900/90 border-amber-700 text-amber-100' : 'bg-amber-50 border-amber-300 text-amber-800'} flex items-center gap-3`}>
+            <Zap size={18} className="text-amber-500" />
+            <span className="font-medium text-sm">{toastMessage}</span>
+            <button
+              onClick={() => setToastMessage(null)}
+              className="ml-2 opacity-60 hover:opacity-100 transition-opacity"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* HEADER / CONTROL BAR */}
       <header className={`h-16 ${theme.bgSecondary} border-b ${theme.border} px-6 flex items-center justify-between z-20 sticky top-0 shadow-sm transition-colors duration-300`}>
         <div className="flex items-center gap-3">
@@ -865,30 +932,103 @@ export default function App() {
             </div>
           )}
 
-          {/* Sentence List */}
-          <div ref={sidebarRef} className={`flex-1 overflow-y-auto p-2 space-y-1 ${darkMode ? 'bg-slate-800/30' : 'bg-slate-50/30'} custom-scrollbar`}>
-            <h3 className={`px-3 py-2 text-[10px] font-black ${theme.textMuted} uppercase tracking-widest`}>Page Contents</h3>
-            {textItems.length === 0 && <p className={`text-xs ${theme.textMuted} p-3 italic`}>Upload a PDF to see text segments...</p>}
-            {textItems.map((text, i) => (
+          {/* Sidebar Tabs */}
+          {pdfDoc && (
+            <div className={`flex border-b ${theme.borderSecondary}`}>
               <button
-                key={i}
-                ref={el => sentenceRefs.current[i] = el}
-                onClick={() => { setCurrentSentenceIndex(i - 1); setIsPlaying(true); }}
-                className={`w-full text-left p-3 rounded-xl text-xs leading-relaxed transition-all ${currentSentenceIndex === i
-                  ? 'bg-blue-600 text-white shadow-lg scale-[1.02] font-medium'
-                  : `${theme.hover} ${theme.textSecondary} hover:shadow-sm`
+                onClick={() => setSidebarTab('sentences')}
+                className={`flex-1 py-2.5 text-xs font-bold flex items-center justify-center gap-2 transition-colors ${sidebarTab === 'sentences'
+                  ? 'text-blue-500 border-b-2 border-blue-500'
+                  : theme.textMuted + ' hover:text-blue-400'
                   }`}
               >
-                <span className={`inline-block w-5 h-5 rounded-full text-center text-[10px] font-bold mr-2 leading-5 ${currentSentenceIndex === i
-                  ? 'bg-white/20 text-white'
-                  : `${theme.bgTertiary} ${theme.textMuted}`
-                  }`}>
-                  {i + 1}
-                </span>
-                {text.length > 100 ? text.slice(0, 100) + '...' : text}
+                <List size={14} />
+                Sentences
               </button>
-            ))}
-          </div>
+              {pdfOutline.length > 0 && (
+                <button
+                  onClick={() => setSidebarTab('chapters')}
+                  className={`flex-1 py-2.5 text-xs font-bold flex items-center justify-center gap-2 transition-colors ${sidebarTab === 'chapters'
+                    ? 'text-blue-500 border-b-2 border-blue-500'
+                    : theme.textMuted + ' hover:text-blue-400'
+                    }`}
+                >
+                  <BookOpen size={14} />
+                  Chapters ({pdfOutline.length})
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Sentence List */}
+          {sidebarTab === 'sentences' && (
+            <div ref={sidebarRef} className={`flex-1 overflow-y-auto p-2 space-y-1 ${darkMode ? 'bg-slate-800/30' : 'bg-slate-50/30'} custom-scrollbar`}>
+              <h3 className={`px-3 py-2 text-[10px] font-black ${theme.textMuted} uppercase tracking-widest`}>Page Contents</h3>
+              {textItems.length === 0 && <p className={`text-xs ${theme.textMuted} p-3 italic`}>Upload a PDF to see text segments...</p>}
+              {textItems.map((text, i) => (
+                <button
+                  key={i}
+                  ref={el => sentenceRefs.current[i] = el}
+                  onClick={() => { setCurrentSentenceIndex(i - 1); setIsPlaying(true); }}
+                  className={`w-full text-left p-3 rounded-xl text-xs leading-relaxed transition-all ${currentSentenceIndex === i
+                    ? 'bg-blue-600 text-white shadow-lg scale-[1.02] font-medium'
+                    : `${theme.hover} ${theme.textSecondary} hover:shadow-sm`
+                    }`}
+                >
+                  <span className={`inline-block w-5 h-5 rounded-full text-center text-[10px] font-bold mr-2 leading-5 ${currentSentenceIndex === i
+                    ? 'bg-white/20 text-white'
+                    : `${theme.bgTertiary} ${theme.textMuted}`
+                    }`}>
+                    {i + 1}
+                  </span>
+                  {text.length > 100 ? text.slice(0, 100) + '...' : text}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Chapters List (TOC) */}
+          {sidebarTab === 'chapters' && pdfOutline.length > 0 && (
+            <div className={`flex-1 overflow-y-auto p-2 space-y-1 ${darkMode ? 'bg-slate-800/30' : 'bg-slate-50/30'} custom-scrollbar`}>
+              <h3 className={`px-3 py-2 text-[10px] font-black ${theme.textMuted} uppercase tracking-widest`}>Table of Contents</h3>
+              {pdfOutline.map((item, i) => (
+                <button
+                  key={i}
+                  onClick={async () => {
+                    // Navigate to the chapter's destination page
+                    if (item.dest) {
+                      try {
+                        let pageIndex;
+                        if (typeof item.dest === 'string') {
+                          // Named destination
+                          const dest = await pdfDoc.getDestination(item.dest);
+                          if (dest) {
+                            const ref = dest[0];
+                            pageIndex = await pdfDoc.getPageIndex(ref);
+                          }
+                        } else if (Array.isArray(item.dest)) {
+                          // Direct destination
+                          const ref = item.dest[0];
+                          pageIndex = await pdfDoc.getPageIndex(ref);
+                        }
+                        if (pageIndex !== undefined) {
+                          setCurrentPage(pageIndex + 1);
+                          setCurrentSentenceIndex(-1);
+                          setStatus(`Jumped to: ${item.title}`);
+                        }
+                      } catch (e) {
+                        console.warn('Could not navigate to chapter:', e);
+                      }
+                    }
+                  }}
+                  className={`w-full text-left p-3 rounded-xl text-xs leading-relaxed transition-all ${theme.hover} ${theme.textSecondary} hover:shadow-sm hover:text-blue-500`}
+                >
+                  <BookOpen size={12} className="inline mr-2 opacity-50" />
+                  {item.title}
+                </button>
+              ))}
+            </div>
+          )}
         </aside>
 
         {/* VIEWPORT: PDF CANVAS */}
@@ -1033,6 +1173,6 @@ export default function App() {
           box-shadow: 0 2px 6px rgba(59, 130, 246, 0.4);
         }
       `}} />
-    </div>
+    </div >
   );
 }
