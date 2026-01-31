@@ -13,7 +13,10 @@ A modern, feature-rich PDF reader with **neural text-to-speech** powered by **[K
 ## ✨ Features
 
 ### 📖 PDF Viewing
+- **Drag & Drop Upload** - Drop PDFs directly onto the window
 - **PDF Rendering** - View PDF documents with smooth page navigation
+- **Table of Contents** - Navigate using PDF chapter outline (if available)
+- **Text Selection** - Select text directly on PDF for copying or reading
 - **Zoom Controls** - Zoom in/out, fit to page, fit to width
 - **Page Jump** - Type any page number to jump directly
 - **Framed Viewer** - Professional document viewer layout with toolbar
@@ -24,7 +27,11 @@ A modern, feature-rich PDF reader with **neural text-to-speech** powered by **[K
 - **Speed Control** - Adjust playback speed from 0.5x to 2x
 - **Volume Control** - Adjustable audio volume slider
 - **Audio Buffering** - Pre-fetches upcoming sentences for seamless playback
+- **Download Page Audio** - Export current page as WAV file
+- **Selective Read** - Select any text and read only that selection
+- **Continue From Here** - Right-click any sentence to start from that point
 - **Browser Fallback** - Uses Web Speech API for quick testing without backend
+- **Auto-Failover** - Automatically switches to browser voice if backend unavailable
 
 ### 🎨 User Experience
 - **Dark Mode** - Beautiful dark/light theme toggle with smooth transitions
@@ -32,8 +39,11 @@ A modern, feature-rich PDF reader with **neural text-to-speech** powered by **[K
 - **Auto-Scroll** - Sidebar automatically scrolls to current sentence
 - **Reading Progress** - Visual progress bar showing completion percentage
 - **Estimated Time** - Shows remaining reading time
+- **Toast Notifications** - Informative feedback for user actions
 
 ### 💾 Memory & Persistence
+- **Library (IndexedDB)** - PDFs saved locally for instant resume (up to 5 books)
+- **One-Click Resume** - Click any book in library to continue reading
 - **Settings Saved** - Voice, speed, volume, zoom, and theme persist across sessions
 - **Reading Progress** - Remembers your position in each PDF (page + sentence)
 - **Resume Reading** - Automatically resumes from where you left off
@@ -59,7 +69,7 @@ A modern, feature-rich PDF reader with **neural text-to-speech** powered by **[K
 - **PDF Parsing**: PDF.js 5.x (bundled locally for offline use)
 - **Styling**: Tailwind CSS 4.x
 - **Icons**: Lucide React
-- **Storage**: localStorage for persistence
+- **Storage**: localStorage + IndexedDB for persistence
 - **Offline**: No internet required after installation
 
 ---
@@ -191,6 +201,7 @@ npm run lint     # Run ESLint
 natural-reader/
 ├── src/
 │   ├── App.jsx       # Main application component
+│   ├── db.js         # IndexedDB utilities for library persistence
 │   ├── main.jsx      # React entry point
 │   └── index.css     # Global styles (Tailwind)
 ├── dist/             # Production build output
@@ -205,10 +216,13 @@ natural-reader/
 ## 💡 Tips
 
 - **Resume Reading**: Open the same PDF file to automatically resume from your last position
+- **Library**: Your recent books are saved in browser storage - click to instantly resume
 - **Keyboard Navigation**: Use keyboard shortcuts for faster control
 - **Prefetching**: The app pre-fetches the next 2 sentences for seamless playback
 - **Dark Mode**: Toggle with the moon/sun icon or press `Ctrl+D`
 - **Jump to Page**: Click on the page number in the toolbar and type any page
+- **Right-Click Menu**: Right-click sentences for quick actions like "Continue from here"
+- **Read Selection**: Select any text, then click the floating "Read Selection" button
 
 ---
 
