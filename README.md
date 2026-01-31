@@ -88,11 +88,32 @@ A modern, feature-rich PDF reader with **neural text-to-speech** powered by **[K
 # Clone the repository
 git clone <repository-url>
 cd natural-reader
-
-# Install dependencies
+```
+#### Install dependencies
+```bash
 npm install
+python3 -m venv .venv
+.venv\Scripts\activate # For Windows
+source .venv/bin/activate # For Linux/Mac
+pip install -r requirements.txt
+```
+#### Download Voice Models
+```bash
+# Download models from GitHub releases
 
-# Start development server
+## kokoro-V1.0.onnx
+wget https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/kokoro-v1.0.onnx
+
+## voices-V1.0.bin
+wget https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/voices-v1.0.bin
+```
+
+#### Start Python Kokoro TTS server
+```bash
+python server.py
+```
+#### Start development server
+```bash
 npm run dev
 ```
 
