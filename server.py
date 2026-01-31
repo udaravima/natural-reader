@@ -7,10 +7,10 @@ import io
 import os
 # import torch  # Kept for consistency if needed by other parts, but likely unused now
 from kokoro_onnx import Kokoro
+import onnxruntime as ort
 import uvicorn
 
 # --- KOKORO SETUP ---
-# Using ONNX model for CPU efficiency and to avoid CUDA warnings
 MODEL_PATH = "kokoro-v1.0.onnx"
 VOICES_PATH = "voices-v1.0.bin"
 
@@ -18,9 +18,39 @@ if not os.path.exists(MODEL_PATH) or not os.path.exists(VOICES_PATH):
     print("Error: Model files not found. Ensure 'kokoro-v1.0.onnx' and 'voices-v1.0.bin' are present. \nmodel_path: https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/kokoro-v1.0.onnx,\nvoices_path: https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/voices-v1.0.bin")
     exit(1)
 
+# --- GPU SUPPORT DETECTION ---
+def get_execution_providers():
+    """Detect and return the best available execution providers (GPU if available, else CPU)."""
+    available_providers = ort.get_available_providers()
+    print(f"Available ONNX Runtime providers: {available_providers}")
+    
+    # Prefer CUDA, then DirectML (Windows), then CPU
+    preferred_order = ["CUDAExecutionProvider", "DmlExecutionProvider", "CPUExecutionProvider"]
+    providers = []
+    
+    for provider in preferred_order:
+        if provider in available_providers:
+            providers.append(provider)
+    
+    # Ensure CPU is always a fallback
+    if "CPUExecutionProvider" not in providers:
+        providers.append("CPUExecutionProvider")
+    
+    return providers
+
+# Create custom ONNX session with GPU support if available
+providers = get_execution_providers()
+print(f"Using execution providers: {providers}")
+
 print(f"Loading Kokoro ONNX model from {MODEL_PATH}...")
-kokoro = Kokoro(MODEL_PATH, VOICES_PATH)
-print("Kokoro loaded successfully.")
+
+# Create session with our detected providers
+session = ort.InferenceSession(MODEL_PATH, providers=providers)
+kokoro = Kokoro.from_session(session, VOICES_PATH)
+
+# Log which provider is actually being used
+actual_provider = session.get_providers()[0] if session.get_providers() else "Unknown"
+print(f"Kokoro loaded successfully using: {actual_provider}")
 
 app = FastAPI()
 

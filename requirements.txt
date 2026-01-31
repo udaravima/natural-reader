@@ -17,3 +17,6 @@ pydantic
 # Optional: torch is imported but may not be needed with ONNX model
 # Uncomment if required by your setup
 # torch
+
+onnxruntime-gpu
+onnxruntime-directml
