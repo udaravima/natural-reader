@@ -164,8 +164,24 @@ export default function App() {
     localStorage.setItem('neural-pdf-apiPort', JSON.stringify(apiPort));
   }, [apiPort]);
 
+  // Mobile config persistence
+  useEffect(() => {
+    localStorage.setItem('neural-pdf-mobileBreakpoint', JSON.stringify(mobileBreakpoint));
+  }, [mobileBreakpoint]);
+
+  useEffect(() => {
+    localStorage.setItem('neural-pdf-layoutMode', JSON.stringify(layoutMode));
+  }, [layoutMode]);
+
+  useEffect(() => {
+    localStorage.setItem('neural-pdf-showHeaderControlsOnMobile', JSON.stringify(showHeaderControlsOnMobile));
+  }, [showHeaderControlsOnMobile]);
+
   // Helper to build API URL
   const getApiUrl = (endpoint) => `http://${apiHost}:${apiPort}${endpoint}`;
+
+  // Computed: Effective mobile state based on layoutMode
+  const effectiveIsMobile = layoutMode === 'auto' ? isMobile : layoutMode === 'mobile';
 
   // --- READING PROGRESS PERSISTENCE ---
   // Save reading progress for the current PDF
@@ -207,7 +223,7 @@ export default function App() {
 
   useEffect(() => {
     const checkMobile = () => {
-      const mobile = window.innerWidth < 768;
+      const mobile = window.innerWidth < mobileBreakpoint;
       const wasMobile = wasMobileRef.current;
 
       // Transitioning to mobile: close sidebar
@@ -224,20 +240,20 @@ export default function App() {
     };
 
     // Initial check
-    const initialMobile = window.innerWidth < 768;
+    const initialMobile = window.innerWidth < mobileBreakpoint;
     wasMobileRef.current = initialMobile;
     setIsMobile(initialMobile);
     setSidebarOpen(!initialMobile); // Start closed on mobile, open on desktop
 
     window.addEventListener('resize', checkMobile);
     return () => window.removeEventListener('resize', checkMobile);
-  }, []);
+  }, [mobileBreakpoint]);
 
   // Close sidebar when selecting a sentence on mobile
   const handleMobileSentenceClick = (index) => {
     setCurrentSentenceIndex(index - 1);
     setIsPlaying(true);
-    if (isMobile) {
+    if (effectiveIsMobile) {
       setSidebarOpen(false);
     }
   };
@@ -1133,8 +1149,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* PLAYBACK CONTROLS - Hidden on mobile, shown on tablet+ */}
-        <div className={`hidden md:flex items-center gap-2 ${theme.bgTertiary} p-1 rounded-xl border ${theme.border} shadow-inner`}>
+        {/* PLAYBACK CONTROLS - Visibility controlled by settings */}
+        <div className={`${showHeaderControlsOnMobile ? 'flex' : 'hidden md:flex'} items-center gap-2 ${theme.bgTertiary} p-1 rounded-xl border ${theme.border} shadow-inner`}>
           <button
             onClick={() => setCurrentSentenceIndex(prev => Math.max(-1, prev - 2))}
             className={`p-2 ${theme.hover} rounded-lg transition-colors ${theme.textSecondary}`}
@@ -1275,7 +1291,7 @@ export default function App() {
       <main className="flex-1 flex overflow-hidden relative">
 
         {/* MOBILE OVERLAY */}
-        {sidebarOpen && isMobile && (
+        {sidebarOpen && effectiveIsMobile && (
           <div
             className="fixed inset-0 bg-black/50 backdrop-blur-sm z-30 md:hidden"
             onClick={() => setSidebarOpen(false)}
@@ -1284,14 +1300,14 @@ export default function App() {
 
         {/* SIDEBAR: NAVIGATION & SETTINGS */}
         <aside className={`
-          ${isMobile
+          ${effectiveIsMobile
             ? `fixed inset-y-0 left-0 z-40 w-80 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`
             : `relative ${sidebarOpen ? 'w-80' : 'w-0'} overflow-hidden`
           }
           ${theme.bgSecondary} border-r ${theme.border} flex flex-col shadow-xl transition-all duration-300 ease-in-out
-          ${isMobile && sidebarOpen ? 'pt-16' : ''}
+          ${effectiveIsMobile && sidebarOpen ? 'pt-16' : ''}
         `}>
-          <div className={`${isMobile ? '' : 'w-80'} flex flex-col h-full`}>
+          <div className={`${effectiveIsMobile ? '' : 'w-80'} flex flex-col h-full`}>
             <div className={`p-4 border-b ${theme.borderSecondary} ${darkMode ? 'bg-slate-800/50' : 'bg-slate-50/50'}`}>
               <h3 className={`text-[10px] font-black ${theme.textMuted} uppercase tracking-widest mb-3`}>Settings</h3>
               <div className="flex flex-col gap-3">
@@ -1421,6 +1437,49 @@ export default function App() {
                     >
                       Recheck
                     </button>
+                  </div>
+                </div>
+
+                {/* Mobile Layout Configuration */}
+                <div className="space-y-2">
+                  <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>LAYOUT MODE</span>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] font-bold ${theme.textMuted} w-10 shrink-0`}>Mode</span>
+                      <select
+                        value={layoutMode}
+                        onChange={(e) => setLayoutMode(e.target.value)}
+                        className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`}
+                      >
+                        <option value="auto">Auto (detect screen)</option>
+                        <option value="desktop">Force Desktop</option>
+                        <option value="mobile">Force Mobile</option>
+                      </select>
+                    </div>
+                    {layoutMode === 'auto' && (
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] font-bold ${theme.textMuted} w-10 shrink-0`}>Width</span>
+                        <input
+                          type="number"
+                          value={mobileBreakpoint}
+                          onChange={(e) => setMobileBreakpoint(parseInt(e.target.value) || 768)}
+                          min="320"
+                          max="1440"
+                          className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors min-w-0`}
+                          title="Screen width below which mobile mode activates"
+                        />
+                        <span className={`text-[10px] ${theme.textMuted}`}>px</span>
+                      </div>
+                    )}
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={showHeaderControlsOnMobile}
+                        onChange={(e) => setShowHeaderControlsOnMobile(e.target.checked)}
+                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className={`text-[10px] font-bold ${theme.textMuted}`}>Show header controls on mobile</span>
+                    </label>
                   </div>
                 </div>
               </div>
@@ -1640,13 +1699,13 @@ export default function App() {
           {/* PDF CANVAS CONTAINER */}
           <div
             ref={pdfContainerRef}
-            className={`flex-1 overflow-auto p-2 md:p-6 flex justify-center custom-scrollbar ${darkMode ? 'bg-slate-900/50' : 'bg-slate-300/30'} ${isMobile && pdfDoc ? 'pb-28' : ''}`}
+            className={`flex-1 overflow-auto p-2 md:p-6 flex justify-center custom-scrollbar ${darkMode ? 'bg-slate-900/50' : 'bg-slate-300/30'} ${effectiveIsMobile && pdfDoc ? 'pb-28' : ''}`}
           >
             <div
               className={`relative ${theme.canvasBg} shadow-2xl rounded-sm border ${theme.border}`}
               style={{
                 height: 'fit-content',
-                maxWidth: isMobile ? '100%' : undefined,
+                maxWidth: effectiveIsMobile ? '100%' : undefined,
               }}
             >
               {pdfDoc ? (
@@ -1655,8 +1714,8 @@ export default function App() {
                     ref={canvasRef}
                     className="block"
                     style={{
-                      maxWidth: isMobile ? '100%' : undefined,
-                      height: isMobile ? 'auto' : undefined,
+                      maxWidth: effectiveIsMobile ? '100%' : undefined,
+                      height: effectiveIsMobile ? 'auto' : undefined,
                     }}
                   />
                   <div
@@ -1735,7 +1794,7 @@ export default function App() {
       </main>
 
       {/* MOBILE BOTTOM NAVIGATION */}
-      {isMobile && pdfDoc && (
+      {effectiveIsMobile && pdfDoc && (
         <nav className={`fixed bottom-0 left-0 right-0 z-50 ${theme.bgSecondary} border-t ${theme.border} px-2 py-2 safe-area-pb`}>
           <div className="flex items-center justify-around gap-1">
             {/* Previous Page */}
