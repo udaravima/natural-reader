@@ -86,6 +86,8 @@ export default function App() {
   const [playbackSpeed, setPlaybackSpeed] = useState(() => getStoredValue('playbackSpeed', 1.0));
   const [selectedVoice, setSelectedVoice] = useState(() => getStoredValue('selectedVoice', 'af_heart'));
   const [isLocalhost, setIsLocalhost] = useState(() => getStoredValue('isLocalhost', true));
+  const [apiHost, setApiHost] = useState(() => getStoredValue('apiHost', 'localhost'));
+  const [apiPort, setApiPort] = useState(() => getStoredValue('apiPort', '8000'));
   const [status, setStatus] = useState('Initializing PDF Engine...');
 
   // Enhanced Features State
@@ -146,6 +148,17 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('neural-pdf-isLocalhost', JSON.stringify(isLocalhost));
   }, [isLocalhost]);
+
+  useEffect(() => {
+    localStorage.setItem('neural-pdf-apiHost', JSON.stringify(apiHost));
+  }, [apiHost]);
+
+  useEffect(() => {
+    localStorage.setItem('neural-pdf-apiPort', JSON.stringify(apiPort));
+  }, [apiPort]);
+
+  // Helper to build API URL
+  const getApiUrl = (endpoint) => `http://${apiHost}:${apiPort}${endpoint}`;
 
   // --- READING PROGRESS PERSISTENCE ---
   // Save reading progress for the current PDF
@@ -260,7 +273,7 @@ export default function App() {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 3000);
 
-        const response = await fetch('http://localhost:8000/v1/synthesize', {
+        const response = await fetch(getApiUrl('/v1/synthesize'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: 'test', voice: 'af_heart', speed: 1.0 }),
@@ -538,7 +551,7 @@ export default function App() {
 
     if (isLocalhost) {
       try {
-        const response = await fetch('http://localhost:8000/v1/synthesize', {
+        const response = await fetch(getApiUrl('/v1/synthesize'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -602,7 +615,7 @@ export default function App() {
 
     if (isLocalhost && backendAvailable) {
       try {
-        const response = await fetch('http://localhost:8000/v1/synthesize', {
+        const response = await fetch(getApiUrl('/v1/synthesize'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -696,7 +709,7 @@ export default function App() {
     setStatus("Generating audio for page...");
 
     try {
-      const response = await fetch('http://localhost:8000/v1/batch_synthesize', {
+      const response = await fetch(getApiUrl('/v1/batch_synthesize'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -750,7 +763,7 @@ export default function App() {
     if (audioCache.current.has(index)) return audioCache.current.get(index);
 
     try {
-      const response = await fetch('http://localhost:8000/v1/synthesize', {
+      const response = await fetch(getApiUrl('/v1/synthesize'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1226,8 +1239,8 @@ export default function App() {
                     onClick={() => isPreviewingVoice ? stopVoicePreview() : previewVoice(selectedVoice)}
                     disabled={!backendAvailable && isLocalhost}
                     className={`px-3 py-2.5 rounded-lg border transition-all flex items-center justify-center ${isPreviewingVoice
-                        ? 'bg-blue-600 text-white border-blue-600 animate-pulse'
-                        : `${theme.border} ${theme.hover} ${theme.textSecondary} hover:text-blue-500 hover:border-blue-400`
+                      ? 'bg-blue-600 text-white border-blue-600 animate-pulse'
+                      : `${theme.border} ${theme.hover} ${theme.textSecondary} hover:text-blue-500 hover:border-blue-400`
                       } ${(!backendAvailable && isLocalhost) ? 'opacity-50 cursor-not-allowed' : ''}`}
                     title={isPreviewingVoice ? "Stop preview" : "Preview this voice"}
                   >
@@ -1272,6 +1285,65 @@ export default function App() {
                     className="flex-1 h-2 appearance-none bg-slate-300 dark:bg-slate-600 rounded-full cursor-pointer accent-blue-500"
                   />
                   <span className={`text-xs font-bold ${theme.textSecondary} w-8`}>{Math.round(volume * 100)}%</span>
+                </div>
+              </div>
+
+              {/* API Configuration */}
+              <div className="space-y-1">
+                <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>VOICE API</span>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={apiHost}
+                    onChange={(e) => { setApiHost(e.target.value); setBackendAvailable(null); }}
+                    placeholder="Host"
+                    className={`flex-1 text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`}
+                    title="API Host (e.g., localhost or 192.168.1.100)"
+                  />
+                  <input
+                    type="text"
+                    value={apiPort}
+                    onChange={(e) => { setApiPort(e.target.value); setBackendAvailable(null); }}
+                    placeholder="Port"
+                    className={`w-20 text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors text-center`}
+                    title="API Port (default: 8000)"
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-2 mt-1">
+                  <span className={`text-[10px] ${backendAvailable === null ? theme.textMuted : backendAvailable ? 'text-green-500' : 'text-red-400'}`}>
+                    {backendAvailable === null ? '⏳ Checking...' : backendAvailable ? '✓ Connected' : '✗ Unavailable'}
+                  </span>
+                  <button
+                    onClick={async () => {
+                      setBackendAvailable(null);
+                      setStatus('Checking API connection...');
+                      try {
+                        const controller = new AbortController();
+                        const timeoutId = setTimeout(() => controller.abort(), 3000);
+                        const response = await fetch(getApiUrl('/v1/synthesize'), {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ text: 'test', voice: 'af_heart', speed: 1.0 }),
+                          signal: controller.signal
+                        });
+                        clearTimeout(timeoutId);
+                        if (response.ok) {
+                          setBackendAvailable(true);
+                          setIsLocalhost(true);
+                          setStatus('API connected!');
+                        } else {
+                          throw new Error('Backend error');
+                        }
+                      } catch (e) {
+                        setBackendAvailable(false);
+                        setIsLocalhost(false);
+                        setStatus('API unavailable');
+                      }
+                    }}
+                    className={`text-[10px] font-bold px-2 py-1 rounded-lg ${theme.hover} ${theme.textSecondary} hover:text-blue-500 transition-colors`}
+                  >
+                    Recheck
+                  </button>
                 </div>
               </div>
             </div>
