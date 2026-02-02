@@ -4,7 +4,7 @@ import {
   Volume2, SkipForward, SkipBack, Zap, Loader2, Moon, Sun,
   ZoomIn, ZoomOut, Keyboard, Clock, VolumeX, Volume1,
   Maximize, Minimize, RotateCcw, Download, BookOpen, List, Trash2, Library,
-  PlayCircle, MousePointer2, X
+  PlayCircle, MousePointer2, X, Menu, PanelLeftClose, Settings
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { saveBook, getBook, getRecentBooks, deleteBook, updateBookMeta } from './db';
@@ -109,6 +109,8 @@ export default function App() {
   const [selectedText, setSelectedText] = useState(''); // For selective read
   const [isReadingSelection, setIsReadingSelection] = useState(false);
   const [isPreviewingVoice, setIsPreviewingVoice] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [isMobile, setIsMobile] = useState(false);
   const voicePreviewRef = useRef(new Audio()); // Separate audio for voice preview
   const pdfContainerRef = useRef(null);
 
@@ -194,6 +196,31 @@ export default function App() {
   useEffect(() => {
     audioRef.current.volume = volume;
   }, [volume]);
+
+  // --- MOBILE DETECTION & RESPONSIVE BEHAVIOR ---
+  useEffect(() => {
+    const checkMobile = () => {
+      const mobile = window.innerWidth < 768;
+      setIsMobile(mobile);
+      // Auto-close sidebar on mobile
+      if (mobile && sidebarOpen) {
+        setSidebarOpen(false);
+      }
+    };
+
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
+  // Close sidebar when selecting a sentence on mobile
+  const handleMobileSentenceClick = (index) => {
+    setCurrentSentenceIndex(index - 1);
+    setIsPlaying(true);
+    if (isMobile) {
+      setSidebarOpen(false);
+    }
+  };
 
   // --- KEYBOARD SHORTCUTS ---
   useEffect(() => {
@@ -1067,8 +1094,16 @@ export default function App() {
       )}
 
       {/* HEADER / CONTROL BAR */}
-      <header className={`h-16 ${theme.bgSecondary} border-b ${theme.border} px-6 flex items-center justify-between z-20 sticky top-0 shadow-sm transition-colors duration-300`}>
-        <div className="flex items-center gap-3">
+      <header className={`h-16 ${theme.bgSecondary} border-b ${theme.border} px-4 md:px-6 flex items-center justify-between z-20 sticky top-0 shadow-sm transition-colors duration-300`}>
+        <div className="flex items-center gap-2 md:gap-3">
+          {/* Sidebar Toggle Button */}
+          <button
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
+            title={sidebarOpen ? "Hide Sidebar" : "Show Sidebar"}
+          >
+            {sidebarOpen ? <PanelLeftClose size={20} /> : <Menu size={20} />}
+          </button>
           <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-cyan-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-500/30">
             <Volume2 size={22} />
           </div>
@@ -1217,10 +1252,23 @@ export default function App() {
         </div>
       )}
 
-      <main className="flex-1 flex overflow-hidden">
+      <main className="flex-1 flex overflow-hidden relative">
+
+        {/* MOBILE OVERLAY */}
+        {sidebarOpen && isMobile && (
+          <div
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-30 md:hidden"
+            onClick={() => setSidebarOpen(false)}
+          />
+        )}
 
         {/* SIDEBAR: NAVIGATION & SETTINGS */}
-        <aside className={`w-80 ${theme.bgSecondary} border-r ${theme.border} flex flex-col shadow-xl z-10 transition-colors duration-300`}>
+        <aside className={`
+          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+          ${isMobile ? 'fixed inset-y-0 left-0 z-40 w-80' : 'relative w-80'}
+          ${theme.bgSecondary} border-r ${theme.border} flex flex-col shadow-xl transition-all duration-300 ease-in-out
+          ${isMobile && sidebarOpen ? 'pt-16' : ''}
+        `}>
           <div className={`p-4 border-b ${theme.borderSecondary} ${darkMode ? 'bg-slate-800/50' : 'bg-slate-50/50'}`}>
             <h3 className={`text-[10px] font-black ${theme.textMuted} uppercase tracking-widest mb-3`}>Settings</h3>
             <div className="flex flex-col gap-3">
@@ -1405,7 +1453,7 @@ export default function App() {
                 <button
                   key={i}
                   ref={el => sentenceRefs.current[i] = el}
-                  onClick={() => { setCurrentSentenceIndex(i - 1); setIsPlaying(true); }}
+                  onClick={() => handleMobileSentenceClick(i)}
                   onContextMenu={(e) => handleSentenceContextMenu(e, i)}
                   className={`w-full text-left p-3 rounded-xl text-xs leading-relaxed transition-all ${currentSentenceIndex === i
                     ? 'bg-blue-600 text-white shadow-lg scale-[1.02] font-medium'
@@ -1562,7 +1610,7 @@ export default function App() {
           {/* PDF CANVAS CONTAINER */}
           <div
             ref={pdfContainerRef}
-            className={`flex-1 overflow-auto p-6 flex justify-center custom-scrollbar ${darkMode ? 'bg-slate-900/50' : 'bg-slate-300/30'}`}
+            className={`flex-1 overflow-auto p-4 md:p-6 flex justify-center custom-scrollbar ${darkMode ? 'bg-slate-900/50' : 'bg-slate-300/30'} ${isMobile && pdfDoc ? 'pb-28' : ''}`}
           >
             <div className={`relative ${theme.canvasBg} shadow-2xl rounded-sm border ${theme.border}`} style={{ height: 'fit-content' }}>
               {pdfDoc ? (
@@ -1643,6 +1691,63 @@ export default function App() {
         </section>
       </main>
 
+      {/* MOBILE BOTTOM NAVIGATION */}
+      {isMobile && pdfDoc && (
+        <nav className={`fixed bottom-0 left-0 right-0 z-50 ${theme.bgSecondary} border-t ${theme.border} px-2 py-2 safe-area-pb`}>
+          <div className="flex items-center justify-around gap-1">
+            {/* Previous Page */}
+            <button
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              disabled={currentPage <= 1}
+              className={`p-3 rounded-xl transition-all ${currentPage <= 1 ? 'opacity-30' : theme.hover + ' ' + theme.textSecondary}`}
+            >
+              <ChevronLeft size={24} />
+            </button>
+
+            {/* Previous Sentence */}
+            <button
+              onClick={() => setCurrentSentenceIndex(prev => Math.max(-1, prev - 2))}
+              className={`p-3 rounded-xl ${theme.hover} ${theme.textSecondary}`}
+            >
+              <SkipBack size={22} />
+            </button>
+
+            {/* Play/Pause */}
+            <button
+              onClick={handlePlayPause}
+              className={`p-4 rounded-2xl flex items-center justify-center transition-all ${isPlaying
+                ? 'bg-amber-500 text-white shadow-lg shadow-amber-500/30'
+                : 'bg-gradient-to-r from-blue-500 to-cyan-600 text-white shadow-lg shadow-blue-500/30'
+                }`}
+            >
+              {isPlaying ? <Pause size={28} /> : <Play size={28} className="ml-1" />}
+            </button>
+
+            {/* Next Sentence */}
+            <button
+              onClick={skipToNextSentence}
+              className={`p-3 rounded-xl ${theme.hover} ${theme.textSecondary}`}
+            >
+              <SkipForward size={22} />
+            </button>
+
+            {/* Next Page */}
+            <button
+              onClick={() => setCurrentPage(p => Math.min(numPages, p + 1))}
+              disabled={currentPage >= numPages}
+              className={`p-3 rounded-xl transition-all ${currentPage >= numPages ? 'opacity-30' : theme.hover + ' ' + theme.textSecondary}`}
+            >
+              <ChevronRight size={24} />
+            </button>
+          </div>
+
+          {/* Progress Indicator */}
+          <div className={`mt-2 mx-4 text-center text-[10px] font-bold ${theme.textMuted}`}>
+            Page {currentPage}/{numPages} • Sentence {currentSentenceIndex + 1}/{textItems.length}
+          </div>
+        </nav>
+      )}
+
       <style dangerouslySetInnerHTML={{
         __html: `
         .custom-scrollbar::-webkit-scrollbar { width: 6px; }
@@ -1684,6 +1789,46 @@ export default function App() {
         }
         .textLayer ::-moz-selection {
           background: rgba(59, 130, 246, 0.5);
+        }
+        
+        /* Mobile optimizations */
+        .safe-area-pb {
+          padding-bottom: max(12px, env(safe-area-inset-bottom));
+        }
+        
+        @media (max-width: 767px) {
+          /* Larger touch targets on mobile */
+          button {
+            min-height: 44px;
+            min-width: 44px;
+          }
+          
+          /* Hide header playback controls on mobile (we have bottom nav) */
+          .header-playback-controls {
+            display: none;
+          }
+          
+          /* Adjust PDF container padding for bottom nav */
+          .pdf-container-mobile {
+            padding-bottom: 100px;
+          }
+          
+          /* Larger font for better readability */
+          select, input[type="text"] {
+            font-size: 16px !important; /* Prevents zoom on iOS */
+          }
+        }
+        
+        /* Touch-friendly slider on mobile */
+        @media (pointer: coarse) {
+          input[type="range"]::-webkit-slider-thumb {
+            width: 24px;
+            height: 24px;
+          }
+          
+          input[type="range"] {
+            height: 8px;
+          }
         }
       `}} />
     </div >
