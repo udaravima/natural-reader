@@ -111,6 +111,11 @@ export default function App() {
   const [isPreviewingVoice, setIsPreviewingVoice] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isMobile, setIsMobile] = useState(false);
+
+  // Mobile Configuration
+  const [mobileBreakpoint, setMobileBreakpoint] = useState(() => getStoredValue('mobileBreakpoint', 768));
+  const [layoutMode, setLayoutMode] = useState(() => getStoredValue('layoutMode', 'auto')); // 'auto', 'desktop', 'mobile'
+  const [showHeaderControlsOnMobile, setShowHeaderControlsOnMobile] = useState(() => getStoredValue('showHeaderControlsOnMobile', false));
   const voicePreviewRef = useRef(new Audio()); // Separate audio for voice preview
   const pdfContainerRef = useRef(null);
 
@@ -198,17 +203,32 @@ export default function App() {
   }, [volume]);
 
   // --- MOBILE DETECTION & RESPONSIVE BEHAVIOR ---
+  const wasMobileRef = useRef(false);
+
   useEffect(() => {
     const checkMobile = () => {
       const mobile = window.innerWidth < 768;
-      setIsMobile(mobile);
-      // Auto-close sidebar on mobile
-      if (mobile && sidebarOpen) {
+      const wasMobile = wasMobileRef.current;
+
+      // Transitioning to mobile: close sidebar
+      if (mobile && !wasMobile) {
         setSidebarOpen(false);
       }
+      // Transitioning to desktop: open sidebar
+      else if (!mobile && wasMobile) {
+        setSidebarOpen(true);
+      }
+
+      wasMobileRef.current = mobile;
+      setIsMobile(mobile);
     };
 
-    checkMobile();
+    // Initial check
+    const initialMobile = window.innerWidth < 768;
+    wasMobileRef.current = initialMobile;
+    setIsMobile(initialMobile);
+    setSidebarOpen(!initialMobile); // Start closed on mobile, open on desktop
+
     window.addEventListener('resize', checkMobile);
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
@@ -1113,8 +1133,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* PLAYBACK CONTROLS */}
-        <div className={`flex items-center gap-2 ${theme.bgTertiary} p-1 rounded-xl border ${theme.border} shadow-inner`}>
+        {/* PLAYBACK CONTROLS - Hidden on mobile, shown on tablet+ */}
+        <div className={`hidden md:flex items-center gap-2 ${theme.bgTertiary} p-1 rounded-xl border ${theme.border} shadow-inner`}>
           <button
             onClick={() => setCurrentSentenceIndex(prev => Math.max(-1, prev - 2))}
             className={`p-2 ${theme.hover} rounded-lg transition-colors ${theme.textSecondary}`}
@@ -1150,7 +1170,7 @@ export default function App() {
         </div>
 
         {/* RIGHT CONTROLS */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1 md:gap-3">
           {/* Estimated Time */}
           {pdfDoc && calculateEstimatedTimeRemaining() && (
             <div className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-lg border ${theme.border} text-[10px] font-bold ${theme.textSecondary}`}>
@@ -1159,8 +1179,8 @@ export default function App() {
             </div>
           )}
 
-          {/* TTS Mode Toggle */}
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[10px] font-black tracking-widest transition-colors ${isLocalhost
+          {/* TTS Mode Toggle - Hidden on mobile */}
+          <div className={`hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[10px] font-black tracking-widest transition-colors ${isLocalhost
             ? 'bg-green-500/10 border-green-500/30 text-green-500'
             : `${theme.bgTertiary} ${theme.border} ${theme.textSecondary}`
             }`}>
@@ -1179,22 +1199,22 @@ export default function App() {
             {darkMode ? <Sun size={20} /> : <Moon size={20} />}
           </button>
 
-          {/* Download Page Audio */}
+          {/* Download Page Audio - Hidden on mobile */}
           {pdfDoc && isLocalhost && (
             <button
               onClick={downloadPageAudio}
               disabled={isDownloading || textItems.length === 0}
-              className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${isDownloading ? 'opacity-50 cursor-wait' : theme.textSecondary + ' hover:text-green-500'}`}
+              className={`hidden sm:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${isDownloading ? 'opacity-50 cursor-wait' : theme.textSecondary + ' hover:text-green-500'}`}
               title="Download Page Audio"
             >
               {isDownloading ? <Loader2 size={20} className="animate-spin" /> : <Download size={20} />}
             </button>
           )}
 
-          {/* Keyboard Shortcuts */}
+          {/* Keyboard Shortcuts - Hidden on mobile */}
           <button
             onClick={() => setShowShortcuts(!showShortcuts)}
-            className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
+            className={`hidden sm:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
             title="Keyboard Shortcuts"
           >
             <Keyboard size={20} />
@@ -1264,256 +1284,266 @@ export default function App() {
 
         {/* SIDEBAR: NAVIGATION & SETTINGS */}
         <aside className={`
-          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
-          ${isMobile ? 'fixed inset-y-0 left-0 z-40 w-80' : 'relative w-80'}
+          ${isMobile
+            ? `fixed inset-y-0 left-0 z-40 w-80 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`
+            : `relative ${sidebarOpen ? 'w-80' : 'w-0'} overflow-hidden`
+          }
           ${theme.bgSecondary} border-r ${theme.border} flex flex-col shadow-xl transition-all duration-300 ease-in-out
           ${isMobile && sidebarOpen ? 'pt-16' : ''}
         `}>
-          <div className={`p-4 border-b ${theme.borderSecondary} ${darkMode ? 'bg-slate-800/50' : 'bg-slate-50/50'}`}>
-            <h3 className={`text-[10px] font-black ${theme.textMuted} uppercase tracking-widest mb-3`}>Settings</h3>
-            <div className="flex flex-col gap-3">
-              {/* Voice Selection */}
-              <div className="space-y-2">
-                <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>VOICE</span>
-                <div className="flex gap-2">
+          <div className={`${isMobile ? '' : 'w-80'} flex flex-col h-full`}>
+            <div className={`p-4 border-b ${theme.borderSecondary} ${darkMode ? 'bg-slate-800/50' : 'bg-slate-50/50'}`}>
+              <h3 className={`text-[10px] font-black ${theme.textMuted} uppercase tracking-widest mb-3`}>Settings</h3>
+              <div className="flex flex-col gap-3">
+                {/* Voice Selection */}
+                <div className="space-y-2">
+                  <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>VOICE</span>
+                  <div className="flex gap-2">
+                    <select
+                      value={selectedVoice}
+                      onChange={(e) => { setSelectedVoice(e.target.value); clearCache(); }}
+                      className={`flex-1 text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`}
+                    >
+                      {KOKORO_VOICES.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                    </select>
+                    <button
+                      onClick={() => isPreviewingVoice ? stopVoicePreview() : previewVoice(selectedVoice)}
+                      disabled={!backendAvailable && isLocalhost}
+                      className={`px-3 py-2.5 rounded-lg border transition-all flex items-center justify-center ${isPreviewingVoice
+                        ? 'bg-blue-600 text-white border-blue-600 animate-pulse'
+                        : `${theme.border} ${theme.hover} ${theme.textSecondary} hover:text-blue-500 hover:border-blue-400`
+                        } ${(!backendAvailable && isLocalhost) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                      title={isPreviewingVoice ? "Stop preview" : "Preview this voice"}
+                    >
+                      {isPreviewingVoice ? <Square size={14} /> : <PlayCircle size={14} />}
+                    </button>
+                  </div>
+                  {/* Voice Sample Text */}
+                  {(() => {
+                    const currentVoice = KOKORO_VOICES.find(v => v.id === selectedVoice);
+                    return currentVoice?.sampleText && (
+                      <p className={`text-[10px] leading-relaxed ${theme.textMuted} italic px-1 py-2 rounded-lg ${theme.bgTertiary} border ${theme.border}`}>
+                        "{currentVoice.sampleText}"
+                      </p>
+                    );
+                  })()}
+                </div>
+
+                {/* Speed Selection */}
+                <div className="space-y-1">
+                  <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>SPEED</span>
                   <select
-                    value={selectedVoice}
-                    onChange={(e) => { setSelectedVoice(e.target.value); clearCache(); }}
-                    className={`flex-1 text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`}
+                    value={playbackSpeed}
+                    onChange={(e) => { setPlaybackSpeed(parseFloat(e.target.value)); clearCache(); }}
+                    className={`w-full text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`}
                   >
-                    {KOKORO_VOICES.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+                    {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map(s => <option key={s} value={s}>{s}x Speed</option>)}
                   </select>
-                  <button
-                    onClick={() => isPreviewingVoice ? stopVoicePreview() : previewVoice(selectedVoice)}
-                    disabled={!backendAvailable && isLocalhost}
-                    className={`px-3 py-2.5 rounded-lg border transition-all flex items-center justify-center ${isPreviewingVoice
-                      ? 'bg-blue-600 text-white border-blue-600 animate-pulse'
-                      : `${theme.border} ${theme.hover} ${theme.textSecondary} hover:text-blue-500 hover:border-blue-400`
-                      } ${(!backendAvailable && isLocalhost) ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    title={isPreviewingVoice ? "Stop preview" : "Preview this voice"}
-                  >
-                    {isPreviewingVoice ? <Square size={14} /> : <PlayCircle size={14} />}
-                  </button>
                 </div>
-                {/* Voice Sample Text */}
-                {(() => {
-                  const currentVoice = KOKORO_VOICES.find(v => v.id === selectedVoice);
-                  return currentVoice?.sampleText && (
-                    <p className={`text-[10px] leading-relaxed ${theme.textMuted} italic px-1 py-2 rounded-lg ${theme.bgTertiary} border ${theme.border}`}>
-                      "{currentVoice.sampleText}"
-                    </p>
-                  );
-                })()}
-              </div>
 
-              {/* Speed Selection */}
-              <div className="space-y-1">
-                <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>SPEED</span>
-                <select
-                  value={playbackSpeed}
-                  onChange={(e) => { setPlaybackSpeed(parseFloat(e.target.value)); clearCache(); }}
-                  className={`w-full text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`}
-                >
-                  {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map(s => <option key={s} value={s}>{s}x Speed</option>)}
-                </select>
-              </div>
-
-              {/* Volume Control */}
-              <div className="space-y-1">
-                <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>VOLUME</span>
-                <div className={`flex items-center gap-3 p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary}`}>
-                  <VolumeIcon size={16} className={theme.textSecondary} />
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.1"
-                    value={volume}
-                    onChange={(e) => setVolume(parseFloat(e.target.value))}
-                    className="flex-1 h-2 appearance-none bg-slate-300 dark:bg-slate-600 rounded-full cursor-pointer accent-blue-500"
-                  />
-                  <span className={`text-xs font-bold ${theme.textSecondary} w-8`}>{Math.round(volume * 100)}%</span>
+                {/* Volume Control */}
+                <div className="space-y-1">
+                  <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>VOLUME</span>
+                  <div className={`flex items-center gap-3 p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary}`}>
+                    <VolumeIcon size={16} className={theme.textSecondary} />
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.1"
+                      value={volume}
+                      onChange={(e) => setVolume(parseFloat(e.target.value))}
+                      className="flex-1 h-2 appearance-none bg-slate-300 dark:bg-slate-600 rounded-full cursor-pointer accent-blue-500"
+                    />
+                    <span className={`text-xs font-bold ${theme.textSecondary} w-8`}>{Math.round(volume * 100)}%</span>
+                  </div>
                 </div>
-              </div>
 
-              {/* API Configuration */}
-              <div className="space-y-1">
-                <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>VOICE API</span>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={apiHost}
-                    onChange={(e) => { setApiHost(e.target.value); setBackendAvailable(null); }}
-                    placeholder="Host"
-                    className={`flex-1 text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`}
-                    title="API Host (e.g., localhost or 192.168.1.100)"
-                  />
-                  <input
-                    type="text"
-                    value={apiPort}
-                    onChange={(e) => { setApiPort(e.target.value); setBackendAvailable(null); }}
-                    placeholder="Port"
-                    className={`w-20 text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors text-center`}
-                    title="API Port (default: 8000)"
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-2 mt-1">
-                  <span className={`text-[10px] ${backendAvailable === null ? theme.textMuted : backendAvailable ? 'text-green-500' : 'text-red-400'}`}>
-                    {backendAvailable === null ? '⏳ Checking...' : backendAvailable ? '✓ Connected' : '✗ Unavailable'}
-                  </span>
-                  <button
-                    onClick={async () => {
-                      setBackendAvailable(null);
-                      setStatus('Checking API connection...');
-                      try {
-                        const controller = new AbortController();
-                        const timeoutId = setTimeout(() => controller.abort(), 3000);
-                        const response = await fetch(getApiUrl('/v1/synthesize'), {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ text: 'test', voice: 'af_heart', speed: 1.0 }),
-                          signal: controller.signal
-                        });
-                        clearTimeout(timeoutId);
-                        if (response.ok) {
-                          setBackendAvailable(true);
-                          setIsLocalhost(true);
-                          setStatus('API connected!');
-                        } else {
-                          throw new Error('Backend error');
+                {/* API Configuration */}
+                <div className="space-y-2">
+                  <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>VOICE API</span>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] font-bold ${theme.textMuted} w-10 shrink-0`}>Host</span>
+                      <input
+                        type="text"
+                        value={apiHost}
+                        onChange={(e) => { setApiHost(e.target.value); setBackendAvailable(null); }}
+                        placeholder="localhost"
+                        className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors min-w-0`}
+                        title="API Host (e.g., localhost or 192.168.1.100)"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[10px] font-bold ${theme.textMuted} w-10 shrink-0`}>Port</span>
+                      <input
+                        type="text"
+                        value={apiPort}
+                        onChange={(e) => { setApiPort(e.target.value); setBackendAvailable(null); }}
+                        placeholder="8000"
+                        className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors min-w-0`}
+                        title="API Port (default: 8000)"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between gap-2 mt-1">
+                    <span className={`text-[10px] ${backendAvailable === null ? theme.textMuted : backendAvailable ? 'text-green-500' : 'text-red-400'}`}>
+                      {backendAvailable === null ? '⏳ Checking...' : backendAvailable ? '✓ Connected' : '✗ Unavailable'}
+                    </span>
+                    <button
+                      onClick={async () => {
+                        setBackendAvailable(null);
+                        setStatus('Checking API connection...');
+                        try {
+                          const controller = new AbortController();
+                          const timeoutId = setTimeout(() => controller.abort(), 3000);
+                          const response = await fetch(getApiUrl('/v1/synthesize'), {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ text: 'test', voice: 'af_heart', speed: 1.0 }),
+                            signal: controller.signal
+                          });
+                          clearTimeout(timeoutId);
+                          if (response.ok) {
+                            setBackendAvailable(true);
+                            setIsLocalhost(true);
+                            setStatus('API connected!');
+                          } else {
+                            throw new Error('Backend error');
+                          }
+                        } catch (e) {
+                          setBackendAvailable(false);
+                          setIsLocalhost(false);
+                          setStatus('API unavailable');
                         }
-                      } catch (e) {
-                        setBackendAvailable(false);
-                        setIsLocalhost(false);
-                        setStatus('API unavailable');
-                      }
-                    }}
-                    className={`text-[10px] font-bold px-2 py-1 rounded-lg ${theme.hover} ${theme.textSecondary} hover:text-blue-500 transition-colors`}
-                  >
-                    Recheck
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Reading Stats */}
-          {pdfDoc && (
-            <div className={`px-4 py-3 border-b ${theme.borderSecondary} ${darkMode ? 'bg-slate-800/30' : 'bg-blue-50/50'}`}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center text-white text-xs font-black">
-                    {calculateReadingProgress()}%
-                  </div>
-                  <div>
-                    <p className={`text-[10px] font-black ${theme.textMuted} uppercase`}>Progress</p>
-                    <p className={`text-xs font-bold ${theme.text}`}>
-                      {currentSentenceIndex + 1} / {textItems.length} sentences
-                    </p>
+                      }}
+                      className={`text-[10px] font-bold px-2 py-1 rounded-lg ${theme.hover} ${theme.textSecondary} hover:text-blue-500 transition-colors`}
+                    >
+                      Recheck
+                    </button>
                   </div>
                 </div>
               </div>
             </div>
-          )}
 
-          {/* Sidebar Tabs */}
-          {pdfDoc && (
-            <div className={`flex border-b ${theme.borderSecondary}`}>
-              <button
-                onClick={() => setSidebarTab('sentences')}
-                className={`flex-1 py-2.5 text-xs font-bold flex items-center justify-center gap-2 transition-colors ${sidebarTab === 'sentences'
-                  ? 'text-blue-500 border-b-2 border-blue-500'
-                  : theme.textMuted + ' hover:text-blue-400'
-                  }`}
-              >
-                <List size={14} />
-                Sentences
-              </button>
-              {pdfOutline.length > 0 && (
+            {/* Reading Stats */}
+            {pdfDoc && (
+              <div className={`px-4 py-3 border-b ${theme.borderSecondary} ${darkMode ? 'bg-slate-800/30' : 'bg-blue-50/50'}`}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center text-white text-xs font-black">
+                      {calculateReadingProgress()}%
+                    </div>
+                    <div>
+                      <p className={`text-[10px] font-black ${theme.textMuted} uppercase`}>Progress</p>
+                      <p className={`text-xs font-bold ${theme.text}`}>
+                        {currentSentenceIndex + 1} / {textItems.length} sentences
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Sidebar Tabs */}
+            {pdfDoc && (
+              <div className={`flex border-b ${theme.borderSecondary}`}>
                 <button
-                  onClick={() => setSidebarTab('chapters')}
-                  className={`flex-1 py-2.5 text-xs font-bold flex items-center justify-center gap-2 transition-colors ${sidebarTab === 'chapters'
+                  onClick={() => setSidebarTab('sentences')}
+                  className={`flex-1 py-2.5 text-xs font-bold flex items-center justify-center gap-2 transition-colors ${sidebarTab === 'sentences'
                     ? 'text-blue-500 border-b-2 border-blue-500'
                     : theme.textMuted + ' hover:text-blue-400'
                     }`}
                 >
-                  <BookOpen size={14} />
-                  Chapters ({pdfOutline.length})
+                  <List size={14} />
+                  Sentences
                 </button>
-              )}
-            </div>
-          )}
+                {pdfOutline.length > 0 && (
+                  <button
+                    onClick={() => setSidebarTab('chapters')}
+                    className={`flex-1 py-2.5 text-xs font-bold flex items-center justify-center gap-2 transition-colors ${sidebarTab === 'chapters'
+                      ? 'text-blue-500 border-b-2 border-blue-500'
+                      : theme.textMuted + ' hover:text-blue-400'
+                      }`}
+                  >
+                    <BookOpen size={14} />
+                    Chapters ({pdfOutline.length})
+                  </button>
+                )}
+              </div>
+            )}
 
-          {/* Sentence List */}
-          {sidebarTab === 'sentences' && (
-            <div ref={sidebarRef} className={`flex-1 overflow-y-auto p-2 space-y-1 ${darkMode ? 'bg-slate-800/30' : 'bg-slate-50/30'} custom-scrollbar`}>
-              <h3 className={`px-3 py-2 text-[10px] font-black ${theme.textMuted} uppercase tracking-widest`}>Page Contents</h3>
-              {textItems.length === 0 && <p className={`text-xs ${theme.textMuted} p-3 italic`}>Upload a PDF to see text segments...</p>}
-              {textItems.map((text, i) => (
-                <button
-                  key={i}
-                  ref={el => sentenceRefs.current[i] = el}
-                  onClick={() => handleMobileSentenceClick(i)}
-                  onContextMenu={(e) => handleSentenceContextMenu(e, i)}
-                  className={`w-full text-left p-3 rounded-xl text-xs leading-relaxed transition-all ${currentSentenceIndex === i
-                    ? 'bg-blue-600 text-white shadow-lg scale-[1.02] font-medium'
-                    : `${theme.hover} ${theme.textSecondary} hover:shadow-sm`
-                    }`}
-                >
-                  <span className={`inline-block w-5 h-5 rounded-full text-center text-[10px] font-bold mr-2 leading-5 ${currentSentenceIndex === i
-                    ? 'bg-white/20 text-white'
-                    : `${theme.bgTertiary} ${theme.textMuted}`
-                    }`}>
-                    {i + 1}
-                  </span>
-                  {text.length > 100 ? text.slice(0, 100) + '...' : text}
-                </button>
-              ))}
-            </div>
-          )}
+            {/* Sentence List */}
+            {sidebarTab === 'sentences' && (
+              <div ref={sidebarRef} className={`flex-1 overflow-y-auto p-2 space-y-1 ${darkMode ? 'bg-slate-800/30' : 'bg-slate-50/30'} custom-scrollbar`}>
+                <h3 className={`px-3 py-2 text-[10px] font-black ${theme.textMuted} uppercase tracking-widest`}>Page Contents</h3>
+                {textItems.length === 0 && <p className={`text-xs ${theme.textMuted} p-3 italic`}>Upload a PDF to see text segments...</p>}
+                {textItems.map((text, i) => (
+                  <button
+                    key={i}
+                    ref={el => sentenceRefs.current[i] = el}
+                    onClick={() => handleMobileSentenceClick(i)}
+                    onContextMenu={(e) => handleSentenceContextMenu(e, i)}
+                    className={`w-full text-left p-3 rounded-xl text-xs leading-relaxed transition-all ${currentSentenceIndex === i
+                      ? 'bg-blue-600 text-white shadow-lg scale-[1.02] font-medium'
+                      : `${theme.hover} ${theme.textSecondary} hover:shadow-sm`
+                      }`}
+                  >
+                    <span className={`inline-block w-5 h-5 rounded-full text-center text-[10px] font-bold mr-2 leading-5 ${currentSentenceIndex === i
+                      ? 'bg-white/20 text-white'
+                      : `${theme.bgTertiary} ${theme.textMuted}`
+                      }`}>
+                      {i + 1}
+                    </span>
+                    {text.length > 100 ? text.slice(0, 100) + '...' : text}
+                  </button>
+                ))}
+              </div>
+            )}
 
-          {/* Chapters List (TOC) */}
-          {sidebarTab === 'chapters' && pdfOutline.length > 0 && (
-            <div className={`flex-1 overflow-y-auto p-2 space-y-1 ${darkMode ? 'bg-slate-800/30' : 'bg-slate-50/30'} custom-scrollbar`}>
-              <h3 className={`px-3 py-2 text-[10px] font-black ${theme.textMuted} uppercase tracking-widest`}>Table of Contents</h3>
-              {pdfOutline.map((item, i) => (
-                <button
-                  key={i}
-                  onClick={async () => {
-                    // Navigate to the chapter's destination page
-                    if (item.dest) {
-                      try {
-                        let pageIndex;
-                        if (typeof item.dest === 'string') {
-                          // Named destination
-                          const dest = await pdfDoc.getDestination(item.dest);
-                          if (dest) {
-                            const ref = dest[0];
+            {/* Chapters List (TOC) */}
+            {sidebarTab === 'chapters' && pdfOutline.length > 0 && (
+              <div className={`flex-1 overflow-y-auto p-2 space-y-1 ${darkMode ? 'bg-slate-800/30' : 'bg-slate-50/30'} custom-scrollbar`}>
+                <h3 className={`px-3 py-2 text-[10px] font-black ${theme.textMuted} uppercase tracking-widest`}>Table of Contents</h3>
+                {pdfOutline.map((item, i) => (
+                  <button
+                    key={i}
+                    onClick={async () => {
+                      // Navigate to the chapter's destination page
+                      if (item.dest) {
+                        try {
+                          let pageIndex;
+                          if (typeof item.dest === 'string') {
+                            // Named destination
+                            const dest = await pdfDoc.getDestination(item.dest);
+                            if (dest) {
+                              const ref = dest[0];
+                              pageIndex = await pdfDoc.getPageIndex(ref);
+                            }
+                          } else if (Array.isArray(item.dest)) {
+                            // Direct destination
+                            const ref = item.dest[0];
                             pageIndex = await pdfDoc.getPageIndex(ref);
                           }
-                        } else if (Array.isArray(item.dest)) {
-                          // Direct destination
-                          const ref = item.dest[0];
-                          pageIndex = await pdfDoc.getPageIndex(ref);
+                          if (pageIndex !== undefined) {
+                            setCurrentPage(pageIndex + 1);
+                            setCurrentSentenceIndex(-1);
+                            setStatus(`Jumped to: ${item.title}`);
+                          }
+                        } catch (e) {
+                          console.warn('Could not navigate to chapter:', e);
                         }
-                        if (pageIndex !== undefined) {
-                          setCurrentPage(pageIndex + 1);
-                          setCurrentSentenceIndex(-1);
-                          setStatus(`Jumped to: ${item.title}`);
-                        }
-                      } catch (e) {
-                        console.warn('Could not navigate to chapter:', e);
                       }
-                    }
-                  }}
-                  className={`w-full text-left p-3 rounded-xl text-xs leading-relaxed transition-all ${theme.hover} ${theme.textSecondary} hover:shadow-sm hover:text-blue-500`}
-                >
-                  <BookOpen size={12} className="inline mr-2 opacity-50" />
-                  {item.title}
-                </button>
-              ))}
-            </div>
-          )}
+                    }}
+                    className={`w-full text-left p-3 rounded-xl text-xs leading-relaxed transition-all ${theme.hover} ${theme.textSecondary} hover:shadow-sm hover:text-blue-500`}
+                  >
+                    <BookOpen size={12} className="inline mr-2 opacity-50" />
+                    {item.title}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </aside>
 
         {/* VIEWPORT: PDF CANVAS */}
@@ -1610,12 +1640,25 @@ export default function App() {
           {/* PDF CANVAS CONTAINER */}
           <div
             ref={pdfContainerRef}
-            className={`flex-1 overflow-auto p-4 md:p-6 flex justify-center custom-scrollbar ${darkMode ? 'bg-slate-900/50' : 'bg-slate-300/30'} ${isMobile && pdfDoc ? 'pb-28' : ''}`}
+            className={`flex-1 overflow-auto p-2 md:p-6 flex justify-center custom-scrollbar ${darkMode ? 'bg-slate-900/50' : 'bg-slate-300/30'} ${isMobile && pdfDoc ? 'pb-28' : ''}`}
           >
-            <div className={`relative ${theme.canvasBg} shadow-2xl rounded-sm border ${theme.border}`} style={{ height: 'fit-content' }}>
+            <div
+              className={`relative ${theme.canvasBg} shadow-2xl rounded-sm border ${theme.border}`}
+              style={{
+                height: 'fit-content',
+                maxWidth: isMobile ? '100%' : undefined,
+              }}
+            >
               {pdfDoc ? (
                 <>
-                  <canvas ref={canvasRef} className="block" />
+                  <canvas
+                    ref={canvasRef}
+                    className="block"
+                    style={{
+                      maxWidth: isMobile ? '100%' : undefined,
+                      height: isMobile ? 'auto' : undefined,
+                    }}
+                  />
                   <div
                     ref={textLayerRef}
                     className="textLayer absolute top-0 left-0 overflow-hidden opacity-25 leading-none"
@@ -1623,7 +1666,7 @@ export default function App() {
                   />
                 </>
               ) : (
-                <div className={`flex flex-col items-center justify-center p-12 text-center gap-6 ${theme.canvasBg} min-h-[600px] min-w-[500px]`}>
+                <div className={`flex flex-col items-center justify-center p-6 md:p-12 text-center gap-6 ${theme.canvasBg} min-h-[400px] md:min-h-[600px] w-full md:min-w-[500px]`}>
                   <div
                     className={`w-20 h-20 ${theme.bgTertiary} rounded-2xl flex items-center justify-center ${theme.textMuted} border-2 border-dashed ${theme.border} cursor-pointer hover:border-blue-400 hover:text-blue-500 transition-all`}
                     onClick={() => fileInputRef.current.click()}
