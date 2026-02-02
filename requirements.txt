@@ -18,4 +18,13 @@ pydantic
 # Uncomment if required by your setup
 # torch
 
-onnxruntime-gpu
+# ONNX Runtime execution providers (install ONE based on your hardware):
+# For NVIDIA GPUs:
+# onnxruntime-gpu
+
+# For Intel Arc GPUs and Intel NPUs (via OpenVINO):
+onnxruntime-openvino
+openvino>=2024.0.0
+
+# For CPU-only (lightest option):
+# onnxruntime

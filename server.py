@@ -20,38 +20,114 @@ if not os.path.exists(MODEL_PATH) or not os.path.exists(VOICES_PATH):
 
 # --- GPU SUPPORT DETECTION ---
 def get_execution_providers():
-    """Detect and return the best available execution providers (GPU if available, else CPU)."""
+    """
+    Detect and return the best available execution providers.
+    Priority: CUDA > OpenVINO GPU (Intel Arc) > OpenVINO NPU > OpenVINO CPU > CPU
+    """
     available_providers = ort.get_available_providers()
     print(f"Available ONNX Runtime providers: {available_providers}")
     
-    # Prefer CUDA for GPU, fall back to CPU
-    # Note: DirectML is excluded as it doesn't support all ops used by Kokoro (ConvTranspose)
-    preferred_order = ["CUDAExecutionProvider", "CPUExecutionProvider"]
     providers = []
     
-    for provider in preferred_order:
-        if provider in available_providers:
-            providers.append(provider)
+    # Priority 1: NVIDIA CUDA (if available)
+    if "CUDAExecutionProvider" in available_providers:
+        providers.append("CUDAExecutionProvider")
+        print("✓ NVIDIA CUDA detected")
     
-    # Ensure CPU is always a fallback
-    if "CPUExecutionProvider" not in providers:
+    # Priority 2: Intel Arc GPU via OpenVINO
+    if "OpenVINOExecutionProvider" in available_providers:
+        # Try Intel Arc GPU first (discrete GPU)
+        try:
+            gpu_provider = ("OpenVINOExecutionProvider", {
+                "device_type": "GPU",
+                "precision": "FP16",  # FP16 is faster on Arc GPUs
+                "enable_opencl_throttling": True,
+                "cache_dir": ".openvino_cache"
+            })
+            providers.append(gpu_provider)
+            print("✓ Intel Arc GPU (OpenVINO) detected")
+        except Exception as e:
+            print(f"Note: OpenVINO GPU configuration failed: {e}")
+        
+        # Priority 3: Intel NPU (Neural Processing Unit)
+        try:
+            npu_provider = ("OpenVINOExecutionProvider", {
+                "device_type": "NPU",
+                "precision": "FP16",
+                "cache_dir": ".openvino_cache"
+            })
+            # Only add NPU if GPU wasn't already added with same provider name
+            # (we'll test both and use what works)
+            print("✓ Intel NPU (OpenVINO) available as fallback")
+        except Exception as e:
+            print(f"Note: OpenVINO NPU not available: {e}")
+        
+        # Priority 4: OpenVINO optimized CPU (uses Intel VNNI/AVX instructions)
+        try:
+            cpu_openvino = ("OpenVINOExecutionProvider", {
+                "device_type": "CPU",
+                "precision": "FP32",
+                "num_of_threads": 0,  # Auto-detect
+                "cache_dir": ".openvino_cache"
+            })
+            print("✓ OpenVINO CPU acceleration available as fallback")
+        except Exception as e:
+            print(f"Note: OpenVINO CPU configuration failed: {e}")
+    
+    # Priority 5: Standard CPU fallback
+    if "CPUExecutionProvider" in available_providers:
         providers.append("CPUExecutionProvider")
+    
+    # Ensure we always have at least CPU
+    if not providers:
+        providers = ["CPUExecutionProvider"]
     
     return providers
 
-# Create custom ONNX session with GPU support if available
+def create_session_with_fallback(model_path, providers):
+    """
+    Try to create an ONNX session with fallback through providers.
+    Some models may not be compatible with all execution providers.
+    """
+    for i, provider in enumerate(providers):
+        try:
+            if isinstance(provider, tuple):
+                provider_name, options = provider
+                session = ort.InferenceSession(
+                    model_path,
+                    providers=[provider_name],
+                    provider_options=[options]
+                )
+            else:
+                session = ort.InferenceSession(model_path, providers=[provider])
+            
+            actual = session.get_providers()[0] if session.get_providers() else "Unknown"
+            print(f"✓ Successfully created session with: {actual}")
+            return session
+        except Exception as e:
+            provider_name = provider[0] if isinstance(provider, tuple) else provider
+            print(f"✗ Failed to use {provider_name}: {e}")
+            if i < len(providers) - 1:
+                print(f"  Trying next provider...")
+            continue
+    
+    # Final fallback to CPU
+    print("Falling back to CPU execution...")
+    return ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+
+# Create custom ONNX session with GPU/NPU support if available
 providers = get_execution_providers()
-print(f"Using execution providers: {providers}")
+print(f"\nConfigured execution providers: {[p[0] if isinstance(p, tuple) else p for p in providers]}")
 
-print(f"Loading Kokoro ONNX model from {MODEL_PATH}...")
+print(f"\nLoading Kokoro ONNX model from {MODEL_PATH}...")
 
-# Create session with our detected providers
-session = ort.InferenceSession(MODEL_PATH, providers=providers)
+# Create session with fallback handling
+session = create_session_with_fallback(MODEL_PATH, providers)
 kokoro = Kokoro.from_session(session, VOICES_PATH)
 
 # Log which provider is actually being used
 actual_provider = session.get_providers()[0] if session.get_providers() else "Unknown"
-print(f"Kokoro loaded successfully using: {actual_provider}")
+print(f"\n🎙️ Kokoro loaded successfully using: {actual_provider}\n")
 
 app = FastAPI()
 

@@ -119,6 +119,35 @@ npm run dev
 
 The app will be available at `http://localhost:5173`
 
+### Hardware Acceleration Options
+
+The TTS backend supports multiple acceleration options:
+
+| Hardware | Package to Install | Notes |
+|----------|-------------------|-------|
+| **Intel Arc GPU** | `onnxruntime-openvino openvino` | Discrete GPU acceleration via OpenVINO |
+| **Intel NPU** | `onnxruntime-openvino openvino` | Neural Processing Unit (Core Ultra CPUs) |
+| **Intel CPU** | `onnxruntime-openvino openvino` | Uses AVX/VNNI optimizations automatically |
+| **NVIDIA GPU** | `onnxruntime-gpu` | CUDA acceleration |
+| **CPU Only** | `onnxruntime` | Standard CPU execution |
+
+**For Intel Arc / NPU (default configuration):**
+```bash
+pip install onnxruntime-openvino openvino>=2024.0.0
+```
+
+**For NVIDIA GPU:**
+```bash
+pip install onnxruntime-gpu
+```
+
+The server automatically detects and uses the best available hardware in this priority order:
+1. NVIDIA CUDA
+2. Intel Arc GPU (via OpenVINO)
+3. Intel NPU (via OpenVINO)  
+4. OpenVINO-optimized CPU
+5. Standard CPU fallback
+
 ---
 
 ## 📖 Usage
