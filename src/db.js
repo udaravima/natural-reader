@@ -109,7 +109,7 @@ export const getRecentBooks = async () => {
 
         // Return sorted by lastOpened (newest first), without the data blob
         return books
-            .map(({ data, ...meta }) => meta)
+            .map((book) => ({ fileName: book.fileName, size: book.size, lastOpened: book.lastOpened }))
             .sort((a, b) => b.lastOpened - a.lastOpened);
     } catch (e) {
         console.error('Failed to get recent books:', e);

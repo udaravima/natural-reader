@@ -95,8 +95,7 @@ export default function App() {
   const [volume, setVolume] = useState(() => getStoredValue('volume', 1.0));
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [readingStartTime, setReadingStartTime] = useState(null);
-  const [totalWordsRead, setTotalWordsRead] = useState(0);
-  const [fitMode, setFitMode] = useState('custom');
+  const [, setTotalWordsRead] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [pdfOutline, setPdfOutline] = useState([]);
@@ -104,9 +103,9 @@ export default function App() {
   const [backendAvailable, setBackendAvailable] = useState(null); // null = checking, true/false
   const [toastMessage, setToastMessage] = useState(null);
   const [recentBooks, setRecentBooks] = useState([]);
-  const [currentFileRef, setCurrentFileRef] = useState(null); // Store current file for saving
+  const [, setCurrentFileRef] = useState(null); // Store current file for saving
   const [contextMenu, setContextMenu] = useState(null); // {x, y, sentenceIndex}
-  const [selectedText, setSelectedText] = useState(''); // For selective read
+  const [, setSelectedText] = useState(''); // For selective read
   const [isReadingSelection, setIsReadingSelection] = useState(false);
   const [isPreviewingVoice, setIsPreviewingVoice] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -311,6 +310,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [numPages, isPlaying]);
 
   // --- AUTO-SCROLL TO CURRENT SENTENCE ---
@@ -369,6 +369,7 @@ export default function App() {
       setRecentBooks(books);
     };
     loadRecentBooks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // --- PDF LOGIC ---
@@ -436,6 +437,7 @@ export default function App() {
 
   useEffect(() => {
     if (pdfDoc) renderPage(currentPage, pdfDoc);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfDoc, currentPage, scale]);
 
   // Process a PDF file (used by both file input and drag-and-drop)
@@ -493,7 +495,7 @@ export default function App() {
             console.warn('Could not load outline:', e);
             setPdfOutline([]);
           }
-        } catch (err) {
+        } catch {
           setStatus("Error loading PDF");
         }
       };
@@ -552,7 +554,7 @@ export default function App() {
         } else {
           setPdfOutline([]);
         }
-      } catch (e) {
+      } catch {
         setPdfOutline([]);
       }
     } catch (e) {
@@ -860,6 +862,7 @@ export default function App() {
         fetchAudio(target);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [textItems, selectedVoice, playbackSpeed, isLocalhost]);
 
   const handlePlayPause = () => {
@@ -921,6 +924,7 @@ export default function App() {
       const words = textItems[currentSentenceIndex].split(' ').length;
       setTotalWordsRead(prev => prev + words);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSentenceIndex]);
 
   // Sync ref with state when state changes externally (e.g., user clicks a sentence)
@@ -994,6 +998,7 @@ export default function App() {
     }
 
     return () => { active = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPlaying, textItems, currentPage]);
 
   // --- THEME CLASSES ---
@@ -1427,7 +1432,7 @@ export default function App() {
                           } else {
                             throw new Error('Backend error');
                           }
-                        } catch (e) {
+                        } catch {
                           setBackendAvailable(false);
                           setIsLocalhost(false);
                           setStatus('API unavailable');
