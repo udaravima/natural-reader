@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Play, Pause, Square, Upload, ChevronLeft, ChevronRight,
+  Play, Pause, Square, Upload, ChevronLeft, ChevronRight, ChevronDown, ChevronUp,
   Volume2, SkipForward, SkipBack, Zap, Loader2, Moon, Sun,
   ZoomIn, ZoomOut, Keyboard, Clock, VolumeX, Volume1,
   Maximize, Minimize, RotateCcw, Download, BookOpen, List, Trash2, Library,
@@ -109,6 +109,7 @@ export default function App() {
   const [isReadingSelection, setIsReadingSelection] = useState(false);
   const [isPreviewingVoice, setIsPreviewingVoice] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
 
   // Mobile Configuration
@@ -1313,178 +1314,189 @@ export default function App() {
           ${effectiveIsMobile && sidebarOpen ? 'pt-16' : ''}
         `}>
           <div className={`${effectiveIsMobile ? '' : 'w-80'} flex flex-col h-full`}>
-            <div className={`p-4 border-b ${theme.borderSecondary} ${darkMode ? 'bg-slate-800/50' : 'bg-slate-50/50'}`}>
-              <h3 className={`text-[10px] font-black ${theme.textMuted} uppercase tracking-widest mb-3`}>Settings</h3>
-              <div className="flex flex-col gap-3">
-                {/* Voice Selection */}
-                <div className="space-y-2">
-                  <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>VOICE</span>
-                  <div className="flex gap-2">
-                    <select
-                      value={selectedVoice}
-                      onChange={(e) => { setSelectedVoice(e.target.value); clearCache(); }}
-                      className={`flex-1 text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`}
-                    >
-                      {KOKORO_VOICES.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-                    </select>
-                    <button
-                      onClick={() => isPreviewingVoice ? stopVoicePreview() : previewVoice(selectedVoice)}
-                      disabled={!backendAvailable && isLocalhost}
-                      className={`px-3 py-2.5 rounded-lg border transition-all flex items-center justify-center ${isPreviewingVoice
-                        ? 'bg-blue-600 text-white border-blue-600 animate-pulse'
-                        : `${theme.border} ${theme.hover} ${theme.textSecondary} hover:text-blue-500 hover:border-blue-400`
-                        } ${(!backendAvailable && isLocalhost) ? 'opacity-50 cursor-not-allowed' : ''}`}
-                      title={isPreviewingVoice ? "Stop preview" : "Preview this voice"}
-                    >
-                      {isPreviewingVoice ? <Square size={14} /> : <PlayCircle size={14} />}
-                    </button>
-                  </div>
-                  {/* Voice Sample Text */}
-                  {(() => {
-                    const currentVoice = KOKORO_VOICES.find(v => v.id === selectedVoice);
-                    return currentVoice?.sampleText && (
-                      <p className={`text-[10px] leading-relaxed ${theme.textMuted} italic px-1 py-2 rounded-lg ${theme.bgTertiary} border ${theme.border}`}>
-                        "{currentVoice.sampleText}"
-                      </p>
-                    );
-                  })()}
+            <div className={`border-b ${theme.borderSecondary} ${darkMode ? 'bg-slate-800/50' : 'bg-slate-50/50'}`}>
+              <button
+                onClick={() => setSettingsOpen(prev => !prev)}
+                className={`w-full flex items-center justify-between p-4 cursor-pointer hover:opacity-80 transition-opacity`}
+              >
+                <div className="flex items-center gap-2">
+                  <Settings size={14} className={theme.textMuted} />
+                  <h3 className={`text-[10px] font-black ${theme.textMuted} uppercase tracking-widest`}>Settings</h3>
                 </div>
-
-                {/* Speed Selection */}
-                <div className="space-y-1">
-                  <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>SPEED</span>
-                  <select
-                    value={playbackSpeed}
-                    onChange={(e) => { setPlaybackSpeed(parseFloat(e.target.value)); clearCache(); }}
-                    className={`w-full text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`}
-                  >
-                    {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map(s => <option key={s} value={s}>{s}x Speed</option>)}
-                  </select>
-                </div>
-
-                {/* Volume Control */}
-                <div className="space-y-1">
-                  <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>VOLUME</span>
-                  <div className={`flex items-center gap-3 p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary}`}>
-                    <VolumeIcon size={16} className={theme.textSecondary} />
-                    <input
-                      type="range"
-                      min="0"
-                      max="1"
-                      step="0.1"
-                      value={volume}
-                      onChange={(e) => setVolume(parseFloat(e.target.value))}
-                      className="flex-1 h-2 appearance-none bg-slate-300 dark:bg-slate-600 rounded-full cursor-pointer accent-blue-500"
-                    />
-                    <span className={`text-xs font-bold ${theme.textSecondary} w-8`}>{Math.round(volume * 100)}%</span>
-                  </div>
-                </div>
-
-                {/* API Configuration */}
-                <div className="space-y-2">
-                  <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>VOICE API</span>
+                {settingsOpen ? <ChevronUp size={14} className={theme.textMuted} /> : <ChevronDown size={14} className={theme.textMuted} />}
+              </button>
+              <div className={`overflow-hidden transition-all duration-300 ease-in-out ${settingsOpen ? 'max-h-[1000px] opacity-100' : 'max-h-0 opacity-0'}`}>
+                <div className="px-4 pb-4 flex flex-col gap-3">
+                  {/* Voice Selection */}
                   <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[10px] font-bold ${theme.textMuted} w-10 shrink-0`}>Host</span>
-                      <input
-                        type="text"
-                        value={apiHost}
-                        onChange={(e) => { setApiHost(e.target.value); setBackendAvailable(null); }}
-                        placeholder="localhost"
-                        className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors min-w-0`}
-                        title="API Host (e.g., localhost or 192.168.1.100)"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[10px] font-bold ${theme.textMuted} w-10 shrink-0`}>Port</span>
-                      <input
-                        type="text"
-                        value={apiPort}
-                        onChange={(e) => { setApiPort(e.target.value); setBackendAvailable(null); }}
-                        placeholder="8000"
-                        className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors min-w-0`}
-                        title="API Port (default: 8000)"
-                      />
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-between gap-2 mt-1">
-                    <span className={`text-[10px] ${backendAvailable === null ? theme.textMuted : backendAvailable ? 'text-green-500' : 'text-red-400'}`}>
-                      {backendAvailable === null ? '⏳ Checking...' : backendAvailable ? '✓ Connected' : '✗ Unavailable'}
-                    </span>
-                    <button
-                      onClick={async () => {
-                        setBackendAvailable(null);
-                        setStatus('Checking API connection...');
-                        try {
-                          const controller = new AbortController();
-                          const timeoutId = setTimeout(() => controller.abort(), 3000);
-                          const response = await fetch(getApiUrl('/v1/synthesize'), {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ text: 'test', voice: 'af_heart', speed: 1.0 }),
-                            signal: controller.signal
-                          });
-                          clearTimeout(timeoutId);
-                          if (response.ok) {
-                            setBackendAvailable(true);
-                            setIsLocalhost(true);
-                            setStatus('API connected!');
-                          } else {
-                            throw new Error('Backend error');
-                          }
-                        } catch {
-                          setBackendAvailable(false);
-                          setIsLocalhost(false);
-                          setStatus('API unavailable');
-                        }
-                      }}
-                      className={`text-[10px] font-bold px-2 py-1 rounded-lg ${theme.hover} ${theme.textSecondary} hover:text-blue-500 transition-colors`}
-                    >
-                      Recheck
-                    </button>
-                  </div>
-                </div>
-
-                {/* Mobile Layout Configuration */}
-                <div className="space-y-2">
-                  <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>LAYOUT MODE</span>
-                  <div className="space-y-2">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-[10px] font-bold ${theme.textMuted} w-10 shrink-0`}>Mode</span>
+                    <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>VOICE</span>
+                    <div className="flex gap-2">
                       <select
-                        value={layoutMode}
-                        onChange={(e) => setLayoutMode(e.target.value)}
-                        className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`}
+                        value={selectedVoice}
+                        onChange={(e) => { setSelectedVoice(e.target.value); clearCache(); }}
+                        className={`flex-1 text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`}
                       >
-                        <option value="auto">Auto (detect screen)</option>
-                        <option value="desktop">Force Desktop</option>
-                        <option value="mobile">Force Mobile</option>
+                        {KOKORO_VOICES.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
                       </select>
+                      <button
+                        onClick={() => isPreviewingVoice ? stopVoicePreview() : previewVoice(selectedVoice)}
+                        disabled={!backendAvailable && isLocalhost}
+                        className={`px-3 py-2.5 rounded-lg border transition-all flex items-center justify-center ${isPreviewingVoice
+                          ? 'bg-blue-600 text-white border-blue-600 animate-pulse'
+                          : `${theme.border} ${theme.hover} ${theme.textSecondary} hover:text-blue-500 hover:border-blue-400`
+                          } ${(!backendAvailable && isLocalhost) ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        title={isPreviewingVoice ? "Stop preview" : "Preview this voice"}
+                      >
+                        {isPreviewingVoice ? <Square size={14} /> : <PlayCircle size={14} />}
+                      </button>
                     </div>
-                    {layoutMode === 'auto' && (
-                      <div className="flex items-center gap-2">
-                        <span className={`text-[10px] font-bold ${theme.textMuted} w-10 shrink-0`}>Width</span>
-                        <input
-                          type="number"
-                          value={mobileBreakpoint}
-                          onChange={(e) => setMobileBreakpoint(parseInt(e.target.value) || 768)}
-                          min="320"
-                          max="1440"
-                          className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors min-w-0`}
-                          title="Screen width below which mobile mode activates"
-                        />
-                        <span className={`text-[10px] ${theme.textMuted}`}>px</span>
-                      </div>
-                    )}
-                    <label className="flex items-center gap-2 cursor-pointer">
+                    {/* Voice Sample Text */}
+                    {(() => {
+                      const currentVoice = KOKORO_VOICES.find(v => v.id === selectedVoice);
+                      return currentVoice?.sampleText && (
+                        <p className={`text-[10px] leading-relaxed ${theme.textMuted} italic px-1 py-2 rounded-lg ${theme.bgTertiary} border ${theme.border}`}>
+                          "{currentVoice.sampleText}"
+                        </p>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Speed Selection */}
+                  <div className="space-y-1">
+                    <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>SPEED</span>
+                    <select
+                      value={playbackSpeed}
+                      onChange={(e) => { setPlaybackSpeed(parseFloat(e.target.value)); clearCache(); }}
+                      className={`w-full text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`}
+                    >
+                      {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map(s => <option key={s} value={s}>{s}x Speed</option>)}
+                    </select>
+                  </div>
+
+                  {/* Volume Control */}
+                  <div className="space-y-1">
+                    <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>VOLUME</span>
+                    <div className={`flex items-center gap-3 p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary}`}>
+                      <VolumeIcon size={16} className={theme.textSecondary} />
                       <input
-                        type="checkbox"
-                        checked={showHeaderControlsOnMobile}
-                        onChange={(e) => setShowHeaderControlsOnMobile(e.target.checked)}
-                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.1"
+                        value={volume}
+                        onChange={(e) => setVolume(parseFloat(e.target.value))}
+                        className="flex-1 h-2 appearance-none bg-slate-300 dark:bg-slate-600 rounded-full cursor-pointer accent-blue-500"
                       />
-                      <span className={`text-[10px] font-bold ${theme.textMuted}`}>Show header controls on mobile</span>
-                    </label>
+                      <span className={`text-xs font-bold ${theme.textSecondary} w-8`}>{Math.round(volume * 100)}%</span>
+                    </div>
+                  </div>
+
+                  {/* API Configuration */}
+                  <div className="space-y-2">
+                    <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>VOICE API</span>
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] font-bold ${theme.textMuted} w-10 shrink-0`}>Host</span>
+                        <input
+                          type="text"
+                          value={apiHost}
+                          onChange={(e) => { setApiHost(e.target.value); setBackendAvailable(null); }}
+                          placeholder="localhost"
+                          className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors min-w-0`}
+                          title="API Host (e.g., localhost or 192.168.1.100)"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] font-bold ${theme.textMuted} w-10 shrink-0`}>Port</span>
+                        <input
+                          type="text"
+                          value={apiPort}
+                          onChange={(e) => { setApiPort(e.target.value); setBackendAvailable(null); }}
+                          placeholder="8000"
+                          className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors min-w-0`}
+                          title="API Port (default: 8000)"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 mt-1">
+                      <span className={`text-[10px] ${backendAvailable === null ? theme.textMuted : backendAvailable ? 'text-green-500' : 'text-red-400'}`}>
+                        {backendAvailable === null ? '⏳ Checking...' : backendAvailable ? '✓ Connected' : '✗ Unavailable'}
+                      </span>
+                      <button
+                        onClick={async () => {
+                          setBackendAvailable(null);
+                          setStatus('Checking API connection...');
+                          try {
+                            const controller = new AbortController();
+                            const timeoutId = setTimeout(() => controller.abort(), 3000);
+                            const response = await fetch(getApiUrl('/v1/synthesize'), {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ text: 'test', voice: 'af_heart', speed: 1.0 }),
+                              signal: controller.signal
+                            });
+                            clearTimeout(timeoutId);
+                            if (response.ok) {
+                              setBackendAvailable(true);
+                              setIsLocalhost(true);
+                              setStatus('API connected!');
+                            } else {
+                              throw new Error('Backend error');
+                            }
+                          } catch {
+                            setBackendAvailable(false);
+                            setIsLocalhost(false);
+                            setStatus('API unavailable');
+                          }
+                        }}
+                        className={`text-[10px] font-bold px-2 py-1 rounded-lg ${theme.hover} ${theme.textSecondary} hover:text-blue-500 transition-colors`}
+                      >
+                        Recheck
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Mobile Layout Configuration */}
+                  <div className="space-y-2">
+                    <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>LAYOUT MODE</span>
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] font-bold ${theme.textMuted} w-10 shrink-0`}>Mode</span>
+                        <select
+                          value={layoutMode}
+                          onChange={(e) => setLayoutMode(e.target.value)}
+                          className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`}
+                        >
+                          <option value="auto">Auto (detect screen)</option>
+                          <option value="desktop">Force Desktop</option>
+                          <option value="mobile">Force Mobile</option>
+                        </select>
+                      </div>
+                      {layoutMode === 'auto' && (
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[10px] font-bold ${theme.textMuted} w-10 shrink-0`}>Width</span>
+                          <input
+                            type="number"
+                            value={mobileBreakpoint}
+                            onChange={(e) => setMobileBreakpoint(parseInt(e.target.value) || 768)}
+                            min="320"
+                            max="1440"
+                            className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors min-w-0`}
+                            title="Screen width below which mobile mode activates"
+                          />
+                          <span className={`text-[10px] ${theme.textMuted}`}>px</span>
+                        </div>
+                      )}
+                      <label className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={showHeaderControlsOnMobile}
+                          onChange={(e) => setShowHeaderControlsOnMobile(e.target.checked)}
+                          className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                        />
+                        <span className={`text-[10px] font-bold ${theme.textMuted}`}>Show header controls on mobile</span>
+                      </label>
+                    </div>
                   </div>
                 </div>
               </div>
