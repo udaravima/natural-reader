@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import soundfile as sf
@@ -9,6 +9,7 @@ import os
 from kokoro_onnx import Kokoro
 import onnxruntime as ort
 import uvicorn
+import asyncio
 
 # --- KOKORO SETUP ---
 MODEL_PATH = "kokoro-v1.0.onnx"
@@ -151,19 +152,34 @@ class BatchTTSRequest(BaseModel):
     speed: float = 1.0
 
 @app.post("/v1/synthesize")
-async def synthesize(request: TTSRequest):
+async def synthesize(request: TTSRequest, raw_request: Request):
     """
     Accepts text, returns Base64 encoded WAV audio.
+    Checks for client disconnection to avoid wasted inference.
     """
     try:
-        # Generate audio using ONNX model
-        # lang='en-us' is equivalent to lang_code='a' in KPipeline
-        audio, sample_rate = kokoro.create(
-            request.text,
-            voice=request.voice,
-            speed=request.speed,
-            lang="en-us"
+        # Check if client already disconnected before starting heavy work
+        if await raw_request.is_disconnected():
+            print("Client disconnected before inference started, skipping.")
+            return {"audio_base64": "", "duration_seconds": 0}
+
+        # Run inference in thread pool so the event loop stays free
+        # to detect client disconnections
+        loop = asyncio.get_event_loop()
+        audio, sample_rate = await loop.run_in_executor(
+            None,
+            lambda: kokoro.create(
+                request.text,
+                voice=request.voice,
+                speed=request.speed,
+                lang="en-us"
+            )
         )
+
+        # Check again after inference — client may have left during processing
+        if await raw_request.is_disconnected():
+            print("Client disconnected after inference, discarding result.")
+            return {"audio_base64": "", "duration_seconds": 0}
         
         if len(audio) == 0:
              raise HTTPException(status_code=400, detail="No audio generated")
@@ -186,10 +202,10 @@ async def synthesize(request: TTSRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/v1/batch_synthesize")
-async def batch_synthesize(request: BatchTTSRequest):
+async def batch_synthesize(request: BatchTTSRequest, raw_request: Request):
     """
     Accepts a list of sentences, returns a single merged WAV audio as Base64.
-    Useful for downloading entire pages as one audio file.
+    Checks for client disconnection between sentences to bail out early.
     """
     import numpy as np
     
@@ -199,17 +215,26 @@ async def batch_synthesize(request: BatchTTSRequest):
         
         all_audio = []
         sample_rate = None
+        loop = asyncio.get_event_loop()
         
         # Generate audio for each sentence
-        for sentence in request.sentences:
+        for i, sentence in enumerate(request.sentences):
+            # Check for client disconnection between sentences
+            if await raw_request.is_disconnected():
+                print(f"Client disconnected during batch processing (after sentence {i}/{len(request.sentences)}), stopping.")
+                return {"audio_base64": "", "duration_seconds": 0, "sentence_count": 0}
+
             if not sentence.strip():
                 continue
             
-            audio, sr = kokoro.create(
-                sentence,
-                voice=request.voice,
-                speed=request.speed,
-                lang="en-us"
+            audio, sr = await loop.run_in_executor(
+                None,
+                lambda s=sentence: kokoro.create(
+                    s,
+                    voice=request.voice,
+                    speed=request.speed,
+                    lang="en-us"
+                )
             )
             
             if sample_rate is None:
@@ -224,6 +249,11 @@ async def batch_synthesize(request: BatchTTSRequest):
         if not all_audio:
             raise HTTPException(status_code=400, detail="No audio generated from sentences")
         
+        # Final disconnect check before encoding
+        if await raw_request.is_disconnected():
+            print("Client disconnected after batch inference, discarding result.")
+            return {"audio_base64": "", "duration_seconds": 0, "sentence_count": 0}
+
         # Concatenate all audio segments
         merged_audio = np.concatenate(all_audio)
         
