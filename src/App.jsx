@@ -4,7 +4,7 @@ import {
   Volume2, SkipForward, SkipBack, Zap, Loader2, Moon, Sun,
   ZoomIn, ZoomOut, Keyboard, Clock, VolumeX, Volume1,
   Maximize, Minimize, RotateCcw, Download, BookOpen, List, Trash2, Library,
-  PlayCircle, MousePointer2, X, Menu, PanelLeftClose, Settings
+  PlayCircle, MousePointer2, Menu, PanelLeftClose, Settings
 } from 'lucide-react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { saveBook, getBook, getRecentBooks, deleteBook, updateBookMeta } from './db';
@@ -88,14 +88,15 @@ export default function App() {
   const [isLocalhost, setIsLocalhost] = useState(() => getStoredValue('isLocalhost', true));
   const [apiHost, setApiHost] = useState(() => getStoredValue('apiHost', 'localhost'));
   const [apiPort, setApiPort] = useState(() => getStoredValue('apiPort', '8000'));
+  const [requestTimeout, setRequestTimeout] = useState(() => getStoredValue('requestTimeout', 15));
+  const [unlimitedBatchTimeout, setUnlimitedBatchTimeout] = useState(() => getStoredValue('unlimitedBatchTimeout', true));
   const [status, setStatus] = useState('Initializing PDF Engine...');
 
   // Enhanced Features State
   const [darkMode, setDarkMode] = useState(() => getStoredValue('darkMode', false));
   const [volume, setVolume] = useState(() => getStoredValue('volume', 1.0));
   const [showShortcuts, setShowShortcuts] = useState(false);
-  const [readingStartTime, setReadingStartTime] = useState(null);
-  const [, setTotalWordsRead] = useState(0);
+
   const [isDragging, setIsDragging] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [pdfOutline, setPdfOutline] = useState([]);
@@ -103,9 +104,7 @@ export default function App() {
   const [backendAvailable, setBackendAvailable] = useState(null); // null = checking, true/false
   const [toastMessage, setToastMessage] = useState(null);
   const [recentBooks, setRecentBooks] = useState([]);
-  const [, setCurrentFileRef] = useState(null); // Store current file for saving
   const [contextMenu, setContextMenu] = useState(null); // {x, y, sentenceIndex}
-  const [, setSelectedText] = useState(''); // For selective read
   const [isReadingSelection, setIsReadingSelection] = useState(false);
   const [isPreviewingVoice, setIsPreviewingVoice] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -129,6 +128,7 @@ export default function App() {
   const sentenceRefs = useRef([]);
   const sidebarRef = useRef(null);
   const playbackIndexRef = useRef(-1);
+  const retryCountRef = useRef(0);
 
   // --- SETTINGS PERSISTENCE ---
   // Save settings to localStorage when they change
@@ -164,6 +164,13 @@ export default function App() {
     localStorage.setItem('neural-pdf-apiPort', JSON.stringify(apiPort));
   }, [apiPort]);
 
+  useEffect(() => {
+    localStorage.setItem('neural-pdf-requestTimeout', JSON.stringify(requestTimeout));
+  }, [requestTimeout]);
+
+  useEffect(() => {
+    localStorage.setItem('neural-pdf-unlimitedBatchTimeout', JSON.stringify(unlimitedBatchTimeout));
+  }, [unlimitedBatchTimeout]);
   // Mobile config persistence
   useEffect(() => {
     localStorage.setItem('neural-pdf-mobileBreakpoint', JSON.stringify(mobileBreakpoint));
@@ -325,42 +332,42 @@ export default function App() {
   }, [currentSentenceIndex]);
 
   // --- ENGINE INITIALIZATION ---
+  // Reusable backend health check
+  const checkBackend = async () => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
+
+      const response = await fetch(getApiUrl('/v1/synthesize'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: 'test', voice: 'af_heart', speed: 1.0 }),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        setBackendAvailable(true);
+        return true;
+      } else {
+        throw new Error('Backend error');
+      }
+    } catch (e) {
+      console.warn('Backend not available:', e.message);
+      setBackendAvailable(false);
+      setIsLocalhost(false);
+      setToastMessage('Kokoro backend not detected. Using browser voice.');
+      setTimeout(() => setToastMessage(null), 5000);
+      return false;
+    }
+  };
+
   useEffect(() => {
     // PDF.js is now imported locally - no CDN needed
     pdfjsLibRef.current = pdfjsLib;
     setIsLibLoaded(true);
     setStatus('Ready to Open PDF');
-
-    // Check backend health
-    const checkBackend = async () => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000);
-
-        const response = await fetch(getApiUrl('/v1/synthesize'), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: 'test', voice: 'af_heart', speed: 1.0 }),
-          signal: controller.signal
-        });
-
-        clearTimeout(timeoutId);
-
-        if (response.ok) {
-          setBackendAvailable(true);
-        } else {
-          throw new Error('Backend error');
-        }
-      } catch (e) {
-        console.warn('Backend not available:', e.message);
-        setBackendAvailable(false);
-        setIsLocalhost(false); // Auto-switch to system voice
-        setToastMessage('Kokoro backend not detected. Using browser voice.');
-
-        // Auto-dismiss toast after 5 seconds
-        setTimeout(() => setToastMessage(null), 5000);
-      }
-    };
 
     checkBackend();
 
@@ -445,7 +452,6 @@ export default function App() {
   const processFile = (file) => {
     if (file?.type === 'application/pdf' && isLibLoaded) {
       const fileName = file.name;
-      setCurrentFileRef(file); // Store reference for saving
 
       const reader = new FileReader();
       reader.onload = async (ev) => {
@@ -473,9 +479,6 @@ export default function App() {
             setCurrentSentenceIndex(-1);
             playbackIndexRef.current = -1;
           }
-
-          setTotalWordsRead(0);
-          setReadingStartTime(null);
 
           // Save to IndexedDB for library persistence
           saveBook(file, { page: 1, sentenceIndex: -1 }).then(() => {
@@ -611,11 +614,12 @@ export default function App() {
       return;
     }
 
-    setSelectedText(selection);
     setIsReadingSelection(true);
     setStatus("Reading selection...");
 
     if (isLocalhost) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
       try {
         const response = await fetch(getApiUrl('/v1/synthesize'), {
           method: 'POST',
@@ -624,8 +628,11 @@ export default function App() {
             text: selection,
             voice: selectedVoice,
             speed: playbackSpeed
-          })
+          }),
+          signal: controller.signal
         });
+
+        clearTimeout(timeoutId);
 
         if (!response.ok) throw new Error("TTS failed");
         const data = await response.json();
@@ -636,15 +643,15 @@ export default function App() {
         audioRef.current.src = url;
         audioRef.current.onended = () => {
           setIsReadingSelection(false);
-          setSelectedText('');
           setStatus("Selection read complete");
           URL.revokeObjectURL(url);
         };
         audioRef.current.play();
       } catch (e) {
+        clearTimeout(timeoutId);
         console.error("Selection read error:", e);
         setIsReadingSelection(false);
-        setStatus("Failed to read selection");
+        setStatus(e.name === 'AbortError' ? "Selection read timed out" : "Failed to read selection");
       }
     } else {
       // Browser TTS fallback
@@ -652,7 +659,6 @@ export default function App() {
       utterance.rate = playbackSpeed;
       utterance.onend = () => {
         setIsReadingSelection(false);
-        setSelectedText('');
         setStatus("Selection read complete");
       };
       window.speechSynthesis.speak(utterance);
@@ -664,7 +670,6 @@ export default function App() {
     audioRef.current.pause();
     window.speechSynthesis.cancel();
     setIsReadingSelection(false);
-    setSelectedText('');
     setStatus("Selection stopped");
   };
 
@@ -680,6 +685,8 @@ export default function App() {
     setStatus(`Previewing ${voice.name}...`);
 
     if (isLocalhost && backendAvailable) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
       try {
         const response = await fetch(getApiUrl('/v1/synthesize'), {
           method: 'POST',
@@ -688,8 +695,11 @@ export default function App() {
             text: voice.sampleText,
             voice: voiceId,
             speed: playbackSpeed
-          })
+          }),
+          signal: controller.signal
         });
+
+        clearTimeout(timeoutId);
 
         if (!response.ok) throw new Error("TTS failed");
         const data = await response.json();
@@ -706,9 +716,10 @@ export default function App() {
         };
         voicePreviewRef.current.play();
       } catch (e) {
+        clearTimeout(timeoutId);
         console.error("Voice preview error:", e);
         setIsPreviewingVoice(false);
-        setStatus("Preview failed");
+        setStatus(e.name === 'AbortError' ? "Preview timed out" : "Preview failed");
       }
     } else {
       // Browser TTS fallback
@@ -774,6 +785,13 @@ export default function App() {
     setIsDownloading(true);
     setStatus("Generating audio for page...");
 
+    const controller = new AbortController();
+    let timeoutId = null;
+    if (!unlimitedBatchTimeout) {
+      // Batch operations get 4× the timeout since they process multiple sentences
+      timeoutId = setTimeout(() => controller.abort(), requestTimeout * 4 * 1000);
+    }
+
     try {
       const response = await fetch(getApiUrl('/v1/batch_synthesize'), {
         method: 'POST',
@@ -782,8 +800,11 @@ export default function App() {
           sentences: textItems,
           voice: selectedVoice,
           speed: playbackSpeed
-        })
+        }),
+        signal: unlimitedBatchTimeout ? undefined : controller.signal
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) throw new Error("Batch synthesis failed");
 
@@ -811,8 +832,9 @@ export default function App() {
 
       setStatus(`Downloaded page ${currentPage} audio (${Math.round(data.duration_seconds)}s)`);
     } catch (err) {
+      clearTimeout(timeoutId);
       console.error("Download error:", err);
-      setStatus("Failed to generate audio");
+      setStatus(err.name === 'AbortError' ? "Download timed out" : "Failed to generate audio");
     } finally {
       setIsDownloading(false);
     }
@@ -828,6 +850,9 @@ export default function App() {
     if (index < 0 || index >= textItems.length) return null;
     if (audioCache.current.has(index)) return audioCache.current.get(index);
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
+
     try {
       const response = await fetch(getApiUrl('/v1/synthesize'), {
         method: 'POST',
@@ -836,8 +861,11 @@ export default function App() {
           text: textItems[index],
           voice: selectedVoice,
           speed: playbackSpeed
-        })
+        }),
+        signal: controller.signal
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) throw new Error("TTS Fail");
       const data = await response.json();
@@ -849,6 +877,7 @@ export default function App() {
       audioCache.current.set(index, url);
       return url;
     } catch (err) {
+      clearTimeout(timeoutId);
       console.error("Inference Error:", err);
       return null;
     }
@@ -873,9 +902,7 @@ export default function App() {
       window.speechSynthesis.cancel();
     } else {
       setIsPlaying(true);
-      if (!readingStartTime) {
-        setReadingStartTime(Date.now());
-      }
+      retryCountRef.current = 0;
     }
   };
 
@@ -919,15 +946,6 @@ export default function App() {
     return `~${hours}h ${mins}m`;
   };
 
-  // Track words read
-  useEffect(() => {
-    if (currentSentenceIndex >= 0 && textItems[currentSentenceIndex]) {
-      const words = textItems[currentSentenceIndex].split(' ').length;
-      setTotalWordsRead(prev => prev + words);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentSentenceIndex]);
-
   // Sync ref with state when state changes externally (e.g., user clicks a sentence)
   useEffect(() => {
     playbackIndexRef.current = currentSentenceIndex;
@@ -949,6 +967,7 @@ export default function App() {
           setCurrentPage(p => p + 1);
           playbackIndexRef.current = -1;
           setCurrentSentenceIndex(-1);
+          retryCountRef.current = 0;
         } else {
           stopPlayback();
           setStatus("End of Document");
@@ -968,6 +987,7 @@ export default function App() {
         if (!active) return;
 
         if (url) {
+          retryCountRef.current = 0; // Reset retry count on success
           setStatus("Reading...");
           audioRef.current.src = url;
           audioRef.current.onended = () => {
@@ -978,10 +998,20 @@ export default function App() {
             setStatus("Wait for interaction...");
           });
         } else {
-          setStatus("Connection Error - Retrying...");
-          setTimeout(() => {
-            if (active) playLoop();
-          }, 2000);
+          retryCountRef.current += 1;
+          if (retryCountRef.current >= 3) {
+            // Max retries reached — stop playback and notify user
+            stopPlayback();
+            setStatus("Connection failed");
+            setToastMessage("Server unreachable after 3 attempts. Check your connection and try again.");
+            setTimeout(() => setToastMessage(null), 6000);
+            retryCountRef.current = 0;
+          } else {
+            setStatus(`Connection Error — Retry ${retryCountRef.current}/3...`);
+            setTimeout(() => {
+              if (active) playLoop();
+            }, 2000);
+          }
         }
       } else {
         setStatus("Using System Voice...");
@@ -1158,7 +1188,7 @@ export default function App() {
         {/* PLAYBACK CONTROLS - Visibility controlled by settings */}
         <div className={`${showHeaderControlsOnMobile ? 'flex' : 'hidden md:flex'} items-center gap-2 ${theme.bgTertiary} p-1 rounded-xl border ${theme.border} shadow-inner`}>
           <button
-            onClick={() => setCurrentSentenceIndex(prev => Math.max(-1, prev - 2))}
+            onClick={() => setCurrentSentenceIndex(prev => Math.max(-1, prev - 1))}
             className={`p-2 ${theme.hover} rounded-lg transition-colors ${theme.textSecondary}`}
             title="Previous (Shift+←)"
           >
@@ -1325,8 +1355,8 @@ export default function App() {
                 </div>
                 {settingsOpen ? <ChevronUp size={14} className={theme.textMuted} /> : <ChevronDown size={14} className={theme.textMuted} />}
               </button>
-              <div className={`overflow-hidden transition-all duration-300 ease-in-out ${settingsOpen ? 'max-h-[1000px] opacity-100' : 'max-h-0 opacity-0'}`}>
-                <div className="px-4 pb-4 flex flex-col gap-3">
+              <div className={`overflow-hidden transition-all duration-300 ease-in-out ${settingsOpen ? 'max-h-[70vh] opacity-100' : 'max-h-0 opacity-0'}`}>
+                <div className="px-4 pb-4 flex flex-col gap-3 overflow-y-auto max-h-[calc(70vh-3rem)]">
                   {/* Voice Selection */}
                   <div className="space-y-2">
                     <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>VOICE</span>
@@ -1426,26 +1456,11 @@ export default function App() {
                         onClick={async () => {
                           setBackendAvailable(null);
                           setStatus('Checking API connection...');
-                          try {
-                            const controller = new AbortController();
-                            const timeoutId = setTimeout(() => controller.abort(), 3000);
-                            const response = await fetch(getApiUrl('/v1/synthesize'), {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ text: 'test', voice: 'af_heart', speed: 1.0 }),
-                              signal: controller.signal
-                            });
-                            clearTimeout(timeoutId);
-                            if (response.ok) {
-                              setBackendAvailable(true);
-                              setIsLocalhost(true);
-                              setStatus('API connected!');
-                            } else {
-                              throw new Error('Backend error');
-                            }
-                          } catch {
-                            setBackendAvailable(false);
-                            setIsLocalhost(false);
+                          const ok = await checkBackend();
+                          if (ok) {
+                            setIsLocalhost(true);
+                            setStatus('API connected!');
+                          } else {
                             setStatus('API unavailable');
                           }
                         }}
@@ -1454,6 +1469,36 @@ export default function App() {
                         Recheck
                       </button>
                     </div>
+                  </div>
+
+                  {/* Request Timeout */}
+                  <div className="space-y-1">
+                    <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>REQUEST TIMEOUT</span>
+                    <div className={`flex items-center gap-2 p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary}`}>
+                      <Clock size={14} className={theme.textSecondary} />
+                      <input
+                        type="number"
+                        min="5"
+                        max="120"
+                        value={requestTimeout}
+                        onChange={(e) => setRequestTimeout(Math.max(5, Math.min(120, parseInt(e.target.value) || 15)))}
+                        className={`w-14 text-xs font-bold text-center ${theme.bgTertiary} ${theme.text} rounded-lg p-1.5 outline-none focus:ring-2 focus:ring-blue-500`}
+                        title="Request timeout in seconds (5-120)"
+                      />
+                      <span className={`text-[10px] font-bold ${theme.textMuted}`}>seconds</span>
+                    </div>
+                    <p className={`text-[9px] ${theme.textMuted} px-1`}>
+                      Max wait time per TTS request. Increase if on slow network.
+                    </p>
+                    <label className={`flex items-center gap-2 mt-1.5 cursor-pointer`}>
+                      <input
+                        type="checkbox"
+                        checked={unlimitedBatchTimeout}
+                        onChange={(e) => setUnlimitedBatchTimeout(e.target.checked)}
+                        className="accent-blue-500 w-3.5 h-3.5"
+                      />
+                      <span className={`text-[10px] font-bold ${theme.textMuted}`}>Unlimited batch/download timeout</span>
+                    </label>
                   </div>
 
                   {/* Mobile Layout Configuration */}
@@ -1825,7 +1870,7 @@ export default function App() {
 
             {/* Previous Sentence */}
             <button
-              onClick={() => setCurrentSentenceIndex(prev => Math.max(-1, prev - 2))}
+              onClick={() => setCurrentSentenceIndex(prev => Math.max(-1, prev - 1))}
               className={`p-3 rounded-xl ${theme.hover} ${theme.textSecondary}`}
             >
               <SkipBack size={22} />
