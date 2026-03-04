@@ -27,3 +27,7 @@ voices-v1.0.bin
 *.njsproj
 *.sln
 *.sw?
+
+**/__pycache__/*
+.env
+**.pyc
