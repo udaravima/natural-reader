@@ -168,14 +168,17 @@ export function useTtsEngine({
             }
 
             const textToRead = textItems[nextIdx];
-            playbackIndexRef.current = nextIdx;
-            setCurrentSentenceIndex(nextIdx);
             prefetchBuffer(nextIdx);
 
             if (isLocalhost) {
                 setStatus("Generating Voice...");
                 const url = await fetchAudio(nextIdx);
                 if (!active) return;
+
+                // Commit position only after confirming effect is still active
+                // (prevents StrictMode double-run from skipping sentences)
+                playbackIndexRef.current = nextIdx;
+                setCurrentSentenceIndex(nextIdx);
 
                 if (url) {
                     retryCountRef.current = 0;
@@ -204,6 +207,9 @@ export function useTtsEngine({
                     }
                 }
             } else {
+                // System voice — commit position immediately (no async gap)
+                playbackIndexRef.current = nextIdx;
+                setCurrentSentenceIndex(nextIdx);
                 setStatus("Using System Voice...");
                 const ut = new SpeechSynthesisUtterance(textToRead);
                 ut.rate = playbackSpeed;
