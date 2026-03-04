@@ -95,22 +95,22 @@ export default function App() {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
-      const response = await fetch(getApiUrl('/v1/synthesize'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: 'test', voice: 'af_heart', speed: 1.0 }),
+      const response = await fetch(getApiUrl('/v1/health'), {
+        method: 'GET',
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
       if (response.ok) {
-        setBackendAvailable(true);
-        return true;
+        const data = await response.json();
+        if (data.status === 'ok') {
+          setBackendAvailable(true);
+          return true;
+        }
       }
       throw new Error('Backend error');
     } catch (e) {
       console.warn('Backend not available:', e.message);
       setBackendAvailable(false);
-      setIsLocalhost(false);
       setToastMessage('Kokoro backend not detected. Using browser voice.');
       setTimeout(() => setToastMessage(null), 5000);
       return false;

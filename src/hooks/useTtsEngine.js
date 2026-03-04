@@ -30,6 +30,7 @@ export function useTtsEngine({
     const [isPreviewingVoice, setIsPreviewingVoice] = useState(false);
 
     const audioCache = useRef(new Map());
+    const pendingRequests = useRef(new Map()); // Track in-flight fetches to avoid duplicates
     const audioRef = useRef(new Audio());
     const voicePreviewRef = useRef(new Audio());
     const retryCountRef = useRef(0);
@@ -46,42 +47,61 @@ export function useTtsEngine({
     const clearCache = useCallback(() => {
         audioCache.current.forEach(url => URL.revokeObjectURL(url));
         audioCache.current.clear();
+        pendingRequests.current.clear();
     }, []);
+
+    // Clear cache when page content changes (new textItems = new page)
+    useEffect(() => {
+        clearCache();
+    }, [textItems, clearCache]);
 
     const fetchAudio = async (index) => {
         if (index < 0 || index >= textItems.length) return null;
         if (audioCache.current.has(index)) return audioCache.current.get(index);
 
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
-
-        try {
-            const response = await fetch(getApiUrl('/v1/synthesize'), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    text: textItems[index],
-                    voice: selectedVoice,
-                    speed: playbackSpeed
-                }),
-                signal: controller.signal
-            });
-
-            clearTimeout(timeoutId);
-
-            if (!response.ok) throw new Error("TTS Fail");
-            const data = await response.json();
-
-            const b64 = data.audio_base64 || data.audio;
-            const blob = await (await fetch(`data:audio/wav;base64,${b64}`)).blob();
-            const url = URL.createObjectURL(blob);
-            audioCache.current.set(index, url);
-            return url;
-        } catch (err) {
-            clearTimeout(timeoutId);
-            console.error("Inference Error:", err);
-            return null;
+        // If there's already a request in flight for this index, wait for it
+        if (pendingRequests.current.has(index)) {
+            return pendingRequests.current.get(index);
         }
+
+        // Create the fetch promise and store it
+        const fetchPromise = (async () => {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
+
+            try {
+                const response = await fetch(getApiUrl('/v1/synthesize'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        text: textItems[index],
+                        voice: selectedVoice,
+                        speed: playbackSpeed
+                    }),
+                    signal: controller.signal
+                });
+
+                clearTimeout(timeoutId);
+
+                if (!response.ok) throw new Error("TTS Fail");
+                const data = await response.json();
+
+                const b64 = data.audio_base64 || data.audio;
+                const blob = await (await fetch(`data:audio/wav;base64,${b64}`)).blob();
+                const url = URL.createObjectURL(blob);
+                audioCache.current.set(index, url);
+                return url;
+            } catch (err) {
+                clearTimeout(timeoutId);
+                console.error("Inference Error:", err);
+                return null;
+            } finally {
+                pendingRequests.current.delete(index);
+            }
+        })();
+
+        pendingRequests.current.set(index, fetchPromise);
+        return fetchPromise;
     };
 
     const prefetchBuffer = useCallback(async (currentIndex) => {

@@ -25,11 +25,29 @@ router = APIRouter()
 inference_lock = asyncio.Lock()
 
 
+@router.get("/v1/health")
+async def health_check():
+    """
+    Lightweight health check — verifies the model is loaded without running
+    inference or holding the inference lock. Safe to call during playback.
+    """
+    try:
+        model_loaded = kokoro is not None
+        return {
+            "status": "ok" if model_loaded else "error",
+            "model_loaded": model_loaded,
+        }
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
+
+
 @router.post("/v1/synthesize")
 async def synthesize(request: TTSRequest):
     """
     Accepts text, returns Base64 encoded WAV audio.
     """
+    print(f"[TTS] Synthesize request: voice={request.voice}, speed={request.speed}")
+    print(f"[TTS] Text: \"{request.text[:200]}{'...' if len(request.text) > 200 else ''}\"")
     try:
         async with inference_lock:
             loop = asyncio.get_event_loop()
@@ -53,16 +71,18 @@ async def synthesize(request: TTSRequest):
 
         # Encode to base64 for easy transport to JSON
         b64_audio = base64.b64encode(buffer.read()).decode('utf-8')
+        duration = len(audio) / sample_rate
+        print(f"[TTS] ✓ Synthesized {duration:.1f}s audio")
 
         return {
             "audio_base64": b64_audio,
-            "duration_seconds": len(audio) / sample_rate
+            "duration_seconds": duration
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"[TTS] ✗ Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -72,6 +92,7 @@ async def batch_synthesize(request: BatchTTSRequest):
     Accepts a list of sentences, returns a single merged WAV audio as Base64.
     Holds the lock for the entire batch to avoid per-sentence queue contention.
     """
+    print(f"[TTS] Batch request: {len(request.sentences)} sentences, voice={request.voice}, speed={request.speed}")
     try:
         if not request.sentences:
             raise HTTPException(status_code=400, detail="No sentences provided")
