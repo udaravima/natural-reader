@@ -156,6 +156,11 @@ export function useTtsEngine({
             if (nextIdx >= textItems.length) {
                 if (currentPage < numPages) {
                     setStatus("Changing Page...");
+                    // Stop any ongoing audio so the guard condition passes
+                    // when the effect re-runs with new textItems
+                    audioRef.current.pause();
+                    audioRef.current.currentTime = 0;
+                    window.speechSynthesis.cancel();
                     setCurrentPage(p => p + 1);
                     playbackIndexRef.current = -1;
                     setCurrentSentenceIndex(-1);
@@ -220,13 +225,13 @@ export function useTtsEngine({
             }
         };
 
-        if (audioRef.current.paused && !window.speechSynthesis.speaking) {
+        if (textItems.length > 0 && audioRef.current.paused && !window.speechSynthesis.speaking) {
             playLoop();
         }
 
         return () => { active = false; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isPlaying, textItems, currentPage]);
+    }, [isPlaying, textItems]);
 
     // --- SELECTION READING ---
     const readSelection = async () => {

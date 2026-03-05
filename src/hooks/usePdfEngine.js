@@ -65,6 +65,17 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         playbackIndexRef.current = currentSentenceIndex;
     }, [currentSentenceIndex]);
 
+    // Clear text items immediately when page changes to prevent stale TTS playback.
+    // Without this, the TTS loop could re-run with the old page's text before
+    // renderPage finishes extracting the new page's text.
+    const prevPageRef = useRef(currentPage);
+    useEffect(() => {
+        if (prevPageRef.current !== currentPage) {
+            prevPageRef.current = currentPage;
+            setTextItems([]);
+        }
+    }, [currentPage]);
+
     // --- PDF RENDERING ---
     const renderPage = async (pageNum, doc) => {
         if (!doc || !pdfjsLibRef.current) return;

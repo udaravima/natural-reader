@@ -46,8 +46,8 @@ async def synthesize(request: TTSRequest):
     """
     Accepts text, returns Base64 encoded WAV audio.
     """
-    print(f"[TTS] Synthesize request: voice={request.voice}, speed={request.speed}")
-    print(f"[TTS] Text: \"{request.text[:200]}{'...' if len(request.text) > 200 else ''}\"")
+    # print(f"[TTS] Synthesize request: voice={request.voice}, speed={request.speed}")
+    # print(f"[TTS] Text: \"{request.text[:200]}{'...' if len(request.text) > 200 else ''}\"")
     try:
         async with inference_lock:
             loop = asyncio.get_event_loop()
@@ -72,7 +72,7 @@ async def synthesize(request: TTSRequest):
         # Encode to base64 for easy transport to JSON
         b64_audio = base64.b64encode(buffer.read()).decode('utf-8')
         duration = len(audio) / sample_rate
-        print(f"[TTS] ✓ Synthesized {duration:.1f}s audio")
+        # print(f"[TTS] ✓ Synthesized {duration:.1f}s audio")
 
         return {
             "audio_base64": b64_audio,
@@ -92,7 +92,7 @@ async def batch_synthesize(request: BatchTTSRequest):
     Accepts a list of sentences, returns a single merged WAV audio as Base64.
     Holds the lock for the entire batch to avoid per-sentence queue contention.
     """
-    print(f"[TTS] Batch request: {len(request.sentences)} sentences, voice={request.voice}, speed={request.speed}")
+    # print(f"[TTS] Batch request: {len(request.sentences)} sentences, voice={request.voice}, speed={request.speed}")
     try:
         if not request.sentences:
             raise HTTPException(status_code=400, detail="No sentences provided")
