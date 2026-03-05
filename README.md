@@ -13,40 +13,41 @@ A modern, feature-rich PDF reader with **neural text-to-speech** powered by **[K
 ## ✨ Features
 
 ### 📖 PDF Viewing
-- **Drag & Drop Upload** - Drop PDFs directly onto the window
-- **PDF Rendering** - View PDF documents with smooth page navigation
-- **Table of Contents** - Navigate using PDF chapter outline (if available)
-- **Text Selection** - Select text directly on PDF for copying or reading
-- **Zoom Controls** - Zoom in/out, fit to page, fit to width
-- **Page Jump** - Type any page number to jump directly
-- **Framed Viewer** - Professional document viewer layout with toolbar
+- **Drag & Drop Upload** — Drop PDFs directly onto the window
+- **PDF Rendering** — Smooth page-by-page rendering with zoom controls
+- **Table of Contents** — Navigate using the PDF's chapter outline (if available)
+- **Text Selection** — Select text directly on the rendered page for copying or reading
+- **Zoom Controls** — Zoom in/out, fit to page, fit to width
+- **Page Jump** — Click the page indicator and type any page number
 
 ### 🎙️ Text-to-Speech
-- **Kokoro TTS Integration** - High-quality neural text-to-speech via local backend
-- **27 Voice Options** - Wide selection of US and UK male/female voices
-- **Speed Control** - Adjust playback speed from 0.5x to 2x
-- **Volume Control** - Adjustable audio volume slider
-- **Audio Buffering** - Pre-fetches upcoming sentences for seamless playback
-- **Download Page Audio** - Export current page as WAV file
-- **Selective Read** - Select any text and read only that selection
-- **Continue From Here** - Right-click any sentence to start from that point
-- **Browser Fallback** - Uses Web Speech API for quick testing without backend
-- **Auto-Failover** - Automatically switches to browser voice if backend unavailable
+- **Kokoro TTS Integration** — High-quality neural text-to-speech via local backend
+- **27 Voice Options** — Wide selection of US and UK male/female voices with live preview
+- **Speed Control** — Adjust playback speed from 0.5× to 2×
+- **Volume Control** — Adjustable audio volume slider
+- **Audio Buffering** — Pre-fetches upcoming sentences for seamless playback
+- **Auto Page Advance** — Automatically continues reading across pages
+- **Download Page Audio** — Export the current page as a WAV file
+- **Selective Read** — Select any text and read only that selection
+- **Continue From Here** — Right-click any sentence to start reading from that point
+- **Browser Fallback** — Uses Web Speech API when backend is unavailable
+- **Auto-Failover** — Automatically switches to browser voice if backend is unreachable
 
 ### 🎨 User Experience
-- **Dark Mode** - Beautiful dark/light theme toggle with smooth transitions
-- **Sentence Highlighting** - Visual highlighting of current sentence during playback
-- **Auto-Scroll** - Sidebar automatically scrolls to current sentence
-- **Reading Progress** - Visual progress bar showing completion percentage
-- **Estimated Time** - Shows remaining reading time
-- **Toast Notifications** - Informative feedback for user actions
+- **Dark Mode** — Beautiful dark/light theme toggle with smooth transitions
+- **Sentence Highlighting** — Visual highlighting of the current sentence during playback
+- **Auto-Scroll** — Sidebar automatically scrolls to the current sentence
+- **Reading Progress** — Visual progress bar showing page completion percentage
+- **Estimated Time** — Shows remaining reading time for the current page
+- **Responsive Layout** — Full mobile support with dedicated bottom navigation
+- **Collapsible Settings** — Clean, toggle-able settings panel in the sidebar
+- **Toast Notifications** — Informative feedback for user actions
 
 ### 💾 Memory & Persistence
-- **Library (IndexedDB)** - PDFs saved locally for instant resume (up to 5 books)
-- **One-Click Resume** - Click any book in library to continue reading
-- **Settings Saved** - Voice, speed, volume, zoom, and theme persist across sessions
-- **Reading Progress** - Remembers your position in each PDF (page + sentence)
-- **Resume Reading** - Automatically resumes from where you left off
+- **Library (IndexedDB)** — PDFs saved locally for instant resume (up to 5 books)
+- **One-Click Resume** — Click any book in the library to continue reading
+- **Settings Saved** — Voice, speed, volume, zoom, theme, and API settings persist across sessions
+- **Reading Progress** — Remembers your position in each PDF (page + sentence)
 
 ### ⌨️ Keyboard Shortcuts
 | Key | Action |
@@ -65,12 +66,15 @@ A modern, feature-rich PDF reader with **neural text-to-speech** powered by **[K
 
 ## 🛠️ Tech Stack
 
-- **Frontend**: React 19, Vite (Rolldown)
-- **PDF Parsing**: PDF.js 5.x (bundled locally for offline use)
-- **Styling**: Tailwind CSS 4.x
-- **Icons**: Lucide React
-- **Storage**: localStorage + IndexedDB for persistence
-- **Offline**: No internet required after installation
+| Layer | Technology |
+|-------|------------|
+| **Frontend** | React 19, Vite (Rolldown) |
+| **PDF Parsing** | PDF.js 5.x (bundled locally) |
+| **Styling** | Tailwind CSS 4.x |
+| **Icons** | Lucide React |
+| **Storage** | localStorage + IndexedDB |
+| **Backend** | FastAPI, Kokoro ONNX, Uvicorn |
+| **Inference** | ONNX Runtime (CUDA / OpenVINO / CPU) |
 
 ---
 
@@ -78,129 +82,143 @@ A modern, feature-rich PDF reader with **neural text-to-speech** powered by **[K
 
 ### Prerequisites
 
-- Node.js 18+ 
-- npm or yarn
-- Python 3.8+ (for Kokoro TTS backend)
+- **Node.js 18+** and npm
+- **Python 3.8+** (for Kokoro TTS backend)
 
-### Installation
+### 1. Clone & Install Dependencies
 
 ```bash
-# Clone the repository
-git clone <repository-url>
+git clone https://github.com/udaravima/natural-reader.git
 cd natural-reader
-```
-#### Install dependencies
-```bash
+
+# Frontend
 npm install
+
+# Backend
 python3 -m venv .venv
-.venv\Scripts\activate # For Windows
-source .venv/bin/activate # For Linux/Mac
+source .venv/bin/activate        # Linux / macOS
+# .venv\Scripts\activate         # Windows
 pip install -r requirements.txt
 ```
-#### Download Voice Models
-```bash
-# Download models from GitHub releases
 
-## kokoro-V1.0.onnx
+### 2. Download Voice Models
+
+```bash
+# Kokoro v1.0 ONNX model (~310 MB)
 wget https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/kokoro-v1.0.onnx
 
-## voices-V1.0.bin
+# Voice pack (~25 MB)
 wget https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0/voices-v1.0.bin
 ```
 
-#### Start Python Kokoro TTS server
+Place both files in the project root directory.
+
+### 3. Start the Servers
+
 ```bash
-python server.py
-```
-#### Start development server
-```bash
+# Terminal 1 — Start the Kokoro TTS backend (port 8000)
+python run.py
+
+# Terminal 2 — Start the frontend dev server (port 5173)
 npm run dev
 ```
 
-The app will be available at `http://localhost:5173`
+Open **http://localhost:5173** in your browser.
 
-### Hardware Acceleration Options
+### Hardware Acceleration
 
-The TTS backend supports multiple acceleration options:
+The TTS backend automatically detects and uses the best available hardware:
 
-| Hardware | Package to Install | Notes |
-|----------|-------------------|-------|
-| **Intel Arc GPU** | `onnxruntime-openvino openvino` | Discrete GPU acceleration via OpenVINO |
-| **Intel NPU** | `onnxruntime-openvino openvino` | Neural Processing Unit (Core Ultra CPUs) |
-| **Intel CPU** | `onnxruntime-openvino openvino` | Uses AVX/VNNI optimizations automatically |
-| **NVIDIA GPU** | `onnxruntime-gpu` | CUDA acceleration |
-| **CPU Only** | `onnxruntime` | Standard CPU execution |
+| Priority | Hardware | Package | Notes |
+|----------|----------|---------|-------|
+| 1 | **NVIDIA GPU** | `onnxruntime-gpu` | CUDA acceleration |
+| 2 | **Intel Arc GPU** | `onnxruntime-openvino openvino` | OpenVINO discrete GPU |
+| 3 | **Intel NPU** | `onnxruntime-openvino openvino` | Core Ultra Neural Processing Unit |
+| 4 | **Intel CPU** | `onnxruntime-openvino openvino` | AVX/VNNI optimizations |
+| 5 | **CPU** | `onnxruntime` | Standard fallback |
 
-**For Intel Arc / NPU (default configuration):**
 ```bash
+# For Intel Arc / NPU (default in requirements.txt)
 pip install onnxruntime-openvino openvino>=2024.0.0
-```
 
-**For NVIDIA GPU:**
-```bash
+# For NVIDIA GPU
 pip install onnxruntime-gpu
 ```
-
-The server automatically detects and uses the best available hardware in this priority order:
-1. NVIDIA CUDA
-2. Intel Arc GPU (via OpenVINO)
-3. Intel NPU (via OpenVINO)  
-4. OpenVINO-optimized CPU
-5. Standard CPU fallback
 
 ---
 
 ## 📖 Usage
 
-### Browser Mode (Testing)
+### Browser Mode (No Backend Required)
 
-1. Click **Upload** button or the upload area to select a PDF
-2. Click the **"SYSTEM"** toggle in the header (uses browser's built-in TTS)
-3. Click the **Play** button to start reading
-4. Use the sidebar to adjust voice and speed settings
+1. Upload a PDF via the upload button or drag-and-drop
+2. Toggle to **"SYSTEM"** mode in the header
+3. Press **Play** — the browser's built-in Web Speech API reads the text
 
-### Kokoro Mode (High-Quality Neural TTS)
+### Kokoro Mode (Neural TTS)
 
-For high-quality neural TTS, run the Kokoro backend server:
+1. Start the backend: `python run.py`
+2. Ensure the header shows **"KOKORO"** (green indicator)
+3. Upload a PDF and press Play — enjoy neural-quality voices!
 
-1. **Start the Kokoro TTS server:**
-   ```bash
-   python server.py
-   ```
-   The server runs on port 8000.
+### API Endpoints
 
-2. **Use the app:**
-   - Ensure **"KOKORO"** is shown in the header toggle (green)
-   - Upload a PDF and click Play
-   - Enjoy neural-quality voice synthesis!
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/health` | `GET` | Health check — verifies model is loaded |
+| `/v1/synthesize` | `POST` | Synthesize text → Base64 WAV audio |
+| `/v1/batch_synthesize` | `POST` | Synthesize multiple sentences → merged WAV |
 
-### API Contract
+<details>
+<summary><strong>Request / Response Examples</strong></summary>
 
-The backend expects:
+**`POST /v1/synthesize`**
 ```json
-POST /v1/synthesize
 {
   "text": "Text to synthesize",
-  "voice": "af_heart",  
+  "voice": "af_heart",
   "speed": 1.0
 }
 ```
 
-Response:
+**Response:**
 ```json
 {
-  "audio_base64": "<base64-encoded-wav>"
+  "audio_base64": "<base64-encoded-wav>",
+  "duration_seconds": 2.5
 }
 ```
 
+**`POST /v1/batch_synthesize`**
+```json
+{
+  "sentences": ["First sentence.", "Second sentence."],
+  "voice": "af_heart",
+  "speed": 1.0
+}
+```
+
+**Response:**
+```json
+{
+  "audio_base64": "<base64-encoded-wav>",
+  "duration_seconds": 5.2,
+  "sentence_count": 2
+}
+```
+
+</details>
+
 ---
 
-## 🎭 Available Voice Models
+## 🎭 Available Voices
 
-### US Voices
+<details>
+<summary><strong>US Voices (19)</strong></summary>
+
 | Voice ID | Name | Gender |
 |----------|------|--------|
-| `af_heart` | Heart | Female (default) |
+| `af_heart` | Heart | Female *(default)* |
 | `af_bella` | Bella | Female |
 | `af_alloy` | Alloy | Female |
 | `af_aoede` | Aoede | Female |
@@ -220,7 +238,11 @@ Response:
 | `am_onyx` | Onyx | Male |
 | `am_puck` | Puck | Male |
 
-### UK Voices
+</details>
+
+<details>
+<summary><strong>UK Voices (8)</strong></summary>
+
 | Voice ID | Name | Gender |
 |----------|------|--------|
 | `bf_emma` | Emma | Female |
@@ -232,16 +254,7 @@ Response:
 | `bm_george` | George | Male |
 | `bm_lewis` | Lewis | Male |
 
----
-
-## 📜 Scripts
-
-```bash
-npm run dev      # Start development server
-npm run build    # Build for production
-npm run preview  # Preview production build
-npm run lint     # Run ESLint
-```
+</details>
 
 ---
 
@@ -250,38 +263,71 @@ npm run lint     # Run ESLint
 ```
 natural-reader/
 ├── src/
-│   ├── App.jsx       # Main application component
-│   ├── db.js         # IndexedDB utilities for library persistence
-│   ├── main.jsx      # React entry point
-│   └── index.css     # Global styles (Tailwind)
-├── dist/             # Production build output
-├── vite.config.js    # Vite configuration with chunk splitting
+│   ├── App.jsx                # Main application — wires hooks and components
+│   ├── main.jsx               # React entry point
+│   ├── constants.js           # Voice definitions and keyboard shortcut config
+│   ├── db.js                  # IndexedDB utilities for PDF library persistence
+│   ├── index.css              # Global styles (Tailwind)
+│   ├── hooks/
+│   │   ├── usePdfEngine.js    # PDF loading, rendering, text extraction, library
+│   │   ├── useTtsEngine.js    # TTS playback loop, caching, voice preview, download
+│   │   ├── usePersistedState.js  # localStorage-backed state + reading progress
+│   │   ├── useKeyboardShortcuts.js
+│   │   ├── useMobileDetect.js
+│   │   └── useTheme.js
+│   └── components/
+│       ├── Header.jsx         # Top toolbar with playback controls
+│       ├── Sidebar.jsx        # Sentence list, chapters, settings, voice picker
+│       ├── PdfViewer.jsx      # Canvas renderer, text layer, page navigation
+│       ├── MobileBottomNav.jsx
+│       ├── WelcomeScreen.jsx  # Library and upload landing page
+│       └── overlays/          # Drag, toast, context menu, shortcuts modal, etc.
+├── server/
+│   ├── __init__.py
+│   ├── app.py                 # FastAPI app factory with CORS
+│   ├── endpoints.py           # /v1/synthesize, /v1/batch_synthesize, /v1/health
+│   ├── model.py               # Kokoro ONNX loading with GPU/NPU/CPU fallback
+│   └── schemas.py             # Pydantic request models
+├── run.py                     # Server entry point (uvicorn)
+├── requirements.txt           # Python dependencies
+├── vite.config.js             # Vite + Rolldown config with chunk splitting
 ├── tailwind.config.js
-├── server.py         # Kokoro TTS backend server
-└── package.json
+├── package.json
+└── index.html
+```
+
+---
+
+## 📜 Scripts
+
+```bash
+npm run dev      # Start Vite dev server
+npm run build    # Build for production
+npm run preview  # Preview production build
+npm run lint     # Run ESLint
 ```
 
 ---
 
 ## 💡 Tips
 
-- **Resume Reading**: Open the same PDF file to automatically resume from your last position
-- **Library**: Your recent books are saved in browser storage - click to instantly resume
-- **Keyboard Navigation**: Use keyboard shortcuts for faster control
-- **Prefetching**: The app pre-fetches the next 2 sentences for seamless playback
-- **Dark Mode**: Toggle with the moon/sun icon or press `Ctrl+D`
-- **Jump to Page**: Click on the page number in the toolbar and type any page
-- **Right-Click Menu**: Right-click sentences for quick actions like "Continue from here"
-- **Read Selection**: Select any text, then click the floating "Read Selection" button
+- **Resume Reading** — Reopen the same PDF to automatically continue from your last position
+- **Library** — Recent books are persisted in IndexedDB — click to instantly resume
+- **Keyboard Navigation** — Use keyboard shortcuts for hands-free control
+- **Prefetching** — The next 2 sentences are pre-fetched for seamless playback
+- **Dark Mode** — Toggle with the moon/sun icon or `Ctrl + D`
+- **Right-Click Menu** — Right-click any sentence for "Continue from here" and copy options
+- **Read Selection** — Select text on the PDF, then click the floating "Read Selection" button
+- **Download Audio** — Export the current page's audio as a WAV file for offline listening
 
 ---
 
 ## 🔧 Build Optimization
 
-The project uses Rolldown (via rolldown-vite) with optimized chunk splitting:
-- React is split into a separate vendor chunk for better caching
-- PDF.js is loaded from CDN to reduce bundle size
-- Main app bundle is typically under 25KB (gzipped: ~7KB)
+The project uses Rolldown (via `rolldown-vite`) with optimized chunk splitting:
+- **vendor-react** — React core split into a separate chunk for long-term caching
+- **vendor-pdfjs** — PDF.js bundled locally (no CDN dependency)
+- **vendor-icons** — Lucide icons isolated for efficient tree-shaking
 
 ---
 
