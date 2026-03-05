@@ -53,8 +53,8 @@ export const saveBook = async (file, metadata = {}) => {
             request.onerror = () => reject(request.error);
         });
 
-        // Clean up old books if we have too many
-        await cleanupOldBooks(db);
+        // Clean up old books within the same transaction
+        await cleanupOldBooks(store);
 
         db.close();
         return true;
@@ -143,17 +143,27 @@ export const deleteBook = async (fileName) => {
 
 /**
  * Update book metadata (e.g., reading progress)
+ * Uses a single transaction to avoid race conditions.
  * @param {string} fileName - The filename to update
  * @param {Object} updates - Fields to update
  */
 export const updateBookMeta = async (fileName, updates) => {
     try {
-        const book = await getBook(fileName);
-        if (!book) return false;
-
         const db = await openDB();
         const tx = db.transaction(STORE_NAME, 'readwrite');
         const store = tx.objectStore(STORE_NAME);
+
+        // Read and write in the same transaction to avoid race conditions
+        const book = await new Promise((resolve, reject) => {
+            const request = store.get(fileName);
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+
+        if (!book) {
+            db.close();
+            return false;
+        }
 
         const updatedBook = {
             ...book,
@@ -175,10 +185,11 @@ export const updateBookMeta = async (fileName, updates) => {
     }
 };
 
-// Internal: Remove oldest books if over limit
-const cleanupOldBooks = async (db) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
+/**
+ * Internal: Remove oldest books if over limit.
+ * Accepts an existing store to reuse the caller's transaction.
+ */
+const cleanupOldBooks = async (store) => {
     const index = store.index('lastOpened');
 
     const books = await new Promise((resolve, reject) => {

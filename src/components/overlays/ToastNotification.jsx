@@ -1,4 +1,3 @@
-import React from 'react';
 import { Zap } from 'lucide-react';
 
 export default function ToastNotification({ message, darkMode, onClose }) {

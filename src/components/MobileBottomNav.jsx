@@ -1,4 +1,3 @@
-import React from 'react';
 import {
     Play, Pause, ChevronLeft, ChevronRight,
     SkipForward, SkipBack
@@ -8,13 +7,16 @@ export default function MobileBottomNav({
     theme,
     effectiveIsMobile,
     pdfDoc,
-    currentPage, setCurrentPage,
+    currentPage,
     numPages,
-    currentSentenceIndex, setCurrentSentenceIndex,
+    currentSentenceIndex,
     textItems,
     isPlaying,
     handlePlayPause,
     skipToNextSentence,
+    skipToPrevSentence,
+    goToNextPage,
+    goToPrevPage,
 }) {
     if (!effectiveIsMobile || !pdfDoc) return null;
 
@@ -23,7 +25,7 @@ export default function MobileBottomNav({
             <div className="flex items-center justify-around gap-1">
                 {/* Previous Page */}
                 <button
-                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    onClick={goToPrevPage}
                     disabled={currentPage <= 1}
                     className={`p-3 rounded-xl transition-all ${currentPage <= 1 ? 'opacity-30' : theme.hover + ' ' + theme.textSecondary}`}
                 >
@@ -32,7 +34,7 @@ export default function MobileBottomNav({
 
                 {/* Previous Sentence */}
                 <button
-                    onClick={() => setCurrentSentenceIndex(prev => Math.max(-1, prev - 1))}
+                    onClick={skipToPrevSentence}
                     className={`p-3 rounded-xl ${theme.hover} ${theme.textSecondary}`}
                 >
                     <SkipBack size={22} />
@@ -59,7 +61,7 @@ export default function MobileBottomNav({
 
                 {/* Next Page */}
                 <button
-                    onClick={() => setCurrentPage(p => Math.min(numPages, p + 1))}
+                    onClick={goToNextPage}
                     disabled={currentPage >= numPages}
                     className={`p-3 rounded-xl transition-all ${currentPage >= numPages ? 'opacity-30' : theme.hover + ' ' + theme.textSecondary}`}
                 >

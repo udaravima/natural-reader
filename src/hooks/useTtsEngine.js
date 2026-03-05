@@ -21,8 +21,7 @@ export function useTtsEngine({
     unlimitedBatchTimeout,
     backendAvailable,
     pdfFileName,
-    setStatus,
-    setToastMessage,
+    setStatus, showToast,
 }) {
     const [isPlaying, setIsPlaying] = useState(false);
     const [isDownloading, setIsDownloading] = useState(false);
@@ -190,6 +189,8 @@ export function useTtsEngine({
                     setStatus("Reading...");
                     audioRef.current.src = url;
                     audioRef.current.onended = () => {
+                        URL.revokeObjectURL(url);
+                        audioCache.current.delete(nextIdx);
                         if (active) playLoop();
                     };
                     audioRef.current.play().catch(e => {
@@ -201,8 +202,7 @@ export function useTtsEngine({
                     if (retryCountRef.current >= 3) {
                         stopPlayback();
                         setStatus("Connection failed");
-                        setToastMessage("Server unreachable after 3 attempts. Check your connection and try again.");
-                        setTimeout(() => setToastMessage(null), 6000);
+                        showToast('Server unreachable after 3 attempts. Check your connection and try again.', 6000);
                         retryCountRef.current = 0;
                     } else {
                         setStatus(`Connection Error — Retry ${retryCountRef.current}/3...`);
@@ -237,8 +237,7 @@ export function useTtsEngine({
     const readSelection = async () => {
         const selection = window.getSelection().toString().trim();
         if (!selection) {
-            setToastMessage("Select some text first");
-            setTimeout(() => setToastMessage(null), 3000);
+            showToast('Select some text first', 3000);
             return;
         }
 

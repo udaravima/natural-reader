@@ -77,7 +77,8 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
     }, [currentPage]);
 
     // --- PDF RENDERING ---
-    const renderPage = async (pageNum, doc) => {
+    // Visual render: canvas + text selection layer (runs on page, scale, or doc change)
+    const renderPageVisual = async (pageNum, doc) => {
         if (!doc || !pdfjsLibRef.current) return;
         try {
             setStatus("Rendering page...");
@@ -120,9 +121,22 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
                 });
             }
 
+            setStatus(`Page ${pageNum} Ready`);
+        } catch (err) {
+            console.error(err);
+            setStatus("Render Error");
+        }
+    };
+
+    // Text extraction: only runs when the page or document changes (NOT on scale change)
+    // This prevents zoom from destroying the TTS audio cache and interrupting playback.
+    const extractPageText = async (pageNum, doc) => {
+        if (!doc || !pdfjsLibRef.current) return;
+        try {
+            const page = await doc.getPage(pageNum);
+            const textContent = await page.getTextContent();
             const rawText = textContent.items.map(item => item.str).join(' ');
 
-            // Clean up text and split into manageable sentences
             const sentences = rawText
                 .replace(/\s+/g, ' ')
                 .split(/(?<=[.!?])\s+/)
@@ -130,19 +144,21 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
             setTextItems(sentences);
             sentenceRefs.current = sentences.map(() => null);
-            setStatus(`Page ${pageNum} Ready`);
-            return true; // signal cache should be cleared
         } catch (err) {
-            console.error(err);
-            setStatus("Render Error");
-            return false;
+            console.error('Text extraction error:', err);
         }
     };
 
+    // Visual render on any of: doc, page, or scale change
     useEffect(() => {
-        if (pdfDoc) renderPage(currentPage, pdfDoc);
+        if (pdfDoc) renderPageVisual(currentPage, pdfDoc);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [pdfDoc, currentPage, scale]);
+
+    // Text extraction only on doc or page change (not scale)
+    useEffect(() => {
+        if (pdfDoc) extractPageText(currentPage, pdfDoc);
+    }, [pdfDoc, currentPage]);
 
     // --- FILE PROCESSING ---
     const processFile = (file) => {

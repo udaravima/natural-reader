@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { Loader2 } from 'lucide-react';
 
 // Hooks
@@ -44,6 +44,12 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [backendAvailable, setBackendAvailable] = useState(null);
   const [toastMessage, setToastMessage] = useState(null);
+
+  // Centralized toast helper — avoids scattered setTimeout patterns
+  const showToast = useCallback((message, duration = 4000) => {
+    setToastMessage(message);
+    setTimeout(() => setToastMessage(null), duration);
+  }, []);
   const [contextMenu, setContextMenu] = useState(null);
   const [sidebarTab, setSidebarTab] = useState('sentences');
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -72,7 +78,7 @@ export default function App() {
     selectedVoice, playbackSpeed, isLocalhost, volume,
     apiHost, apiPort, requestTimeout, unlimitedBatchTimeout,
     backendAvailable, pdfFileName,
-    setStatus, setToastMessage,
+    setStatus, showToast,
   });
 
   const {
@@ -90,6 +96,11 @@ export default function App() {
 
   // --- BACKEND HEALTH CHECK ---
   const getApiUrl = (endpoint) => `http://${apiHost}:${apiPort}${endpoint}`;
+
+  // Navigation helpers (used by PdfViewer, MobileBottomNav, keyboard shortcuts)
+  const goToNextPage = useCallback(() => setCurrentPage(p => Math.min(numPages, p + 1)), [numPages, setCurrentPage]);
+  const goToPrevPage = useCallback(() => setCurrentPage(p => Math.max(1, p - 1)), [setCurrentPage]);
+  const skipToPrevSentence = useCallback(() => setCurrentSentenceIndex(prev => Math.max(-1, prev - 1)), [setCurrentSentenceIndex]);
 
   const checkBackend = async () => {
     try {
@@ -111,8 +122,7 @@ export default function App() {
     } catch (e) {
       console.warn('Backend not available:', e.message);
       setBackendAvailable(false);
-      setToastMessage('Kokoro backend not detected. Using browser voice.');
-      setTimeout(() => setToastMessage(null), 5000);
+      showToast('Kokoro backend not detected. Using browser voice.', 5000);
       return false;
     }
   };
@@ -193,7 +203,7 @@ export default function App() {
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <DragOverlay isDragging={isDragging} />
+      <DragOverlay isDragging={isDragging} theme={theme} />
 
       {/* Reading Progress Bar */}
       {pdfDoc && (
@@ -212,7 +222,7 @@ export default function App() {
         theme={theme}
         textItems={textItems}
         onContinueFromHere={continueFromHere}
-        onCopySentence={() => { setToastMessage("Copied to clipboard"); setTimeout(() => setToastMessage(null), 2000); }}
+        onCopySentence={() => showToast('Copied to clipboard', 2000)}
         onClose={() => setContextMenu(null)}
       />
 
@@ -240,7 +250,7 @@ export default function App() {
         handlePlayPause={handlePlayPause}
         stopPlayback={stopPlayback}
         skipToNextSentence={skipToNextSentence}
-        setCurrentSentenceIndex={setCurrentSentenceIndex}
+        skipToPrevSentence={skipToPrevSentence}
         setDarkMode={setDarkMode}
         downloadPageAudio={downloadPageAudio}
         handleFileUpload={handleFileUpload}
@@ -301,6 +311,7 @@ export default function App() {
           effectiveIsMobile={effectiveIsMobile}
           pdfDoc={pdfDoc}
           currentPage={currentPage} setCurrentPage={setCurrentPage}
+          goToNextPage={goToNextPage} goToPrevPage={goToPrevPage}
           numPages={numPages}
           scale={scale} setScale={setScale}
           canvasRef={canvasRef}
@@ -319,11 +330,14 @@ export default function App() {
         pdfDoc={pdfDoc}
         currentPage={currentPage} setCurrentPage={setCurrentPage}
         numPages={numPages}
-        currentSentenceIndex={currentSentenceIndex} setCurrentSentenceIndex={setCurrentSentenceIndex}
+        currentSentenceIndex={currentSentenceIndex}
         textItems={textItems}
         isPlaying={isPlaying}
         handlePlayPause={handlePlayPause}
         skipToNextSentence={skipToNextSentence}
+        skipToPrevSentence={skipToPrevSentence}
+        goToNextPage={goToNextPage}
+        goToPrevPage={goToPrevPage}
       />
     </div>
   );

@@ -1,4 +1,3 @@
-import React from 'react';
 import { MousePointer2, Loader2, Square } from 'lucide-react';
 
 export default function ReadSelectionButton({

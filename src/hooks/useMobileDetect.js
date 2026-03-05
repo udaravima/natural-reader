@@ -4,9 +4,9 @@ import { useState, useEffect, useRef } from 'react';
  * Detects mobile viewport and manages sidebar open/close based on breakpoint transitions.
  */
 export function useMobileDetect(mobileBreakpoint, layoutMode) {
-    const [isMobile, setIsMobile] = useState(false);
-    const [sidebarOpen, setSidebarOpen] = useState(true);
-    const wasMobileRef = useRef(false);
+    const [isMobile, setIsMobile] = useState(() => window.innerWidth < mobileBreakpoint);
+    const [sidebarOpen, setSidebarOpen] = useState(() => !(window.innerWidth < mobileBreakpoint));
+    const wasMobileRef = useRef(window.innerWidth < mobileBreakpoint);
 
     // Computed: Effective mobile state based on layoutMode
     const effectiveIsMobile = layoutMode === 'auto' ? isMobile : layoutMode === 'mobile';
@@ -28,12 +28,6 @@ export function useMobileDetect(mobileBreakpoint, layoutMode) {
             wasMobileRef.current = mobile;
             setIsMobile(mobile);
         };
-
-        // Initial check
-        const initialMobile = window.innerWidth < mobileBreakpoint;
-        wasMobileRef.current = initialMobile;
-        setIsMobile(initialMobile);
-        setSidebarOpen(!initialMobile); // Start closed on mobile, open on desktop
 
         window.addEventListener('resize', checkMobile);
         return () => window.removeEventListener('resize', checkMobile);

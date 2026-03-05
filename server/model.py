@@ -52,8 +52,7 @@ def get_execution_providers():
                 "precision": "FP16",
                 "cache_dir": ".openvino_cache"
             })
-            # Only add NPU if GPU wasn't already added with same provider name
-            # (we'll test both and use what works)
+            providers.append(npu_provider)
             print("✓ Intel NPU (OpenVINO) available as fallback")
         except Exception as e:
             print(f"Note: OpenVINO NPU not available: {e}")
@@ -66,6 +65,7 @@ def get_execution_providers():
                 "num_of_threads": 0,  # Auto-detect
                 "cache_dir": ".openvino_cache"
             })
+            providers.append(cpu_openvino)
             print("✓ OpenVINO CPU acceleration available as fallback")
         except Exception as e:
             print(f"Note: OpenVINO CPU configuration failed: {e}")

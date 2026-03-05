@@ -1,4 +1,3 @@
-import React from 'react';
 import {
     Play, Pause, Square, Upload, Volume2, SkipForward, SkipBack,
     Zap, Loader2, Moon, Sun, Download, Keyboard, Clock,
@@ -22,7 +21,7 @@ export default function Header({
     handlePlayPause,
     stopPlayback,
     skipToNextSentence,
-    setCurrentSentenceIndex,
+    skipToPrevSentence,
     setDarkMode,
     downloadPageAudio,
     handleFileUpload,
@@ -52,7 +51,7 @@ export default function Header({
             {/* PLAYBACK CONTROLS */}
             <div className={`${showHeaderControlsOnMobile ? 'flex' : 'hidden md:flex'} items-center gap-2 ${theme.bgTertiary} p-1 rounded-xl border ${theme.border} shadow-inner`}>
                 <button
-                    onClick={() => setCurrentSentenceIndex(prev => Math.max(-1, prev - 1))}
+                    onClick={skipToPrevSentence}
                     className={`p-2 ${theme.hover} rounded-lg transition-colors ${theme.textSecondary}`}
                     title="Previous (Shift+←)"
                 >

@@ -1,4 +1,3 @@
-import React from 'react';
 import {
     ChevronDown, ChevronUp, Settings, PlayCircle, Square,
     Clock, List, BookOpen, VolumeX, Volume1, Volume2
@@ -9,7 +8,7 @@ export default function Sidebar({
     theme,
     darkMode,
     effectiveIsMobile,
-    sidebarOpen, setSidebarOpen,
+    sidebarOpen,
     settingsOpen, setSettingsOpen,
     sidebarTab, setSidebarTab,
     // Settings
@@ -45,6 +44,7 @@ export default function Sidebar({
     handleChapterNavigation,
 }) {
     const VolumeIcon = volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
+    const currentVoice = KOKORO_VOICES.find(v => v.id === selectedVoice);
 
     return (
         <aside className={`
@@ -94,14 +94,11 @@ export default function Sidebar({
                                     </button>
                                 </div>
                                 {/* Voice Sample Text */}
-                                {(() => {
-                                    const currentVoice = KOKORO_VOICES.find(v => v.id === selectedVoice);
-                                    return currentVoice?.sampleText && (
-                                        <p className={`text-[10px] leading-relaxed ${theme.textMuted} italic px-1 py-2 rounded-lg ${theme.bgTertiary} border ${theme.border}`}>
-                                            "{currentVoice.sampleText}"
-                                        </p>
-                                    );
-                                })()}
+                                {currentVoice?.sampleText && (
+                                    <p className={`text-[10px] leading-relaxed ${theme.textMuted} italic px-1 py-2 rounded-lg ${theme.bgTertiary} border ${theme.border}`}>
+                                        "{currentVoice.sampleText}"
+                                    </p>
+                                )}
                             </div>
 
                             {/* Speed Selection */}

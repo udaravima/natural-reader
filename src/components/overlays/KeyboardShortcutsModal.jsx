@@ -1,5 +1,3 @@
-import React from 'react';
-
 export default function KeyboardShortcutsModal({ show, theme, onClose }) {
     if (!show) return null;
 

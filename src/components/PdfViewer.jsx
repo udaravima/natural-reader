@@ -1,4 +1,3 @@
-import React from 'react';
 import {
     ChevronLeft, ChevronRight, ZoomIn, ZoomOut,
     RotateCcw, Maximize, Minimize
@@ -10,7 +9,7 @@ export default function PdfViewer({
     darkMode,
     effectiveIsMobile,
     pdfDoc,
-    currentPage, setCurrentPage,
+    currentPage, setCurrentPage, goToNextPage, goToPrevPage,
     numPages,
     scale, setScale,
     canvasRef,
@@ -30,7 +29,7 @@ export default function PdfViewer({
                     {/* LEFT: Page Navigation */}
                     <div className="flex items-center gap-2">
                         <button
-                            onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                            onClick={goToPrevPage}
                             disabled={currentPage <= 1}
                             className={`p-2 rounded-lg transition-all ${theme.hover} ${currentPage <= 1 ? 'opacity-30 cursor-not-allowed' : theme.textSecondary + ' hover:text-blue-500'}`}
                             title="Previous Page"
@@ -52,7 +51,7 @@ export default function PdfViewer({
                             <span className={`text-sm ${theme.textMuted}`}>/ {numPages}</span>
                         </div>
                         <button
-                            onClick={() => setCurrentPage(p => Math.min(numPages, p + 1))}
+                            onClick={goToNextPage}
                             disabled={currentPage >= numPages}
                             className={`p-2 rounded-lg transition-all ${theme.hover} ${currentPage >= numPages ? 'opacity-30 cursor-not-allowed' : theme.textSecondary + ' hover:text-blue-500'}`}
                             title="Next Page"

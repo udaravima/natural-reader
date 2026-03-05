@@ -1,4 +1,3 @@
-import React from 'react';
 import { Upload, BookOpen, Trash2, Library } from 'lucide-react';
 
 export default function WelcomeScreen({

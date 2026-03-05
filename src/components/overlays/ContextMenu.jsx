@@ -1,4 +1,3 @@
-import React from 'react';
 import { PlayCircle, MousePointer2 } from 'lucide-react';
 
 export default function ContextMenu({ contextMenu, theme, textItems, onContinueFromHere, onCopySentence, onClose }) {

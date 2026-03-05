@@ -6,11 +6,11 @@ from pydantic import BaseModel
 
 class TTSRequest(BaseModel):
     text: str
-    voice: str = "bf_alice"  # Default voice
+    voice: str = "af_heart"  # Default voice (synced with frontend)
     speed: float = 1.0
 
 
 class BatchTTSRequest(BaseModel):
     sentences: list[str]
-    voice: str = "bf_alice"
+    voice: str = "af_heart"
     speed: float = 1.0
