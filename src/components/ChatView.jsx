@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Send, Square, Bot, User, Loader2, MessageSquare, Brain, ChevronDown, ChevronRight, Volume2, StopCircle, Copy } from 'lucide-react';
+import {
+    Send, Square, Bot, User, Loader2, MessageSquare, Brain, ChevronDown, ChevronRight,
+    Volume2, StopCircle, Copy, Paperclip, Mic, ImagePlus,
+} from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import AttachmentPreview from './AttachmentPreview';
+import VoiceRecorder from './VoiceRecorder';
+import { fileToAttachment, ATTACHMENT_ACCEPT, kindFromMime } from '../utils/attachment';
 
 export default function ChatView({
     theme,
@@ -29,8 +35,13 @@ export default function ChatView({
         }
     };
     const [draft, setDraft] = useState('');
+    const [pendingAttachments, setPendingAttachments] = useState([]);
+    const [showRecorder, setShowRecorder] = useState(false);
+    const [isDragging, setIsDragging] = useState(false);
+    const dragCounterRef = useRef(0); // robust drag-leave detection across child elements
     const listRef = useRef(null);
     const textareaRef = useRef(null);
+    const fileInputRef = useRef(null);
 
     // Auto-scroll to bottom on new message / streaming token.
     useEffect(() => {
@@ -47,12 +58,77 @@ export default function ChatView({
         ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
     }, [draft]);
 
-    const canSend = draft.trim().length > 0 && !isStreaming && !!selectedModel && reachable !== false;
+    // ------ Attachment helpers ------
+    const ingestFiles = async (fileList) => {
+        const files = Array.from(fileList || []).filter(f => f && kindFromMime(f.type));
+        if (files.length === 0) return;
+        const results = await Promise.all(files.map(f => fileToAttachment(f)));
+        const accepted = [];
+        for (const r of results) {
+            if (r.ok) accepted.push(r.attachment);
+            else showToast?.(r.error, 4000);
+        }
+        if (accepted.length) {
+            setPendingAttachments(prev => [...prev, ...accepted]);
+        }
+    };
+
+    const removePending = (id) => {
+        setPendingAttachments(prev => prev.filter(a => a.id !== id));
+    };
+
+    const handleFileChange = (e) => {
+        ingestFiles(e.target.files);
+        // Reset so picking the same file twice still triggers onChange
+        e.target.value = '';
+    };
+
+    const handlePaste = (e) => {
+        const items = e.clipboardData?.items;
+        if (!items || items.length === 0) return;
+        const filesFromClipboard = [];
+        for (const it of items) {
+            if (it.kind === 'file' && it.type.startsWith('image/')) {
+                const f = it.getAsFile();
+                if (f) filesFromClipboard.push(f);
+            }
+        }
+        if (filesFromClipboard.length > 0) {
+            e.preventDefault(); // we handled it; don't also paste a binary blob into the textarea
+            ingestFiles(filesFromClipboard);
+        }
+    };
+
+    // ------ Scoped drag & drop ------
+    const handleDragEnter = (e) => {
+        e.preventDefault(); e.stopPropagation();
+        if (!e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+        dragCounterRef.current += 1;
+        setIsDragging(true);
+    };
+    const handleDragOver = (e) => {
+        e.preventDefault(); e.stopPropagation();
+    };
+    const handleDragLeave = (e) => {
+        e.preventDefault(); e.stopPropagation();
+        dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+        if (dragCounterRef.current === 0) setIsDragging(false);
+    };
+    const handleDrop = (e) => {
+        e.preventDefault(); e.stopPropagation();
+        dragCounterRef.current = 0;
+        setIsDragging(false);
+        if (e.dataTransfer?.files?.length) ingestFiles(e.dataTransfer.files);
+    };
+
+    const canSend = (draft.trim().length > 0 || pendingAttachments.length > 0)
+        && !isStreaming && !!selectedModel && reachable !== false;
 
     const handleSend = () => {
         if (!canSend) return;
-        sendMessage(draft);
+        sendMessage(draft, pendingAttachments);
         setDraft('');
+        setPendingAttachments([]);
     };
 
     const handleKeyDown = (e) => {
@@ -63,7 +139,23 @@ export default function ChatView({
     };
 
     return (
-        <section className={`flex-1 flex flex-col overflow-hidden ${theme.viewportBg} transition-colors duration-300`}>
+        <section
+            className={`flex-1 flex flex-col overflow-hidden ${theme.viewportBg} transition-colors duration-300 relative`}
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+        >
+            {/* Drop overlay — shown while dragging files over the chat view */}
+            {isDragging && (
+                <div className={`absolute inset-0 z-20 pointer-events-none flex items-center justify-center backdrop-blur-sm ${darkMode ? 'bg-blue-900/30' : 'bg-blue-100/60'}`}>
+                    <div className={`px-6 py-4 rounded-2xl border-2 border-dashed ${theme.border} ${theme.bgSecondary} flex items-center gap-3 shadow-xl`}>
+                        <ImagePlus size={20} className="text-blue-500" />
+                        <span className={`text-sm font-bold ${theme.text}`}>Drop image or audio to attach</span>
+                    </div>
+                </div>
+            )}
+
             {/* MESSAGE LIST */}
             <div
                 ref={listRef}
@@ -101,43 +193,105 @@ export default function ChatView({
 
             {/* INPUT BAR */}
             <div className={`border-t ${theme.border} ${theme.bgSecondary} px-4 py-3 ${effectiveIsMobile ? 'pb-20' : ''}`}>
-                <div className="max-w-3xl mx-auto flex items-end gap-2">
-                    <textarea
-                        ref={textareaRef}
-                        value={draft}
-                        onChange={(e) => setDraft(e.target.value)}
-                        onKeyDown={handleKeyDown}
-                        placeholder={
-                            reachable === false
-                                ? 'Ollama unreachable — check host/port in sidebar.'
-                                : !selectedModel
-                                    ? 'Pick a model in the sidebar to start.'
-                                    : 'Ask the model anything…  (Enter to send, Shift+Enter for newline)'
-                        }
-                        rows={1}
-                        className={`flex-1 resize-none p-3 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.text} text-sm leading-relaxed outline-none focus:ring-2 focus:ring-blue-500 transition-colors`}
-                        style={{ maxHeight: '200px' }}
-                    />
-                    {isStreaming ? (
-                        <button
-                            onClick={stopStream}
-                            className="p-3 rounded-xl bg-red-500 hover:bg-red-600 text-white shadow-md transition-colors"
-                            title="Stop generation"
-                        >
-                            <Square size={18} fill="currentColor" />
-                        </button>
-                    ) : (
-                        <button
-                            onClick={handleSend}
-                            disabled={!canSend}
-                            className={`p-3 rounded-xl shadow-md transition-all ${canSend
-                                ? 'bg-blue-600 hover:bg-blue-700 text-white'
-                                : `${theme.bgTertiary} ${theme.textMuted} opacity-50 cursor-not-allowed`}`}
-                            title="Send (Enter)"
-                        >
-                            <Send size={18} />
-                        </button>
+                <div className="max-w-3xl mx-auto flex flex-col gap-2">
+                    {/* Voice recorder panel (modal-like, only when toggled) */}
+                    {showRecorder && (
+                        <VoiceRecorder
+                            theme={theme}
+                            darkMode={darkMode}
+                            showToast={showToast}
+                            onAttach={(att) => {
+                                setPendingAttachments(prev => [...prev, att]);
+                                setShowRecorder(false);
+                            }}
+                            onCancel={() => setShowRecorder(false)}
+                        />
                     )}
+
+                    {/* Pending attachments preview row */}
+                    {pendingAttachments.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                            {pendingAttachments.map(att => (
+                                <AttachmentPreview
+                                    key={att.id}
+                                    attachment={att}
+                                    theme={theme}
+                                    darkMode={darkMode}
+                                    onRemove={() => removePending(att.id)}
+                                />
+                            ))}
+                        </div>
+                    )}
+
+                    <div className="flex items-end gap-2">
+                        {/* Paperclip — opens file picker */}
+                        <button
+                            onClick={() => fileInputRef.current?.click()}
+                            disabled={isStreaming}
+                            className={`p-3 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.textSecondary} hover:text-blue-500 transition-colors disabled:opacity-50`}
+                            title="Attach image or audio file"
+                        >
+                            <Paperclip size={18} />
+                        </button>
+                        <input
+                            type="file"
+                            ref={fileInputRef}
+                            onChange={handleFileChange}
+                            accept={ATTACHMENT_ACCEPT}
+                            multiple
+                            className="hidden"
+                        />
+
+                        {/* Mic — toggles voice recorder */}
+                        <button
+                            onClick={() => setShowRecorder(s => !s)}
+                            disabled={isStreaming}
+                            className={`p-3 rounded-xl border ${theme.border} transition-colors disabled:opacity-50 ${showRecorder
+                                ? 'bg-red-500 text-white border-red-500'
+                                : `${theme.bgTertiary} ${theme.textSecondary} hover:text-red-500`}`}
+                            title={showRecorder ? 'Close recorder' : 'Record voice clip'}
+                        >
+                            <Mic size={18} />
+                        </button>
+
+                        <textarea
+                            ref={textareaRef}
+                            value={draft}
+                            onChange={(e) => setDraft(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            onPaste={handlePaste}
+                            placeholder={
+                                reachable === false
+                                    ? 'Ollama unreachable — check host/port in sidebar.'
+                                    : !selectedModel
+                                        ? 'Pick a model in the sidebar to start.'
+                                        : 'Ask the model, drop / paste / attach an image or audio…  (Enter to send)'
+                            }
+                            rows={1}
+                            className={`flex-1 resize-none p-3 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.text} text-sm leading-relaxed outline-none focus:ring-2 focus:ring-blue-500 transition-colors`}
+                            style={{ maxHeight: '200px' }}
+                        />
+                        {isStreaming ? (
+                            <button
+                                onClick={stopStream}
+                                className="p-3 rounded-xl bg-red-500 hover:bg-red-600 text-white shadow-md transition-colors"
+                                title="Stop generation"
+                            >
+                                <Square size={18} fill="currentColor" />
+                            </button>
+                        ) : (
+                            <button
+                                onClick={handleSend}
+                                disabled={!canSend}
+                                className={`p-3 rounded-xl shadow-md transition-all ${canSend
+                                    ? 'bg-blue-600 hover:bg-blue-700 text-white'
+                                    : `${theme.bgTertiary} ${theme.textMuted} opacity-50 cursor-not-allowed`}`}
+                                title="Send (Enter)"
+                            >
+                                <Send size={18} />
+                            </button>
+                        )}
+                    </div>
                 </div>
             </div>
         </section>
@@ -149,6 +303,8 @@ function MessageBubble({ message, theme, darkMode, isStreamingNow, isSpeaking, o
     const Icon = isUser ? User : Bot;
     const hasContent = !!message.content;
     const hasThinking = !isUser && !!message.thinking;
+    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    const hasAttachments = attachments.length > 0;
     return (
         <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white shrink-0 ${
@@ -167,15 +323,31 @@ function MessageBubble({ message, theme, darkMode, isStreamingNow, isSpeaking, o
                         isStreamingNow={isStreamingNow}
                     />
                 )}
-                {(hasContent || isUser) && (
+                {hasAttachments && (
+                    <div className={`flex flex-wrap gap-2 ${isUser ? 'justify-end' : ''}`}>
+                        {attachments.map(att => (
+                            <AttachmentPreview
+                                key={att.id}
+                                attachment={att}
+                                theme={theme}
+                                darkMode={darkMode}
+                            />
+                        ))}
+                    </div>
+                )}
+                {(hasContent || (isUser && !hasAttachments)) && (
                     <div className={`px-4 py-3 rounded-2xl ${isUser
                         ? darkMode ? 'bg-blue-600/30 text-white rounded-tr-sm' : 'bg-blue-100 text-slate-900 rounded-tr-sm'
                         : `${theme.bgSecondary} border ${theme.border} ${theme.text} rounded-tl-sm`
                     }`}>
                         {isUser ? (
-                            <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
-                                {message.content}
-                            </p>
+                            hasContent ? (
+                                <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
+                                    {message.content}
+                                </p>
+                            ) : (
+                                <p className={`text-sm ${theme.textMuted} italic`}>(attachment only)</p>
+                            )
                         ) : hasContent ? (
                             <AssistantMarkdown content={message.content} darkMode={darkMode} />
                         ) : (

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { markdownToSpeech } from '../utils/markdownToSpeech';
+import { stripAttachmentData, formatAttachmentSize } from '../utils/attachment';
 import {
     saveSession as dbSaveSession,
     getSession as dbGetSession,
@@ -194,12 +195,18 @@ export function useChatEngine({
     const saveActiveSession = useCallback(async (overrides = {}) => {
         const id = activeSessionIdRef.current;
         if (!id) return;
+        // Strip attachment binary payloads (dataUrl + base64) before persisting —
+        // sessions stay cheap; reopening shows placeholder chips with metadata only.
+        const persistableMessages = messagesRef.current.map(m => {
+            if (!Array.isArray(m.attachments) || m.attachments.length === 0) return m;
+            return { ...m, attachments: m.attachments.map(stripAttachmentData) };
+        });
         const record = {
             id,
             title: overrides.title ?? sessions.find(s => s.id === id)?.title ?? 'New chat',
             model: overrides.model ?? selectedModel ?? '',
             createdAt: createdAtRef.current || Date.now(),
-            messages: messagesRef.current,
+            messages: persistableMessages,
             events: eventsRef.current,
         };
         await dbSaveSession(record);
@@ -375,16 +382,24 @@ export function useChatEngine({
         newSession();
     }, [newSession]);
 
-    const sendMessage = useCallback(async (userText) => {
-        const trimmed = userText?.trim();
-        if (!trimmed || isStreaming) return;
+    const sendMessage = useCallback(async (userText, attachments = []) => {
+        const trimmed = (userText || '').trim();
+        const cleanAttachments = (attachments || []).filter(a => a && a.kind);
+        if (!trimmed && cleanAttachments.length === 0) return;
+        if (isStreaming) return;
 
         if (!selectedModel) {
             showToast?.('Pick a model first.', 4000);
             return;
         }
 
-        const userMsg = { role: 'user', content: trimmed, id: `u-${Date.now()}`, timestamp: Date.now() };
+        const userMsg = {
+            role: 'user',
+            content: trimmed,
+            attachments: cleanAttachments,
+            id: `u-${Date.now()}`,
+            timestamp: Date.now(),
+        };
         const assistantId = `a-${Date.now()}`;
         const assistantMsg = { role: 'assistant', content: '', thinking: '', id: assistantId, timestamp: Date.now() };
 
@@ -406,7 +421,16 @@ export function useChatEngine({
         setMessages(prev => [...prev, userMsg, assistantMsg]);
         sentenceBufferRef.current = '';
         setIsStreaming(true);
-        logEvent('sent', `prompt: ${titleFromPrompt(trimmed)}`);
+        logEvent('sent', `prompt: ${titleFromPrompt(trimmed || '(attachment only)')}`);
+        if (cleanAttachments.length > 0) {
+            const imgCount = cleanAttachments.filter(a => a.kind === 'image').length;
+            const audCount = cleanAttachments.filter(a => a.kind === 'audio').length;
+            const totalBytes = cleanAttachments.reduce((sum, a) => sum + (a.size || 0), 0);
+            const parts = [];
+            if (imgCount) parts.push(`${imgCount} image${imgCount > 1 ? 's' : ''}`);
+            if (audCount) parts.push(`${audCount} audio`);
+            logEvent('attached', `${parts.join(', ')} (${formatAttachmentSize(totalBytes)} total)`);
+        }
         // Track this as the message currently being read aloud so the per-message
         // Stop button can target it. If auto-TTS is off, leave it null until the
         // user manually triggers speakMessage().
@@ -416,9 +440,20 @@ export function useChatEngine({
         abortRef.current = controller;
 
         try {
-            const history = [...messagesRef.current, userMsg].map(m => ({
-                role: m.role, content: m.content,
-            }));
+            // Build the messages history for the Ollama POST. Include images/audio
+            // arrays from each historical user message that still has attachment
+            // data in memory. (Attachments stripped on session save will simply have
+            // no base64 to forward, which is fine — the model just sees the text.)
+            const buildApiMessage = (m) => {
+                const out = { role: m.role, content: m.content };
+                const atts = Array.isArray(m.attachments) ? m.attachments : [];
+                const imgB64 = atts.filter(a => a.kind === 'image' && a.base64).map(a => a.base64);
+                const audB64 = atts.filter(a => a.kind === 'audio' && a.base64).map(a => a.base64);
+                if (imgB64.length) out.images = imgB64;
+                if (audB64.length) out.audio = audB64;
+                return out;
+            };
+            const history = [...messagesRef.current, userMsg].map(buildApiMessage);
             const res = await fetch(ollamaUrl('/api/chat'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

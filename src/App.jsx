@@ -212,9 +212,19 @@ export default function App() {
   }, [contextMenu]);
 
   // --- EVENT HANDLERS ---
-  const handleDragOver = (e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(true); };
-  const handleDragLeave = (e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(false); };
+  // In chat mode, ChatView owns drag/drop for image/audio attachments. We bail
+  // out at the window level so the reader's DragOverlay never appears and the
+  // file isn't routed through processFile() (which expects PDF/TXT).
+  const handleDragOver = (e) => {
+    if (inChat) return;
+    e.preventDefault(); e.stopPropagation(); setIsDragging(true);
+  };
+  const handleDragLeave = (e) => {
+    if (inChat) return;
+    e.preventDefault(); e.stopPropagation(); setIsDragging(false);
+  };
   const handleDrop = (e) => {
+    if (inChat) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
     const files = e.dataTransfer.files;
     if (files.length === 0) return;
