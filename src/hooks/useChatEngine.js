@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { markdownToSpeech } from '../utils/markdownToSpeech';
 
 const SENTENCE_TERMINATOR = /(?<=[.!?])\s+/;
 const MIN_TTS_LENGTH = 5;
@@ -18,6 +19,7 @@ export function useChatEngine({
     selectedModel,
     chatTtsMode,        // 'streaming' | 'after-complete'
     chatAutoTts,        // bool — disables TTS entirely
+    enableThinking,     // bool — sends `think: true` to Ollama and surfaces message.thinking
     playSentence,       // (text) => Promise<void>  — from useTtsEngine
     stopChatPlayback,   // () => void
     showToast,
@@ -37,9 +39,10 @@ export function useChatEngine({
 
     const enqueueTts = useCallback((text) => {
         if (!chatAutoTts) return;
-        const trimmed = text.trim();
-        if (trimmed.length < MIN_TTS_LENGTH) return;
-        ttsQueueRef.current = ttsQueueRef.current.then(() => playSentence(trimmed));
+        // Strip markdown markup so the TTS doesn't vocalize "star star bold".
+        const spoken = markdownToSpeech(text).trim();
+        if (spoken.length < MIN_TTS_LENGTH) return;
+        ttsQueueRef.current = ttsQueueRef.current.then(() => playSentence(spoken));
     }, [chatAutoTts, playSentence]);
 
     // Flush any complete sentences from the rolling buffer; keep the trailing
@@ -87,14 +90,13 @@ export function useChatEngine({
             abortRef.current.abort();
             abortRef.current = null;
         }
-        // Drain any remaining buffered text so a partial sentence still gets read
-        const tail = sentenceBufferRef.current.trim();
-        if (tail) {
-            enqueueTts(tail);
-            sentenceBufferRef.current = '';
-        }
+        // Hard stop: silence current audio, drop any queued sentences, reset the chain.
+        // The user wants silence, not a partial sentence finishing.
+        stopChatPlayback();
+        ttsQueueRef.current = Promise.resolve();
+        sentenceBufferRef.current = '';
         setIsStreaming(false);
-    }, [enqueueTts]);
+    }, [stopChatPlayback]);
 
     const clearHistory = useCallback(() => {
         stopStream();
@@ -115,10 +117,11 @@ export function useChatEngine({
 
         const userMsg = { role: 'user', content: trimmed, id: `u-${Date.now()}`, timestamp: Date.now() };
         const assistantId = `a-${Date.now()}`;
-        const assistantMsg = { role: 'assistant', content: '', id: assistantId, timestamp: Date.now() };
+        const assistantMsg = { role: 'assistant', content: '', thinking: '', id: assistantId, timestamp: Date.now() };
 
-        // Lock TTS mode for THIS message — switching mid-stream applies to the next one.
+        // Lock TTS mode + thinking flag for THIS message — toggling mid-stream applies to next message.
         const modeForThisMsg = chatTtsMode;
+        const thinkForThisMsg = !!enableThinking;
 
         setMessages(prev => [...prev, userMsg, assistantMsg]);
         sentenceBufferRef.current = '';
@@ -134,7 +137,12 @@ export function useChatEngine({
             const res = await fetch(ollamaUrl('/api/chat'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model: selectedModel, messages: history, stream: true }),
+                body: JSON.stringify({
+                    model: selectedModel,
+                    messages: history,
+                    stream: true,
+                    think: thinkForThisMsg,
+                }),
                 signal: controller.signal,
             });
             if (!res.ok || !res.body) throw new Error(`Ollama error: HTTP ${res.status}`);
@@ -160,6 +168,13 @@ export function useChatEngine({
                         continue;
                     }
                     const token = payload?.message?.content || '';
+                    const thinkingTok = payload?.message?.thinking || '';
+                    if (thinkingTok) {
+                        // Reasoning trace — surfaces in the disclosure but never feeds TTS.
+                        setMessages(prev => prev.map(m =>
+                            m.id === assistantId ? { ...m, thinking: (m.thinking || '') + thinkingTok } : m
+                        ));
+                    }
                     if (token) {
                         setMessages(prev => prev.map(m =>
                             m.id === assistantId ? { ...m, content: m.content + token } : m
@@ -203,7 +218,7 @@ export function useChatEngine({
             setIsStreaming(false);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, ollamaHost, ollamaPort, flushBufferedSentences, enqueueTts]);
+    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, enableThinking, ollamaHost, ollamaPort, flushBufferedSentences, enqueueTts]);
 
     return {
         messages,

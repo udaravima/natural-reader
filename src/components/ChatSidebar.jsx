@@ -1,4 +1,4 @@
-import { Trash2, RefreshCw, Volume2, VolumeX, MessageSquare, Bot } from 'lucide-react';
+import { Trash2, RefreshCw, Volume2, VolumeX, MessageSquare, Bot, Brain } from 'lucide-react';
 
 export default function ChatSidebar({
     theme,
@@ -14,6 +14,8 @@ export default function ChatSidebar({
     // TTS preferences
     chatTtsMode, setChatTtsMode,
     chatAutoTts, setChatAutoTts,
+    // Model options
+    enableThinking, setEnableThinking,
     // Chat state
     messages,
     clearHistory,
@@ -131,6 +133,26 @@ export default function ChatSidebar({
                                 <VolumeX size={14} className={theme.textMuted} />
                             )}
                         </button>
+                    </div>
+
+                    {/* Model options */}
+                    <div className="space-y-2">
+                        <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>MODEL OPTIONS</span>
+                        <button
+                            onClick={() => setEnableThinking(!enableThinking)}
+                            className={`w-full flex items-center justify-between p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.hover} text-xs font-bold transition-colors`}
+                        >
+                            <span className={`flex items-center gap-2 ${theme.textSecondary}`}>
+                                <Brain size={14} className={enableThinking ? 'text-blue-500' : theme.textMuted} />
+                                Enable thinking
+                            </span>
+                            <span className={`text-[10px] font-bold ${enableThinking ? 'text-blue-500' : theme.textMuted}`}>
+                                {enableThinking ? 'ON' : 'OFF'}
+                            </span>
+                        </button>
+                        <p className={`text-[9px] ${theme.textMuted} px-1`}>
+                            Asks the model to expose its reasoning. Has no effect on models that don't support it.
+                        </p>
                     </div>
                 </div>
 

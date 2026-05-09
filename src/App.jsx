@@ -50,6 +50,7 @@ export default function App() {
   const [selectedModel, setSelectedModel] = usePersistedState('selectedModel', '');
   const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', 'streaming');
   const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', true);
+  const [enableThinking, setEnableThinking] = usePersistedState('enableThinking', false);
 
   // --- TRANSIENT UI STATE ---
   const [status, setStatus] = useState('Initializing PDF Engine...');
@@ -107,7 +108,7 @@ export default function App() {
 
   const chatEngine = useChatEngine({
     ollamaHost, ollamaPort, selectedModel,
-    chatTtsMode, chatAutoTts,
+    chatTtsMode, chatAutoTts, enableThinking,
     playSentence, stopChatPlayback,
     showToast,
   });
@@ -343,6 +344,7 @@ export default function App() {
             refreshModels={refreshModels}
             chatTtsMode={chatTtsMode} setChatTtsMode={setChatTtsMode}
             chatAutoTts={chatAutoTts} setChatAutoTts={setChatAutoTts}
+            enableThinking={enableThinking} setEnableThinking={setEnableThinking}
             messages={chatMessages}
             clearHistory={chatClearHistory}
           />
