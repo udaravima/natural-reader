@@ -35,7 +35,6 @@ export default function ChatSidebar({
 }) {
     const [renamingId, setRenamingId] = useState(null);
     const [draftTitle, setDraftTitle] = useState('');
-    const [logOpen, setLogOpen] = useState(false);
     const activeMeta = sessions.find(s => s.id === activeSessionId);
     const userMessageCount = messages.filter(m => m.role === 'user').length;
     return (
@@ -46,15 +45,24 @@ export default function ChatSidebar({
             ${theme.bgSecondary} border-r ${theme.border} flex flex-col shadow-xl transition-all duration-300 ease-in-out
             ${effectiveIsMobile && sidebarOpen ? 'pt-16' : ''}
         `}>
-            <div className={`${effectiveIsMobile ? '' : 'w-80'} flex flex-col h-full`}>
-                {/* HEADER */}
-                <div className={`px-4 py-3 border-b ${theme.borderSecondary} flex items-center gap-2`}>
+            <div className={`${effectiveIsMobile ? '' : 'w-80'} flex flex-col h-full overflow-hidden`}>
+                {/* HEADER (sticky at top) */}
+                <div className={`px-4 py-3 border-b ${theme.borderSecondary} flex items-center gap-2 shrink-0`}>
                     <MessageSquare size={14} className={theme.textMuted} />
                     <h3 className={`text-[10px] font-black ${theme.textMuted} uppercase tracking-widest`}>Chat</h3>
                 </div>
 
-                {/* SETTINGS */}
-                <div className={`px-4 py-4 space-y-4 border-b ${theme.borderSecondary} overflow-y-auto`}>
+                {/* All sections live inside one outer scroll container so they stack
+                    naturally and the user can scroll the whole sidebar when many are open. */}
+                <div className="flex-1 overflow-y-auto custom-scrollbar">
+
+                {/* SETTINGS — collapsed by default once a model is configured */}
+                <Section
+                    theme={theme}
+                    title="Settings"
+                    defaultOpen={!selectedModel}
+                    bodyClassName="px-4 py-4 space-y-4 max-h-[60vh] overflow-y-auto custom-scrollbar"
+                >
                     {/* Ollama host/port */}
                     <div className="space-y-2">
                         <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>OLLAMA SERVER</span>
@@ -172,23 +180,29 @@ export default function ChatSidebar({
                             Asks the model to expose its reasoning. Has no effect on models that don't support it.
                         </p>
                     </div>
-                </div>
+                </Section>
 
-                {/* SESSIONS + ACTIVE SUMMARY + LOG */}
-                <div className="flex-1 flex flex-col overflow-hidden">
-                    {/* Sessions list */}
-                    <div className={`px-4 py-3 border-b ${theme.borderSecondary}`}>
-                        <div className="flex items-center justify-between mb-2">
-                            <h4 className={`text-[10px] font-black ${theme.textMuted} uppercase tracking-widest`}>Sessions</h4>
-                            <button
-                                onClick={newSession}
-                                className={`text-[10px] font-bold px-2 py-1 rounded-lg ${theme.hover} ${theme.textSecondary} hover:text-blue-500 transition-colors flex items-center gap-1`}
-                                title="Start a new chat"
-                            >
-                                <Plus size={10} /> New
-                            </button>
-                        </div>
-                        <div className="space-y-1 max-h-48 overflow-y-auto custom-scrollbar pr-1">
+                {/* SESSIONS */}
+                <Section
+                    theme={theme}
+                    title="Sessions"
+                    count={sessions.length}
+                    defaultOpen={true}
+                    headerAction={
+                        <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => { e.stopPropagation(); newSession(); }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); newSession(); } }}
+                            className={`text-[10px] font-bold px-2 py-1 rounded-lg ${theme.hover} ${theme.textSecondary} hover:text-blue-500 transition-colors flex items-center gap-1 cursor-pointer`}
+                            title="Start a new chat"
+                        >
+                            <Plus size={10} /> New
+                        </span>
+                    }
+                    bodyClassName="px-4 py-2 max-h-[40vh] overflow-y-auto custom-scrollbar"
+                >
+                        <div className="space-y-1">
                             {sessions.length === 0 ? (
                                 <p className={`text-xs ${theme.textMuted} italic`}>No saved sessions yet.</p>
                             ) : (
@@ -269,70 +283,100 @@ export default function ChatSidebar({
                                 })
                             )}
                         </div>
-                    </div>
+                </Section>
 
-                    {/* Active session summary + Clear (= start fresh, doesn't delete saved session) */}
-                    <div className={`px-4 py-3 border-b ${theme.borderSecondary}`}>
-                        <div className="flex items-center justify-between mb-1">
-                            <h4 className={`text-[10px] font-black ${theme.textMuted} uppercase tracking-widest`}>Conversation</h4>
-                            {messages.length > 0 && (
-                                <button
-                                    onClick={clearHistory}
-                                    className={`text-[10px] font-bold px-2 py-1 rounded-lg ${theme.hover} ${theme.textMuted} hover:text-red-500 transition-colors flex items-center gap-1`}
-                                    title="Start a fresh chat (saved session preserved)"
-                                >
-                                    <Plus size={10} /> New chat
-                                </button>
-                            )}
-                        </div>
-                        {messages.length === 0 ? (
-                            <p className={`text-xs ${theme.textMuted} italic`}>No messages yet.</p>
-                        ) : (
-                            <div className={`text-xs ${theme.textSecondary} space-y-0.5`}>
-                                <p className="truncate" title={activeMeta?.title}>
-                                    {activeMeta?.title || 'New chat (unsaved)'}
-                                </p>
-                                <p className={`text-[10px] ${theme.textMuted}`}>
-                                    {messages.length} message{messages.length === 1 ? '' : 's'} · {userMessageCount} from you
-                                </p>
-                            </div>
-                        )}
-                    </div>
-
-                    {/* Session event log (collapsible) */}
-                    <div className="flex-1 flex flex-col overflow-hidden">
-                        <button
-                            onClick={() => setLogOpen((o) => !o)}
-                            className={`w-full flex items-center justify-between px-4 py-2 ${theme.hover} transition-colors`}
+                {/* CONVERSATION (active session info) */}
+                <Section
+                    theme={theme}
+                    title="Conversation"
+                    defaultOpen={true}
+                    headerAction={messages.length > 0 ? (
+                        <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => { e.stopPropagation(); clearHistory(); }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); clearHistory(); } }}
+                            className={`text-[10px] font-bold px-2 py-1 rounded-lg ${theme.hover} ${theme.textMuted} hover:text-red-500 transition-colors flex items-center gap-1 cursor-pointer`}
+                            title="Start a fresh chat (saved session preserved)"
                         >
-                            <div className="flex items-center gap-2">
-                                {logOpen ? <ChevronDown size={12} className={theme.textMuted} /> : <ChevronRight size={12} className={theme.textMuted} />}
-                                <ScrollText size={12} className={theme.textMuted} />
-                                <h4 className={`text-[10px] font-black ${theme.textMuted} uppercase tracking-widest`}>Session log</h4>
-                            </div>
-                            <span className={`text-[10px] ${theme.textMuted}`}>{events.length}</span>
-                        </button>
-                        {logOpen && (
-                            <div className="px-4 pb-3 flex-1 overflow-y-auto custom-scrollbar text-[11px] font-mono leading-relaxed">
-                                {events.length === 0 ? (
-                                    <p className={`${theme.textMuted} italic`}>No events yet.</p>
-                                ) : (
-                                    <ul className="space-y-1">
-                                        {events.map((e, i) => (
-                                            <li key={i} className={`flex gap-2 ${eventKindColor(e.kind, theme)}`}>
-                                                <span className={`${theme.textMuted} shrink-0`}>{formatTime(e.ts)}</span>
-                                                <span className="font-bold uppercase shrink-0">{e.kind}</span>
-                                                <span className={`${theme.textSecondary} break-words min-w-0`}>{e.message}</span>
-                                            </li>
-                                        ))}
-                                    </ul>
-                                )}
-                            </div>
-                        )}
-                    </div>
+                            <Plus size={10} /> New chat
+                        </span>
+                    ) : null}
+                    bodyClassName="px-4 py-3 max-h-[30vh] overflow-y-auto"
+                >
+                    {messages.length === 0 ? (
+                        <p className={`text-xs ${theme.textMuted} italic`}>No messages yet.</p>
+                    ) : (
+                        <div className={`text-xs ${theme.textSecondary} space-y-0.5`}>
+                            <p className="truncate" title={activeMeta?.title}>
+                                {activeMeta?.title || 'New chat (unsaved)'}
+                            </p>
+                            <p className={`text-[10px] ${theme.textMuted}`}>
+                                {messages.length} message{messages.length === 1 ? '' : 's'} · {userMessageCount} from you
+                            </p>
+                        </div>
+                    )}
+                </Section>
+
+                {/* SESSION LOG */}
+                <Section
+                    theme={theme}
+                    title="Session log"
+                    icon={<ScrollText size={12} className={theme.textMuted} />}
+                    count={events.length}
+                    defaultOpen={false}
+                    bodyClassName="px-4 py-3 max-h-[40vh] overflow-y-auto custom-scrollbar text-[11px] font-mono leading-relaxed"
+                >
+                    {events.length === 0 ? (
+                        <p className={`${theme.textMuted} italic`}>No events yet.</p>
+                    ) : (
+                        <ul className="space-y-1">
+                            {events.map((e, i) => (
+                                <li key={i} className={`flex gap-2 ${eventKindColor(e.kind, theme)}`}>
+                                    <span className={`${theme.textMuted} shrink-0`}>{formatTime(e.ts)}</span>
+                                    <span className="font-bold uppercase shrink-0">{e.kind}</span>
+                                    <span className={`${theme.textSecondary} break-words min-w-0`}>{e.message}</span>
+                                </li>
+                            ))}
+                        </ul>
+                    )}
+                </Section>
+
                 </div>
             </div>
         </aside>
+    );
+}
+
+// Reusable collapsible section for the chat sidebar.
+// Header is a button; body is conditionally rendered with its own scroll container.
+function Section({ theme, title, icon, count, defaultOpen = true, headerAction, bodyClassName = '', children }) {
+    const [open, setOpen] = useState(defaultOpen);
+    return (
+        <div className={`border-b ${theme.borderSecondary} flex flex-col shrink-0`}>
+            <div
+                onClick={() => setOpen((o) => !o)}
+                className={`w-full flex items-center justify-between gap-2 px-4 py-2.5 ${theme.hover} transition-colors cursor-pointer select-none`}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen((o) => !o); } }}
+            >
+                <div className="flex items-center gap-2 min-w-0">
+                    {open ? <ChevronDown size={12} className={theme.textMuted} /> : <ChevronRight size={12} className={theme.textMuted} />}
+                    {icon}
+                    <h4 className={`text-[10px] font-black ${theme.textMuted} uppercase tracking-widest truncate`}>{title}</h4>
+                    {count !== undefined && (
+                        <span className={`text-[10px] ${theme.textMuted}`}>{count}</span>
+                    )}
+                </div>
+                {headerAction}
+            </div>
+            {open && (
+                <div className={bodyClassName}>
+                    {children}
+                </div>
+            )}
+        </div>
     );
 }
 

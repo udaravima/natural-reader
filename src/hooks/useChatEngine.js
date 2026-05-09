@@ -90,14 +90,45 @@ export function useChatEngine({
     const ttsParamsRef = useRef({});
     ttsParamsRef.current = { isLocalhost, selectedVoice, playbackSpeed, requestTimeout };
 
-    // Drain the queue serially. Each iteration awaits the next item's already-in-flight
-    // synthesis, then plays it. New items pushed during playback are picked up.
+    // Build a queue item with synthesis DEFERRED. Synthesis is triggered lazily
+    // by the playback loop's prefetch (only N..N+2 in flight at once), mirroring
+    // the reader's prefetchBuffer pattern. This avoids piling up parallel
+    // requests against Kokoro's serializing asyncio lock — which previously
+    // caused cascading per-sentence timeouts on long replies.
+    const makeQueueItem = useCallback((spoken) => {
+        const { isLocalhost } = ttsParamsRef.current;
+        if (!isLocalhost) return { kind: 'fallback', text: spoken, urlPromise: null };
+        return { kind: 'kokoro', text: spoken, urlPromise: null };
+    }, []);
+
+    // Kick off synthesis for a queue item if it hasn't started yet. Idempotent.
+    const kickoffSynthesis = useCallback((item) => {
+        if (!item || item.kind !== 'kokoro' || item.urlPromise) return;
+        const { selectedVoice, playbackSpeed, requestTimeout } = ttsParamsRef.current;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
+        item.urlPromise = synthesizeText(item.text, {
+            voice: selectedVoice,
+            speed: playbackSpeed,
+            signal: controller.signal,
+        }).finally(() => clearTimeout(timeoutId));
+    }, [synthesizeText]);
+
+    // Drain the queue serially. Each iteration:
+    //   1. shifts the current item
+    //   2. kicks off synthesis for current + next two (bounded prefetch)
+    //   3. awaits the current item's URL and plays it
+    // New items pushed mid-playback (streaming auto-TTS) are picked up automatically.
     const runChatPlayback = useCallback(async () => {
         while (chatQueueRef.current.length > 0) {
-            if (!chatPlayingRef.current) return; // cancelled (stopSpeaking / speakMessage)
+            if (!chatPlayingRef.current) return;
             const item = chatQueueRef.current.shift();
             try {
                 if (item.kind === 'kokoro') {
+                    kickoffSynthesis(item);
+                    // Prefetch the next two so they're ready by the time the loop reaches them.
+                    if (chatQueueRef.current[0]) kickoffSynthesis(chatQueueRef.current[0]);
+                    if (chatQueueRef.current[1]) kickoffSynthesis(chatQueueRef.current[1]);
                     const url = await item.urlPromise;
                     if (!chatPlayingRef.current) {
                         if (url) URL.revokeObjectURL(url);
@@ -115,29 +146,13 @@ export function useChatEngine({
             }
         }
         chatPlayingRef.current = false;
-    }, [playChatUrl, playChatSpeech]);
+    }, [playChatUrl, playChatSpeech, kickoffSynthesis]);
 
     const ensurePlaybackRunning = useCallback(() => {
         if (chatPlayingRef.current) return;
         chatPlayingRef.current = true;
         chatPlaybackPromiseRef.current = runChatPlayback();
     }, [runChatPlayback]);
-
-    // Build a queue item by kicking off synthesis (or wrapping fallback text).
-    const makeQueueItem = useCallback((spoken) => {
-        const { isLocalhost, selectedVoice, playbackSpeed, requestTimeout } = ttsParamsRef.current;
-        if (!isLocalhost) {
-            return { kind: 'fallback', text: spoken };
-        }
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
-        const urlPromise = synthesizeText(spoken, {
-            voice: selectedVoice,
-            speed: playbackSpeed,
-            signal: controller.signal,
-        }).finally(() => clearTimeout(timeoutId));
-        return { kind: 'kokoro', urlPromise };
-    }, [synthesizeText]);
 
     const enqueueTts = useCallback((text) => {
         if (!chatAutoTts) return;
@@ -153,7 +168,7 @@ export function useChatEngine({
         const items = chatQueueRef.current;
         chatQueueRef.current = [];
         for (const item of items) {
-            if (item.kind === 'kokoro') {
+            if (item.kind === 'kokoro' && item.urlPromise) {
                 item.urlPromise.then(url => { if (url) URL.revokeObjectURL(url); }).catch(() => {});
             }
         }
