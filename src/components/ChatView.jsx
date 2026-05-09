@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
     Send, Square, Bot, User, Loader2, MessageSquare, Brain, ChevronDown, ChevronRight,
-    Volume2, StopCircle, Copy, Paperclip, Mic, ImagePlus,
+    Volume2, StopCircle, Copy, Paperclip, ImagePlus,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import AttachmentPreview from './AttachmentPreview';
-import VoiceRecorder from './VoiceRecorder';
-import { fileToAttachment, ATTACHMENT_ACCEPT, kindFromMime } from '../utils/attachment';
+// VoiceRecorder is intentionally not imported — audio attachments are paused
+// until a Whisper-style transcription step is added (see plan file). The file
+// itself is kept on disk so re-enabling is a single import + a JSX block.
+import { fileToAttachment, IMAGE_ACCEPT, kindFromMime } from '../utils/attachment';
 
 export default function ChatView({
     theme,
@@ -36,7 +38,6 @@ export default function ChatView({
     };
     const [draft, setDraft] = useState('');
     const [pendingAttachments, setPendingAttachments] = useState([]);
-    const [showRecorder, setShowRecorder] = useState(false);
     const [isDragging, setIsDragging] = useState(false);
     const dragCounterRef = useRef(0); // robust drag-leave detection across child elements
     const listRef = useRef(null);
@@ -59,8 +60,16 @@ export default function ChatView({
     }, [draft]);
 
     // ------ Attachment helpers ------
+    // Audio attachments are temporarily disabled — the Ollama image projector
+    // can't decode audio bytes, and we haven't added a Whisper transcription
+    // step yet. Audio files are filtered out here with a friendly toast.
     const ingestFiles = async (fileList) => {
-        const files = Array.from(fileList || []).filter(f => f && kindFromMime(f.type));
+        const all = Array.from(fileList || []);
+        const dropped = all.filter(f => f && kindFromMime(f.type) === 'audio');
+        if (dropped.length > 0) {
+            showToast?.('Audio attachments are not supported yet — coming soon.', 4000);
+        }
+        const files = all.filter(f => f && kindFromMime(f.type) === 'image');
         if (files.length === 0) return;
         const results = await Promise.all(files.map(f => fileToAttachment(f)));
         const accepted = [];
@@ -151,7 +160,7 @@ export default function ChatView({
                 <div className={`absolute inset-0 z-20 pointer-events-none flex items-center justify-center backdrop-blur-sm ${darkMode ? 'bg-blue-900/30' : 'bg-blue-100/60'}`}>
                     <div className={`px-6 py-4 rounded-2xl border-2 border-dashed ${theme.border} ${theme.bgSecondary} flex items-center gap-3 shadow-xl`}>
                         <ImagePlus size={20} className="text-blue-500" />
-                        <span className={`text-sm font-bold ${theme.text}`}>Drop image or audio to attach</span>
+                        <span className={`text-sm font-bold ${theme.text}`}>Drop an image to attach</span>
                     </div>
                 </div>
             )}
@@ -194,20 +203,6 @@ export default function ChatView({
             {/* INPUT BAR */}
             <div className={`border-t ${theme.border} ${theme.bgSecondary} px-4 py-3 ${effectiveIsMobile ? 'pb-20' : ''}`}>
                 <div className="max-w-3xl mx-auto flex flex-col gap-2">
-                    {/* Voice recorder panel (modal-like, only when toggled) */}
-                    {showRecorder && (
-                        <VoiceRecorder
-                            theme={theme}
-                            darkMode={darkMode}
-                            showToast={showToast}
-                            onAttach={(att) => {
-                                setPendingAttachments(prev => [...prev, att]);
-                                setShowRecorder(false);
-                            }}
-                            onCancel={() => setShowRecorder(false)}
-                        />
-                    )}
-
                     {/* Pending attachments preview row */}
                     {pendingAttachments.length > 0 && (
                         <div className="flex flex-wrap gap-2">
@@ -224,12 +219,13 @@ export default function ChatView({
                     )}
 
                     <div className="flex items-end gap-2">
-                        {/* Paperclip — opens file picker */}
+                        {/* Paperclip — opens image picker (audio attachments
+                            paused; see useChatEngine.js comment) */}
                         <button
                             onClick={() => fileInputRef.current?.click()}
                             disabled={isStreaming}
                             className={`p-3 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.textSecondary} hover:text-blue-500 transition-colors disabled:opacity-50`}
-                            title="Attach image or audio file"
+                            title="Attach image"
                         >
                             <Paperclip size={18} />
                         </button>
@@ -237,22 +233,10 @@ export default function ChatView({
                             type="file"
                             ref={fileInputRef}
                             onChange={handleFileChange}
-                            accept={ATTACHMENT_ACCEPT}
+                            accept={IMAGE_ACCEPT}
                             multiple
                             className="hidden"
                         />
-
-                        {/* Mic — toggles voice recorder */}
-                        <button
-                            onClick={() => setShowRecorder(s => !s)}
-                            disabled={isStreaming}
-                            className={`p-3 rounded-xl border ${theme.border} transition-colors disabled:opacity-50 ${showRecorder
-                                ? 'bg-red-500 text-white border-red-500'
-                                : `${theme.bgTertiary} ${theme.textSecondary} hover:text-red-500`}`}
-                            title={showRecorder ? 'Close recorder' : 'Record voice clip'}
-                        >
-                            <Mic size={18} />
-                        </button>
 
                         <textarea
                             ref={textareaRef}
@@ -265,7 +249,7 @@ export default function ChatView({
                                     ? 'Ollama unreachable — check host/port in sidebar.'
                                     : !selectedModel
                                         ? 'Pick a model in the sidebar to start.'
-                                        : 'Ask the model, drop / paste / attach an image or audio…  (Enter to send)'
+                                        : 'Ask the model, drop / paste / attach an image…  (Enter to send)'
                             }
                             rows={1}
                             className={`flex-1 resize-none p-3 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.text} text-sm leading-relaxed outline-none focus:ring-2 focus:ring-blue-500 transition-colors`}

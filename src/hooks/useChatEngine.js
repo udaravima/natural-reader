@@ -440,20 +440,59 @@ export function useChatEngine({
         abortRef.current = controller;
 
         try {
-            // Build the messages history for the Ollama POST. Include images/audio
-            // arrays from each historical user message that still has attachment
-            // data in memory. (Attachments stripped on session save will simply have
-            // no base64 to forward, which is fine — the model just sees the text.)
+            // Build the messages history for the Ollama POST.
+            //
+            // Ollama's native /api/chat requires `content` to be a plain string
+            // (structured content blocks return HTTP 400). The `Message` struct
+            // only has ONE binary-input field: `images: [base64]`. There is no
+            // `audios` field — earlier attempts using `audio` / `audios` were
+            // silently dropped by the JSON parser.
+            //
+            // For audio-capable models (qwen2-audio, gemma4-with-audio, ...),
+            // the convention is to put the audio bytes into the same `images`
+            // array — the runtime treats those bytes as audio when the model
+            // is audio-capable. So image AND audio attachments both feed
+            // `images`. (If a single message mixes both kinds, the model will
+            // see both byte blobs and decide based on its own modality. We
+            // accept that edge case rather than introducing a non-existent
+            // field.)
+            //
+            // Attachments stripped on session save (no base64) are skipped — the
+            // historical message just goes back as text, which is fine.
             const buildApiMessage = (m) => {
-                const out = { role: m.role, content: m.content };
                 const atts = Array.isArray(m.attachments) ? m.attachments : [];
-                const imgB64 = atts.filter(a => a.kind === 'image' && a.base64).map(a => a.base64);
-                const audB64 = atts.filter(a => a.kind === 'audio' && a.base64).map(a => a.base64);
-                if (imgB64.length) out.images = imgB64;
-                if (audB64.length) out.audio = audB64;
+                const binaryB64 = atts
+                    .filter(a => a && a.base64 && (a.kind === 'image' || a.kind === 'audio'))
+                    .map(a => a.base64);
+                const out = {
+                    role: m.role,
+                    content: m.content || '',
+                };
+                if (binaryB64.length) out.images = binaryB64;
                 return out;
             };
             const history = [...messagesRef.current, userMsg].map(buildApiMessage);
+
+            // Lightweight diagnostic — logs the outgoing message shape WITHOUT
+            // the heavy base64 payloads, so the user can verify what's being sent.
+            try {
+                console.debug('[chat] /api/chat outgoing messages (base64 omitted):',
+                    history.map((h, i) => {
+                        const src = [...messagesRef.current, userMsg][i];
+                        const kinds = (src?.attachments || [])
+                            .filter(a => a && a.base64)
+                            .map(a => a.kind);
+                        return {
+                            role: h.role,
+                            content: typeof h.content === 'string'
+                                ? (h.content.length > 80 ? h.content.slice(0, 80) + '…' : h.content)
+                                : h.content,
+                            images: Array.isArray(h.images)
+                                ? `${h.images.length} (${kinds.join(',') || 'binary'})`
+                                : undefined,
+                        };
+                    }));
+            } catch { /* logging is best-effort */ }
             const res = await fetch(ollamaUrl('/api/chat'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
