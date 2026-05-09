@@ -22,6 +22,7 @@ export function useTtsEngine({
     backendAvailable,
     pdfFileName,
     setStatus, showToast,
+    enabled = true,
 }) {
     const [isPlaying, setIsPlaying] = useState(false);
     const [isDownloading, setIsDownloading] = useState(false);
@@ -32,10 +33,83 @@ export function useTtsEngine({
     const pendingRequests = useRef(new Map()); // Track in-flight fetches to avoid duplicates
     const audioRef = useRef(new Audio());
     const voicePreviewRef = useRef(new Audio());
+    const chatAudioRef = useRef(new Audio()); // Separate channel so chat TTS can't collide with reader TTS
     const retryCountRef = useRef(0);
 
     // Helper to build API URL
     const getApiUrl = (endpoint) => `http://${apiHost}:${apiPort}${endpoint}`;
+
+    // Pure synthesis: returns a blob URL (or null on error). Reused by reader playback,
+    // selection read, voice preview, and chat sentence playback.
+    const synthesizeText = useCallback(async (text, { voice, speed, signal } = {}) => {
+        try {
+            const url = `http://${apiHost}:${apiPort}/v1/synthesize`;
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text,
+                    voice: voice || selectedVoice,
+                    speed: speed || playbackSpeed,
+                }),
+                signal,
+            });
+            if (!response.ok) throw new Error('TTS Fail');
+            const data = await response.json();
+            const b64 = data.audio_base64 || data.audio;
+            const blob = await (await fetch(`data:audio/wav;base64,${b64}`)).blob();
+            return URL.createObjectURL(blob);
+        } catch (err) {
+            if (err.name !== 'AbortError') console.error('Synthesis error:', err);
+            return null;
+        }
+    }, [apiHost, apiPort, selectedVoice, playbackSpeed]);
+
+    // Play a single block of text on the chat audio channel, resolving when it ends.
+    // Falls back to SpeechSynthesisUtterance when Kokoro isn't selected.
+    const playSentence = useCallback((text) => {
+        return new Promise((resolve) => {
+            if (!text || !text.trim()) { resolve(); return; }
+
+            if (!isLocalhost) {
+                const ut = new SpeechSynthesisUtterance(text);
+                ut.rate = playbackSpeed;
+                ut.volume = volume;
+                ut.onend = () => resolve();
+                ut.onerror = () => resolve();
+                window.speechSynthesis.speak(ut);
+                return;
+            }
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
+            synthesizeText(text, {
+                voice: selectedVoice,
+                speed: playbackSpeed,
+                signal: controller.signal,
+            }).then((url) => {
+                clearTimeout(timeoutId);
+                if (!url) { resolve(); return; }
+                chatAudioRef.current.volume = volume;
+                chatAudioRef.current.src = url;
+                chatAudioRef.current.onended = () => {
+                    URL.revokeObjectURL(url);
+                    resolve();
+                };
+                chatAudioRef.current.onerror = () => {
+                    URL.revokeObjectURL(url);
+                    resolve();
+                };
+                chatAudioRef.current.play().catch(() => resolve());
+            });
+        });
+    }, [isLocalhost, selectedVoice, playbackSpeed, volume, requestTimeout, synthesizeText]);
+
+    const stopChatPlayback = useCallback(() => {
+        chatAudioRef.current.pause();
+        chatAudioRef.current.currentTime = 0;
+        window.speechSynthesis.cancel();
+    }, []);
 
     // --- VOLUME CONTROL ---
     useEffect(() => {
@@ -63,38 +137,19 @@ export function useTtsEngine({
             return pendingRequests.current.get(index);
         }
 
-        // Create the fetch promise and store it
         const fetchPromise = (async () => {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
-
             try {
-                const response = await fetch(getApiUrl('/v1/synthesize'), {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        text: textItems[index],
-                        voice: selectedVoice,
-                        speed: playbackSpeed
-                    }),
-                    signal: controller.signal
+                const url = await synthesizeText(textItems[index], {
+                    voice: selectedVoice,
+                    speed: playbackSpeed,
+                    signal: controller.signal,
                 });
-
-                clearTimeout(timeoutId);
-
-                if (!response.ok) throw new Error("TTS Fail");
-                const data = await response.json();
-
-                const b64 = data.audio_base64 || data.audio;
-                const blob = await (await fetch(`data:audio/wav;base64,${b64}`)).blob();
-                const url = URL.createObjectURL(blob);
-                audioCache.current.set(index, url);
+                if (url) audioCache.current.set(index, url);
                 return url;
-            } catch (err) {
-                clearTimeout(timeoutId);
-                console.error("Inference Error:", err);
-                return null;
             } finally {
+                clearTimeout(timeoutId);
                 pendingRequests.current.delete(index);
             }
         })();
@@ -143,9 +198,18 @@ export function useTtsEngine({
         }
     };
 
+    // Stop reader playback when the engine is disabled (e.g. switching to chat view)
+    useEffect(() => {
+        if (!enabled && isPlaying) {
+            setIsPlaying(false);
+            audioRef.current.pause();
+            window.speechSynthesis.cancel();
+        }
+    }, [enabled, isPlaying]);
+
     // --- MAIN PLAYBACK LOOP ---
     useEffect(() => {
-        if (!isPlaying) return;
+        if (!enabled || !isPlaying) return;
 
         let active = true;
 
@@ -231,7 +295,7 @@ export function useTtsEngine({
 
         return () => { active = false; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isPlaying, textItems]);
+    }, [isPlaying, textItems, enabled]);
 
     // --- SELECTION READING ---
     const readSelection = async () => {
@@ -442,5 +506,10 @@ export function useTtsEngine({
         stopVoicePreview,
         downloadPageAudio,
         clearCache,
+
+        // Reusable helpers (used by useChatEngine for AI response playback)
+        synthesizeText,
+        playSentence,
+        stopChatPlayback,
     };
 }

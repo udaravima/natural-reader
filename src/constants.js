@@ -29,6 +29,12 @@ export const KOKORO_VOICES = [
     { id: 'bm_lewis', name: 'Lewis (UK Male)', sampleText: "Hi there, I'm Lewis! My thoughtful British tone contemplates every word with care and precision." },
 ];
 
+// Defaults for the Ollama chat backend (separate service from Kokoro)
+export const OLLAMA_DEFAULTS = {
+    host: 'localhost',
+    port: '11434',
+};
+
 // How many sentences make up one pseudo-page when reading a plain text (.txt) file
 export const SENTENCES_PER_TEXT_PAGE = 40;
 

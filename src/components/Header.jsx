@@ -1,7 +1,7 @@
 import {
     Play, Pause, Square, Upload, Volume2, SkipForward, SkipBack,
     Zap, Loader2, Moon, Sun, Download, Keyboard, Clock,
-    PanelLeftClose, Menu
+    PanelLeftClose, Menu, BookOpen, MessageSquare
 } from 'lucide-react';
 
 export default function Header({
@@ -17,6 +17,8 @@ export default function Header({
     sidebarOpen, setSidebarOpen,
     showShortcuts, setShowShortcuts,
     fileInputRef,
+    // View mode
+    viewMode, setViewMode,
     // Playback controls
     handlePlayPause,
     stopPlayback,
@@ -28,6 +30,7 @@ export default function Header({
     calculateEstimatedTimeRemaining,
     playbackSpeed,
 }) {
+    const inChat = viewMode === 'chat';
     return (
         <header className={`h-16 ${theme.bgSecondary} border-b ${theme.border} px-4 md:px-6 flex items-center justify-between z-20 sticky top-0 shadow-sm transition-colors duration-300`}>
             <div className="flex items-center gap-2 md:gap-3">
@@ -48,7 +51,8 @@ export default function Header({
                 </div>
             </div>
 
-            {/* PLAYBACK CONTROLS */}
+            {/* PLAYBACK CONTROLS — reader mode only */}
+            {!inChat && (
             <div className={`${showHeaderControlsOnMobile ? 'flex' : 'hidden md:flex'} items-center gap-2 ${theme.bgTertiary} p-1 rounded-xl border ${theme.border} shadow-inner`}>
                 <button
                     onClick={skipToPrevSentence}
@@ -83,11 +87,32 @@ export default function Header({
                     <Square size={16} fill="currentColor" />
                 </button>
             </div>
+            )}
 
             {/* RIGHT CONTROLS */}
             <div className="flex items-center gap-1 md:gap-3">
+                {/* Reader / Chat toggle */}
+                <div className={`flex p-1 rounded-xl border ${theme.border} ${theme.bgTertiary}`}>
+                    <button
+                        onClick={() => setViewMode('reader')}
+                        className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold flex items-center gap-1.5 transition-colors ${!inChat ? 'bg-blue-600 text-white shadow' : `${theme.textSecondary} hover:text-blue-500`}`}
+                        title="Reader mode"
+                    >
+                        <BookOpen size={12} />
+                        <span className="hidden sm:inline">Reader</span>
+                    </button>
+                    <button
+                        onClick={() => setViewMode('chat')}
+                        className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold flex items-center gap-1.5 transition-colors ${inChat ? 'bg-blue-600 text-white shadow' : `${theme.textSecondary} hover:text-blue-500`}`}
+                        title="Chat mode"
+                    >
+                        <MessageSquare size={12} />
+                        <span className="hidden sm:inline">Chat</span>
+                    </button>
+                </div>
+
                 {/* Estimated Time */}
-                {hasDocument && calculateEstimatedTimeRemaining(playbackSpeed) && (
+                {!inChat && hasDocument && calculateEstimatedTimeRemaining(playbackSpeed) && (
                     <div className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-lg border ${theme.border} text-[10px] font-bold ${theme.textSecondary}`}>
                         <Clock size={12} />
                         {calculateEstimatedTimeRemaining(playbackSpeed)}
@@ -115,7 +140,7 @@ export default function Header({
                 </button>
 
                 {/* Download Page Audio */}
-                {hasDocument && isLocalhost && (
+                {!inChat && hasDocument && isLocalhost && (
                     <button
                         onClick={downloadPageAudio}
                         disabled={isDownloading || textItems.length === 0}
@@ -135,13 +160,15 @@ export default function Header({
                     <Keyboard size={20} />
                 </button>
 
-                {/* Upload Button */}
-                <button
-                    onClick={() => fileInputRef.current.click()}
-                    className="p-2.5 bg-gradient-to-r from-slate-700 to-slate-800 text-white rounded-xl hover:from-slate-600 hover:to-slate-700 transition-all shadow-md"
-                >
-                    <Upload size={20} />
-                </button>
+                {/* Upload Button — reader mode only */}
+                {!inChat && (
+                    <button
+                        onClick={() => fileInputRef.current.click()}
+                        className="p-2.5 bg-gradient-to-r from-slate-700 to-slate-800 text-white rounded-xl hover:from-slate-600 hover:to-slate-700 transition-all shadow-md"
+                    >
+                        <Upload size={20} />
+                    </button>
+                )}
                 <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".pdf,.txt,text/plain,application/pdf" className="hidden" />
             </div>
         </header>

@@ -8,11 +8,17 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useTheme } from './hooks/useTheme';
 import { usePdfEngine } from './hooks/usePdfEngine';
 import { useTtsEngine } from './hooks/useTtsEngine';
+import { useChatEngine } from './hooks/useChatEngine';
+
+// Constants
+import { OLLAMA_DEFAULTS } from './constants';
 
 // Components
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import PdfViewer from './components/PdfViewer';
+import ChatView from './components/ChatView';
+import ChatSidebar from './components/ChatSidebar';
 import MobileBottomNav from './components/MobileBottomNav';
 
 // Overlays
@@ -37,6 +43,13 @@ export default function App() {
   const [mobileBreakpoint, setMobileBreakpoint] = usePersistedState('mobileBreakpoint', 768);
   const [layoutMode, setLayoutMode] = usePersistedState('layoutMode', 'auto');
   const [showHeaderControlsOnMobile, setShowHeaderControlsOnMobile] = usePersistedState('showHeaderControlsOnMobile', false);
+  // Reader / Chat top-level view + Ollama config
+  const [viewMode, setViewMode] = usePersistedState('viewMode', 'reader');
+  const [ollamaHost, setOllamaHost] = usePersistedState('ollamaHost', OLLAMA_DEFAULTS.host);
+  const [ollamaPort, setOllamaPort] = usePersistedState('ollamaPort', OLLAMA_DEFAULTS.port);
+  const [selectedModel, setSelectedModel] = usePersistedState('selectedModel', '');
+  const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', 'streaming');
+  const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', true);
 
   // --- TRANSIENT UI STATE ---
   const [status, setStatus] = useState('Initializing PDF Engine...');
@@ -72,6 +85,8 @@ export default function App() {
     calculateReadingProgress, calculateEstimatedTimeRemaining,
   } = pdfEngine;
 
+  const inChat = viewMode === 'chat';
+
   const ttsEngine = useTtsEngine({
     textItems, currentSentenceIndex, setCurrentSentenceIndex,
     playbackIndexRef, currentPage, setCurrentPage, numPages,
@@ -79,6 +94,7 @@ export default function App() {
     apiHost, apiPort, requestTimeout, unlimitedBatchTimeout,
     backendAvailable, pdfFileName,
     setStatus, showToast,
+    enabled: !inChat,
   });
 
   const {
@@ -86,13 +102,42 @@ export default function App() {
     handlePlayPause, stopPlayback, skipToNextSentence,
     readSelection, stopSelectionRead,
     previewVoice, stopVoicePreview, downloadPageAudio, clearCache,
+    playSentence, stopChatPlayback,
   } = ttsEngine;
+
+  const chatEngine = useChatEngine({
+    ollamaHost, ollamaPort, selectedModel,
+    chatTtsMode, chatAutoTts,
+    playSentence, stopChatPlayback,
+    showToast,
+  });
+
+  const {
+    messages: chatMessages,
+    isStreaming: chatIsStreaming,
+    availableModels,
+    reachable: ollamaReachable,
+    sendMessage: chatSendMessage,
+    stopStream: chatStopStream,
+    clearHistory: chatClearHistory,
+    refreshModels,
+  } = chatEngine;
 
   useKeyboardShortcuts({
     handlePlayPause, stopPlayback, skipToNextSentence,
     setCurrentSentenceIndex, setCurrentPage, setScale, setDarkMode,
     numPages,
+    viewMode,
   });
+
+  // Stop chat audio + abort any in-flight stream when leaving chat mode.
+  useEffect(() => {
+    if (!inChat) {
+      chatStopStream();
+      stopChatPlayback();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inChat]);
 
   // True when any document (PDF or .txt) is loaded — used as a gate by UI bits
   // that don't care about file type. pdfDoc stays the source of truth for code
@@ -253,6 +298,7 @@ export default function App() {
         theme={theme}
         darkMode={darkMode}
         hasDocument={hasDocument}
+        viewMode={viewMode} setViewMode={setViewMode}
         status={status}
         isPlaying={isPlaying}
         isLocalhost={isLocalhost} setIsLocalhost={setIsLocalhost}
@@ -284,6 +330,23 @@ export default function App() {
           />
         )}
 
+        {inChat ? (
+          <ChatSidebar
+            theme={theme}
+            effectiveIsMobile={effectiveIsMobile}
+            sidebarOpen={sidebarOpen}
+            ollamaHost={ollamaHost} setOllamaHost={setOllamaHost}
+            ollamaPort={ollamaPort} setOllamaPort={setOllamaPort}
+            selectedModel={selectedModel} setSelectedModel={setSelectedModel}
+            availableModels={availableModels}
+            reachable={ollamaReachable}
+            refreshModels={refreshModels}
+            chatTtsMode={chatTtsMode} setChatTtsMode={setChatTtsMode}
+            chatAutoTts={chatAutoTts} setChatAutoTts={setChatAutoTts}
+            messages={chatMessages}
+            clearHistory={chatClearHistory}
+          />
+        ) : (
         <Sidebar
           theme={theme}
           darkMode={darkMode}
@@ -320,7 +383,21 @@ export default function App() {
           handleSentenceContextMenu={handleSentenceContextMenu}
           handleChapterNavigation={handleChapterNavigation}
         />
+        )}
 
+        {inChat ? (
+          <ChatView
+            theme={theme}
+            darkMode={darkMode}
+            effectiveIsMobile={effectiveIsMobile}
+            messages={chatMessages}
+            isStreaming={chatIsStreaming}
+            selectedModel={selectedModel}
+            reachable={ollamaReachable}
+            sendMessage={chatSendMessage}
+            stopStream={chatStopStream}
+          />
+        ) : (
         <PdfViewer
           theme={theme}
           darkMode={darkMode}
@@ -341,12 +418,13 @@ export default function App() {
           openFromLibrary={openFromLibrary}
           removeFromLibrary={removeFromLibrary}
         />
+        )}
       </main>
 
       <MobileBottomNav
         theme={theme}
         effectiveIsMobile={effectiveIsMobile}
-        hasDocument={hasDocument}
+        hasDocument={hasDocument && !inChat}
         currentPage={currentPage} setCurrentPage={setCurrentPage}
         numPages={numPages}
         currentSentenceIndex={currentSentenceIndex}
