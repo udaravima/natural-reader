@@ -28,12 +28,16 @@ export function useChatEngine({
     const [isStreaming, setIsStreaming] = useState(false);
     const [availableModels, setAvailableModels] = useState([]);
     const [reachable, setReachable] = useState(null); // null=unknown, true/false
+    const [speakingMessageId, setSpeakingMessageId] = useState(null); // which assistant msg is being read aloud
 
     const abortRef = useRef(null);
     const ttsQueueRef = useRef(Promise.resolve());
     const sentenceBufferRef = useRef('');
     const messagesRef = useRef([]);
     messagesRef.current = messages;
+    // Mirror of speakingMessageId for use inside async/then callbacks (avoids stale closures).
+    const speakingMessageIdRef = useRef(null);
+    const setSpeaking = (id) => { speakingMessageIdRef.current = id; setSpeakingMessageId(id); };
 
     const ollamaUrl = (path) => `http://${ollamaHost}:${ollamaPort}${path}`;
 
@@ -85,6 +89,44 @@ export function useChatEngine({
         return () => clearTimeout(handle);
     }, [refreshModels]);
 
+    // Stop only the read-aloud — does NOT abort an in-flight Ollama stream.
+    // Used by the per-message Stop button on assistant bubbles.
+    const stopSpeaking = useCallback(() => {
+        stopChatPlayback();
+        ttsQueueRef.current = Promise.resolve();
+        setSpeaking(null);
+    }, [stopChatPlayback]);
+
+    // Manually start (or restart) read-aloud for a specific assistant message.
+    // Useful when chatAutoTts is off, or to re-read a finished message later.
+    const speakMessage = useCallback((messageId) => {
+        const msg = messagesRef.current.find(m => m.id === messageId);
+        if (!msg || msg.role !== 'assistant' || !msg.content) return;
+
+        // Cancel any current playback + queued sentences before starting fresh.
+        stopChatPlayback();
+        ttsQueueRef.current = Promise.resolve();
+
+        const cleaned = markdownToSpeech(msg.content).trim();
+        if (!cleaned) return;
+        const sentences = cleaned
+            .replace(/\s+/g, ' ')
+            .split(SENTENCE_TERMINATOR)
+            .filter(s => s.trim().length >= MIN_TTS_LENGTH);
+        if (sentences.length === 0) return;
+
+        setSpeaking(messageId);
+        for (const s of sentences) {
+            ttsQueueRef.current = ttsQueueRef.current.then(() => playSentence(s));
+        }
+        // When the queue drains, clear the indicator — but only if we're still
+        // speaking the same message (a later speakMessage / stopSpeaking may have replaced us).
+        const final = ttsQueueRef.current;
+        final.then(() => {
+            if (speakingMessageIdRef.current === messageId) setSpeaking(null);
+        });
+    }, [stopChatPlayback, playSentence]);
+
     const stopStream = useCallback(() => {
         if (abortRef.current) {
             abortRef.current.abort();
@@ -95,6 +137,7 @@ export function useChatEngine({
         stopChatPlayback();
         ttsQueueRef.current = Promise.resolve();
         sentenceBufferRef.current = '';
+        setSpeaking(null);
         setIsStreaming(false);
     }, [stopChatPlayback]);
 
@@ -103,6 +146,7 @@ export function useChatEngine({
         stopChatPlayback();
         ttsQueueRef.current = Promise.resolve();
         sentenceBufferRef.current = '';
+        setSpeaking(null);
         setMessages([]);
     }, [stopStream, stopChatPlayback]);
 
@@ -126,6 +170,10 @@ export function useChatEngine({
         setMessages(prev => [...prev, userMsg, assistantMsg]);
         sentenceBufferRef.current = '';
         setIsStreaming(true);
+        // Track this as the message currently being read aloud so the per-message
+        // Stop button can target it. If auto-TTS is off, leave it null until the
+        // user manually triggers speakMessage().
+        if (chatAutoTts) setSpeaking(assistantId);
 
         const controller = new AbortController();
         abortRef.current = controller;
@@ -204,6 +252,15 @@ export function useChatEngine({
                     sentences.forEach(enqueueTts);
                 }
             }
+            // After all sentences are queued, fire-and-forget a tail handler that
+            // clears the speaking indicator once the queue drains — but only if
+            // we're still speaking this message (a manual override may have replaced us).
+            if (chatAutoTts) {
+                const tail = ttsQueueRef.current;
+                tail.then(() => {
+                    if (speakingMessageIdRef.current === assistantId) setSpeaking(null);
+                });
+            }
             setReachable(true);
         } catch (e) {
             if (e.name === 'AbortError') {
@@ -229,5 +286,9 @@ export function useChatEngine({
         stopStream,
         clearHistory,
         refreshModels,
+        // Per-message read-aloud controls
+        speakingMessageId,
+        speakMessage,
+        stopSpeaking,
     };
 }

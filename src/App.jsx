@@ -122,6 +122,9 @@ export default function App() {
     stopStream: chatStopStream,
     clearHistory: chatClearHistory,
     refreshModels,
+    speakingMessageId,
+    speakMessage,
+    stopSpeaking,
   } = chatEngine;
 
   useKeyboardShortcuts({
@@ -398,6 +401,9 @@ export default function App() {
             reachable={ollamaReachable}
             sendMessage={chatSendMessage}
             stopStream={chatStopStream}
+            speakingMessageId={speakingMessageId}
+            speakMessage={speakMessage}
+            stopSpeaking={stopSpeaking}
           />
         ) : (
         <PdfViewer

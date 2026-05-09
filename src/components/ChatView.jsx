@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Send, Square, Bot, User, Loader2, MessageSquare, Brain, ChevronDown, ChevronRight } from 'lucide-react';
+import { Send, Square, Bot, User, Loader2, MessageSquare, Brain, ChevronDown, ChevronRight, Volume2, StopCircle } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -13,6 +13,9 @@ export default function ChatView({
     reachable,
     sendMessage,
     stopStream,
+    speakingMessageId,
+    speakMessage,
+    stopSpeaking,
 }) {
     const [draft, setDraft] = useState('');
     const listRef = useRef(null);
@@ -68,6 +71,9 @@ export default function ChatView({
                                     theme={theme}
                                     darkMode={darkMode}
                                     isStreamingNow={isStreaming && isLatestAssistant}
+                                    isSpeaking={speakingMessageId === m.id}
+                                    onSpeak={() => speakMessage(m.id)}
+                                    onStopSpeak={stopSpeaking}
                                 />
                             );
                         })}
@@ -126,7 +132,7 @@ export default function ChatView({
     );
 }
 
-function MessageBubble({ message, theme, darkMode, isStreamingNow }) {
+function MessageBubble({ message, theme, darkMode, isStreamingNow, isSpeaking, onSpeak, onStopSpeak }) {
     const isUser = message.role === 'user';
     const Icon = isUser ? User : Bot;
     const hasContent = !!message.content;
@@ -164,6 +170,18 @@ function MessageBubble({ message, theme, darkMode, isStreamingNow }) {
                             <p className={`text-sm ${theme.textMuted} italic`}>…</p>
                         )}
                     </div>
+                )}
+                {!isUser && hasContent && (
+                    <button
+                        onClick={isSpeaking ? onStopSpeak : onSpeak}
+                        className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-bold transition-colors ${isSpeaking
+                            ? 'text-red-500 hover:text-red-600'
+                            : `${theme.textMuted} hover:text-blue-500`}`}
+                        title={isSpeaking ? 'Stop reading' : 'Read aloud'}
+                    >
+                        {isSpeaking ? <StopCircle size={12} /> : <Volume2 size={12} />}
+                        <span>{isSpeaking ? 'Stop' : 'Read aloud'}</span>
+                    </button>
                 )}
             </div>
         </div>
