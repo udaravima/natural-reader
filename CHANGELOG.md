@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-05-09
+
+### Added
+- **Local AI Chat (Ollama integration)** — new top-level Reader↔Chat toggle in the header. Streams responses from a local Ollama server (`/api/chat`), with model picker auto-populated from `/api/tags` and configurable host/port (default `localhost:11434`).
+- **Plain text (.txt) file support** — drag, drop, or pick a `.txt` file to read it the same way as PDFs. Files are paginated into pseudo-pages of ~40 sentences and use the existing TTS, sentence highlight, library, and resume-progress flow. New `TextPageRenderer` component; `fileType` discriminator on library records.
+- **Multi-session chat memory** — every chat is auto-saved to IndexedDB (new `chat_sessions` store, DB migrated to v3). Sessions list in the sidebar with switch / rename / delete; auto-named from the first prompt; LRU-capped at 50 sessions.
+- **Per-session event log** — each session records `sent` / `received` / `aborted` / `error` events with timestamps. Viewable as a collapsible "Session log" section in the sidebar.
+- **Per-message read-aloud controls** — every assistant bubble has a "Read aloud" button to start/stop TTS for that message specifically. Works with auto-TTS off; you can re-read finished messages later.
+- **Per-message copy button** — one-click copy of any chat message (user or assistant) to clipboard, with toast confirmation.
+- **Markdown rendering in chat** — assistant replies render as proper Markdown (lists, code blocks, tables, headings, links) via `react-markdown` + `remark-gfm`. User messages stay plain.
+- **Reasoning model support** — toggle "Enable thinking" in the chat sidebar to send `think: true` to Ollama and surface `message.thinking` traces (for deepseek-r1, qwen3-thinking, gpt-oss, etc.). Thinking renders in a collapsible disclosure that auto-expands while streaming and auto-collapses once the answer arrives.
+- **Streaming vs after-complete TTS modes** — toggle between reading sentences as they stream in, or waiting for the full reply. Mode is locked at message-start so toggling mid-stream applies to the next message.
+- **Markdown-aware TTS** — chat speech strips Markdown markup (`**`, `__`, `#`, fenced code, link URLs) before synthesis, so the audio reads visible text only — no more "star star bold star star".
+- **Collapsible chat sidebar sections** — Settings, Sessions, Conversation, and Session log are independently collapsible with their own scroll containers, plus an outer scroll for the whole sidebar.
+
+### Changed
+- **TTS engine refactor** — extracted reusable `synthesizeText`, `playChatUrl`, `playChatSpeech`, and `stopChatPlayback` helpers; the chat side composes them on its own audio channel (`chatAudioRef`) so chat playback and reader playback can never collide. Reader playback is now gated by an `enabled` prop and pauses automatically when switching to chat mode.
+- **Bounded chat TTS prefetch** — chat synthesis now mirrors the reader's pattern: only the current sentence plus the next two are in flight at any moment. Eliminates the cascading per-sentence timeouts that previously caused chat TTS to stop after a few sentences on long replies.
+- **Centralized toast + IndexedDB transactions** — single transaction in `saveBook`/`updateBookMeta`, fewer round-trips, race-condition-free. Toast helper consolidated in `App.jsx`.
+
+### Fixed
+- **Stop button for chat TTS** — clicking Stop on a chat message now silences audio immediately, drops queued sentences, and resets the playback chain (previously the in-flight sentence and queued ones kept playing).
+- **Long chat replies cutting off mid-message** — the prefetch bound (above) prevents Kokoro's serialized inference from timing out queued sentences and silently skipping them. Replies after horizontal rules and other mid-message structure now read all the way through.
+
 ## [1.3.0] - 2026-03-05
 
 ### Added

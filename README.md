@@ -1,23 +1,24 @@
-# Neural PDF Reader
+# Neural Reader
 
-A modern, feature-rich PDF reader with **neural text-to-speech** powered by **[Kokoro TTS](https://github.com/hexgrad/kokoro)**. Upload PDFs and have them read aloud with natural-sounding neural voices.
+A modern, feature-rich document reader with **neural text-to-speech** powered by **[Kokoro TTS](https://github.com/hexgrad/kokoro)** and an **optional local-AI chat mode** powered by **[Ollama](https://ollama.com/)**. Open PDFs or `.txt` files, have them read aloud with natural-sounding voices, or chat with a local LLM and have its replies streamed back as speech.
 
-> 🎯 **This project is a web frontend for Kokoro TTS.** It provides an intuitive interface for reading PDF documents aloud using Kokoro's neural voice synthesis. A browser-based fallback mode is also available for testing without the backend.
+> 🎯 **A web frontend for Kokoro TTS — now with a built-in Ollama chat side-mode.** The reader provides an intuitive interface for reading PDF and plain-text documents aloud using Kokoro's neural voice synthesis. The chat mode talks to a local Ollama server you run yourself, with the same voice pipeline reading replies back to you. A browser-based Web Speech fallback is also available for testing without either backend.
 
-![Neural Reader](https://img.shields.io/badge/React-19.x-blue) ![PDF.js](https://img.shields.io/badge/PDF.js-5.x-orange) ![Kokoro TTS](https://img.shields.io/badge/Kokoro-TTS-green) ![Vite](https://img.shields.io/badge/Vite-Rolldown-purple) ![Offline](https://img.shields.io/badge/Offline-Ready-brightgreen)
+![Neural Reader](https://img.shields.io/badge/React-19.x-blue) ![PDF.js](https://img.shields.io/badge/PDF.js-5.x-orange) ![Kokoro TTS](https://img.shields.io/badge/Kokoro-TTS-green) ![Ollama](https://img.shields.io/badge/Ollama-Chat-orange) ![Vite](https://img.shields.io/badge/Vite-Rolldown-purple) ![Offline](https://img.shields.io/badge/Offline-Ready-brightgreen)
 
-> 🔌 **Works 100% Offline!** Once installed, the app runs completely without internet. PDF.js is bundled locally, and Kokoro TTS runs on your machine.
+> 🔌 **Works 100% Offline!** Once installed, the app runs completely without internet. PDF.js is bundled locally, and Kokoro TTS / Ollama run on your machine.
 
 ---
 
 ## ✨ Features
 
-### 📖 PDF Viewing
-- **Drag & Drop Upload** — Drop PDFs directly onto the window
+### 📖 Document Viewing
+- **Drag & Drop Upload** — Drop PDFs or `.txt` files directly onto the window
 - **PDF Rendering** — Smooth page-by-page rendering with zoom controls
+- **Plain Text (.txt) Support** — Text files are paginated into pseudo-pages (~40 sentences) and use the same reading pipeline as PDFs (sentence highlight, library, resume progress, selection-read)
 - **Table of Contents** — Navigate using the PDF's chapter outline (if available)
 - **Text Selection** — Select text directly on the rendered page for copying or reading
-- **Zoom Controls** — Zoom in/out, fit to page, fit to width
+- **Zoom Controls** — Zoom in/out, fit to page, fit to width (font size for `.txt`)
 - **Page Jump** — Click the page indicator and type any page number
 
 ### 🎙️ Text-to-Speech
@@ -33,6 +34,18 @@ A modern, feature-rich PDF reader with **neural text-to-speech** powered by **[K
 - **Browser Fallback** — Uses Web Speech API when backend is unavailable
 - **Auto-Failover** — Automatically switches to browser voice if backend is unreachable
 
+### 💬 Local AI Chat (Ollama)
+- **Reader ↔ Chat Toggle** — Switch the main view between document reader and chat mode from the header
+- **Streaming Replies** — Token-by-token streaming from a local Ollama server (`/api/chat`)
+- **Model Picker** — Auto-populated from `/api/tags`; configurable host/port (defaults to `localhost:11434`)
+- **Chat TTS** — Replies are read aloud through the same Kokoro pipeline, with bounded prefetch to avoid gaps
+- **Streaming vs After-Complete TTS** — Read sentences as they stream in, or wait for the full reply before reading
+- **Per-Message Read Aloud** — A `🔊 Read aloud` / `■ Stop` button on every assistant bubble — works even with auto-TTS off, or to re-read finished messages later
+- **Markdown Rendering** — Lists, code blocks, tables, headings, links render natively in chat bubbles
+- **Markdown-Aware TTS** — Markup is stripped before synthesis so audio reads visible text only (no "star star bold")
+- **Reasoning Trace Toggle** — Enable thinking to send `think: true` to Ollama and see reasoning trace (deepseek-r1, qwen3-thinking, gpt-oss, …) in a collapsible disclosure that auto-expands while streaming
+- **Per-Message Copy** — One-click copy of any chat message to clipboard
+
 ### 🎨 User Experience
 - **Dark Mode** — Beautiful dark/light theme toggle with smooth transitions
 - **Sentence Highlighting** — Visual highlighting of the current sentence during playback
@@ -40,27 +53,31 @@ A modern, feature-rich PDF reader with **neural text-to-speech** powered by **[K
 - **Reading Progress** — Visual progress bar showing page completion percentage
 - **Estimated Time** — Shows remaining reading time for the current page
 - **Responsive Layout** — Full mobile support with dedicated bottom navigation
-- **Collapsible Settings** — Clean, toggle-able settings panel in the sidebar
+- **Collapsible Sidebar Sections** — Settings, Sessions, Conversation, and Session log are independently collapsible with their own scroll containers
 - **Toast Notifications** — Informative feedback for user actions
 
 ### 💾 Memory & Persistence
-- **Library (IndexedDB)** — PDFs saved locally for instant resume (up to 5 books)
-- **One-Click Resume** — Click any book in the library to continue reading
-- **Settings Saved** — Voice, speed, volume, zoom, theme, and API settings persist across sessions
-- **Reading Progress** — Remembers your position in each PDF (page + sentence)
+- **Document Library (IndexedDB)** — PDFs and `.txt` files saved locally for instant resume (up to 5 docs)
+- **Chat Sessions (IndexedDB)** — Every chat is auto-saved; switch / rename / delete from the sidebar; auto-named from the first prompt; LRU-capped at 50 sessions
+- **Per-Session Event Log** — `sent`, `received`, `aborted`, `error` events with timestamps, viewable as a collapsible log
+- **One-Click Resume** — Click any document in the library to continue reading
+- **Settings Saved** — Voice, speed, volume, zoom, theme, Ollama host/port, model, TTS mode all persist across sessions
+- **Reading Progress** — Remembers your position in each document (page + sentence)
 
 ### ⌨️ Keyboard Shortcuts
-| Key | Action |
-|-----|--------|
-| `Space` | Play / Pause |
-| `Escape` | Stop playback |
-| `Shift + ←` | Previous sentence |
-| `Shift + →` | Next sentence |
-| `Page Up` | Previous page |
-| `Page Down` | Next page |
-| `Ctrl + +` | Zoom in |
-| `Ctrl + -` | Zoom out |
-| `Ctrl + D` | Toggle dark mode |
+| Key | Action | Mode |
+|-----|--------|------|
+| `Space` | Play / Pause | Reader only |
+| `Escape` | Stop playback | Reader only |
+| `Shift + ←` | Previous sentence | Reader only |
+| `Shift + →` | Next sentence | Reader only |
+| `Page Up` | Previous page | Reader only |
+| `Page Down` | Next page | Reader only |
+| `Ctrl + +` | Zoom in | Both |
+| `Ctrl + -` | Zoom out | Both |
+| `Ctrl + D` | Toggle dark mode | Both |
+| `Enter` | Send message | Chat (in prompt box) |
+| `Shift + Enter` | New line in prompt | Chat (in prompt box) |
 
 ---
 
@@ -70,11 +87,13 @@ A modern, feature-rich PDF reader with **neural text-to-speech** powered by **[K
 |-------|------------|
 | **Frontend** | React 19, Vite (Rolldown) |
 | **PDF Parsing** | PDF.js 5.x (bundled locally) |
+| **Markdown** | `react-markdown` + `remark-gfm` (chat replies) |
 | **Styling** | Tailwind CSS 4.x |
 | **Icons** | Lucide React |
-| **Storage** | localStorage + IndexedDB |
-| **Backend** | FastAPI, Kokoro ONNX, Uvicorn |
-| **Inference** | ONNX Runtime (CUDA / OpenVINO / CPU) |
+| **Storage** | localStorage + IndexedDB (`books` + `chat_sessions` stores) |
+| **TTS Backend** | FastAPI, Kokoro ONNX, Uvicorn |
+| **TTS Inference** | ONNX Runtime (CUDA / OpenVINO / CPU) |
+| **Chat Backend (optional)** | [Ollama](https://ollama.com/) — local LLM server (default `:11434`) |
 
 ---
 
@@ -124,6 +143,19 @@ npm run dev
 ```
 
 Open **http://localhost:5173** in your browser.
+
+### 4. (Optional) Local AI Chat with Ollama
+
+The chat mode talks to a locally running [Ollama](https://ollama.com/) server. Reader mode works without it — chat is purely opt-in.
+
+```bash
+# Install Ollama (https://ollama.com/download), then pull a model
+ollama pull gemma3
+# Reasoning model that produces a thinking trace
+ollama pull deepseek-r1:1.5b
+```
+
+Ollama serves at `http://localhost:11434` by default. In the app, toggle to **Chat** in the header — host/port and model picker live in the chat sidebar.
 
 ### Hardware Acceleration
 
@@ -265,23 +297,29 @@ natural-reader/
 ├── src/
 │   ├── App.jsx                # Main application — wires hooks and components
 │   ├── main.jsx               # React entry point
-│   ├── constants.js           # Voice definitions and keyboard shortcut config
-│   ├── db.js                  # IndexedDB utilities for PDF library persistence
+│   ├── constants.js           # Voice definitions, keyboard shortcuts, Ollama defaults
+│   ├── db.js                  # IndexedDB: document library + chat sessions (v3)
 │   ├── index.css              # Global styles (Tailwind)
 │   ├── hooks/
-│   │   ├── usePdfEngine.js    # PDF loading, rendering, text extraction, library
-│   │   ├── useTtsEngine.js    # TTS playback loop, caching, voice preview, download
+│   │   ├── usePdfEngine.js       # PDF + .txt loading, rendering, text extraction, library
+│   │   ├── useTtsEngine.js       # TTS playback loop, caching, voice preview, chat audio channel
+│   │   ├── useChatEngine.js      # Ollama streaming, sessions, per-session event log, chat TTS queue
 │   │   ├── usePersistedState.js  # localStorage-backed state + reading progress
 │   │   ├── useKeyboardShortcuts.js
 │   │   ├── useMobileDetect.js
 │   │   └── useTheme.js
+│   ├── utils/
+│   │   └── markdownToSpeech.js   # Strips Markdown markup before chat TTS synthesis
 │   └── components/
-│       ├── Header.jsx         # Top toolbar with playback controls
-│       ├── Sidebar.jsx        # Sentence list, chapters, settings, voice picker
-│       ├── PdfViewer.jsx      # Canvas renderer, text layer, page navigation
+│       ├── Header.jsx            # Top toolbar with Reader/Chat toggle + playback controls
+│       ├── Sidebar.jsx           # Reader sidebar: sentence list, chapters, settings, voice picker
+│       ├── ChatSidebar.jsx       # Chat sidebar: Ollama config, model picker, sessions, log
+│       ├── PdfViewer.jsx         # Branches between PDF canvas and TextPageRenderer
+│       ├── TextPageRenderer.jsx  # Renders a .txt pseudo-page with sentence highlighting
+│       ├── ChatView.jsx          # Chat message list, prompt box, per-message read aloud + copy
 │       ├── MobileBottomNav.jsx
-│       ├── WelcomeScreen.jsx  # Library and upload landing page
-│       └── overlays/          # Drag, toast, context menu, shortcuts modal, etc.
+│       ├── WelcomeScreen.jsx     # Library and upload landing page
+│       └── overlays/             # Drag, toast, context menu, shortcuts modal, etc.
 ├── server/
 │   ├── __init__.py
 │   ├── app.py                 # FastAPI app factory with CORS
