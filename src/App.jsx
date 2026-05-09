@@ -103,13 +103,14 @@ export default function App() {
     handlePlayPause, stopPlayback, skipToNextSentence,
     readSelection, stopSelectionRead,
     previewVoice, stopVoicePreview, downloadPageAudio, clearCache,
-    playSentence, stopChatPlayback,
+    synthesizeText, playChatUrl, playChatSpeech, stopChatPlayback,
   } = ttsEngine;
 
   const chatEngine = useChatEngine({
     ollamaHost, ollamaPort, selectedModel,
     chatTtsMode, chatAutoTts, enableThinking,
-    playSentence, stopChatPlayback,
+    isLocalhost, selectedVoice, playbackSpeed, requestTimeout,
+    synthesizeText, playChatUrl, playChatSpeech, stopChatPlayback,
     showToast,
   });
 

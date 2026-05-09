@@ -8,10 +8,17 @@ const MIN_TTS_LENGTH = 5;
  * Drives a streaming chat against a local Ollama server.
  *
  * Streaming mode reads NDJSON chunks from /api/chat, appends tokens to the
- * latest assistant message, and flushes complete sentences from a buffer
- * to the TTS queue as they form. After-complete mode skips per-token TTS
- * and segments the full reply once streaming finishes. The TTS queue is a
- * FIFO promise chain so sentences play in order on a single audio channel.
+ * latest assistant message, and flushes complete sentences as they form.
+ * After-complete mode skips per-token TTS and segments the full reply once
+ * streaming finishes.
+ *
+ * TTS queue design (mirrors useTtsEngine's reader pattern):
+ *   - Each enqueued sentence kicks off Kokoro synthesis IMMEDIATELY (parallel),
+ *     storing the in-flight promise on the queue item.
+ *   - A single playback loop awaits items in order — by the time it reaches
+ *     item N+1, its synthesis is (likely) already complete, eliminating the
+ *     audible gap that the old FIFO `then`-chain produced.
+ *   - Single chat audio element is reused; volume/speed read at play time.
  */
 export function useChatEngine({
     ollamaHost,
@@ -20,8 +27,14 @@ export function useChatEngine({
     chatTtsMode,        // 'streaming' | 'after-complete'
     chatAutoTts,        // bool — disables TTS entirely
     enableThinking,     // bool — sends `think: true` to Ollama and surfaces message.thinking
-    playSentence,       // (text) => Promise<void>  — from useTtsEngine
-    stopChatPlayback,   // () => void
+    isLocalhost,        // bool — true means use Kokoro, false means Web Speech fallback
+    selectedVoice,
+    playbackSpeed,
+    requestTimeout,
+    synthesizeText,     // from useTtsEngine — returns Promise<blobUrl|null>
+    playChatUrl,        // from useTtsEngine — plays a pre-fetched blob URL
+    playChatSpeech,     // from useTtsEngine — Web Speech API fallback
+    stopChatPlayback,   // from useTtsEngine — silences chat audio + speech synthesis
     showToast,
 }) {
     const [messages, setMessages] = useState([]);
@@ -31,7 +44,6 @@ export function useChatEngine({
     const [speakingMessageId, setSpeakingMessageId] = useState(null); // which assistant msg is being read aloud
 
     const abortRef = useRef(null);
-    const ttsQueueRef = useRef(Promise.resolve());
     const sentenceBufferRef = useRef('');
     const messagesRef = useRef([]);
     messagesRef.current = messages;
@@ -39,15 +51,88 @@ export function useChatEngine({
     const speakingMessageIdRef = useRef(null);
     const setSpeaking = (id) => { speakingMessageIdRef.current = id; setSpeakingMessageId(id); };
 
+    // Prefetched playback queue. Each item:
+    //   { kind: 'kokoro', urlPromise: Promise<blobUrl|null> }
+    //   { kind: 'fallback', text: string }
+    const chatQueueRef = useRef([]);
+    const chatPlayingRef = useRef(false);
+    const chatPlaybackPromiseRef = useRef(Promise.resolve());
+
     const ollamaUrl = (path) => `http://${ollamaHost}:${ollamaPort}${path}`;
+
+    // Read latest values via refs so the playback loop and queued items pick up
+    // voice/speed/volume changes for not-yet-fetched items without re-creating callbacks.
+    const ttsParamsRef = useRef({});
+    ttsParamsRef.current = { isLocalhost, selectedVoice, playbackSpeed, requestTimeout };
+
+    // Drain the queue serially. Each iteration awaits the next item's already-in-flight
+    // synthesis, then plays it. New items pushed during playback are picked up.
+    const runChatPlayback = useCallback(async () => {
+        while (chatQueueRef.current.length > 0) {
+            if (!chatPlayingRef.current) return; // cancelled (stopSpeaking / speakMessage)
+            const item = chatQueueRef.current.shift();
+            try {
+                if (item.kind === 'kokoro') {
+                    const url = await item.urlPromise;
+                    if (!chatPlayingRef.current) {
+                        if (url) URL.revokeObjectURL(url);
+                        return;
+                    }
+                    if (!url) continue; // synthesis failed silently — skip and keep going
+                    await playChatUrl(url);
+                    URL.revokeObjectURL(url);
+                } else {
+                    if (!chatPlayingRef.current) return;
+                    await playChatSpeech(item.text);
+                }
+            } catch (e) {
+                console.error('Chat TTS playback error:', e);
+            }
+        }
+        chatPlayingRef.current = false;
+    }, [playChatUrl, playChatSpeech]);
+
+    const ensurePlaybackRunning = useCallback(() => {
+        if (chatPlayingRef.current) return;
+        chatPlayingRef.current = true;
+        chatPlaybackPromiseRef.current = runChatPlayback();
+    }, [runChatPlayback]);
+
+    // Build a queue item by kicking off synthesis (or wrapping fallback text).
+    const makeQueueItem = useCallback((spoken) => {
+        const { isLocalhost, selectedVoice, playbackSpeed, requestTimeout } = ttsParamsRef.current;
+        if (!isLocalhost) {
+            return { kind: 'fallback', text: spoken };
+        }
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
+        const urlPromise = synthesizeText(spoken, {
+            voice: selectedVoice,
+            speed: playbackSpeed,
+            signal: controller.signal,
+        }).finally(() => clearTimeout(timeoutId));
+        return { kind: 'kokoro', urlPromise };
+    }, [synthesizeText]);
 
     const enqueueTts = useCallback((text) => {
         if (!chatAutoTts) return;
         // Strip markdown markup so the TTS doesn't vocalize "star star bold".
         const spoken = markdownToSpeech(text).trim();
         if (spoken.length < MIN_TTS_LENGTH) return;
-        ttsQueueRef.current = ttsQueueRef.current.then(() => playSentence(spoken));
-    }, [chatAutoTts, playSentence]);
+        chatQueueRef.current.push(makeQueueItem(spoken));
+        ensurePlaybackRunning();
+    }, [chatAutoTts, makeQueueItem, ensurePlaybackRunning]);
+
+    // Drop any pending Kokoro URLs in the queue when we cancel — they'd leak otherwise.
+    const drainQueueAndRevoke = () => {
+        const items = chatQueueRef.current;
+        chatQueueRef.current = [];
+        for (const item of items) {
+            if (item.kind === 'kokoro') {
+                item.urlPromise.then(url => { if (url) URL.revokeObjectURL(url); }).catch(() => {});
+            }
+        }
+    };
 
     // Flush any complete sentences from the rolling buffer; keep the trailing
     // partial fragment for the next chunk.
@@ -92,8 +177,9 @@ export function useChatEngine({
     // Stop only the read-aloud — does NOT abort an in-flight Ollama stream.
     // Used by the per-message Stop button on assistant bubbles.
     const stopSpeaking = useCallback(() => {
-        stopChatPlayback();
-        ttsQueueRef.current = Promise.resolve();
+        chatPlayingRef.current = false;     // signals runChatPlayback to exit on its next iteration
+        drainQueueAndRevoke();
+        stopChatPlayback();                 // pauses current audio + speech synthesis
         setSpeaking(null);
     }, [stopChatPlayback]);
 
@@ -104,8 +190,7 @@ export function useChatEngine({
         if (!msg || msg.role !== 'assistant' || !msg.content) return;
 
         // Cancel any current playback + queued sentences before starting fresh.
-        stopChatPlayback();
-        ttsQueueRef.current = Promise.resolve();
+        stopSpeaking();
 
         const cleaned = markdownToSpeech(msg.content).trim();
         if (!cleaned) return;
@@ -116,39 +201,37 @@ export function useChatEngine({
         if (sentences.length === 0) return;
 
         setSpeaking(messageId);
+        // Eagerly fire synthesis for ALL sentences in parallel — Kokoro serializes
+        // server-side anyway, so the first finishes quickly and later ones overlap
+        // with playback of earlier ones. No audible gaps.
         for (const s of sentences) {
-            ttsQueueRef.current = ttsQueueRef.current.then(() => playSentence(s));
+            chatQueueRef.current.push(makeQueueItem(s));
         }
+        ensurePlaybackRunning();
         // When the queue drains, clear the indicator — but only if we're still
         // speaking the same message (a later speakMessage / stopSpeaking may have replaced us).
-        const final = ttsQueueRef.current;
-        final.then(() => {
+        chatPlaybackPromiseRef.current.then(() => {
             if (speakingMessageIdRef.current === messageId) setSpeaking(null);
         });
-    }, [stopChatPlayback, playSentence]);
+    }, [stopSpeaking, makeQueueItem, ensurePlaybackRunning]);
 
     const stopStream = useCallback(() => {
         if (abortRef.current) {
             abortRef.current.abort();
             abortRef.current = null;
         }
-        // Hard stop: silence current audio, drop any queued sentences, reset the chain.
+        // Hard stop: silence current audio, drop any queued sentences, reset playback state.
         // The user wants silence, not a partial sentence finishing.
-        stopChatPlayback();
-        ttsQueueRef.current = Promise.resolve();
+        stopSpeaking();
         sentenceBufferRef.current = '';
-        setSpeaking(null);
         setIsStreaming(false);
-    }, [stopChatPlayback]);
+    }, [stopSpeaking]);
 
     const clearHistory = useCallback(() => {
         stopStream();
-        stopChatPlayback();
-        ttsQueueRef.current = Promise.resolve();
         sentenceBufferRef.current = '';
-        setSpeaking(null);
         setMessages([]);
-    }, [stopStream, stopChatPlayback]);
+    }, [stopStream]);
 
     const sendMessage = useCallback(async (userText) => {
         const trimmed = userText?.trim();
@@ -256,8 +339,7 @@ export function useChatEngine({
             // clears the speaking indicator once the queue drains — but only if
             // we're still speaking this message (a manual override may have replaced us).
             if (chatAutoTts) {
-                const tail = ttsQueueRef.current;
-                tail.then(() => {
+                chatPlaybackPromiseRef.current.then(() => {
                     if (speakingMessageIdRef.current === assistantId) setSpeaking(null);
                 });
             }

@@ -111,6 +111,32 @@ export function useTtsEngine({
         window.speechSynthesis.cancel();
     }, []);
 
+    // Play an already-fetched audio blob URL on the chat audio channel; resolves on end/error.
+    // Used by the chat playback loop so synthesis can be prefetched (mirrors reader's pattern).
+    const playChatUrl = useCallback((url) => {
+        return new Promise((resolve) => {
+            if (!url) { resolve(); return; }
+            chatAudioRef.current.volume = volume;
+            chatAudioRef.current.src = url;
+            chatAudioRef.current.onended = () => resolve();
+            chatAudioRef.current.onerror = () => resolve();
+            chatAudioRef.current.play().catch(() => resolve());
+        });
+    }, [volume]);
+
+    // Play a fallback (Web Speech API) utterance; resolves on end/error.
+    const playChatSpeech = useCallback((text) => {
+        return new Promise((resolve) => {
+            if (!text || !text.trim()) { resolve(); return; }
+            const ut = new SpeechSynthesisUtterance(text);
+            ut.rate = playbackSpeed;
+            ut.volume = volume;
+            ut.onend = () => resolve();
+            ut.onerror = () => resolve();
+            window.speechSynthesis.speak(ut);
+        });
+    }, [playbackSpeed, volume]);
+
     // --- VOLUME CONTROL ---
     useEffect(() => {
         audioRef.current.volume = volume;
@@ -509,7 +535,13 @@ export function useTtsEngine({
 
         // Reusable helpers (used by useChatEngine for AI response playback)
         synthesizeText,
-        playSentence,
+        playSentence,        // legacy synth+play (kept for any callers that want both in one)
+        playChatUrl,         // play a pre-fetched blob URL on the chat audio channel
+        playChatSpeech,      // Web Speech API fallback for !isLocalhost
         stopChatPlayback,
+        isLocalhost,
+        selectedVoice,
+        playbackSpeed,
+        requestTimeout,
     };
 }
