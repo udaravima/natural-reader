@@ -126,6 +126,13 @@ export default function App() {
     speakingMessageId,
     speakMessage,
     stopSpeaking,
+    sessions: chatSessions,
+    activeSessionId: chatActiveSessionId,
+    events: chatEvents,
+    newSession: chatNewSession,
+    switchToSession: chatSwitchToSession,
+    deleteSession: chatDeleteSession,
+    renameSession: chatRenameSession,
   } = chatEngine;
 
   useKeyboardShortcuts({
@@ -338,6 +345,7 @@ export default function App() {
         {inChat ? (
           <ChatSidebar
             theme={theme}
+            darkMode={darkMode}
             effectiveIsMobile={effectiveIsMobile}
             sidebarOpen={sidebarOpen}
             ollamaHost={ollamaHost} setOllamaHost={setOllamaHost}
@@ -351,6 +359,13 @@ export default function App() {
             enableThinking={enableThinking} setEnableThinking={setEnableThinking}
             messages={chatMessages}
             clearHistory={chatClearHistory}
+            sessions={chatSessions}
+            activeSessionId={chatActiveSessionId}
+            events={chatEvents}
+            newSession={chatNewSession}
+            switchToSession={chatSwitchToSession}
+            deleteSession={chatDeleteSession}
+            renameSession={chatRenameSession}
           />
         ) : (
         <Sidebar
@@ -405,6 +420,7 @@ export default function App() {
             speakingMessageId={speakingMessageId}
             speakMessage={speakMessage}
             stopSpeaking={stopSpeaking}
+            showToast={showToast}
           />
         ) : (
         <PdfViewer

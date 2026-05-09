@@ -1,8 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { markdownToSpeech } from '../utils/markdownToSpeech';
+import {
+    saveSession as dbSaveSession,
+    getSession as dbGetSession,
+    getRecentSessions as dbGetRecentSessions,
+    deleteSession as dbDeleteSession,
+} from '../db';
 
 const SENTENCE_TERMINATOR = /(?<=[.!?])\s+/;
 const MIN_TTS_LENGTH = 5;
+const MAX_TITLE_LENGTH = 60;
+
+const newSessionId = () => `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const titleFromPrompt = (text) => {
+    const oneLine = (text || '').replace(/\s+/g, ' ').trim();
+    return oneLine.length > MAX_TITLE_LENGTH
+        ? oneLine.slice(0, MAX_TITLE_LENGTH - 1) + '…'
+        : (oneLine || 'New chat');
+};
 
 /**
  * Drives a streaming chat against a local Ollama server.
@@ -57,6 +72,16 @@ export function useChatEngine({
     const chatQueueRef = useRef([]);
     const chatPlayingRef = useRef(false);
     const chatPlaybackPromiseRef = useRef(Promise.resolve());
+
+    // Session state — list metadata stays in React state for the sidebar; the
+    // currently-loaded session's full record (including events log) sits in a ref
+    // because we mutate it on every event without re-rendering.
+    const [sessions, setSessions] = useState([]); // metadata only (no messages/events)
+    const [activeSessionId, setActiveSessionId] = useState(null);
+    const activeSessionIdRef = useRef(null);
+    const [events, setEvents] = useState([]); // events for the active session
+    const eventsRef = useRef([]);              // mirror used inside async callbacks
+    const createdAtRef = useRef(null);         // start timestamp of the active session
 
     const ollamaUrl = (path) => `http://${ollamaHost}:${ollamaPort}${path}`;
 
@@ -133,6 +158,108 @@ export function useChatEngine({
             }
         }
     };
+
+    // ----- SESSION MANAGEMENT -----
+    const setActive = (id) => { activeSessionIdRef.current = id; setActiveSessionId(id); };
+
+    const refreshSessions = useCallback(async () => {
+        const list = await dbGetRecentSessions();
+        setSessions(list);
+    }, []);
+
+    // Append an event to the in-memory log for the active session.
+    // Persisted alongside messages on next saveActiveSession() call.
+    const logEvent = useCallback((kind, message) => {
+        const entry = { ts: Date.now(), kind, message: message || '' };
+        eventsRef.current = [...eventsRef.current, entry];
+        setEvents(eventsRef.current);
+    }, []);
+
+    // Persist the active session — must be called with the latest messages array.
+    const saveActiveSession = useCallback(async (overrides = {}) => {
+        const id = activeSessionIdRef.current;
+        if (!id) return;
+        const record = {
+            id,
+            title: overrides.title ?? sessions.find(s => s.id === id)?.title ?? 'New chat',
+            model: overrides.model ?? selectedModel ?? '',
+            createdAt: createdAtRef.current || Date.now(),
+            messages: messagesRef.current,
+            events: eventsRef.current,
+        };
+        await dbSaveSession(record);
+        await refreshSessions();
+    }, [sessions, selectedModel, refreshSessions]);
+
+    // Load an existing session into the active view. Stops anything currently playing.
+    const switchToSession = useCallback(async (id) => {
+        if (!id) return;
+        // Cancel anything in flight before swapping content.
+        if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
+        chatPlayingRef.current = false;
+        drainQueueAndRevoke();
+        stopChatPlayback();
+        setSpeaking(null);
+        sentenceBufferRef.current = '';
+
+        const record = await dbGetSession(id);
+        if (!record) {
+            // Stale id — drop it.
+            setActive(null);
+            eventsRef.current = [];
+            setEvents([]);
+            return;
+        }
+        setMessages(record.messages || []);
+        eventsRef.current = record.events || [];
+        setEvents(eventsRef.current);
+        createdAtRef.current = record.createdAt || Date.now();
+        setActive(id);
+        setIsStreaming(false);
+    }, [stopChatPlayback]);
+
+    // Reset the chat view without deleting any saved sessions.
+    const newSession = useCallback(() => {
+        if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
+        chatPlayingRef.current = false;
+        drainQueueAndRevoke();
+        stopChatPlayback();
+        setSpeaking(null);
+        sentenceBufferRef.current = '';
+
+        setMessages([]);
+        eventsRef.current = [];
+        setEvents([]);
+        createdAtRef.current = null;
+        setActive(null);
+        setIsStreaming(false);
+    }, [stopChatPlayback]);
+
+    const deleteSession = useCallback(async (id) => {
+        await dbDeleteSession(id);
+        await refreshSessions();
+        if (activeSessionIdRef.current === id) {
+            // The active session was deleted — start fresh.
+            newSession();
+        }
+    }, [refreshSessions, newSession]);
+
+    const renameSession = useCallback(async (id, newTitle) => {
+        const record = await dbGetSession(id);
+        if (!record) return;
+        const trimmed = (newTitle || '').trim();
+        if (!trimmed) return;
+        record.title = trimmed.slice(0, MAX_TITLE_LENGTH);
+        record.updatedAt = Date.now();
+        await dbSaveSession(record);
+        await refreshSessions();
+    }, [refreshSessions]);
+
+    // On mount, load the sessions list. Don't auto-load any session — start blank
+    // (matches the "auto-create on first message" UX choice).
+    useEffect(() => {
+        refreshSessions();
+    }, [refreshSessions]);
 
     // Flush any complete sentences from the rolling buffer; keep the trailing
     // partial fragment for the next chunk.
@@ -227,11 +354,11 @@ export function useChatEngine({
         setIsStreaming(false);
     }, [stopSpeaking]);
 
+    // "Clear" in the sidebar starts a fresh blank session view. The active
+    // session (if any) is preserved on disk and accessible via the sessions list.
     const clearHistory = useCallback(() => {
-        stopStream();
-        sentenceBufferRef.current = '';
-        setMessages([]);
-    }, [stopStream]);
+        newSession();
+    }, [newSession]);
 
     const sendMessage = useCallback(async (userText) => {
         const trimmed = userText?.trim();
@@ -250,9 +377,21 @@ export function useChatEngine({
         const modeForThisMsg = chatTtsMode;
         const thinkForThisMsg = !!enableThinking;
 
+        // Auto-create a session if this is the first message.
+        let sessionTitleSet = false;
+        if (!activeSessionIdRef.current) {
+            const id = newSessionId();
+            createdAtRef.current = Date.now();
+            eventsRef.current = [];
+            setEvents([]);
+            setActive(id);
+            sessionTitleSet = true; // we'll set the title from this prompt below
+        }
+
         setMessages(prev => [...prev, userMsg, assistantMsg]);
         sentenceBufferRef.current = '';
         setIsStreaming(true);
+        logEvent('sent', `prompt: ${titleFromPrompt(trimmed)}`);
         // Track this as the message currently being read aloud so the per-message
         // Stop button can target it. If auto-TTS is off, leave it null until the
         // user manually triggers speakMessage().
@@ -344,20 +483,29 @@ export function useChatEngine({
                 });
             }
             setReachable(true);
+            logEvent('received', `assistant reply (${(messagesRef.current.find(m => m.id === assistantId)?.content || '').length} chars)`);
         } catch (e) {
             if (e.name === 'AbortError') {
-                // Stop was called — assistant message keeps whatever streamed.
+                logEvent('aborted', 'user stopped the stream');
             } else {
                 console.error('Chat error:', e);
                 setReachable(false);
                 showToast?.(`Chat failed: ${e.message}`, 5000);
+                logEvent('error', e.message);
             }
         } finally {
             abortRef.current = null;
             setIsStreaming(false);
+            // Persist after each turn so the session list/log stay current.
+            saveActiveSession({
+                title: sessionTitleSet ? titleFromPrompt(trimmed) : undefined,
+                model: selectedModel,
+            }).catch(err => console.error('Session save failed:', err));
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, enableThinking, ollamaHost, ollamaPort, flushBufferedSentences, enqueueTts]);
+    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, enableThinking, ollamaHost, ollamaPort, flushBufferedSentences, enqueueTts, logEvent, saveActiveSession]);
+
+    const activeSession = sessions.find(s => s.id === activeSessionId) || null;
 
     return {
         messages,
@@ -372,5 +520,14 @@ export function useChatEngine({
         speakingMessageId,
         speakMessage,
         stopSpeaking,
+        // Sessions + per-session event log
+        sessions,
+        activeSessionId,
+        activeSession,
+        events,
+        newSession,
+        switchToSession,
+        deleteSession,
+        renameSession,
     };
 }

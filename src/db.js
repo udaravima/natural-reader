@@ -4,9 +4,11 @@
  */
 
 const DB_NAME = 'neural-pdf-library';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_NAME = 'books';
+const SESSIONS_STORE = 'chat_sessions';
 const MAX_BOOKS = 5; // Keep last 5 books
+const MAX_SESSIONS = 50; // Cap chat history at 50 sessions (LRU by updatedAt)
 
 // Derive fileType from a File object's name/MIME type
 export const detectFileType = (file) => {
@@ -44,6 +46,13 @@ const openDB = () => {
                     }
                     cursor.continue();
                 };
+            }
+            // v2 → v3: add chat sessions store
+            if (event.oldVersion < 3) {
+                if (!db.objectStoreNames.contains(SESSIONS_STORE)) {
+                    const sessionsStore = db.createObjectStore(SESSIONS_STORE, { keyPath: 'id' });
+                    sessionsStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+                }
             }
         };
     });
@@ -238,6 +247,122 @@ const cleanupOldBooks = async (store) => {
                 const request = store.delete(book.fileName);
                 request.onsuccess = resolve;
                 request.onerror = resolve; // Continue even on error
+            });
+        }
+    }
+};
+
+// =====================================================================
+// CHAT SESSIONS
+// Each session record:
+//   { id, title, model, createdAt, updatedAt, messages: [...], events: [...] }
+// `messages` is the full chat history; `events` is a per-session log
+// (sent / received / aborted / error). The recents listing strips both
+// for cheap rendering.
+// =====================================================================
+
+export const saveSession = async (session) => {
+    if (!session?.id) return false;
+    try {
+        const db = await openDB();
+        const record = { ...session, updatedAt: Date.now() };
+        const tx = db.transaction(SESSIONS_STORE, 'readwrite');
+        const store = tx.objectStore(SESSIONS_STORE);
+        await new Promise((resolve, reject) => {
+            const req = store.put(record);
+            req.onsuccess = resolve;
+            req.onerror = () => reject(req.error);
+        });
+        await cleanupOldSessions(store);
+        db.close();
+        return true;
+    } catch (e) {
+        console.error('Failed to save chat session:', e);
+        return false;
+    }
+};
+
+export const getSession = async (id) => {
+    if (!id) return null;
+    try {
+        const db = await openDB();
+        const tx = db.transaction(SESSIONS_STORE, 'readonly');
+        const store = tx.objectStore(SESSIONS_STORE);
+        const result = await new Promise((resolve, reject) => {
+            const req = store.get(id);
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+        db.close();
+        return result || null;
+    } catch (e) {
+        console.error('Failed to get chat session:', e);
+        return null;
+    }
+};
+
+// List all sessions (metadata only — no messages or events) sorted newest-first.
+export const getRecentSessions = async () => {
+    try {
+        const db = await openDB();
+        const tx = db.transaction(SESSIONS_STORE, 'readonly');
+        const store = tx.objectStore(SESSIONS_STORE);
+        const records = await new Promise((resolve, reject) => {
+            const req = store.getAll();
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+        db.close();
+        return records
+            .map((s) => ({
+                id: s.id,
+                title: s.title,
+                model: s.model,
+                createdAt: s.createdAt,
+                updatedAt: s.updatedAt,
+                messageCount: Array.isArray(s.messages) ? s.messages.length : 0,
+            }))
+            .sort((a, b) => b.updatedAt - a.updatedAt);
+    } catch (e) {
+        console.error('Failed to list chat sessions:', e);
+        return [];
+    }
+};
+
+export const deleteSession = async (id) => {
+    if (!id) return false;
+    try {
+        const db = await openDB();
+        const tx = db.transaction(SESSIONS_STORE, 'readwrite');
+        const store = tx.objectStore(SESSIONS_STORE);
+        await new Promise((resolve, reject) => {
+            const req = store.delete(id);
+            req.onsuccess = resolve;
+            req.onerror = () => reject(req.error);
+        });
+        db.close();
+        return true;
+    } catch (e) {
+        console.error('Failed to delete chat session:', e);
+        return false;
+    }
+};
+
+const cleanupOldSessions = async (store) => {
+    const index = store.index('updatedAt');
+    const sessions = await new Promise((resolve, reject) => {
+        const req = index.getAll();
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+    if (sessions.length > MAX_SESSIONS) {
+        sessions.sort((a, b) => a.updatedAt - b.updatedAt);
+        const toDelete = sessions.slice(0, sessions.length - MAX_SESSIONS);
+        for (const s of toDelete) {
+            await new Promise((resolve) => {
+                const req = store.delete(s.id);
+                req.onsuccess = resolve;
+                req.onerror = resolve;
             });
         }
     }
