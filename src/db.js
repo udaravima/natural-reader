@@ -4,9 +4,17 @@
  */
 
 const DB_NAME = 'neural-pdf-library';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = 'books';
 const MAX_BOOKS = 5; // Keep last 5 books
+
+// Derive fileType from a File object's name/MIME type
+export const detectFileType = (file) => {
+    if (!file) return 'pdf';
+    const name = (file.name || '').toLowerCase();
+    if (file.type === 'text/plain' || name.endsWith('.txt')) return 'text';
+    return 'pdf';
+};
 
 // Open database connection
 const openDB = () => {
@@ -21,6 +29,21 @@ const openDB = () => {
             if (!db.objectStoreNames.contains(STORE_NAME)) {
                 const store = db.createObjectStore(STORE_NAME, { keyPath: 'fileName' });
                 store.createIndex('lastOpened', 'lastOpened', { unique: false });
+            }
+            // v1 → v2: backfill fileType on existing records (all were PDFs)
+            if (event.oldVersion < 2) {
+                const tx = event.target.transaction;
+                const store = tx.objectStore(STORE_NAME);
+                const cursorReq = store.openCursor();
+                cursorReq.onsuccess = (e) => {
+                    const cursor = e.target.result;
+                    if (!cursor) return;
+                    const value = cursor.value;
+                    if (!value.fileType) {
+                        cursor.update({ ...value, fileType: 'pdf' });
+                    }
+                    cursor.continue();
+                };
             }
         };
     });
@@ -40,6 +63,7 @@ export const saveBook = async (file, metadata = {}) => {
             fileName: file.name,
             data: arrayBuffer,
             size: file.size,
+            fileType: detectFileType(file),
             lastOpened: Date.now(),
             ...metadata
         };
@@ -109,7 +133,12 @@ export const getRecentBooks = async () => {
 
         // Return sorted by lastOpened (newest first), without the data blob
         return books
-            .map((book) => ({ fileName: book.fileName, size: book.size, lastOpened: book.lastOpened }))
+            .map((book) => ({
+                fileName: book.fileName,
+                size: book.size,
+                lastOpened: book.lastOpened,
+                fileType: book.fileType || 'pdf',
+            }))
             .sort((a, b) => b.lastOpened - a.lastOpened);
     } catch (e) {
         console.error('Failed to get recent books:', e);

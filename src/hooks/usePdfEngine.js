@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
-import { saveBook, getBook, getRecentBooks, deleteBook, updateBookMeta } from '../db';
+import { saveBook, getBook, getRecentBooks, deleteBook, updateBookMeta, detectFileType } from '../db';
 import { loadReadingProgress, saveReadingProgress } from './usePersistedState';
+import { SENTENCES_PER_TEXT_PAGE } from '../constants';
 
 // Configure PDF.js worker for offline use
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -9,12 +10,31 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
     import.meta.url
 ).toString();
 
+// Shared sentence segmentation: same rule for PDF and .txt so the TTS engine
+// receives a consistent textItems shape regardless of source.
+const segmentSentences = (rawText) =>
+    rawText
+        .replace(/\s+/g, ' ')
+        .split(/(?<=[.!?])\s+/)
+        .filter(s => s.trim().length > 5);
+
+// Chunk a flat sentence array into pseudo-pages of N sentences.
+const paginateSentences = (sentences, perPage = SENTENCES_PER_TEXT_PAGE) => {
+    const pages = [];
+    for (let i = 0; i < sentences.length; i += perPage) {
+        pages.push(sentences.slice(i, i + perPage));
+    }
+    return pages.length > 0 ? pages : [[]];
+};
+
 /**
  * Manages PDF document loading, rendering, text extraction, outline, and library.
  */
 export function usePdfEngine({ scale, setStatus, setToastMessage }) {
     const [pdfDoc, setPdfDoc] = useState(null);
     const [pdfFileName, setPdfFileName] = useState('');
+    const [fileType, setFileType] = useState('pdf'); // 'pdf' | 'text'
+    const [textPages, setTextPages] = useState([]); // sentences[][] for .txt files
     const [currentPage, setCurrentPage] = useState(1);
     const [numPages, setNumPages] = useState(0);
     const [textItems, setTextItems] = useState([]);
@@ -136,12 +156,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
             const page = await doc.getPage(pageNum);
             const textContent = await page.getTextContent();
             const rawText = textContent.items.map(item => item.str).join(' ');
-
-            const sentences = rawText
-                .replace(/\s+/g, ' ')
-                .split(/(?<=[.!?])\s+/)
-                .filter(s => s.trim().length > 5);
-
+            const sentences = segmentSentences(rawText);
             setTextItems(sentences);
             sentenceRefs.current = sentences.map(() => null);
         } catch (err) {
@@ -149,47 +164,80 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         }
     };
 
-    // Visual render on any of: doc, page, or scale change
+    // Visual render on any of: doc, page, or scale change (PDF only — txt has no canvas)
     useEffect(() => {
-        if (pdfDoc) renderPageVisual(currentPage, pdfDoc);
+        if (fileType === 'pdf' && pdfDoc) renderPageVisual(currentPage, pdfDoc);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [pdfDoc, currentPage, scale]);
+    }, [pdfDoc, currentPage, scale, fileType]);
 
-    // Text extraction only on doc or page change (not scale)
+    // Sentence source per file type. For PDF we re-extract on page change; for text
+    // we slice the pre-paginated array.
     useEffect(() => {
-        if (pdfDoc) extractPageText(currentPage, pdfDoc);
-    }, [pdfDoc, currentPage]);
+        if (fileType === 'pdf') {
+            if (pdfDoc) extractPageText(currentPage, pdfDoc);
+            return;
+        }
+        if (fileType === 'text' && textPages.length > 0) {
+            const sentences = textPages[currentPage - 1] || [];
+            setTextItems(sentences);
+            sentenceRefs.current = sentences.map(() => null);
+            setStatus(`Page ${currentPage} Ready`);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pdfDoc, currentPage, fileType, textPages]);
 
     // --- FILE PROCESSING ---
-    const processFile = (file) => {
-        if (file?.type === 'application/pdf' && isLibLoaded) {
-            const fileName = file.name;
+    // Apply saved reading progress (or reset to page 1) for the just-loaded document.
+    const applySavedProgress = (fileName, totalPages) => {
+        const savedProgress = loadReadingProgress(fileName);
+        if (savedProgress && savedProgress.page <= totalPages) {
+            setCurrentPage(savedProgress.page);
+            setTimeout(() => {
+                if (savedProgress.sentenceIndex >= 0) {
+                    setCurrentSentenceIndex(savedProgress.sentenceIndex);
+                    playbackIndexRef.current = savedProgress.sentenceIndex;
+                }
+            }, 500);
+            setStatus(`Resumed from page ${savedProgress.page}`);
+        } else {
+            setCurrentPage(1);
+            setCurrentSentenceIndex(-1);
+            playbackIndexRef.current = -1;
+        }
+    };
 
+    // Load a plain-text document from a UTF-8 string: paginate, set state,
+    // and clear PDF-only state so the viewer renders the text path.
+    const loadTextDocument = (rawText, fileName) => {
+        const sentences = segmentSentences(rawText);
+        const pages = paginateSentences(sentences, SENTENCES_PER_TEXT_PAGE);
+        setPdfDoc(null);
+        setPdfOutline([]);
+        setTextPages(pages);
+        setNumPages(pages.length);
+        setFileType('text');
+        setPdfFileName(fileName);
+        applySavedProgress(fileName, pages.length);
+    };
+
+    const processFile = (file) => {
+        if (!file || !isLibLoaded) return;
+        const detected = detectFileType(file);
+        const fileName = file.name;
+
+        if (detected === 'pdf') {
             const reader = new FileReader();
             reader.onload = async (ev) => {
                 try {
                     const loadingTask = pdfjsLibRef.current.getDocument({ data: ev.target.result });
                     const doc = await loadingTask.promise;
+                    setFileType('pdf');
+                    setTextPages([]);
                     setPdfDoc(doc);
                     setNumPages(doc.numPages);
                     setPdfFileName(fileName);
 
-                    // Check for saved reading progress
-                    const savedProgress = loadReadingProgress(fileName);
-                    if (savedProgress && savedProgress.page <= doc.numPages) {
-                        setCurrentPage(savedProgress.page);
-                        setTimeout(() => {
-                            if (savedProgress.sentenceIndex >= 0) {
-                                setCurrentSentenceIndex(savedProgress.sentenceIndex);
-                                playbackIndexRef.current = savedProgress.sentenceIndex;
-                            }
-                        }, 500);
-                        setStatus(`Resumed from page ${savedProgress.page}`);
-                    } else {
-                        setCurrentPage(1);
-                        setCurrentSentenceIndex(-1);
-                        playbackIndexRef.current = -1;
-                    }
+                    applySavedProgress(fileName, doc.numPages);
 
                     // Save to IndexedDB for library persistence
                     saveBook(file, { page: 1, sentenceIndex: -1 }).then(() => {
@@ -199,11 +247,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
                     // Fetch PDF outline (Table of Contents)
                     try {
                         const outline = await doc.getOutline();
-                        if (outline && outline.length > 0) {
-                            setPdfOutline(outline);
-                        } else {
-                            setPdfOutline([]);
-                        }
+                        setPdfOutline(outline && outline.length > 0 ? outline : []);
                     } catch (e) {
                         console.warn('Could not load outline:', e);
                         setPdfOutline([]);
@@ -213,6 +257,24 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
                 }
             };
             reader.readAsArrayBuffer(file);
+            return;
+        }
+
+        if (detected === 'text') {
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                try {
+                    const rawText = ev.target.result;
+                    loadTextDocument(rawText, fileName);
+                    saveBook(file, { page: 1, sentenceIndex: -1 }).then(() => {
+                        getRecentBooks().then(setRecentBooks);
+                    });
+                } catch (e) {
+                    console.error('Failed to load text file:', e);
+                    setStatus("Error loading text file");
+                }
+            };
+            reader.readAsText(file);
         }
     };
 
@@ -228,29 +290,27 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
                 return;
             }
 
+            const storedType = bookData.fileType || 'pdf';
+
+            if (storedType === 'text') {
+                const rawText = new TextDecoder().decode(bookData.data);
+                loadTextDocument(rawText, fileName);
+                updateBookMeta(fileName, {}).then(() => {
+                    getRecentBooks().then(setRecentBooks);
+                });
+                return;
+            }
+
             const loadingTask = pdfjsLibRef.current.getDocument({ data: bookData.data });
             const doc = await loadingTask.promise;
 
+            setFileType('pdf');
+            setTextPages([]);
             setPdfDoc(doc);
             setNumPages(doc.numPages);
             setPdfFileName(fileName);
 
-            const savedProgress = loadReadingProgress(fileName);
-            if (savedProgress && savedProgress.page <= doc.numPages) {
-                setCurrentPage(savedProgress.page);
-                setTimeout(() => {
-                    if (savedProgress.sentenceIndex >= 0) {
-                        setCurrentSentenceIndex(savedProgress.sentenceIndex);
-                        playbackIndexRef.current = savedProgress.sentenceIndex;
-                    }
-                }, 500);
-                setStatus(`Resumed "${fileName}" from page ${savedProgress.page}`);
-            } else {
-                setCurrentPage(1);
-                setCurrentSentenceIndex(-1);
-                playbackIndexRef.current = -1;
-                setStatus(`Opened "${fileName}"`);
-            }
+            applySavedProgress(fileName, doc.numPages);
 
             updateBookMeta(fileName, {}).then(() => {
                 getRecentBooks().then(setRecentBooks);
@@ -258,11 +318,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
             try {
                 const outline = await doc.getOutline();
-                if (outline && outline.length > 0) {
-                    setPdfOutline(outline);
-                } else {
-                    setPdfOutline([]);
-                }
+                setPdfOutline(outline && outline.length > 0 ? outline : []);
             } catch {
                 setPdfOutline([]);
             }
@@ -312,6 +368,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         // State
         pdfDoc,
         pdfFileName,
+        fileType,
         currentPage, setCurrentPage,
         numPages,
         textItems,

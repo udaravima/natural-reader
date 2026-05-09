@@ -6,7 +6,7 @@ import {
 export default function MobileBottomNav({
     theme,
     effectiveIsMobile,
-    pdfDoc,
+    hasDocument,
     currentPage,
     numPages,
     currentSentenceIndex,
@@ -18,7 +18,7 @@ export default function MobileBottomNav({
     goToNextPage,
     goToPrevPage,
 }) {
-    if (!effectiveIsMobile || !pdfDoc) return null;
+    if (!effectiveIsMobile || !hasDocument) return null;
 
     return (
         <nav className={`fixed bottom-0 left-0 right-0 z-50 ${theme.bgSecondary} border-t ${theme.border} px-2 py-2 safe-area-pb`}>

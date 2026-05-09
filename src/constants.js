@@ -29,6 +29,13 @@ export const KOKORO_VOICES = [
     { id: 'bm_lewis', name: 'Lewis (UK Male)', sampleText: "Hi there, I'm Lewis! My thoughtful British tone contemplates every word with care and precision." },
 ];
 
+// How many sentences make up one pseudo-page when reading a plain text (.txt) file
+export const SENTENCES_PER_TEXT_PAGE = 40;
+
+// Threshold above which .txt segmentation is sliced across animation frames
+// to avoid blocking the main thread on very large files
+export const TEXT_SEGMENTATION_CHUNK_THRESHOLD = 200_000;
+
 // Keyboard shortcuts config
 export const SHORTCUTS = {
     PLAY_PAUSE: ' ',

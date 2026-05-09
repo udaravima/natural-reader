@@ -29,6 +29,7 @@ export default function Sidebar({
     previewVoice,
     stopVoicePreview,
     // PDF state
+    hasDocument,
     pdfDoc,
     pdfOutline,
     textItems,
@@ -258,7 +259,7 @@ export default function Sidebar({
                 </div>
 
                 {/* Reading Stats */}
-                {pdfDoc && (
+                {hasDocument && (
                     <div className={`px-4 py-3 border-b ${theme.borderSecondary} ${darkMode ? 'bg-slate-800/30' : 'bg-blue-50/50'}`}>
                         <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
@@ -277,7 +278,7 @@ export default function Sidebar({
                 )}
 
                 {/* Sidebar Tabs */}
-                {pdfDoc && (
+                {hasDocument && (
                     <div className={`flex border-b ${theme.borderSecondary}`}>
                         <button
                             onClick={() => setSidebarTab('sentences')}
@@ -308,7 +309,7 @@ export default function Sidebar({
                 {sidebarTab === 'sentences' && (
                     <div className={`flex-1 overflow-y-auto p-2 space-y-1 ${darkMode ? 'bg-slate-800/30' : 'bg-slate-50/30'} custom-scrollbar`}>
                         <h3 className={`px-3 py-2 text-[10px] font-black ${theme.textMuted} uppercase tracking-widest`}>Page Contents</h3>
-                        {textItems.length === 0 && <p className={`text-xs ${theme.textMuted} p-3 italic`}>Upload a PDF to see text segments...</p>}
+                        {textItems.length === 0 && <p className={`text-xs ${theme.textMuted} p-3 italic`}>Upload a PDF or TXT file to see text segments...</p>}
                         {textItems.map((text, i) => (
                             <button
                                 key={i}

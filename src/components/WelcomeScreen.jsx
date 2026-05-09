@@ -1,4 +1,4 @@
-import { Upload, BookOpen, Trash2, Library } from 'lucide-react';
+import { Upload, BookOpen, FileText, Trash2, Library } from 'lucide-react';
 
 export default function WelcomeScreen({
     theme,
@@ -16,8 +16,8 @@ export default function WelcomeScreen({
                 <Upload size={36} />
             </div>
             <div>
-                <p className={`${theme.textSecondary} font-semibold mb-2 text-lg`}>Open a PDF Document</p>
-                <p className={`text-sm ${theme.textMuted}`}>Click to browse or drag & drop</p>
+                <p className={`${theme.textSecondary} font-semibold mb-2 text-lg`}>Open a PDF or Text File</p>
+                <p className={`text-sm ${theme.textMuted}`}>Click to browse or drag &amp; drop a .pdf or .txt</p>
             </div>
             <button
                 onClick={() => fileInputRef.current.click()}
@@ -35,19 +35,26 @@ export default function WelcomeScreen({
                         <h3 className={`text-sm font-bold ${theme.textSecondary}`}>Your Library</h3>
                     </div>
                     <div className="space-y-2">
-                        {recentBooks.map((book) => (
+                        {recentBooks.map((book) => {
+                            const isText = book.fileType === 'text';
+                            const Icon = isText ? FileText : BookOpen;
+                            const tileGradient = isText
+                                ? 'from-emerald-500 to-teal-600'
+                                : 'from-blue-500 to-cyan-600';
+                            const displayName = book.fileName.replace(/\.(pdf|txt)$/i, '');
+                            return (
                             <button
                                 key={book.fileName}
                                 onClick={() => openFromLibrary(book.fileName)}
                                 className={`w-full flex items-center justify-between p-3 rounded-xl ${theme.bgTertiary} ${theme.hover} transition-all group border ${theme.border}`}
                             >
                                 <div className="flex items-center gap-3 text-left">
-                                    <div className={`w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-600 flex items-center justify-center text-white flex-shrink-0`}>
-                                        <BookOpen size={18} />
+                                    <div className={`w-10 h-10 rounded-lg bg-gradient-to-br ${tileGradient} flex items-center justify-center text-white flex-shrink-0`}>
+                                        <Icon size={18} />
                                     </div>
                                     <div className="overflow-hidden">
                                         <p className={`font-medium text-sm ${theme.text} truncate max-w-[200px]`}>
-                                            {book.fileName.replace('.pdf', '')}
+                                            {displayName}
                                         </p>
                                         <p className={`text-xs ${theme.textMuted}`}>
                                             {(book.size / 1024 / 1024).toFixed(1)} MB • {new Date(book.lastOpened).toLocaleDateString()}
@@ -62,7 +69,8 @@ export default function WelcomeScreen({
                                     <Trash2 size={14} />
                                 </button>
                             </button>
-                        ))}
+                            );
+                        })}
                     </div>
                     <p className={`text-[10px] ${theme.textMuted} mt-3 italic`}>
                         Last {recentBooks.length} books saved for instant resume

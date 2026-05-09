@@ -1,13 +1,13 @@
 import { MousePointer2, Loader2, Square } from 'lucide-react';
 
 export default function ReadSelectionButton({
-    pdfDoc,
+    hasDocument,
     isReadingSelection,
     darkMode,
     onReadSelection,
     onStopSelectionRead,
 }) {
-    if (!pdfDoc) return null;
+    if (!hasDocument) return null;
 
     // Reading indicator
     if (isReadingSelection) {

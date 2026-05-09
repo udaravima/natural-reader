@@ -64,7 +64,7 @@ export default function App() {
   const pdfEngine = usePdfEngine({ scale, setStatus, setToastMessage });
 
   const {
-    pdfDoc, pdfFileName, currentPage, setCurrentPage, numPages,
+    pdfDoc, pdfFileName, fileType, currentPage, setCurrentPage, numPages,
     textItems, isLibLoaded, pdfOutline, recentBooks,
     currentSentenceIndex, setCurrentSentenceIndex,
     canvasRef, textLayerRef, fileInputRef, sentenceRefs, playbackIndexRef,
@@ -93,6 +93,11 @@ export default function App() {
     setCurrentSentenceIndex, setCurrentPage, setScale, setDarkMode,
     numPages,
   });
+
+  // True when any document (PDF or .txt) is loaded — used as a gate by UI bits
+  // that don't care about file type. pdfDoc stays the source of truth for code
+  // that actually needs the pdf.js object (e.g. chapter navigation).
+  const hasDocument = !!pdfDoc || (fileType === 'text' && numPages > 0);
 
   // --- BACKEND HEALTH CHECK ---
   const getApiUrl = (endpoint) => `http://${apiHost}:${apiPort}${endpoint}`;
@@ -155,8 +160,18 @@ export default function App() {
   const handleDrop = (e) => {
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
     const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      files[0].type === 'application/pdf' ? processFile(files[0]) : setStatus("Please drop a PDF file");
+    if (files.length === 0) return;
+    const file = files[0];
+    const name = (file.name || '').toLowerCase();
+    const isSupported =
+      file.type === 'application/pdf' ||
+      file.type === 'text/plain' ||
+      name.endsWith('.pdf') ||
+      name.endsWith('.txt');
+    if (isSupported) {
+      processFile(file);
+    } else {
+      setStatus("Please drop a PDF or TXT file");
     }
   };
 
@@ -206,7 +221,7 @@ export default function App() {
       <DragOverlay isDragging={isDragging} theme={theme} />
 
       {/* Reading Progress Bar */}
-      {pdfDoc && (
+      {hasDocument && (
         <div className="h-1 bg-slate-300/20 w-full fixed top-0 left-0 z-50">
           <div
             className="h-full bg-gradient-to-r from-blue-500 via-cyan-500 to-teal-500 transition-all duration-500 ease-out"
@@ -227,7 +242,7 @@ export default function App() {
       />
 
       <ReadSelectionButton
-        pdfDoc={pdfDoc}
+        hasDocument={hasDocument}
         isReadingSelection={isReadingSelection}
         darkMode={darkMode}
         onReadSelection={readSelection}
@@ -237,7 +252,7 @@ export default function App() {
       <Header
         theme={theme}
         darkMode={darkMode}
-        pdfDoc={pdfDoc}
+        hasDocument={hasDocument}
         status={status}
         isPlaying={isPlaying}
         isLocalhost={isLocalhost} setIsLocalhost={setIsLocalhost}
@@ -291,6 +306,7 @@ export default function App() {
           isPreviewingVoice={isPreviewingVoice}
           previewVoice={previewVoice}
           stopVoicePreview={stopVoicePreview}
+          hasDocument={hasDocument}
           pdfDoc={pdfDoc}
           pdfOutline={pdfOutline}
           textItems={textItems}
@@ -310,6 +326,9 @@ export default function App() {
           darkMode={darkMode}
           effectiveIsMobile={effectiveIsMobile}
           pdfDoc={pdfDoc}
+          fileType={fileType}
+          textItems={textItems}
+          currentSentenceIndex={currentSentenceIndex}
           currentPage={currentPage} setCurrentPage={setCurrentPage}
           goToNextPage={goToNextPage} goToPrevPage={goToPrevPage}
           numPages={numPages}
@@ -327,7 +346,7 @@ export default function App() {
       <MobileBottomNav
         theme={theme}
         effectiveIsMobile={effectiveIsMobile}
-        pdfDoc={pdfDoc}
+        hasDocument={hasDocument}
         currentPage={currentPage} setCurrentPage={setCurrentPage}
         numPages={numPages}
         currentSentenceIndex={currentSentenceIndex}

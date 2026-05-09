@@ -3,12 +3,16 @@ import {
     RotateCcw, Maximize, Minimize
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen';
+import TextPageRenderer from './TextPageRenderer';
 
 export default function PdfViewer({
     theme,
     darkMode,
     effectiveIsMobile,
     pdfDoc,
+    fileType,
+    textItems,
+    currentSentenceIndex,
     currentPage, setCurrentPage, goToNextPage, goToPrevPage,
     numPages,
     scale, setScale,
@@ -20,11 +24,13 @@ export default function PdfViewer({
     openFromLibrary,
     removeFromLibrary,
 }) {
+    const isText = fileType === 'text';
+    const hasDoc = isText ? numPages > 0 : !!pdfDoc;
     return (
         <section className={`flex-1 flex flex-col overflow-hidden ${theme.viewportBg} transition-colors duration-300`}>
 
             {/* PDF OPTIONS TOOLBAR */}
-            {pdfDoc && (
+            {hasDoc && (
                 <div className={`flex items-center justify-between px-4 py-2 ${theme.bgSecondary} border-b ${theme.border} shrink-0`}>
                     {/* LEFT: Page Navigation */}
                     <div className="flex items-center gap-2">
@@ -111,10 +117,10 @@ export default function PdfViewer({
                 </div>
             )}
 
-            {/* PDF CANVAS CONTAINER */}
+            {/* DOCUMENT CONTAINER (PDF canvas or text page) */}
             <div
                 ref={pdfContainerRef}
-                className={`flex-1 overflow-auto p-2 md:p-6 flex justify-center custom-scrollbar ${darkMode ? 'bg-slate-900/50' : 'bg-slate-300/30'} ${effectiveIsMobile && pdfDoc ? 'pb-28' : ''}`}
+                className={`flex-1 overflow-auto p-2 md:p-6 flex justify-center custom-scrollbar ${darkMode ? 'bg-slate-900/50' : 'bg-slate-300/30'} ${effectiveIsMobile && hasDoc ? 'pb-28' : ''}`}
             >
                 <div
                     className={`relative ${theme.canvasBg} shadow-2xl rounded-sm border ${theme.border}`}
@@ -123,22 +129,33 @@ export default function PdfViewer({
                         maxWidth: effectiveIsMobile ? '100%' : undefined,
                     }}
                 >
-                    {pdfDoc ? (
-                        <>
-                            <canvas
-                                ref={canvasRef}
-                                className="block"
-                                style={{
-                                    maxWidth: effectiveIsMobile ? '100%' : undefined,
-                                    height: effectiveIsMobile ? 'auto' : undefined,
-                                }}
+                    {hasDoc ? (
+                        isText ? (
+                            <TextPageRenderer
+                                theme={theme}
+                                darkMode={darkMode}
+                                sentences={textItems}
+                                currentSentenceIndex={currentSentenceIndex}
+                                scale={scale}
+                                effectiveIsMobile={effectiveIsMobile}
                             />
-                            <div
-                                ref={textLayerRef}
-                                className="textLayer absolute top-0 left-0 overflow-hidden opacity-25 leading-none"
-                                style={{ pointerEvents: 'auto' }}
-                            />
-                        </>
+                        ) : (
+                            <>
+                                <canvas
+                                    ref={canvasRef}
+                                    className="block"
+                                    style={{
+                                        maxWidth: effectiveIsMobile ? '100%' : undefined,
+                                        height: effectiveIsMobile ? 'auto' : undefined,
+                                    }}
+                                />
+                                <div
+                                    ref={textLayerRef}
+                                    className="textLayer absolute top-0 left-0 overflow-hidden opacity-25 leading-none"
+                                    style={{ pointerEvents: 'auto' }}
+                                />
+                            </>
+                        )
                     ) : (
                         <WelcomeScreen
                             theme={theme}

@@ -7,7 +7,7 @@ import {
 export default function Header({
     theme,
     darkMode,
-    pdfDoc,
+    hasDocument,
     status,
     isPlaying,
     isLocalhost, setIsLocalhost,
@@ -87,7 +87,7 @@ export default function Header({
             {/* RIGHT CONTROLS */}
             <div className="flex items-center gap-1 md:gap-3">
                 {/* Estimated Time */}
-                {pdfDoc && calculateEstimatedTimeRemaining(playbackSpeed) && (
+                {hasDocument && calculateEstimatedTimeRemaining(playbackSpeed) && (
                     <div className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-lg border ${theme.border} text-[10px] font-bold ${theme.textSecondary}`}>
                         <Clock size={12} />
                         {calculateEstimatedTimeRemaining(playbackSpeed)}
@@ -115,7 +115,7 @@ export default function Header({
                 </button>
 
                 {/* Download Page Audio */}
-                {pdfDoc && isLocalhost && (
+                {hasDocument && isLocalhost && (
                     <button
                         onClick={downloadPageAudio}
                         disabled={isDownloading || textItems.length === 0}
@@ -142,7 +142,7 @@ export default function Header({
                 >
                     <Upload size={20} />
                 </button>
-                <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".pdf" className="hidden" />
+                <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".pdf,.txt,text/plain,application/pdf" className="hidden" />
             </div>
         </header>
     );
