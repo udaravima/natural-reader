@@ -475,27 +475,6 @@ export function useChatEngine({
                 return out;
             };
             const history = [...messagesRef.current, userMsg].map(buildApiMessage);
-
-            // Lightweight diagnostic — logs the outgoing message shape WITHOUT
-            // the heavy base64 payloads, so the user can verify what's being sent.
-            try {
-                console.debug('[chat] /api/chat outgoing messages (base64 omitted):',
-                    history.map((h, i) => {
-                        const src = [...messagesRef.current, userMsg][i];
-                        const kinds = (src?.attachments || [])
-                            .filter(a => a && a.base64)
-                            .map(a => a.kind);
-                        return {
-                            role: h.role,
-                            content: typeof h.content === 'string'
-                                ? (h.content.length > 80 ? h.content.slice(0, 80) + '…' : h.content)
-                                : h.content,
-                            images: Array.isArray(h.images)
-                                ? `${h.images.length} (${kinds.join(',') || 'binary'})`
-                                : undefined,
-                        };
-                    }));
-            } catch { /* logging is best-effort */ }
             const res = await fetch(ollamaUrl('/api/chat'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -546,7 +525,24 @@ export function useChatEngine({
                             flushBufferedSentences();
                         }
                     }
-                    if (payload?.done) break;
+                    if (payload?.done) {
+                        // Capture Ollama's per-request metrics from the final chunk.
+                        // All durations are nanoseconds; the UI converts to s for display.
+                        const stats = {
+                            model: payload.model,
+                            doneReason: payload.done_reason,
+                            totalNs: payload.total_duration,
+                            loadNs: payload.load_duration,
+                            promptEvalCount: payload.prompt_eval_count,
+                            promptEvalNs: payload.prompt_eval_duration,
+                            evalCount: payload.eval_count,
+                            evalNs: payload.eval_duration,
+                        };
+                        setMessages(prev => prev.map(m =>
+                            m.id === assistantId ? { ...m, stats } : m
+                        ));
+                        break;
+                    }
                 }
             }
 

@@ -1,0 +1,87 @@
+server {
+    listen 80;
+    server_name chat.oraian.net;
+    # Force redirect to HTTPS
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name chat.oraian.net;
+
+    # SSL Configuration
+    ssl_certificate /etc/nginx/ssl/oraian/chat.oraian.net.crt;
+    ssl_certificate_key /etc/nginx/ssl/oraian/chat.oraian.net.key;
+
+    # Fallback (RSA)
+    ssl_certificate /etc/nginx/ssl/oraian/rsa-fallback.crt;
+    ssl_certificate_key /etc/nginx/ssl/oraian/rsa-fallback.key;
+
+    # Optimization for modern curves (Ed25519)
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+
+    root /var/www/chat.oraian.net/dist;
+    index index.html;
+
+    # Serve ES modules with a JS MIME type so Firefox accepts them
+    location ~ \.mjs$ {
+       types { } default_type text/javascript;
+
+       # Vite hashes filenames already, so cache them aggressively
+       add_header Cache-Control "public, max-age=31536000, immutable";
+       try_files $uri =404;
+    }
+
+    location ~ \.wasm$ {
+       types { } default_type application/wasm;
+       add_header Cache-Control "public, max-age=31536000, immutable";
+    }    
+
+    location / {
+       try_files $uri $uri/ /index.html;
+    }
+
+    location /v1/ {
+        # Assuming TTS running on port 8000
+        proxy_pass http://127.0.0.1:8000/v1/;
+
+        # Standard Proxy Headers
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSocket Support (Crucial for chat)
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Timeouts for long-lived chat connections
+        proxy_read_timeout 86400;
+    }
+
+    location /api/ {
+        # Assuming your local chat app runs on port 3000
+        proxy_pass http://127.0.0.1:11434/api/;
+
+        # Standard Proxy Headers
+        proxy_set_header Host localhost:11434;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+	proxy_set_header X-Forwarded-Host $host;
+
+        # WebSocket Support (Crucial for chat)
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Timeouts for long-lived chat connections
+        proxy_read_timeout 86400;
+	proxy_buffering off;
+    }
+}

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
     Send, Square, Bot, User, Loader2, MessageSquare, Brain, ChevronDown, ChevronRight,
-    Volume2, StopCircle, Copy, Paperclip, ImagePlus,
+    Volume2, StopCircle, Copy, Paperclip, ImagePlus, Activity,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -43,9 +43,22 @@ export default function ChatView({
     const listRef = useRef(null);
     const textareaRef = useRef(null);
     const fileInputRef = useRef(null);
+    // Stick-to-bottom flag: when true, new messages/tokens auto-scroll the list to
+    // the bottom (live "tailing"). When the user scrolls up, this flips to false
+    // so they can read history without each token snapping them back down.
+    const stickToBottomRef = useRef(true);
+    const STICK_THRESHOLD = 80; // px from bottom to count as "at bottom"
 
-    // Auto-scroll to bottom on new message / streaming token.
+    const handleListScroll = () => {
+        const el = listRef.current;
+        if (!el) return;
+        const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+        stickToBottomRef.current = dist < STICK_THRESHOLD;
+    };
+
+    // Follow-along auto-scroll: only fires when the user is already near the bottom.
     useEffect(() => {
+        if (!stickToBottomRef.current) return;
         const el = listRef.current;
         if (!el) return;
         el.scrollTop = el.scrollHeight;
@@ -168,6 +181,7 @@ export default function ChatView({
             {/* MESSAGE LIST */}
             <div
                 ref={listRef}
+                onScroll={handleListScroll}
                 className={`flex-1 overflow-y-auto custom-scrollbar px-4 md:px-8 py-4 md:py-6 ${effectiveIsMobile ? 'pb-28' : ''}`}
             >
                 {messages.length === 0 ? (
@@ -363,7 +377,80 @@ function MessageBubble({ message, theme, darkMode, isStreamingNow, isSpeaking, o
                         </button>
                     </div>
                 )}
+                {!isUser && message.stats && (
+                    <MessageStatsDisclosure stats={message.stats} theme={theme} darkMode={darkMode} />
+                )}
             </div>
+        </div>
+    );
+}
+
+// Compact, collapsed-by-default model-stats footer.
+// Closed: a single line with token count, total time, and tokens/sec.
+// Open: full breakdown — model, load, prompt eval, generation, done reason.
+function MessageStatsDisclosure({ stats, theme, darkMode }) {
+    const [open, setOpen] = useState(false);
+    if (!stats) return null;
+
+    const fmtNs = (ns) => {
+        if (!ns && ns !== 0) return '—';
+        const ms = ns / 1e6;
+        if (ms < 1000) return `${Math.round(ms)} ms`;
+        return `${(ms / 1000).toFixed(2)} s`;
+    };
+    const evalSec = stats.evalNs ? stats.evalNs / 1e9 : 0;
+    const tokPerSec = evalSec > 0 && stats.evalCount
+        ? (stats.evalCount / evalSec).toFixed(1)
+        : null;
+
+    const summaryParts = [];
+    if (stats.evalCount != null) summaryParts.push(`${stats.evalCount} tok`);
+    if (stats.totalNs != null) summaryParts.push(fmtNs(stats.totalNs));
+    if (tokPerSec) summaryParts.push(`${tokPerSec} tok/s`);
+
+    return (
+        // `w-fit` keeps this disclosure sized to its content rather than stretching
+        // the parent flex column. Without it, the inner grid's `1fr` (or any
+        // intrinsic-grow child) makes the whole bubble expand to its max width.
+        <div className={`w-fit max-w-full rounded-md ${darkMode ? 'bg-slate-800/30' : 'bg-slate-100/60'}`}>
+            <button
+                onClick={() => setOpen(o => !o)}
+                className={`flex items-center gap-1.5 px-2 py-1 text-[10px] font-bold ${theme.textMuted} hover:text-blue-500 transition-colors`}
+                title={open ? 'Hide details' : 'Show details'}
+            >
+                {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                <Activity size={11} />
+                <span>{summaryParts.join(' · ') || 'details'}</span>
+            </button>
+            {open && (
+                <dl className={`grid grid-cols-[max-content_max-content] gap-x-3 gap-y-0.5 px-3 pb-2 text-[10px] ${theme.textSecondary}`}>
+                    {stats.model && (<>
+                        <dt className={theme.textMuted}>Model</dt>
+                        <dd className="font-mono">{stats.model}</dd>
+                    </>)}
+                    <dt className={theme.textMuted}>Total</dt>
+                    <dd>{fmtNs(stats.totalNs)}</dd>
+                    {stats.loadNs != null && (<>
+                        <dt className={theme.textMuted}>Load</dt>
+                        <dd>{fmtNs(stats.loadNs)}</dd>
+                    </>)}
+                    {stats.promptEvalCount != null && (<>
+                        <dt className={theme.textMuted}>Prompt</dt>
+                        <dd>{stats.promptEvalCount} tok in {fmtNs(stats.promptEvalNs)}</dd>
+                    </>)}
+                    {stats.evalCount != null && (<>
+                        <dt className={theme.textMuted}>Generation</dt>
+                        <dd>
+                            {stats.evalCount} tok in {fmtNs(stats.evalNs)}
+                            {tokPerSec && ` (${tokPerSec} tok/s)`}
+                        </dd>
+                    </>)}
+                    {stats.doneReason && stats.doneReason !== 'stop' && (<>
+                        <dt className={theme.textMuted}>Reason</dt>
+                        <dd>{stats.doneReason}</dd>
+                    </>)}
+                </dl>
+            )}
         </div>
     );
 }

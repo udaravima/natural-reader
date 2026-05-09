@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Image attachments in chat** — paperclip button, drag & drop onto the chat view, and `Ctrl + V` paste from clipboard. Files preview as thumbnails above the prompt and inside user bubbles after sending; attached images are sent to Ollama via the per-message `images: [base64]` field. Size cap 10 MB per image.
+- **Same-origin / reverse-proxy support** — leaving the **Host** field blank in either sidebar now issues requests as relative URLs (`/v1/synthesize`, `/api/chat`, …) so an nginx/Caddy front can serve the frontend and proxy both backends from a single hostname. New `src/utils/url.js` helper centralizes URL construction and accepts bare hosts, `http(s)://`-prefixed hosts, or no host at all.
+- **Model response stats footer** — every assistant bubble has a small collapsible `⚡ N tok · X.X s · Y.Y tok/s` line. Expanded view shows model name, total time, load time, prompt eval (tokens + time), generation (tokens + time + throughput), and `done_reason` when non-trivial. Pulled directly from Ollama's final NDJSON chunk.
+- **Stick-to-bottom scroll** — chat list auto-tails new tokens only when the user is already near the bottom (within 80 px). Scrolling up pauses the auto-tail so you can read history during a long stream; returning to the bottom resumes it.
+- **Reverse-proxy production deployment docs** — README now includes a worked nginx example covering both `/v1/*` and `/api/*`, plus notes on `proxy_buffering off` for streaming, Ollama Host-header allowlist (override or `OLLAMA_ORIGINS`), and serving `.mjs` files with the right MIME type so Firefox can load PDF.js's worker.
+
+### Changed
+- **Voice recording / audio attachments paused** — Ollama's image projector chokes on non-image bytes (`unknown data type` on raw audio), and there's no native audio path in the daemon for this gemma4 build. The mic button + `<VoiceRecorder>` component were removed from the visible UI, and audio files are filtered out of drop / paste with a friendly toast. Component files and utilities remain on disk so re-enabling is a small re-toggle once a transcription step (Whisper) lands.
+
+### Fixed
+- **Chat bubble horizontal stretch** — the stats footer's grid `1fr` second column was forcing the bubble's flex column to expand to its `max-w-[85%]`. Switched to `max-content` for both columns and added `w-fit` to the disclosure wrapper, so bubbles size to their actual content again.
+
 ## [1.4.0] - 2026-05-09
 
 ### Added

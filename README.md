@@ -37,7 +37,10 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 ### 💬 Local AI Chat (Ollama)
 - **Reader ↔ Chat Toggle** — Switch the main view between document reader and chat mode from the header
 - **Streaming Replies** — Token-by-token streaming from a local Ollama server (`/api/chat`)
-- **Model Picker** — Auto-populated from `/api/tags`; configurable host/port (defaults to `localhost:11434`)
+- **Model Picker** — Auto-populated from `/api/tags`; configurable host/port (defaults to `localhost:11434`, leave blank for same-origin)
+- **Image Attachments** — Paperclip button, drag & drop onto the chat view, and `Ctrl + V` paste images from the clipboard. Thumbnails preview above the prompt and persist in user bubbles. Sent to vision-capable models via the per-message `images: [base64]` field. *(Audio attachments are temporarily paused — see CHANGELOG.)*
+- **Model Response Stats** — Every assistant bubble has a collapsible footer showing token count, total time, and tokens/sec. Expanded view breaks out load / prompt-eval / generation phases for fine-grained latency inspection.
+- **Stick-to-Bottom Scroll** — The chat list auto-tails streaming tokens when you're at the bottom; scrolling up pauses the auto-follow so you can read history during a long response, and resumes when you scroll back down.
 - **Chat TTS** — Replies are read aloud through the same Kokoro pipeline, with bounded prefetch to avoid gaps
 - **Streaming vs After-Complete TTS** — Read sentences as they stream in, or wait for the full reply before reading
 - **Per-Message Read Aloud** — A `🔊 Read aloud` / `■ Stop` button on every assistant bubble — works even with auto-TTS off, or to re-read finished messages later
@@ -262,6 +265,8 @@ For production, the typical setup is to serve the frontend as static files from 
 
 ### Example nginx config
 
+A complete, battle-tested config (Ed25519 + RSA fallback, gzip, the works) lives at [`docs/chat.oraian.net.sample`](docs/chat.oraian.net.sample). The minimal version below is what's actually load-bearing:
+
 ```nginx
 server {
     listen 80;
@@ -320,6 +325,24 @@ Notes:
 - **Streaming.** `proxy_buffering off` on `/api/` is required so chat responses stream token-by-token instead of arriving as one buffered chunk.
 - **CORS.** Same-origin requests don't need CORS at all. The Kokoro server's permissive CORS header (set in [server/app.py](server/app.py)) is harmless but unused under this setup.
 - **Custom hostnames during development.** If you want to test against a non-localhost machine without proxying, set Host to an IP / hostname (e.g. `192.168.1.10`) and the matching Port. Bare hostnames default to `http://`; you can also paste a full `https://example.com` if you have HTTPS terminating elsewhere.
+- **Ollama 403 on the proxy.** Ollama has a built-in Host-header allowlist (defaults to `localhost` / `127.0.0.1`) that's separate from the bind address. When nginx forwards `Host: chat.example.com`, Ollama rejects with 403 and an empty body. Fix either by overriding the header at the proxy (`proxy_set_header Host localhost:11434;` inside the `/api/` block) or by adding your domain to `OLLAMA_ORIGINS` via systemd:
+  ```bash
+  sudo systemctl edit ollama
+  # then add:
+  # [Service]
+  # Environment="OLLAMA_ORIGINS=https://chat.example.com"
+  sudo systemctl restart ollama
+  ```
+  Recommended: do both — the proxy override unblocks `curl`, and `OLLAMA_ORIGINS` unblocks browser CORS preflights.
+- **Firefox + PDF.js worker (`.mjs` MIME type).** PDF.js's worker file is a `.mjs` ES module. nginx's stock `mime.types` doesn't list `.mjs`, so it serves it as `application/octet-stream`, and Firefox refuses to load it as a module — PDF parsing then falls back to a slow main-thread "fake worker" that often fails. Fix: serve `.mjs` with a JS MIME type. Add this **before** your `location /` block:
+  ```nginx
+  location ~ \.mjs$ {
+      types { } default_type text/javascript;
+      add_header Cache-Control "public, max-age=31536000, immutable";
+      try_files $uri =404;
+  }
+  ```
+  Chrome is more lenient and works without this; Firefox is doing the spec-correct thing.
 
 ---
 
@@ -389,17 +412,21 @@ natural-reader/
 │   │   ├── useMobileDetect.js
 │   │   └── useTheme.js
 │   ├── utils/
-│   │   └── markdownToSpeech.js   # Strips Markdown markup before chat TTS synthesis
+│   │   ├── attachment.js         # File → Attachment helper, size caps, strip-on-save for IndexedDB
+│   │   ├── markdownToSpeech.js   # Strips Markdown markup before chat TTS synthesis
+│   │   └── url.js                # Builds API URLs, returns relative paths when host is blank
 │   └── components/
-│       ├── Header.jsx            # Top toolbar with Reader/Chat toggle + playback controls
-│       ├── Sidebar.jsx           # Reader sidebar: sentence list, chapters, settings, voice picker
-│       ├── ChatSidebar.jsx       # Chat sidebar: Ollama config, model picker, sessions, log
-│       ├── PdfViewer.jsx         # Branches between PDF canvas and TextPageRenderer
-│       ├── TextPageRenderer.jsx  # Renders a .txt pseudo-page with sentence highlighting
-│       ├── ChatView.jsx          # Chat message list, prompt box, per-message read aloud + copy
+│       ├── Header.jsx              # Top toolbar with Reader/Chat toggle + playback controls
+│       ├── Sidebar.jsx             # Reader sidebar: sentence list, chapters, settings, voice picker
+│       ├── ChatSidebar.jsx         # Chat sidebar: Ollama config, model picker, sessions, log
+│       ├── PdfViewer.jsx           # Branches between PDF canvas and TextPageRenderer
+│       ├── TextPageRenderer.jsx    # Renders a .txt pseudo-page with sentence highlighting
+│       ├── ChatView.jsx            # Chat list, prompt box, attachments, per-message stats / read-aloud / copy
+│       ├── AttachmentPreview.jsx   # Image-thumbnail / audio-player chip used in pending bar + bubbles
+│       ├── VoiceRecorder.jsx       # MediaRecorder UI (kept for future re-enable; currently unused)
 │       ├── MobileBottomNav.jsx
-│       ├── WelcomeScreen.jsx     # Library and upload landing page
-│       └── overlays/             # Drag, toast, context menu, shortcuts modal, etc.
+│       ├── WelcomeScreen.jsx       # Library and upload landing page
+│       └── overlays/               # Drag, toast, context menu, shortcuts modal, etc.
 ├── server/
 │   ├── __init__.py
 │   ├── app.py                 # FastAPI app factory with CORS
@@ -429,6 +456,7 @@ npm run lint     # Run ESLint
 
 ## 💡 Tips
 
+### Reader
 - **Resume Reading** — Reopen the same PDF to automatically continue from your last position
 - **Library** — Recent books are persisted in IndexedDB — click to instantly resume
 - **Keyboard Navigation** — Use keyboard shortcuts for hands-free control
@@ -437,6 +465,13 @@ npm run lint     # Run ESLint
 - **Right-Click Menu** — Right-click any sentence for "Continue from here" and copy options
 - **Read Selection** — Select text on the PDF, then click the floating "Read Selection" button
 - **Download Audio** — Export the current page's audio as a WAV file for offline listening
+
+### Chat
+- **Drop / paste an image** — Drop an image file anywhere on the chat view, or `Ctrl + V` a screenshot directly into the prompt textarea. Multiple images per message are supported.
+- **Model stats** — Click the small `⚡` chevron under any reply to expand a per-turn breakdown of load time, prompt eval, generation throughput, and `done_reason`. Useful for comparing models or spotting cold-start cost.
+- **Scroll while streaming** — Scroll up at any time during a reply; the chat will stop tailing tokens and let you read history. Scroll back near the bottom and tailing resumes automatically.
+- **Sessions** — Every chat is saved automatically; switch / rename / delete from the sidebar. Click "New chat" to start a fresh thread without losing the current one.
+- **Reasoning models** — For `deepseek-r1`, `qwen3-thinking`, etc., enable "Thinking" in the chat sidebar. The reasoning trace appears in a collapsible disclosure above the answer (auto-expanded while streaming).
 
 ---
 
