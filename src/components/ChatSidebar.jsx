@@ -72,8 +72,9 @@ export default function ChatSidebar({
                                 type="text"
                                 value={ollamaHost}
                                 onChange={(e) => setOllamaHost(e.target.value)}
-                                placeholder="localhost"
+                                placeholder="localhost (blank = same origin)"
                                 className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors min-w-0`}
+                                title="Ollama host. Leave blank to hit /api/* on the same origin (reverse-proxy mode)."
                             />
                         </div>
                         <div className="flex items-center gap-2">
@@ -84,8 +85,14 @@ export default function ChatSidebar({
                                 onChange={(e) => setOllamaPort(e.target.value)}
                                 placeholder="11434"
                                 className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors min-w-0`}
+                                title="Ollama port. Ignored when Host is blank."
                             />
                         </div>
+                        {!ollamaHost?.trim() && (
+                            <p className={`text-[9px] ${theme.textMuted} px-1`}>
+                                Same-origin mode — requests go to <code>/api/*</code> on the page's host.
+                            </p>
+                        )}
                         <div className="flex items-center justify-between gap-2 mt-1">
                             <span className={`text-[10px] ${reachable === null ? theme.textMuted : reachable ? 'text-green-500' : 'text-red-400'}`}>
                                 {reachable === null ? '⏳ Checking...' : reachable ? '✓ Connected' : '✗ Unreachable'}

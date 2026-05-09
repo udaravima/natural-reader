@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { KOKORO_VOICES } from '../constants';
+import { buildApiUrl } from '../utils/url';
 
 /**
  * Manages TTS playback engine: audio caching, buffering, playback loop,
@@ -36,14 +37,16 @@ export function useTtsEngine({
     const chatAudioRef = useRef(new Audio()); // Separate channel so chat TTS can't collide with reader TTS
     const retryCountRef = useRef(0);
 
-    // Helper to build API URL
-    const getApiUrl = (endpoint) => `http://${apiHost}:${apiPort}${endpoint}`;
+    // Helper to build API URL — empty `apiHost` produces a relative URL so
+    // reverse-proxied deployments (e.g. nginx routing /v1/* → Kokoro) work
+    // without needing host/port in settings.
+    const getApiUrl = (endpoint) => buildApiUrl(apiHost, apiPort, endpoint);
 
     // Pure synthesis: returns a blob URL (or null on error). Reused by reader playback,
     // selection read, voice preview, and chat sentence playback.
     const synthesizeText = useCallback(async (text, { voice, speed, signal } = {}) => {
         try {
-            const url = `http://${apiHost}:${apiPort}/v1/synthesize`;
+            const url = buildApiUrl(apiHost, apiPort, '/v1/synthesize');
             const response = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

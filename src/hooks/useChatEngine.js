@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { markdownToSpeech } from '../utils/markdownToSpeech';
 import { stripAttachmentData, formatAttachmentSize } from '../utils/attachment';
+import { buildApiUrl } from '../utils/url';
 import {
     saveSession as dbSaveSession,
     getSession as dbGetSession,
@@ -84,7 +85,9 @@ export function useChatEngine({
     const eventsRef = useRef([]);              // mirror used inside async callbacks
     const createdAtRef = useRef(null);         // start timestamp of the active session
 
-    const ollamaUrl = (path) => `http://${ollamaHost}:${ollamaPort}${path}`;
+    // Empty `ollamaHost` returns a relative path — useful when the app sits
+    // behind a reverse proxy that routes /api/* to the local Ollama daemon.
+    const ollamaUrl = (path) => buildApiUrl(ollamaHost, ollamaPort, path);
 
     // Read latest values via refs so the playback loop and queued items pick up
     // voice/speed/volume changes for not-yet-fetched items without re-creating callbacks.
@@ -297,8 +300,8 @@ export function useChatEngine({
     }, [enqueueTts]);
 
     // GET /api/tags — populate the model dropdown. Debounced when host/port changes.
+    // Both being empty is valid: it means "use same origin" (reverse-proxied deploy).
     const refreshModels = useCallback(async () => {
-        if (!ollamaHost || !ollamaPort) return;
         try {
             const controller = new AbortController();
             const t = setTimeout(() => controller.abort(), 5000);

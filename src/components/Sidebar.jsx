@@ -142,9 +142,9 @@ export default function Sidebar({
                                             type="text"
                                             value={apiHost}
                                             onChange={(e) => { setApiHost(e.target.value); setBackendAvailable(null); }}
-                                            placeholder="localhost"
+                                            placeholder="localhost (blank = same origin)"
                                             className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors min-w-0`}
-                                            title="API Host (e.g., localhost or 192.168.1.100)"
+                                            title="API Host. Leave blank to hit /v1/* on the same origin (reverse-proxy mode)."
                                         />
                                     </div>
                                     <div className="flex items-center gap-2">
@@ -155,10 +155,15 @@ export default function Sidebar({
                                             onChange={(e) => { setApiPort(e.target.value); setBackendAvailable(null); }}
                                             placeholder="8000"
                                             className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors min-w-0`}
-                                            title="API Port (default: 8000)"
+                                            title="API Port. Ignored when Host is blank."
                                         />
                                     </div>
                                 </div>
+                                {!apiHost?.trim() && (
+                                    <p className={`text-[9px] ${theme.textMuted} px-1`}>
+                                        Same-origin mode — requests go to <code>/v1/*</code> on the page's host.
+                                    </p>
+                                )}
                                 <div className="flex items-center justify-between gap-2 mt-1">
                                     <span className={`text-[10px] ${backendAvailable === null ? theme.textMuted : backendAvailable ? 'text-green-500' : 'text-red-400'}`}>
                                         {backendAvailable === null ? '⏳ Checking...' : backendAvailable ? '✓ Connected' : '✗ Unavailable'}

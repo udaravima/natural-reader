@@ -195,11 +195,24 @@ pip install onnxruntime-gpu
 
 ### API Endpoints
 
+The frontend talks to two backends. Each has its own host/port (configurable in the sidebar). **Leave the host field blank to hit the same origin the page was served from** — useful when an nginx (or similar) reverse proxy is fronting both services on a single domain.
+
+#### Kokoro TTS (FastAPI server in this repo, default `localhost:8000`)
+
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/v1/health` | `GET` | Health check — verifies model is loaded |
-| `/v1/synthesize` | `POST` | Synthesize text → Base64 WAV audio |
-| `/v1/batch_synthesize` | `POST` | Synthesize multiple sentences → merged WAV |
+| `/v1/health` | `GET` | Health check — verifies the model is loaded. Cheap; safe to call during playback. |
+| `/v1/synthesize` | `POST` | Synthesize one block of text → Base64 WAV audio. Used for per-sentence reader playback, selection-read, voice preview, and chat TTS. |
+| `/v1/batch_synthesize` | `POST` | Synthesize multiple sentences → single merged WAV with 0.3 s silence between. Used by "Download Page Audio". |
+
+#### Ollama (local LLM server, default `localhost:11434`, optional)
+
+The chat side-mode talks to a locally running [Ollama](https://ollama.com/) daemon. Only needed if you use the Chat view — the Reader works without it.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/tags` | `GET` | Lists installed models. Populates the model dropdown in the chat sidebar. Polled when the host/port changes (debounced). |
+| `/api/chat` | `POST` | Streaming NDJSON chat. Body includes `{model, messages, stream: true, think}`. Per-message `images: [base64]` field carries vision attachments (audio routing is paused — see code comments in [src/hooks/useChatEngine.js](src/hooks/useChatEngine.js)). |
 
 <details>
 <summary><strong>Request / Response Examples</strong></summary>
@@ -240,6 +253,73 @@ pip install onnxruntime-gpu
 ```
 
 </details>
+
+---
+
+## 🌐 Reverse Proxy / Production Deployment
+
+For production, the typical setup is to serve the frontend as static files from a web server (nginx, Caddy, …) and reverse-proxy both backends on the same hostname. The frontend supports this natively: leaving the **Host** field blank in either the reader or chat sidebar settings causes requests to be issued as same-origin paths (`/v1/synthesize`, `/api/chat`, …). nginx (or whatever sits in front) handles the routing.
+
+### Example nginx config
+
+```nginx
+server {
+    listen 80;
+    server_name chat.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name chat.example.com;
+
+    ssl_certificate     /etc/nginx/ssl/example.com.crt;
+    ssl_certificate_key /etc/nginx/ssl/example.com.key;
+
+    # Static frontend (output of `npm run build`)
+    root  /var/www/chat.example.com/dist;
+    index index.html;
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Kokoro TTS — running on 127.0.0.1:8000
+    location /v1/ {
+        proxy_pass http://127.0.0.1:8000/v1/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # Long-lived synthesis (especially batch) needs a generous timeout
+        proxy_read_timeout 86400;
+    }
+
+    # Ollama — running on 127.0.0.1:11434
+    location /api/ {
+        proxy_pass http://127.0.0.1:11434/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # Streaming chat — disable response buffering so NDJSON tokens arrive live
+        proxy_buffering off;
+        proxy_read_timeout 86400;
+    }
+}
+```
+
+### App configuration
+
+In **both** sidebars (Reader → Voice API, Chat → Ollama Server), **clear the Host field**. The placeholder will read *"localhost (blank = same origin)"* and a small hint will appear confirming the mode. The Port field is then ignored.
+
+Notes:
+
+- **Ollama bind address.** By default Ollama listens on `127.0.0.1:11434`. That's fine here since nginx is the only thing talking to it. If you change `OLLAMA_HOST` to bind on a different interface, mirror it in the `proxy_pass` line.
+- **Streaming.** `proxy_buffering off` on `/api/` is required so chat responses stream token-by-token instead of arriving as one buffered chunk.
+- **CORS.** Same-origin requests don't need CORS at all. The Kokoro server's permissive CORS header (set in [server/app.py](server/app.py)) is harmless but unused under this setup.
+- **Custom hostnames during development.** If you want to test against a non-localhost machine without proxying, set Host to an IP / hostname (e.g. `192.168.1.10`) and the matching Port. Bare hostnames default to `http://`; you can also paste a full `https://example.com` if you have HTTPS terminating elsewhere.
 
 ---
 

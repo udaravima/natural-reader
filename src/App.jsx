@@ -13,6 +13,9 @@ import { useChatEngine } from './hooks/useChatEngine';
 // Constants
 import { OLLAMA_DEFAULTS } from './constants';
 
+// Utils
+import { buildApiUrl } from './utils/url';
+
 // Components
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
@@ -157,7 +160,7 @@ export default function App() {
   const hasDocument = !!pdfDoc || (fileType === 'text' && numPages > 0);
 
   // --- BACKEND HEALTH CHECK ---
-  const getApiUrl = (endpoint) => `http://${apiHost}:${apiPort}${endpoint}`;
+  const getApiUrl = (endpoint) => buildApiUrl(apiHost, apiPort, endpoint);
 
   // Navigation helpers (used by PdfViewer, MobileBottomNav, keyboard shortcuts)
   const goToNextPage = useCallback(() => setCurrentPage(p => Math.min(numPages, p + 1)), [numPages, setCurrentPage]);
