@@ -8,9 +8,11 @@ import remarkGfm from 'remark-gfm';
  * (paragraph / list / heading / table) level — `paragraphMap[i]` maps the
  * currently-spoken sentence to the block it belongs to.
  *
- * Block index is assigned by walking react-markdown's component invocations
- * in source order via a render-scoped mutable counter that the wrapped block
- * components close over. Non-block components (li, td, code) do not increment.
+ * Highlight alignment uses each rendered element's `node.position.start.offset`
+ * (passed by react-markdown when `passNode` is on, which is the default) and
+ * looks it up in `pageData.blockOffsets`. This works regardless of nesting
+ * depth — an inner `<ul>` inside a list item resolves to its enclosing
+ * top-level list block, not a separate one.
  */
 export default function MarkdownPageRenderer({
     theme,
@@ -24,10 +26,15 @@ export default function MarkdownPageRenderer({
     const activeBlock = pageData?.paragraphMap?.[currentSentenceIndex] ?? -1;
     const containerRef = useRef(null);
 
-    // Per-render counter shared by all wrapped block components. React-markdown
-    // invokes them depth-first in source order, so the counter naturally aligns
-    // with `paragraphMap` block indices computed during pagination.
-    const counter = { value: 0 };
+    const findBlockIndex = (offset) => {
+        const ranges = pageData?.blockOffsets;
+        if (!ranges || offset == null) return -1;
+        for (let i = 0; i < ranges.length; i++) {
+            const [s, e] = ranges[i];
+            if (offset >= s && offset < e) return i;
+        }
+        return -1;
+    };
 
     // Auto-scroll the active block into view when it changes (mirrors usePdfEngine behavior).
     useEffect(() => {
@@ -43,15 +50,22 @@ export default function MarkdownPageRenderer({
             : 'bg-blue-200/50 ring-1 ring-blue-300/60';
     };
 
+    // For top-level block-level elements, attach the block-index resolved from
+    // node offset and highlight if it's the active block. Inner/nested
+    // invocations still resolve to their enclosing block (so highlight is
+    // consistent), but to avoid duplicating the data attribute on inner
+    // elements we only attach it when the node's start matches the block start.
     const wrapBlock = (Tag, baseClass = '') => {
-        const Component = ({ children, ...props }) => {
-            const i = counter.value++;
-            const isActive = i === activeBlock;
+        const Component = ({ children, node, ...props }) => {
+            const offset = node?.position?.start?.offset;
+            const i = findBlockIndex(offset);
+            const isActive = i >= 0 && i === activeBlock;
+            const isTopLevel = i >= 0 && pageData.blockOffsets[i][0] === offset;
             return (
                 <Tag
                     {...props}
-                    data-block-index={i}
-                    className={`${baseClass} rounded-md transition-colors duration-200 ${highlightFor(isActive)}`}
+                    data-block-index={isTopLevel ? i : undefined}
+                    className={`${baseClass} rounded-md transition-colors duration-200 ${isTopLevel ? highlightFor(isActive) : ''}`}
                 >
                     {children}
                 </Tag>
@@ -79,40 +93,44 @@ export default function MarkdownPageRenderer({
         code: ({ inline, children, ...props }) => inline
             ? <code {...props} className={`px-1 py-0.5 rounded text-[0.9em] font-mono ${darkMode ? 'bg-slate-700/60' : 'bg-slate-200'}`}>{children}</code>
             : <code {...props} className="font-mono">{children}</code>,
-        pre: ({ children, ...props }) => {
-            // Code blocks count toward block index (they appear in the rendered tree)
-            // but contribute zero TTS sentences, so they never become activeBlock.
-            const i = counter.value++;
+        pre: ({ children, node, ...props }) => {
+            const offset = node?.position?.start?.offset;
+            const i = findBlockIndex(offset);
+            const isTopLevel = i >= 0 && pageData.blockOffsets[i][0] === offset;
             return (
                 <pre
                     {...props}
-                    data-block-index={i}
+                    data-block-index={isTopLevel ? i : undefined}
                     className={`my-3 p-3 rounded-lg overflow-x-auto text-sm font-mono ${darkMode ? 'bg-slate-800/80 text-slate-100' : 'bg-slate-900/90 text-slate-100'}`}
                 >
                     {children}
                 </pre>
             );
         },
-        blockquote: ({ children, ...props }) => {
-            const i = counter.value++;
-            const isActive = i === activeBlock;
+        blockquote: ({ children, node, ...props }) => {
+            const offset = node?.position?.start?.offset;
+            const i = findBlockIndex(offset);
+            const isActive = i >= 0 && i === activeBlock;
+            const isTopLevel = i >= 0 && pageData.blockOffsets[i][0] === offset;
             return (
                 <blockquote
                     {...props}
-                    data-block-index={i}
-                    className={`border-l-4 pl-4 my-3 italic rounded-r-md transition-colors duration-200 ${darkMode ? 'border-slate-500 text-slate-300' : 'border-slate-400 text-slate-700'} ${highlightFor(isActive)}`}
+                    data-block-index={isTopLevel ? i : undefined}
+                    className={`border-l-4 pl-4 my-3 italic rounded-r-md transition-colors duration-200 ${darkMode ? 'border-slate-500 text-slate-300' : 'border-slate-400 text-slate-700'} ${isTopLevel ? highlightFor(isActive) : ''}`}
                 >
                     {children}
                 </blockquote>
             );
         },
-        table: ({ children, ...props }) => {
-            const i = counter.value++;
-            const isActive = i === activeBlock;
+        table: ({ children, node, ...props }) => {
+            const offset = node?.position?.start?.offset;
+            const i = findBlockIndex(offset);
+            const isActive = i >= 0 && i === activeBlock;
+            const isTopLevel = i >= 0 && pageData.blockOffsets[i][0] === offset;
             return (
                 <div
-                    data-block-index={i}
-                    className={`overflow-x-auto my-3 rounded-md transition-colors duration-200 ${highlightFor(isActive)}`}
+                    data-block-index={isTopLevel ? i : undefined}
+                    className={`overflow-x-auto my-3 rounded-md transition-colors duration-200 ${isTopLevel ? highlightFor(isActive) : ''}`}
                 >
                     <table {...props} className="border-collapse text-sm w-full">{children}</table>
                 </div>
@@ -121,10 +139,9 @@ export default function MarkdownPageRenderer({
         thead: ({ children, ...props }) => <thead {...props} className={darkMode ? 'bg-slate-800/60' : 'bg-slate-100'}>{children}</thead>,
         th: ({ children, ...props }) => <th {...props} className="border border-slate-500/40 px-3 py-1.5 font-semibold text-left">{children}</th>,
         td: ({ children, ...props }) => <td {...props} className="border border-slate-500/40 px-3 py-1.5">{children}</td>,
-        hr: ({ ...props }) => {
-            counter.value++;
-            return <hr {...props} className={`my-6 ${darkMode ? 'border-slate-700' : 'border-slate-300'}`} />;
-        },
+        hr: ({ ...props }) => (
+            <hr {...props} className={`my-6 ${darkMode ? 'border-slate-700' : 'border-slate-300'}`} />
+        ),
         img: ({ alt, src, ...props }) => (
             <img {...props} alt={alt} src={src} className="max-w-full rounded-md my-3" />
         ),
