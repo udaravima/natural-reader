@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [1.5.0] - 2026-05-10
 
 ### Added
 - **Image attachments in chat** — paperclip button, drag & drop onto the chat view, and `Ctrl + V` paste from clipboard. Files preview as thumbnails above the prompt and inside user bubbles after sending; attached images are sent to Ollama via the per-message `images: [base64]` field. Size cap 10 MB per image.
