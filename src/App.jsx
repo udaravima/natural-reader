@@ -87,6 +87,7 @@ export default function App() {
     canvasRef, textLayerRef, fileInputRef, sentenceRefs, playbackIndexRef,
     processFile, openFromLibrary, removeFromLibrary, handleFileUpload,
     calculateReadingProgress, calculateEstimatedTimeRemaining,
+    markdownPageData,
   } = pdfEngine;
 
   const inChat = viewMode === 'chat';
@@ -154,10 +155,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inChat]);
 
-  // True when any document (PDF or .txt) is loaded — used as a gate by UI bits
-  // that don't care about file type. pdfDoc stays the source of truth for code
-  // that actually needs the pdf.js object (e.g. chapter navigation).
-  const hasDocument = !!pdfDoc || (fileType === 'text' && numPages > 0);
+  // True when any document (PDF, .txt, or .md) is loaded — used as a gate by UI
+  // bits that don't care about file type. pdfDoc stays the source of truth for
+  // code that actually needs the pdf.js object (e.g. chapter navigation).
+  const hasDocument = !!pdfDoc || ((fileType === 'text' || fileType === 'markdown') && numPages > 0);
 
   // --- BACKEND HEALTH CHECK ---
   const getApiUrl = (endpoint) => buildApiUrl(apiHost, apiPort, endpoint);
@@ -236,12 +237,15 @@ export default function App() {
     const isSupported =
       file.type === 'application/pdf' ||
       file.type === 'text/plain' ||
+      file.type === 'text/markdown' ||
       name.endsWith('.pdf') ||
-      name.endsWith('.txt');
+      name.endsWith('.txt') ||
+      name.endsWith('.md') ||
+      name.endsWith('.markdown');
     if (isSupported) {
       processFile(file);
     } else {
-      setStatus("Please drop a PDF or TXT file");
+      setStatus("Please drop a PDF, TXT, or Markdown file");
     }
   };
 
@@ -455,6 +459,7 @@ export default function App() {
           recentBooks={recentBooks}
           openFromLibrary={openFromLibrary}
           removeFromLibrary={removeFromLibrary}
+          markdownPageData={markdownPageData}
         />
         )}
       </main>

@@ -1,6 +1,6 @@
 # Neural Reader
 
-A modern, feature-rich document reader with **neural text-to-speech** powered by **[Kokoro TTS](https://github.com/hexgrad/kokoro)** and an **optional local-AI chat mode** powered by **[Ollama](https://ollama.com/)**. Open PDFs or `.txt` files, have them read aloud with natural-sounding voices, or chat with a local LLM and have its replies streamed back as speech.
+A modern, feature-rich document reader with **neural text-to-speech** powered by **[Kokoro TTS](https://github.com/hexgrad/kokoro)** and an **optional local-AI chat mode** powered by **[Ollama](https://ollama.com/)**. Open PDFs, `.txt`, or `.md` files, have them read aloud with natural-sounding voices, or chat with a local LLM and have its replies streamed back as speech.
 
 > 🎯 **A web frontend for Kokoro TTS — now with a built-in Ollama chat side-mode.** The reader provides an intuitive interface for reading PDF and plain-text documents aloud using Kokoro's neural voice synthesis. The chat mode talks to a local Ollama server you run yourself, with the same voice pipeline reading replies back to you. A browser-based Web Speech fallback is also available for testing without either backend.
 
@@ -13,12 +13,13 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 ## ✨ Features
 
 ### 📖 Document Viewing
-- **Drag & Drop Upload** — Drop PDFs or `.txt` files directly onto the window
+- **Drag & Drop Upload** — Drop PDFs, `.txt`, or `.md` files directly onto the window
 - **PDF Rendering** — Smooth page-by-page rendering with zoom controls
 - **Plain Text (.txt) Support** — Text files are paginated into pseudo-pages (~40 sentences) and use the same reading pipeline as PDFs (sentence highlight, library, resume progress, selection-read)
+- **Markdown (.md) Support** — Markdown files render with proper formatting (headings, lists, code blocks, tables, blockquotes) via `react-markdown` + `remark-gfm`. Pagination is paragraph-aware (~40 sentence soft cap, breaks only on block boundaries). The block currently being read is highlighted at the paragraph level, and TTS strips Markdown markup so `**bold**` reads as "bold" and code blocks are skipped entirely.
 - **Table of Contents** — Navigate using the PDF's chapter outline (if available)
 - **Text Selection** — Select text directly on the rendered page for copying or reading
-- **Zoom Controls** — Zoom in/out, fit to page, fit to width (font size for `.txt`)
+- **Zoom Controls** — Zoom in/out, fit to page, fit to width (font size for `.txt` and `.md`)
 - **Page Jump** — Click the page indicator and type any page number
 
 ### 🎙️ Text-to-Speech
@@ -60,7 +61,7 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 - **Toast Notifications** — Informative feedback for user actions
 
 ### 💾 Memory & Persistence
-- **Document Library (IndexedDB)** — PDFs and `.txt` files saved locally for instant resume (up to 5 docs)
+- **Document Library (IndexedDB)** — PDFs, `.txt`, and `.md` files saved locally for instant resume (up to 5 docs)
 - **Chat Sessions (IndexedDB)** — Every chat is auto-saved; switch / rename / delete from the sidebar; auto-named from the first prompt; LRU-capped at 50 sessions
 - **Per-Session Event Log** — `sent`, `received`, `aborted`, `error` events with timestamps, viewable as a collapsible log
 - **One-Click Resume** — Click any document in the library to continue reading
@@ -531,7 +532,7 @@ natural-reader/
 │   ├── db.js                  # IndexedDB: document library + chat sessions (v3)
 │   ├── index.css              # Global styles (Tailwind)
 │   ├── hooks/
-│   │   ├── usePdfEngine.js       # PDF + .txt loading, rendering, text extraction, library
+│   │   ├── usePdfEngine.js       # PDF + .txt + .md loading, rendering, text extraction, library
 │   │   ├── useTtsEngine.js       # TTS playback loop, caching, voice preview, chat audio channel
 │   │   ├── useChatEngine.js      # Ollama streaming, sessions, per-session event log, chat TTS queue
 │   │   ├── usePersistedState.js  # localStorage-backed state + reading progress
@@ -548,6 +549,7 @@ natural-reader/
 │       ├── ChatSidebar.jsx         # Chat sidebar: Ollama config, model picker, sessions, log
 │       ├── PdfViewer.jsx           # Branches between PDF canvas and TextPageRenderer
 │       ├── TextPageRenderer.jsx    # Renders a .txt pseudo-page with sentence highlighting
+│       ├── MarkdownPageRenderer.jsx # Renders a .md page (react-markdown + remark-gfm) with paragraph-level highlighting
 │       ├── ChatView.jsx            # Chat list, prompt box, attachments, per-message stats / read-aloud / copy
 │       ├── AttachmentPreview.jsx   # Image-thumbnail / audio-player chip used in pending bar + bubbles
 │       ├── VoiceRecorder.jsx       # MediaRecorder UI (kept for future re-enable; currently unused)

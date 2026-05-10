@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Markdown (`.md`) reader support** — drop or pick a `.md` / `.markdown` file and it joins the existing library alongside PDFs and `.txt` files. Renders properly via `react-markdown` + `remark-gfm` (headings, lists, code blocks, tables, blockquotes) instead of showing raw `**bold**` / `# heading` markup.
+- **Paragraph-level highlight while reading** — the block (paragraph, list, heading, table, blockquote) containing the currently-spoken sentence gets a subtle background tint and auto-scrolls into view. Pagination is paragraph-aware: pages cap at ~40 sentences but always end on a block boundary.
+- **Markdown-aware TTS for the reader** — sentences are passed through the same `markdownToSpeech` filter used in chat before synthesis, so `**bold**` reads as "bold" (not "star star bold star star"), `[link text](url)` reads as "link text", and fenced code blocks are skipped entirely.
+- **Library tile for markdown** — `.md` files in the recents list show a `FileCode` icon with a purple gradient to distinguish them from `.txt` (teal) and `.pdf` (blue).
+
 ## [1.5.0] - 2026-05-10
 
 ### Added

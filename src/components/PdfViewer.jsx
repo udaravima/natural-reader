@@ -4,6 +4,7 @@ import {
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen';
 import TextPageRenderer from './TextPageRenderer';
+import MarkdownPageRenderer from './MarkdownPageRenderer';
 
 export default function PdfViewer({
     theme,
@@ -23,9 +24,11 @@ export default function PdfViewer({
     recentBooks,
     openFromLibrary,
     removeFromLibrary,
+    markdownPageData,
 }) {
     const isText = fileType === 'text';
-    const hasDoc = isText ? numPages > 0 : !!pdfDoc;
+    const isMarkdown = fileType === 'markdown';
+    const hasDoc = (isText || isMarkdown) ? numPages > 0 : !!pdfDoc;
     return (
         <section className={`flex-1 flex flex-col overflow-hidden ${theme.viewportBg} transition-colors duration-300`}>
 
@@ -130,7 +133,16 @@ export default function PdfViewer({
                     }}
                 >
                     {hasDoc ? (
-                        isText ? (
+                        isMarkdown ? (
+                            <MarkdownPageRenderer
+                                theme={theme}
+                                darkMode={darkMode}
+                                pageData={markdownPageData}
+                                currentSentenceIndex={currentSentenceIndex}
+                                scale={scale}
+                                effectiveIsMobile={effectiveIsMobile}
+                            />
+                        ) : isText ? (
                             <TextPageRenderer
                                 theme={theme}
                                 darkMode={darkMode}

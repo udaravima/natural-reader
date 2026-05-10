@@ -3,6 +3,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { saveBook, getBook, getRecentBooks, deleteBook, updateBookMeta, detectFileType } from '../db';
 import { loadReadingProgress, saveReadingProgress } from './usePersistedState';
 import { SENTENCES_PER_TEXT_PAGE } from '../constants';
+import { markdownToSpeech } from '../utils/markdownToSpeech';
 
 // Configure PDF.js worker for offline use
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -27,14 +28,90 @@ const paginateSentences = (sentences, perPage = SENTENCES_PER_TEXT_PAGE) => {
     return pages.length > 0 ? pages : [[]];
 };
 
+// --- MARKDOWN ---
+// Block-aware splitter: keeps fenced code blocks atomic, otherwise splits on
+// blank lines (CommonMark block boundary). Each block carries:
+//   raw       — original markdown source for that block (rendered by react-markdown)
+//   plain     — markdown markup stripped (used to extract sentences for TTS)
+//   sentences — TTS-ready sentence array (empty for code blocks: skipped by TTS)
+const buildMarkdownBlock = (raw, type) => {
+    const isCode = type === 'code';
+    const plain = isCode ? '' : markdownToSpeech(raw);
+    const sentences = isCode
+        ? []
+        : plain
+            .replace(/\s+/g, ' ')
+            .split(/(?<=[.!?])\s+/)
+            .map(s => s.trim())
+            .filter(s => s.length > 0);
+    return { raw, plain, sentences, type };
+};
+
+const segmentMarkdown = (rawText) => {
+    if (!rawText) return [];
+    const blocks = [];
+    const fenceRe = /```[\s\S]*?```/g;
+    let lastIndex = 0;
+    let match;
+    const pushProse = (chunk) => {
+        const trimmed = chunk.replace(/^\s*\n+/, '').replace(/\n+\s*$/, '');
+        if (!trimmed) return;
+        const proseBlocks = trimmed.split(/\n{2,}/).map(s => s.replace(/\s+$/, '')).filter(s => s.trim().length > 0);
+        for (const b of proseBlocks) {
+            blocks.push(buildMarkdownBlock(b, 'paragraph'));
+        }
+    };
+    while ((match = fenceRe.exec(rawText)) !== null) {
+        pushProse(rawText.slice(lastIndex, match.index));
+        blocks.push(buildMarkdownBlock(match[0], 'code'));
+        lastIndex = match.index + match[0].length;
+    }
+    pushProse(rawText.slice(lastIndex));
+    return blocks;
+};
+
+// Greedy pagination: pack blocks until the next would exceed the soft cap.
+// Pages always end on a block boundary; a single oversize block gets its own page.
+const buildMarkdownPage = (blocks) => {
+    const sentences = [];
+    const paragraphMap = [];
+    blocks.forEach((block, blockIndex) => {
+        for (const s of block.sentences) {
+            sentences.push(s);
+            paragraphMap.push(blockIndex);
+        }
+    });
+    const rawMarkdown = blocks.map(b => b.raw).join('\n\n');
+    return { rawMarkdown, blocks, sentences, paragraphMap };
+};
+
+const paginateMarkdownBlocks = (blocks, perPage = SENTENCES_PER_TEXT_PAGE) => {
+    const pages = [];
+    let current = [];
+    let count = 0;
+    for (const block of blocks) {
+        const size = block.sentences.length;
+        if (current.length > 0 && count + size > perPage) {
+            pages.push(buildMarkdownPage(current));
+            current = [];
+            count = 0;
+        }
+        current.push(block);
+        count += size;
+    }
+    if (current.length > 0) pages.push(buildMarkdownPage(current));
+    return pages.length > 0 ? pages : [buildMarkdownPage([])];
+};
+
 /**
  * Manages PDF document loading, rendering, text extraction, outline, and library.
  */
 export function usePdfEngine({ scale, setStatus, setToastMessage }) {
     const [pdfDoc, setPdfDoc] = useState(null);
     const [pdfFileName, setPdfFileName] = useState('');
-    const [fileType, setFileType] = useState('pdf'); // 'pdf' | 'text'
+    const [fileType, setFileType] = useState('pdf'); // 'pdf' | 'text' | 'markdown'
     const [textPages, setTextPages] = useState([]); // sentences[][] for .txt files
+    const [markdownPages, setMarkdownPages] = useState([]); // page objects for .md files
     const [currentPage, setCurrentPage] = useState(1);
     const [numPages, setNumPages] = useState(0);
     const [textItems, setTextItems] = useState([]);
@@ -171,7 +248,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
     }, [pdfDoc, currentPage, scale, fileType]);
 
     // Sentence source per file type. For PDF we re-extract on page change; for text
-    // we slice the pre-paginated array.
+    // and markdown we slice the pre-paginated array.
     useEffect(() => {
         if (fileType === 'pdf') {
             if (pdfDoc) extractPageText(currentPage, pdfDoc);
@@ -182,9 +259,17 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
             setTextItems(sentences);
             sentenceRefs.current = sentences.map(() => null);
             setStatus(`Page ${currentPage} Ready`);
+            return;
+        }
+        if (fileType === 'markdown' && markdownPages.length > 0) {
+            const page = markdownPages[currentPage - 1];
+            const sentences = page?.sentences || [];
+            setTextItems(sentences);
+            sentenceRefs.current = sentences.map(() => null);
+            setStatus(`Page ${currentPage} Ready`);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [pdfDoc, currentPage, fileType, textPages]);
+    }, [pdfDoc, currentPage, fileType, textPages, markdownPages]);
 
     // --- FILE PROCESSING ---
     // Apply saved reading progress (or reset to page 1) for the just-loaded document.
@@ -213,9 +298,26 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         const pages = paginateSentences(sentences, SENTENCES_PER_TEXT_PAGE);
         setPdfDoc(null);
         setPdfOutline([]);
+        setMarkdownPages([]);
         setTextPages(pages);
         setNumPages(pages.length);
         setFileType('text');
+        setPdfFileName(fileName);
+        applySavedProgress(fileName, pages.length);
+    };
+
+    // Load a markdown document: parse blocks, paginate paragraph-aware, then
+    // hand off to the markdown renderer. Sentences for TTS already pass through
+    // markdownToSpeech() during segmentation, so the audio path stays plain.
+    const loadMarkdownDocument = (rawText, fileName) => {
+        const blocks = segmentMarkdown(rawText);
+        const pages = paginateMarkdownBlocks(blocks, SENTENCES_PER_TEXT_PAGE);
+        setPdfDoc(null);
+        setPdfOutline([]);
+        setTextPages([]);
+        setMarkdownPages(pages);
+        setNumPages(pages.length);
+        setFileType('markdown');
         setPdfFileName(fileName);
         applySavedProgress(fileName, pages.length);
     };
@@ -233,6 +335,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
                     const doc = await loadingTask.promise;
                     setFileType('pdf');
                     setTextPages([]);
+                    setMarkdownPages([]);
                     setPdfDoc(doc);
                     setNumPages(doc.numPages);
                     setPdfFileName(fileName);
@@ -260,18 +363,22 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
             return;
         }
 
-        if (detected === 'text') {
+        if (detected === 'text' || detected === 'markdown') {
             const reader = new FileReader();
             reader.onload = (ev) => {
                 try {
                     const rawText = ev.target.result;
-                    loadTextDocument(rawText, fileName);
+                    if (detected === 'markdown') {
+                        loadMarkdownDocument(rawText, fileName);
+                    } else {
+                        loadTextDocument(rawText, fileName);
+                    }
                     saveBook(file, { page: 1, sentenceIndex: -1 }).then(() => {
                         getRecentBooks().then(setRecentBooks);
                     });
                 } catch (e) {
-                    console.error('Failed to load text file:', e);
-                    setStatus("Error loading text file");
+                    console.error('Failed to load file:', e);
+                    setStatus(detected === 'markdown' ? "Error loading markdown file" : "Error loading text file");
                 }
             };
             reader.readAsText(file);
@@ -292,9 +399,13 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
             const storedType = bookData.fileType || 'pdf';
 
-            if (storedType === 'text') {
+            if (storedType === 'text' || storedType === 'markdown') {
                 const rawText = new TextDecoder().decode(bookData.data);
-                loadTextDocument(rawText, fileName);
+                if (storedType === 'markdown') {
+                    loadMarkdownDocument(rawText, fileName);
+                } else {
+                    loadTextDocument(rawText, fileName);
+                }
                 updateBookMeta(fileName, {}).then(() => {
                     getRecentBooks().then(setRecentBooks);
                 });
@@ -306,6 +417,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
             setFileType('pdf');
             setTextPages([]);
+            setMarkdownPages([]);
             setPdfDoc(doc);
             setNumPages(doc.numPages);
             setPdfFileName(fileName);
@@ -364,6 +476,9 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         return `~${hours}h ${mins}m`;
     };
 
+    // Current markdown page object (rawMarkdown + paragraphMap) — null for non-md files
+    const markdownPageData = fileType === 'markdown' ? (markdownPages[currentPage - 1] || null) : null;
+
     return {
         // State
         pdfDoc,
@@ -376,6 +491,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         pdfOutline,
         recentBooks,
         currentSentenceIndex, setCurrentSentenceIndex,
+        markdownPageData,
 
         // Refs
         canvasRef,
