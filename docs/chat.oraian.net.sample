@@ -85,3 +85,58 @@ server {
 	proxy_buffering off;
     }
 }
+
+# ---------------------------------------------------------------------------
+# OPTIONAL HARDENING — uncomment what fits your deployment.
+# See README.md → "🔒 Security & Hardening" for the rationale and quick picks.
+# ---------------------------------------------------------------------------
+#
+# 1) HTTP Basic Auth — recommended for any single-user / small-team deploy.
+# -------------------------------------------------------------------------
+# Create the password file once:
+#     sudo htpasswd -B -c /etc/nginx/htpasswd you
+# Add more users with:
+#     sudo htpasswd -B    /etc/nginx/htpasswd teammate
+# Then paste these two lines INSIDE both `location /v1/ {}` and `location /api/ {}`:
+#
+#     auth_basic           "Neural Reader";
+#     auth_basic_user_file /etc/nginx/htpasswd;
+#
+#
+# 2) IP allowlist — for static-IP or VPN setups.
+# -----------------------------------------------
+# Inside each backend location block (BEFORE `proxy_pass`):
+#
+#     allow 203.0.113.42;     # your home IP
+#     allow 10.0.0.0/8;       # internal LAN / VPN
+#     deny  all;
+#
+#
+# 3) Rate limiting — caps a single client's request rate. Stack under auth.
+# --------------------------------------------------------------------------
+# In the top-level `http {}` block of /etc/nginx/nginx.conf, declare the zones:
+#
+#     limit_req_zone $binary_remote_addr zone=tts:10m  rate=5r/s;
+#     limit_req_zone $binary_remote_addr zone=chat:10m rate=2r/s;
+#
+# Then inside this server block, apply per-location:
+#
+#     location /v1/      { limit_req zone=tts  burst=10 nodelay; ... }
+#     location /api/chat { limit_req zone=chat burst=3  nodelay; ... }
+#
+# (The chat zone needs its own sub-location since /api/tags etc. shouldn't be
+#  rate-limited as aggressively.)
+#
+#
+# 4) Tighten Kokoro CORS — server-side, NOT nginx.
+# -------------------------------------------------
+# Edit server/app.py. Replace:
+#
+#     allow_origins=["*"]
+#
+# with the actual frontend origin(s):
+#
+#     allow_origins=["https://chat.oraian.net"]
+#
+# Then reload uvicorn (e.g. `pkill -HUP -f uvicorn` or restart the service).
+# ---------------------------------------------------------------------------

@@ -346,6 +346,133 @@ Notes:
 
 ---
 
+## 🔒 Security & Hardening
+
+The frontend issues every API call directly from the browser — there's no auth gateway, no per-user gating. If your deployment is reachable on the public internet (any domain pointed at it), anyone can hit `/v1/synthesize`, `/api/chat`, etc. with no credentials. For a `localhost`-only dev box this is fine; for a public domain it's not. This section is the recipe for locking it down.
+
+### Threat model
+
+| Endpoint | What an unauthenticated caller can do | Cost to you |
+|---|---|---|
+| `POST /v1/synthesize` | Generate arbitrary TTS audio of any length | GPU/CPU burn, electricity |
+| `POST /v1/batch_synthesize` | Submit huge sentence arrays; with **Unlimited batch timeout** on, a single request can pin Kokoro's inference lock for hours | Same, amplified — practical DoS surface |
+| `POST /api/chat` | Run any installed model with any prompt for as long as they want | LLM inference cost (the expensive one) |
+| `GET  /api/tags` | List the names + sizes of every model you have pulled | Information disclosure / fingerprinting |
+| `GET  /api/version` | Probe the Ollama daemon version | Fingerprinting |
+
+In addition, [server/app.py](server/app.py) ships with `allow_origins=["*"]`, so even *other websites* can drive your Kokoro endpoint from JavaScript without anyone visiting your site. That makes Kokoro a free TTS-as-a-service for whoever knows the URL.
+
+### What is *not* a vulnerability (worth saying out loud)
+
+- **Chat history, sessions, document library** — all in IndexedDB, sandboxed per origin. Other websites can't read them.
+- **Bind addresses** — Kokoro and Ollama listen on `127.0.0.1` only (Ollama by default; Kokoro via [run.py](run.py) on `0.0.0.0` but firewalled by your nginx-only routing). Only the proxy is internet-facing.
+- **TLS** — terminated at nginx with a real cert; in-transit traffic is fine.
+- **Input shapes** — both backends do ML inference. There's no shell-out, no eval, no SQL. The risk is *resource consumption*, not RCE.
+
+### Mitigations (effort-ordered, stack as needed)
+
+#### 1. HTTP Basic Auth at nginx — biggest payoff, smallest effort
+
+The browser prompts once, remembers credentials for the session, and both backends become useless to anyone without them. Recommended for any single-user deployment.
+
+```bash
+# One-time: create the password file
+sudo htpasswd -B -c /etc/nginx/htpasswd you
+# To add another user later, omit -c
+sudo htpasswd -B    /etc/nginx/htpasswd teammate
+```
+
+In each backend `location` block:
+
+```nginx
+location /v1/ {
+    auth_basic           "Neural Reader";
+    auth_basic_user_file /etc/nginx/htpasswd;
+    proxy_pass           http://127.0.0.1:8000/v1/;
+    # ... existing headers / timeouts ...
+}
+location /api/ {
+    auth_basic           "Neural Reader";
+    auth_basic_user_file /etc/nginx/htpasswd;
+    proxy_pass           http://127.0.0.1:11434/api/;
+    # ...
+}
+```
+
+`sudo nginx -t && sudo systemctl reload nginx`. Done.
+
+#### 2. IP allowlist — for static-IP / VPN setups
+
+Zero credentials to manage. Brittle if your IP changes.
+
+```nginx
+location /v1/ {
+    allow 203.0.113.42;     # your home IP
+    allow 10.0.0.0/8;       # internal LAN / VPN
+    deny  all;
+    proxy_pass http://127.0.0.1:8000/v1/;
+    # ...
+}
+```
+
+#### 3. Rate limiting — layer this under any auth
+
+Caps how fast a single client can hammer the daemons. Useful even for "just you" deployments — keeps a runaway script from pegging the GPU.
+
+In the top-level `http {}` block of `/etc/nginx/nginx.conf`:
+
+```nginx
+limit_req_zone $binary_remote_addr zone=tts:10m  rate=5r/s;
+limit_req_zone $binary_remote_addr zone=chat:10m rate=2r/s;
+```
+
+Then inside each location:
+
+```nginx
+location /v1/ {
+    limit_req zone=tts burst=10 nodelay;
+    # ...
+}
+location /api/chat {
+    limit_req zone=chat burst=3 nodelay;
+    # ...
+}
+```
+
+#### 4. Tighten Kokoro CORS — server-side, one-line edit
+
+Stops other websites from co-opting your TTS via cross-origin fetch. Same-origin requests from your own page are unaffected.
+
+In [server/app.py](server/app.py):
+
+```python
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://chat.example.com"],   # not "*"
+    allow_credentials=True,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
+```
+
+Reload uvicorn (`pkill -HUP -f "uvicorn"` or restart the service).
+
+#### 5. Token-based auth (advanced)
+
+For a more app-like UX than the browser's basic-auth dialog: nginx checks for `Authorization: Bearer <token>` and returns `401` when absent; the frontend stores the token in `localStorage` (set once via a small settings field) and threads it through `fetch`. Better UX, more code on both sides — pursue this if you graduate to multi-user or want the auth to be invisible after first login.
+
+### Quick picks by deployment shape
+
+| Deployment | Recommended stack |
+|---|---|
+| **Personal — just you** | Basic auth + tighter CORS. Five lines of nginx, one line in `server/app.py`. |
+| **Small team / family** | Basic auth + rate limit + tighter CORS. Each user gets their own htpasswd entry. |
+| **Public-ish demo** | Basic auth + rate limit + restrict `selectedModel` server-side (don't expose your most expensive model on `/api/tags`). Consider token auth instead of basic. |
+
+The sample [docs/chat.oraian.net.sample](docs/chat.oraian.net.sample) includes the above mitigations as **commented-out blocks at the bottom of the file** — uncomment what you need and reload nginx.
+
+---
+
 ## 🎭 Available Voices
 
 <details>
