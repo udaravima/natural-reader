@@ -1,13 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { markdownToSpeech } from '../utils/markdownToSpeech';
 import { stripAttachmentData, formatAttachmentSize } from '../utils/attachment';
 import { buildApiUrl } from '../utils/url';
-import {
-    saveSession as dbSaveSession,
-    getSession as dbGetSession,
-    getRecentSessions as dbGetRecentSessions,
-    deleteSession as dbDeleteSession,
-} from '../db';
+import { makeSessionStore } from '../lib/sessionStore';
+import { executeToolCall, getToolDefinitions } from '../lib/chatTools';
 
 const SENTENCE_TERMINATOR = /(?<=[.!?])\s+/;
 const MIN_TTS_LENGTH = 5;
@@ -48,12 +44,29 @@ export function useChatEngine({
     selectedVoice,
     playbackSpeed,
     requestTimeout,
+    apiHost,            // FastAPI host — used for chat-session persistence (same server as Kokoro)
+    apiPort,
+    currentDocId,             // sha256 of the open doc (null if none) — gates autonomous tools
+    currentDocIndexState,     // 'indexed' | 'chunks_uploaded' | ... | null — gates autonomous tools
     synthesizeText,     // from useTtsEngine — returns Promise<blobUrl|null>
     playChatUrl,        // from useTtsEngine — plays a pre-fetched blob URL
     playChatSpeech,     // from useTtsEngine — Web Speech API fallback
     stopChatPlayback,   // from useTtsEngine — silences chat audio + speech synthesis
     showToast,
 }) {
+    // Toasted once per tool/thinking fallback so retries don't spam the user.
+    const toolFallbackToastedRef = useRef(false);
+    // Toast at most once per offline streak — avoid spamming on every save.
+    const backendOfflineToastedRef = useRef(false);
+    const sessionStore = useMemo(() => makeSessionStore({
+        apiHost,
+        apiPort,
+        onBackendOffline: () => {
+            if (backendOfflineToastedRef.current) return;
+            backendOfflineToastedRef.current = true;
+            showToast?.('Backend offline — chat sessions won’t be saved.', 4000);
+        },
+    }), [apiHost, apiPort, showToast]);
     const [messages, setMessages] = useState([]);
     const [isStreaming, setIsStreaming] = useState(false);
     const [availableModels, setAvailableModels] = useState([]);
@@ -182,9 +195,9 @@ export function useChatEngine({
     const setActive = (id) => { activeSessionIdRef.current = id; setActiveSessionId(id); };
 
     const refreshSessions = useCallback(async () => {
-        const list = await dbGetRecentSessions();
+        const list = await sessionStore.getRecentSessions();
         setSessions(list);
-    }, []);
+    }, [sessionStore]);
 
     // Append an event to the in-memory log for the active session.
     // Persisted alongside messages on next saveActiveSession() call.
@@ -212,9 +225,15 @@ export function useChatEngine({
             messages: persistableMessages,
             events: eventsRef.current,
         };
-        await dbSaveSession(record);
+        const result = await sessionStore.saveSession(record);
+        // If the save forked an old IDB session, switch the active id to the new
+        // pg row so subsequent edits flow into the same record.
+        if (result?.forkedFrom && result.id !== id) {
+            setActive(result.id);
+        }
+        if (result) backendOfflineToastedRef.current = false;
         await refreshSessions();
-    }, [sessions, selectedModel, refreshSessions]);
+    }, [sessions, selectedModel, refreshSessions, sessionStore]);
 
     // Load an existing session into the active view. Stops anything currently playing.
     const switchToSession = useCallback(async (id) => {
@@ -227,7 +246,7 @@ export function useChatEngine({
         setSpeaking(null);
         sentenceBufferRef.current = '';
 
-        const record = await dbGetSession(id);
+        const record = await sessionStore.getSession(id);
         if (!record) {
             // Stale id — drop it.
             setActive(null);
@@ -241,7 +260,7 @@ export function useChatEngine({
         createdAtRef.current = record.createdAt || Date.now();
         setActive(id);
         setIsStreaming(false);
-    }, [stopChatPlayback]);
+    }, [stopChatPlayback, sessionStore]);
 
     // Reset the chat view without deleting any saved sessions.
     const newSession = useCallback(() => {
@@ -261,24 +280,18 @@ export function useChatEngine({
     }, [stopChatPlayback]);
 
     const deleteSession = useCallback(async (id) => {
-        await dbDeleteSession(id);
+        await sessionStore.deleteSession(id);
         await refreshSessions();
         if (activeSessionIdRef.current === id) {
             // The active session was deleted — start fresh.
             newSession();
         }
-    }, [refreshSessions, newSession]);
+    }, [refreshSessions, newSession, sessionStore]);
 
     const renameSession = useCallback(async (id, newTitle) => {
-        const record = await dbGetSession(id);
-        if (!record) return;
-        const trimmed = (newTitle || '').trim();
-        if (!trimmed) return;
-        record.title = trimmed.slice(0, MAX_TITLE_LENGTH);
-        record.updatedAt = Date.now();
-        await dbSaveSession(record);
-        await refreshSessions();
-    }, [refreshSessions]);
+        const ok = await sessionStore.renameSession(id, newTitle);
+        if (ok) await refreshSessions();
+    }, [refreshSessions, sessionStore]);
 
     // On mount, load the sessions list. Don't auto-load any session — start blank
     // (matches the "auto-create on first message" UX choice).
@@ -385,10 +398,11 @@ export function useChatEngine({
         newSession();
     }, [newSession]);
 
-    const sendMessage = useCallback(async (userText, attachments = []) => {
+    const sendMessage = useCallback(async (userText, attachments = [], docContext = null) => {
         const trimmed = (userText || '').trim();
         const cleanAttachments = (attachments || []).filter(a => a && a.kind);
-        if (!trimmed && cleanAttachments.length === 0) return;
+        const hasDocCtx = !!(docContext && docContext.text);
+        if (!trimmed && cleanAttachments.length === 0 && !hasDocCtx) return;
         if (isStreaming) return;
 
         if (!selectedModel) {
@@ -400,6 +414,7 @@ export function useChatEngine({
             role: 'user',
             content: trimmed,
             attachments: cleanAttachments,
+            docContext: hasDocCtx ? docContext : undefined,
             id: `u-${Date.now()}`,
             timestamp: Date.now(),
         };
@@ -474,75 +489,270 @@ export function useChatEngine({
                 if (binaryB64.length) out.images = binaryB64;
                 return out;
             };
-            const history = [...messagesRef.current, userMsg].map(buildApiMessage);
-            const res = await fetch(ollamaUrl('/api/chat'), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: selectedModel,
-                    messages: history,
-                    stream: true,
-                    think: thinkForThisMsg,
-                }),
-                signal: controller.signal,
-            });
-            if (!res.ok || !res.body) throw new Error(`Ollama error: HTTP ${res.status}`);
-
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            let lineBuf = '';
-
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                lineBuf += decoder.decode(value, { stream: true });
-                const lines = lineBuf.split('\n');
-                lineBuf = lines.pop() || '';
-
-                for (const line of lines) {
-                    const trimmedLine = line.trim();
-                    if (!trimmedLine) continue;
-                    let payload;
-                    try {
-                        payload = JSON.parse(trimmedLine);
-                    } catch {
-                        continue;
+            // Build the system preamble. Two optional layers:
+            //   1. The explicit excerpt (chip text) the user attached.
+            //   2. Top-k semantically retrieved chunks (if `useRetrieval` is on
+            //      AND the doc is indexed). Retrieval runs synchronously here —
+            //      one embed + one vector query — so it adds a small latency
+            //      before the model starts streaming.
+            let retrievalResults = [];
+            if (hasDocCtx && docContext.useRetrieval && docContext.doc_id) {
+                try {
+                    const q = (trimmed || docContext.text || '').slice(0, 2000);
+                    const res = await fetch(
+                        buildApiUrl(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docContext.doc_id)}/search`),
+                        {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ query: q, k: 3 }),
+                            signal: controller.signal,
+                        },
+                    );
+                    if (res.ok) {
+                        const data = await res.json();
+                        retrievalResults = Array.isArray(data.results) ? data.results : [];
+                    } else {
+                        console.warn('Search request failed:', res.status);
                     }
-                    const token = payload?.message?.content || '';
-                    const thinkingTok = payload?.message?.thinking || '';
-                    if (thinkingTok) {
-                        // Reasoning trace — surfaces in the disclosure but never feeds TTS.
-                        setMessages(prev => prev.map(m =>
-                            m.id === assistantId ? { ...m, thinking: (m.thinking || '') + thinkingTok } : m
-                        ));
+                } catch (e) {
+                    if (e.name !== 'AbortError') {
+                        console.warn('Search request errored:', e);
                     }
-                    if (token) {
-                        setMessages(prev => prev.map(m =>
-                            m.id === assistantId ? { ...m, content: m.content + token } : m
-                        ));
-                        if (modeForThisMsg === 'streaming') {
-                            sentenceBufferRef.current += token;
-                            flushBufferedSentences();
+                }
+            }
+
+            const contextPreamble = [];
+            const hasRetrieval = retrievalResults.length > 0;
+            if (hasDocCtx) {
+                // Closing line is conditional: when retrieval is ALSO active,
+                // we must NOT tell the model "answer from this excerpt or say
+                // you don't know" — that prompt effectively masks the second
+                // system message containing the retrieved passages. Some
+                // models (gemma in particular) take that instruction literally
+                // and refuse to use the retrieval results at all.
+                const closing = hasRetrieval
+                    ? `This is the passage the user is currently looking at. You ALSO have additional ` +
+                      `retrieved passages from elsewhere in the document (next system message). ` +
+                      `Draw on whichever sources contain the answer — the visible passage is not ` +
+                      `the only source of truth.`
+                    : `Answer the user's question using this excerpt as the primary context. ` +
+                      `If the excerpt does not contain the answer, say so plainly.`;
+                contextPreamble.push({
+                    role: 'system',
+                    content:
+                        `The user is reading "${docContext.fileName || 'a document'}".\n` +
+                        `Relevant excerpt (${docContext.kind || 'page'}` +
+                        `${docContext.page != null ? `, page ${docContext.page}` : ''}):\n\n` +
+                        `"""\n${docContext.text}\n"""\n\n` +
+                        closing,
+                });
+            }
+            if (hasRetrieval) {
+                const blocks = retrievalResults.map((r, i) => {
+                    const pageLabel = r.page != null ? `page ${r.page}` : 'unknown location';
+                    return `[${i + 1}] (${pageLabel})\n${r.text}`;
+                }).join('\n\n');
+                contextPreamble.push({
+                    role: 'system',
+                    content:
+                        `Additional passages retrieved by semantic similarity to the user's question, ` +
+                        `from across the whole document (not just the visible page):\n\n${blocks}\n\n` +
+                        `Use these passages to answer when the visible excerpt doesn't contain the ` +
+                        `answer. Cite the bracketed numbers ([1], [2], …) when you draw on them so ` +
+                        `the user can verify.`,
+                });
+            }
+            const history = [...contextPreamble, ...messagesRef.current, userMsg].map(buildApiMessage);
+
+            // ---------- Autonomous tool calling ----------
+            // Build the tool context once. The registry filters by `when(ctx)`,
+            // so when there's no indexed doc loaded, `tools` is just [] and the
+            // request body looks identical to the pre-tools era.
+            const toolCtx = { currentDocId, currentDocIndexState, apiHost, apiPort };
+            const tools = getToolDefinitions(toolCtx);
+
+            // Consume a streaming /api/chat response. Token-by-token content
+            // and thinking are flushed into the assistant message live; the
+            // returned `captured` object reports the final stats + any
+            // tool_calls the model decided to emit.
+            const consumeStream = async (response) => {
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let lineBuf = '';
+                const captured = { toolCalls: [], stats: null };
+
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    lineBuf += decoder.decode(value, { stream: true });
+                    const lines = lineBuf.split('\n');
+                    lineBuf = lines.pop() || '';
+
+                    for (const line of lines) {
+                        const trimmedLine = line.trim();
+                        if (!trimmedLine) continue;
+                        let payload;
+                        try { payload = JSON.parse(trimmedLine); }
+                        catch { continue; }
+
+                        const token = payload?.message?.content || '';
+                        const thinkingTok = payload?.message?.thinking || '';
+                        const tcChunk = payload?.message?.tool_calls;
+
+                        if (thinkingTok) {
+                            // Reasoning trace — surfaces in the disclosure but never feeds TTS.
+                            setMessages(prev => prev.map(m =>
+                                m.id === assistantId ? { ...m, thinking: (m.thinking || '') + thinkingTok } : m
+                            ));
+                        }
+                        if (token) {
+                            setMessages(prev => prev.map(m =>
+                                m.id === assistantId ? { ...m, content: m.content + token } : m
+                            ));
+                            if (modeForThisMsg === 'streaming') {
+                                sentenceBufferRef.current += token;
+                                flushBufferedSentences();
+                            }
+                        }
+                        if (Array.isArray(tcChunk) && tcChunk.length > 0) {
+                            captured.toolCalls.push(...tcChunk);
+                        }
+                        if (payload?.done) {
+                            // Capture Ollama's per-request metrics from the final chunk.
+                            // All durations are nanoseconds; the UI converts to s for display.
+                            captured.stats = {
+                                model: payload.model,
+                                doneReason: payload.done_reason,
+                                totalNs: payload.total_duration,
+                                loadNs: payload.load_duration,
+                                promptEvalCount: payload.prompt_eval_count,
+                                promptEvalNs: payload.prompt_eval_duration,
+                                evalCount: payload.eval_count,
+                                evalNs: payload.eval_duration,
+                            };
+                            break;
                         }
                     }
-                    if (payload?.done) {
-                        // Capture Ollama's per-request metrics from the final chunk.
-                        // All durations are nanoseconds; the UI converts to s for display.
-                        const stats = {
-                            model: payload.model,
-                            doneReason: payload.done_reason,
-                            totalNs: payload.total_duration,
-                            loadNs: payload.load_duration,
-                            promptEvalCount: payload.prompt_eval_count,
-                            promptEvalNs: payload.prompt_eval_duration,
-                            evalCount: payload.eval_count,
-                            evalNs: payload.eval_duration,
-                        };
-                        setMessages(prev => prev.map(m =>
-                            m.id === assistantId ? { ...m, stats } : m
-                        ));
-                        break;
+                }
+                return captured;
+            };
+
+            // First /api/chat request. If tools is non-empty, include it. Some
+            // models 400 when `think: true` and `tools: [...]` are sent
+            // together — fall back to a tools-less retry in that case (we
+            // keep thinking on; only tools get dropped).
+            const buildBody = (extra = {}) => ({
+                model: selectedModel,
+                messages: history,
+                stream: true,
+                think: thinkForThisMsg,
+                ...extra,
+            });
+            const firstBody = tools.length > 0 ? buildBody({ tools }) : buildBody();
+            let res = await fetch(ollamaUrl('/api/chat'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(firstBody),
+                signal: controller.signal,
+            });
+            if (!res.ok && tools.length > 0 && res.status >= 400 && res.status < 500) {
+                console.warn(`Ollama returned ${res.status} with tools+think — retrying without tools.`);
+                if (!toolFallbackToastedRef.current) {
+                    toolFallbackToastedRef.current = true;
+                    showToast?.('This model rejected tools — proceeded without them.', 4000);
+                }
+                logEvent('tool-fallback', `model rejected tools (HTTP ${res.status}); retrying without`);
+                res = await fetch(ollamaUrl('/api/chat'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildBody()),
+                    signal: controller.signal,
+                });
+            }
+            if (!res.ok || !res.body) throw new Error(`Ollama error: HTTP ${res.status}`);
+
+            const first = await consumeStream(res);
+            if (first.stats) {
+                setMessages(prev => prev.map(m =>
+                    m.id === assistantId ? { ...m, stats: first.stats } : m
+                ));
+            }
+
+            // If the model called any tools, execute them and re-POST without
+            // `tools` to force a text answer. Single round-trip cap — we don't
+            // loop, so a confused model can't spin forever.
+            if (first.toolCalls.length > 0) {
+                setMessages(prev => prev.map(m =>
+                    m.id === assistantId ? { ...m, toolStatus: 'Searching document…' } : m
+                ));
+                logEvent('tool-call', `${first.toolCalls.length} tool call${first.toolCalls.length > 1 ? 's' : ''}`);
+
+                const toolResults = await Promise.all(first.toolCalls.map(async (tc) => {
+                    const name = tc?.function?.name;
+                    const rawArgs = tc?.function?.arguments;
+                    // Ollama may send arguments as object OR JSON string —
+                    // normalize so the tool always receives a plain object.
+                    let args = {};
+                    if (rawArgs && typeof rawArgs === 'object') args = rawArgs;
+                    else if (typeof rawArgs === 'string') {
+                        try { args = JSON.parse(rawArgs); } catch { args = {}; }
                     }
+                    const result = await executeToolCall(name, args, toolCtx);
+                    return { name, arguments: args, result };
+                }));
+
+                // Persist a compact summary on the assistant message — full
+                // chunk text isn't kept here (it's already in the model's
+                // final answer; the disclosure just shows what was searched).
+                const toolCallSummaries = toolResults.map(tr => ({
+                    name: tr.name,
+                    arguments: tr.arguments,
+                    result_summary: tr.result?.error
+                        ? { error: tr.result.error }
+                        : {
+                            ok: true,
+                            chunk_count: tr.result?.chunk_count ?? null,
+                            query: tr.result?.query ?? null,
+                        },
+                }));
+                setMessages(prev => prev.map(m =>
+                    m.id === assistantId
+                        ? { ...m, toolCalls: toolCallSummaries, toolStatus: undefined }
+                        : m
+                ));
+
+                // Build the follow-up history per Ollama's tool-calling
+                // convention: append the assistant turn (with its tool_calls
+                // and any partial content it streamed) and one tool message
+                // per result.
+                const assistantContent = (messagesRef.current.find(m => m.id === assistantId)?.content) || '';
+                const followupHistory = [
+                    ...history,
+                    { role: 'assistant', content: assistantContent, tool_calls: first.toolCalls },
+                    ...toolResults.map(tr => ({
+                        role: 'tool',
+                        content: JSON.stringify(tr.result),
+                    })),
+                ];
+
+                const res2 = await fetch(ollamaUrl('/api/chat'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: selectedModel,
+                        messages: followupHistory,
+                        stream: true,
+                        think: thinkForThisMsg,
+                    }),
+                    signal: controller.signal,
+                });
+                if (!res2.ok || !res2.body) throw new Error(`Ollama follow-up error: HTTP ${res2.status}`);
+
+                const second = await consumeStream(res2);
+                if (second.stats) {
+                    setMessages(prev => prev.map(m =>
+                        m.id === assistantId ? { ...m, stats: second.stats } : m
+                    ));
                 }
             }
 
@@ -591,7 +801,7 @@ export function useChatEngine({
             }).catch(err => console.error('Session save failed:', err));
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, enableThinking, ollamaHost, ollamaPort, flushBufferedSentences, enqueueTts, logEvent, saveActiveSession]);
+    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, enableThinking, ollamaHost, ollamaPort, apiHost, apiPort, currentDocId, currentDocIndexState, flushBufferedSentences, enqueueTts, logEvent, saveActiveSession]);
 
     const activeSession = sessions.find(s => s.id === activeSessionId) || null;
 

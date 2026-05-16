@@ -1,4 +1,4 @@
-import { Upload, BookOpen, FileText, Trash2, Library } from 'lucide-react';
+import { Upload, BookOpen, FileText, FileCode, Trash2, Library } from 'lucide-react';
 
 export default function WelcomeScreen({
     theme,
@@ -16,8 +16,8 @@ export default function WelcomeScreen({
                 <Upload size={36} />
             </div>
             <div>
-                <p className={`${theme.textSecondary} font-semibold mb-2 text-lg`}>Open a PDF or Text File</p>
-                <p className={`text-sm ${theme.textMuted}`}>Click to browse or drag &amp; drop a .pdf or .txt</p>
+                <p className={`${theme.textSecondary} font-semibold mb-2 text-lg`}>Open a PDF, Text or Markdown File</p>
+                <p className={`text-sm ${theme.textMuted}`}>Click to browse or drag &amp; drop a .pdf, .txt, or .md</p>
             </div>
             <button
                 onClick={() => fileInputRef.current.click()}
@@ -37,11 +37,14 @@ export default function WelcomeScreen({
                     <div className="space-y-2">
                         {recentBooks.map((book) => {
                             const isText = book.fileType === 'text';
-                            const Icon = isText ? FileText : BookOpen;
-                            const tileGradient = isText
-                                ? 'from-emerald-500 to-teal-600'
-                                : 'from-blue-500 to-cyan-600';
-                            const displayName = book.fileName.replace(/\.(pdf|txt)$/i, '');
+                            const isMarkdown = book.fileType === 'markdown';
+                            const Icon = isMarkdown ? FileCode : isText ? FileText : BookOpen;
+                            const tileGradient = isMarkdown
+                                ? 'from-purple-500 to-fuchsia-600'
+                                : isText
+                                    ? 'from-emerald-500 to-teal-600'
+                                    : 'from-blue-500 to-cyan-600';
+                            const displayName = book.fileName.replace(/\.(pdf|txt|md|markdown)$/i, '');
                             return (
                             <button
                                 key={book.fileName}

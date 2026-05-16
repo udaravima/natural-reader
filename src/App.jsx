@@ -15,6 +15,8 @@ import { OLLAMA_DEFAULTS } from './constants';
 
 // Utils
 import { buildApiUrl } from './utils/url';
+import { getOrComputeDocHash } from './utils/docHash';
+import { getBook } from './db';
 
 // Components
 import Header from './components/Header';
@@ -71,6 +73,18 @@ export default function App() {
   const [sidebarTab, setSidebarTab] = useState('sentences');
   const [settingsOpen, setSettingsOpen] = useState(false);
 
+  // Context payload waiting to be attached to the next chat message.
+  // Lives at App scope so it survives the reader→chat view-mode switch.
+  // Shape: { doc_id, fileName, page, kind: 'page'|'selection', text }
+  const [pendingChatContext, setPendingChatContext] = useState(null);
+
+  // Per-document index status keyed by sha256 doc_id. Shape:
+  //   { state: 'idle' | 'chunks_uploaded' | 'indexing' | 'indexed' | 'failed' | 'uploading',
+  //     chunkCount, embeddedCount }
+  const [docIndexByDocId, setDocIndexByDocId] = useState({});
+  // Computed hash for the currently open document — null until lazily hashed.
+  const [currentDocId, setCurrentDocId] = useState(null);
+
   const pdfContainerRef = useRef(null);
 
   // --- HOOKS ---
@@ -87,6 +101,8 @@ export default function App() {
     canvasRef, textLayerRef, fileInputRef, sentenceRefs, playbackIndexRef,
     processFile, openFromLibrary, removeFromLibrary, handleFileUpload,
     calculateReadingProgress, calculateEstimatedTimeRemaining,
+    markdownPageData,
+    extractAllChunks,
   } = pdfEngine;
 
   const inChat = viewMode === 'chat';
@@ -109,10 +125,16 @@ export default function App() {
     synthesizeText, playChatUrl, playChatSpeech, stopChatPlayback,
   } = ttsEngine;
 
+  // currentDocId / currentDocIndexState are exposed to the chat engine so the
+  // tool registry can decide whether to advertise `search_document` to the
+  // model. Both are null while no doc is open.
+  const currentDocIndexEntry = currentDocId ? docIndexByDocId[currentDocId] : null;
   const chatEngine = useChatEngine({
     ollamaHost, ollamaPort, selectedModel,
     chatTtsMode, chatAutoTts, enableThinking,
     isLocalhost, selectedVoice, playbackSpeed, requestTimeout,
+    apiHost, apiPort,
+    currentDocId, currentDocIndexState: currentDocIndexEntry?.state || null,
     synthesizeText, playChatUrl, playChatSpeech, stopChatPlayback,
     showToast,
   });
@@ -154,10 +176,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inChat]);
 
-  // True when any document (PDF or .txt) is loaded — used as a gate by UI bits
-  // that don't care about file type. pdfDoc stays the source of truth for code
-  // that actually needs the pdf.js object (e.g. chapter navigation).
-  const hasDocument = !!pdfDoc || (fileType === 'text' && numPages > 0);
+  // True when any document (PDF, .txt, or .md) is loaded — used as a gate by UI
+  // bits that don't care about file type. pdfDoc stays the source of truth for
+  // code that actually needs the pdf.js object (e.g. chapter navigation).
+  const hasDocument = !!pdfDoc || ((fileType === 'text' || fileType === 'markdown') && numPages > 0);
 
   // --- BACKEND HEALTH CHECK ---
   const getApiUrl = (endpoint) => buildApiUrl(apiHost, apiPort, endpoint);
@@ -236,12 +258,15 @@ export default function App() {
     const isSupported =
       file.type === 'application/pdf' ||
       file.type === 'text/plain' ||
+      file.type === 'text/markdown' ||
       name.endsWith('.pdf') ||
-      name.endsWith('.txt');
+      name.endsWith('.txt') ||
+      name.endsWith('.md') ||
+      name.endsWith('.markdown');
     if (isSupported) {
       processFile(file);
     } else {
-      setStatus("Please drop a PDF or TXT file");
+      setStatus("Please drop a PDF, TXT, or Markdown file");
     }
   };
 
@@ -269,6 +294,234 @@ export default function App() {
     setCurrentSentenceIndex(-1);
     setStatus(`Jumped to: ${title}`);
   };
+
+  // ---------- DOC-AWARE CHAT HANDLERS ----------
+  // Cap the excerpt before sending — small models choke on a wall of text and
+  // even big ones waste tokens on a whole dense PDF page.
+  const CONTEXT_CHAR_CAP = 8000;
+
+  // Read the file bytes back out of IndexedDB and compute (or look up) its
+  // sha256 hash. Returns null if the doc isn't in the library yet.
+  const ensureDocHash = useCallback(async () => {
+    if (!pdfFileName) return null;
+    const record = await getBook(pdfFileName);
+    if (!record?.data) return null;
+    return getOrComputeDocHash(pdfFileName, record.data);
+  }, [pdfFileName]);
+
+  const handleAskAboutPage = useCallback(async (page) => {
+    if (!pdfFileName) return;
+    // textItems holds the sentences for the currently rendered page across PDF,
+    // text, and markdown — joining gives us the full page text.
+    const fullText = (textItems || []).join(' ').trim();
+    if (!fullText) {
+      showToast('Nothing to ask about — page has no text.', 3000);
+      return;
+    }
+    const text = fullText.length > CONTEXT_CHAR_CAP
+      ? fullText.slice(0, CONTEXT_CHAR_CAP) + ' [truncated]'
+      : fullText;
+    const docId = await ensureDocHash();
+    setPendingChatContext({
+      doc_id: docId,
+      fileName: pdfFileName,
+      page,
+      kind: 'page',
+      text,
+    });
+    setViewMode('chat');
+  }, [pdfFileName, textItems, ensureDocHash, setViewMode, showToast]);
+
+  const handleAskAboutSelection = useCallback(async () => {
+    const sel = (typeof window !== 'undefined') ? window.getSelection() : null;
+    const selectedText = sel ? sel.toString().trim() : '';
+    if (!selectedText) {
+      showToast('Select some text first, then click again.', 3000);
+      return;
+    }
+    if (!pdfFileName) return;
+    const text = selectedText.length > CONTEXT_CHAR_CAP
+      ? selectedText.slice(0, CONTEXT_CHAR_CAP) + ' [truncated]'
+      : selectedText;
+    const docId = await ensureDocHash();
+    setPendingChatContext({
+      doc_id: docId,
+      fileName: pdfFileName,
+      page: currentPage,
+      kind: 'selection',
+      text,
+    });
+    setViewMode('chat');
+  }, [pdfFileName, currentPage, ensureDocHash, setViewMode, showToast]);
+
+  const clearPendingChatContext = useCallback(() => setPendingChatContext(null), []);
+
+  // ---------- INDEXING ----------
+  // When the open document changes, lazily hash it and fetch its backend
+  // status so the toolbar button shows the right label on load.
+  useEffect(() => {
+    let cancelled = false;
+    if (!pdfFileName) {
+      setCurrentDocId(null);
+      return undefined;
+    }
+    (async () => {
+      const docId = await ensureDocHash();
+      if (cancelled || !docId) return;
+      setCurrentDocId(docId);
+      if (docIndexByDocId[docId]) return; // already cached
+      try {
+        const res = await fetch(getApiUrl(`/v1/docs/${encodeURIComponent(docId)}`));
+        if (cancelled) return;
+        if (res.status === 404) {
+          setDocIndexByDocId((prev) => ({ ...prev, [docId]: { state: 'idle' } }));
+          return;
+        }
+        if (!res.ok) return; // backend offline; leave state undefined
+        const data = await res.json();
+        setDocIndexByDocId((prev) => ({
+          ...prev,
+          [docId]: {
+            state: data.state || 'idle',
+            chunkCount: data.chunk_count,
+            embeddedCount: data.embedded_count,
+          },
+        }));
+      } catch {
+        // Backend unreachable — leave entry undefined. Clicking Index later
+        // will attempt the network call and surface a toast.
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdfFileName, ensureDocHash]);
+
+  const handleIndexDocument = useCallback(async () => {
+    if (!pdfFileName) return;
+    const docId = await ensureDocHash();
+    if (!docId) {
+      showToast('Could not read document bytes — re-open the file and try again.', 4000);
+      return;
+    }
+    setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'uploading' } }));
+    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
+
+    // 1. Register the document.
+    let registerRes;
+    try {
+      const fileSize = (await getBook(pdfFileName))?.size ?? 0;
+      registerRes = await fetch(apiUrl('/v1/docs'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          doc_id: docId,
+          file_name: pdfFileName,
+          file_type: fileType,
+          size_bytes: fileSize,
+          page_count: numPages,
+        }),
+      });
+      if (!registerRes.ok) throw new Error(`HTTP ${registerRes.status}`);
+    } catch (e) {
+      console.error('Doc register failed:', e);
+      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
+      showToast(`Indexing failed: backend unreachable (${e.message})`, 5000);
+      return;
+    }
+
+    // 2. Extract chunks from the loaded document.
+    let chunks;
+    try {
+      chunks = await extractAllChunks();
+    } catch (e) {
+      console.error('Chunk extraction failed:', e);
+      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
+      showToast(`Indexing failed: could not extract text (${e.message})`, 5000);
+      return;
+    }
+    if (chunks.length === 0) {
+      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { state: 'idle' } }));
+      showToast('Nothing to index — this document has no extractable text.', 4000);
+      return;
+    }
+
+    // 3. Upload in batches of 50 to keep request payloads bounded and give
+    // the UI a chance to show progress on large docs.
+    const BATCH = 50;
+    let lastStatus = null;
+    try {
+      for (let i = 0; i < chunks.length; i += BATCH) {
+        const slice = chunks.slice(i, i + BATCH);
+        const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}/chunks`), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chunks: slice }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        lastStatus = data.status;
+      }
+    } catch (e) {
+      console.error('Chunk upload failed:', e);
+      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
+      showToast(`Indexing failed during upload: ${e.message}`, 5000);
+      return;
+    }
+
+    setDocIndexByDocId((prev) => ({
+      ...prev,
+      [docId]: {
+        state: 'indexing',
+        chunkCount: lastStatus?.chunk_count ?? chunks.length,
+        embeddedCount: lastStatus?.embedded_count ?? 0,
+      },
+    }));
+
+    // 4. Kick off the embedding job. Returns 202 immediately; we poll status.
+    try {
+      const indexRes = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}/index`), { method: 'POST' });
+      if (!indexRes.ok) throw new Error(`HTTP ${indexRes.status}`);
+    } catch (e) {
+      console.error('Index kick-off failed:', e);
+      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
+      showToast(`Could not start embedding job: ${e.message}`, 5000);
+      return;
+    }
+
+    showToast(`Embedding ${chunks.length} chunks — this can take a minute.`, 3500);
+
+    // 5. Poll every 2s until state leaves 'indexing'. Cap the polling window
+    // to ~10 minutes so a stuck job doesn't loop forever.
+    const POLL_MS = 2000;
+    const MAX_POLLS = 300;
+    for (let i = 0; i < MAX_POLLS; i++) {
+      await new Promise((r) => setTimeout(r, POLL_MS));
+      try {
+        const sRes = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}`));
+        if (!sRes.ok) continue;
+        const sData = await sRes.json();
+        setDocIndexByDocId((prev) => ({
+          ...prev,
+          [docId]: {
+            state: sData.state,
+            chunkCount: sData.chunk_count,
+            embeddedCount: sData.embedded_count,
+          },
+        }));
+        if (sData.state === 'indexed') {
+          showToast(`Indexed ${sData.embedded_count} chunks.`, 3000);
+          return;
+        }
+        if (sData.state === 'failed') {
+          showToast(`Indexing failed: ${sData.error_message || 'unknown error'}`, 6000);
+          return;
+        }
+      } catch {
+        // Backend hiccup — keep polling; transient errors shouldn't bail.
+      }
+    }
+    showToast('Indexing is taking unusually long — check the server logs.', 6000);
+  }, [pdfFileName, ensureDocHash, extractAllChunks, fileType, numPages, showToast, apiHost, apiPort]);
 
   // --- LOADING STATE ---
   if (!isLibLoaded) {
@@ -317,6 +570,7 @@ export default function App() {
         darkMode={darkMode}
         onReadSelection={readSelection}
         onStopSelectionRead={stopSelectionRead}
+        onAskAboutSelection={inChat ? null : handleAskAboutSelection}
       />
 
       <Header
@@ -434,6 +688,9 @@ export default function App() {
             speakMessage={speakMessage}
             stopSpeaking={stopSpeaking}
             showToast={showToast}
+            pendingDocContext={pendingChatContext}
+            clearPendingDocContext={clearPendingChatContext}
+            currentDocIndexState={pendingChatContext?.doc_id ? docIndexByDocId[pendingChatContext.doc_id]?.state : null}
           />
         ) : (
         <PdfViewer
@@ -455,6 +712,10 @@ export default function App() {
           recentBooks={recentBooks}
           openFromLibrary={openFromLibrary}
           removeFromLibrary={removeFromLibrary}
+          markdownPageData={markdownPageData}
+          onAskAboutPage={handleAskAboutPage}
+          indexEntry={currentDocId ? docIndexByDocId[currentDocId] : null}
+          onIndexDocument={handleIndexDocument}
         />
         )}
       </main>

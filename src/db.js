@@ -14,6 +14,7 @@ const MAX_SESSIONS = 50; // Cap chat history at 50 sessions (LRU by updatedAt)
 export const detectFileType = (file) => {
     if (!file) return 'pdf';
     const name = (file.name || '').toLowerCase();
+    if (file.type === 'text/markdown' || name.endsWith('.md') || name.endsWith('.markdown')) return 'markdown';
     if (file.type === 'text/plain' || name.endsWith('.txt')) return 'text';
     return 'pdf';
 };

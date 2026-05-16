@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
     Send, Square, Bot, User, Loader2, MessageSquare, Brain, ChevronDown, ChevronRight,
-    Volume2, StopCircle, Copy, Paperclip, ImagePlus, Activity,
+    Volume2, StopCircle, Copy, Paperclip, ImagePlus, Activity, FileText, X as XIcon,
+    Wrench, Search,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -25,7 +26,20 @@ export default function ChatView({
     speakMessage,
     stopSpeaking,
     showToast,
+    pendingDocContext,
+    clearPendingDocContext,
+    currentDocIndexState, // 'indexed' | other; gates the "Use whole document" toggle
 }) {
+    // "Use whole document" augments the chip excerpt with semantic search results
+    // from the indexed doc. Off by default per the rollout plan — opt-in keeps
+    // surprising token use to a minimum, and v1 only supports it when the chip
+    // (and therefore the doc id) is already attached.
+    const [useRetrieval, setUseRetrieval] = useState(false);
+    const retrievalAvailable = !!pendingDocContext?.doc_id && currentDocIndexState === 'indexed';
+    // When retrieval isn't available the toggle UI is hidden entirely (it
+    // depends on `onToggleRetrieval` being passed). The state value persists
+    // across docs so the user's last choice survives doc switches — it just
+    // can't fire until the new doc is indexed.
     const copyMessage = async (text) => {
         if (!text) return;
         try {
@@ -143,14 +157,21 @@ export default function ChatView({
         if (e.dataTransfer?.files?.length) ingestFiles(e.dataTransfer.files);
     };
 
-    const canSend = (draft.trim().length > 0 || pendingAttachments.length > 0)
+    // A docContext counts as send-worthy on its own (e.g. user clicked
+    // "Ask page" and just wants the model's take without typing anything).
+    const canSend = (draft.trim().length > 0 || pendingAttachments.length > 0 || !!pendingDocContext)
         && !isStreaming && !!selectedModel && reachable !== false;
 
     const handleSend = () => {
         if (!canSend) return;
-        sendMessage(draft, pendingAttachments);
+        const ctx = pendingDocContext
+            ? { ...pendingDocContext, useRetrieval: useRetrieval && retrievalAvailable }
+            : null;
+        sendMessage(draft, pendingAttachments, ctx);
         setDraft('');
         setPendingAttachments([]);
+        setUseRetrieval(false);
+        clearPendingDocContext?.();
     };
 
     const handleKeyDown = (e) => {
@@ -217,6 +238,19 @@ export default function ChatView({
             {/* INPUT BAR */}
             <div className={`border-t ${theme.border} ${theme.bgSecondary} px-4 py-3 ${effectiveIsMobile ? 'pb-20' : ''}`}>
                 <div className="max-w-3xl mx-auto flex flex-col gap-2">
+                    {/* Doc-context chip — present when the user came in via
+                        "Ask page" or "Ask AI" on a selection. Sent with the
+                        next message, then cleared. */}
+                    {pendingDocContext && (
+                        <DocContextChip
+                            ctx={pendingDocContext}
+                            theme={theme}
+                            darkMode={darkMode}
+                            onRemove={() => clearPendingDocContext?.()}
+                            useRetrieval={useRetrieval}
+                            onToggleRetrieval={retrievalAvailable ? () => setUseRetrieval(v => !v) : null}
+                        />
+                    )}
                     {/* Pending attachments preview row */}
                     {pendingAttachments.length > 0 && (
                         <div className="flex flex-wrap gap-2">
@@ -303,6 +337,9 @@ function MessageBubble({ message, theme, darkMode, isStreamingNow, isSpeaking, o
     const hasThinking = !isUser && !!message.thinking;
     const attachments = Array.isArray(message.attachments) ? message.attachments : [];
     const hasAttachments = attachments.length > 0;
+    const docContext = isUser ? message.docContext : null;
+    const toolStatus = !isUser ? message.toolStatus : null;
+    const toolCalls = !isUser && Array.isArray(message.toolCalls) ? message.toolCalls : null;
     return (
         <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white shrink-0 ${
@@ -331,6 +368,15 @@ function MessageBubble({ message, theme, darkMode, isStreamingNow, isSpeaking, o
                                 darkMode={darkMode}
                             />
                         ))}
+                    </div>
+                )}
+                {docContext && (
+                    <DocContextChip ctx={docContext} theme={theme} darkMode={darkMode} compact />
+                )}
+                {toolStatus && (
+                    <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-bold ${darkMode ? 'bg-cyan-500/15 text-cyan-300' : 'bg-cyan-50 text-cyan-700'}`}>
+                        <Loader2 size={11} className="animate-spin" />
+                        {toolStatus}
                     </div>
                 )}
                 {(hasContent || (isUser && !hasAttachments)) && (
@@ -376,6 +422,9 @@ function MessageBubble({ message, theme, darkMode, isStreamingNow, isSpeaking, o
                             <span>Copy</span>
                         </button>
                     </div>
+                )}
+                {toolCalls && toolCalls.length > 0 && (
+                    <ToolCallsDisclosure toolCalls={toolCalls} theme={theme} darkMode={darkMode} />
                 )}
                 {!isUser && message.stats && (
                     <MessageStatsDisclosure stats={message.stats} theme={theme} darkMode={darkMode} />
@@ -524,6 +573,101 @@ function ThinkingDisclosure({ text, theme, darkMode, isStreamingNow }) {
                 <div className={`px-3 pb-3 pt-0 text-[11px] italic leading-relaxed whitespace-pre-wrap break-words ${theme.textMuted}`}>
                     {text}
                 </div>
+            )}
+        </div>
+    );
+}
+
+// Collapsed-by-default footer summarizing which tools the assistant called.
+// Mirrors MessageStatsDisclosure's look so the bubble's footer-row treatments
+// stay consistent. Click to expand and see per-tool args + a one-line result
+// summary (e.g. "ok · 4 chunks" or "error: ...").
+function ToolCallsDisclosure({ toolCalls, theme, darkMode }) {
+    const [open, setOpen] = useState(false);
+    if (!toolCalls?.length) return null;
+
+    const summary = toolCalls.length === 1
+        ? `🔎 ${toolCalls[0].name}`
+        : `🔎 ${toolCalls.length} tool calls`;
+
+    return (
+        <div className={`w-fit max-w-full rounded-md ${darkMode ? 'bg-cyan-500/10' : 'bg-cyan-50'}`}>
+            <button
+                onClick={() => setOpen(o => !o)}
+                className={`flex items-center gap-1.5 px-2 py-1 text-[10px] font-bold ${theme.textMuted} hover:text-cyan-600 transition-colors`}
+                title={open ? 'Hide tool calls' : 'Show tool calls'}
+            >
+                {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                <Wrench size={11} />
+                <span>{summary}</span>
+            </button>
+            {open && (
+                <ul className={`px-3 pb-2 text-[10px] ${theme.textSecondary} space-y-1`}>
+                    {toolCalls.map((tc, i) => {
+                        const argStr = tc.arguments
+                            ? Object.entries(tc.arguments)
+                                .map(([k, v]) => `${k}=${typeof v === 'string' ? `"${v.length > 60 ? v.slice(0, 60) + '…' : v}"` : v}`)
+                                .join(', ')
+                            : '';
+                        const result = tc.result_summary || {};
+                        const resultLabel = result.error
+                            ? `error: ${result.error}`
+                            : result.chunk_count != null
+                                ? `${result.chunk_count} chunk${result.chunk_count === 1 ? '' : 's'}`
+                                : 'ok';
+                        return (
+                            <li key={i} className="flex items-start gap-1.5">
+                                <Search size={10} className={`mt-0.5 shrink-0 ${theme.textMuted}`} />
+                                <span className="font-mono break-all">
+                                    <span className="font-bold">{tc.name}</span>({argStr}) <span className={theme.textMuted}>→ {resultLabel}</span>
+                                </span>
+                            </li>
+                        );
+                    })}
+                </ul>
+            )}
+        </div>
+    );
+}
+
+function DocContextChip({ ctx, theme, darkMode, onRemove, compact = false, useRetrieval, onToggleRetrieval }) {
+    if (!ctx) return null;
+    const label = ctx.kind === 'selection' ? 'Selection' : `Page ${ctx.page ?? '?'}`;
+    const file = ctx.fileName || 'document';
+    const preview = (ctx.text || '').replace(/\s+/g, ' ').slice(0, 120);
+    return (
+        <div
+            className={`flex items-start gap-2 px-3 py-2 rounded-xl border text-xs ${theme.border} ${darkMode ? 'bg-purple-500/10' : 'bg-purple-50'} ${compact ? 'max-w-[85%]' : 'w-full'}`}
+            title={ctx.text}
+        >
+            <FileText size={14} className={`shrink-0 mt-0.5 ${darkMode ? 'text-purple-300' : 'text-purple-600'}`} />
+            <div className="flex-1 min-w-0">
+                <p className={`font-bold truncate ${theme.text}`}>
+                    {label} <span className={`font-normal ${theme.textMuted}`}>· {file}</span>
+                </p>
+                {preview && (
+                    <p className={`text-[11px] mt-0.5 truncate ${theme.textSecondary}`}>{preview}{ctx.text.length > 120 ? '…' : ''}</p>
+                )}
+                {onToggleRetrieval && (
+                    <label className={`mt-1 flex items-center gap-1.5 text-[10px] font-bold cursor-pointer ${useRetrieval ? 'text-blue-500' : theme.textMuted}`}>
+                        <input
+                            type="checkbox"
+                            checked={!!useRetrieval}
+                            onChange={onToggleRetrieval}
+                            className="accent-blue-500"
+                        />
+                        Use whole document
+                    </label>
+                )}
+            </div>
+            {onRemove && (
+                <button
+                    onClick={onRemove}
+                    className={`shrink-0 p-1 rounded ${theme.hover} ${theme.textMuted} hover:text-red-500 transition-colors`}
+                    title="Remove context"
+                >
+                    <XIcon size={12} />
+                </button>
             )}
         </div>
     );

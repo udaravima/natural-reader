@@ -169,7 +169,7 @@ export default function Header({
                         <Upload size={20} />
                     </button>
                 )}
-                <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".pdf,.txt,text/plain,application/pdf" className="hidden" />
+                <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept=".pdf,.txt,.md,.markdown,text/plain,text/markdown,application/pdf" className="hidden" />
             </div>
         </header>
     );
