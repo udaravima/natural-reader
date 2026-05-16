@@ -21,6 +21,9 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "nomic-embed-text")
 EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", "768"))
 EMBEDDING_TIMEOUT_S = float(os.environ.get("EMBEDDING_TIMEOUT_S", "30"))
+# nomic-embed-text context is 8192 tokens; ~4 chars/token → 24 000 chars is a
+# conservative ceiling that avoids the "input length exceeds context" 500.
+MAX_INPUT_CHARS = int(os.environ.get("EMBEDDING_MAX_CHARS", "24000"))
 MAX_CONCURRENCY = int(os.environ.get("EMBEDDING_MAX_CONCURRENCY", "4"))
 
 _client: httpx.AsyncClient | None = None
@@ -49,6 +52,13 @@ def _get_client() -> httpx.AsyncClient:
 async def embed_one(text: str) -> list[float]:
     """Embed a single string via Ollama. Raises httpx.HTTPError on failure."""
     client = _get_client()
+    # Truncate to stay within the model's context window.
+    if len(text) > MAX_INPUT_CHARS:
+        logger.warning(
+            "Truncating text from %d to %d chars for embedding",
+            len(text), MAX_INPUT_CHARS,
+        )
+        text = text[:MAX_INPUT_CHARS]
     async with _semaphore:
         resp = await client.post(
             f"{OLLAMA_URL}/api/embeddings",
@@ -67,8 +77,21 @@ async def embed_one(text: str) -> list[float]:
     return vec
 
 
-async def embed_batch(texts: list[str]) -> list[list[float]]:
-    """Embed many strings in parallel (bounded by the semaphore)."""
+async def embed_batch(texts: list[str]) -> list[list[float] | None]:
+    """Embed many strings in parallel (bounded by the semaphore).
+
+    Returns ``None`` for any text that fails to embed (e.g. too long even
+    after truncation, transient Ollama error).  Callers should skip
+    ``None`` entries rather than aborting the whole batch.
+    """
     if not texts:
         return []
-    return await asyncio.gather(*(embed_one(t) for t in texts))
+
+    async def _safe_embed(t: str) -> list[float] | None:
+        try:
+            return await embed_one(t)
+        except Exception as e:
+            logger.warning("Failed to embed text (len=%d): %s", len(t), e)
+            return None
+
+    return await asyncio.gather(*(_safe_embed(t) for t in texts))

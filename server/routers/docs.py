@@ -284,6 +284,8 @@ async def _run_index_job(doc_id: str) -> None:
             # parallelism per call. Persist after each batch so a partial
             # failure halfway through still saves progress.
             BATCH = 16
+            embedded_count = 0
+            skipped_count = 0
             for i in range(0, len(rows), BATCH):
                 slice_ = rows[i : i + BATCH]
                 texts = [r[1] for r in slice_]
@@ -291,6 +293,9 @@ async def _run_index_job(doc_id: str) -> None:
                 async with pool.connection() as conn:
                     async with conn.cursor() as cur:
                         for (chunk_id, _text), vec in zip(slice_, vectors):
+                            if vec is None:
+                                skipped_count += 1
+                                continue
                             await cur.execute(
                                 """
                                 UPDATE doc_chunks
@@ -299,6 +304,7 @@ async def _run_index_job(doc_id: str) -> None:
                                 """,
                                 (vec, EMBEDDING_MODEL, chunk_id),
                             )
+                            embedded_count += 1
 
             async with pool.connection() as conn:
                 await conn.execute(
@@ -310,7 +316,10 @@ async def _run_index_job(doc_id: str) -> None:
                     """,
                     (EMBEDDING_MODEL, EMBEDDING_DIM, doc_id),
                 )
-            logger.info("Indexed %d chunks for doc %s", len(rows), doc_id)
+            logger.info(
+                "Indexed %d chunks for doc %s (%d embedded, %d skipped)",
+                len(rows), doc_id, embedded_count, skipped_count,
+            )
         except Exception as e:
             logger.exception("Index job failed for %s", doc_id)
             try:
