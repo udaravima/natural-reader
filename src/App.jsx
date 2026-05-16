@@ -78,6 +78,13 @@ export default function App() {
   // Shape: { doc_id, fileName, page, kind: 'page'|'selection', text }
   const [pendingChatContext, setPendingChatContext] = useState(null);
 
+  // Per-document index status keyed by sha256 doc_id. Shape:
+  //   { state: 'idle' | 'chunks_uploaded' | 'indexing' | 'indexed' | 'failed' | 'uploading',
+  //     chunkCount, embeddedCount }
+  const [docIndexByDocId, setDocIndexByDocId] = useState({});
+  // Computed hash for the currently open document — null until lazily hashed.
+  const [currentDocId, setCurrentDocId] = useState(null);
+
   const pdfContainerRef = useRef(null);
 
   // --- HOOKS ---
@@ -95,6 +102,7 @@ export default function App() {
     processFile, openFromLibrary, removeFromLibrary, handleFileUpload,
     calculateReadingProgress, calculateEstimatedTimeRemaining,
     markdownPageData,
+    extractAllChunks,
   } = pdfEngine;
 
   const inChat = viewMode === 'chat';
@@ -343,6 +351,129 @@ export default function App() {
 
   const clearPendingChatContext = useCallback(() => setPendingChatContext(null), []);
 
+  // ---------- INDEXING ----------
+  // When the open document changes, lazily hash it and fetch its backend
+  // status so the toolbar button shows the right label on load.
+  useEffect(() => {
+    let cancelled = false;
+    if (!pdfFileName) {
+      setCurrentDocId(null);
+      return undefined;
+    }
+    (async () => {
+      const docId = await ensureDocHash();
+      if (cancelled || !docId) return;
+      setCurrentDocId(docId);
+      if (docIndexByDocId[docId]) return; // already cached
+      try {
+        const res = await fetch(getApiUrl(`/v1/docs/${encodeURIComponent(docId)}`));
+        if (cancelled) return;
+        if (res.status === 404) {
+          setDocIndexByDocId((prev) => ({ ...prev, [docId]: { state: 'idle' } }));
+          return;
+        }
+        if (!res.ok) return; // backend offline; leave state undefined
+        const data = await res.json();
+        setDocIndexByDocId((prev) => ({
+          ...prev,
+          [docId]: {
+            state: data.state || 'idle',
+            chunkCount: data.chunk_count,
+            embeddedCount: data.embedded_count,
+          },
+        }));
+      } catch {
+        // Backend unreachable — leave entry undefined. Clicking Index later
+        // will attempt the network call and surface a toast.
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdfFileName, ensureDocHash]);
+
+  const handleIndexDocument = useCallback(async () => {
+    if (!pdfFileName) return;
+    const docId = await ensureDocHash();
+    if (!docId) {
+      showToast('Could not read document bytes — re-open the file and try again.', 4000);
+      return;
+    }
+    setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'uploading' } }));
+    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
+
+    // 1. Register the document.
+    let registerRes;
+    try {
+      const fileSize = (await getBook(pdfFileName))?.size ?? 0;
+      registerRes = await fetch(apiUrl('/v1/docs'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          doc_id: docId,
+          file_name: pdfFileName,
+          file_type: fileType,
+          size_bytes: fileSize,
+          page_count: numPages,
+        }),
+      });
+      if (!registerRes.ok) throw new Error(`HTTP ${registerRes.status}`);
+    } catch (e) {
+      console.error('Doc register failed:', e);
+      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
+      showToast(`Indexing failed: backend unreachable (${e.message})`, 5000);
+      return;
+    }
+
+    // 2. Extract chunks from the loaded document.
+    let chunks;
+    try {
+      chunks = await extractAllChunks();
+    } catch (e) {
+      console.error('Chunk extraction failed:', e);
+      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
+      showToast(`Indexing failed: could not extract text (${e.message})`, 5000);
+      return;
+    }
+    if (chunks.length === 0) {
+      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { state: 'idle' } }));
+      showToast('Nothing to index — this document has no extractable text.', 4000);
+      return;
+    }
+
+    // 3. Upload in batches of 50 to keep request payloads bounded and give
+    // the UI a chance to show progress on large docs.
+    const BATCH = 50;
+    let lastStatus = null;
+    try {
+      for (let i = 0; i < chunks.length; i += BATCH) {
+        const slice = chunks.slice(i, i + BATCH);
+        const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}/chunks`), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chunks: slice }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        lastStatus = data.status;
+      }
+    } catch (e) {
+      console.error('Chunk upload failed:', e);
+      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
+      showToast(`Indexing failed during upload: ${e.message}`, 5000);
+      return;
+    }
+
+    setDocIndexByDocId((prev) => ({
+      ...prev,
+      [docId]: {
+        state: lastStatus?.state || 'chunks_uploaded',
+        chunkCount: lastStatus?.chunk_count ?? chunks.length,
+        embeddedCount: lastStatus?.embedded_count ?? 0,
+      },
+    }));
+    showToast(`Uploaded ${chunks.length} chunks. Embeddings come in PR 4.`, 4000);
+  }, [pdfFileName, ensureDocHash, extractAllChunks, fileType, numPages, showToast, apiHost, apiPort]);
+
   // --- LOADING STATE ---
   if (!isLibLoaded) {
     return (
@@ -533,6 +664,8 @@ export default function App() {
           removeFromLibrary={removeFromLibrary}
           markdownPageData={markdownPageData}
           onAskAboutPage={handleAskAboutPage}
+          indexEntry={currentDocId ? docIndexByDocId[currentDocId] : null}
+          onIndexDocument={handleIndexDocument}
         />
         )}
       </main>

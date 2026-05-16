@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .db import close_db, init_db
 from .endpoints import router as tts_router
 from .routers.chat_sessions import router as chat_sessions_router
+from .routers.docs import router as docs_router
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ def create_app() -> FastAPI:
 
     app.include_router(tts_router)
     app.include_router(chat_sessions_router)
+    app.include_router(docs_router)
 
     @app.on_event("startup")
     async def _startup() -> None:

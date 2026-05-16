@@ -5,6 +5,7 @@ import {
 import WelcomeScreen from './WelcomeScreen';
 import TextPageRenderer from './TextPageRenderer';
 import MarkdownPageRenderer from './MarkdownPageRenderer';
+import IndexButton from './IndexButton';
 
 export default function PdfViewer({
     theme,
@@ -26,6 +27,8 @@ export default function PdfViewer({
     removeFromLibrary,
     markdownPageData,
     onAskAboutPage,
+    indexEntry,
+    onIndexDocument,
 }) {
     const isText = fileType === 'text';
     const isMarkdown = fileType === 'markdown';
@@ -117,18 +120,27 @@ export default function PdfViewer({
                             <Maximize size={14} className="inline mr-1" />
                             Width
                         </button>
+                        {(onAskAboutPage || onIndexDocument) && (
+                            <div className={`w-px h-6 ${theme.border} mx-1`}></div>
+                        )}
                         {onAskAboutPage && (
-                            <>
-                                <div className={`w-px h-6 ${theme.border} mx-1`}></div>
-                                <button
-                                    onClick={() => onAskAboutPage(currentPage)}
-                                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${theme.hover} ${theme.textSecondary} hover:text-blue-500`}
-                                    title="Ask the model about this page"
-                                >
-                                    <MessageSquare size={14} className="inline mr-1" />
-                                    Ask page
-                                </button>
-                            </>
+                            <button
+                                onClick={() => onAskAboutPage(currentPage)}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${theme.hover} ${theme.textSecondary} hover:text-blue-500`}
+                                title="Ask the model about this page"
+                            >
+                                <MessageSquare size={14} className="inline mr-1" />
+                                Ask page
+                            </button>
+                        )}
+                        {onIndexDocument && (
+                            <IndexButton
+                                theme={theme}
+                                state={indexEntry?.state || 'idle'}
+                                chunkCount={indexEntry?.chunkCount}
+                                embeddedCount={indexEntry?.embeddedCount}
+                                onIndex={onIndexDocument}
+                            />
                         )}
                     </div>
                 </div>

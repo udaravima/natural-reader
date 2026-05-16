@@ -496,6 +496,52 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
     // Current markdown page object (rawMarkdown + paragraphMap) — null for non-md files
     const markdownPageData = fileType === 'markdown' ? (markdownPages[currentPage - 1] || null) : null;
 
+    // Extract chunks across the entire document for backend indexing. One row per
+    // PDF/TXT page, one row per markdown block (code blocks excluded). Order
+    // (`ord`) is monotonic across the whole doc; `page` is the 1-based page that
+    // chunk belongs to so we can cite back to it in retrieval. Empty chunks are
+    // skipped so we don't waste embedding compute on whitespace.
+    const extractAllChunks = async () => {
+        if (fileType === 'pdf') {
+            if (!pdfDoc) return [];
+            const out = [];
+            let ord = 0;
+            for (let p = 1; p <= pdfDoc.numPages; p++) {
+                const page = await pdfDoc.getPage(p);
+                const content = await page.getTextContent();
+                const text = content.items
+                    .map(i => i.str)
+                    .join(' ')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                if (text) out.push({ ord: ord++, page: p, chunk_type: 'page', text });
+            }
+            return out;
+        }
+        if (fileType === 'markdown') {
+            const out = [];
+            let ord = 0;
+            markdownPages.forEach((pageObj, pi) => {
+                for (const block of pageObj.blocks || []) {
+                    if (block.type === 'code') continue;
+                    const text = (block.plain || '').replace(/\s+/g, ' ').trim();
+                    if (text) out.push({ ord: ord++, page: pi + 1, chunk_type: 'block', text });
+                }
+            });
+            return out;
+        }
+        if (fileType === 'text') {
+            const out = [];
+            let ord = 0;
+            textPages.forEach((sentences, pi) => {
+                const text = (sentences || []).join(' ').replace(/\s+/g, ' ').trim();
+                if (text) out.push({ ord: ord++, page: pi + 1, chunk_type: 'page', text });
+            });
+            return out;
+        }
+        return [];
+    };
+
     return {
         // State
         pdfDoc,
@@ -524,5 +570,6 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         handleFileUpload,
         calculateReadingProgress,
         calculateEstimatedTimeRemaining,
+        extractAllChunks,
     };
 }
