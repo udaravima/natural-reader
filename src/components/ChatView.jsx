@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
     Send, Square, Bot, User, Loader2, MessageSquare, Brain, ChevronDown, ChevronRight,
     Volume2, StopCircle, Copy, Paperclip, ImagePlus, Activity, FileText, X as XIcon,
+    Wrench, Search,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -337,6 +338,8 @@ function MessageBubble({ message, theme, darkMode, isStreamingNow, isSpeaking, o
     const attachments = Array.isArray(message.attachments) ? message.attachments : [];
     const hasAttachments = attachments.length > 0;
     const docContext = isUser ? message.docContext : null;
+    const toolStatus = !isUser ? message.toolStatus : null;
+    const toolCalls = !isUser && Array.isArray(message.toolCalls) ? message.toolCalls : null;
     return (
         <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white shrink-0 ${
@@ -369,6 +372,12 @@ function MessageBubble({ message, theme, darkMode, isStreamingNow, isSpeaking, o
                 )}
                 {docContext && (
                     <DocContextChip ctx={docContext} theme={theme} darkMode={darkMode} compact />
+                )}
+                {toolStatus && (
+                    <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-bold ${darkMode ? 'bg-cyan-500/15 text-cyan-300' : 'bg-cyan-50 text-cyan-700'}`}>
+                        <Loader2 size={11} className="animate-spin" />
+                        {toolStatus}
+                    </div>
                 )}
                 {(hasContent || (isUser && !hasAttachments)) && (
                     <div className={`px-4 py-3 rounded-2xl ${isUser
@@ -413,6 +422,9 @@ function MessageBubble({ message, theme, darkMode, isStreamingNow, isSpeaking, o
                             <span>Copy</span>
                         </button>
                     </div>
+                )}
+                {toolCalls && toolCalls.length > 0 && (
+                    <ToolCallsDisclosure toolCalls={toolCalls} theme={theme} darkMode={darkMode} />
                 )}
                 {!isUser && message.stats && (
                     <MessageStatsDisclosure stats={message.stats} theme={theme} darkMode={darkMode} />
@@ -561,6 +573,58 @@ function ThinkingDisclosure({ text, theme, darkMode, isStreamingNow }) {
                 <div className={`px-3 pb-3 pt-0 text-[11px] italic leading-relaxed whitespace-pre-wrap break-words ${theme.textMuted}`}>
                     {text}
                 </div>
+            )}
+        </div>
+    );
+}
+
+// Collapsed-by-default footer summarizing which tools the assistant called.
+// Mirrors MessageStatsDisclosure's look so the bubble's footer-row treatments
+// stay consistent. Click to expand and see per-tool args + a one-line result
+// summary (e.g. "ok · 4 chunks" or "error: ...").
+function ToolCallsDisclosure({ toolCalls, theme, darkMode }) {
+    const [open, setOpen] = useState(false);
+    if (!toolCalls?.length) return null;
+
+    const summary = toolCalls.length === 1
+        ? `🔎 ${toolCalls[0].name}`
+        : `🔎 ${toolCalls.length} tool calls`;
+
+    return (
+        <div className={`w-fit max-w-full rounded-md ${darkMode ? 'bg-cyan-500/10' : 'bg-cyan-50'}`}>
+            <button
+                onClick={() => setOpen(o => !o)}
+                className={`flex items-center gap-1.5 px-2 py-1 text-[10px] font-bold ${theme.textMuted} hover:text-cyan-600 transition-colors`}
+                title={open ? 'Hide tool calls' : 'Show tool calls'}
+            >
+                {open ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                <Wrench size={11} />
+                <span>{summary}</span>
+            </button>
+            {open && (
+                <ul className={`px-3 pb-2 text-[10px] ${theme.textSecondary} space-y-1`}>
+                    {toolCalls.map((tc, i) => {
+                        const argStr = tc.arguments
+                            ? Object.entries(tc.arguments)
+                                .map(([k, v]) => `${k}=${typeof v === 'string' ? `"${v.length > 60 ? v.slice(0, 60) + '…' : v}"` : v}`)
+                                .join(', ')
+                            : '';
+                        const result = tc.result_summary || {};
+                        const resultLabel = result.error
+                            ? `error: ${result.error}`
+                            : result.chunk_count != null
+                                ? `${result.chunk_count} chunk${result.chunk_count === 1 ? '' : 's'}`
+                                : 'ok';
+                        return (
+                            <li key={i} className="flex items-start gap-1.5">
+                                <Search size={10} className={`mt-0.5 shrink-0 ${theme.textMuted}`} />
+                                <span className="font-mono break-all">
+                                    <span className="font-bold">{tc.name}</span>({argStr}) <span className={theme.textMuted}>→ {resultLabel}</span>
+                                </span>
+                            </li>
+                        );
+                    })}
+                </ul>
             )}
         </div>
     );

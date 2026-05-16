@@ -36,6 +36,7 @@ class MessageIn(BaseModel):
     attachments: list[Any] = Field(default_factory=list)
     docContext: dict[str, Any] | None = None
     stats: dict[str, Any] | None = None
+    toolCalls: list[Any] | None = None
     timestamp: int = 0
 
 
@@ -120,7 +121,7 @@ async def get_session(session_id: str) -> dict[str, Any]:
 
         await cur.execute(
             """
-            SELECT id, role, content, thinking, attachments, doc_context, stats, timestamp
+            SELECT id, role, content, thinking, attachments, doc_context, stats, tool_calls, timestamp
             FROM chat_messages
             WHERE session_id = %s
             ORDER BY created_at, id
@@ -136,7 +137,7 @@ async def get_session(session_id: str) -> dict[str, Any]:
         event_rows = await cur.fetchall()
 
     messages = []
-    for mid, role, content, thinking, attachments, doc_context, stats, ts in message_rows:
+    for mid, role, content, thinking, attachments, doc_context, stats, tool_calls, ts in message_rows:
         msg = {
             "id": mid,
             "role": role,
@@ -150,6 +151,8 @@ async def get_session(session_id: str) -> dict[str, Any]:
             msg["docContext"] = doc_context
         if stats:
             msg["stats"] = stats
+        if tool_calls:
+            msg["toolCalls"] = tool_calls
         messages.append(msg)
 
     events = [{"ts": int(ts), "kind": kind, "message": msg} for ts, kind, msg in event_rows]
@@ -209,8 +212,8 @@ async def upsert_session(session_id: str, payload: SessionIn) -> dict[str, Any]:
                         await cur.execute(
                             """
                             INSERT INTO chat_messages
-                                (id, session_id, role, content, thinking, attachments, doc_context, stats, timestamp)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                (id, session_id, role, content, thinking, attachments, doc_context, stats, tool_calls, timestamp)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 m.id,
@@ -221,6 +224,7 @@ async def upsert_session(session_id: str, payload: SessionIn) -> dict[str, Any]:
                                 Jsonb(m.attachments),
                                 Jsonb(m.docContext) if m.docContext is not None else None,
                                 Jsonb(m.stats) if m.stats is not None else None,
+                                Jsonb(m.toolCalls) if m.toolCalls is not None else None,
                                 m.timestamp,
                             ),
                         )

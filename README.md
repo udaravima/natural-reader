@@ -1,8 +1,8 @@
 # Neural Reader
 
-A modern, feature-rich document reader with **neural text-to-speech** powered by **[Kokoro TTS](https://github.com/hexgrad/kokoro)** and an **optional local-AI chat mode** powered by **[Ollama](https://ollama.com/)**. Open PDFs, `.txt`, or `.md` files, have them read aloud with natural-sounding voices, or chat with a local LLM and have its replies streamed back as speech.
+A modern, feature-rich document reader with **neural text-to-speech** powered by **[Kokoro TTS](https://github.com/hexgrad/kokoro)**, an **optional local-AI chat mode** powered by **[Ollama](https://ollama.com/)**, and (new in `v1.6.0`) **document-aware chat with RAG + autonomous tool calling** backed by **Postgres + pgvector**. Open PDFs, `.txt`, or `.md` files, have them read aloud with natural-sounding voices, ask the model about what you're reading, or let the model search the indexed doc on its own.
 
-> 🎯 **A web frontend for Kokoro TTS — now with a built-in Ollama chat side-mode.** The reader provides an intuitive interface for reading PDF and plain-text documents aloud using Kokoro's neural voice synthesis. The chat mode talks to a local Ollama server you run yourself, with the same voice pipeline reading replies back to you. A browser-based Web Speech fallback is also available for testing without either backend.
+> 🎯 **A web frontend for Kokoro TTS — now with chat that knows what you're reading.** Beyond the TTS reader and the standalone Ollama chat side-mode, the app can index a loaded document into pgvector and expose a `search_document` tool that your local LLM calls autonomously when a question warrants it. Everything stays local: Ollama for the LLM + embeddings, Postgres in a container for chat sessions and vectors, no cloud round-trips. A browser-based Web Speech fallback is also available for testing without any backend.
 
 ![Neural Reader](https://img.shields.io/badge/React-19.x-blue) ![PDF.js](https://img.shields.io/badge/PDF.js-5.x-orange) ![Kokoro TTS](https://img.shields.io/badge/Kokoro-TTS-green) ![Ollama](https://img.shields.io/badge/Ollama-Chat-orange) ![Vite](https://img.shields.io/badge/Vite-Rolldown-purple) ![Offline](https://img.shields.io/badge/Offline-Ready-brightgreen)
 
@@ -49,6 +49,18 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 - **Markdown-Aware TTS** — Markup is stripped before synthesis so audio reads visible text only (no "star star bold")
 - **Reasoning Trace Toggle** — Enable thinking to send `think: true` to Ollama and see reasoning trace (deepseek-r1, qwen3-thinking, gpt-oss, …) in a collapsible disclosure that auto-expands while streaming
 - **Per-Message Copy** — One-click copy of any chat message to clipboard
+
+### 📑 Document Chat & RAG *(new in `v1.6.0`)*
+
+A full end-to-end walkthrough lives in [docs/CHAT_WITH_PDF.md](docs/CHAT_WITH_PDF.md). Headline capabilities:
+
+- **Ask page** — One toolbar click sends the current page text (~8000 char cap) to the model as a chat preamble. No indexing required.
+- **Ask AI on a selection** — Highlight any text on the rendered page and send just that snippet as context. Paired with the existing "Read Selection" TTS button.
+- **Index this document** — Backed by **Postgres + pgvector**. Frontend extracts per-page (PDF), per-block (Markdown), or per-pseudo-page (TXT) chunks; backend embeds them via Ollama's `nomic-embed-text` (768-dim) and stores them in an HNSW-indexed `vector` column. Re-indexing is idempotent (`UNIQUE (doc_id, text_hash)`).
+- **Use whole document** — A checkbox on the doc-context chip folds the top-3 semantically-retrieved chunks from the indexed doc into the chat preamble with bracketed citations the model is told to use.
+- **Autonomous tool calling** — When a doc is indexed and the chat model supports Ollama's `tools` parameter, the model gets a `search_document` tool it can invoke on its own. The frontend executes it, hands the result back, and the model streams the final answer. Single-iteration cap to prevent loops; falls back gracefully on models without tool support (the field is silently ignored). Tool calls are persisted in a `tool_calls` JSONB column and re-rendered as a 🔎 disclosure on the assistant bubble.
+- **Postgres-backed chat sessions** — Sessions previously stored in IndexedDB now write to Postgres via a new `src/lib/sessionStore.js` abstraction. Legacy IDB sessions stay readable with a small **LOCAL** badge; the first edit on one forks to a fresh Postgres session, leaving the original intact.
+- **Pluggable tool registry** — `src/lib/chatTools/` houses one tool per file with `{name, definition, when(ctx), execute(args, ctx)}`. Adding `web_search`, `read_url`, etc. later is one new file + one line in the registry index. See `src/lib/chatTools/_example.js`.
 
 ### 🎨 User Experience
 - **Dark Mode** — Beautiful dark/light theme toggle with smooth transitions
@@ -98,6 +110,9 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 | **TTS Backend** | FastAPI, Kokoro ONNX, Uvicorn |
 | **TTS Inference** | ONNX Runtime (CUDA / OpenVINO / CPU) |
 | **Chat Backend (optional)** | [Ollama](https://ollama.com/) — local LLM server (default `:11434`) |
+| **Doc Chat Backend (optional, new in 1.6)** | FastAPI routers: `/v1/chat/sessions/*` and `/v1/docs/*` |
+| **Doc Storage / RAG** | Postgres 16 + [pgvector](https://github.com/pgvector/pgvector) (HNSW, cosine), embedded via Ollama `nomic-embed-text` |
+| **DB driver** | `psycopg[binary,pool]` (async) with `pgvector` codec registered per-connection |
 
 ---
 
@@ -106,7 +121,9 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 ### Prerequisites
 
 - **Node.js 18+** and npm
-- **Python 3.8+** (for Kokoro TTS backend)
+- **Python 3.10+** (Kokoro TTS backend; new doc-chat routes use `|`-style unions)
+- **(Optional, for Document Chat & RAG)** Docker + Docker Compose, *or* a host Postgres 16 with the `pgvector` extension
+- **(Optional, for chat)** [Ollama](https://ollama.com/) — needs a chat model AND `nomic-embed-text` if you want indexing/retrieval/tool calling
 
 ### 1. Clone & Install Dependencies
 
@@ -153,13 +170,30 @@ Open **http://localhost:5173** in your browser.
 The chat mode talks to a locally running [Ollama](https://ollama.com/) server. Reader mode works without it — chat is purely opt-in.
 
 ```bash
-# Install Ollama (https://ollama.com/download), then pull a model
+# Install Ollama (https://ollama.com/download), then pull a chat model
 ollama pull gemma3
 # Reasoning model that produces a thinking trace
 ollama pull deepseek-r1:1.5b
 ```
 
 Ollama serves at `http://localhost:11434` by default. In the app, toggle to **Chat** in the header — host/port and model picker live in the chat sidebar.
+
+### 5. (Optional) Document Chat & RAG
+
+To use **Ask page**, **Index this document**, **Use whole document**, and **autonomous tool calling** (see the [walkthrough](docs/CHAT_WITH_PDF.md) for the full tour), you need Postgres + an embedding model.
+
+```bash
+# Bring up Postgres + pgvector (port 5433 on the host to avoid colliding with a system Postgres on 5432)
+docker-compose up -d postgres
+
+# Pull the embedding model (768-dim — the schema is hard-locked to this)
+ollama pull nomic-embed-text
+
+# Optional: pull a chat model that supports Ollama's tools parameter (for autonomous search_document)
+ollama pull qwen2.5    # or llama3.1 / llama3.2 / mistral / gemma2
+```
+
+`python run.py` applies migrations on startup and exposes the new endpoints under `/v1/chat/sessions/*` and `/v1/docs/*` — the existing Kokoro routes are unchanged. If Postgres is unreachable, those new routes return `503` but **TTS and the regular Ollama chat keep working** (the chat layer streams against Ollama directly; only session persistence depends on Postgres).
 
 ### Hardware Acceleration
 
@@ -208,6 +242,20 @@ The frontend talks to two backends. Each has its own host/port (configurable in 
 | `/v1/health` | `GET` | Health check — verifies the model is loaded. Cheap; safe to call during playback. |
 | `/v1/synthesize` | `POST` | Synthesize one block of text → Base64 WAV audio. Used for per-sentence reader playback, selection-read, voice preview, and chat TTS. |
 | `/v1/batch_synthesize` | `POST` | Synthesize multiple sentences → single merged WAV with 0.3 s silence between. Used by "Download Page Audio". |
+
+#### Document Chat & RAG (same FastAPI server, new in `v1.6.0`)
+
+All endpoints return `503` when Postgres is unreachable.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/chat/sessions` | `GET` | List session metadata, newest first. |
+| `/v1/chat/sessions/{id}` | `GET / PUT / PATCH / DELETE` | Per-session CRUD; PUT is a transactional upsert of the whole record (messages + events) matching the frontend's contract. |
+| `/v1/docs` | `POST` | Register a document by sha256 `doc_id` (idempotent). |
+| `/v1/docs/{doc_id}` | `GET / DELETE` | Status (`state`, `chunk_count`, `embedded_count`, model, dim) or cascade delete. |
+| `/v1/docs/{doc_id}/chunks` | `POST` | Bulk insert/upsert chunks (batches of ~50). Idempotent on `(doc_id, text_hash)`. |
+| `/v1/docs/{doc_id}/index` | `POST` | Kick off the background embedding job; returns 202. Poll the doc status endpoint for progress. |
+| `/v1/docs/{doc_id}/search` | `POST` | `{query, k}` → top-k chunks by cosine similarity (HNSW). Used both by the "Use whole document" toggle and by the autonomous `search_document` tool. |
 
 #### Ollama (local LLM server, default `localhost:11434`, optional)
 
@@ -529,39 +577,60 @@ natural-reader/
 │   ├── App.jsx                # Main application — wires hooks and components
 │   ├── main.jsx               # React entry point
 │   ├── constants.js           # Voice definitions, keyboard shortcuts, Ollama defaults
-│   ├── db.js                  # IndexedDB: document library + chat sessions (v3)
+│   ├── db.js                  # IndexedDB: document library + legacy chat sessions (v3)
 │   ├── index.css              # Global styles (Tailwind)
 │   ├── hooks/
-│   │   ├── usePdfEngine.js       # PDF + .txt + .md loading, rendering, text extraction, library
+│   │   ├── usePdfEngine.js       # PDF + .txt + .md loading, rendering, text extraction, library, extractAllChunks
 │   │   ├── useTtsEngine.js       # TTS playback loop, caching, voice preview, chat audio channel
-│   │   ├── useChatEngine.js      # Ollama streaming, sessions, per-session event log, chat TTS queue
+│   │   ├── useChatEngine.js      # Ollama streaming, sessions, tool-call loop, per-session event log, chat TTS queue
 │   │   ├── usePersistedState.js  # localStorage-backed state + reading progress
 │   │   ├── useKeyboardShortcuts.js
 │   │   ├── useMobileDetect.js
 │   │   └── useTheme.js
+│   ├── lib/
+│   │   ├── sessionStore.js       # Postgres-or-IndexedDB session dispatcher (legacy IDB sessions → read-only LOCAL badge)
+│   │   └── chatTools/
+│   │       ├── index.js          # Tool registry (getToolDefinitions, executeToolCall)
+│   │       ├── searchDocument.js # `search_document` tool — semantic search over the open doc
+│   │       └── _example.js       # Stub showing the shape new tools follow (web_search, read_url, …)
 │   ├── utils/
 │   │   ├── attachment.js         # File → Attachment helper, size caps, strip-on-save for IndexedDB
+│   │   ├── docHash.js            # sha256 of file bytes → stable doc_id (Web Crypto, lazy + memoized)
 │   │   ├── markdownToSpeech.js   # Strips Markdown markup before chat TTS synthesis
 │   │   └── url.js                # Builds API URLs, returns relative paths when host is blank
 │   └── components/
 │       ├── Header.jsx              # Top toolbar with Reader/Chat toggle + playback controls
 │       ├── Sidebar.jsx             # Reader sidebar: sentence list, chapters, settings, voice picker
-│       ├── ChatSidebar.jsx         # Chat sidebar: Ollama config, model picker, sessions, log
-│       ├── PdfViewer.jsx           # Branches between PDF canvas and TextPageRenderer
+│       ├── ChatSidebar.jsx         # Chat sidebar: Ollama config, model picker, sessions (with LOCAL badge), log
+│       ├── PdfViewer.jsx           # Branches between PDF canvas and TextPageRenderer; toolbar hosts Ask page + IndexButton
+│       ├── IndexButton.jsx         # Toolbar control: idle → uploading → indexing N/M → indexed (or failed)
 │       ├── TextPageRenderer.jsx    # Renders a .txt pseudo-page with sentence highlighting
 │       ├── MarkdownPageRenderer.jsx # Renders a .md page (react-markdown + remark-gfm) with paragraph-level highlighting
-│       ├── ChatView.jsx            # Chat list, prompt box, attachments, per-message stats / read-aloud / copy
+│       ├── ChatView.jsx            # Chat list, prompt box, attachments, DocContextChip, ToolCallsDisclosure, per-message stats / read-aloud / copy
 │       ├── AttachmentPreview.jsx   # Image-thumbnail / audio-player chip used in pending bar + bubbles
 │       ├── VoiceRecorder.jsx       # MediaRecorder UI (kept for future re-enable; currently unused)
 │       ├── MobileBottomNav.jsx
 │       ├── WelcomeScreen.jsx       # Library and upload landing page
-│       └── overlays/               # Drag, toast, context menu, shortcuts modal, etc.
+│       └── overlays/               # Drag, toast, context menu, shortcuts modal, ReadSelectionButton (+ Ask AI)
 ├── server/
 │   ├── __init__.py
-│   ├── app.py                 # FastAPI app factory with CORS
+│   ├── app.py                 # FastAPI app factory — mounts TTS + chat_sessions + docs routers, runs init_db on startup
+│   ├── db.py                  # psycopg async pool + migration runner + pgvector codec registration
 │   ├── endpoints.py           # /v1/synthesize, /v1/batch_synthesize, /v1/health
 │   ├── model.py               # Kokoro ONNX loading with GPU/NPU/CPU fallback
-│   └── schemas.py             # Pydantic request models
+│   ├── schemas.py             # Pydantic request models (TTS)
+│   ├── sql/
+│   │   ├── 001_init.sql       # Core schema: documents, doc_chunks (vector(768)), chat_sessions, chat_messages, chat_events
+│   │   └── 002_tool_calls.sql # Adds tool_calls JSONB to chat_messages
+│   ├── routers/
+│   │   ├── chat_sessions.py   # /v1/chat/sessions/* — list / get / upsert / patch / delete
+│   │   └── docs.py            # /v1/docs/* — register / chunks / index (BackgroundTasks) / search / status
+│   └── services/
+│       └── embeddings.py      # httpx client → Ollama /api/embeddings, Semaphore(4), dim assertion
+├── docker-compose.yml         # pgvector/pgvector:pg16 on host port 5433
+├── docs/
+│   ├── CHAT_WITH_PDF.md       # End-to-end walkthrough for the doc-chat / RAG / tool-calling feature
+│   └── chat.oraian.net.sample # Production nginx config (TLS + proxy + commented hardening recipes)
 ├── run.py                     # Server entry point (uvicorn)
 ├── requirements.txt           # Python dependencies
 ├── vite.config.js             # Vite + Rolldown config with chunk splitting

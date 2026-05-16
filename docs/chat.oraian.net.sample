@@ -46,7 +46,11 @@ server {
     }
 
     location /v1/ {
-        # Assuming TTS running on port 8000
+        # FastAPI on port 8000 — handles all /v1/* routes:
+        #   • TTS:               /v1/health, /v1/synthesize, /v1/batch_synthesize
+        #   • Chat sessions:     /v1/chat/sessions, /v1/chat/sessions/{id}      (new in 1.6.0)
+        #   • Document RAG:      /v1/docs, /v1/docs/{doc_id}/...                (new in 1.6.0)
+        # No per-route splitting needed — they all share the same upstream.
         proxy_pass http://127.0.0.1:8000/v1/;
 
         # Standard Proxy Headers
@@ -139,4 +143,33 @@ server {
 #     allow_origins=["https://chat.oraian.net"]
 #
 # Then reload uvicorn (e.g. `pkill -HUP -f uvicorn` or restart the service).
+#
+#
+# 5) Postgres access for Document Chat & RAG (new in 1.6.0).
+# ---------------------------------------------------------
+# The /v1/chat/sessions/* and /v1/docs/* endpoints store data in Postgres.
+# They are proxied through the same /v1/ block above — no extra `location`
+# needed — but they DO require:
+#
+#   a) Postgres reachable from the FastAPI process. Either run the bundled
+#      `docker-compose up -d postgres` on the same host (binds to 127.0.0.1:5433)
+#      or set DATABASE_URL when starting `python run.py`:
+#
+#          export DATABASE_URL=postgresql://natural_reader:natural_reader@localhost:5433/natural_reader
+#
+#   b) Ollama reachable for embeddings — the daemon needs `nomic-embed-text` pulled:
+#          ollama pull nomic-embed-text
+#
+# Routes return HTTP 503 when Postgres is down. TTS and the regular Ollama
+# /api/chat passthrough are unaffected — the chat layer streams against Ollama
+# directly; only session persistence depends on Postgres.
+#
+# If you want to protect the doc-RAG endpoints separately from TTS (e.g. allow
+# anyone to use TTS but restrict document indexing), split the location:
+#
+#     location ~ ^/v1/(chat|docs)/ {
+#         # auth_basic or IP-allowlist here
+#         proxy_pass http://127.0.0.1:8000;
+#         # same proxy_set_header lines as /v1/
+#     }
 # ---------------------------------------------------------------------------

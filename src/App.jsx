@@ -125,11 +125,16 @@ export default function App() {
     synthesizeText, playChatUrl, playChatSpeech, stopChatPlayback,
   } = ttsEngine;
 
+  // currentDocId / currentDocIndexState are exposed to the chat engine so the
+  // tool registry can decide whether to advertise `search_document` to the
+  // model. Both are null while no doc is open.
+  const currentDocIndexEntry = currentDocId ? docIndexByDocId[currentDocId] : null;
   const chatEngine = useChatEngine({
     ollamaHost, ollamaPort, selectedModel,
     chatTtsMode, chatAutoTts, enableThinking,
     isLocalhost, selectedVoice, playbackSpeed, requestTimeout,
     apiHost, apiPort,
+    currentDocId, currentDocIndexState: currentDocIndexEntry?.state || null,
     synthesizeText, playChatUrl, playChatSpeech, stopChatPlayback,
     showToast,
   });

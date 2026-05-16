@@ -3,6 +3,7 @@ import { markdownToSpeech } from '../utils/markdownToSpeech';
 import { stripAttachmentData, formatAttachmentSize } from '../utils/attachment';
 import { buildApiUrl } from '../utils/url';
 import { makeSessionStore } from '../lib/sessionStore';
+import { executeToolCall, getToolDefinitions } from '../lib/chatTools';
 
 const SENTENCE_TERMINATOR = /(?<=[.!?])\s+/;
 const MIN_TTS_LENGTH = 5;
@@ -45,12 +46,16 @@ export function useChatEngine({
     requestTimeout,
     apiHost,            // FastAPI host — used for chat-session persistence (same server as Kokoro)
     apiPort,
+    currentDocId,             // sha256 of the open doc (null if none) — gates autonomous tools
+    currentDocIndexState,     // 'indexed' | 'chunks_uploaded' | ... | null — gates autonomous tools
     synthesizeText,     // from useTtsEngine — returns Promise<blobUrl|null>
     playChatUrl,        // from useTtsEngine — plays a pre-fetched blob URL
     playChatSpeech,     // from useTtsEngine — Web Speech API fallback
     stopChatPlayback,   // from useTtsEngine — silences chat audio + speech synthesis
     showToast,
 }) {
+    // Toasted once per tool/thinking fallback so retries don't spam the user.
+    const toolFallbackToastedRef = useRef(false);
     // Toast at most once per offline streak — avoid spamming on every save.
     const backendOfflineToastedRef = useRef(false);
     const sessionStore = useMemo(() => makeSessionStore({
@@ -543,74 +548,196 @@ export function useChatEngine({
                 });
             }
             const history = [...contextPreamble, ...messagesRef.current, userMsg].map(buildApiMessage);
-            const res = await fetch(ollamaUrl('/api/chat'), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    model: selectedModel,
-                    messages: history,
-                    stream: true,
-                    think: thinkForThisMsg,
-                }),
-                signal: controller.signal,
-            });
-            if (!res.ok || !res.body) throw new Error(`Ollama error: HTTP ${res.status}`);
 
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            let lineBuf = '';
+            // ---------- Autonomous tool calling ----------
+            // Build the tool context once. The registry filters by `when(ctx)`,
+            // so when there's no indexed doc loaded, `tools` is just [] and the
+            // request body looks identical to the pre-tools era.
+            const toolCtx = { currentDocId, currentDocIndexState, apiHost, apiPort };
+            const tools = getToolDefinitions(toolCtx);
 
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                lineBuf += decoder.decode(value, { stream: true });
-                const lines = lineBuf.split('\n');
-                lineBuf = lines.pop() || '';
+            // Consume a streaming /api/chat response. Token-by-token content
+            // and thinking are flushed into the assistant message live; the
+            // returned `captured` object reports the final stats + any
+            // tool_calls the model decided to emit.
+            const consumeStream = async (response) => {
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let lineBuf = '';
+                const captured = { toolCalls: [], stats: null };
 
-                for (const line of lines) {
-                    const trimmedLine = line.trim();
-                    if (!trimmedLine) continue;
-                    let payload;
-                    try {
-                        payload = JSON.parse(trimmedLine);
-                    } catch {
-                        continue;
-                    }
-                    const token = payload?.message?.content || '';
-                    const thinkingTok = payload?.message?.thinking || '';
-                    if (thinkingTok) {
-                        // Reasoning trace — surfaces in the disclosure but never feeds TTS.
-                        setMessages(prev => prev.map(m =>
-                            m.id === assistantId ? { ...m, thinking: (m.thinking || '') + thinkingTok } : m
-                        ));
-                    }
-                    if (token) {
-                        setMessages(prev => prev.map(m =>
-                            m.id === assistantId ? { ...m, content: m.content + token } : m
-                        ));
-                        if (modeForThisMsg === 'streaming') {
-                            sentenceBufferRef.current += token;
-                            flushBufferedSentences();
+                while (true) {
+                    const { value, done } = await reader.read();
+                    if (done) break;
+                    lineBuf += decoder.decode(value, { stream: true });
+                    const lines = lineBuf.split('\n');
+                    lineBuf = lines.pop() || '';
+
+                    for (const line of lines) {
+                        const trimmedLine = line.trim();
+                        if (!trimmedLine) continue;
+                        let payload;
+                        try { payload = JSON.parse(trimmedLine); }
+                        catch { continue; }
+
+                        const token = payload?.message?.content || '';
+                        const thinkingTok = payload?.message?.thinking || '';
+                        const tcChunk = payload?.message?.tool_calls;
+
+                        if (thinkingTok) {
+                            // Reasoning trace — surfaces in the disclosure but never feeds TTS.
+                            setMessages(prev => prev.map(m =>
+                                m.id === assistantId ? { ...m, thinking: (m.thinking || '') + thinkingTok } : m
+                            ));
+                        }
+                        if (token) {
+                            setMessages(prev => prev.map(m =>
+                                m.id === assistantId ? { ...m, content: m.content + token } : m
+                            ));
+                            if (modeForThisMsg === 'streaming') {
+                                sentenceBufferRef.current += token;
+                                flushBufferedSentences();
+                            }
+                        }
+                        if (Array.isArray(tcChunk) && tcChunk.length > 0) {
+                            captured.toolCalls.push(...tcChunk);
+                        }
+                        if (payload?.done) {
+                            // Capture Ollama's per-request metrics from the final chunk.
+                            // All durations are nanoseconds; the UI converts to s for display.
+                            captured.stats = {
+                                model: payload.model,
+                                doneReason: payload.done_reason,
+                                totalNs: payload.total_duration,
+                                loadNs: payload.load_duration,
+                                promptEvalCount: payload.prompt_eval_count,
+                                promptEvalNs: payload.prompt_eval_duration,
+                                evalCount: payload.eval_count,
+                                evalNs: payload.eval_duration,
+                            };
+                            break;
                         }
                     }
-                    if (payload?.done) {
-                        // Capture Ollama's per-request metrics from the final chunk.
-                        // All durations are nanoseconds; the UI converts to s for display.
-                        const stats = {
-                            model: payload.model,
-                            doneReason: payload.done_reason,
-                            totalNs: payload.total_duration,
-                            loadNs: payload.load_duration,
-                            promptEvalCount: payload.prompt_eval_count,
-                            promptEvalNs: payload.prompt_eval_duration,
-                            evalCount: payload.eval_count,
-                            evalNs: payload.eval_duration,
-                        };
-                        setMessages(prev => prev.map(m =>
-                            m.id === assistantId ? { ...m, stats } : m
-                        ));
-                        break;
+                }
+                return captured;
+            };
+
+            // First /api/chat request. If tools is non-empty, include it. Some
+            // models 400 when `think: true` and `tools: [...]` are sent
+            // together — fall back to a tools-less retry in that case (we
+            // keep thinking on; only tools get dropped).
+            const buildBody = (extra = {}) => ({
+                model: selectedModel,
+                messages: history,
+                stream: true,
+                think: thinkForThisMsg,
+                ...extra,
+            });
+            const firstBody = tools.length > 0 ? buildBody({ tools }) : buildBody();
+            let res = await fetch(ollamaUrl('/api/chat'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(firstBody),
+                signal: controller.signal,
+            });
+            if (!res.ok && tools.length > 0 && res.status >= 400 && res.status < 500) {
+                console.warn(`Ollama returned ${res.status} with tools+think — retrying without tools.`);
+                if (!toolFallbackToastedRef.current) {
+                    toolFallbackToastedRef.current = true;
+                    showToast?.('This model rejected tools — proceeded without them.', 4000);
+                }
+                logEvent('tool-fallback', `model rejected tools (HTTP ${res.status}); retrying without`);
+                res = await fetch(ollamaUrl('/api/chat'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildBody()),
+                    signal: controller.signal,
+                });
+            }
+            if (!res.ok || !res.body) throw new Error(`Ollama error: HTTP ${res.status}`);
+
+            const first = await consumeStream(res);
+            if (first.stats) {
+                setMessages(prev => prev.map(m =>
+                    m.id === assistantId ? { ...m, stats: first.stats } : m
+                ));
+            }
+
+            // If the model called any tools, execute them and re-POST without
+            // `tools` to force a text answer. Single round-trip cap — we don't
+            // loop, so a confused model can't spin forever.
+            if (first.toolCalls.length > 0) {
+                setMessages(prev => prev.map(m =>
+                    m.id === assistantId ? { ...m, toolStatus: 'Searching document…' } : m
+                ));
+                logEvent('tool-call', `${first.toolCalls.length} tool call${first.toolCalls.length > 1 ? 's' : ''}`);
+
+                const toolResults = await Promise.all(first.toolCalls.map(async (tc) => {
+                    const name = tc?.function?.name;
+                    const rawArgs = tc?.function?.arguments;
+                    // Ollama may send arguments as object OR JSON string —
+                    // normalize so the tool always receives a plain object.
+                    let args = {};
+                    if (rawArgs && typeof rawArgs === 'object') args = rawArgs;
+                    else if (typeof rawArgs === 'string') {
+                        try { args = JSON.parse(rawArgs); } catch { args = {}; }
                     }
+                    const result = await executeToolCall(name, args, toolCtx);
+                    return { name, arguments: args, result };
+                }));
+
+                // Persist a compact summary on the assistant message — full
+                // chunk text isn't kept here (it's already in the model's
+                // final answer; the disclosure just shows what was searched).
+                const toolCallSummaries = toolResults.map(tr => ({
+                    name: tr.name,
+                    arguments: tr.arguments,
+                    result_summary: tr.result?.error
+                        ? { error: tr.result.error }
+                        : {
+                            ok: true,
+                            chunk_count: tr.result?.chunk_count ?? null,
+                            query: tr.result?.query ?? null,
+                        },
+                }));
+                setMessages(prev => prev.map(m =>
+                    m.id === assistantId
+                        ? { ...m, toolCalls: toolCallSummaries, toolStatus: undefined }
+                        : m
+                ));
+
+                // Build the follow-up history per Ollama's tool-calling
+                // convention: append the assistant turn (with its tool_calls
+                // and any partial content it streamed) and one tool message
+                // per result.
+                const assistantContent = (messagesRef.current.find(m => m.id === assistantId)?.content) || '';
+                const followupHistory = [
+                    ...history,
+                    { role: 'assistant', content: assistantContent, tool_calls: first.toolCalls },
+                    ...toolResults.map(tr => ({
+                        role: 'tool',
+                        content: JSON.stringify(tr.result),
+                    })),
+                ];
+
+                const res2 = await fetch(ollamaUrl('/api/chat'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: selectedModel,
+                        messages: followupHistory,
+                        stream: true,
+                        think: thinkForThisMsg,
+                    }),
+                    signal: controller.signal,
+                });
+                if (!res2.ok || !res2.body) throw new Error(`Ollama follow-up error: HTTP ${res2.status}`);
+
+                const second = await consumeStream(res2);
+                if (second.stats) {
+                    setMessages(prev => prev.map(m =>
+                        m.id === assistantId ? { ...m, stats: second.stats } : m
+                    ));
                 }
             }
 
@@ -659,7 +786,7 @@ export function useChatEngine({
             }).catch(err => console.error('Session save failed:', err));
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, enableThinking, ollamaHost, ollamaPort, flushBufferedSentences, enqueueTts, logEvent, saveActiveSession]);
+    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, enableThinking, ollamaHost, ollamaPort, apiHost, apiPort, currentDocId, currentDocIndexState, flushBufferedSentences, enqueueTts, logEvent, saveActiveSession]);
 
     const activeSession = sessions.find(s => s.id === activeSessionId) || null;
 
