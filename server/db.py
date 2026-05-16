@@ -13,6 +13,7 @@ import logging
 import os
 from pathlib import Path
 
+from pgvector.psycopg import register_vector_async
 from psycopg_pool import AsyncConnectionPool
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,25 @@ async def init_db() -> bool:
     delay = 1.0
     for attempt in range(5):
         try:
-            pool = AsyncConnectionPool(url, min_size=1, max_size=10, open=False)
+            # `configure` runs once per new connection — register the pgvector
+            # codec so we can pass Python lists where `vector(...)` is expected
+            # and read them back as lists.
+            async def _configure(conn):
+                # The vector extension must already be created (the migrations
+                # handle that on first start) before register_vector_async can
+                # look up its OID. After a fresh DB we run migrations before
+                # any caller binds a vector, so this is safe.
+                try:
+                    await register_vector_async(conn)
+                except Exception as e:
+                    # On the very first connection, the extension may not exist
+                    # yet — migrations create it. Swallow here; subsequent
+                    # connections will register cleanly.
+                    logger.debug("pgvector codec registration deferred: %s", e)
+
+            pool = AsyncConnectionPool(
+                url, min_size=1, max_size=10, open=False, configure=_configure
+            )
             await pool.open(wait=True, timeout=10)
             async with pool.connection() as conn:
                 await conn.execute("SELECT 1")
@@ -49,6 +68,12 @@ async def init_db() -> bool:
             _pool_ready.set()
             logger.info("Postgres pool opened (attempt %d)", attempt + 1)
             await _run_migrations()
+            # Reset any stale 'indexing' rows left over from a crash mid-job
+            # so they show up as resumable instead of stuck.
+            async with pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE documents SET state = 'chunks_uploaded' WHERE state = 'indexing'"
+                )
             return True
         except Exception as e:
             logger.warning("DB connect attempt %d failed: %s", attempt + 1, e)

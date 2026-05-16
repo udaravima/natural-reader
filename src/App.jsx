@@ -466,12 +466,56 @@ export default function App() {
     setDocIndexByDocId((prev) => ({
       ...prev,
       [docId]: {
-        state: lastStatus?.state || 'chunks_uploaded',
+        state: 'indexing',
         chunkCount: lastStatus?.chunk_count ?? chunks.length,
         embeddedCount: lastStatus?.embedded_count ?? 0,
       },
     }));
-    showToast(`Uploaded ${chunks.length} chunks. Embeddings come in PR 4.`, 4000);
+
+    // 4. Kick off the embedding job. Returns 202 immediately; we poll status.
+    try {
+      const indexRes = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}/index`), { method: 'POST' });
+      if (!indexRes.ok) throw new Error(`HTTP ${indexRes.status}`);
+    } catch (e) {
+      console.error('Index kick-off failed:', e);
+      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
+      showToast(`Could not start embedding job: ${e.message}`, 5000);
+      return;
+    }
+
+    showToast(`Embedding ${chunks.length} chunks — this can take a minute.`, 3500);
+
+    // 5. Poll every 2s until state leaves 'indexing'. Cap the polling window
+    // to ~10 minutes so a stuck job doesn't loop forever.
+    const POLL_MS = 2000;
+    const MAX_POLLS = 300;
+    for (let i = 0; i < MAX_POLLS; i++) {
+      await new Promise((r) => setTimeout(r, POLL_MS));
+      try {
+        const sRes = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}`));
+        if (!sRes.ok) continue;
+        const sData = await sRes.json();
+        setDocIndexByDocId((prev) => ({
+          ...prev,
+          [docId]: {
+            state: sData.state,
+            chunkCount: sData.chunk_count,
+            embeddedCount: sData.embedded_count,
+          },
+        }));
+        if (sData.state === 'indexed') {
+          showToast(`Indexed ${sData.embedded_count} chunks.`, 3000);
+          return;
+        }
+        if (sData.state === 'failed') {
+          showToast(`Indexing failed: ${sData.error_message || 'unknown error'}`, 6000);
+          return;
+        }
+      } catch {
+        // Backend hiccup — keep polling; transient errors shouldn't bail.
+      }
+    }
+    showToast('Indexing is taking unusually long — check the server logs.', 6000);
   }, [pdfFileName, ensureDocHash, extractAllChunks, fileType, numPages, showToast, apiHost, apiPort]);
 
   // --- LOADING STATE ---
@@ -641,6 +685,7 @@ export default function App() {
             showToast={showToast}
             pendingDocContext={pendingChatContext}
             clearPendingDocContext={clearPendingChatContext}
+            currentDocIndexState={pendingChatContext?.doc_id ? docIndexByDocId[pendingChatContext.doc_id]?.state : null}
           />
         ) : (
         <PdfViewer

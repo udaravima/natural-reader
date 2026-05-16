@@ -484,20 +484,64 @@ export function useChatEngine({
                 if (binaryB64.length) out.images = binaryB64;
                 return out;
             };
-            // Inject a synthetic system preamble for the doc context so the model
-            // sees the excerpt before the user's question. Only emitted for this
-            // turn — not persisted, not retained across messages — to keep
-            // historical messages compact and the context current.
-            const contextPreamble = hasDocCtx ? [{
-                role: 'system',
-                content:
-                    `The user is reading "${docContext.fileName || 'a document'}".\n` +
-                    `Relevant excerpt (${docContext.kind || 'page'}` +
-                    `${docContext.page != null ? `, page ${docContext.page}` : ''}):\n\n` +
-                    `"""\n${docContext.text}\n"""\n\n` +
-                    `Answer the user's question using this excerpt as the primary context. ` +
-                    `If the excerpt does not contain the answer, say so plainly.`,
-            }] : [];
+            // Build the system preamble. Two optional layers:
+            //   1. The explicit excerpt (chip text) the user attached.
+            //   2. Top-k semantically retrieved chunks (if `useRetrieval` is on
+            //      AND the doc is indexed). Retrieval runs synchronously here —
+            //      one embed + one vector query — so it adds a small latency
+            //      before the model starts streaming.
+            let retrievalResults = [];
+            if (hasDocCtx && docContext.useRetrieval && docContext.doc_id) {
+                try {
+                    const q = (trimmed || docContext.text || '').slice(0, 2000);
+                    const res = await fetch(
+                        buildApiUrl(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docContext.doc_id)}/search`),
+                        {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ query: q, k: 3 }),
+                            signal: controller.signal,
+                        },
+                    );
+                    if (res.ok) {
+                        const data = await res.json();
+                        retrievalResults = Array.isArray(data.results) ? data.results : [];
+                    } else {
+                        console.warn('Search request failed:', res.status);
+                    }
+                } catch (e) {
+                    if (e.name !== 'AbortError') {
+                        console.warn('Search request errored:', e);
+                    }
+                }
+            }
+
+            const contextPreamble = [];
+            if (hasDocCtx) {
+                contextPreamble.push({
+                    role: 'system',
+                    content:
+                        `The user is reading "${docContext.fileName || 'a document'}".\n` +
+                        `Relevant excerpt (${docContext.kind || 'page'}` +
+                        `${docContext.page != null ? `, page ${docContext.page}` : ''}):\n\n` +
+                        `"""\n${docContext.text}\n"""\n\n` +
+                        `Answer the user's question using this excerpt as the primary context. ` +
+                        `If the excerpt does not contain the answer, say so plainly.`,
+                });
+            }
+            if (retrievalResults.length > 0) {
+                const blocks = retrievalResults.map((r, i) => {
+                    const pageLabel = r.page != null ? `page ${r.page}` : 'unknown location';
+                    return `[${i + 1}] (${pageLabel})\n${r.text}`;
+                }).join('\n\n');
+                contextPreamble.push({
+                    role: 'system',
+                    content:
+                        `Additional passages from elsewhere in the document, retrieved by ` +
+                        `semantic similarity to the question:\n\n${blocks}\n\n` +
+                        `Cite the bracketed numbers when you draw on these passages.`,
+                });
+            }
             const history = [...contextPreamble, ...messagesRef.current, userMsg].map(buildApiMessage);
             const res = await fetch(ollamaUrl('/api/chat'), {
                 method: 'POST',

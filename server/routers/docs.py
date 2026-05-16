@@ -16,14 +16,16 @@ button is safe — the existing rows are upserted in place.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
 from ..db import get_pool, is_ready
+from ..services.embeddings import EMBEDDING_DIM, EMBEDDING_MODEL, embed_batch, embed_one
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/docs", tags=["docs"])
@@ -48,6 +50,24 @@ class ChunkIn(BaseModel):
 
 class ChunksUploadIn(BaseModel):
     chunks: list[ChunkIn]
+
+
+class SearchIn(BaseModel):
+    query: str = Field(min_length=1, max_length=4000)
+    k: int = Field(default=5, ge=1, le=20)
+
+
+# Per-doc lock prevents two concurrent /index calls for the same doc from
+# stomping each other. New entries are created on demand.
+_index_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_index_lock(doc_id: str) -> asyncio.Lock:
+    lock = _index_locks.get(doc_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _index_locks[doc_id] = lock
+    return lock
 
 
 # ---------- helpers ----------
@@ -213,4 +233,171 @@ async def delete_document(doc_id: str) -> dict[str, Any]:
         row = await cur.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
+    _index_locks.pop(doc_id, None)
     return {"ok": True, "doc_id": doc_id}
+
+
+# ---------- embeddings + retrieval ----------
+
+async def _run_index_job(doc_id: str) -> None:
+    """
+    Background task: pulls all chunks for `doc_id` with NULL embeddings,
+    embeds them in batches, and writes the vectors back. Updates the
+    document state to `indexed` on success or `failed` on error.
+
+    Held under a per-doc lock so concurrent /index calls coalesce instead of
+    duplicating work.
+    """
+    lock = _get_index_lock(doc_id)
+    async with lock:
+        if not is_ready():
+            logger.warning("Skipping index job for %s — DB not ready", doc_id)
+            return
+        pool = get_pool()
+        try:
+            async with pool.connection() as conn:
+                # Pull only the chunks we still need to embed. The model name
+                # is captured per row so a swap (which requires re-creating
+                # the column) doesn't silently mix dims.
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT id, text FROM doc_chunks WHERE doc_id = %s AND embedding IS NULL ORDER BY ord",
+                        (doc_id,),
+                    )
+                    rows = await cur.fetchall()
+
+            if not rows:
+                # Nothing left to embed — mark indexed and bail.
+                async with pool.connection() as conn:
+                    await conn.execute(
+                        """
+                        UPDATE documents
+                        SET state = 'indexed', embedding_model = %s, embedding_dim = %s,
+                            error_message = NULL, updated_at = now()
+                        WHERE doc_id = %s
+                        """,
+                        (EMBEDDING_MODEL, EMBEDDING_DIM, doc_id),
+                    )
+                return
+
+            # Embed in moderate batches; the semaphore in embed_batch caps
+            # parallelism per call. Persist after each batch so a partial
+            # failure halfway through still saves progress.
+            BATCH = 16
+            for i in range(0, len(rows), BATCH):
+                slice_ = rows[i : i + BATCH]
+                texts = [r[1] for r in slice_]
+                vectors = await embed_batch(texts)
+                async with pool.connection() as conn:
+                    async with conn.cursor() as cur:
+                        for (chunk_id, _text), vec in zip(slice_, vectors):
+                            await cur.execute(
+                                """
+                                UPDATE doc_chunks
+                                SET embedding = %s, embedding_model = %s
+                                WHERE id = %s
+                                """,
+                                (vec, EMBEDDING_MODEL, chunk_id),
+                            )
+
+            async with pool.connection() as conn:
+                await conn.execute(
+                    """
+                    UPDATE documents
+                    SET state = 'indexed', embedding_model = %s, embedding_dim = %s,
+                        error_message = NULL, updated_at = now()
+                    WHERE doc_id = %s
+                    """,
+                    (EMBEDDING_MODEL, EMBEDDING_DIM, doc_id),
+                )
+            logger.info("Indexed %d chunks for doc %s", len(rows), doc_id)
+        except Exception as e:
+            logger.exception("Index job failed for %s", doc_id)
+            try:
+                pool = get_pool()
+                async with pool.connection() as conn:
+                    await conn.execute(
+                        "UPDATE documents SET state = 'failed', error_message = %s, updated_at = now() WHERE doc_id = %s",
+                        (str(e)[:500], doc_id),
+                    )
+            except Exception:
+                logger.exception("Could not record failure state for %s", doc_id)
+
+
+@router.post("/{doc_id}/index", status_code=202)
+async def start_index_job(doc_id: str, background: BackgroundTasks) -> dict[str, Any]:
+    """
+    Kick off a background embedding job for `doc_id`. Returns 202 immediately;
+    poll `GET /v1/docs/{doc_id}` for progress (`embedded_count` / `chunk_count`).
+
+    Safe to call repeatedly — the per-doc lock serializes runs and the
+    embedding query only picks up chunks with NULL embeddings, so a re-run
+    after a partial failure only does the leftover work.
+    """
+    _ensure_ready()
+    pool = get_pool()
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT state FROM documents WHERE doc_id = %s",
+            (doc_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Document not found")
+        # Mark as indexing — the bg task will flip to indexed/failed when done.
+        await conn.execute(
+            "UPDATE documents SET state = 'indexing', error_message = NULL, updated_at = now() WHERE doc_id = %s",
+            (doc_id,),
+        )
+
+    background.add_task(_run_index_job, doc_id)
+    return {"ok": True, "doc_id": doc_id, "state": "indexing"}
+
+
+@router.post("/{doc_id}/search")
+async def search_document(doc_id: str, req: SearchIn) -> dict[str, Any]:
+    """
+    Semantic search over `doc_id`'s embedded chunks. Returns top-k chunks
+    by cosine similarity (higher `score` = closer).
+    """
+    _ensure_ready()
+    pool = get_pool()
+    # Verify the doc exists first so we can give a clean 404 instead of an
+    # empty result set the caller has to interpret.
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT state FROM documents WHERE doc_id = %s",
+            (doc_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+    try:
+        qvec = await embed_one(req.query)
+    except Exception as e:
+        logger.exception("Embedding failed for search query")
+        raise HTTPException(status_code=502, detail=f"Embedding service error: {e}") from e
+
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT id, page, chunk_type, text,
+                   1 - (embedding <=> %s) AS score
+            FROM doc_chunks
+            WHERE doc_id = %s AND embedding IS NOT NULL
+            ORDER BY embedding <=> %s
+            LIMIT %s
+            """,
+            (qvec, doc_id, qvec, req.k),
+        )
+        rows = await cur.fetchall()
+        cols = [d.name for d in cur.description]
+
+    results = [dict(zip(cols, r)) for r in rows]
+    for r in results:
+        # Cap text length in the response — full chunk text can be huge and
+        # the chat preamble already truncates. Keep payloads bounded.
+        if r.get("text") and len(r["text"]) > 4000:
+            r["text"] = r["text"][:4000] + " [truncated]"
+    return {"doc_id": doc_id, "results": results}

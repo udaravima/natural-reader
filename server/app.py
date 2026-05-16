@@ -10,6 +10,7 @@ from .db import close_db, init_db
 from .endpoints import router as tts_router
 from .routers.chat_sessions import router as chat_sessions_router
 from .routers.docs import router as docs_router
+from .services.embeddings import start_client as start_embeddings, stop_client as stop_embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +39,11 @@ def create_app() -> FastAPI:
         ok = await init_db()
         if not ok:
             logger.warning("Postgres is offline; chat persistence is disabled")
+        await start_embeddings()
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:
+        await stop_embeddings()
         await close_db()
 
     return app
