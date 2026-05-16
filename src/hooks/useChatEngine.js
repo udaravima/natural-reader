@@ -522,7 +522,21 @@ export function useChatEngine({
             }
 
             const contextPreamble = [];
+            const hasRetrieval = retrievalResults.length > 0;
             if (hasDocCtx) {
+                // Closing line is conditional: when retrieval is ALSO active,
+                // we must NOT tell the model "answer from this excerpt or say
+                // you don't know" — that prompt effectively masks the second
+                // system message containing the retrieved passages. Some
+                // models (gemma in particular) take that instruction literally
+                // and refuse to use the retrieval results at all.
+                const closing = hasRetrieval
+                    ? `This is the passage the user is currently looking at. You ALSO have additional ` +
+                      `retrieved passages from elsewhere in the document (next system message). ` +
+                      `Draw on whichever sources contain the answer — the visible passage is not ` +
+                      `the only source of truth.`
+                    : `Answer the user's question using this excerpt as the primary context. ` +
+                      `If the excerpt does not contain the answer, say so plainly.`;
                 contextPreamble.push({
                     role: 'system',
                     content:
@@ -530,11 +544,10 @@ export function useChatEngine({
                         `Relevant excerpt (${docContext.kind || 'page'}` +
                         `${docContext.page != null ? `, page ${docContext.page}` : ''}):\n\n` +
                         `"""\n${docContext.text}\n"""\n\n` +
-                        `Answer the user's question using this excerpt as the primary context. ` +
-                        `If the excerpt does not contain the answer, say so plainly.`,
+                        closing,
                 });
             }
-            if (retrievalResults.length > 0) {
+            if (hasRetrieval) {
                 const blocks = retrievalResults.map((r, i) => {
                     const pageLabel = r.page != null ? `page ${r.page}` : 'unknown location';
                     return `[${i + 1}] (${pageLabel})\n${r.text}`;
@@ -542,9 +555,11 @@ export function useChatEngine({
                 contextPreamble.push({
                     role: 'system',
                     content:
-                        `Additional passages from elsewhere in the document, retrieved by ` +
-                        `semantic similarity to the question:\n\n${blocks}\n\n` +
-                        `Cite the bracketed numbers when you draw on these passages.`,
+                        `Additional passages retrieved by semantic similarity to the user's question, ` +
+                        `from across the whole document (not just the visible page):\n\n${blocks}\n\n` +
+                        `Use these passages to answer when the visible excerpt doesn't contain the ` +
+                        `answer. Cite the bracketed numbers ([1], [2], …) when you draw on them so ` +
+                        `the user can verify.`,
                 });
             }
             const history = [...contextPreamble, ...messagesRef.current, userMsg].map(buildApiMessage);
