@@ -21,9 +21,10 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "nomic-embed-text")
 EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", "768"))
 EMBEDDING_TIMEOUT_S = float(os.environ.get("EMBEDDING_TIMEOUT_S", "30"))
-# nomic-embed-text context is 8192 tokens; ~4 chars/token → 24 000 chars is a
-# conservative ceiling that avoids the "input length exceeds context" 500.
-MAX_INPUT_CHARS = int(os.environ.get("EMBEDDING_MAX_CHARS", "24000"))
+# Ollama's default context for nomic-embed-text is often 2048 tokens.
+# At ~4 chars/token the safe ceiling is ~2 000 chars.  Override via env
+# if you've set a larger context (e.g. `num_ctx` in a Modelfile).
+MAX_INPUT_CHARS = int(os.environ.get("EMBEDDING_MAX_CHARS", "2000"))
 MAX_CONCURRENCY = int(os.environ.get("EMBEDDING_MAX_CONCURRENCY", "4"))
 
 _client: httpx.AsyncClient | None = None
