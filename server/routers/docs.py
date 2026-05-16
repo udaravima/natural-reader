@@ -383,10 +383,10 @@ async def search_document(doc_id: str, req: SearchIn) -> dict[str, Any]:
         await cur.execute(
             """
             SELECT id, page, chunk_type, text,
-                   1 - (embedding <=> %s) AS score
+                   1 - (embedding <=> %s::vector) AS score
             FROM doc_chunks
             WHERE doc_id = %s AND embedding IS NOT NULL
-            ORDER BY embedding <=> %s
+            ORDER BY embedding <=> %s::vector
             LIMIT %s
             """,
             (qvec, doc_id, qvec, req.k),
