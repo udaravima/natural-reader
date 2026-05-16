@@ -1,13 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { markdownToSpeech } from '../utils/markdownToSpeech';
 import { stripAttachmentData, formatAttachmentSize } from '../utils/attachment';
 import { buildApiUrl } from '../utils/url';
-import {
-    saveSession as dbSaveSession,
-    getSession as dbGetSession,
-    getRecentSessions as dbGetRecentSessions,
-    deleteSession as dbDeleteSession,
-} from '../db';
+import { makeSessionStore } from '../lib/sessionStore';
 
 const SENTENCE_TERMINATOR = /(?<=[.!?])\s+/;
 const MIN_TTS_LENGTH = 5;
@@ -48,12 +43,25 @@ export function useChatEngine({
     selectedVoice,
     playbackSpeed,
     requestTimeout,
+    apiHost,            // FastAPI host — used for chat-session persistence (same server as Kokoro)
+    apiPort,
     synthesizeText,     // from useTtsEngine — returns Promise<blobUrl|null>
     playChatUrl,        // from useTtsEngine — plays a pre-fetched blob URL
     playChatSpeech,     // from useTtsEngine — Web Speech API fallback
     stopChatPlayback,   // from useTtsEngine — silences chat audio + speech synthesis
     showToast,
 }) {
+    // Toast at most once per offline streak — avoid spamming on every save.
+    const backendOfflineToastedRef = useRef(false);
+    const sessionStore = useMemo(() => makeSessionStore({
+        apiHost,
+        apiPort,
+        onBackendOffline: () => {
+            if (backendOfflineToastedRef.current) return;
+            backendOfflineToastedRef.current = true;
+            showToast?.('Backend offline — chat sessions won’t be saved.', 4000);
+        },
+    }), [apiHost, apiPort, showToast]);
     const [messages, setMessages] = useState([]);
     const [isStreaming, setIsStreaming] = useState(false);
     const [availableModels, setAvailableModels] = useState([]);
@@ -182,9 +190,9 @@ export function useChatEngine({
     const setActive = (id) => { activeSessionIdRef.current = id; setActiveSessionId(id); };
 
     const refreshSessions = useCallback(async () => {
-        const list = await dbGetRecentSessions();
+        const list = await sessionStore.getRecentSessions();
         setSessions(list);
-    }, []);
+    }, [sessionStore]);
 
     // Append an event to the in-memory log for the active session.
     // Persisted alongside messages on next saveActiveSession() call.
@@ -212,9 +220,15 @@ export function useChatEngine({
             messages: persistableMessages,
             events: eventsRef.current,
         };
-        await dbSaveSession(record);
+        const result = await sessionStore.saveSession(record);
+        // If the save forked an old IDB session, switch the active id to the new
+        // pg row so subsequent edits flow into the same record.
+        if (result?.forkedFrom && result.id !== id) {
+            setActive(result.id);
+        }
+        if (result) backendOfflineToastedRef.current = false;
         await refreshSessions();
-    }, [sessions, selectedModel, refreshSessions]);
+    }, [sessions, selectedModel, refreshSessions, sessionStore]);
 
     // Load an existing session into the active view. Stops anything currently playing.
     const switchToSession = useCallback(async (id) => {
@@ -227,7 +241,7 @@ export function useChatEngine({
         setSpeaking(null);
         sentenceBufferRef.current = '';
 
-        const record = await dbGetSession(id);
+        const record = await sessionStore.getSession(id);
         if (!record) {
             // Stale id — drop it.
             setActive(null);
@@ -241,7 +255,7 @@ export function useChatEngine({
         createdAtRef.current = record.createdAt || Date.now();
         setActive(id);
         setIsStreaming(false);
-    }, [stopChatPlayback]);
+    }, [stopChatPlayback, sessionStore]);
 
     // Reset the chat view without deleting any saved sessions.
     const newSession = useCallback(() => {
@@ -261,24 +275,18 @@ export function useChatEngine({
     }, [stopChatPlayback]);
 
     const deleteSession = useCallback(async (id) => {
-        await dbDeleteSession(id);
+        await sessionStore.deleteSession(id);
         await refreshSessions();
         if (activeSessionIdRef.current === id) {
             // The active session was deleted — start fresh.
             newSession();
         }
-    }, [refreshSessions, newSession]);
+    }, [refreshSessions, newSession, sessionStore]);
 
     const renameSession = useCallback(async (id, newTitle) => {
-        const record = await dbGetSession(id);
-        if (!record) return;
-        const trimmed = (newTitle || '').trim();
-        if (!trimmed) return;
-        record.title = trimmed.slice(0, MAX_TITLE_LENGTH);
-        record.updatedAt = Date.now();
-        await dbSaveSession(record);
-        await refreshSessions();
-    }, [refreshSessions]);
+        const ok = await sessionStore.renameSession(id, newTitle);
+        if (ok) await refreshSessions();
+    }, [refreshSessions, sessionStore]);
 
     // On mount, load the sessions list. Don't auto-load any session — start blank
     // (matches the "auto-create on first message" UX choice).
@@ -385,10 +393,11 @@ export function useChatEngine({
         newSession();
     }, [newSession]);
 
-    const sendMessage = useCallback(async (userText, attachments = []) => {
+    const sendMessage = useCallback(async (userText, attachments = [], docContext = null) => {
         const trimmed = (userText || '').trim();
         const cleanAttachments = (attachments || []).filter(a => a && a.kind);
-        if (!trimmed && cleanAttachments.length === 0) return;
+        const hasDocCtx = !!(docContext && docContext.text);
+        if (!trimmed && cleanAttachments.length === 0 && !hasDocCtx) return;
         if (isStreaming) return;
 
         if (!selectedModel) {
@@ -400,6 +409,7 @@ export function useChatEngine({
             role: 'user',
             content: trimmed,
             attachments: cleanAttachments,
+            docContext: hasDocCtx ? docContext : undefined,
             id: `u-${Date.now()}`,
             timestamp: Date.now(),
         };
@@ -474,7 +484,21 @@ export function useChatEngine({
                 if (binaryB64.length) out.images = binaryB64;
                 return out;
             };
-            const history = [...messagesRef.current, userMsg].map(buildApiMessage);
+            // Inject a synthetic system preamble for the doc context so the model
+            // sees the excerpt before the user's question. Only emitted for this
+            // turn — not persisted, not retained across messages — to keep
+            // historical messages compact and the context current.
+            const contextPreamble = hasDocCtx ? [{
+                role: 'system',
+                content:
+                    `The user is reading "${docContext.fileName || 'a document'}".\n` +
+                    `Relevant excerpt (${docContext.kind || 'page'}` +
+                    `${docContext.page != null ? `, page ${docContext.page}` : ''}):\n\n` +
+                    `"""\n${docContext.text}\n"""\n\n` +
+                    `Answer the user's question using this excerpt as the primary context. ` +
+                    `If the excerpt does not contain the answer, say so plainly.`,
+            }] : [];
+            const history = [...contextPreamble, ...messagesRef.current, userMsg].map(buildApiMessage);
             const res = await fetch(ollamaUrl('/api/chat'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

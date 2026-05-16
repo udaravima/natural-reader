@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
     Send, Square, Bot, User, Loader2, MessageSquare, Brain, ChevronDown, ChevronRight,
-    Volume2, StopCircle, Copy, Paperclip, ImagePlus, Activity,
+    Volume2, StopCircle, Copy, Paperclip, ImagePlus, Activity, FileText, X as XIcon,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -25,6 +25,8 @@ export default function ChatView({
     speakMessage,
     stopSpeaking,
     showToast,
+    pendingDocContext,
+    clearPendingDocContext,
 }) {
     const copyMessage = async (text) => {
         if (!text) return;
@@ -143,14 +145,17 @@ export default function ChatView({
         if (e.dataTransfer?.files?.length) ingestFiles(e.dataTransfer.files);
     };
 
-    const canSend = (draft.trim().length > 0 || pendingAttachments.length > 0)
+    // A docContext counts as send-worthy on its own (e.g. user clicked
+    // "Ask page" and just wants the model's take without typing anything).
+    const canSend = (draft.trim().length > 0 || pendingAttachments.length > 0 || !!pendingDocContext)
         && !isStreaming && !!selectedModel && reachable !== false;
 
     const handleSend = () => {
         if (!canSend) return;
-        sendMessage(draft, pendingAttachments);
+        sendMessage(draft, pendingAttachments, pendingDocContext || null);
         setDraft('');
         setPendingAttachments([]);
+        clearPendingDocContext?.();
     };
 
     const handleKeyDown = (e) => {
@@ -217,6 +222,17 @@ export default function ChatView({
             {/* INPUT BAR */}
             <div className={`border-t ${theme.border} ${theme.bgSecondary} px-4 py-3 ${effectiveIsMobile ? 'pb-20' : ''}`}>
                 <div className="max-w-3xl mx-auto flex flex-col gap-2">
+                    {/* Doc-context chip — present when the user came in via
+                        "Ask page" or "Ask AI" on a selection. Sent with the
+                        next message, then cleared. */}
+                    {pendingDocContext && (
+                        <DocContextChip
+                            ctx={pendingDocContext}
+                            theme={theme}
+                            darkMode={darkMode}
+                            onRemove={() => clearPendingDocContext?.()}
+                        />
+                    )}
                     {/* Pending attachments preview row */}
                     {pendingAttachments.length > 0 && (
                         <div className="flex flex-wrap gap-2">
@@ -303,6 +319,7 @@ function MessageBubble({ message, theme, darkMode, isStreamingNow, isSpeaking, o
     const hasThinking = !isUser && !!message.thinking;
     const attachments = Array.isArray(message.attachments) ? message.attachments : [];
     const hasAttachments = attachments.length > 0;
+    const docContext = isUser ? message.docContext : null;
     return (
         <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}>
             <div className={`w-8 h-8 rounded-full flex items-center justify-center text-white shrink-0 ${
@@ -332,6 +349,9 @@ function MessageBubble({ message, theme, darkMode, isStreamingNow, isSpeaking, o
                             />
                         ))}
                     </div>
+                )}
+                {docContext && (
+                    <DocContextChip ctx={docContext} theme={theme} darkMode={darkMode} compact />
                 )}
                 {(hasContent || (isUser && !hasAttachments)) && (
                     <div className={`px-4 py-3 rounded-2xl ${isUser
@@ -524,6 +544,38 @@ function ThinkingDisclosure({ text, theme, darkMode, isStreamingNow }) {
                 <div className={`px-3 pb-3 pt-0 text-[11px] italic leading-relaxed whitespace-pre-wrap break-words ${theme.textMuted}`}>
                     {text}
                 </div>
+            )}
+        </div>
+    );
+}
+
+function DocContextChip({ ctx, theme, darkMode, onRemove, compact = false }) {
+    if (!ctx) return null;
+    const label = ctx.kind === 'selection' ? 'Selection' : `Page ${ctx.page ?? '?'}`;
+    const file = ctx.fileName || 'document';
+    const preview = (ctx.text || '').replace(/\s+/g, ' ').slice(0, 120);
+    return (
+        <div
+            className={`flex items-start gap-2 px-3 py-2 rounded-xl border text-xs ${theme.border} ${darkMode ? 'bg-purple-500/10' : 'bg-purple-50'} ${compact ? 'max-w-[85%]' : 'w-full'}`}
+            title={ctx.text}
+        >
+            <FileText size={14} className={`shrink-0 mt-0.5 ${darkMode ? 'text-purple-300' : 'text-purple-600'}`} />
+            <div className="flex-1 min-w-0">
+                <p className={`font-bold truncate ${theme.text}`}>
+                    {label} <span className={`font-normal ${theme.textMuted}`}>· {file}</span>
+                </p>
+                {preview && (
+                    <p className={`text-[11px] mt-0.5 truncate ${theme.textSecondary}`}>{preview}{ctx.text.length > 120 ? '…' : ''}</p>
+                )}
+            </div>
+            {onRemove && (
+                <button
+                    onClick={onRemove}
+                    className={`shrink-0 p-1 rounded ${theme.hover} ${theme.textMuted} hover:text-red-500 transition-colors`}
+                    title="Remove context"
+                >
+                    <XIcon size={12} />
+                </button>
             )}
         </div>
     );

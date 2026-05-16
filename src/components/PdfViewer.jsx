@@ -1,6 +1,6 @@
 import {
     ChevronLeft, ChevronRight, ZoomIn, ZoomOut,
-    RotateCcw, Maximize, Minimize
+    RotateCcw, Maximize, Minimize, MessageSquare
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen';
 import TextPageRenderer from './TextPageRenderer';
@@ -25,6 +25,7 @@ export default function PdfViewer({
     openFromLibrary,
     removeFromLibrary,
     markdownPageData,
+    onAskAboutPage,
 }) {
     const isText = fileType === 'text';
     const isMarkdown = fileType === 'markdown';
@@ -98,7 +99,7 @@ export default function PdfViewer({
                         </button>
                     </div>
 
-                    {/* RIGHT: Fit Options */}
+                    {/* RIGHT: Fit Options + Chat actions */}
                     <div className="flex items-center gap-1">
                         <button
                             onClick={() => setScale(0.8)}
@@ -116,6 +117,19 @@ export default function PdfViewer({
                             <Maximize size={14} className="inline mr-1" />
                             Width
                         </button>
+                        {onAskAboutPage && (
+                            <>
+                                <div className={`w-px h-6 ${theme.border} mx-1`}></div>
+                                <button
+                                    onClick={() => onAskAboutPage(currentPage)}
+                                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${theme.hover} ${theme.textSecondary} hover:text-blue-500`}
+                                    title="Ask the model about this page"
+                                >
+                                    <MessageSquare size={14} className="inline mr-1" />
+                                    Ask page
+                                </button>
+                            </>
+                        )}
                     </div>
                 </div>
             )}

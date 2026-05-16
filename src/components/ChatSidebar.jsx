@@ -223,6 +223,14 @@ export default function ChatSidebar({
                                                 ? darkMode ? 'bg-blue-600/20 border border-blue-500/40' : 'bg-blue-100 border border-blue-300'
                                                 : `${theme.hover} border border-transparent`}`}
                                         >
+                                            {s.source === 'local' && !isRenaming && (
+                                                <span
+                                                    className={`shrink-0 px-1 py-px rounded text-[8px] font-black uppercase tracking-wider ${darkMode ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-100 text-amber-700'}`}
+                                                    title="Stored locally in your browser (legacy). Editing forks to a new server session."
+                                                >
+                                                    Local
+                                                </span>
+                                            )}
                                             {isRenaming ? (
                                                 <>
                                                     <input

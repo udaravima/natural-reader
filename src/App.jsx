@@ -15,6 +15,8 @@ import { OLLAMA_DEFAULTS } from './constants';
 
 // Utils
 import { buildApiUrl } from './utils/url';
+import { getOrComputeDocHash } from './utils/docHash';
+import { getBook } from './db';
 
 // Components
 import Header from './components/Header';
@@ -71,6 +73,11 @@ export default function App() {
   const [sidebarTab, setSidebarTab] = useState('sentences');
   const [settingsOpen, setSettingsOpen] = useState(false);
 
+  // Context payload waiting to be attached to the next chat message.
+  // Lives at App scope so it survives the reader→chat view-mode switch.
+  // Shape: { doc_id, fileName, page, kind: 'page'|'selection', text }
+  const [pendingChatContext, setPendingChatContext] = useState(null);
+
   const pdfContainerRef = useRef(null);
 
   // --- HOOKS ---
@@ -114,6 +121,7 @@ export default function App() {
     ollamaHost, ollamaPort, selectedModel,
     chatTtsMode, chatAutoTts, enableThinking,
     isLocalhost, selectedVoice, playbackSpeed, requestTimeout,
+    apiHost, apiPort,
     synthesizeText, playChatUrl, playChatSpeech, stopChatPlayback,
     showToast,
   });
@@ -274,6 +282,67 @@ export default function App() {
     setStatus(`Jumped to: ${title}`);
   };
 
+  // ---------- DOC-AWARE CHAT HANDLERS ----------
+  // Cap the excerpt before sending — small models choke on a wall of text and
+  // even big ones waste tokens on a whole dense PDF page.
+  const CONTEXT_CHAR_CAP = 8000;
+
+  // Read the file bytes back out of IndexedDB and compute (or look up) its
+  // sha256 hash. Returns null if the doc isn't in the library yet.
+  const ensureDocHash = useCallback(async () => {
+    if (!pdfFileName) return null;
+    const record = await getBook(pdfFileName);
+    if (!record?.data) return null;
+    return getOrComputeDocHash(pdfFileName, record.data);
+  }, [pdfFileName]);
+
+  const handleAskAboutPage = useCallback(async (page) => {
+    if (!pdfFileName) return;
+    // textItems holds the sentences for the currently rendered page across PDF,
+    // text, and markdown — joining gives us the full page text.
+    const fullText = (textItems || []).join(' ').trim();
+    if (!fullText) {
+      showToast('Nothing to ask about — page has no text.', 3000);
+      return;
+    }
+    const text = fullText.length > CONTEXT_CHAR_CAP
+      ? fullText.slice(0, CONTEXT_CHAR_CAP) + ' [truncated]'
+      : fullText;
+    const docId = await ensureDocHash();
+    setPendingChatContext({
+      doc_id: docId,
+      fileName: pdfFileName,
+      page,
+      kind: 'page',
+      text,
+    });
+    setViewMode('chat');
+  }, [pdfFileName, textItems, ensureDocHash, setViewMode, showToast]);
+
+  const handleAskAboutSelection = useCallback(async () => {
+    const sel = (typeof window !== 'undefined') ? window.getSelection() : null;
+    const selectedText = sel ? sel.toString().trim() : '';
+    if (!selectedText) {
+      showToast('Select some text first, then click again.', 3000);
+      return;
+    }
+    if (!pdfFileName) return;
+    const text = selectedText.length > CONTEXT_CHAR_CAP
+      ? selectedText.slice(0, CONTEXT_CHAR_CAP) + ' [truncated]'
+      : selectedText;
+    const docId = await ensureDocHash();
+    setPendingChatContext({
+      doc_id: docId,
+      fileName: pdfFileName,
+      page: currentPage,
+      kind: 'selection',
+      text,
+    });
+    setViewMode('chat');
+  }, [pdfFileName, currentPage, ensureDocHash, setViewMode, showToast]);
+
+  const clearPendingChatContext = useCallback(() => setPendingChatContext(null), []);
+
   // --- LOADING STATE ---
   if (!isLibLoaded) {
     return (
@@ -321,6 +390,7 @@ export default function App() {
         darkMode={darkMode}
         onReadSelection={readSelection}
         onStopSelectionRead={stopSelectionRead}
+        onAskAboutSelection={inChat ? null : handleAskAboutSelection}
       />
 
       <Header
@@ -438,6 +508,8 @@ export default function App() {
             speakMessage={speakMessage}
             stopSpeaking={stopSpeaking}
             showToast={showToast}
+            pendingDocContext={pendingChatContext}
+            clearPendingDocContext={clearPendingChatContext}
           />
         ) : (
         <PdfViewer
@@ -460,6 +532,7 @@ export default function App() {
           openFromLibrary={openFromLibrary}
           removeFromLibrary={removeFromLibrary}
           markdownPageData={markdownPageData}
+          onAskAboutPage={handleAskAboutPage}
         />
         )}
       </main>
