@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .db import close_db, init_db
 from .endpoints import router as tts_router
 from .routers.chat_sessions import router as chat_sessions_router
-from .routers.docs import router as docs_router
+from .routers.docs import PDF_STORAGE_DIR, router as docs_router
 from .services.embeddings import start_client as start_embeddings, stop_client as stop_embeddings
 
 logger = logging.getLogger(__name__)
@@ -40,6 +40,12 @@ def create_app() -> FastAPI:
         if not ok:
             logger.warning("Postgres is offline; chat persistence is disabled")
         await start_embeddings()
+        # Make sure the PDF-retention directory exists before the first upload
+        # hits — Path.mkdir in the route is a fallback, not the primary owner.
+        try:
+            PDF_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning("Could not create PDF storage dir %s: %s", PDF_STORAGE_DIR, e)
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:

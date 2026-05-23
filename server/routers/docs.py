@@ -19,13 +19,23 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
+from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Response, UploadFile
+from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from ..db import get_pool, is_ready
+from ..services import docling_convert
 from ..services.embeddings import EMBEDDING_DIM, EMBEDDING_MODEL, embed_batch, embed_one
+
+
+# Filesystem location for retained PDF bytes. Overridable via env so the
+# docker-compose mount can park them on a named volume in production.
+PDF_STORAGE_DIR = Path(os.environ.get("PDF_STORAGE_DIR", "./data/pdfs")).resolve()
+PDF_UPLOAD_MAX_MB = int(os.environ.get("PDF_UPLOAD_MAX_MB", "50"))
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/docs", tags=["docs"])
@@ -57,17 +67,34 @@ class SearchIn(BaseModel):
     k: int = Field(default=5, ge=1, le=20)
 
 
-# Per-doc lock prevents two concurrent /index calls for the same doc from
-# stomping each other. New entries are created on demand.
-_index_locks: dict[str, asyncio.Lock] = {}
+class ConvertOptionsIn(BaseModel):
+    preset: str = Field(default="standard", pattern="^(fast|standard|accurate)$")
+    ocr: bool = False
+    tables: bool = True
+    images: str = Field(default="drop", pattern="^(drop|embed|describe)$")
+    # Inclusive 1-based [start, end]. None = whole document.
+    page_range: list[int] | None = None
 
 
-def _get_index_lock(doc_id: str) -> asyncio.Lock:
-    lock = _index_locks.get(doc_id)
+# Per-doc lock prevents concurrent /index *or* /convert calls for the same doc
+# from stomping each other. Shared between embedding and conversion jobs since
+# they touch the same doc_chunks rows.
+_doc_job_locks: dict[str, asyncio.Lock] = {}
+# Back-compat alias for the original name used in PR 4. Kept so any external
+# call sites (none in-repo, but easy to grep for) still resolve.
+_index_locks = _doc_job_locks
+
+
+def _get_doc_lock(doc_id: str) -> asyncio.Lock:
+    lock = _doc_job_locks.get(doc_id)
     if lock is None:
         lock = asyncio.Lock()
-        _index_locks[doc_id] = lock
+        _doc_job_locks[doc_id] = lock
     return lock
+
+
+# Retained for backwards reference to the PR 4 helper name.
+_get_index_lock = _get_doc_lock
 
 
 # ---------- helpers ----------
@@ -95,8 +122,11 @@ async def _fetch_doc_status(conn, doc_id: str) -> dict[str, Any] | None:
             SELECT d.doc_id, d.file_name, d.file_type, d.size_bytes, d.page_count,
                    d.state, d.embedding_model, d.embedding_dim, d.error_message,
                    d.created_at, d.updated_at,
+                   d.conversion_state, d.conversion_options, d.conversion_error,
+                   d.converted_at, d.pdf_path,
                    COALESCE(c.cnt, 0) AS chunk_count,
-                   COALESCE(c.embedded, 0) AS embedded_count
+                   COALESCE(c.embedded, 0) AS embedded_count,
+                   COALESCE(p.page_cnt, 0) AS converted_page_count
             FROM documents d
             LEFT JOIN (
                 SELECT doc_id,
@@ -105,6 +135,9 @@ async def _fetch_doc_status(conn, doc_id: str) -> dict[str, Any] | None:
                 FROM doc_chunks
                 GROUP BY doc_id
             ) c ON c.doc_id = d.doc_id
+            LEFT JOIN (
+                SELECT doc_id, COUNT(*) AS page_cnt FROM doc_pages GROUP BY doc_id
+            ) p ON p.doc_id = d.doc_id
             WHERE d.doc_id = %s
             """,
             (doc_id,),
@@ -116,6 +149,10 @@ async def _fetch_doc_status(conn, doc_id: str) -> dict[str, Any] | None:
     rec = dict(zip(cols, row))
     rec["created_at"] = _epoch_ms(rec["created_at"])
     rec["updated_at"] = _epoch_ms(rec["updated_at"])
+    if rec.get("converted_at") is not None:
+        rec["converted_at"] = _epoch_ms(rec["converted_at"])
+    # Don't leak the absolute filesystem path to the client.
+    rec["has_pdf"] = bool(rec.pop("pdf_path", None))
     return rec
 
 
@@ -229,11 +266,21 @@ async def delete_document(doc_id: str) -> dict[str, Any]:
     _ensure_ready()
     pool = get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:
-        await cur.execute("DELETE FROM documents WHERE doc_id = %s RETURNING doc_id", (doc_id,))
+        await cur.execute(
+            "DELETE FROM documents WHERE doc_id = %s RETURNING pdf_path",
+            (doc_id,),
+        )
         row = await cur.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
-    _index_locks.pop(doc_id, None)
+    _doc_job_locks.pop(doc_id, None)
+    # Best-effort cleanup of the retained PDF.
+    pdf_path = row[0]
+    if pdf_path:
+        try:
+            Path(pdf_path).unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning("Could not remove PDF for %s at %s: %s", doc_id, pdf_path, e)
     return {"ok": True, "doc_id": doc_id}
 
 
@@ -248,7 +295,7 @@ async def _run_index_job(doc_id: str) -> None:
     Held under a per-doc lock so concurrent /index calls coalesce instead of
     duplicating work.
     """
-    lock = _get_index_lock(doc_id)
+    lock = _get_doc_lock(doc_id)
     async with lock:
         if not is_ready():
             logger.warning("Skipping index job for %s — DB not ready", doc_id)
@@ -410,3 +457,320 @@ async def search_document(doc_id: str, req: SearchIn) -> dict[str, Any]:
         if r.get("text") and len(r["text"]) > 4000:
             r["text"] = r["text"][:4000] + " [truncated]"
     return {"doc_id": doc_id, "results": results}
+
+
+# ---------- Docling conversion (PDF → Markdown) ----------
+
+def _pdf_storage_path(doc_id: str) -> Path:
+    PDF_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    return PDF_STORAGE_DIR / f"{doc_id}.pdf"
+
+
+@router.post("/{doc_id}/pdf")
+async def upload_pdf_bytes(doc_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+    """
+    Persist the raw PDF bytes for `doc_id` to the backend filesystem so the
+    convert job (and any future reconversion) can read them without another
+    upload from the browser. Re-upload overwrites in place.
+    """
+    _ensure_ready()
+    pool = get_pool()
+    # Confirm the row exists first — otherwise we'd happily park bytes for a
+    # doc that was never registered.
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT 1 FROM documents WHERE doc_id = %s", (doc_id,))
+        if not await cur.fetchone():
+            raise HTTPException(status_code=404, detail="Register the document first")
+
+    max_bytes = PDF_UPLOAD_MAX_MB * 1024 * 1024
+    path = _pdf_storage_path(doc_id)
+    written = 0
+    try:
+        with open(path, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    out.close()
+                    path.unlink(missing_ok=True)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"PDF exceeds {PDF_UPLOAD_MAX_MB} MB limit",
+                    )
+                out.write(chunk)
+    finally:
+        await file.close()
+
+    async with pool.connection() as conn:
+        await conn.execute(
+            "UPDATE documents SET pdf_path = %s, updated_at = now() WHERE doc_id = %s",
+            (str(path), doc_id),
+        )
+    return {"ok": True, "doc_id": doc_id, "size_bytes": written}
+
+
+@router.delete("/{doc_id}/pdf")
+async def delete_pdf_bytes(doc_id: str) -> dict[str, Any]:
+    """Remove retained PDF bytes for `doc_id`. Keeps converted markdown / chunks."""
+    _ensure_ready()
+    pool = get_pool()
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT pdf_path FROM documents WHERE doc_id = %s", (doc_id,))
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Document not found")
+        pdf_path = row[0]
+        await cur.execute(
+            "UPDATE documents SET pdf_path = NULL, updated_at = now() WHERE doc_id = %s",
+            (doc_id,),
+        )
+    if pdf_path:
+        try:
+            Path(pdf_path).unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning("Could not remove PDF for %s: %s", doc_id, e)
+    return {"ok": True, "doc_id": doc_id}
+
+
+async def _chunks_from_pages(doc_id: str) -> int:
+    """
+    After conversion: wipe existing chunks for `doc_id` and seed new ones from
+    `doc_pages` (one chunk per page). Embeddings will be (re)generated by the
+    indexing job. Returns the number of inserted chunk rows.
+    """
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            async with conn.cursor() as cur:
+                await cur.execute("DELETE FROM doc_chunks WHERE doc_id = %s", (doc_id,))
+                await cur.execute(
+                    "SELECT page, markdown FROM doc_pages WHERE doc_id = %s ORDER BY page",
+                    (doc_id,),
+                )
+                pages = await cur.fetchall()
+                inserted = 0
+                for ord_, (page, markdown) in enumerate(pages):
+                    text = (markdown or "").strip()
+                    if not text:
+                        continue
+                    await cur.execute(
+                        """
+                        INSERT INTO doc_chunks
+                            (doc_id, ord, page, chunk_type, text, text_hash)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (doc_id, text_hash) DO UPDATE SET
+                            ord = EXCLUDED.ord, page = EXCLUDED.page,
+                            chunk_type = EXCLUDED.chunk_type
+                        """,
+                        (doc_id, ord_, page, "page-md", text, _text_hash(text)),
+                    )
+                    inserted += 1
+    return inserted
+
+
+async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
+    """
+    Background task: convert the retained PDF for `doc_id` to per-page Markdown,
+    store in `doc_pages`, then chain into the existing embedding pipeline so the
+    doc lands at `state='indexed'` when finished.
+    """
+    lock = _get_doc_lock(doc_id)
+    async with lock:
+        if not is_ready():
+            logger.warning("Skipping convert job for %s — DB not ready", doc_id)
+            return
+        pool = get_pool()
+        try:
+            async with pool.connection() as conn, conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT pdf_path FROM documents WHERE doc_id = %s",
+                    (doc_id,),
+                )
+                row = await cur.fetchone()
+            if not row or not row[0]:
+                raise RuntimeError("No retained PDF for this document")
+            pdf_path = Path(row[0])
+
+            pages = await docling_convert.convert_pdf_to_markdown_pages(pdf_path, options)
+            if not pages:
+                raise RuntimeError("Conversion produced no pages")
+
+            # Persist pages (delete-then-insert; reconversion replaces).
+            async with pool.connection() as conn:
+                async with conn.transaction():
+                    async with conn.cursor() as cur:
+                        await cur.execute("DELETE FROM doc_pages WHERE doc_id = %s", (doc_id,))
+                        for page_no, md in pages:
+                            await cur.execute(
+                                "INSERT INTO doc_pages (doc_id, page, markdown) VALUES (%s, %s, %s)",
+                                (doc_id, page_no, md),
+                            )
+
+            async with pool.connection() as conn:
+                await conn.execute(
+                    """
+                    UPDATE documents
+                    SET conversion_state = 'converted',
+                        conversion_error = NULL,
+                        converted_at = now(),
+                        updated_at = now()
+                    WHERE doc_id = %s
+                    """,
+                    (doc_id,),
+                )
+
+            # Auto-chain into indexing: seed chunks from MD, then embed.
+            inserted = await _chunks_from_pages(doc_id)
+            logger.info("Convert job: seeded %d chunks for %s", inserted, doc_id)
+            if inserted:
+                async with pool.connection() as conn:
+                    await conn.execute(
+                        "UPDATE documents SET state = 'indexing', error_message = NULL, updated_at = now() WHERE doc_id = %s",
+                        (doc_id,),
+                    )
+        except Exception as e:
+            logger.exception("Convert job failed for %s", doc_id)
+            try:
+                async with get_pool().connection() as conn:
+                    await conn.execute(
+                        """
+                        UPDATE documents
+                        SET conversion_state = 'conversion_failed',
+                            conversion_error = %s,
+                            updated_at = now()
+                        WHERE doc_id = %s
+                        """,
+                        (str(e)[:500], doc_id),
+                    )
+            except Exception:
+                logger.exception("Could not record conversion failure for %s", doc_id)
+            return
+
+    # Run the embedding job outside the conversion lock — _run_index_job
+    # acquires the same lock itself.
+    await _run_index_job(doc_id)
+
+
+@router.post("/{doc_id}/convert", status_code=202)
+async def start_convert_job(
+    doc_id: str,
+    options: ConvertOptionsIn,
+    background: BackgroundTasks,
+) -> dict[str, Any]:
+    """
+    Kick off a docling conversion in the background. Requires that
+    POST /v1/docs/{doc_id}/pdf has stored the bytes first. Returns 202; poll
+    GET /v1/docs/{doc_id} to watch `conversion_state` and then `state`.
+    """
+    _ensure_ready()
+    if not docling_convert.is_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail="Docling is disabled on this server (set DOCLING_ENABLED=true).",
+        )
+
+    pool = get_pool()
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT pdf_path FROM documents WHERE doc_id = %s",
+            (doc_id,),
+        )
+        row = await cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if not row[0]:
+            raise HTTPException(
+                status_code=409,
+                detail="Upload the PDF bytes first via POST /v1/docs/{doc_id}/pdf",
+            )
+        await conn.execute(
+            """
+            UPDATE documents
+            SET conversion_state = 'converting',
+                conversion_options = %s,
+                conversion_error = NULL,
+                updated_at = now()
+            WHERE doc_id = %s
+            """,
+            (Jsonb(options.model_dump()), doc_id),
+        )
+
+    background.add_task(_run_convert_job, doc_id, options.model_dump())
+    return {"ok": True, "doc_id": doc_id, "conversion_state": "converting"}
+
+
+@router.get("/{doc_id}/markdown")
+async def get_document_markdown(doc_id: str, page: int | None = None) -> Response:
+    """
+    Return the docling-converted Markdown for this document. Without `page`
+    the whole document is returned (pages joined with form-feed markers); with
+    `page=N` only that page's Markdown is returned.
+    """
+    _ensure_ready()
+    pool = get_pool()
+    async with pool.connection() as conn, conn.cursor() as cur:
+        if page is not None:
+            await cur.execute(
+                "SELECT markdown FROM doc_pages WHERE doc_id = %s AND page = %s",
+                (doc_id, page),
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Page not found")
+            return Response(content=row[0] or "", media_type="text/markdown")
+
+        await cur.execute(
+            "SELECT page, markdown FROM doc_pages WHERE doc_id = %s ORDER BY page",
+            (doc_id,),
+        )
+        rows = await cur.fetchall()
+    if not rows:
+        raise HTTPException(status_code=404, detail="No converted markdown for this document")
+    # Join with a labelled separator so the MD reader can split client-side
+    # without losing page boundaries. Single newlines around the marker keep
+    # the result valid Markdown.
+    body = "\n\n".join(f"<!-- page {p} -->\n\n{md}" for (p, md) in rows)
+    return Response(content=body, media_type="text/markdown")
+
+
+@router.delete("/{doc_id}/markdown")
+async def delete_document_markdown(doc_id: str) -> dict[str, Any]:
+    """
+    Wipe a document's converted markdown and the chunks/embeddings derived
+    from it. The document row itself stays (so re-conversion is a single
+    click), as does the retained PDF (delete via DELETE /pdf if needed).
+
+    Sets `conversion_state=NULL` so the toolbar shows the inviting "Convert"
+    label again. The doc-level `state` flips back to `registered` because the
+    chunks are gone — the user can either re-run convert or fall back to the
+    native client-side `Index` flow.
+    """
+    _ensure_ready()
+    pool = get_pool()
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT 1 FROM documents WHERE doc_id = %s", (doc_id,))
+        if not await cur.fetchone():
+            raise HTTPException(status_code=404, detail="Document not found")
+        async with conn.transaction():
+            await conn.execute("DELETE FROM doc_pages WHERE doc_id = %s", (doc_id,))
+            # The chunks were seeded from doc_pages, so they're stale now.
+            # Re-indexing without reconverting would just re-create them empty.
+            await conn.execute("DELETE FROM doc_chunks WHERE doc_id = %s", (doc_id,))
+            await conn.execute(
+                """
+                UPDATE documents
+                SET conversion_state = NULL,
+                    conversion_error = NULL,
+                    converted_at = NULL,
+                    state = 'registered',
+                    embedding_model = NULL,
+                    embedding_dim = NULL,
+                    error_message = NULL,
+                    updated_at = now()
+                WHERE doc_id = %s
+                """,
+                (doc_id,),
+            )
+    return {"ok": True, "doc_id": doc_id}

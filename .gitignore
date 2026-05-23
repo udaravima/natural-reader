@@ -31,3 +31,6 @@ voices-v1.0.bin
 **/__pycache__/*
 .env
 **.pyc
+
+# Backend-retained PDFs (uploaded for docling conversion)
+data/

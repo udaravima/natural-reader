@@ -2,6 +2,44 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0] - 2026-05-23
+
+### Added
+- **Docling PDF → Markdown conversion** — new backend pipeline that converts PDFs into layout-aware Markdown using [Docling](https://github.com/DS4SD/docling) (MIT, IBM/DS4SD). Click **Convert** in the PDF toolbar to open an options dialog with a **Fast / Standard / Accurate** quality preset (the Accurate path uses the VLM `granite_docling` pipeline when available), an OCR force-toggle for scanned PDFs, table extraction toggle, image handling (drop / embed-base64 / VLM describe), and an optional page-range limiter. After conversion the doc is automatically re-chunked and re-embedded from the cleaner Markdown text so retrieval picks up tables and headings the native pdf.js extractor was missing.
+- **PDF ↔ Markdown reader toggle** — once a doc is converted, the PDF toolbar gains a small **PDF | MD** segmented control. **MD** swaps the PDF canvas for a new `MarkdownReader` that renders the docling output per page with anchored separators, syncs the toolbar's page number with whichever page is in view, and lets TTS / "Read selection" / "Ask AI" work on the cleaner text. Reader view is per-doc and persists across navigation.
+- **Export converted Markdown** — Download icon in the toolbar (visible when `conversion_state='converted'`) saves the full document MD as `{filename}.md` via blob download.
+- **Delete converted Markdown** — Trash icon (with confirm prompt) wipes `doc_pages` + the chunks/embeddings derived from them and resets `conversion_state` so the **Convert** button reappears. The retained PDF on disk stays in place so reconversion is one click.
+- **Retained PDF on the server** — `POST /v1/docs/{id}/pdf` (multipart, ≤ `PDF_UPLOAD_MAX_MB`, default 50 MB) parks the bytes in `./data/pdfs/{doc_id}.pdf` so reconversion with different settings doesn't require a re-upload. New `DELETE /v1/docs/{id}/pdf` removes them. Deleting the document row cleans up the file automatically.
+- **Per-message audio export in chat** — every assistant chat message gets an **Audio** action button (next to Read aloud / Copy). Click it to synthesize the whole message through Kokoro and download a `.wav` named after the active session title + assistant-message index (e.g. `Session Title_msg2.wav`). Shows an inline spinner while generating; only one message synthesizes at a time. Hidden when Kokoro isn't selected.
+- **Audiobook export — full document as a single WAV** — new **Library** icon in the header (reader mode + Kokoro only) extracts every page's text and synthesizes them one page at a time via `/v1/batch_synthesize`, stitches the WAVs client-side into one file, and downloads `{filename}_audiobook.wav`. While exporting, the button morphs into a progress card showing `current/total` + the current label ("Synthesizing page 14…") with an **X** to cancel. Failed pages are skipped with a toast at the end instead of aborting the whole job. New client-side WAV concatenator (`src/utils/wavConcat.js`) parses RIFF chunks, reuses the first file's header, concatenates `data` payloads, and rewrites RIFF + `data` sizes.
+- **Home button to return to the library** — new Home icon in the header (reader mode, doc open) stops TTS, drops the loaded document, clears the active doc id, and brings up the welcome screen with the recent-books list. Reading progress was already persisted, so reopening the doc resumes where you left off.
+
+### Changed
+- **MarkdownReader and MarkdownPageRenderer width** widened from `min(820px, 80vw)` to `min(1200px, 95vw)` so MD prose, tables, and code blocks have room to breathe on wide screens.
+- **MarkdownReader no longer maintains an inner scroll container** — scrolling and page-nav scroll happen via the existing PdfViewer outer scroller. Combined with a small "programmatic-scroll quiet window" (`PROG_SCROLL_QUIET_MS = 800`), this fixes the feedback loop where a "next page" click was getting overridden mid-scroll by the IntersectionObserver. The observer now uses the viewport (`root: null`) and respects the quiet window.
+- **Server schema** — new migration `server/sql/003_docling.sql` adds `documents.pdf_path`, `documents.conversion_state`, `documents.conversion_options` (JSONB), `documents.conversion_error`, `documents.converted_at`, and a new `doc_pages` table (`doc_id`, `page`, `markdown`). `_fetch_doc_status` now returns `conversion_state` / `converted_page_count` / `conversion_options` / `has_pdf` so the frontend can mirror the full lifecycle. Stale `conversion_state='converting'` rows are reset on startup the same way stale `state='indexing'` already was.
+- **`_run_index_job` lock** renamed from `_index_locks` to `_doc_job_locks` and shared with `_run_convert_job` since they touch the same `doc_chunks` rows. The old `_get_index_lock` / `_index_locks` names remain as aliases.
+- **Python deps** — adds `docling>=2.0` and `python-multipart` to `requirements.txt`. Docling pulls in transformers + torch (CPU); first conversion downloads layout/table model weights (~500 MB to ~2 GB total). Gate the feature with `DOCLING_ENABLED=true` env var so the rest of the server boots without the heavy stack installed.
+- **Persistent storage** — `./data/pdfs/` is created on app startup and added to `.gitignore`. Set `PDF_STORAGE_DIR` to override.
+- **ESLint config** — `globalIgnores` now also covers `.venv` and `node_modules` so vendored minified JS inside the Python virtualenv (e.g. the `mpire` dashboard's bundled bootstrap.js) doesn't pollute lint output.
+
+### Fixed
+- **MD-file zoom & toolbar controls now feel responsive** — the box is much wider, page next/prev actually scrolls to the requested page in the converted MD view, and the observer no longer fights programmatic scrolls.
+
+### New endpoints
+- `POST /v1/docs/{doc_id}/pdf` — multipart upload, persists raw PDF bytes for later reconversion.
+- `DELETE /v1/docs/{doc_id}/pdf` — remove retained PDF bytes (keeps markdown + chunks).
+- `POST /v1/docs/{doc_id}/convert` — `202 Accepted`; kicks off a docling background job with the supplied options.
+- `GET /v1/docs/{doc_id}/markdown` (optionally `?page=N`) — returns the converted Markdown as `text/markdown`.
+- `DELETE /v1/docs/{doc_id}/markdown` — wipe converted markdown + derived chunks/embeddings; doc row + retained PDF stay in place.
+
+### Caveats
+- **Docling conversion is heavy.** Standard preset on a 50-page text PDF takes a few minutes on CPU; Accurate (VLM) is slower still. The Convert button polls every 2 s for up to 20 min before warning the user. Cancel isn't wired yet — kill the backend if you need to abort.
+- **Audiobook export is single-threaded** because kokoro-onnx is. A long book may take many minutes; the rest of the app stays usable while it runs.
+- **WAV concat assumes identical PCM format across pages.** Since every page in a single export uses the same voice + speed, that holds. Don't change voice mid-export.
+- **Page-range applies to conversion only**, not RAG retrieval. Search still returns top-K across all converted pages.
+- **Reconverting a doc** wipes `doc_pages` then `doc_chunks` then re-embeds. The PDF on disk stays.
+
 ## [1.6.0] - 2026-05-16
 
 ### Added

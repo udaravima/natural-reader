@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { KOKORO_VOICES } from '../constants';
 import { buildApiUrl } from '../utils/url';
+import { markdownToSpeech } from '../utils/markdownToSpeech';
+import { concatWavs } from '../utils/wavConcat';
 
 /**
  * Manages TTS playback engine: audio caching, buffering, playback loop,
@@ -29,6 +31,17 @@ export function useTtsEngine({
     const [isDownloading, setIsDownloading] = useState(false);
     const [isReadingSelection, setIsReadingSelection] = useState(false);
     const [isPreviewingVoice, setIsPreviewingVoice] = useState(false);
+    // ID of the chat message currently being synthesized for download.
+    // Lets each message bubble show its own spinner without blocking the
+    // (separate) page-audio download state above.
+    const [downloadingMessageId, setDownloadingMessageId] = useState(null);
+    // Whole-book audiobook export: long-running, per-page synthesis. Kept
+    // separate from per-page/per-message download states so the UI can show
+    // a dedicated progress + cancel surface.
+    //
+    //   { current, total, label } | null
+    const [bookProgress, setBookProgress] = useState(null);
+    const bookAbortRef = useRef(null);
 
     const audioCache = useRef(new Map());
     const pendingRequests = useRef(new Map()); // Track in-flight fetches to avoid duplicates
@@ -518,10 +531,218 @@ export function useTtsEngine({
         }
     };
 
+    // Generic text → .wav download. Used by the chat view to export an
+    // assistant message's audio. Strips markdown via the same helper the
+    // chat-playback path uses so the spoken output matches what's read aloud,
+    // and splits into sentences so kokoro's batch endpoint can chunk them.
+    //
+    // `trackingId` is opaque — when provided we flip `downloadingMessageId`
+    // to it so the originating UI can show a per-item spinner. The page-audio
+    // download keeps using `isDownloading` separately.
+    const downloadTextAudio = useCallback(async (text, filenameBase = 'audio', trackingId = null) => {
+        if (!isLocalhost) {
+            showToast?.('Audio download requires Kokoro backend (system voice has no file).', 4000);
+            return false;
+        }
+        const cleaned = markdownToSpeech(text || '').trim();
+        if (!cleaned) {
+            showToast?.('Nothing to synthesize.', 3000);
+            return false;
+        }
+        const sentences = cleaned
+            .replace(/\s+/g, ' ')
+            .split(/(?<=[.!?])\s+/)
+            .map(s => s.trim())
+            .filter(s => s.length > 0);
+        if (sentences.length === 0) {
+            showToast?.('Nothing to synthesize.', 3000);
+            return false;
+        }
+
+        if (trackingId) setDownloadingMessageId(trackingId);
+        const controller = new AbortController();
+        const timeoutId = unlimitedBatchTimeout
+            ? null
+            : setTimeout(() => controller.abort(), requestTimeout * 4 * 1000);
+        try {
+            const response = await fetch(buildApiUrl(apiHost, apiPort, '/v1/batch_synthesize'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sentences,
+                    voice: selectedVoice,
+                    speed: playbackSpeed,
+                }),
+                signal: unlimitedBatchTimeout ? undefined : controller.signal,
+            });
+            if (timeoutId) clearTimeout(timeoutId);
+            if (!response.ok) throw new Error('Batch synthesis failed');
+
+            const data = await response.json();
+            const b64 = data.audio_base64;
+            const byteCharacters = atob(b64);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const blob = new Blob([new Uint8Array(byteNumbers)], { type: 'audio/wav' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            // Keep the filename safe across OSes — strip path separators and
+            // anything that tends to confuse Windows in particular.
+            const safe = String(filenameBase).replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) || 'audio';
+            a.download = `${safe}.wav`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 0);
+            return true;
+        } catch (err) {
+            if (timeoutId) clearTimeout(timeoutId);
+            console.error('Text audio download error:', err);
+            showToast?.(
+                err.name === 'AbortError' ? 'Download timed out.' : 'Failed to generate audio.',
+                5000,
+            );
+            return false;
+        } finally {
+            if (trackingId) setDownloadingMessageId(null);
+        }
+    }, [isLocalhost, unlimitedBatchTimeout, requestTimeout, apiHost, apiPort, selectedVoice, playbackSpeed, showToast]);
+
+    // Synthesize an entire document (PDF / TXT / MD) and download it as a
+    // single WAV. Operates page-by-page so progress is visible and a single
+    // bad page can't tank the whole job — failed pages are skipped with a
+    // toast warning rather than aborting.
+    //
+    // `pages` shape: [{ page: number, text: string }, ...]  (one entry per page)
+    // `filenameBase`: name of the output file (extension is added).
+    const downloadBookAudio = useCallback(async (pages, filenameBase = 'audiobook') => {
+        if (!isLocalhost) {
+            showToast?.('Audiobook export requires the Kokoro backend.', 5000);
+            return false;
+        }
+        if (!Array.isArray(pages) || pages.length === 0) {
+            showToast?.('Nothing to synthesize.', 3000);
+            return false;
+        }
+
+        // Re-entrancy guard — if a download is already in flight, surface the
+        // existing one rather than starting a duplicate.
+        if (bookAbortRef.current) {
+            showToast?.('An audiobook is already being generated.', 4000);
+            return false;
+        }
+
+        const controller = new AbortController();
+        bookAbortRef.current = controller;
+        setBookProgress({ current: 0, total: pages.length, label: 'Preparing…' });
+
+        const wavBlobs = [];
+        let failed = 0;
+        try {
+            for (let i = 0; i < pages.length; i++) {
+                if (controller.signal.aborted) break;
+                const { page, text } = pages[i] || {};
+                setBookProgress({ current: i, total: pages.length, label: `Synthesizing page ${page ?? i + 1}…` });
+
+                const cleaned = (text || '').trim();
+                if (!cleaned) continue;
+                const sentences = cleaned
+                    .replace(/\s+/g, ' ')
+                    .split(/(?<=[.!?])\s+/)
+                    .map((s) => s.trim())
+                    .filter((s) => s.length > 0);
+                if (sentences.length === 0) continue;
+
+                try {
+                    const response = await fetch(buildApiUrl(apiHost, apiPort, '/v1/batch_synthesize'), {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            sentences,
+                            voice: selectedVoice,
+                            speed: playbackSpeed,
+                        }),
+                        // Audiobook export deliberately ignores `unlimitedBatchTimeout`
+                        // for the *per-page* call — each page is bounded; only the
+                        // outer loop is unbounded. The user can cancel any time.
+                        signal: controller.signal,
+                    });
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    const data = await response.json();
+                    const b64 = data.audio_base64;
+                    if (!b64) throw new Error('No audio in response');
+                    const byteCharacters = atob(b64);
+                    const byteNumbers = new Uint8Array(byteCharacters.length);
+                    for (let k = 0; k < byteCharacters.length; k++) {
+                        byteNumbers[k] = byteCharacters.charCodeAt(k);
+                    }
+                    wavBlobs.push(new Blob([byteNumbers], { type: 'audio/wav' }));
+                } catch (e) {
+                    if (e.name === 'AbortError') throw e;
+                    console.warn(`Page ${page ?? i + 1} failed to synthesize:`, e);
+                    failed += 1;
+                }
+            }
+
+            if (controller.signal.aborted) {
+                setStatus?.('Audiobook export cancelled');
+                return false;
+            }
+            if (wavBlobs.length === 0) {
+                showToast?.('No pages could be synthesized.', 5000);
+                return false;
+            }
+
+            setBookProgress({ current: pages.length, total: pages.length, label: 'Stitching audio…' });
+            const merged = await concatWavs(wavBlobs);
+            if (!merged) {
+                showToast?.('Could not stitch the audio together.', 5000);
+                return false;
+            }
+
+            const url = URL.createObjectURL(merged);
+            const safe = String(filenameBase).replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) || 'audiobook';
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${safe}.wav`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 0);
+
+            if (failed > 0) {
+                showToast?.(`Audiobook ready — ${failed} page(s) failed and were skipped.`, 6000);
+            } else {
+                setStatus?.(`Audiobook downloaded (${wavBlobs.length} page${wavBlobs.length === 1 ? '' : 's'})`);
+            }
+            return true;
+        } catch (e) {
+            if (e.name === 'AbortError') {
+                setStatus?.('Audiobook export cancelled');
+                return false;
+            }
+            console.error('Audiobook export failed:', e);
+            showToast?.(`Audiobook export failed: ${e.message}`, 6000);
+            return false;
+        } finally {
+            bookAbortRef.current = null;
+            setBookProgress(null);
+        }
+    }, [isLocalhost, apiHost, apiPort, selectedVoice, playbackSpeed, showToast, setStatus]);
+
+    const cancelBookDownload = useCallback(() => {
+        bookAbortRef.current?.abort();
+    }, []);
+
     return {
         // State
         isPlaying, setIsPlaying,
         isDownloading,
+        downloadingMessageId,
+        bookProgress,
         isReadingSelection,
         isPreviewingVoice,
 
@@ -534,6 +755,9 @@ export function useTtsEngine({
         previewVoice,
         stopVoicePreview,
         downloadPageAudio,
+        downloadTextAudio,
+        downloadBookAudio,
+        cancelBookDownload,
         clearCache,
 
         // Reusable helpers (used by useChatEngine for AI response playback)

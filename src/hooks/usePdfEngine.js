@@ -542,6 +542,28 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         return [];
     };
 
+    // Close the currently open document and drop back to the welcome screen.
+    // Reading progress was already persisted by the progress effect, so the
+    // doc will resume at the right spot the next time the user opens it.
+    const closeDocument = () => {
+        setPdfDoc(null);
+        setPdfFileName('');
+        setFileType('pdf');
+        setNumPages(0);
+        setCurrentPage(1);
+        setTextItems([]);
+        setTextPages([]);
+        setMarkdownPages([]);
+        setPdfOutline([]);
+        setCurrentSentenceIndex(-1);
+        sentenceRefs.current = [];
+        playbackIndexRef.current = -1;
+        setStatus('Ready to Open PDF');
+        // Refresh the library snapshot so the welcome screen shows the latest
+        // lastOpened ordering when the user lands back on it.
+        getRecentBooks().then(setRecentBooks).catch(() => {});
+    };
+
     return {
         // State
         pdfDoc,
@@ -571,5 +593,6 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         calculateReadingProgress,
         calculateEstimatedTimeRemaining,
         extractAllChunks,
+        closeDocument,
     };
 }
