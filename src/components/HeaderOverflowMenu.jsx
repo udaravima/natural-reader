@@ -5,14 +5,16 @@ import {
 } from 'lucide-react';
 
 /**
- * Mobile-only overflow menu for the Header.
+ * Overflow menu for the Header — visible at any viewport narrower than `lg`
+ * (1024 px), i.e. phones AND tablets / squeezed-down desktop windows.
  *
- * The Header has ~10 buttons on desktop. Most of them have `hidden sm:*`
- * classes which makes them simply *vanish* on phones — leaving the user with
- * no way to toggle dark mode, change TTS backend, download audio, see
- * shortcuts, etc. This component surfaces all of those actions inside a small
- * dropdown so mobile users can still reach them. Desktop hides the dropdown
- * entirely (the inline buttons handle everything).
+ * The Header has ~10 buttons on full desktop. The secondary ones are gated
+ * with `hidden lg:*` so they don't crowd a narrow layout — without this
+ * menu they'd just vanish, leaving the user with no way to toggle dark
+ * mode, change TTS backend, download audio, see shortcuts, etc. This
+ * component (`lg:hidden`) surfaces all of those actions in a small
+ * dropdown. At `lg` and wider the dropdown is hidden because the inline
+ * buttons handle everything.
  *
  * Each `actions` entry is `{ key, label, icon: Icon, onClick, disabled?,
  * tone?: 'default'|'accent', sublabel?, show?: boolean }`. Entries with
@@ -111,7 +113,7 @@ export default function HeaderOverflowMenu({
     if (actions.length === 0) return null;
 
     return (
-        <div ref={wrapRef} className="relative sm:hidden">
+        <div ref={wrapRef} className="relative lg:hidden">
             <button
                 onClick={() => setOpen(v => !v)}
                 className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500 ${open ? 'text-blue-500' : ''}`}

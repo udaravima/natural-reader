@@ -27,6 +27,7 @@ import ChatView from './components/ChatView';
 import ChatSidebar from './components/ChatSidebar';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
+import DistractionFreeBar from './components/DistractionFreeBar';
 
 // Overlays
 import DragOverlay from './components/overlays/DragOverlay';
@@ -1096,23 +1097,22 @@ export default function App() {
         />
       )}
 
-      {/* Floating exit pill — only visible in distraction-free mode. Sits in
-          the top-right so it doesn't fight reading flow and stays reachable
-          by mouse + tap. F also toggles. */}
+      {/* Floating control bar — only visible in distraction-free mode.
+          Carries prev/play/next + page indicator + Exit when reading; just
+          Exit in chat mode or with no doc open. F also toggles. */}
       {distractionFree && (
-        <button
-          onClick={() => setDistractionFree(false)}
-          className="fixed top-3 right-3 z-50 px-3 py-1.5 rounded-full text-xs font-bold bg-slate-900/80 text-white shadow-lg backdrop-blur-sm hover:bg-slate-900 transition-colors flex items-center gap-1.5"
-          title="Exit distraction-free mode (F)"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M4 14h6v6" />
-            <path d="M20 10h-6V4" />
-            <path d="m14 10 7-7" />
-            <path d="M3 21l7-7" />
-          </svg>
-          Exit
-        </button>
+        <DistractionFreeBar
+          onExit={() => setDistractionFree(false)}
+          hasDocument={hasDocument}
+          inChat={inChat}
+          isPlaying={isPlaying}
+          handlePlayPause={handlePlayPause}
+          skipToNextSentence={skipToNextSentence}
+          skipToPrevSentence={skipToPrevSentence}
+          currentPage={currentPage}
+          numPages={numPages}
+          setCurrentPage={setCurrentPage}
+        />
       )}
     </div>
   );
