@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.2] - 2026-05-23
+
+### Fixed
+- **Tablet header was cut off.** The secondary-action buttons hid at `sm:` (640 px) and the inline group did not have enough room between 640 px and 1024 px — the buttons that didn't fit were just clipped. Inline buttons now hide at `lg:` (1024 px) instead, and the `⋯` overflow menu activates `lg:hidden` so phones AND tablets / squeezed desktop windows reach every action through the dropdown. Full desktop (≥ 1024 px) layout is unchanged. ([src/components/Header.jsx](src/components/Header.jsx), [src/components/HeaderOverflowMenu.jsx](src/components/HeaderOverflowMenu.jsx))
+- **Floating "Read Selection" / "Ask AI" buttons overlapped the mobile bottom nav.** Their `bottom-6` position sat directly on top of `MobileBottomNav`, so taps on the next-sentence / play buttons were stealing the floating-button area. Bumped to `bottom-24 right-4 md:bottom-6 md:right-6` so phones get clearance over the nav and desktop is unchanged. ([src/components/overlays/ReadSelectionButton.jsx](src/components/overlays/ReadSelectionButton.jsx))
+
+### Changed
+- **Distraction-free mode keeps basic playback controls visible.** The earlier bare "Exit" pill was too minimal for actual reading sessions. New floating pill at bottom-center carries **prev sentence / play-pause / next sentence**, a clickable **page-number input** (jump pages without leaving the mode), and **Exit**. In chat mode or with no document open, the pill collapses to just Exit. `F` still toggles the mode. New component [src/components/DistractionFreeBar.jsx](src/components/DistractionFreeBar.jsx).
+
 ## [1.7.1] - 2026-05-23
 
 ### Fixed
