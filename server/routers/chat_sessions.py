@@ -124,7 +124,22 @@ async def get_session(session_id: str) -> dict[str, Any]:
             SELECT id, role, content, thinking, attachments, doc_context, stats, tool_calls, timestamp
             FROM chat_messages
             WHERE session_id = %s
-            ORDER BY timestamp, created_at, id
+            ORDER BY
+                timestamp,
+                -- When two messages share a Date.now() ms (the user prompt and
+                -- the assistant placeholder are created in the same tick), the
+                -- user message must come first. Without this CASE the fallback
+                -- to `id` puts `a-<ts>` before `u-<ts>` lexicographically and
+                -- the bubble pair renders flipped.
+                CASE role
+                    WHEN 'system'    THEN 0
+                    WHEN 'user'      THEN 1
+                    WHEN 'tool'      THEN 2
+                    WHEN 'assistant' THEN 3
+                    ELSE 4
+                END,
+                created_at,
+                id
             """,
             (session_id,),
         )
