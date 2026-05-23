@@ -307,7 +307,28 @@ All under `http://localhost:8000` by default. Same FastAPI app as the existing K
 
 ---
 
-## 10. What's next
+## 10. Performance — audiobook export & multi-worker
+
+The audiobook export (header **Library** icon, v1.7.0+) synthesises one page per `/v1/batch_synthesize` call and stitches the WAVs client-side. The frontend loop pipelines up to **3 page-synths in parallel** by default. With the default single-worker server those three requests still queue at the worker, so the parallelism is mostly a small startup-overlap win.
+
+To actually fan synthesis across CPU cores, run the server with multiple uvicorn workers — each one loads its own Kokoro ONNX session, so an audiobook job with N workers truly runs N pages at a time:
+
+```bash
+WORKERS=4 python run.py        # four kokoro models in RAM, four pages in flight
+```
+
+Trade-offs:
+
+- **RAM**: each worker holds a full Kokoro model. Budget ~300–500 MB per worker on the ONNX-CPU build; more if you switch to the GPU build.
+- **First-call latency** is unchanged (the worker still has to do the first inference); it's the *batch* time that drops roughly linearly with worker count up to your CPU-core ceiling.
+- **GPU**: if you've installed `onnxruntime-gpu` and have an NVIDIA card, one worker on the GPU is faster than four on CPU. Multi-worker on a single GPU isn't useful — they fight over VRAM.
+- **Postgres pool** is per-process, so N workers means N × `max_size=10` connections to Postgres. Default Postgres `max_connections` is 100 — fine up to ~9 workers, retune above that.
+
+Same trick helps any synth-heavy workflow (the reader's per-page TTS, "Read selection", chat read-aloud), not just audiobook export.
+
+A standard `docker-compose.yml` for the FastAPI backend doesn't ship yet — until it does, run the server directly or wrap `WORKERS=4 python run.py` in your favorite process manager (systemd / supervisor / pm2-with-python-interpreter).
+
+## 11. What's next
 
 The PR 5 tool registry (`src/lib/chatTools/`) is built to host more tools. Concretely:
 

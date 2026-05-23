@@ -639,22 +639,29 @@ export function useTtsEngine({
         bookAbortRef.current = controller;
         setBookProgress({ current: 0, total: pages.length, label: 'Preparing…' });
 
-        const wavBlobs = [];
+        // Run up to AUDIOBOOK_CONCURRENCY page-synth requests in parallel.
+        // With one uvicorn worker this is a small win (requests still serialise
+        // at the worker); with `uvicorn --workers N` it actually fans out across
+        // CPU cores. Set conservatively — kokoro-onnx is memory-hungry and the
+        // default Kokoro server is single-worker, so over-pipelining just
+        // builds a queue without speeding anything up.
+        const AUDIOBOOK_CONCURRENCY = 3;
+        const wavBlobs = new Array(pages.length);
         let failed = 0;
+        let completed = 0;
+        let nextIdx = 0;
         try {
-            for (let i = 0; i < pages.length; i++) {
-                if (controller.signal.aborted) break;
+            const synthesizeOne = async (i) => {
+                if (controller.signal.aborted) return;
                 const { page, text } = pages[i] || {};
-                setBookProgress({ current: i, total: pages.length, label: `Synthesizing page ${page ?? i + 1}…` });
-
                 const cleaned = (text || '').trim();
-                if (!cleaned) continue;
+                if (!cleaned) return;
                 const sentences = cleaned
                     .replace(/\s+/g, ' ')
                     .split(/(?<=[.!?])\s+/)
                     .map((s) => s.trim())
                     .filter((s) => s.length > 0);
-                if (sentences.length === 0) continue;
+                if (sentences.length === 0) return;
 
                 try {
                     const response = await fetch(buildApiUrl(apiHost, apiPort, '/v1/batch_synthesize'), {
@@ -665,9 +672,8 @@ export function useTtsEngine({
                             voice: selectedVoice,
                             speed: playbackSpeed,
                         }),
-                        // Audiobook export deliberately ignores `unlimitedBatchTimeout`
-                        // for the *per-page* call — each page is bounded; only the
-                        // outer loop is unbounded. The user can cancel any time.
+                        // Per-page call is bounded by the server; the outer loop
+                        // is what's unbounded. User can cancel any time.
                         signal: controller.signal,
                     });
                     if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -679,25 +685,50 @@ export function useTtsEngine({
                     for (let k = 0; k < byteCharacters.length; k++) {
                         byteNumbers[k] = byteCharacters.charCodeAt(k);
                     }
-                    wavBlobs.push(new Blob([byteNumbers], { type: 'audio/wav' }));
+                    // Slot the blob at its page index so the final concat
+                    // preserves the document's order even though we synthesised
+                    // out-of-order.
+                    wavBlobs[i] = new Blob([byteNumbers], { type: 'audio/wav' });
                 } catch (e) {
                     if (e.name === 'AbortError') throw e;
                     console.warn(`Page ${page ?? i + 1} failed to synthesize:`, e);
                     failed += 1;
                 }
-            }
+            };
+
+            const worker = async () => {
+                while (true) {
+                    if (controller.signal.aborted) return;
+                    const i = nextIdx++;
+                    if (i >= pages.length) return;
+                    await synthesizeOne(i);
+                    completed += 1;
+                    // Report against the *latest* in-flight page so the label
+                    // stays useful even with out-of-order completion.
+                    const inflightPage = pages[Math.min(nextIdx, pages.length - 1)]?.page;
+                    setBookProgress({
+                        current: completed,
+                        total: pages.length,
+                        label: `Synthesizing page ${inflightPage ?? completed}…`,
+                    });
+                }
+            };
+
+            const poolSize = Math.min(AUDIOBOOK_CONCURRENCY, pages.length);
+            await Promise.all(Array.from({ length: poolSize }, () => worker()));
 
             if (controller.signal.aborted) {
                 setStatus?.('Audiobook export cancelled');
                 return false;
             }
-            if (wavBlobs.length === 0) {
+            const ordered = wavBlobs.filter(Boolean);
+            if (ordered.length === 0) {
                 showToast?.('No pages could be synthesized.', 5000);
                 return false;
             }
 
             setBookProgress({ current: pages.length, total: pages.length, label: 'Stitching audio…' });
-            const merged = await concatWavs(wavBlobs);
+            const merged = await concatWavs(ordered);
             if (!merged) {
                 showToast?.('Could not stitch the audio together.', 5000);
                 return false;
@@ -716,7 +747,7 @@ export function useTtsEngine({
             if (failed > 0) {
                 showToast?.(`Audiobook ready — ${failed} page(s) failed and were skipped.`, 6000);
             } else {
-                setStatus?.(`Audiobook downloaded (${wavBlobs.length} page${wavBlobs.length === 1 ? '' : 's'})`);
+                setStatus?.(`Audiobook downloaded (${ordered.length} page${ordered.length === 1 ? '' : 's'})`);
             }
             return true;
         } catch (e) {
