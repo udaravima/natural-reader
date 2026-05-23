@@ -124,7 +124,7 @@ async def get_session(session_id: str) -> dict[str, Any]:
             SELECT id, role, content, thinking, attachments, doc_context, stats, tool_calls, timestamp
             FROM chat_messages
             WHERE session_id = %s
-            ORDER BY created_at, id
+            ORDER BY timestamp, created_at, id
             """,
             (session_id,),
         )
