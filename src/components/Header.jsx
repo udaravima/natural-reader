@@ -3,6 +3,7 @@ import {
     Zap, Loader2, Moon, Sun, Download, Keyboard, Clock,
     PanelLeftClose, Menu, BookOpen, MessageSquare, Home, Library, X, Maximize2
 } from 'lucide-react';
+import HeaderOverflowMenu from './HeaderOverflowMenu';
 
 export default function Header({
     theme,
@@ -136,10 +137,10 @@ export default function Header({
                     </button>
                 </div>
 
-                {/* Dark Mode Toggle */}
+                {/* Dark Mode Toggle (desktop — mobile uses overflow menu) */}
                 <button
                     onClick={() => setDarkMode(!darkMode)}
-                    className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-amber-500`}
+                    className={`hidden sm:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-amber-500`}
                     title="Toggle Dark Mode (Ctrl+D)"
                 >
                     {darkMode ? <Sun size={20} /> : <Moon size={20} />}
@@ -200,27 +201,51 @@ export default function Header({
                 </button>
 
                 {/* Distraction-free mode — hides Header, sidebar, bottom nav,
-                    and the PDF toolbar. Keyboard shortcut F also toggles. */}
+                    and the PDF toolbar. Keyboard shortcut F also toggles.
+                    Desktop only — mobile uses the overflow menu. */}
                 {onEnterDistractionFree && hasDocument && (
                     <button
                         onClick={onEnterDistractionFree}
-                        className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
+                        className={`hidden sm:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
                         title="Distraction-free mode (F)"
                     >
                         <Maximize2 size={20} />
                     </button>
                 )}
 
-                {/* Home Button — close the current doc and return to the library.
-                    Reader mode only, and only when a doc is actually open. */}
+                {/* Home Button — desktop only; mobile uses the overflow menu. */}
                 {!inChat && hasDocument && onGoHome && (
                     <button
                         onClick={onGoHome}
-                        className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
+                        className={`hidden sm:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
                         title="Close document and return to your library"
                     >
                         <Home size={20} />
                     </button>
+                )}
+
+                {/* Mobile overflow — surfaces the secondary actions that get
+                    hidden on small screens by `sm:*` classes above. The
+                    component itself is `sm:hidden`, so it only renders on
+                    phones. Hidden in chat mode where the sidebar already
+                    carries most of the same settings. */}
+                {!inChat && (
+                    <HeaderOverflowMenu
+                        theme={theme}
+                        darkMode={darkMode}
+                        isLocalhost={isLocalhost}
+                        setIsLocalhost={setIsLocalhost}
+                        setDarkMode={setDarkMode}
+                        onDownloadPageAudio={downloadPageAudio}
+                        isDownloading={isDownloading}
+                        downloadEnabled={hasDocument && isLocalhost && textItems.length > 0}
+                        onShowShortcuts={() => setShowShortcuts(true)}
+                        onEnterDistractionFree={onEnterDistractionFree}
+                        onGoHome={onGoHome}
+                        onDownloadBookAudio={onDownloadBookAudio}
+                        bookProgress={bookProgress}
+                        hasDocument={hasDocument}
+                    />
                 )}
 
                 {/* Upload Button — reader mode only */}
