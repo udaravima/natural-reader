@@ -45,6 +45,7 @@ export default function PdfViewer({
     onDeleteMarkdown,
     viewMode, // 'pdf' | 'md'
     setViewMode,
+    distractionFree = false,
 }) {
     const isText = fileType === 'text';
     const isMarkdown = fileType === 'markdown';
@@ -57,7 +58,7 @@ export default function PdfViewer({
         <section className={`flex-1 flex flex-col overflow-hidden ${theme.viewportBg} transition-colors duration-300`}>
 
             {/* PDF OPTIONS TOOLBAR */}
-            {hasDoc && (
+            {hasDoc && !distractionFree && (
                 <div className={`flex items-center justify-between px-4 py-2 ${theme.bgSecondary} border-b ${theme.border} shrink-0`}>
                     {/* LEFT: Page Navigation */}
                     <div className="flex items-center gap-2">

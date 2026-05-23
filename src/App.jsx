@@ -58,6 +58,11 @@ export default function App() {
   const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', 'streaming');
   const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', true);
   const [enableThinking, setEnableThinking] = usePersistedState('enableThinking', false);
+  // Distraction-free reading: hides Header, sidebars, mobile bottom nav, and
+  // the PdfViewer toolbar so only the page content + a small floating exit
+  // pill remain. Persisted across reloads (some users prefer the immersive
+  // layout as their default).
+  const [distractionFree, setDistractionFree] = usePersistedState('distractionFree', false);
 
   // --- TRANSIENT UI STATE ---
   const [status, setStatus] = useState('Initializing PDF Engine...');
@@ -178,6 +183,7 @@ export default function App() {
   useKeyboardShortcuts({
     handlePlayPause, stopPlayback, skipToNextSentence,
     setCurrentSentenceIndex, setCurrentPage, setScale, setDarkMode,
+    setDistractionFree,
     numPages,
     viewMode,
   });
@@ -894,34 +900,37 @@ export default function App() {
         onAskAboutSelection={inChat ? null : handleAskAboutSelection}
       />
 
-      <Header
-        theme={theme}
-        darkMode={darkMode}
-        hasDocument={hasDocument}
-        viewMode={viewMode} setViewMode={setViewMode}
-        status={status}
-        isPlaying={isPlaying}
-        isLocalhost={isLocalhost} setIsLocalhost={setIsLocalhost}
-        isDownloading={isDownloading}
-        textItems={textItems}
-        showHeaderControlsOnMobile={showHeaderControlsOnMobile}
-        sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen}
-        showShortcuts={showShortcuts} setShowShortcuts={setShowShortcuts}
-        fileInputRef={fileInputRef}
-        handlePlayPause={handlePlayPause}
-        stopPlayback={stopPlayback}
-        skipToNextSentence={skipToNextSentence}
-        skipToPrevSentence={skipToPrevSentence}
-        setDarkMode={setDarkMode}
-        downloadPageAudio={downloadPageAudio}
-        handleFileUpload={handleFileUpload}
-        calculateEstimatedTimeRemaining={calculateEstimatedTimeRemaining}
-        playbackSpeed={playbackSpeed}
-        onGoHome={handleGoHome}
-        onDownloadBookAudio={handleDownloadBookAudio}
-        bookProgress={bookProgress}
-        onCancelBookDownload={cancelBookDownload}
-      />
+      {!distractionFree && (
+        <Header
+          theme={theme}
+          darkMode={darkMode}
+          hasDocument={hasDocument}
+          viewMode={viewMode} setViewMode={setViewMode}
+          status={status}
+          isPlaying={isPlaying}
+          isLocalhost={isLocalhost} setIsLocalhost={setIsLocalhost}
+          isDownloading={isDownloading}
+          textItems={textItems}
+          showHeaderControlsOnMobile={showHeaderControlsOnMobile}
+          sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen}
+          showShortcuts={showShortcuts} setShowShortcuts={setShowShortcuts}
+          fileInputRef={fileInputRef}
+          handlePlayPause={handlePlayPause}
+          stopPlayback={stopPlayback}
+          skipToNextSentence={skipToNextSentence}
+          skipToPrevSentence={skipToPrevSentence}
+          setDarkMode={setDarkMode}
+          downloadPageAudio={downloadPageAudio}
+          handleFileUpload={handleFileUpload}
+          calculateEstimatedTimeRemaining={calculateEstimatedTimeRemaining}
+          playbackSpeed={playbackSpeed}
+          onGoHome={handleGoHome}
+          onDownloadBookAudio={handleDownloadBookAudio}
+          bookProgress={bookProgress}
+          onCancelBookDownload={cancelBookDownload}
+          onEnterDistractionFree={() => setDistractionFree(true)}
+        />
+      )}
 
       <KeyboardShortcutsModal show={showShortcuts} theme={theme} onClose={() => setShowShortcuts(false)} />
 
@@ -934,7 +943,7 @@ export default function App() {
           />
         )}
 
-        {inChat ? (
+        {!distractionFree && (inChat ? (
           <ChatSidebar
             theme={theme}
             darkMode={darkMode}
@@ -996,7 +1005,7 @@ export default function App() {
           handleSentenceContextMenu={handleSentenceContextMenu}
           handleChapterNavigation={handleChapterNavigation}
         />
-        )}
+        ))}
 
         {inChat ? (
           <ChatView
@@ -1054,6 +1063,7 @@ export default function App() {
           onDeleteMarkdown={handleDeleteMarkdown}
           viewMode={currentDocView}
           setViewMode={setCurrentDocView}
+          distractionFree={distractionFree}
         />
         )}
       </main>
@@ -1068,21 +1078,42 @@ export default function App() {
         initialOptions={currentConvertEntry?.options}
       />
 
-      <MobileBottomNav
-        theme={theme}
-        effectiveIsMobile={effectiveIsMobile}
-        hasDocument={hasDocument && !inChat}
-        currentPage={currentPage} setCurrentPage={setCurrentPage}
-        numPages={numPages}
-        currentSentenceIndex={currentSentenceIndex}
-        textItems={textItems}
-        isPlaying={isPlaying}
-        handlePlayPause={handlePlayPause}
-        skipToNextSentence={skipToNextSentence}
-        skipToPrevSentence={skipToPrevSentence}
-        goToNextPage={goToNextPage}
-        goToPrevPage={goToPrevPage}
-      />
+      {!distractionFree && (
+        <MobileBottomNav
+          theme={theme}
+          effectiveIsMobile={effectiveIsMobile}
+          hasDocument={hasDocument && !inChat}
+          currentPage={currentPage} setCurrentPage={setCurrentPage}
+          numPages={numPages}
+          currentSentenceIndex={currentSentenceIndex}
+          textItems={textItems}
+          isPlaying={isPlaying}
+          handlePlayPause={handlePlayPause}
+          skipToNextSentence={skipToNextSentence}
+          skipToPrevSentence={skipToPrevSentence}
+          goToNextPage={goToNextPage}
+          goToPrevPage={goToPrevPage}
+        />
+      )}
+
+      {/* Floating exit pill — only visible in distraction-free mode. Sits in
+          the top-right so it doesn't fight reading flow and stays reachable
+          by mouse + tap. F also toggles. */}
+      {distractionFree && (
+        <button
+          onClick={() => setDistractionFree(false)}
+          className="fixed top-3 right-3 z-50 px-3 py-1.5 rounded-full text-xs font-bold bg-slate-900/80 text-white shadow-lg backdrop-blur-sm hover:bg-slate-900 transition-colors flex items-center gap-1.5"
+          title="Exit distraction-free mode (F)"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4 14h6v6" />
+            <path d="M20 10h-6V4" />
+            <path d="m14 10 7-7" />
+            <path d="M3 21l7-7" />
+          </svg>
+          Exit
+        </button>
+      )}
     </div>
   );
 }

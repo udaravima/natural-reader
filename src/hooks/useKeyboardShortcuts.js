@@ -14,6 +14,7 @@ export function useKeyboardShortcuts({
     setCurrentPage,
     setScale,
     setDarkMode,
+    setDistractionFree,
     numPages,
     viewMode,
 }) {
@@ -28,6 +29,7 @@ export function useKeyboardShortcuts({
             setCurrentPage,
             setScale,
             setDarkMode,
+            setDistractionFree,
             numPages,
             viewMode,
         };
@@ -87,6 +89,14 @@ export function useKeyboardShortcuts({
                     if (e.ctrlKey || e.metaKey) {
                         e.preventDefault();
                         cb.setDarkMode(d => !d);
+                    }
+                    break;
+                case SHORTCUTS.TOGGLE_DISTRACTION_FREE:
+                    // Bare-key toggle (no modifier) — works in reader and chat
+                    // since the chat list also benefits from a minimal frame.
+                    if (!e.ctrlKey && !e.metaKey && !e.altKey && cb.setDistractionFree) {
+                        e.preventDefault();
+                        cb.setDistractionFree(v => !v);
                     }
                     break;
             }

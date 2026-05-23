@@ -1,7 +1,7 @@
 import {
     Play, Pause, Square, Upload, Volume2, SkipForward, SkipBack,
     Zap, Loader2, Moon, Sun, Download, Keyboard, Clock,
-    PanelLeftClose, Menu, BookOpen, MessageSquare, Home, Library, X
+    PanelLeftClose, Menu, BookOpen, MessageSquare, Home, Library, X, Maximize2
 } from 'lucide-react';
 
 export default function Header({
@@ -33,6 +33,7 @@ export default function Header({
     onDownloadBookAudio,
     bookProgress,
     onCancelBookDownload,
+    onEnterDistractionFree,
 }) {
     const isExportingBook = !!bookProgress;
     const inChat = viewMode === 'chat';
@@ -197,6 +198,18 @@ export default function Header({
                 >
                     <Keyboard size={20} />
                 </button>
+
+                {/* Distraction-free mode — hides Header, sidebar, bottom nav,
+                    and the PDF toolbar. Keyboard shortcut F also toggles. */}
+                {onEnterDistractionFree && hasDocument && (
+                    <button
+                        onClick={onEnterDistractionFree}
+                        className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
+                        title="Distraction-free mode (F)"
+                    >
+                        <Maximize2 size={20} />
+                    </button>
+                )}
 
                 {/* Home Button — close the current doc and return to the library.
                     Reader mode only, and only when a doc is actually open. */}
