@@ -410,16 +410,24 @@ export function useChatEngine({
             return;
         }
 
+        // `Date.now()` only has ms resolution and these two messages are
+        // created in the same tick — left to itself, both rows tie on
+        // timestamp at the backend, then sort by id, which puts `a-<ts>`
+        // before `u-<ts>` lexicographically and the pair renders flipped on
+        // reload. Bumping the assistant ts (and id suffix) by 1 ms keeps the
+        // ordering monotonic without a sequence counter.
+        const userTs = Date.now();
+        const assistantTs = userTs + 1;
         const userMsg = {
             role: 'user',
             content: trimmed,
             attachments: cleanAttachments,
             docContext: hasDocCtx ? docContext : undefined,
-            id: `u-${Date.now()}`,
-            timestamp: Date.now(),
+            id: `u-${userTs}`,
+            timestamp: userTs,
         };
-        const assistantId = `a-${Date.now()}`;
-        const assistantMsg = { role: 'assistant', content: '', thinking: '', id: assistantId, timestamp: Date.now() };
+        const assistantId = `a-${assistantTs}`;
+        const assistantMsg = { role: 'assistant', content: '', thinking: '', id: assistantId, timestamp: assistantTs };
 
         // Lock TTS mode + thinking flag for THIS message — toggling mid-stream applies to next message.
         const modeForThisMsg = chatTtsMode;

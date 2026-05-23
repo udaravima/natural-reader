@@ -50,6 +50,16 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 - **Reasoning Trace Toggle** — Enable thinking to send `think: true` to Ollama and see reasoning trace (deepseek-r1, qwen3-thinking, gpt-oss, …) in a collapsible disclosure that auto-expands while streaming
 - **Per-Message Copy** — One-click copy of any chat message to clipboard
 
+### 🪄 Docling Conversion, Audiobook & Chat Audio *(new in `v1.7.x`)*
+
+- **Convert PDF → Markdown with Docling** — Optional backend pipeline (gated by `DOCLING_ENABLED=true`) that turns a PDF into layout-aware Markdown using [Docling](https://github.com/DS4SD/docling). Click **Convert** in the PDF toolbar to pick a quality preset (Fast / Standard / Accurate — the Accurate path uses GraniteDocling VLM), force-enable OCR for scanned PDFs, toggle table extraction, choose image handling (drop / embed-base64 / VLM-describe), or limit a page range. After conversion the doc is auto re-chunked + re-embedded so RAG picks up tables and headings the native pdf.js extractor missed.
+- **PDF ↔ MD reader toggle** — Once converted, a small `PDF | MD` segmented control in the toolbar swaps the canvas for a wide Markdown reader with anchored per-page separators. The Download / Trash icons next to it export the converted MD (`{filename}.md`) or wipe it server-side.
+- **Audiobook export** — Library icon in the header synthesises every page through `/v1/batch_synthesize`, stitches the WAVs client-side, and downloads `{filename}_audiobook.wav`. Progress + cancel UI; up to 3 pages in flight at once. Set `WORKERS=N python run.py` to fan synthesis across CPU cores (one Kokoro model per worker; see [docs/CHAT_WITH_PDF.md §10](docs/CHAT_WITH_PDF.md#10-performance--audiobook-export--multi-worker)).
+- **Per-message chat audio export** — Every assistant chat message has a new **Audio** button that downloads it as `.wav` (filename derived from session title + message index).
+- **Home button** — Header icon (reader mode, doc open) returns to the library; reading progress was already persisted so reopening resumes where you left off.
+- **Distraction-free mode** — Press `F` (or click the `Maximize2` button in the header) to hide Header, sidebar, mobile bottom nav, and the PDF toolbar. Small floating Exit pill in the top-right brings everything back. Persisted across reloads; works in both reader and chat.
+- **Mobile overflow menu** — On phones, secondary header actions (dark mode, TTS backend, page audio, audiobook, shortcuts, home, distraction-free) collapse into a `⋯` dropdown so the top bar stops feeling cramped.
+
 ### 📑 Document Chat & RAG *(new in `v1.6.0`)*
 
 A full end-to-end walkthrough lives in [docs/CHAT_WITH_PDF.md](docs/CHAT_WITH_PDF.md). Headline capabilities:
@@ -92,6 +102,7 @@ A full end-to-end walkthrough lives in [docs/CHAT_WITH_PDF.md](docs/CHAT_WITH_PD
 | `Ctrl + +` | Zoom in | Both |
 | `Ctrl + -` | Zoom out | Both |
 | `Ctrl + D` | Toggle dark mode | Both |
+| `F` | Distraction-free mode | Both |
 | `Enter` | Send message | Chat (in prompt box) |
 | `Shift + Enter` | New line in prompt | Chat (in prompt box) |
 
@@ -113,6 +124,7 @@ A full end-to-end walkthrough lives in [docs/CHAT_WITH_PDF.md](docs/CHAT_WITH_PD
 | **Doc Chat Backend (optional, new in 1.6)** | FastAPI routers: `/v1/chat/sessions/*` and `/v1/docs/*` |
 | **Doc Storage / RAG** | Postgres 16 + [pgvector](https://github.com/pgvector/pgvector) (HNSW, cosine), embedded via Ollama `nomic-embed-text` |
 | **DB driver** | `psycopg[binary,pool]` (async) with `pgvector` codec registered per-connection |
+| **PDF → Markdown (optional, new in 1.7)** | [Docling](https://github.com/DS4SD/docling) — layout-aware extraction with optional GraniteDocling VLM. Gated by `DOCLING_ENABLED=true`. |
 
 ---
 
@@ -158,6 +170,10 @@ Place both files in the project root directory.
 ```bash
 # Terminal 1 — Start the Kokoro TTS backend (port 8000)
 python run.py
+# Or, to fan TTS / audiobook synthesis across CPU cores (one Kokoro model
+# loaded per worker — budget ~300–500 MB each on the ONNX-CPU build):
+#   WORKERS=4 python run.py
+# HOST and PORT env vars are also honoured.
 
 # Terminal 2 — Start the frontend dev server (port 5173)
 npm run dev
@@ -589,6 +605,7 @@ natural-reader/
 │   │   └── useTheme.js
 │   ├── lib/
 │   │   ├── sessionStore.js       # Postgres-or-IndexedDB session dispatcher (legacy IDB sessions → read-only LOCAL badge)
+│   │   ├── uploadPdf.js          # Multipart upload of PDF bytes (IndexedDB → /v1/docs/{id}/pdf) for docling conversion
 │   │   └── chatTools/
 │   │       ├── index.js          # Tool registry (getToolDefinitions, executeToolCall)
 │   │       ├── searchDocument.js # `search_document` tool — semantic search over the open doc
@@ -597,16 +614,21 @@ natural-reader/
 │   │   ├── attachment.js         # File → Attachment helper, size caps, strip-on-save for IndexedDB
 │   │   ├── docHash.js            # sha256 of file bytes → stable doc_id (Web Crypto, lazy + memoized)
 │   │   ├── markdownToSpeech.js   # Strips Markdown markup before chat TTS synthesis
-│   │   └── url.js                # Builds API URLs, returns relative paths when host is blank
+│   │   ├── url.js                # Builds API URLs, returns relative paths when host is blank
+│   │   └── wavConcat.js          # Stitches multiple PCM WAV blobs into one (audiobook export, v1.7)
 │   └── components/
-│       ├── Header.jsx              # Top toolbar with Reader/Chat toggle + playback controls
+│       ├── Header.jsx              # Top toolbar with Reader/Chat toggle + playback + audiobook + home + distraction-free
+│       ├── HeaderOverflowMenu.jsx  # `⋯` dropdown for secondary actions on mobile (sm:hidden)
 │       ├── Sidebar.jsx             # Reader sidebar: sentence list, chapters, settings, voice picker
 │       ├── ChatSidebar.jsx         # Chat sidebar: Ollama config, model picker, sessions (with LOCAL badge), log
-│       ├── PdfViewer.jsx           # Branches between PDF canvas and TextPageRenderer; toolbar hosts Ask page + IndexButton
+│       ├── PdfViewer.jsx           # Branches between PDF canvas / TextPageRenderer / MarkdownReader; toolbar hosts Ask page, Index, Convert, PDF|MD toggle
 │       ├── IndexButton.jsx         # Toolbar control: idle → uploading → indexing N/M → indexed (or failed)
+│       ├── ConvertButton.jsx       # Toolbar control for docling conversion lifecycle (idle → uploading → converting → converted)
+│       ├── DoclingConvertDialog.jsx # Options modal (quality preset, OCR, tables, images, page range)
+│       ├── MarkdownReader.jsx      # Reader view for docling-converted documents (per-page anchors + page-nav sync)
 │       ├── TextPageRenderer.jsx    # Renders a .txt pseudo-page with sentence highlighting
 │       ├── MarkdownPageRenderer.jsx # Renders a .md page (react-markdown + remark-gfm) with paragraph-level highlighting
-│       ├── ChatView.jsx            # Chat list, prompt box, attachments, DocContextChip, ToolCallsDisclosure, per-message stats / read-aloud / copy
+│       ├── ChatView.jsx            # Chat list, prompt box, attachments, DocContextChip, ToolCallsDisclosure, per-message stats / read-aloud / copy / audio download
 │       ├── AttachmentPreview.jsx   # Image-thumbnail / audio-player chip used in pending bar + bubbles
 │       ├── VoiceRecorder.jsx       # MediaRecorder UI (kept for future re-enable; currently unused)
 │       ├── MobileBottomNav.jsx
@@ -621,17 +643,23 @@ natural-reader/
 │   ├── schemas.py             # Pydantic request models (TTS)
 │   ├── sql/
 │   │   ├── 001_init.sql       # Core schema: documents, doc_chunks (vector(768)), chat_sessions, chat_messages, chat_events
-│   │   └── 002_tool_calls.sql # Adds tool_calls JSONB to chat_messages
+│   │   ├── 002_tool_calls.sql # Adds tool_calls JSONB to chat_messages
+│   │   └── 003_docling.sql    # Docling lifecycle columns on documents + new doc_pages table
 │   ├── routers/
 │   │   ├── chat_sessions.py   # /v1/chat/sessions/* — list / get / upsert / patch / delete
-│   │   └── docs.py            # /v1/docs/* — register / chunks / index (BackgroundTasks) / search / status
+│   │   └── docs.py            # /v1/docs/* — register / chunks / index / search / pdf / convert / markdown
 │   └── services/
-│       └── embeddings.py      # httpx client → Ollama /api/embeddings, Semaphore(4), dim assertion
+│       ├── embeddings.py      # httpx client → Ollama /api/embeddings, Semaphore(4), dim assertion
+│       └── docling_convert.py # PDF → per-page Markdown via Docling (Fast/Standard/Accurate presets)
+├── data/
+│   └── pdfs/                  # Retained PDF bytes (one file per doc_id; created on first conversion)
 ├── docker-compose.yml         # pgvector/pgvector:pg16 on host port 5433
 ├── docs/
-│   ├── CHAT_WITH_PDF.md       # End-to-end walkthrough for the doc-chat / RAG / tool-calling feature
+│   ├── CHAT_WITH_PDF.md       # End-to-end walkthrough for the doc-chat / RAG / tool-calling feature (+ §10 perf)
+│   ├── RELEASE_NOTES_v1.7.0.md # Tag-page notes for v1.7.0
+│   ├── RELEASE_NOTES_v1.7.1.md # Tag-page notes for v1.7.1
 │   └── chat.oraian.net.sample # Production nginx config (TLS + proxy + commented hardening recipes)
-├── run.py                     # Server entry point (uvicorn)
+├── run.py                     # Server entry point (uvicorn) — honours WORKERS / HOST / PORT env vars
 ├── requirements.txt           # Python dependencies
 ├── vite.config.js             # Vite + Rolldown config with chunk splitting
 ├── tailwind.config.js

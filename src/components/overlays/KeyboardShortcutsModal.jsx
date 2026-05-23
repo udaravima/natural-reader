@@ -22,6 +22,7 @@ export default function KeyboardShortcutsModal({ show, theme, onClose }) {
                         ['Ctrl + +', 'Zoom in'],
                         ['Ctrl + -', 'Zoom out'],
                         ['Ctrl + D', 'Toggle dark mode'],
+                        ['F', 'Distraction-free mode'],
                     ].map(([key, action]) => (
                         <div key={key} className={`flex justify-between items-center py-2 border-b ${theme.borderSecondary}`}>
                             <span className={theme.textSecondary}>{action}</span>

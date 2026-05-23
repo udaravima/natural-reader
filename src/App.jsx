@@ -27,6 +27,7 @@ import ChatView from './components/ChatView';
 import ChatSidebar from './components/ChatSidebar';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
+import DistractionFreeBar from './components/DistractionFreeBar';
 
 // Overlays
 import DragOverlay from './components/overlays/DragOverlay';
@@ -58,6 +59,11 @@ export default function App() {
   const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', 'streaming');
   const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', true);
   const [enableThinking, setEnableThinking] = usePersistedState('enableThinking', false);
+  // Distraction-free reading: hides Header, sidebars, mobile bottom nav, and
+  // the PdfViewer toolbar so only the page content + a small floating exit
+  // pill remain. Persisted across reloads (some users prefer the immersive
+  // layout as their default).
+  const [distractionFree, setDistractionFree] = usePersistedState('distractionFree', false);
 
   // --- TRANSIENT UI STATE ---
   const [status, setStatus] = useState('Initializing PDF Engine...');
@@ -178,6 +184,7 @@ export default function App() {
   useKeyboardShortcuts({
     handlePlayPause, stopPlayback, skipToNextSentence,
     setCurrentSentenceIndex, setCurrentPage, setScale, setDarkMode,
+    setDistractionFree,
     numPages,
     viewMode,
   });
@@ -894,34 +901,37 @@ export default function App() {
         onAskAboutSelection={inChat ? null : handleAskAboutSelection}
       />
 
-      <Header
-        theme={theme}
-        darkMode={darkMode}
-        hasDocument={hasDocument}
-        viewMode={viewMode} setViewMode={setViewMode}
-        status={status}
-        isPlaying={isPlaying}
-        isLocalhost={isLocalhost} setIsLocalhost={setIsLocalhost}
-        isDownloading={isDownloading}
-        textItems={textItems}
-        showHeaderControlsOnMobile={showHeaderControlsOnMobile}
-        sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen}
-        showShortcuts={showShortcuts} setShowShortcuts={setShowShortcuts}
-        fileInputRef={fileInputRef}
-        handlePlayPause={handlePlayPause}
-        stopPlayback={stopPlayback}
-        skipToNextSentence={skipToNextSentence}
-        skipToPrevSentence={skipToPrevSentence}
-        setDarkMode={setDarkMode}
-        downloadPageAudio={downloadPageAudio}
-        handleFileUpload={handleFileUpload}
-        calculateEstimatedTimeRemaining={calculateEstimatedTimeRemaining}
-        playbackSpeed={playbackSpeed}
-        onGoHome={handleGoHome}
-        onDownloadBookAudio={handleDownloadBookAudio}
-        bookProgress={bookProgress}
-        onCancelBookDownload={cancelBookDownload}
-      />
+      {!distractionFree && (
+        <Header
+          theme={theme}
+          darkMode={darkMode}
+          hasDocument={hasDocument}
+          viewMode={viewMode} setViewMode={setViewMode}
+          status={status}
+          isPlaying={isPlaying}
+          isLocalhost={isLocalhost} setIsLocalhost={setIsLocalhost}
+          isDownloading={isDownloading}
+          textItems={textItems}
+          showHeaderControlsOnMobile={showHeaderControlsOnMobile}
+          sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen}
+          showShortcuts={showShortcuts} setShowShortcuts={setShowShortcuts}
+          fileInputRef={fileInputRef}
+          handlePlayPause={handlePlayPause}
+          stopPlayback={stopPlayback}
+          skipToNextSentence={skipToNextSentence}
+          skipToPrevSentence={skipToPrevSentence}
+          setDarkMode={setDarkMode}
+          downloadPageAudio={downloadPageAudio}
+          handleFileUpload={handleFileUpload}
+          calculateEstimatedTimeRemaining={calculateEstimatedTimeRemaining}
+          playbackSpeed={playbackSpeed}
+          onGoHome={handleGoHome}
+          onDownloadBookAudio={handleDownloadBookAudio}
+          bookProgress={bookProgress}
+          onCancelBookDownload={cancelBookDownload}
+          onEnterDistractionFree={() => setDistractionFree(true)}
+        />
+      )}
 
       <KeyboardShortcutsModal show={showShortcuts} theme={theme} onClose={() => setShowShortcuts(false)} />
 
@@ -934,7 +944,7 @@ export default function App() {
           />
         )}
 
-        {inChat ? (
+        {!distractionFree && (inChat ? (
           <ChatSidebar
             theme={theme}
             darkMode={darkMode}
@@ -996,7 +1006,7 @@ export default function App() {
           handleSentenceContextMenu={handleSentenceContextMenu}
           handleChapterNavigation={handleChapterNavigation}
         />
-        )}
+        ))}
 
         {inChat ? (
           <ChatView
@@ -1054,6 +1064,7 @@ export default function App() {
           onDeleteMarkdown={handleDeleteMarkdown}
           viewMode={currentDocView}
           setViewMode={setCurrentDocView}
+          distractionFree={distractionFree}
         />
         )}
       </main>
@@ -1068,21 +1079,41 @@ export default function App() {
         initialOptions={currentConvertEntry?.options}
       />
 
-      <MobileBottomNav
-        theme={theme}
-        effectiveIsMobile={effectiveIsMobile}
-        hasDocument={hasDocument && !inChat}
-        currentPage={currentPage} setCurrentPage={setCurrentPage}
-        numPages={numPages}
-        currentSentenceIndex={currentSentenceIndex}
-        textItems={textItems}
-        isPlaying={isPlaying}
-        handlePlayPause={handlePlayPause}
-        skipToNextSentence={skipToNextSentence}
-        skipToPrevSentence={skipToPrevSentence}
-        goToNextPage={goToNextPage}
-        goToPrevPage={goToPrevPage}
-      />
+      {!distractionFree && (
+        <MobileBottomNav
+          theme={theme}
+          effectiveIsMobile={effectiveIsMobile}
+          hasDocument={hasDocument && !inChat}
+          currentPage={currentPage} setCurrentPage={setCurrentPage}
+          numPages={numPages}
+          currentSentenceIndex={currentSentenceIndex}
+          textItems={textItems}
+          isPlaying={isPlaying}
+          handlePlayPause={handlePlayPause}
+          skipToNextSentence={skipToNextSentence}
+          skipToPrevSentence={skipToPrevSentence}
+          goToNextPage={goToNextPage}
+          goToPrevPage={goToPrevPage}
+        />
+      )}
+
+      {/* Floating control bar — only visible in distraction-free mode.
+          Carries prev/play/next + page indicator + Exit when reading; just
+          Exit in chat mode or with no doc open. F also toggles. */}
+      {distractionFree && (
+        <DistractionFreeBar
+          onExit={() => setDistractionFree(false)}
+          hasDocument={hasDocument}
+          inChat={inChat}
+          isPlaying={isPlaying}
+          handlePlayPause={handlePlayPause}
+          skipToNextSentence={skipToNextSentence}
+          skipToPrevSentence={skipToPrevSentence}
+          currentPage={currentPage}
+          numPages={numPages}
+          setCurrentPage={setCurrentPage}
+        />
+      )}
     </div>
   );
 }

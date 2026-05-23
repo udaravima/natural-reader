@@ -13,7 +13,7 @@ export default function ReadSelectionButton({
     // Reading indicator
     if (isReadingSelection) {
         return (
-            <div className="fixed bottom-6 right-6 z-[150] flex items-center gap-3">
+            <div className="fixed bottom-24 right-4 md:bottom-6 md:right-6 z-[150] flex items-center gap-3">
                 <div className={`px-4 py-3 rounded-2xl shadow-xl flex items-center gap-2 ${darkMode ? 'bg-green-700' : 'bg-green-500'} text-white`}>
                     <Loader2 size={18} className="animate-spin" />
                     <span className="text-sm font-bold">Reading...</span>
@@ -31,7 +31,7 @@ export default function ReadSelectionButton({
 
     // Read Selection (TTS) + optional Ask AI (chat) — paired floating actions.
     return (
-        <div className="fixed bottom-6 right-6 z-[150] flex items-center gap-2">
+        <div className="fixed bottom-24 right-4 md:bottom-6 md:right-6 z-[150] flex items-center gap-2">
             <button
                 onClick={onReadSelection}
                 className={`px-4 py-3 rounded-2xl shadow-xl flex items-center gap-2 transition-all hover:scale-105 ${darkMode ? 'bg-gradient-to-r from-blue-600 to-cyan-600 text-white' : 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white'}`}

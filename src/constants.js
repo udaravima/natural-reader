@@ -53,4 +53,5 @@ export const SHORTCUTS = {
     ZOOM_IN: '+',
     ZOOM_OUT: '-',
     TOGGLE_DARK: 'd',
+    TOGGLE_DISTRACTION_FREE: 'f',
 };

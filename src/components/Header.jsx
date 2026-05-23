@@ -1,8 +1,9 @@
 import {
     Play, Pause, Square, Upload, Volume2, SkipForward, SkipBack,
     Zap, Loader2, Moon, Sun, Download, Keyboard, Clock,
-    PanelLeftClose, Menu, BookOpen, MessageSquare, Home, Library, X
+    PanelLeftClose, Menu, BookOpen, MessageSquare, Home, Library, X, Maximize2
 } from 'lucide-react';
+import HeaderOverflowMenu from './HeaderOverflowMenu';
 
 export default function Header({
     theme,
@@ -33,6 +34,7 @@ export default function Header({
     onDownloadBookAudio,
     bookProgress,
     onCancelBookDownload,
+    onEnterDistractionFree,
 }) {
     const isExportingBook = !!bookProgress;
     const inChat = viewMode === 'chat';
@@ -50,7 +52,7 @@ export default function Header({
                 <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-cyan-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-500/30">
                     <Volume2 size={22} />
                 </div>
-                <div className="hidden sm:block">
+                <div className="hidden lg:block">
                     <h1 className={`text-sm font-bold uppercase tracking-tighter ${theme.textSecondary}`}>Neural PDF</h1>
                     <p className="text-[10px] font-bold text-blue-500 truncate max-w-[200px]">{status}</p>
                 </div>
@@ -125,7 +127,7 @@ export default function Header({
                 )}
 
                 {/* TTS Mode Toggle */}
-                <div className={`hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[10px] font-black tracking-widest transition-colors ${isLocalhost
+                <div className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[10px] font-black tracking-widest transition-colors ${isLocalhost
                     ? 'bg-green-500/10 border-green-500/30 text-green-500'
                     : `${theme.bgTertiary} ${theme.border} ${theme.textSecondary}`
                     }`}>
@@ -135,10 +137,10 @@ export default function Header({
                     </button>
                 </div>
 
-                {/* Dark Mode Toggle */}
+                {/* Dark Mode Toggle (desktop — mobile uses overflow menu) */}
                 <button
                     onClick={() => setDarkMode(!darkMode)}
-                    className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-amber-500`}
+                    className={`hidden lg:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-amber-500`}
                     title="Toggle Dark Mode (Ctrl+D)"
                 >
                     {darkMode ? <Sun size={20} /> : <Moon size={20} />}
@@ -149,7 +151,7 @@ export default function Header({
                     <button
                         onClick={downloadPageAudio}
                         disabled={isDownloading || textItems.length === 0 || isExportingBook}
-                        className={`hidden sm:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${isDownloading || isExportingBook ? 'opacity-50 cursor-wait' : theme.textSecondary + ' hover:text-green-500'}`}
+                        className={`hidden lg:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${isDownloading || isExportingBook ? 'opacity-50 cursor-wait' : theme.textSecondary + ' hover:text-green-500'}`}
                         title="Download Page Audio"
                     >
                         {isDownloading ? <Loader2 size={20} className="animate-spin" /> : <Download size={20} />}
@@ -161,7 +163,7 @@ export default function Header({
                     indicator with a Cancel button. */}
                 {!inChat && hasDocument && isLocalhost && onDownloadBookAudio && (
                     isExportingBook ? (
-                        <div className={`hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.textSecondary}`}>
+                        <div className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.textSecondary}`}>
                             <Loader2 size={14} className="animate-spin text-green-500" />
                             <div className="text-[10px] leading-tight">
                                 <div className="font-bold">
@@ -181,7 +183,7 @@ export default function Header({
                         <button
                             onClick={onDownloadBookAudio}
                             disabled={isDownloading}
-                            className={`hidden sm:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-green-500 disabled:opacity-50`}
+                            className={`hidden lg:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-green-500 disabled:opacity-50`}
                             title="Export the entire document as a single audiobook .wav"
                         >
                             <Library size={20} />
@@ -192,22 +194,59 @@ export default function Header({
                 {/* Keyboard Shortcuts */}
                 <button
                     onClick={() => setShowShortcuts(!showShortcuts)}
-                    className={`hidden sm:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
+                    className={`hidden lg:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
                     title="Keyboard Shortcuts"
                 >
                     <Keyboard size={20} />
                 </button>
 
-                {/* Home Button — close the current doc and return to the library.
-                    Reader mode only, and only when a doc is actually open. */}
+                {/* Distraction-free mode — hides Header, sidebar, bottom nav,
+                    and the PDF toolbar. Keyboard shortcut F also toggles.
+                    Desktop only — mobile uses the overflow menu. */}
+                {onEnterDistractionFree && hasDocument && (
+                    <button
+                        onClick={onEnterDistractionFree}
+                        className={`hidden lg:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
+                        title="Distraction-free mode (F)"
+                    >
+                        <Maximize2 size={20} />
+                    </button>
+                )}
+
+                {/* Home Button — desktop only; mobile uses the overflow menu. */}
                 {!inChat && hasDocument && onGoHome && (
                     <button
                         onClick={onGoHome}
-                        className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
+                        className={`hidden lg:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
                         title="Close document and return to your library"
                     >
                         <Home size={20} />
                     </button>
+                )}
+
+                {/* Overflow menu — surfaces the secondary actions that get
+                    hidden on small/medium screens by `lg:*` classes above.
+                    The component itself is `lg:hidden`, so it renders on
+                    phones AND tablets (anything < 1024 px). Hidden in chat
+                    mode where the sidebar already carries most of the same
+                    settings. */}
+                {!inChat && (
+                    <HeaderOverflowMenu
+                        theme={theme}
+                        darkMode={darkMode}
+                        isLocalhost={isLocalhost}
+                        setIsLocalhost={setIsLocalhost}
+                        setDarkMode={setDarkMode}
+                        onDownloadPageAudio={downloadPageAudio}
+                        isDownloading={isDownloading}
+                        downloadEnabled={hasDocument && isLocalhost && textItems.length > 0}
+                        onShowShortcuts={() => setShowShortcuts(true)}
+                        onEnterDistractionFree={onEnterDistractionFree}
+                        onGoHome={onGoHome}
+                        onDownloadBookAudio={onDownloadBookAudio}
+                        bookProgress={bookProgress}
+                        hasDocument={hasDocument}
+                    />
                 )}
 
                 {/* Upload Button — reader mode only */}

@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.2] - 2026-05-23
+
+### Fixed
+- **Tablet header was cut off.** The secondary-action buttons hid at `sm:` (640 px) and the inline group did not have enough room between 640 px and 1024 px — the buttons that didn't fit were just clipped. Inline buttons now hide at `lg:` (1024 px) instead, and the `⋯` overflow menu activates `lg:hidden` so phones AND tablets / squeezed desktop windows reach every action through the dropdown. Full desktop (≥ 1024 px) layout is unchanged. ([src/components/Header.jsx](src/components/Header.jsx), [src/components/HeaderOverflowMenu.jsx](src/components/HeaderOverflowMenu.jsx))
+- **Floating "Read Selection" / "Ask AI" buttons overlapped the mobile bottom nav.** Their `bottom-6` position sat directly on top of `MobileBottomNav`, so taps on the next-sentence / play buttons were stealing the floating-button area. Bumped to `bottom-24 right-4 md:bottom-6 md:right-6` so phones get clearance over the nav and desktop is unchanged. ([src/components/overlays/ReadSelectionButton.jsx](src/components/overlays/ReadSelectionButton.jsx))
+
+### Changed
+- **Distraction-free mode keeps basic playback controls visible.** The earlier bare "Exit" pill was too minimal for actual reading sessions. New floating pill at bottom-center carries **prev sentence / play-pause / next sentence**, a clickable **page-number input** (jump pages without leaving the mode), and **Exit**. In chat mode or with no document open, the pill collapses to just Exit. `F` still toggles the mode. New component [src/components/DistractionFreeBar.jsx](src/components/DistractionFreeBar.jsx).
+
+## [1.7.1] - 2026-05-23
+
+### Fixed
+- **Chat session reload — messages appeared in the wrong order.** The save path bulk-inserts every message in one transaction (same `created_at`), and the user prompt + the empty assistant placeholder are created in the same `Date.now()` tick (same `timestamp`). The final tiebreak fell to `id`, where `a-<ts>` sorts before `u-<ts>` lexicographically — producing the `[response, query, response, query]` pattern. Fixed in two layers: the SELECT now adds a role-based `CASE` between `timestamp` and `id` (`user` before `assistant`) so existing saved sessions read back correctly without a migration, and `sendMessage` bumps the assistant's `timestamp + id` suffix by 1 ms so new pairs are monotonic without depending on the tiebreak. ([server/routers/chat_sessions.py](server/routers/chat_sessions.py), [src/hooks/useChatEngine.js](src/hooks/useChatEngine.js))
+
+### Added
+- **Distraction-free reading mode.** Press `F` (or click the new `Maximize2` button in the header) to hide the Header, sidebar, mobile bottom nav, and the PDF toolbar — leaving just the document content and a small floating **Exit** pill in the top-right. Persisted across reloads. Listed in the keyboard-shortcuts modal. Works in both reader and chat. ([src/App.jsx](src/App.jsx), [src/hooks/useKeyboardShortcuts.js](src/hooks/useKeyboardShortcuts.js))
+- **Mobile overflow menu (`⋯`) in the header.** Several actions were `hidden sm:*` and simply vanished on phones (dark mode toggle, TTS-backend switch, page-audio download, audiobook export, keyboard shortcuts, home, distraction-free). They're now all reachable through a small dropdown rendered only on small screens (`sm:hidden`). Desktop layout unchanged. ([src/components/HeaderOverflowMenu.jsx](src/components/HeaderOverflowMenu.jsx))
+- **Audiobook export — parallel page synthesis.** The page-by-page loop in `downloadBookAudio` now runs up to 3 page-synth requests in flight at once via a small worker-pool pattern. Pages are slotted by index so the final WAV concatenation preserves document order even though synthesis completes out-of-order. Cancel still works mid-pool. ([src/hooks/useTtsEngine.js](src/hooks/useTtsEngine.js))
+- **Multi-worker uvicorn support.** `run.py` honours a new `WORKERS=N` env var (also `HOST` and `PORT`). With one worker the audiobook pipelining is a small overlap win; with N workers (each loading its own Kokoro model) it actually fans out across CPU cores so audiobook jobs scale roughly linearly. Trade-offs (RAM per worker, Postgres pool sizing, GPU caveat) documented in [docs/CHAT_WITH_PDF.md](docs/CHAT_WITH_PDF.md) §10.
+
+### Caveats
+- **Multi-worker uvicorn loads one Kokoro model per worker** (~300–500 MB on the ONNX-CPU build). Budget RAM accordingly; on a 4 GB host stick to 1–2 workers.
+- **Postgres pool is per-process** — default `max_size=10` × N workers = up to 10 N connections. Default Postgres `max_connections` is 100, so re-tune above ~9 workers.
+- **The mobile overflow menu only renders below the `sm` breakpoint** (640 px). It's deliberately invisible on tablets / desktops where the inline buttons handle the same actions.
+
 ## [1.7.0] - 2026-05-23
 
 ### Added
