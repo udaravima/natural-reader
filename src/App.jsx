@@ -17,6 +17,7 @@ import { OLLAMA_DEFAULTS } from './constants';
 import { buildApiUrl } from './utils/url';
 import { getOrComputeDocHash } from './utils/docHash';
 import { getBook } from './db';
+import { uploadPdfBytesToBackend } from './lib/uploadPdf';
 
 // Components
 import Header from './components/Header';
@@ -25,6 +26,7 @@ import PdfViewer from './components/PdfViewer';
 import ChatView from './components/ChatView';
 import ChatSidebar from './components/ChatSidebar';
 import MobileBottomNav from './components/MobileBottomNav';
+import DoclingConvertDialog from './components/DoclingConvertDialog';
 
 // Overlays
 import DragOverlay from './components/overlays/DragOverlay';
@@ -85,6 +87,16 @@ export default function App() {
   // Computed hash for the currently open document — null until lazily hashed.
   const [currentDocId, setCurrentDocId] = useState(null);
 
+  // Per-document docling conversion status. Shape mirrors index:
+  //   { state: 'idle' | 'uploading' | 'converting' | 'converted' | 'failed',
+  //     pageCount, error, options }
+  const [docConvertByDocId, setDocConvertByDocId] = useState({});
+  // Whether the reader is showing the original PDF canvas or the converted MD.
+  // Keyed by doc_id so the choice survives doc switches.
+  const [docViewByDocId, setDocViewByDocId] = useState({});
+  // Modal visibility for the docling options dialog.
+  const [convertDialogOpen, setConvertDialogOpen] = useState(false);
+
   const pdfContainerRef = useRef(null);
 
   // --- HOOKS ---
@@ -103,6 +115,7 @@ export default function App() {
     calculateReadingProgress, calculateEstimatedTimeRemaining,
     markdownPageData,
     extractAllChunks,
+    closeDocument,
   } = pdfEngine;
 
   const inChat = viewMode === 'chat';
@@ -119,9 +132,11 @@ export default function App() {
 
   const {
     isPlaying, isDownloading, isReadingSelection, isPreviewingVoice,
+    downloadingMessageId, bookProgress,
     handlePlayPause, stopPlayback, skipToNextSentence,
     readSelection, stopSelectionRead,
-    previewVoice, stopVoicePreview, downloadPageAudio, clearCache,
+    previewVoice, stopVoicePreview, downloadPageAudio, downloadTextAudio,
+    downloadBookAudio, cancelBookDownload, clearCache,
     synthesizeText, playChatUrl, playChatSpeech, stopChatPlayback,
   } = ttsEngine;
 
@@ -356,6 +371,74 @@ export default function App() {
 
   const clearPendingChatContext = useCallback(() => setPendingChatContext(null), []);
 
+  // Synthesize the WHOLE document as a single audiobook .wav.
+  // Pulls per-page text via the existing extractAllChunks helper (works for
+  // PDF, TXT, and MD), then hands the page list to the TTS engine which
+  // synthesizes one batch per page and concatenates the WAVs client-side.
+  const handleDownloadBookAudio = useCallback(async () => {
+    if (!pdfFileName) return;
+    if (!isLocalhost) {
+      showToast('Audiobook export requires the Kokoro backend.', 5000);
+      return;
+    }
+    let chunks;
+    try {
+      chunks = await extractAllChunks();
+    } catch (e) {
+      console.error('Chunk extraction failed:', e);
+      showToast(`Could not extract text: ${e.message}`, 5000);
+      return;
+    }
+    if (!chunks || chunks.length === 0) {
+      showToast('No extractable text in this document.', 4000);
+      return;
+    }
+    // extractAllChunks returns one chunk per page for PDF/TXT and one per
+    // block for MD. Group by page so each `downloadBookAudio` iteration is a
+    // page-sized batch — a single MD page can have many blocks.
+    const byPage = new Map();
+    for (const c of chunks) {
+      const p = c.page ?? 0;
+      const prev = byPage.get(p) || '';
+      byPage.set(p, prev ? `${prev}\n\n${c.text}` : c.text);
+    }
+    const pages = Array.from(byPage.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([page, text]) => ({ page, text }));
+
+    const base = pdfFileName.replace(/\.(pdf|txt|md|markdown)$/i, '');
+    await downloadBookAudio(pages, `${base}_audiobook`);
+  }, [pdfFileName, isLocalhost, extractAllChunks, downloadBookAudio, showToast]);
+
+  // Synthesize a single chat message into a downloadable .wav. Filename is
+  // derived from the active session title and message position so multiple
+  // exports from the same chat don't clobber each other in the user's
+  // Downloads folder.
+  const handleDownloadMessageAudio = useCallback((messageId) => {
+    const msg = chatMessages.find((m) => m.id === messageId);
+    if (!msg || !msg.content) return;
+    const session = chatSessions.find((s) => s.id === chatActiveSessionId);
+    const sessionTitle = session?.title || 'chat';
+    const index = chatMessages
+      .filter((m) => m.role === 'assistant')
+      .findIndex((m) => m.id === messageId);
+    const seq = index >= 0 ? `_msg${index + 1}` : '';
+    const base = `${sessionTitle}${seq}`;
+    downloadTextAudio(msg.content, base, messageId);
+  }, [chatMessages, chatSessions, chatActiveSessionId, downloadTextAudio]);
+
+  // Close the active document and return to the library/welcome screen.
+  // Stops TTS first so audio doesn't keep playing into nothingness, then
+  // clears the in-flight doc id (the index/convert toolbar disappears when
+  // hasDocument flips to false).
+  const handleGoHome = useCallback(() => {
+    stopPlayback();
+    stopChatPlayback();
+    closeDocument();
+    setCurrentDocId(null);
+    setPendingChatContext(null);
+  }, [stopPlayback, stopChatPlayback, closeDocument]);
+
   // ---------- INDEXING ----------
   // When the open document changes, lazily hash it and fetch its backend
   // status so the toolbar button shows the right label on load.
@@ -369,12 +452,13 @@ export default function App() {
       const docId = await ensureDocHash();
       if (cancelled || !docId) return;
       setCurrentDocId(docId);
-      if (docIndexByDocId[docId]) return; // already cached
+      if (docIndexByDocId[docId] && docConvertByDocId[docId]) return; // already cached
       try {
         const res = await fetch(getApiUrl(`/v1/docs/${encodeURIComponent(docId)}`));
         if (cancelled) return;
         if (res.status === 404) {
           setDocIndexByDocId((prev) => ({ ...prev, [docId]: { state: 'idle' } }));
+          setDocConvertByDocId((prev) => ({ ...prev, [docId]: { state: 'idle' } }));
           return;
         }
         if (!res.ok) return; // backend offline; leave state undefined
@@ -385,6 +469,17 @@ export default function App() {
             state: data.state || 'idle',
             chunkCount: data.chunk_count,
             embeddedCount: data.embedded_count,
+          },
+        }));
+        setDocConvertByDocId((prev) => ({
+          ...prev,
+          [docId]: {
+            // Backend null → 'idle' so the button shows the inviting "Convert" label.
+            state: data.conversion_state || 'idle',
+            pageCount: data.converted_page_count || 0,
+            error: data.conversion_error || null,
+            options: data.conversion_options || null,
+            hasPdf: !!data.has_pdf,
           },
         }));
       } catch {
@@ -523,6 +618,232 @@ export default function App() {
     showToast('Indexing is taking unusually long — check the server logs.', 6000);
   }, [pdfFileName, ensureDocHash, extractAllChunks, fileType, numPages, showToast, apiHost, apiPort]);
 
+  // ---------- DOCLING CONVERSION ----------
+  // Mirror of handleIndexDocument: registers (if needed) → uploads PDF bytes →
+  // starts /convert → polls until conversion+indexing finish. Auto-switches
+  // the reader to the MD view on success.
+  const handleConvertDocument = useCallback(async (options) => {
+    if (!pdfFileName || fileType !== 'pdf') return;
+    const docId = await ensureDocHash();
+    if (!docId) {
+      showToast('Could not read document bytes — re-open the file and try again.', 4000);
+      return;
+    }
+    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
+
+    setDocConvertByDocId((prev) => ({
+      ...prev,
+      [docId]: { ...(prev[docId] || {}), state: 'uploading', error: null },
+    }));
+
+    // 1. Register the doc (idempotent).
+    try {
+      const fileSize = (await getBook(pdfFileName))?.size ?? 0;
+      const registerRes = await fetch(apiUrl('/v1/docs'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          doc_id: docId,
+          file_name: pdfFileName,
+          file_type: fileType,
+          size_bytes: fileSize,
+          page_count: numPages,
+        }),
+      });
+      if (!registerRes.ok) throw new Error(`HTTP ${registerRes.status}`);
+    } catch (e) {
+      console.error('Doc register failed:', e);
+      setDocConvertByDocId((prev) => ({
+        ...prev,
+        [docId]: { ...(prev[docId] || {}), state: 'failed', error: e.message },
+      }));
+      showToast(`Convert failed: backend unreachable (${e.message})`, 5000);
+      return;
+    }
+
+    // 2. Push the raw PDF bytes so the backend can run docling against them.
+    try {
+      await uploadPdfBytesToBackend({ docId, fileName: pdfFileName, apiHost, apiPort });
+    } catch (e) {
+      console.error('PDF upload failed:', e);
+      setDocConvertByDocId((prev) => ({
+        ...prev,
+        [docId]: { ...(prev[docId] || {}), state: 'failed', error: e.message },
+      }));
+      showToast(`Could not upload PDF: ${e.message}`, 6000);
+      return;
+    }
+
+    // 3. Kick off the conversion job.
+    setDocConvertByDocId((prev) => ({
+      ...prev,
+      [docId]: { ...(prev[docId] || {}), state: 'converting', options, error: null },
+    }));
+    try {
+      const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}/convert`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(options),
+      });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const data = await res.json();
+          if (data?.detail) detail = data.detail;
+        } catch {
+          /* keep status code */
+        }
+        throw new Error(detail);
+      }
+    } catch (e) {
+      console.error('Convert kick-off failed:', e);
+      setDocConvertByDocId((prev) => ({
+        ...prev,
+        [docId]: { ...(prev[docId] || {}), state: 'failed', error: e.message },
+      }));
+      showToast(`Could not start conversion: ${e.message}`, 6000);
+      return;
+    }
+
+    showToast('Converting with Docling — this can take a few minutes.', 4000);
+
+    // 4. Poll. Conversion finishes when conversion_state='converted' AND the
+    // chained indexing leaves state='indexed' (or 'failed' on either side).
+    const POLL_MS = 2000;
+    const MAX_POLLS = 600; // 20 minutes — docling on big PDFs is slow.
+    for (let i = 0; i < MAX_POLLS; i++) {
+      await new Promise((r) => setTimeout(r, POLL_MS));
+      try {
+        const sRes = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}`));
+        if (!sRes.ok) continue;
+        const sData = await sRes.json();
+        setDocConvertByDocId((prev) => ({
+          ...prev,
+          [docId]: {
+            ...(prev[docId] || {}),
+            state: sData.conversion_state || 'idle',
+            pageCount: sData.converted_page_count || 0,
+            error: sData.conversion_error || null,
+            options: sData.conversion_options || prev[docId]?.options || null,
+            hasPdf: !!sData.has_pdf,
+          },
+        }));
+        setDocIndexByDocId((prev) => ({
+          ...prev,
+          [docId]: {
+            state: sData.state || 'idle',
+            chunkCount: sData.chunk_count,
+            embeddedCount: sData.embedded_count,
+          },
+        }));
+        if (sData.conversion_state === 'conversion_failed') {
+          showToast(`Conversion failed: ${sData.conversion_error || 'unknown error'}`, 6000);
+          return;
+        }
+        if (sData.conversion_state === 'converted' && sData.state === 'indexed') {
+          showToast(`Converted ${sData.converted_page_count} pages.`, 3000);
+          setDocViewByDocId((prev) => ({ ...prev, [docId]: 'md' }));
+          return;
+        }
+        if (sData.conversion_state === 'converted' && sData.state === 'failed') {
+          // Conversion worked but downstream embedding failed.
+          showToast(`Conversion done, but indexing failed: ${sData.error_message || 'unknown'}`, 6000);
+          return;
+        }
+      } catch {
+        // Transient hiccup — keep polling.
+      }
+    }
+    showToast('Conversion is taking unusually long — check the server logs.', 6000);
+  }, [pdfFileName, fileType, ensureDocHash, numPages, showToast, apiHost, apiPort]);
+
+  const openConvertDialog = useCallback(() => setConvertDialogOpen(true), []);
+  const closeConvertDialog = useCallback(() => setConvertDialogOpen(false), []);
+  const submitConvertDialog = useCallback((options) => {
+    setConvertDialogOpen(false);
+    handleConvertDocument(options);
+  }, [handleConvertDocument]);
+
+  // Download the docling-converted Markdown for the current doc. Uses an
+  // ObjectURL + temporary <a> rather than data: URIs so large MD files don't
+  // bloat memory or hit URL length limits.
+  const handleExportMarkdown = useCallback(async () => {
+    if (!currentDocId) return;
+    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
+    try {
+      const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(currentDocId)}/markdown`));
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try {
+          const data = await res.json();
+          if (data?.detail) detail = data.detail;
+        } catch {
+          /* keep status */
+        }
+        throw new Error(detail);
+      }
+      const text = await res.text();
+      const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const baseName = (pdfFileName || 'document').replace(/\.[^.]+$/, '');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${baseName}.md`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // The URL needs to outlive the click() handler in some browsers; release
+      // it on the next macrotask.
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (e) {
+      console.error('Markdown export failed:', e);
+      showToast(`Could not export Markdown: ${e.message}`, 5000);
+    }
+  }, [currentDocId, apiHost, apiPort, pdfFileName, showToast]);
+
+  // Wipe the converted markdown + derived chunks for this doc. Keeps the row
+  // and any retained PDF so reconversion is one click.
+  const handleDeleteMarkdown = useCallback(async () => {
+    if (!currentDocId) return;
+    // Confirm before destroying — once chunks are gone the chat can't search
+    // this doc until it's re-indexed or reconverted.
+    const ok = typeof window !== 'undefined'
+      ? window.confirm('Delete the converted Markdown and its embeddings? The PDF stays in your library.')
+      : true;
+    if (!ok) return;
+
+    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
+    try {
+      const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(currentDocId)}/markdown`), {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (e) {
+      console.error('Markdown delete failed:', e);
+      showToast(`Could not delete Markdown: ${e.message}`, 5000);
+      return;
+    }
+
+    setDocConvertByDocId((prev) => ({
+      ...prev,
+      [currentDocId]: { ...(prev[currentDocId] || {}), state: 'idle', pageCount: 0, error: null, options: null },
+    }));
+    setDocIndexByDocId((prev) => ({
+      ...prev,
+      [currentDocId]: { state: 'idle', chunkCount: 0, embeddedCount: 0 },
+    }));
+    // If the user was reading the MD view, drop back to the PDF rendering.
+    setDocViewByDocId((prev) => ({ ...prev, [currentDocId]: 'pdf' }));
+    showToast('Converted Markdown deleted.', 3000);
+  }, [currentDocId, apiHost, apiPort, showToast]);
+
+  const currentConvertEntry = currentDocId ? docConvertByDocId[currentDocId] : null;
+  const currentDocView = currentDocId ? docViewByDocId[currentDocId] || 'pdf' : 'pdf';
+  const setCurrentDocView = useCallback((mode) => {
+    if (!currentDocId) return;
+    setDocViewByDocId((prev) => ({ ...prev, [currentDocId]: mode }));
+  }, [currentDocId]);
+
   // --- LOADING STATE ---
   if (!isLibLoaded) {
     return (
@@ -596,6 +917,10 @@ export default function App() {
         handleFileUpload={handleFileUpload}
         calculateEstimatedTimeRemaining={calculateEstimatedTimeRemaining}
         playbackSpeed={playbackSpeed}
+        onGoHome={handleGoHome}
+        onDownloadBookAudio={handleDownloadBookAudio}
+        bookProgress={bookProgress}
+        onCancelBookDownload={cancelBookDownload}
       />
 
       <KeyboardShortcutsModal show={showShortcuts} theme={theme} onClose={() => setShowShortcuts(false)} />
@@ -687,6 +1012,8 @@ export default function App() {
             speakingMessageId={speakingMessageId}
             speakMessage={speakMessage}
             stopSpeaking={stopSpeaking}
+            downloadingMessageId={downloadingMessageId}
+            downloadMessageAudio={isLocalhost ? handleDownloadMessageAudio : null}
             showToast={showToast}
             pendingDocContext={pendingChatContext}
             clearPendingDocContext={clearPendingChatContext}
@@ -716,9 +1043,30 @@ export default function App() {
           onAskAboutPage={handleAskAboutPage}
           indexEntry={currentDocId ? docIndexByDocId[currentDocId] : null}
           onIndexDocument={handleIndexDocument}
+          docId={currentDocId}
+          apiHost={apiHost}
+          apiPort={apiPort}
+          convertState={currentConvertEntry?.state || 'idle'}
+          convertError={currentConvertEntry?.error}
+          convertedPageCount={currentConvertEntry?.pageCount}
+          onOpenConvertDialog={fileType === 'pdf' ? openConvertDialog : null}
+          onExportMarkdown={handleExportMarkdown}
+          onDeleteMarkdown={handleDeleteMarkdown}
+          viewMode={currentDocView}
+          setViewMode={setCurrentDocView}
         />
         )}
       </main>
+
+      <DoclingConvertDialog
+        theme={theme}
+        darkMode={darkMode}
+        open={convertDialogOpen}
+        onClose={closeConvertDialog}
+        onSubmit={submitConvertDialog}
+        pageCount={numPages}
+        initialOptions={currentConvertEntry?.options}
+      />
 
       <MobileBottomNav
         theme={theme}

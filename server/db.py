@@ -69,11 +69,28 @@ async def init_db() -> bool:
             logger.info("Postgres pool opened (attempt %d)", attempt + 1)
             await _run_migrations()
             # Reset any stale 'indexing' rows left over from a crash mid-job
-            # so they show up as resumable instead of stuck.
+            # so they show up as resumable instead of stuck. Same for
+            # 'converting' rows — they were created by a doc-conversion job
+            # that didn't get a chance to flip to 'converted'/'conversion_failed'.
             async with pool.connection() as conn:
                 await conn.execute(
                     "UPDATE documents SET state = 'chunks_uploaded' WHERE state = 'indexing'"
                 )
+                # `conversion_state` column only exists after migration 3 is
+                # applied — guard with a column lookup so a fresh DB at
+                # migration 1 doesn't blow up startup.
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_name='documents' AND column_name='conversion_state'"
+                    )
+                    has_col = await cur.fetchone()
+                if has_col:
+                    await conn.execute(
+                        "UPDATE documents SET conversion_state = NULL, "
+                        "conversion_error = 'Interrupted by server restart', "
+                        "updated_at = now() WHERE conversion_state = 'converting'"
+                    )
             return True
         except Exception as e:
             logger.warning("DB connect attempt %d failed: %s", attempt + 1, e)

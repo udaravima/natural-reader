@@ -1,11 +1,14 @@
 import {
     ChevronLeft, ChevronRight, ZoomIn, ZoomOut,
-    RotateCcw, Maximize, Minimize, MessageSquare
+    RotateCcw, Maximize, Minimize, MessageSquare, FileText, FileType,
+    Download, Trash2
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen';
 import TextPageRenderer from './TextPageRenderer';
 import MarkdownPageRenderer from './MarkdownPageRenderer';
+import MarkdownReader from './MarkdownReader';
 import IndexButton from './IndexButton';
+import ConvertButton from './ConvertButton';
 
 export default function PdfViewer({
     theme,
@@ -29,10 +32,27 @@ export default function PdfViewer({
     onAskAboutPage,
     indexEntry,
     onIndexDocument,
+    // Docling conversion props (all optional — only render the controls when
+    // the parent passed them down).
+    docId,
+    apiHost,
+    apiPort,
+    convertState,
+    convertError,
+    convertedPageCount,
+    onOpenConvertDialog,
+    onExportMarkdown,
+    onDeleteMarkdown,
+    viewMode, // 'pdf' | 'md'
+    setViewMode,
 }) {
     const isText = fileType === 'text';
     const isMarkdown = fileType === 'markdown';
+    const isPdf = !isText && !isMarkdown;
     const hasDoc = (isText || isMarkdown) ? numPages > 0 : !!pdfDoc;
+    const canShowConvert = isPdf && !!onOpenConvertDialog;
+    const isConverted = convertState === 'converted';
+    const showingMdView = viewMode === 'md' && isConverted;
     return (
         <section className={`flex-1 flex flex-col overflow-hidden ${theme.viewportBg} transition-colors duration-300`}>
 
@@ -133,7 +153,7 @@ export default function PdfViewer({
                                 Ask page
                             </button>
                         )}
-                        {onIndexDocument && (
+                        {onIndexDocument && !isConverted && (
                             <IndexButton
                                 theme={theme}
                                 state={indexEntry?.state || 'idle'}
@@ -141,6 +161,61 @@ export default function PdfViewer({
                                 embeddedCount={indexEntry?.embeddedCount}
                                 onIndex={onIndexDocument}
                             />
+                        )}
+                        {canShowConvert && (
+                            <ConvertButton
+                                theme={theme}
+                                state={convertState || 'idle'}
+                                pageCount={convertedPageCount}
+                                error={convertError}
+                                onClick={onOpenConvertDialog}
+                            />
+                        )}
+                        {isConverted && setViewMode && (
+                            <div className={`flex items-center ml-1 rounded-lg border ${theme.border} overflow-hidden`}>
+                                <button
+                                    onClick={() => setViewMode('pdf')}
+                                    className={`px-2 py-1.5 text-xs font-bold flex items-center transition-all ${
+                                        viewMode !== 'md'
+                                            ? 'bg-blue-600 text-white'
+                                            : `${theme.bgTertiary} ${theme.textSecondary} ${theme.hover}`
+                                    }`}
+                                    title="Show the original PDF rendering"
+                                >
+                                    <FileType size={12} className="inline mr-1" />
+                                    PDF
+                                </button>
+                                <button
+                                    onClick={() => setViewMode('md')}
+                                    className={`px-2 py-1.5 text-xs font-bold flex items-center transition-all ${
+                                        viewMode === 'md'
+                                            ? 'bg-blue-600 text-white'
+                                            : `${theme.bgTertiary} ${theme.textSecondary} ${theme.hover}`
+                                    }`}
+                                    title="Show the docling-converted Markdown"
+                                >
+                                    <FileText size={12} className="inline mr-1" />
+                                    MD
+                                </button>
+                            </div>
+                        )}
+                        {isConverted && onExportMarkdown && (
+                            <button
+                                onClick={onExportMarkdown}
+                                className={`p-1.5 rounded-lg transition-all ${theme.hover} ${theme.textSecondary} hover:text-blue-500`}
+                                title="Download the converted Markdown as a .md file"
+                            >
+                                <Download size={14} />
+                            </button>
+                        )}
+                        {isConverted && onDeleteMarkdown && (
+                            <button
+                                onClick={onDeleteMarkdown}
+                                className={`p-1.5 rounded-lg transition-all ${theme.hover} ${theme.textSecondary} hover:text-red-500`}
+                                title="Delete the converted Markdown + embeddings from the server"
+                            >
+                                <Trash2 size={14} />
+                            </button>
                         )}
                     </div>
                 </div>
@@ -159,7 +234,19 @@ export default function PdfViewer({
                     }}
                 >
                     {hasDoc ? (
-                        isMarkdown ? (
+                        showingMdView ? (
+                            <MarkdownReader
+                                theme={theme}
+                                darkMode={darkMode}
+                                apiHost={apiHost}
+                                apiPort={apiPort}
+                                docId={docId}
+                                currentPage={currentPage}
+                                setCurrentPage={setCurrentPage}
+                                scale={scale}
+                                effectiveIsMobile={effectiveIsMobile}
+                            />
+                        ) : isMarkdown ? (
                             <MarkdownPageRenderer
                                 theme={theme}
                                 darkMode={darkMode}

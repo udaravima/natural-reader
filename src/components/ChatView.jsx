@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
     Send, Square, Bot, User, Loader2, MessageSquare, Brain, ChevronDown, ChevronRight,
     Volume2, StopCircle, Copy, Paperclip, ImagePlus, Activity, FileText, X as XIcon,
-    Wrench, Search,
+    Wrench, Search, Download,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -25,6 +25,8 @@ export default function ChatView({
     speakingMessageId,
     speakMessage,
     stopSpeaking,
+    downloadingMessageId,
+    downloadMessageAudio,
     showToast,
     pendingDocContext,
     clearPendingDocContext,
@@ -222,6 +224,8 @@ export default function ChatView({
                                     onSpeak={() => speakMessage(m.id)}
                                     onStopSpeak={stopSpeaking}
                                     onCopy={() => copyMessage(m.content)}
+                                    isDownloading={downloadingMessageId === m.id}
+                                    onDownloadAudio={downloadMessageAudio ? () => downloadMessageAudio(m.id) : null}
                                 />
                             );
                         })}
@@ -330,7 +334,10 @@ export default function ChatView({
     );
 }
 
-function MessageBubble({ message, theme, darkMode, isStreamingNow, isSpeaking, onSpeak, onStopSpeak, onCopy }) {
+function MessageBubble({
+    message, theme, darkMode, isStreamingNow, isSpeaking,
+    onSpeak, onStopSpeak, onCopy, isDownloading, onDownloadAudio,
+}) {
     const isUser = message.role === 'user';
     const Icon = isUser ? User : Bot;
     const hasContent = !!message.content;
@@ -411,6 +418,23 @@ function MessageBubble({ message, theme, darkMode, isStreamingNow, isSpeaking, o
                             >
                                 {isSpeaking ? <StopCircle size={12} /> : <Volume2 size={12} />}
                                 <span>{isSpeaking ? 'Stop' : 'Read aloud'}</span>
+                            </button>
+                        )}
+                        {!isUser && onDownloadAudio && (
+                            <button
+                                onClick={onDownloadAudio}
+                                disabled={isDownloading}
+                                className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-bold transition-colors ${
+                                    isDownloading
+                                        ? `${theme.textMuted} opacity-70 cursor-wait`
+                                        : `${theme.textMuted} hover:text-blue-500`
+                                }`}
+                                title={isDownloading ? 'Generating audio…' : 'Download audio (.wav)'}
+                            >
+                                {isDownloading
+                                    ? <Loader2 size={12} className="animate-spin" />
+                                    : <Download size={12} />}
+                                <span>{isDownloading ? 'Generating' : 'Audio'}</span>
                             </button>
                         )}
                         <button

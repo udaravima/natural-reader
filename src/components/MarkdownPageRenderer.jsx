@@ -152,7 +152,7 @@ export default function MarkdownPageRenderer({
             <div
                 className={`${darkMode ? 'bg-slate-900' : 'bg-white'} ${theme.text} px-6 md:px-12 py-8 md:py-12 leading-relaxed`}
                 style={{
-                    width: effectiveIsMobile ? '100%' : 'min(820px, 80vw)',
+                    width: effectiveIsMobile ? '100%' : 'min(1200px, 95vw)',
                     minHeight: '60vh',
                 }}
             >
@@ -169,7 +169,7 @@ export default function MarkdownPageRenderer({
             className={`${darkMode ? 'bg-slate-900' : 'bg-white'} ${theme.text} px-6 md:px-12 py-8 md:py-12 leading-relaxed`}
             style={{
                 fontSize: `${fontSize}px`,
-                width: effectiveIsMobile ? '100%' : 'min(820px, 80vw)',
+                width: effectiveIsMobile ? '100%' : 'min(1200px, 95vw)',
                 minHeight: '60vh',
             }}
         >

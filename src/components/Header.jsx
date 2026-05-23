@@ -1,7 +1,7 @@
 import {
     Play, Pause, Square, Upload, Volume2, SkipForward, SkipBack,
     Zap, Loader2, Moon, Sun, Download, Keyboard, Clock,
-    PanelLeftClose, Menu, BookOpen, MessageSquare
+    PanelLeftClose, Menu, BookOpen, MessageSquare, Home, Library, X
 } from 'lucide-react';
 
 export default function Header({
@@ -29,7 +29,12 @@ export default function Header({
     handleFileUpload,
     calculateEstimatedTimeRemaining,
     playbackSpeed,
+    onGoHome,
+    onDownloadBookAudio,
+    bookProgress,
+    onCancelBookDownload,
 }) {
+    const isExportingBook = !!bookProgress;
     const inChat = viewMode === 'chat';
     return (
         <header className={`h-16 ${theme.bgSecondary} border-b ${theme.border} px-4 md:px-6 flex items-center justify-between z-20 sticky top-0 shadow-sm transition-colors duration-300`}>
@@ -143,12 +148,45 @@ export default function Header({
                 {!inChat && hasDocument && isLocalhost && (
                     <button
                         onClick={downloadPageAudio}
-                        disabled={isDownloading || textItems.length === 0}
-                        className={`hidden sm:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${isDownloading ? 'opacity-50 cursor-wait' : theme.textSecondary + ' hover:text-green-500'}`}
+                        disabled={isDownloading || textItems.length === 0 || isExportingBook}
+                        className={`hidden sm:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${isDownloading || isExportingBook ? 'opacity-50 cursor-wait' : theme.textSecondary + ' hover:text-green-500'}`}
                         title="Download Page Audio"
                     >
                         {isDownloading ? <Loader2 size={20} className="animate-spin" /> : <Download size={20} />}
                     </button>
+                )}
+
+                {/* Download Book Audio — full document → single .wav.
+                    While exporting, this slot morphs into a small progress
+                    indicator with a Cancel button. */}
+                {!inChat && hasDocument && isLocalhost && onDownloadBookAudio && (
+                    isExportingBook ? (
+                        <div className={`hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.textSecondary}`}>
+                            <Loader2 size={14} className="animate-spin text-green-500" />
+                            <div className="text-[10px] leading-tight">
+                                <div className="font-bold">
+                                    {bookProgress.current}/{bookProgress.total}
+                                </div>
+                                <div className={`${theme.textMuted}`}>{bookProgress.label}</div>
+                            </div>
+                            <button
+                                onClick={onCancelBookDownload}
+                                className={`p-1 rounded-md ${theme.hover} hover:text-red-500`}
+                                title="Cancel audiobook export"
+                            >
+                                <X size={14} />
+                            </button>
+                        </div>
+                    ) : (
+                        <button
+                            onClick={onDownloadBookAudio}
+                            disabled={isDownloading}
+                            className={`hidden sm:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-green-500 disabled:opacity-50`}
+                            title="Export the entire document as a single audiobook .wav"
+                        >
+                            <Library size={20} />
+                        </button>
+                    )
                 )}
 
                 {/* Keyboard Shortcuts */}
@@ -159,6 +197,18 @@ export default function Header({
                 >
                     <Keyboard size={20} />
                 </button>
+
+                {/* Home Button — close the current doc and return to the library.
+                    Reader mode only, and only when a doc is actually open. */}
+                {!inChat && hasDocument && onGoHome && (
+                    <button
+                        onClick={onGoHome}
+                        className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
+                        title="Close document and return to your library"
+                    >
+                        <Home size={20} />
+                    </button>
+                )}
 
                 {/* Upload Button — reader mode only */}
                 {!inChat && (
