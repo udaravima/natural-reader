@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.3] - 2026-05-23
+
+### Fixed
+- **PDF canvas went blank after toggling Reader ↔ Chat.** Toggling to Chat unmounts `PdfViewer`; toggling back mounts a fresh `<canvas>` DOM node, but the render `useEffect` only re-fired when `[pdfDoc, currentPage, scale, fileType]` changed — none of which moved on a view-mode toggle — so the new canvas stayed empty until the user manually stepped the page. Fixed by exposing `canvasRef` from `usePdfEngine` as a callback ref: every time the `<canvas>` attaches, a `canvasMountNonce` state bumps and the render effect re-paints the current page against the fresh node. ([src/hooks/usePdfEngine.js](src/hooks/usePdfEngine.js))
+
 ## [1.7.2] - 2026-05-23
 
 ### Fixed

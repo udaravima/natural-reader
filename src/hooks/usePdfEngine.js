@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { gfm } from 'micromark-extension-gfm';
@@ -144,6 +144,19 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
     const sentenceRefs = useRef([]);
     const playbackIndexRef = useRef(-1);
 
+    // Bumped every time the <canvas> DOM node attaches. Toggling Reader ↔ Chat
+    // unmounts PdfViewer and remounts a *fresh* canvas; without this signal,
+    // the render-on-deps useEffect below doesn't notice (none of pdfDoc /
+    // currentPage / scale / fileType changed) and the new canvas stays blank
+    // until the user manually steps the page. The callback ref `setCanvasNode`
+    // (returned in place of canvasRef) updates both the existing ref AND this
+    // nonce so the render effect re-fires on every mount.
+    const [canvasMountNonce, setCanvasMountNonce] = useState(0);
+    const setCanvasNode = useCallback((node) => {
+        canvasRef.current = node;
+        if (node) setCanvasMountNonce((n) => n + 1);
+    }, []);
+
     // --- ENGINE INITIALIZATION ---
     useEffect(() => {
         pdfjsLibRef.current = pdfjsLib;
@@ -258,11 +271,17 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         }
     };
 
-    // Visual render on any of: doc, page, or scale change (PDF only — txt has no canvas)
+    // Visual render on any of: doc, page, or scale change (PDF only — txt has no canvas).
+    // `canvasMountNonce` in deps re-fires this whenever the <canvas> DOM node
+    // is replaced (Reader ↔ Chat toggle, MD ↔ PDF view swap, etc.) so the
+    // fresh canvas gets painted without a manual page step.
     useEffect(() => {
-        if (fileType === 'pdf' && pdfDoc) renderPageVisual(currentPage, pdfDoc);
+        if (fileType === 'pdf' && pdfDoc && canvasRef.current) {
+            renderPageVisual(currentPage, pdfDoc);
+        }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [pdfDoc, currentPage, scale, fileType]);
+    }, [pdfDoc, currentPage, scale, fileType, canvasMountNonce]);
+
 
     // Sentence source per file type. For PDF we re-extract on page change; for text
     // and markdown we slice the pre-paginated array.
@@ -578,8 +597,12 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         currentSentenceIndex, setCurrentSentenceIndex,
         markdownPageData,
 
-        // Refs
-        canvasRef,
+        // Refs — `canvasRef` is exposed as a callback ref so we can re-fire
+        // the render effect whenever the <canvas> DOM node is replaced
+        // (Reader ↔ Chat toggle, etc.). React accepts both ref objects and
+        // callback functions in `ref={...}`, so PdfViewer keeps its existing
+        // `ref={canvasRef}` usage unchanged.
+        canvasRef: setCanvasNode,
         textLayerRef,
         fileInputRef,
         sentenceRefs,
