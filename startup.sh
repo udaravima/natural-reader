@@ -28,9 +28,60 @@ readonly ENGINE_STATE_FILE=".local/container-engine"  # .local/ is gitignored
 readonly MODEL_BASE_URL="https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0"
 readonly MODEL_FILES=("kokoro-v1.0.onnx" "voices-v1.0.bin")
 
+# Minimum tool versions, kept in sync with the README "Software Requirements".
+# Node: Vite 7 (Rolldown) + @vitejs/plugin-react require ^20.19.0 || >=22.12.0.
+# Python: Docling requires >=3.10,<4.0; doc-chat routes use 3.10+ unions.
+readonly PYTHON_MIN="3.10.0"
+readonly PYTHON_MAX_EXCL="4.0.0"
+
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+
+# vercmp A B — echo -1 if A<B, 0 if A==B, 1 if A>B (dotted numeric versions).
+vercmp() {
+	[[ "$1" == "$2" ]] && { echo 0; return; }
+	local i
+	local -a a b
+	# Split each dotted operand into an array of components.
+	read -ra a <<<"${1//./ }"
+	read -ra b <<<"${2//./ }"
+	for ((i = 0; i < ${#a[@]} || i < ${#b[@]}; i++)); do
+		local x=${a[i]:-0} y=${b[i]:-0}
+		x=${x%%[^0-9]*}; y=${y%%[^0-9]*}    # drop pre-release/build suffixes
+		if ((10#${x:-0} > 10#${y:-0})); then echo 1; return; fi
+		if ((10#${x:-0} < 10#${y:-0})); then echo -1; return; fi
+	done
+	echo 0
+}
+version_ge() { [[ "$(vercmp "$1" "$2")" != "-1" ]]; }
+version_lt() { [[ "$(vercmp "$1" "$2")" == "-1" ]]; }
+
+# Verify python3 exists and satisfies >=PYTHON_MIN, <PYTHON_MAX_EXCL.
+check_python_version() {
+	command -v python3 >/dev/null 2>&1 || die "python3 is not installed."
+	local v
+	v="$(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
+	if version_ge "$v" "$PYTHON_MIN" && version_lt "$v" "$PYTHON_MAX_EXCL"; then
+		log "Python $v OK (need >=$PYTHON_MIN, <$PYTHON_MAX_EXCL)"
+	else
+		die "Python $v is unsupported — need >=$PYTHON_MIN and <$PYTHON_MAX_EXCL."
+	fi
+}
+
+# Verify node + npm exist and node satisfies ^20.19.0 || >=22.12.0.
+check_node_version() {
+	command -v node >/dev/null 2>&1 || die "node is not installed."
+	command -v npm >/dev/null 2>&1 || die "npm is not installed."
+	local v
+	v="$(node -v)"; v="${v#v}"
+	if { version_ge "$v" "20.19.0" && version_lt "$v" "21.0.0"; } \
+		|| version_ge "$v" "22.12.0"; then
+		log "Node.js $v OK (need ^20.19.0 or >=22.12.0)"
+	else
+		die "Node.js $v is unsupported — need ^20.19.0 or >=22.12.0 (Vite 7 / Rolldown)."
+	fi
+}
 
 usage() {
 	cat <<EOF
@@ -90,16 +141,21 @@ compose() {
 	fi
 }
 
-# Download a URL to a destination using wget or curl, whichever is available.
+# Download a URL using wget or curl, whichever is available. Writes to a
+# temporary ".partial" file and moves it into place only on success, so an
+# interrupted transfer never leaves a truncated file that later looks complete.
 download() {
-	local url="$1" dest="$2"
+	local url="$1" dest="$2" tmp="${2}.partial"
+	rm -f "$tmp"
 	if command -v wget >/dev/null 2>&1; then
-		wget -O "$dest" "$url"
+		wget -O "$tmp" "$url"
 	elif command -v curl >/dev/null 2>&1; then
-		curl -fL -o "$dest" "$url"
+		curl -fL -o "$tmp" "$url"
 	else
 		die "Neither wget nor curl is installed; cannot download $url"
 	fi
+	[[ -s "$tmp" ]] || { rm -f "$tmp"; die "Download produced an empty file: $url"; }
+	mv -f "$tmp" "$dest"
 }
 
 # Poll until Postgres accepts connections, with a bounded timeout. Migrations in
@@ -126,9 +182,9 @@ cmd_init() {
 	engine="$(resolve_engine "${1:-}")"
 	log "Using container engine: $engine"
 
-	# --- Prerequisite checks -------------------------------------------------
-	command -v python3 >/dev/null 2>&1 || die "python3 is not installed."
-	command -v npm >/dev/null 2>&1 || die "npm is not installed."
+	# --- Prerequisite checks (existence + correct versions) ------------------
+	check_python_version
+	check_node_version
 	command -v wget >/dev/null 2>&1 || command -v curl >/dev/null 2>&1 \
 		|| die "Neither wget nor curl is installed (needed to download models)."
 	[[ -f package.json ]] || die "package.json not found — are you in the project root?"
@@ -146,10 +202,13 @@ cmd_init() {
 	"$VENV_DIR/bin/python" -m pip install -r requirements.txt
 
 	# --- Kokoro model files --------------------------------------------------
+	# Use -s (exists AND non-empty), not -f, so a leftover zero-byte/truncated
+	# file from an aborted run is re-fetched rather than blindly trusted.
 	for model in "${MODEL_FILES[@]}"; do
-		if [[ -f "$model" ]]; then
-			log "Model already present: $model"
+		if [[ -s "$model" ]]; then
+			log "Model already present, skipping: $model"
 		else
+			[[ -e "$model" ]] && warn "Existing $model is empty/incomplete — re-downloading"
 			log "Downloading $model"
 			download "$MODEL_BASE_URL/$model" "$model"
 		fi
@@ -202,4 +261,7 @@ main() {
 	esac
 }
 
-main "$@"
+# Run only when executed directly; `source startup.sh` loads functions for tests.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+	main "$@"
+fi
