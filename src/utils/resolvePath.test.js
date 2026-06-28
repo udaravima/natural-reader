@@ -54,3 +54,32 @@ describe('resolvePath edge cases (contract)', () => {
         expect(resolvePath('docs/', 'b.md')).toEqual({ kind: 'path', path: 'docs/b.md', anchor: null });
     });
 });
+
+describe('resolvePath rejects dangerous schemes (XSS hardening)', () => {
+    const dangerous = [
+        'javascript:alert(1)',
+        'JaVaScRiPt:alert(1)',
+        ' javascript:alert(1)',
+        'java\tscript:alert(1)',
+        'data:text/html,<script>alert(1)</script>',
+        'vbscript:msgbox(1)',
+        'file:///etc/passwd',
+    ];
+    for (const href of dangerous) {
+        it(`classifies ${JSON.stringify(href)} as unsafe`, () => {
+            expect(resolvePath('docs', href)).toEqual({ kind: 'unsafe' });
+        });
+    }
+
+    it('still classifies safe external schemes as external', () => {
+        expect(resolvePath('docs', 'https://x.com').kind).toBe('external');
+        expect(resolvePath('docs', 'http://x.com').kind).toBe('external');
+        expect(resolvePath('docs', 'mailto:a@b.c').kind).toBe('external');
+        expect(resolvePath('docs', '//cdn/x.js').kind).toBe('external');
+    });
+
+    it('isExternal no longer treats javascript:/data: as external', () => {
+        expect(isExternal('javascript:alert(1)')).toBe(false);
+        expect(isExternal('data:text/html,x')).toBe(false);
+    });
+});

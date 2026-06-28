@@ -1,10 +1,16 @@
 // Resolves Markdown link hrefs to workspace-relative paths (or classifies them
-// as external / anchor). Pure: no I/O, fully unit-tested.
+// as external / anchor / unsafe). Pure: no I/O, fully unit-tested.
 
-const EXTERNAL_RE = /^([a-z][a-z0-9+.-]*:|\/\/)/i; // http:, https:, mailto:, //cdn
+// Only these schemes are safe to emit as a link href. Anything else with an
+// explicit scheme (javascript:, data:, vbscript:, file:, …) is rejected by
+// resolvePath as { kind: 'unsafe' } so the renderer never produces such an href.
+const SAFE_EXTERNAL_RE = /^(https?:|mailto:|\/\/)/i; // http(s):, mailto:, //cdn
+const SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;            // any explicit URI scheme
+// ASCII control chars (built via RegExp ctor to avoid embedding literal ones).
+const CONTROL_CHARS = new RegExp('[\\u0000-\\u001F]', 'g');
 
 export function isExternal(href) {
-    return EXTERNAL_RE.test(href || '');
+    return SAFE_EXTERNAL_RE.test(href || '');
 }
 
 export function dirname(relPath) {
@@ -28,6 +34,11 @@ export function resolvePath(currentDir, href) {
     if (!raw) return { kind: 'none' };
     if (raw.startsWith('#')) return { kind: 'anchor', anchor: decodeURIComponent(raw.slice(1)) };
     if (isExternal(raw)) return { kind: 'external', href: raw };
+    // Reject any other explicit scheme. Strip ASCII control chars first so
+    // schemes browsers still honor with embedded tabs/newlines (java\tscript:)
+    // can't slip through and be treated as a relative "path".
+    const stripped = raw.replace(CONTROL_CHARS, '');
+    if (SCHEME_RE.test(stripped) && !isExternal(stripped)) return { kind: 'unsafe' };
 
     const hashIdx = raw.indexOf('#');
     const anchor = hashIdx === -1 ? null : decodeURIComponent(raw.slice(hashIdx + 1));
