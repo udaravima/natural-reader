@@ -17,7 +17,10 @@ import { OLLAMA_DEFAULTS } from './constants';
 import { buildApiUrl } from './utils/url';
 import { getOrComputeDocHash } from './utils/docHash';
 import { getBook } from './db';
+import { saveWorkspaceState } from './db';
 import { uploadPdfBytesToBackend } from './lib/uploadPdf';
+import { WorkspaceProvider } from './lib/WorkspaceContext';
+import { createFsaWorkspace, createSnapshotWorkspace, pickEntryFile, isMarkdownPath } from './lib/workspace';
 
 // Components
 import Header from './components/Header';
@@ -104,6 +107,9 @@ export default function App() {
   const [convertDialogOpen, setConvertDialogOpen] = useState(false);
 
   const pdfContainerRef = useRef(null);
+  const [workspace, setWorkspace] = useState(null);
+  const [workspaceEntryPath, setWorkspaceEntryPath] = useState(null);
+  const folderInputRef = useRef(null);
 
   // --- HOOKS ---
   const theme = useTheme(darkMode);
@@ -122,6 +128,8 @@ export default function App() {
     markdownPageData,
     extractAllChunks,
     closeDocument,
+    loadMarkdownDocument,
+    loadTextDocument,
   } = pdfEngine;
 
   const inChat = viewMode === 'chat';
@@ -445,6 +453,59 @@ export default function App() {
     setCurrentDocId(null);
     setPendingChatContext(null);
   }, [stopPlayback, stopChatPlayback, closeDocument]);
+
+  // ---------- WORKSPACE (folder open) ----------
+  // Loads a workspace-relative file into the reader WITHOUT touching the
+  // 5-doc library (synthesized docs are workspace-scoped). Reused for initial
+  // open, link navigation, and Back/Forward.
+  const onOpenDoc = useCallback(async (path, { anchor } = {}) => {
+    if (!workspace) return;
+    try {
+      const text = await workspace.readText(path);
+      const name = path.split('/').pop();
+      if (isMarkdownPath(path)) loadMarkdownDocument(text, name);
+      else loadTextDocument(text, name);
+      saveWorkspaceState({ rootName: workspace.rootName, handle: workspace.handle || null, lastPath: path });
+      if (anchor) {
+        setTimeout(() => {
+          const el = document.getElementById(anchor);
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 100);
+      }
+    } catch {
+      showToast('Could not open that file from the folder.', 3000);
+    }
+  }, [workspace, loadMarkdownDocument, loadTextDocument, showToast]);
+
+  const adoptWorkspace = useCallback((ws) => {
+    const entry = pickEntryFile(ws.listFiles());
+    if (!entry) {
+      showToast('No Markdown files found in that folder.', 4000);
+      return;
+    }
+    setWorkspace(ws);
+    setWorkspaceEntryPath(entry);
+    setViewMode('reader');
+  }, [showToast, setViewMode]);
+
+  const openFolder = useCallback(async () => {
+    if (typeof window !== 'undefined' && window.showDirectoryPicker) {
+      try {
+        const handle = await window.showDirectoryPicker({ mode: 'read' });
+        adoptWorkspace(await createFsaWorkspace(handle));
+      } catch (e) {
+        if (e?.name !== 'AbortError') showToast('Could not open folder.', 3000);
+      }
+    } else {
+      folderInputRef.current?.click(); // webkitdirectory fallback
+    }
+  }, [adoptWorkspace, showToast]);
+
+  const handleFolderInput = useCallback((e) => {
+    const files = e.target.files;
+    if (files && files.length) adoptWorkspace(createSnapshotWorkspace(files));
+    e.target.value = '';
+  }, [adoptWorkspace]);
 
   // ---------- INDEXING ----------
   // When the open document changes, lazily hash it and fetch its backend
@@ -1030,42 +1091,45 @@ export default function App() {
             currentDocIndexState={pendingChatContext?.doc_id ? docIndexByDocId[pendingChatContext.doc_id]?.state : null}
           />
         ) : (
-        <PdfViewer
-          theme={theme}
-          darkMode={darkMode}
-          effectiveIsMobile={effectiveIsMobile}
-          pdfDoc={pdfDoc}
-          fileType={fileType}
-          textItems={textItems}
-          currentSentenceIndex={currentSentenceIndex}
-          currentPage={currentPage} setCurrentPage={setCurrentPage}
-          goToNextPage={goToNextPage} goToPrevPage={goToPrevPage}
-          numPages={numPages}
-          scale={scale} setScale={setScale}
-          canvasRef={canvasRef}
-          textLayerRef={textLayerRef}
-          pdfContainerRef={pdfContainerRef}
-          fileInputRef={fileInputRef}
-          recentBooks={recentBooks}
-          openFromLibrary={openFromLibrary}
-          removeFromLibrary={removeFromLibrary}
-          markdownPageData={markdownPageData}
-          onAskAboutPage={handleAskAboutPage}
-          indexEntry={currentDocId ? docIndexByDocId[currentDocId] : null}
-          onIndexDocument={handleIndexDocument}
-          docId={currentDocId}
-          apiHost={apiHost}
-          apiPort={apiPort}
-          convertState={currentConvertEntry?.state || 'idle'}
-          convertError={currentConvertEntry?.error}
-          convertedPageCount={currentConvertEntry?.pageCount}
-          onOpenConvertDialog={fileType === 'pdf' ? openConvertDialog : null}
-          onExportMarkdown={handleExportMarkdown}
-          onDeleteMarkdown={handleDeleteMarkdown}
-          viewMode={currentDocView}
-          setViewMode={setCurrentDocView}
-          distractionFree={distractionFree}
-        />
+        <WorkspaceProvider workspace={workspace} initialPath={workspaceEntryPath} onOpenDoc={onOpenDoc}>
+          <PdfViewer
+            theme={theme}
+            darkMode={darkMode}
+            effectiveIsMobile={effectiveIsMobile}
+            pdfDoc={pdfDoc}
+            fileType={fileType}
+            textItems={textItems}
+            currentSentenceIndex={currentSentenceIndex}
+            currentPage={currentPage} setCurrentPage={setCurrentPage}
+            goToNextPage={goToNextPage} goToPrevPage={goToPrevPage}
+            numPages={numPages}
+            scale={scale} setScale={setScale}
+            canvasRef={canvasRef}
+            textLayerRef={textLayerRef}
+            pdfContainerRef={pdfContainerRef}
+            fileInputRef={fileInputRef}
+            recentBooks={recentBooks}
+            openFromLibrary={openFromLibrary}
+            removeFromLibrary={removeFromLibrary}
+            markdownPageData={markdownPageData}
+            onAskAboutPage={handleAskAboutPage}
+            indexEntry={currentDocId ? docIndexByDocId[currentDocId] : null}
+            onIndexDocument={handleIndexDocument}
+            docId={currentDocId}
+            apiHost={apiHost}
+            apiPort={apiPort}
+            convertState={currentConvertEntry?.state || 'idle'}
+            convertError={currentConvertEntry?.error}
+            convertedPageCount={currentConvertEntry?.pageCount}
+            onOpenConvertDialog={fileType === 'pdf' ? openConvertDialog : null}
+            onExportMarkdown={handleExportMarkdown}
+            onDeleteMarkdown={handleDeleteMarkdown}
+            viewMode={currentDocView}
+            setViewMode={setCurrentDocView}
+            distractionFree={distractionFree}
+            openFolder={openFolder}
+          />
+        </WorkspaceProvider>
         )}
       </main>
 
@@ -1114,6 +1178,17 @@ export default function App() {
           setCurrentPage={setCurrentPage}
         />
       )}
+
+      {/* Hidden folder input — webkitdirectory fallback when showDirectoryPicker is unavailable */}
+      <input
+        ref={folderInputRef}
+        type="file"
+        webkitdirectory=""
+        directory=""
+        multiple
+        style={{ display: 'none' }}
+        onChange={handleFolderInput}
+      />
     </div>
   );
 }
