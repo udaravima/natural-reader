@@ -130,12 +130,36 @@ A full end-to-end walkthrough lives in [docs/CHAT_WITH_PDF.md](docs/CHAT_WITH_PD
 
 ## 🚀 Getting Started
 
-### Prerequisites
+### Software Requirements
 
-- **Node.js 18+** and npm
-- **Python 3.10+** (Kokoro TTS backend; new doc-chat routes use `|`-style unions)
-- **(Optional, for Document Chat & RAG)** Docker + Docker Compose, *or* a host Postgres 16 with the `pgvector` extension
-- **(Optional, for chat)** [Ollama](https://ollama.com/) — needs a chat model AND `nomic-embed-text` if you want indexing/retrieval/tool calling
+Install this before you start. The app is split into a **React frontend** (Vite) and a **Python TTS backend** (FastAPI). Chat and RAG layer on optional extras.
+
+#### Required — Reader + Neural TTS
+
+| Software | Version | Why |
+|----------|---------|-----|
+| **Node.js** + **npm** | `20.19+` **or** `22.12+` | Frontend dev server / build. Vite 7 (Rolldown) and `@vitejs/plugin-react` declare `engines: ^20.19.0 \|\| >=22.12.0` — older Node will fail to start. npm ships with Node. |
+| **Python** | `3.10`–`3.13` | Kokoro TTS backend (`run.py`). Doc-chat routes use `\|`-style unions (3.10+); Docling pins `>=3.10,<4.0`. |
+| **Git** | any recent | Clone the repository |
+| **wget** or **curl** | any | Download the Kokoro voice model files (~335 MB total — see step 2) |
+
+> 💡 Tip: use `nvm` to pin Node and a `.venv` to isolate Python — the install steps below assume both.
+
+#### Optional — Local AI Chat (Ollama)
+
+| Software | Version | Why |
+|----------|---------|-----|
+| **[Ollama](https://ollama.com/)** | latest | Runs the local LLM for chat mode (and embeddings for RAG). Reader + TTS work without it. |
+
+#### Optional — Document Chat & RAG
+
+| Software | Version | Why |
+|----------|---------|-----|
+| **Docker + Docker Compose**, *or* **Podman + podman-compose** | recent | Runs Postgres in a container via `docker-compose.yml`. `startup.sh` supports either engine. |
+| *— or —* host **PostgreSQL** + **pgvector** | `pg16` | Stores chat sessions and document embeddings. The provided container image is `pgvector/pgvector:pg16`. |
+| Ollama embedding model **`nomic-embed-text`** | 768-dim | Indexing / retrieval / autonomous `search_document` tool calling. The schema is hard-locked to 768 dims. |
+
+> 📦 **Disk:** budget ~335 MB for the Kokoro model + voice pack, and (only if you enable `DOCLING_ENABLED=true`) an extra ~500 MB–2 GB downloaded on first conversion for the Docling layout/table models.
 
 ### 1. Clone & Install Dependencies
 
