@@ -610,6 +610,8 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
         // Actions
         processFile,
+        loadMarkdownDocument,
+        loadTextDocument,
         openFromLibrary,
         removeFromLibrary,
         handleFileUpload,
