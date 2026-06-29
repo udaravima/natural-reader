@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useWorkspace } from '../lib/WorkspaceContext';
 import { resolvePath, dirname } from '../utils/resolvePath';
 import { isNavigable } from '../lib/workspace';
@@ -46,6 +47,18 @@ export function WorkspaceLink({ href, children, ...props }) {
         <a {...props} href={href} onClick={onClick} className={LINK_CLASS}>
             {children}
         </a>
+    );
+}
+
+export function WorkspaceNav() {
+    const ws = useWorkspace();
+    if (!ws?.workspace) return null;
+    const btn = 'p-1 rounded disabled:opacity-30 hover:bg-black/10';
+    return (
+        <div className="flex items-center gap-1">
+            <button className={btn} onClick={ws.goBack} disabled={!ws.canGoBack} title="Back"><ChevronLeft size={18} /></button>
+            <button className={btn} onClick={ws.goForward} disabled={!ws.canGoForward} title="Forward"><ChevronRight size={18} /></button>
+        </div>
     );
 }
 

@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useReducer } fro
 
 const WorkspaceContext = createContext({ workspace: null });
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useWorkspace() {
     return useContext(WorkspaceContext);
 }
@@ -33,11 +34,15 @@ export function WorkspaceProvider({ workspace, initialPath, onOpenDoc, children 
     });
 
     const onOpenRef = useRef(onOpenDoc);
-    onOpenRef.current = onOpenDoc;
-
-    // Mirror state into a ref so goBack/goForward read fresh values.
     const stateRef = useRef(state);
-    stateRef.current = state;
+    // Sync latest onOpenDoc + state into refs AFTER render (not during render,
+    // which react-hooks/refs forbids) so navigate/goBack/goForward read fresh
+    // values. Initial useRef values already hold the first render's values, so
+    // the mount effect below still sees a valid onOpenDoc on first paint.
+    useEffect(() => {
+        onOpenRef.current = onOpenDoc;
+        stateRef.current = state;
+    });
 
     // Open the initial document once per workspace/initialPath.
     const openedKey = useRef(null);
@@ -77,7 +82,6 @@ export function WorkspaceProvider({ workspace, initialPath, onOpenDoc, children 
         navigate,
         goBack,
         goForward,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     }), [workspace, state]);
 
     return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;

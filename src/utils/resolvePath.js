@@ -7,6 +7,7 @@
 const SAFE_EXTERNAL_RE = /^(https?:|mailto:|\/\/)/i; // http(s):, mailto:, //cdn
 const SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;            // any explicit URI scheme
 // ASCII control chars (built via RegExp ctor to avoid embedding literal ones).
+// eslint-disable-next-line no-control-regex
 const CONTROL_CHARS = new RegExp('[\\u0000-\\u001F]', 'g');
 
 export function isExternal(href) {

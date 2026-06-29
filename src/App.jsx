@@ -17,7 +17,7 @@ import { OLLAMA_DEFAULTS } from './constants';
 import { buildApiUrl } from './utils/url';
 import { getOrComputeDocHash } from './utils/docHash';
 import { getBook } from './db';
-import { saveWorkspaceState } from './db';
+import { saveWorkspaceState, clearWorkspaceState } from './db';
 import { uploadPdfBytesToBackend } from './lib/uploadPdf';
 import { WorkspaceProvider } from './lib/WorkspaceContext';
 import { createFsaWorkspace, createSnapshotWorkspace, pickEntryFile, isMarkdownPath } from './lib/workspace';
@@ -991,6 +991,8 @@ export default function App() {
           bookProgress={bookProgress}
           onCancelBookDownload={cancelBookDownload}
           onEnterDistractionFree={() => setDistractionFree(true)}
+          workspaceName={workspace?.rootName}
+          onCloseWorkspace={() => { setWorkspace(null); setWorkspaceEntryPath(null); clearWorkspaceState(); }}
         />
       )}
 
