@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     createSnapshotWorkspace, indexDirectoryHandle, pickEntryFile, isNavigable,
+    isMarkdownPath, isTextPath,
 } from './workspace';
 
 function fakeFile(relPath, content) {
@@ -57,5 +58,17 @@ describe('isNavigable', () => {
         expect(isNavigable('a.markdown')).toBe(true);
         expect(isNavigable('a.txt')).toBe(true);
         expect(isNavigable('a.png')).toBe(false);
+    });
+});
+
+describe('isMarkdownPath / isTextPath', () => {
+    it('isMarkdownPath matches .md and .markdown, not .txt', () => {
+        expect(isMarkdownPath('a.md')).toBe(true);
+        expect(isMarkdownPath('a.markdown')).toBe(true);
+        expect(isMarkdownPath('a.txt')).toBe(false);
+    });
+    it('isTextPath matches .txt, not .md', () => {
+        expect(isTextPath('a.txt')).toBe(true);
+        expect(isTextPath('a.md')).toBe(false);
     });
 });

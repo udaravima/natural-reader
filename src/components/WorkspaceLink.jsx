@@ -65,6 +65,7 @@ export function WorkspaceNav() {
 export function WorkspaceImage({ src, alt, ...props }) {
     const ws = useWorkspace();
     const [url, setUrl] = useState(null);
+    // Intentionally mirrors resolvePath's external-scheme check: external/data: srcs pass through untouched.
     const relative = src && !/^([a-z]+:|\/\/|data:)/i.test(src);
 
     useEffect(() => {

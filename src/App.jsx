@@ -108,9 +108,14 @@ export default function App() {
 
   const pdfContainerRef = useRef(null);
   const [workspace, setWorkspace] = useState(null);
+  const workspaceRef = useRef(null);
   const [workspaceEntryPath, setWorkspaceEntryPath] = useState(null);
   const folderInputRef = useRef(null);
   const [reconnect, setReconnect] = useState(null); // { rootName } | null
+
+  // Mirror workspace into a ref so async restore/reconnect effects can check
+  // whether a manual open happened during the await without reading stale state.
+  useEffect(() => { workspaceRef.current = workspace; }, [workspace]);
 
   // --- HOOKS ---
   const theme = useTheme(darkMode);
@@ -520,6 +525,7 @@ export default function App() {
           const perm = await saved.handle.queryPermission({ mode: 'read' });
           if (perm === 'granted') {
             const ws = await createFsaWorkspace(saved.handle);
+            if (workspaceRef.current) return; // user opened a folder during the await
             setWorkspace(ws);
             setWorkspaceEntryPath(saved.lastPath || pickEntryFile(ws.listFiles()));
           } else {
@@ -542,6 +548,7 @@ export default function App() {
         const perm = await saved.handle.requestPermission({ mode: 'read' });
         if (perm === 'granted') {
           const ws = await createFsaWorkspace(saved.handle);
+          if (workspaceRef.current) return; // user opened a folder during the await
           setWorkspace(ws);
           setWorkspaceEntryPath(saved.lastPath || pickEntryFile(ws.listFiles()));
           setReconnect(null);
@@ -1141,7 +1148,7 @@ export default function App() {
             currentDocIndexState={pendingChatContext?.doc_id ? docIndexByDocId[pendingChatContext.doc_id]?.state : null}
           />
         ) : (
-        <WorkspaceProvider workspace={workspace} initialPath={workspaceEntryPath} onOpenDoc={onOpenDoc}>
+        <WorkspaceProvider workspace={workspace} initialPath={workspaceEntryPath} onOpenDoc={onOpenDoc} onMissing={(path) => showToast(`"${path}" isn't in this folder`, 3000)}>
           <PdfViewer
             theme={theme}
             darkMode={darkMode}

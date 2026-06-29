@@ -27,13 +27,14 @@ function reducer(state, action) {
     }
 }
 
-export function WorkspaceProvider({ workspace, initialPath, onOpenDoc, children }) {
+export function WorkspaceProvider({ workspace, initialPath, onOpenDoc, onMissing, children }) {
     const [state, dispatch] = useReducer(reducer, {
         history: initialPath ? [initialPath] : [],
         pointer: initialPath ? 0 : -1,
     });
 
     const onOpenRef = useRef(onOpenDoc);
+    const onMissingRef = useRef(onMissing);
     const stateRef = useRef(state);
     // Sync latest onOpenDoc + state into refs AFTER render (not during render,
     // which react-hooks/refs forbids) so navigate/goBack/goForward read fresh
@@ -41,6 +42,7 @@ export function WorkspaceProvider({ workspace, initialPath, onOpenDoc, children 
     // the mount effect below still sees a valid onOpenDoc on first paint.
     useEffect(() => {
         onOpenRef.current = onOpenDoc;
+        onMissingRef.current = onMissing;
         stateRef.current = state;
     });
 
@@ -82,6 +84,7 @@ export function WorkspaceProvider({ workspace, initialPath, onOpenDoc, children 
         navigate,
         goBack,
         goForward,
+        onMissing: (path) => onMissingRef.current?.(path),
     }), [workspace, state]);
 
     return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
