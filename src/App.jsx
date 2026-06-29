@@ -17,7 +17,7 @@ import { OLLAMA_DEFAULTS } from './constants';
 import { buildApiUrl } from './utils/url';
 import { getOrComputeDocHash } from './utils/docHash';
 import { getBook } from './db';
-import { saveWorkspaceState, clearWorkspaceState } from './db';
+import { saveWorkspaceState, clearWorkspaceState, getWorkspaceState } from './db';
 import { uploadPdfBytesToBackend } from './lib/uploadPdf';
 import { WorkspaceProvider } from './lib/WorkspaceContext';
 import { createFsaWorkspace, createSnapshotWorkspace, pickEntryFile, isMarkdownPath } from './lib/workspace';
@@ -110,6 +110,7 @@ export default function App() {
   const [workspace, setWorkspace] = useState(null);
   const [workspaceEntryPath, setWorkspaceEntryPath] = useState(null);
   const folderInputRef = useRef(null);
+  const [reconnect, setReconnect] = useState(null); // { rootName } | null
 
   // --- HOOKS ---
   const theme = useTheme(darkMode);
@@ -506,6 +507,53 @@ export default function App() {
     if (files && files.length) adoptWorkspace(createSnapshotWorkspace(files));
     e.target.value = '';
   }, [adoptWorkspace]);
+
+  // Restore a saved workspace on load. If the FSA handle still has permission,
+  // silently re-open it; otherwise surface a one-click reconnect affordance.
+  useEffect(() => {
+    if (!isLibLoaded) return;
+    (async () => {
+      try {
+        const saved = await getWorkspaceState();
+        if (!saved) return;
+        if (saved.handle && saved.handle.queryPermission) {
+          const perm = await saved.handle.queryPermission({ mode: 'read' });
+          if (perm === 'granted') {
+            const ws = await createFsaWorkspace(saved.handle);
+            setWorkspace(ws);
+            setWorkspaceEntryPath(saved.lastPath || pickEntryFile(ws.listFiles()));
+          } else {
+            setReconnect({ rootName: saved.rootName }); // needs a user gesture
+          }
+        } else {
+          setReconnect({ rootName: saved.rootName }); // snapshot: must re-pick
+        }
+      } catch (e) {
+        // Don't crash mount — workspace restore is best-effort.
+        console.warn('Workspace restore failed:', e);
+      }
+    })();
+  }, [isLibLoaded]); // stable state setters don't need to be listed
+
+  const reconnectFolder = useCallback(async () => {
+    try {
+      const saved = await getWorkspaceState();
+      if (saved?.handle?.requestPermission) {
+        const perm = await saved.handle.requestPermission({ mode: 'read' });
+        if (perm === 'granted') {
+          const ws = await createFsaWorkspace(saved.handle);
+          setWorkspace(ws);
+          setWorkspaceEntryPath(saved.lastPath || pickEntryFile(ws.listFiles()));
+          setReconnect(null);
+          return;
+        }
+      }
+      openFolder(); // snapshot or denied: full re-pick
+    } catch (e) {
+      console.warn('Reconnect failed:', e);
+      openFolder();
+    }
+  }, [openFolder]);
 
   // ---------- INDEXING ----------
   // When the open document changes, lazily hash it and fetch its backend
@@ -1131,6 +1179,13 @@ export default function App() {
             distractionFree={distractionFree}
             openFolder={openFolder}
           />
+          {reconnect && !workspace && (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-2 rounded-lg shadow-lg bg-white/90 dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700">
+              <button onClick={reconnectFolder} className="text-sm underline text-blue-500">
+                Reconnect folder &ldquo;{reconnect.rootName}&rdquo;
+              </button>
+            </div>
+          )}
         </WorkspaceProvider>
         )}
       </main>
