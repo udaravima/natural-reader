@@ -4,8 +4,8 @@
 #
 #   ./startup.sh init [podman|docker]   Check prerequisites, set up venv + deps,
 #                                       download models, install + build frontend.
-#   ./startup.sh up                     Start the Postgres container and the TTS backend.
-#   ./startup.sh down                   Stop the Postgres container.
+#   ./startup.sh up                     Start Postgres + the TTS backend (run.py).
+#   ./startup.sh down                   SIGTERM the TTS backend, then stop Postgres.
 #   ./startup.sh help                   Show usage.
 #
 # The container engine is resolved in this order: explicit arg to `init` →
@@ -24,6 +24,7 @@ readonly VENV_DIR=".venv"
 readonly POSTGRES_SERVICE="postgres"
 readonly POSTGRES_USER="natural_reader"
 readonly ENGINE_STATE_FILE=".local/container-engine"  # .local/ is gitignored
+readonly RUNNER_PIDFILE=".local/runner.pid"           # PID of the run.py backend
 
 readonly MODEL_BASE_URL="https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0"
 readonly MODEL_FILES=("kokoro-v1.0.onnx" "voices-v1.0.bin")
@@ -92,7 +93,8 @@ Commands:
                          backend deps, download Kokoro models, install + build
                          the frontend. The engine choice is remembered.
   up                     Start the Postgres container and the TTS backend (run.py).
-  down                   Stop the Postgres container.
+                         Runs in the foreground; Ctrl-C SIGTERMs the backend cleanly.
+  down                   SIGTERM the TTS backend (if running) and stop Postgres.
   help                   Show this message.
 
 Environment:
@@ -177,6 +179,21 @@ wait_for_postgres() {
 	warn "Postgres not ready after ${retries}s; continuing (TTS still works, RAG may 503)."
 }
 
+# SIGTERM the run.py backend recorded in RUNNER_PIDFILE (started by `up`), if it
+# is still alive, then remove the pidfile. Idempotent and safe to call when no
+# runner is recorded — used both by `down` and by the `up` shutdown trap.
+stop_runner() {
+	[[ -f "$RUNNER_PIDFILE" ]] || return 0
+	local pid; pid="$(<"$RUNNER_PIDFILE")"
+	if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+		log "Stopping Neural Voice Server (SIGTERM pid $pid)"
+		kill -TERM "$pid" 2>/dev/null || true
+		# Give it a few seconds to shut down cleanly before giving up.
+		for _ in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+	fi
+	rm -f "$RUNNER_PIDFILE"
+}
+
 cmd_init() {
 	local engine
 	engine="$(resolve_engine "${1:-}")"
@@ -238,12 +255,23 @@ cmd_up() {
 	wait_for_postgres "$engine"
 
 	log "Starting Neural Voice Server (run.py)"
-	exec "$VENV_DIR/bin/python" run.py
+	mkdir -p "$(dirname "$RUNNER_PIDFILE")"
+	"$VENV_DIR/bin/python" run.py &
+	local runner_pid=$!
+	printf '%s' "$runner_pid" >"$RUNNER_PIDFILE"
+	# Trap: if this shell is interrupted (Ctrl-C), terminated, or exits for any
+	# reason, SIGTERM the backend and clean up the pidfile so it never goes
+	# stale. stop_runner reads the pidfile, so the handler needs no local state.
+	trap stop_runner INT TERM EXIT
+	wait "$runner_pid"
 }
 
 cmd_down() {
 	local engine
 	engine="$(resolve_engine)"
+	# SIGTERM the run.py backend started by a previous `up` (via its pidfile),
+	# then bring the containers down.
+	stop_runner
 	log "Stopping containers ($engine)"
 	compose "$engine" down
 }
