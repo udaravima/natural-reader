@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.8.0] - 2026-07-28
+
+### Added
+- **Chrome "Read Aloud" extension (`extension/`, v0.1).** A Manifest V3 browser extension that reads the selected text or the whole page aloud on any site through the same local Kokoro TTS backend the app uses (`http://localhost:8000`). Vanilla JS, **no build step** — load `extension/` unpacked. A floating Shadow-DOM toolbar (play/pause, stop, seek, voice, speed, drag, close) is injected on demand via the right-click menu or the popup; whole-page reads are split into ~30-sentence chunks and played back-to-back with prefetch-one-ahead, so audio starts after the first chunk instead of the whole page. Includes a popup (read buttons + backend status dot) and an options page (default voice, speed, backend URL, test-connection). Loopback-only host permissions; page/selection text is rendered `textContent`-only (XSS-safe); the backend is unchanged. Pure `shared/` modules are unit-tested (20 tests); built TDD via subagent-driven development. See [extension/README.md](extension/README.md); design spec + plan in [docs/superpowers/](docs/superpowers/).
+- **Markdown folder workspace.** Open a folder (File System Access API, with a `webkitdirectory` picker fallback) so a Markdown/text document's cross-file links actually navigate: relative `.md`/`.txt` links open the target in the reader, `#heading` anchors scroll to the heading (via `rehype-slug` ids), and relative images render from the folder. Adds Back/Forward history with a header workspace badge; workspace state is persisted in IndexedDB (new v4 store) and restored on load (File System Access re-permission prompt, or a re-pick for the snapshot fallback). Link hrefs pass through a safe-scheme allowlist that rejects `javascript:` / `data:` / other dangerous schemes. New Vitest + Testing Library test infrastructure underpins it. ([src/lib/workspace.js](src/lib/workspace.js), [src/lib/WorkspaceContext.jsx](src/lib/WorkspaceContext.jsx), [src/components/WorkspaceLink.jsx](src/components/WorkspaceLink.jsx), [src/utils/resolvePath.js](src/utils/resolvePath.js))
+
+### Changed
+- **`startup.sh` modernised into a real lifecycle script.** Rewritten with `set -euo pipefail`, container-engine auto-detection (docker / podman), and pre-flight **version checks** (Node `≥20.19` or `≥22.12`, Python `3.10–3.13`) before it runs anything. Model downloads are now **atomic and idempotent** — the Kokoro ONNX model and voice pack are fetched to a `.partial` temp and moved into place only on success, and already-present files are skipped instead of re-downloaded. `up` starts the `run.py` backend under a pidfile; `down` — and Ctrl-C during `up` — **SIGTERM** the backend and bring the containers down cleanly via a trap (engine-aware, so nothing is left running). The README gained a tiered **Software Requirements** section.
+
+### Caveats / known limitations
+- **Extension site compatibility.** The extension works on ordinary pages (Wikipedia, blogs, docs) but can fail on sites with a **strict Content-Security-Policy** (e.g. `claude.ai`) — the content script's dynamic module import gets blocked and a small "could not start on this page" notice shows instead of the toolbar. It also only runs in the **top page**, so text inside a **sandboxed iframe** (e.g. an embedded artifact) reports "nothing to read", and the localhost fetch from an HTTPS page may be gated by Chrome's **Private Network Access** depending on Chrome version. These are documented in [extension/README.md](extension/README.md#site-compatibility-known) and slated for a follow-up (route synthesis through the service worker).
+- **No highlight-follow** in the extension (no word-by-word highlight), and **loopback backend only** (`localhost` / `127.0.0.1`) — remote/hosted backends are not yet supported.
+
 ## [1.7.3] - 2026-05-23
 
 ### Fixed

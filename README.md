@@ -50,6 +50,11 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 - **Reasoning Trace Toggle** — Enable thinking to send `think: true` to Ollama and see reasoning trace (deepseek-r1, qwen3-thinking, gpt-oss, …) in a collapsible disclosure that auto-expands while streaming
 - **Per-Message Copy** — One-click copy of any chat message to clipboard
 
+### 🧩 Chrome Read-Aloud Extension & Markdown Folder Workspace *(new in `v1.8.0`)*
+
+- **Chrome "Read Aloud" extension** — A Manifest V3 browser extension (in [`extension/`](extension/)) that reads the selected text or the whole page aloud on any site through this project's local Kokoro TTS backend. No build step — load `extension/` unpacked. Floating Shadow-DOM toolbar (play/pause, stop, seek, voice, speed) via right-click or a popup; whole-page reads chunk into sentences and stream with prefetch. Loopback-only permissions, backend unchanged. Setup + known site limits in [extension/README.md](extension/README.md).
+- **Markdown folder workspace** — Open a folder so a Markdown/text file's cross-file links navigate in-reader: relative `.md`/`.txt` links open the target, `#heading` anchors scroll, relative images render, with Back/Forward history. Uses the File System Access API (with a folder-picker fallback), persists across reloads, and rejects dangerous link schemes.
+
 ### 🪄 Docling Conversion, Audiobook & Chat Audio *(new in `v1.7.x`)*
 
 - **Convert PDF → Markdown with Docling** — Optional backend pipeline (gated by `DOCLING_ENABLED=true`) that turns a PDF into layout-aware Markdown using [Docling](https://github.com/DS4SD/docling). Click **Convert** in the PDF toolbar to pick a quality preset (Fast / Standard / Accurate — the Accurate path uses GraniteDocling VLM), force-enable OCR for scanned PDFs, toggle table extraction, choose image handling (drop / embed-base64 / VLM-describe), or limit a page range. After conversion the doc is auto re-chunked + re-embedded so RAG picks up tables and headings the native pdf.js extractor missed.

@@ -29,20 +29,49 @@ The extension will show a green status dot in the popup when the backend is heal
 
 ## Usage
 
-- **Read Selection:** Right-click on selected text → **"Read aloud"** (toolbar pops up with playback controls; audio plays immediately)
-- **Read Whole Page:** Right-click on the page → **"Read page"** (text is chunked automatically; a toolbar shows the progress, e.g., "Chunk 3 / 10")
+- **Read Selection:** Select text → right-click → **"Read selection aloud"** (toolbar pops up with playback controls; audio plays immediately)
+- **Read Whole Page:** Right-click on the page → **"Read whole page aloud"** (text is chunked automatically; a toolbar shows the progress, e.g., "chunk 3 / 10")
 - **Playback Controls:** Play/Pause, Stop, and seek bar in the toolbar
 - **Voice & Speed:** Click the extension popup → **Options** or right-click the extension icon → **Options page**
   - Choose a voice, adjust playback speed, and optionally change the backend URL
   - Click **Test connection** to verify the backend is reachable
 - **Close:** Click the ✕ button on the toolbar to dismiss the audio player
 
-## Limitations (v1)
+## Limitations (v0.1)
 
 - **Backend:** only works with the local Kokoro TTS backend at `http://localhost:8000`; remote backends are not yet supported
 - **Highlight follow:** no visual highlight of words as they are read
 - **Page extraction:** basic extraction; some complex layouts or dynamic content may not extract correctly
 - **Navigation:** audio stops if you navigate away from the current page
+
+## Site compatibility (known)
+
+The extension works on ordinary web pages — Wikipedia, blogs, documentation
+sites, most articles. It can fail on some sites, by design of how a content
+script reaches its code and the page:
+
+- **Strict Content-Security-Policy sites** (e.g. `claude.ai`, some banks, GitHub):
+  the content script loads its logic with a dynamic `import()` of the extension's
+  own modules, which a strict page CSP can block. When that happens you'll see a
+  small dark notice like *"Read Aloud: Failed to fetch dynamically imported
+  module…"* instead of the toolbar. A future version can route synthesis through
+  the service worker to avoid this.
+- **Sandboxed iframes / embedded content** (e.g. a rendered artifact inside a host
+  page): the content script runs only in the top page, so text living inside a
+  sandboxed iframe isn't seen — a "read whole page" there may report *"nothing to
+  read."*
+- **Private Network Access:** the page-context fetch to `http://localhost:8000` can
+  be gated by Chrome's PNA on some HTTPS sites depending on your Chrome version. If
+  reads work on `http` pages / localhost but not on an HTTPS site while the popup
+  dot stays green, this is the likely cause.
+
+## Known rough edges (deferred)
+
+- Stopping/closing doesn't abort an in-flight synthesis request server-side (the
+  audio is just discarded client-side).
+- Rapid double-triggers (e.g. selection-read while a page-read is starting) can
+  briefly spawn a second toolbar.
+- Toolbar labels lack full ARIA associations.
 
 ## Manual E2E Checklist
 

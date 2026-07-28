@@ -260,9 +260,10 @@ cmd_up() {
 	local runner_pid=$!
 	printf '%s' "$runner_pid" >"$RUNNER_PIDFILE"
 	# Trap: if this shell is interrupted (Ctrl-C), terminated, or exits for any
-	# reason, SIGTERM the backend and clean up the pidfile so it never goes
-	# stale. stop_runner reads the pidfile, so the handler needs no local state.
-	trap stop_runner INT TERM EXIT
+	# reason, SIGTERM the backend AND bring the containers down (engine-aware) so
+	# nothing is left running. Clear the trap first so an INT followed by the EXIT
+	# trap can't run the teardown twice.
+	trap 'trap - INT TERM EXIT; stop_runner; log "Stopping containers ($engine)"; compose "$engine" down' INT TERM EXIT
 	wait "$runner_pid"
 }
 
