@@ -6,6 +6,7 @@ export default function WelcomeScreen({
     recentBooks,
     openFromLibrary,
     removeFromLibrary,
+    openFolder,
 }) {
     return (
         <div className={`flex flex-col items-center justify-center p-6 md:p-12 text-center gap-6 ${theme.canvasBg} min-h-[400px] md:min-h-[600px] w-full md:min-w-[500px]`}>
@@ -19,13 +20,24 @@ export default function WelcomeScreen({
                 <p className={`${theme.textSecondary} font-semibold mb-2 text-lg`}>Open a PDF, Text or Markdown File</p>
                 <p className={`text-sm ${theme.textMuted}`}>Click to browse or drag &amp; drop a .pdf, .txt, or .md</p>
             </div>
-            <button
-                onClick={() => fileInputRef.current.click()}
-                className="px-6 py-2.5 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-md"
-            >
-                <Upload size={16} className="inline mr-2" />
-                Choose File
-            </button>
+            <div className="flex items-center gap-3">
+                <button
+                    onClick={() => fileInputRef.current.click()}
+                    className="px-6 py-2.5 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-md"
+                >
+                    <Upload size={16} className="inline mr-2" />
+                    Choose File
+                </button>
+                {openFolder && (
+                    <button
+                        type="button"
+                        onClick={openFolder}
+                        className="px-4 py-2 rounded-lg border text-sm font-medium hover:bg-black/5"
+                    >
+                        Open folder
+                    </button>
+                )}
+            </div>
 
             {/* LIBRARY - Recent Books */}
             {recentBooks.length > 0 && (

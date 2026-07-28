@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { max-width: 420px; margin: 40px auto; font: 14px system-ui, sans-serif; }
+    label { display: block; margin: 14px 0 4px; font-weight: 600; }
+    input, select { width: 100%; box-sizing: border-box; padding: 6px; }
+    .row { display: flex; gap: 8px; align-items: center; }
+    button { padding: 8px 14px; margin-top: 8px; cursor: pointer; }
+    #testResult { margin-left: 10px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>Read Aloud — Settings</h1>
+  <label>Default voice</label>
+  <select id="voice"></select>
+  <label>Default speed <span id="speedVal"></span></label>
+  <input id="speed" type="range" min="0.5" max="2" step="0.1" />
+  <label>Backend URL</label>
+  <input id="baseUrl" type="text" />
+  <div class="row">
+    <button id="test">Test connection</button>
+    <span id="testResult"></span>
+  </div>
+  <script type="module" src="options.js"></script>
+</body>
+</html>

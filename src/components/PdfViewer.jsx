@@ -9,6 +9,7 @@ import MarkdownPageRenderer from './MarkdownPageRenderer';
 import MarkdownReader from './MarkdownReader';
 import IndexButton from './IndexButton';
 import ConvertButton from './ConvertButton';
+import { WorkspaceNav } from './WorkspaceLink';
 
 export default function PdfViewer({
     theme,
@@ -46,6 +47,7 @@ export default function PdfViewer({
     viewMode, // 'pdf' | 'md'
     setViewMode,
     distractionFree = false,
+    openFolder,
 }) {
     const isText = fileType === 'text';
     const isMarkdown = fileType === 'markdown';
@@ -60,8 +62,9 @@ export default function PdfViewer({
             {/* PDF OPTIONS TOOLBAR */}
             {hasDoc && !distractionFree && (
                 <div className={`flex items-center justify-between px-4 py-2 ${theme.bgSecondary} border-b ${theme.border} shrink-0`}>
-                    {/* LEFT: Page Navigation */}
+                    {/* LEFT: Page Navigation + Workspace Back/Forward */}
                     <div className="flex items-center gap-2">
+                        <WorkspaceNav />
                         <button
                             onClick={goToPrevPage}
                             disabled={currentPage <= 1}
@@ -289,6 +292,7 @@ export default function PdfViewer({
                             recentBooks={recentBooks}
                             openFromLibrary={openFromLibrary}
                             removeFromLibrary={removeFromLibrary}
+                            openFolder={openFolder}
                         />
                     )}
                 </div>

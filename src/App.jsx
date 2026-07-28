@@ -17,7 +17,10 @@ import { OLLAMA_DEFAULTS } from './constants';
 import { buildApiUrl } from './utils/url';
 import { getOrComputeDocHash } from './utils/docHash';
 import { getBook } from './db';
+import { saveWorkspaceState, clearWorkspaceState, getWorkspaceState } from './db';
 import { uploadPdfBytesToBackend } from './lib/uploadPdf';
+import { WorkspaceProvider } from './lib/WorkspaceContext';
+import { createFsaWorkspace, createSnapshotWorkspace, pickEntryFile, isMarkdownPath } from './lib/workspace';
 
 // Components
 import Header from './components/Header';
@@ -104,6 +107,15 @@ export default function App() {
   const [convertDialogOpen, setConvertDialogOpen] = useState(false);
 
   const pdfContainerRef = useRef(null);
+  const [workspace, setWorkspace] = useState(null);
+  const workspaceRef = useRef(null);
+  const [workspaceEntryPath, setWorkspaceEntryPath] = useState(null);
+  const folderInputRef = useRef(null);
+  const [reconnect, setReconnect] = useState(null); // { rootName } | null
+
+  // Mirror workspace into a ref so async restore/reconnect effects can check
+  // whether a manual open happened during the await without reading stale state.
+  useEffect(() => { workspaceRef.current = workspace; }, [workspace]);
 
   // --- HOOKS ---
   const theme = useTheme(darkMode);
@@ -122,6 +134,8 @@ export default function App() {
     markdownPageData,
     extractAllChunks,
     closeDocument,
+    loadMarkdownDocument,
+    loadTextDocument,
   } = pdfEngine;
 
   const inChat = viewMode === 'chat';
@@ -445,6 +459,108 @@ export default function App() {
     setCurrentDocId(null);
     setPendingChatContext(null);
   }, [stopPlayback, stopChatPlayback, closeDocument]);
+
+  // ---------- WORKSPACE (folder open) ----------
+  // Loads a workspace-relative file into the reader WITHOUT touching the
+  // 5-doc library (synthesized docs are workspace-scoped). Reused for initial
+  // open, link navigation, and Back/Forward.
+  const onOpenDoc = useCallback(async (path, { anchor } = {}) => {
+    if (!workspace) return;
+    try {
+      const text = await workspace.readText(path);
+      const name = path.split('/').pop();
+      if (isMarkdownPath(path)) loadMarkdownDocument(text, name);
+      else loadTextDocument(text, name);
+      saveWorkspaceState({ rootName: workspace.rootName, handle: workspace.handle || null, lastPath: path });
+      if (anchor) {
+        setTimeout(() => {
+          const el = document.getElementById(anchor);
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 100);
+      }
+    } catch {
+      showToast('Could not open that file from the folder.', 3000);
+    }
+  }, [workspace, loadMarkdownDocument, loadTextDocument, showToast]);
+
+  const adoptWorkspace = useCallback((ws) => {
+    const entry = pickEntryFile(ws.listFiles());
+    if (!entry) {
+      showToast('No Markdown files found in that folder.', 4000);
+      return;
+    }
+    setWorkspace(ws);
+    setWorkspaceEntryPath(entry);
+    setViewMode('reader');
+  }, [showToast, setViewMode]);
+
+  const openFolder = useCallback(async () => {
+    if (typeof window !== 'undefined' && window.showDirectoryPicker) {
+      try {
+        const handle = await window.showDirectoryPicker({ mode: 'read' });
+        adoptWorkspace(await createFsaWorkspace(handle));
+      } catch (e) {
+        if (e?.name !== 'AbortError') showToast('Could not open folder.', 3000);
+      }
+    } else {
+      folderInputRef.current?.click(); // webkitdirectory fallback
+    }
+  }, [adoptWorkspace, showToast]);
+
+  const handleFolderInput = useCallback((e) => {
+    const files = e.target.files;
+    if (files && files.length) adoptWorkspace(createSnapshotWorkspace(files));
+    e.target.value = '';
+  }, [adoptWorkspace]);
+
+  // Restore a saved workspace on load. If the FSA handle still has permission,
+  // silently re-open it; otherwise surface a one-click reconnect affordance.
+  useEffect(() => {
+    if (!isLibLoaded) return;
+    (async () => {
+      try {
+        const saved = await getWorkspaceState();
+        if (!saved) return;
+        if (saved.handle && saved.handle.queryPermission) {
+          const perm = await saved.handle.queryPermission({ mode: 'read' });
+          if (perm === 'granted') {
+            const ws = await createFsaWorkspace(saved.handle);
+            if (workspaceRef.current) return; // user opened a folder during the await
+            setWorkspace(ws);
+            setWorkspaceEntryPath(saved.lastPath || pickEntryFile(ws.listFiles()));
+          } else {
+            setReconnect({ rootName: saved.rootName }); // needs a user gesture
+          }
+        } else {
+          setReconnect({ rootName: saved.rootName }); // snapshot: must re-pick
+        }
+      } catch (e) {
+        // Don't crash mount — workspace restore is best-effort.
+        console.warn('Workspace restore failed:', e);
+      }
+    })();
+  }, [isLibLoaded]); // stable state setters don't need to be listed
+
+  const reconnectFolder = useCallback(async () => {
+    try {
+      const saved = await getWorkspaceState();
+      if (saved?.handle?.requestPermission) {
+        const perm = await saved.handle.requestPermission({ mode: 'read' });
+        if (perm === 'granted') {
+          const ws = await createFsaWorkspace(saved.handle);
+          if (workspaceRef.current) return; // user opened a folder during the await
+          setWorkspace(ws);
+          setWorkspaceEntryPath(saved.lastPath || pickEntryFile(ws.listFiles()));
+          setReconnect(null);
+          return;
+        }
+      }
+      openFolder(); // snapshot or denied: full re-pick
+    } catch (e) {
+      console.warn('Reconnect failed:', e);
+      openFolder();
+    }
+  }, [openFolder]);
 
   // ---------- INDEXING ----------
   // When the open document changes, lazily hash it and fetch its backend
@@ -930,6 +1046,8 @@ export default function App() {
           bookProgress={bookProgress}
           onCancelBookDownload={cancelBookDownload}
           onEnterDistractionFree={() => setDistractionFree(true)}
+          workspaceName={workspace?.rootName}
+          onCloseWorkspace={() => { setWorkspace(null); setWorkspaceEntryPath(null); clearWorkspaceState(); }}
         />
       )}
 
@@ -1030,42 +1148,52 @@ export default function App() {
             currentDocIndexState={pendingChatContext?.doc_id ? docIndexByDocId[pendingChatContext.doc_id]?.state : null}
           />
         ) : (
-        <PdfViewer
-          theme={theme}
-          darkMode={darkMode}
-          effectiveIsMobile={effectiveIsMobile}
-          pdfDoc={pdfDoc}
-          fileType={fileType}
-          textItems={textItems}
-          currentSentenceIndex={currentSentenceIndex}
-          currentPage={currentPage} setCurrentPage={setCurrentPage}
-          goToNextPage={goToNextPage} goToPrevPage={goToPrevPage}
-          numPages={numPages}
-          scale={scale} setScale={setScale}
-          canvasRef={canvasRef}
-          textLayerRef={textLayerRef}
-          pdfContainerRef={pdfContainerRef}
-          fileInputRef={fileInputRef}
-          recentBooks={recentBooks}
-          openFromLibrary={openFromLibrary}
-          removeFromLibrary={removeFromLibrary}
-          markdownPageData={markdownPageData}
-          onAskAboutPage={handleAskAboutPage}
-          indexEntry={currentDocId ? docIndexByDocId[currentDocId] : null}
-          onIndexDocument={handleIndexDocument}
-          docId={currentDocId}
-          apiHost={apiHost}
-          apiPort={apiPort}
-          convertState={currentConvertEntry?.state || 'idle'}
-          convertError={currentConvertEntry?.error}
-          convertedPageCount={currentConvertEntry?.pageCount}
-          onOpenConvertDialog={fileType === 'pdf' ? openConvertDialog : null}
-          onExportMarkdown={handleExportMarkdown}
-          onDeleteMarkdown={handleDeleteMarkdown}
-          viewMode={currentDocView}
-          setViewMode={setCurrentDocView}
-          distractionFree={distractionFree}
-        />
+        <WorkspaceProvider workspace={workspace} initialPath={workspaceEntryPath} onOpenDoc={onOpenDoc} onMissing={(path) => showToast(`"${path}" isn't in this folder`, 3000)}>
+          <PdfViewer
+            theme={theme}
+            darkMode={darkMode}
+            effectiveIsMobile={effectiveIsMobile}
+            pdfDoc={pdfDoc}
+            fileType={fileType}
+            textItems={textItems}
+            currentSentenceIndex={currentSentenceIndex}
+            currentPage={currentPage} setCurrentPage={setCurrentPage}
+            goToNextPage={goToNextPage} goToPrevPage={goToPrevPage}
+            numPages={numPages}
+            scale={scale} setScale={setScale}
+            canvasRef={canvasRef}
+            textLayerRef={textLayerRef}
+            pdfContainerRef={pdfContainerRef}
+            fileInputRef={fileInputRef}
+            recentBooks={recentBooks}
+            openFromLibrary={openFromLibrary}
+            removeFromLibrary={removeFromLibrary}
+            markdownPageData={markdownPageData}
+            onAskAboutPage={handleAskAboutPage}
+            indexEntry={currentDocId ? docIndexByDocId[currentDocId] : null}
+            onIndexDocument={handleIndexDocument}
+            docId={currentDocId}
+            apiHost={apiHost}
+            apiPort={apiPort}
+            convertState={currentConvertEntry?.state || 'idle'}
+            convertError={currentConvertEntry?.error}
+            convertedPageCount={currentConvertEntry?.pageCount}
+            onOpenConvertDialog={fileType === 'pdf' ? openConvertDialog : null}
+            onExportMarkdown={handleExportMarkdown}
+            onDeleteMarkdown={handleDeleteMarkdown}
+            viewMode={currentDocView}
+            setViewMode={setCurrentDocView}
+            distractionFree={distractionFree}
+            openFolder={openFolder}
+          />
+          {reconnect && !workspace && (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-2 rounded-lg shadow-lg bg-white/90 dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700">
+              <button onClick={reconnectFolder} className="text-sm underline text-blue-500">
+                Reconnect folder &ldquo;{reconnect.rootName}&rdquo;
+              </button>
+            </div>
+          )}
+        </WorkspaceProvider>
         )}
       </main>
 
@@ -1114,6 +1242,17 @@ export default function App() {
           setCurrentPage={setCurrentPage}
         />
       )}
+
+      {/* Hidden folder input — webkitdirectory fallback when showDirectoryPicker is unavailable */}
+      <input
+        ref={folderInputRef}
+        type="file"
+        webkitdirectory=""
+        directory=""
+        multiple
+        style={{ display: 'none' }}
+        onChange={handleFolderInput}
+      />
     </div>
   );
 }

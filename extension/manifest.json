@@ -1,0 +1,14 @@
+{
+  "manifest_version": 3,
+  "name": "Natural Reader — Read Aloud",
+  "version": "0.1.0",
+  "description": "Read selected text or the whole page aloud using the local Kokoro TTS backend.",
+  "permissions": ["contextMenus", "activeTab", "scripting", "storage"],
+  "host_permissions": ["http://localhost/*", "http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "action": { "default_popup": "popup/popup.html", "default_title": "Read Aloud" },
+  "options_page": "options/options.html",
+  "web_accessible_resources": [
+    { "resources": ["shared/*.js", "content/toolbar.css"], "matches": ["<all_urls>"] }
+  ]
+}

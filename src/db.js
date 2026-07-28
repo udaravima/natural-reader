@@ -4,9 +4,10 @@
  */
 
 const DB_NAME = 'neural-pdf-library';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const STORE_NAME = 'books';
 const SESSIONS_STORE = 'chat_sessions';
+const WORKSPACE_STORE = 'workspaces';
 const MAX_BOOKS = 5; // Keep last 5 books
 const MAX_SESSIONS = 50; // Cap chat history at 50 sessions (LRU by updatedAt)
 
@@ -53,6 +54,12 @@ const openDB = () => {
                 if (!db.objectStoreNames.contains(SESSIONS_STORE)) {
                     const sessionsStore = db.createObjectStore(SESSIONS_STORE, { keyPath: 'id' });
                     sessionsStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+                }
+            }
+            // v3 → v4: workspace persistence (one record, id 'last')
+            if (event.oldVersion < 4) {
+                if (!db.objectStoreNames.contains(WORKSPACE_STORE)) {
+                    db.createObjectStore(WORKSPACE_STORE, { keyPath: 'id' });
                 }
             }
         };
@@ -366,5 +373,66 @@ const cleanupOldSessions = async (store) => {
                 req.onerror = resolve;
             });
         }
+    }
+};
+
+// =====================================================================
+// WORKSPACE STATE (single record, id 'last')
+//   { id:'last', rootName, handle?, lastPath }
+// `handle` is a structured-clonable FileSystemDirectoryHandle (FSA only);
+// snapshot workspaces persist rootName + lastPath without a handle.
+// =====================================================================
+
+export const saveWorkspaceState = async ({ rootName, handle = null, lastPath = null }) => {
+    try {
+        const db = await openDB();
+        const tx = db.transaction(WORKSPACE_STORE, 'readwrite');
+        const store = tx.objectStore(WORKSPACE_STORE);
+        await new Promise((resolve, reject) => {
+            const req = store.put({ id: 'last', rootName, handle, lastPath });
+            req.onsuccess = resolve;
+            req.onerror = () => reject(req.error);
+        });
+        db.close();
+        return true;
+    } catch (e) {
+        console.error('Failed to save workspace state:', e);
+        return false;
+    }
+};
+
+export const getWorkspaceState = async () => {
+    try {
+        const db = await openDB();
+        const tx = db.transaction(WORKSPACE_STORE, 'readonly');
+        const store = tx.objectStore(WORKSPACE_STORE);
+        const result = await new Promise((resolve, reject) => {
+            const req = store.get('last');
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+        db.close();
+        return result || null;
+    } catch (e) {
+        console.error('Failed to read workspace state:', e);
+        return null;
+    }
+};
+
+export const clearWorkspaceState = async () => {
+    try {
+        const db = await openDB();
+        const tx = db.transaction(WORKSPACE_STORE, 'readwrite');
+        const store = tx.objectStore(WORKSPACE_STORE);
+        await new Promise((resolve, reject) => {
+            const req = store.delete('last');
+            req.onsuccess = resolve;
+            req.onerror = () => reject(req.error);
+        });
+        db.close();
+        return true;
+    } catch (e) {
+        console.error('Failed to clear workspace state:', e);
+        return false;
     }
 };

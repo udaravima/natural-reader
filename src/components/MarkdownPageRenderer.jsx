@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import rehypeSlug from 'rehype-slug';
+import { WorkspaceLink, WorkspaceImage } from './WorkspaceLink';
 
 /**
  * Renders a paginated chunk of markdown via react-markdown + remark-gfm.
@@ -86,9 +88,7 @@ export default function MarkdownPageRenderer({
         ol: wrapBlock('ol', 'list-decimal pl-7 my-2 leading-relaxed'),
         li: ({ children, ...props }) => <li {...props} className="my-1">{children}</li>,
         a: ({ children, href, ...props }) => (
-            <a {...props} href={href} target="_blank" rel="noopener noreferrer" className="text-blue-500 underline break-words">
-                {children}
-            </a>
+            <WorkspaceLink {...props} href={href}>{children}</WorkspaceLink>
         ),
         code: ({ inline, children, ...props }) => inline
             ? <code {...props} className={`px-1 py-0.5 rounded text-[0.9em] font-mono ${darkMode ? 'bg-slate-700/60' : 'bg-slate-200'}`}>{children}</code>
@@ -142,9 +142,7 @@ export default function MarkdownPageRenderer({
         hr: ({ ...props }) => (
             <hr {...props} className={`my-6 ${darkMode ? 'border-slate-700' : 'border-slate-300'}`} />
         ),
-        img: ({ alt, src, ...props }) => (
-            <img {...props} alt={alt} src={src} className="max-w-full rounded-md my-3" />
-        ),
+        img: ({ alt, src, ...props }) => <WorkspaceImage {...props} alt={alt} src={src} />,
     };
 
     if (!pageData || (pageData.blocks?.length ?? 0) === 0) {
@@ -173,7 +171,7 @@ export default function MarkdownPageRenderer({
                 minHeight: '60vh',
             }}
         >
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSlug]} components={components}>
                 {pageData.rawMarkdown}
             </ReactMarkdown>
         </div>

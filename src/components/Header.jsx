@@ -35,6 +35,8 @@ export default function Header({
     bookProgress,
     onCancelBookDownload,
     onEnterDistractionFree,
+    workspaceName,
+    onCloseWorkspace,
 }) {
     const isExportingBook = !!bookProgress;
     const inChat = viewMode === 'chat';
@@ -56,6 +58,12 @@ export default function Header({
                     <h1 className={`text-sm font-bold uppercase tracking-tighter ${theme.textSecondary}`}>Neural PDF</h1>
                     <p className="text-[10px] font-bold text-blue-500 truncate max-w-[200px]">{status}</p>
                 </div>
+                {workspaceName && (
+                    <div className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-blue-500/10 text-blue-500">
+                        <span className="truncate max-w-[140px]">📁 {workspaceName}</span>
+                        <button onClick={onCloseWorkspace} title="Close folder" className="hover:opacity-70">×</button>
+                    </div>
+                )}
             </div>
 
             {/* PLAYBACK CONTROLS — reader mode only */}
