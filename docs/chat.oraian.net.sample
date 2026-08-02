@@ -74,6 +74,12 @@ server {
 
         # Standard Proxy Headers
         proxy_set_header Host localhost:11434;
+        # Ollama 403s cross-origin requests: its CORS check compares the browser's
+        # Origin against Host / OLLAMA_ORIGINS, and the browser sends Origin on
+        # every non-GET (so POST /api/chat fails while GET /api/tags passes). We
+        # already rewrite Host to localhost:11434, so strip Origin here → Ollama
+        # treats it as a same-origin (non-CORS) request and allows it.
+        proxy_set_header Origin "";
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
