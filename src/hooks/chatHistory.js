@@ -32,3 +32,17 @@ export const buildApiMessage = (m) => {
 // so the excerpt is adjacent to the user message either way.
 export const buildChatHistory = ({ priorMessages = [], contextPreamble = [], userMsg }) =>
     [...priorMessages, ...contextPreamble, userMsg].map(buildApiMessage);
+
+// Turn pins into `system` preamble messages (one per pin). Passed as the
+// `contextPreamble` to buildChatHistory so they sit right before the user turn.
+export const buildPinPreamble = (pins = []) =>
+    pins.map((p) => ({
+        role: 'system',
+        content:
+            `The user is reading "${p.fileName || 'a document'}".\n` +
+            `Relevant excerpt (${p.kind || 'page'}` +
+            `${p.page != null ? `, page ${p.page}` : ''}):\n\n` +
+            `"""\n${p.text}\n"""\n\n` +
+            `Use this excerpt as primary context for the user's question. If it does ` +
+            `not contain the answer, say so or use the document search tool if available.`,
+    }));

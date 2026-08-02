@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildApiMessage, buildChatHistory } from './chatHistory';
+import { buildApiMessage, buildChatHistory, buildPinPreamble } from './chatHistory';
 
 describe('buildApiMessage', () => {
     it('maps role + content, defaulting missing content to an empty string', () => {
@@ -86,5 +86,36 @@ describe('buildChatHistory', () => {
         expect(history.map(m => m.role)).toEqual(['user', 'system', 'system', 'user']);
         expect(history[history.length - 2].content).toBe(retrieved.content);
         expect(history[history.length - 3].content).toBe(excerpt.content);
+    });
+});
+
+describe('buildPinPreamble', () => {
+    const pin = (over = {}) => ({ id: 'x', doc_id: 'd', fileName: 'moon.md', page: 3, kind: 'selection', text: 'cheese', ...over });
+
+    it('returns [] for no pins', () => {
+        expect(buildPinPreamble([])).toEqual([]);
+        expect(buildPinPreamble()).toEqual([]);
+    });
+
+    it('emits one system block per pin, preserving order', () => {
+        const out = buildPinPreamble([pin({ text: 'one' }), pin({ text: 'two', page: null, kind: 'page' })]);
+        expect(out).toHaveLength(2);
+        expect(out.every((m) => m.role === 'system')).toBe(true);
+        expect(out[0].content).toContain('moon.md');
+        expect(out[0].content).toContain('one');
+        expect(out[0].content).toContain('page 3');
+        expect(out[1].content).toContain('two');
+        expect(out[1].content).not.toContain('page '); // page is null → no page label
+    });
+
+    it('composes with buildChatHistory: pins land right before the user message', () => {
+        // (buildChatHistory is already imported at the top of this file)
+        const history = buildChatHistory({
+            priorMessages: [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }],
+            contextPreamble: buildPinPreamble([pin({ text: 'ctx' })]),
+            userMsg: { role: 'user', content: 'now' },
+        });
+        expect(history.map((m) => m.role)).toEqual(['user', 'assistant', 'system', 'user']);
+        expect(history[history.length - 1]).toEqual({ role: 'user', content: 'now' });
     });
 });
