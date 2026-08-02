@@ -130,11 +130,17 @@ resolve_engine() {
 	printf '%s' "$engine"
 }
 
-# Run a compose subcommand, preferring the v2 plugin ("<engine> compose") and
-# falling back to the standalone binary ("<engine>-compose").
+# Run a compose subcommand. For podman, prefer the dedicated `podman-compose`
+# binary: podman's built-in `podman compose` is only a shim that delegates to the
+# first external provider it finds, which is frequently a legacy/broken
+# docker-compose (fails with "Not supported URL scheme http+docker") even when the
+# podman socket is fine. For docker, prefer the v2 plugin ("docker compose"). Both
+# fall back to the standalone "<engine>-compose" binary.
 compose() {
 	local engine="$1"; shift
-	if "$engine" compose version >/dev/null 2>&1; then
+	if [[ "$engine" == "podman" ]] && command -v podman-compose >/dev/null 2>&1; then
+		podman-compose -f "$COMPOSE_FILE" "$@"
+	elif "$engine" compose version >/dev/null 2>&1; then
 		"$engine" compose -f "$COMPOSE_FILE" "$@"
 	elif command -v "${engine}-compose" >/dev/null 2>&1; then
 		"${engine}-compose" -f "$COMPOSE_FILE" "$@"

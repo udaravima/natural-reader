@@ -35,3 +35,4 @@ voices-v1.0.bin
 
 # Backend-retained PDFs (uploaded for docling conversion)
 data/
+.aider*
