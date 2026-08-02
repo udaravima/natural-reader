@@ -4,6 +4,7 @@ import { stripAttachmentData, formatAttachmentSize } from '../utils/attachment';
 import { buildApiUrl } from '../utils/url';
 import { makeSessionStore } from '../lib/sessionStore';
 import { executeToolCall, getToolDefinitions } from '../lib/chatTools';
+import { buildChatHistory } from './chatHistory';
 
 const SENTENCE_TERMINATOR = /(?<=[.!?])\s+/;
 const MIN_TTS_LENGTH = 5;
@@ -485,18 +486,9 @@ export function useChatEngine({
             //
             // Attachments stripped on session save (no base64) are skipped — the
             // historical message just goes back as text, which is fine.
-            const buildApiMessage = (m) => {
-                const atts = Array.isArray(m.attachments) ? m.attachments : [];
-                const binaryB64 = atts
-                    .filter(a => a && a.base64 && (a.kind === 'image' || a.kind === 'audio'))
-                    .map(a => a.base64);
-                const out = {
-                    role: m.role,
-                    content: m.content || '',
-                };
-                if (binaryB64.length) out.images = binaryB64;
-                return out;
-            };
+            // (Message mapping + history assembly live in ./chatHistory so the
+            // ordering is unit-tested — see buildChatHistory below.)
+            //
             // Build the system preamble. Two optional layers:
             //   1. The explicit excerpt (chip text) the user attached.
             //   2. Top-k semantically retrieved chunks (if `useRetrieval` is on
@@ -570,7 +562,14 @@ export function useChatEngine({
                         `the user can verify.`,
                 });
             }
-            const history = [...contextPreamble, ...messagesRef.current, userMsg].map(buildApiMessage);
+            // The excerpt/retrieval preamble goes IMMEDIATELY before the current
+            // user message (not at the front of the whole history), so it isn't
+            // stranded behind prior turns on a multi-turn chat. See chatHistory.js.
+            const history = buildChatHistory({
+                priorMessages: messagesRef.current,
+                contextPreamble,
+                userMsg,
+            });
 
             // ---------- Autonomous tool calling ----------
             // Build the tool context once. The registry filters by `when(ctx)`,
