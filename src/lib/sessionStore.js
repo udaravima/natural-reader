@@ -164,6 +164,34 @@ export function makeSessionStore({ apiHost, apiPort, onBackendOffline }) {
             }
         },
 
+        /**
+         * Persist just the pins for a session (instant save on pin add/remove).
+         * Mirrors renameSession: local IDB sessions update in place; pg sessions
+         * hit the PATCH endpoint. Degrades to falsy/offline without throwing.
+         */
+        updateSessionPins: async (id, pins) => {
+            if (!id) return false;
+            if (LOCAL_IDS.has(id)) {
+                const record = await idb.getSession(id);
+                if (!record) return false;
+                record.pins = pins;
+                record.updatedAt = Date.now();
+                return idb.saveSession(record);
+            }
+            try {
+                await fetchJson(`/v1/chat/sessions/${encodeURIComponent(id)}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pins }),
+                });
+                notifyOnline();
+                return true;
+            } catch (e) {
+                notifyOffline(e);
+                return false;
+            }
+        },
+
         /** True if `id` is in the legacy IDB store. Used by callers that want to
          * disable destructive UI for read-only sessions. */
         isLocalId: (id) => LOCAL_IDS.has(id),
