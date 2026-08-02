@@ -54,6 +54,7 @@ class SessionIn(BaseModel):
     updatedAt: int | None = None
     messages: list[MessageIn] = Field(default_factory=list)
     events: list[EventIn] = Field(default_factory=list)
+    pins: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ---------- helpers ----------
@@ -112,7 +113,7 @@ async def get_session(session_id: str) -> dict[str, Any]:
     pool = get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT id, title, model, created_at, updated_at FROM chat_sessions WHERE id = %s",
+            "SELECT id, title, model, created_at, updated_at, pins FROM chat_sessions WHERE id = %s",
             (session_id,),
         )
         srow = await cur.fetchone()
@@ -180,6 +181,7 @@ async def get_session(session_id: str) -> dict[str, Any]:
         "updatedAt": _epoch_ms(srow[4]),
         "messages": messages,
         "events": events,
+        "pins": srow[5] or [],
         "source": "pg",
     }
 
@@ -199,15 +201,17 @@ async def upsert_session(session_id: str, payload: SessionIn) -> dict[str, Any]:
         async with conn.transaction():
             await conn.execute(
                 """
-                INSERT INTO chat_sessions (id, title, model, created_at, updated_at)
+                INSERT INTO chat_sessions (id, title, model, created_at, updated_at, pins)
                 VALUES (
                     %s, %s, %s,
                     COALESCE(to_timestamp(%s::double precision / 1000.0), now()),
-                    now()
+                    now(),
+                    %s
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     title = EXCLUDED.title,
                     model = EXCLUDED.model,
+                    pins = EXCLUDED.pins,
                     updated_at = now()
                 """,
                 (
@@ -215,6 +219,7 @@ async def upsert_session(session_id: str, payload: SessionIn) -> dict[str, Any]:
                     payload.title,
                     payload.model,
                     payload.createdAt,
+                    Jsonb(payload.pins),
                 ),
             )
 
@@ -264,7 +269,8 @@ async def patch_session(session_id: str, body: dict[str, Any]) -> dict[str, Any]
     _ensure_ready()
     title = body.get("title")
     model = body.get("model")
-    if title is None and model is None:
+    pins = body.get("pins")
+    if title is None and model is None and pins is None:
         return {"ok": True, "id": session_id, "noop": True}
 
     pool = get_pool()
@@ -275,11 +281,12 @@ async def patch_session(session_id: str, body: dict[str, Any]) -> dict[str, Any]
             UPDATE chat_sessions
             SET title = COALESCE(%s, title),
                 model = COALESCE(%s, model),
+                pins  = COALESCE(%s, pins),
                 updated_at = now()
             WHERE id = %s
             RETURNING id
             """,
-            (title, model, session_id),
+            (title, model, Jsonb(pins) if pins is not None else None, session_id),
         )
         row = await cur.fetchone()
     if not row:
