@@ -9,6 +9,7 @@ import { useTheme } from './hooks/useTheme';
 import { usePdfEngine } from './hooks/usePdfEngine';
 import { useTtsEngine } from './hooks/useTtsEngine';
 import { useChatEngine } from './hooks/useChatEngine';
+import { makePin } from './hooks/pins';
 
 // Constants
 import { OLLAMA_DEFAULTS } from './constants';
@@ -83,11 +84,6 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState(null);
   const [sidebarTab, setSidebarTab] = useState('sentences');
   const [settingsOpen, setSettingsOpen] = useState(false);
-
-  // Context payload waiting to be attached to the next chat message.
-  // Lives at App scope so it survives the reader→chat view-mode switch.
-  // Shape: { doc_id, fileName, page, kind: 'page'|'selection', text }
-  const [pendingChatContext, setPendingChatContext] = useState(null);
 
   // Per-document index status keyed by sha256 doc_id. Shape:
   //   { state: 'idle' | 'chunks_uploaded' | 'indexing' | 'indexed' | 'failed' | 'uploading',
@@ -193,6 +189,9 @@ export default function App() {
     switchToSession: chatSwitchToSession,
     deleteSession: chatDeleteSession,
     renameSession: chatRenameSession,
+    pins: chatPins,
+    addPin: chatAddPin,
+    removePin: chatRemovePin,
   } = chatEngine;
 
   useKeyboardShortcuts({
@@ -358,15 +357,9 @@ export default function App() {
       ? fullText.slice(0, CONTEXT_CHAR_CAP) + ' [truncated]'
       : fullText;
     const docId = await ensureDocHash();
-    setPendingChatContext({
-      doc_id: docId,
-      fileName: pdfFileName,
-      page,
-      kind: 'page',
-      text,
-    });
+    chatAddPin(makePin({ doc_id: docId, fileName: pdfFileName, page, kind: 'page', text }));
     setViewMode('chat');
-  }, [pdfFileName, textItems, ensureDocHash, setViewMode, showToast]);
+  }, [pdfFileName, textItems, ensureDocHash, setViewMode, showToast, chatAddPin]);
 
   const handleAskAboutSelection = useCallback(async () => {
     const sel = (typeof window !== 'undefined') ? window.getSelection() : null;
@@ -380,17 +373,9 @@ export default function App() {
       ? selectedText.slice(0, CONTEXT_CHAR_CAP) + ' [truncated]'
       : selectedText;
     const docId = await ensureDocHash();
-    setPendingChatContext({
-      doc_id: docId,
-      fileName: pdfFileName,
-      page: currentPage,
-      kind: 'selection',
-      text,
-    });
+    chatAddPin(makePin({ doc_id: docId, fileName: pdfFileName, page: currentPage, kind: 'selection', text }));
     setViewMode('chat');
-  }, [pdfFileName, currentPage, ensureDocHash, setViewMode, showToast]);
-
-  const clearPendingChatContext = useCallback(() => setPendingChatContext(null), []);
+  }, [pdfFileName, currentPage, ensureDocHash, setViewMode, showToast, chatAddPin]);
 
   // Synthesize the WHOLE document as a single audiobook .wav.
   // Pulls per-page text via the existing extractAllChunks helper (works for
@@ -457,7 +442,6 @@ export default function App() {
     stopChatPlayback();
     closeDocument();
     setCurrentDocId(null);
-    setPendingChatContext(null);
   }, [stopPlayback, stopChatPlayback, closeDocument]);
 
   // ---------- WORKSPACE (folder open) ----------
@@ -1143,9 +1127,8 @@ export default function App() {
             downloadingMessageId={downloadingMessageId}
             downloadMessageAudio={isLocalhost ? handleDownloadMessageAudio : null}
             showToast={showToast}
-            pendingDocContext={pendingChatContext}
-            clearPendingDocContext={clearPendingChatContext}
-            currentDocIndexState={pendingChatContext?.doc_id ? docIndexByDocId[pendingChatContext.doc_id]?.state : null}
+            pins={chatPins}
+            onRemovePin={chatRemovePin}
           />
         ) : (
         <WorkspaceProvider workspace={workspace} initialPath={workspaceEntryPath} onOpenDoc={onOpenDoc} onMissing={(path) => showToast(`"${path}" isn't in this folder`, 3000)}>

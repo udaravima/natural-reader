@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Pinned chat context:** "Ask AI" on a selection (or "Ask page") now *pins* the
+  excerpt to the conversation — it stays attached across follow-ups instead of
+  being sent once. Multiple pins accumulate as removable chips, are saved with the
+  chat session (restored on reload), and are bounded (max 6 pins / 12k chars).
+  Whole-document breadth continues to come from semantic retrieval.
+
+### Fixed
+- Ask-AI context is no longer stranded at the front of a multi-turn chat (the model
+  previously reported "no content attached" on follow-up questions).
+
 ## [1.8.0] - 2026-07-28
 
 ### Added
