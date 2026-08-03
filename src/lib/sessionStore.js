@@ -187,7 +187,7 @@ export function makeSessionStore({ apiHost, apiPort, onBackendOffline }) {
                 notifyOnline();
                 return true;
             } catch (e) {
-                notifyOffline(e);
+                if (e.status !== 404) notifyOffline(e);
                 return false;
             }
         },

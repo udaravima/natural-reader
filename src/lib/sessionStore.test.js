@@ -25,4 +25,13 @@ describe('updateSessionPins', () => {
         expect(await store.updateSessionPins('', [])).toBe(false);
         expect(fetchMock).not.toHaveBeenCalled();
     });
+
+    it('treats a 404 (session row not yet persisted) as benign: returns false without notifying offline', async () => {
+        fetchMock.mockResolvedValue({ ok: false, status: 404, text: async () => '' });
+        const onBackendOffline = vi.fn();
+        const store = makeSessionStore({ apiHost: '', apiPort: '', onBackendOffline });
+        const ok = await store.updateSessionPins('s-1', []);
+        expect(ok).toBe(false);
+        expect(onBackendOffline).not.toHaveBeenCalled();
+    });
 });
