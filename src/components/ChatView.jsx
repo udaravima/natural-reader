@@ -28,20 +28,9 @@ export default function ChatView({
     downloadingMessageId,
     downloadMessageAudio,
     showToast,
-    pendingDocContext,
-    clearPendingDocContext,
-    currentDocIndexState, // 'indexed' | other; gates the "Use whole document" toggle
+    pins,
+    onRemovePin,
 }) {
-    // "Use whole document" augments the chip excerpt with semantic search results
-    // from the indexed doc. Off by default per the rollout plan — opt-in keeps
-    // surprising token use to a minimum, and v1 only supports it when the chip
-    // (and therefore the doc id) is already attached.
-    const [useRetrieval, setUseRetrieval] = useState(false);
-    const retrievalAvailable = !!pendingDocContext?.doc_id && currentDocIndexState === 'indexed';
-    // When retrieval isn't available the toggle UI is hidden entirely (it
-    // depends on `onToggleRetrieval` being passed). The state value persists
-    // across docs so the user's last choice survives doc switches — it just
-    // can't fire until the new doc is indexed.
     const copyMessage = async (text) => {
         if (!text) return;
         try {
@@ -159,21 +148,16 @@ export default function ChatView({
         if (e.dataTransfer?.files?.length) ingestFiles(e.dataTransfer.files);
     };
 
-    // A docContext counts as send-worthy on its own (e.g. user clicked
-    // "Ask page" and just wants the model's take without typing anything).
-    const canSend = (draft.trim().length > 0 || pendingAttachments.length > 0 || !!pendingDocContext)
+    // A pin counts as send-worthy on its own (e.g. user clicked "Ask page"
+    // and just wants the model's take without typing anything).
+    const canSend = (draft.trim().length > 0 || pendingAttachments.length > 0 || pins.length > 0)
         && !isStreaming && !!selectedModel && reachable !== false;
 
     const handleSend = () => {
         if (!canSend) return;
-        const ctx = pendingDocContext
-            ? { ...pendingDocContext, useRetrieval: useRetrieval && retrievalAvailable }
-            : null;
-        sendMessage(draft, pendingAttachments, ctx);
+        sendMessage(draft, pendingAttachments);
         setDraft('');
         setPendingAttachments([]);
-        setUseRetrieval(false);
-        clearPendingDocContext?.();
     };
 
     const handleKeyDown = (e) => {
@@ -242,18 +226,21 @@ export default function ChatView({
             {/* INPUT BAR */}
             <div className={`border-t ${theme.border} ${theme.bgSecondary} px-4 py-3 ${effectiveIsMobile ? 'pb-20' : ''}`}>
                 <div className="max-w-3xl mx-auto flex flex-col gap-2">
-                    {/* Doc-context chip — present when the user came in via
-                        "Ask page" or "Ask AI" on a selection. Sent with the
-                        next message, then cleared. */}
-                    {pendingDocContext && (
-                        <DocContextChip
-                            ctx={pendingDocContext}
-                            theme={theme}
-                            darkMode={darkMode}
-                            onRemove={() => clearPendingDocContext?.()}
-                            useRetrieval={useRetrieval}
-                            onToggleRetrieval={retrievalAvailable ? () => setUseRetrieval(v => !v) : null}
-                        />
+                    {/* Pin row — docs/pages/selections pinned via "Ask page" or
+                        "Ask AI" on a selection. Persist across sends until
+                        explicitly removed. */}
+                    {pins.length > 0 && (
+                        <div className="flex flex-col gap-1.5">
+                            {pins.map((p) => (
+                                <DocContextChip
+                                    key={p.id}
+                                    ctx={p}
+                                    theme={theme}
+                                    darkMode={darkMode}
+                                    onRemove={() => onRemovePin?.(p.id)}
+                                />
+                            ))}
+                        </div>
                     )}
                     {/* Pending attachments preview row */}
                     {pendingAttachments.length > 0 && (
@@ -654,7 +641,7 @@ function ToolCallsDisclosure({ toolCalls, theme, darkMode }) {
     );
 }
 
-function DocContextChip({ ctx, theme, darkMode, onRemove, compact = false, useRetrieval, onToggleRetrieval }) {
+export function DocContextChip({ ctx, theme, darkMode, onRemove, compact = false }) {
     if (!ctx) return null;
     const label = ctx.kind === 'selection' ? 'Selection' : `Page ${ctx.page ?? '?'}`;
     const file = ctx.fileName || 'document';
@@ -671,17 +658,6 @@ function DocContextChip({ ctx, theme, darkMode, onRemove, compact = false, useRe
                 </p>
                 {preview && (
                     <p className={`text-[11px] mt-0.5 truncate ${theme.textSecondary}`}>{preview}{ctx.text.length > 120 ? '…' : ''}</p>
-                )}
-                {onToggleRetrieval && (
-                    <label className={`mt-1 flex items-center gap-1.5 text-[10px] font-bold cursor-pointer ${useRetrieval ? 'text-blue-500' : theme.textMuted}`}>
-                        <input
-                            type="checkbox"
-                            checked={!!useRetrieval}
-                            onChange={onToggleRetrieval}
-                            className="accent-blue-500"
-                        />
-                        Use whole document
-                    </label>
                 )}
             </div>
             {onRemove && (
