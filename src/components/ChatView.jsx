@@ -28,7 +28,7 @@ export default function ChatView({
     downloadingMessageId,
     downloadMessageAudio,
     showToast,
-    pins,
+    pins = [],
     onRemovePin,
 }) {
     const copyMessage = async (text) => {
