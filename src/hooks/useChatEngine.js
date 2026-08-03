@@ -4,7 +4,8 @@ import { stripAttachmentData, formatAttachmentSize } from '../utils/attachment';
 import { buildApiUrl } from '../utils/url';
 import { makeSessionStore } from '../lib/sessionStore';
 import { executeToolCall, getToolDefinitions } from '../lib/chatTools';
-import { buildChatHistory } from './chatHistory';
+import { buildChatHistory, buildPinPreamble } from './chatHistory';
+import { addPin as addPinReducer, removePin as removePinReducer, MAX_PINS } from './pins';
 
 const SENTENCE_TERMINATOR = /(?<=[.!?])\s+/;
 const MIN_TTS_LENGTH = 5;
@@ -69,6 +70,9 @@ export function useChatEngine({
         },
     }), [apiHost, apiPort, showToast]);
     const [messages, setMessages] = useState([]);
+    const [pins, setPins] = useState([]);
+    const pinsRef = useRef([]);
+    pinsRef.current = pins;
     const [isStreaming, setIsStreaming] = useState(false);
     const [availableModels, setAvailableModels] = useState([]);
     const [reachable, setReachable] = useState(null); // null=unknown, true/false
@@ -195,6 +199,35 @@ export function useChatEngine({
     // ----- SESSION MANAGEMENT -----
     const setActive = (id) => { activeSessionIdRef.current = id; setActiveSessionId(id); };
 
+    // Persist pins immediately when a session already exists. Before the first
+    // message there is no session yet; pins ride along in the first full save.
+    const persistPins = useCallback((next) => {
+        const id = activeSessionIdRef.current;
+        if (id) sessionStore.updateSessionPins(id, next);
+    }, [sessionStore]);
+
+    const addPin = useCallback((pin) => {
+        const res = addPinReducer(pinsRef.current, pin);
+        if (!res.added) {
+            const msg = res.reason === 'duplicate' ? 'That passage is already pinned.'
+                : res.reason === 'max-pins' ? `You can pin up to ${MAX_PINS} passages.`
+                : 'Pinned context is full — remove a pin first.';
+            showToast?.(msg, 3500);
+            return false;
+        }
+        setPins(res.pins);
+        persistPins(res.pins);
+        return true;
+    }, [showToast, persistPins]);
+
+    const removePin = useCallback((id) => {
+        const next = removePinReducer(pinsRef.current, id);
+        setPins(next);
+        persistPins(next);
+    }, [persistPins]);
+
+    const clearPins = useCallback(() => setPins([]), []);
+
     const refreshSessions = useCallback(async () => {
         const list = await sessionStore.getRecentSessions();
         setSessions(list);
@@ -225,6 +258,7 @@ export function useChatEngine({
             createdAt: createdAtRef.current || Date.now(),
             messages: persistableMessages,
             events: eventsRef.current,
+            pins: pinsRef.current,
         };
         const result = await sessionStore.saveSession(record);
         // If the save forked an old IDB session, switch the active id to the new
@@ -256,6 +290,7 @@ export function useChatEngine({
             return;
         }
         setMessages(record.messages || []);
+        setPins(record.pins || []);
         eventsRef.current = record.events || [];
         setEvents(eventsRef.current);
         createdAtRef.current = record.createdAt || Date.now();
@@ -273,6 +308,7 @@ export function useChatEngine({
         sentenceBufferRef.current = '';
 
         setMessages([]);
+        setPins([]);
         eventsRef.current = [];
         setEvents([]);
         createdAtRef.current = null;
@@ -399,11 +435,11 @@ export function useChatEngine({
         newSession();
     }, [newSession]);
 
-    const sendMessage = useCallback(async (userText, attachments = [], docContext = null) => {
+    const sendMessage = useCallback(async (userText, attachments = []) => {
         const trimmed = (userText || '').trim();
         const cleanAttachments = (attachments || []).filter(a => a && a.kind);
-        const hasDocCtx = !!(docContext && docContext.text);
-        if (!trimmed && cleanAttachments.length === 0 && !hasDocCtx) return;
+        const hasPins = pinsRef.current.length > 0;
+        if (!trimmed && cleanAttachments.length === 0 && !hasPins) return;
         if (isStreaming) return;
 
         if (!selectedModel) {
@@ -423,7 +459,6 @@ export function useChatEngine({
             role: 'user',
             content: trimmed,
             attachments: cleanAttachments,
-            docContext: hasDocCtx ? docContext : undefined,
             id: `u-${userTs}`,
             timestamp: userTs,
         };
@@ -489,82 +524,10 @@ export function useChatEngine({
             // (Message mapping + history assembly live in ./chatHistory so the
             // ordering is unit-tested — see buildChatHistory below.)
             //
-            // Build the system preamble. Two optional layers:
-            //   1. The explicit excerpt (chip text) the user attached.
-            //   2. Top-k semantically retrieved chunks (if `useRetrieval` is on
-            //      AND the doc is indexed). Retrieval runs synchronously here —
-            //      one embed + one vector query — so it adds a small latency
-            //      before the model starts streaming.
-            let retrievalResults = [];
-            if (hasDocCtx && docContext.useRetrieval && docContext.doc_id) {
-                try {
-                    const q = (trimmed || docContext.text || '').slice(0, 2000);
-                    const res = await fetch(
-                        buildApiUrl(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docContext.doc_id)}/search`),
-                        {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ query: q, k: 3 }),
-                            signal: controller.signal,
-                        },
-                    );
-                    if (res.ok) {
-                        const data = await res.json();
-                        retrievalResults = Array.isArray(data.results) ? data.results : [];
-                    } else {
-                        console.warn('Search request failed:', res.status);
-                    }
-                } catch (e) {
-                    if (e.name !== 'AbortError') {
-                        console.warn('Search request errored:', e);
-                    }
-                }
-            }
-
-            const contextPreamble = [];
-            const hasRetrieval = retrievalResults.length > 0;
-            if (hasDocCtx) {
-                // Closing line is conditional: when retrieval is ALSO active,
-                // we must NOT tell the model "answer from this excerpt or say
-                // you don't know" — that prompt effectively masks the second
-                // system message containing the retrieved passages. Some
-                // models (gemma in particular) take that instruction literally
-                // and refuse to use the retrieval results at all.
-                const closing = hasRetrieval
-                    ? `This is the passage the user is currently looking at. You ALSO have additional ` +
-                      `retrieved passages from elsewhere in the document (next system message). ` +
-                      `Draw on whichever sources contain the answer — the visible passage is not ` +
-                      `the only source of truth.`
-                    : `Answer the user's question using this excerpt as the primary context. ` +
-                      `If the excerpt does not contain the answer, say so plainly.`;
-                contextPreamble.push({
-                    role: 'system',
-                    content:
-                        `The user is reading "${docContext.fileName || 'a document'}".\n` +
-                        `Relevant excerpt (${docContext.kind || 'page'}` +
-                        `${docContext.page != null ? `, page ${docContext.page}` : ''}):\n\n` +
-                        `"""\n${docContext.text}\n"""\n\n` +
-                        closing,
-                });
-            }
-            if (hasRetrieval) {
-                const blocks = retrievalResults.map((r, i) => {
-                    const pageLabel = r.page != null ? `page ${r.page}` : 'unknown location';
-                    return `[${i + 1}] (${pageLabel})\n${r.text}`;
-                }).join('\n\n');
-                contextPreamble.push({
-                    role: 'system',
-                    content:
-                        `Additional passages retrieved by semantic similarity to the user's question, ` +
-                        `from across the whole document (not just the visible page):\n\n${blocks}\n\n` +
-                        `Use these passages to answer when the visible excerpt doesn't contain the ` +
-                        `answer. Cite the bracketed numbers ([1], [2], …) when you draw on them so ` +
-                        `the user can verify.`,
-                });
-            }
-            // The excerpt/retrieval preamble goes IMMEDIATELY before the current
-            // user message (not at the front of the whole history), so it isn't
-            // stranded behind prior turns on a multi-turn chat. See chatHistory.js.
+            // Persistent pins → system preamble, placed right before the user
+            // turn by buildChatHistory. Whole-document breadth comes from the
+            // autonomous search_document tool, not from here.
+            const contextPreamble = buildPinPreamble(pinsRef.current);
             const history = buildChatHistory({
                 priorMessages: messagesRef.current,
                 contextPreamble,
@@ -834,5 +797,10 @@ export function useChatEngine({
         switchToSession,
         deleteSession,
         renameSession,
+        // Persistent pinned-context
+        pins,
+        addPin,
+        removePin,
+        clearPins,
     };
 }
