@@ -269,7 +269,13 @@ cmd_up() {
 	# reason, SIGTERM the backend AND bring the containers down (engine-aware) so
 	# nothing is left running. Clear the trap first so an INT followed by the EXIT
 	# trap can't run the teardown twice.
-	trap 'trap - INT TERM EXIT; stop_runner; log "Stopping containers ($engine)"; compose "$engine" down' INT TERM EXIT
+	#
+	# NB: the trap body is DOUBLE-quoted so `$engine` is expanded (baked in) now,
+	# while it's in scope. If run.py exits on its own (e.g. the port is already in
+	# use), `wait` returns and the EXIT trap fires in global scope where the local
+	# `engine` no longer exists — a deferred `$engine` would then abort teardown
+	# under `set -u` ("engine: unbound variable").
+	trap "trap - INT TERM EXIT; stop_runner; log 'Stopping containers ($engine)'; compose $engine down" INT TERM EXIT
 	wait "$runner_pid"
 }
 
