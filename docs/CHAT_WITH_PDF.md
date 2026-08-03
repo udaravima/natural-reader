@@ -14,8 +14,8 @@ The reader and the chat used to be two completely separate features. You could o
 
 You can now:
 
-1. **Ask a one-shot question about the page you're on** — one toolbar click sends the current page text to the model.
-2. **Highlight a passage and ask about *just* that snippet** — selection-aware.
+1. **Pin the page you're on** — one toolbar click attaches the current page text; it stays in context across follow-ups.
+2. **Highlight a passage and pin *just* that snippet** — selection-aware, and you can stack several pins.
 3. **Index the whole document** — pgvector embeddings via Ollama's `nomic-embed-text`, then let the chat semantically retrieve passages from anywhere in the doc.
 4. **Let the model decide on its own** — once a doc is indexed, the model gets a `search_document` tool it can invoke autonomously whenever a question warrants it.
 
@@ -174,41 +174,57 @@ psql postgresql://natural_reader:natural_reader@localhost:5433/natural_reader \
 
 ## 6. Asking questions
 
-There are four progressively-more-magic ways to give the model document context.
+There are a few ways to give the model document context. The first two create
+**pins** — persistent excerpts that stay attached to the conversation (Section 6.3);
+the last is fully autonomous retrieval.
 
-### 6.1. Ask page (manual, current-page only)
+### 6.1. Ask page (current page → a pin)
 
 The fastest path. Cap is `~8000 chars` per page (truncated tail marker added if over).
 
 1. While reading a page, click **Ask page** in the toolbar.
-2. The app jumps to chat mode with a purple **DocContextChip** above the input. Chip reads `Page N · filename.pdf` + a preview of the excerpt.
+2. The app jumps to chat mode and **pins** the page: a purple **pin chip** appears above the input reading `Page N · filename.pdf` + a preview. The pin stays attached to the conversation.
 3. Type your question (or just hit Send to let the model decide what to say about the page).
-4. The model gets a system preamble with the full page text and answers.
+4. The model gets a system preamble with the page text — re-sent on **every** turn (positioned right before your latest question), so follow-ups keep the context without re-attaching.
 
-**No indexing required.** Works the moment a doc loads.
+**No indexing required.** Works the moment a doc loads. Remove a pin anytime via the ✕ on its chip.
 
-### 6.2. Ask AI on a text selection
+### 6.2. Ask AI on a text selection (→ a pin)
 
-Same idea, but scoped to whatever you highlighted.
+Same idea, scoped to whatever you highlighted — and you can stack several.
 
 1. Select text on the rendered page.
-2. Two floating buttons appear bottom-right: **Read Selection** (existing TTS feature) and the new purple **Ask AI**.
-3. Click **Ask AI** → jumps to chat with a `Selection · filename.pdf` chip.
-4. Cap is also `~8000 chars`; cross-page selections are concatenated as one snippet (no per-page tagging in v1).
+2. Two floating buttons appear bottom-right: **Read Selection** (existing TTS feature) and the purple **Ask AI**.
+3. Click **Ask AI** → jumps to chat and pins a `Selection · filename.pdf` chip.
+4. Cap is `~8000 chars` per pin; cross-page selections are concatenated as one snippet (no per-page tagging). **Multiple pins accumulate** — see 6.3.
 
-### 6.3. Use whole document (toggle on the chip)
+### 6.3. How pins behave (persistent context)
 
-Manual retrieval. Adds top-3 semantically-similar chunks from the whole doc to whatever excerpt the chip already carries. Useful when the answer needs context from elsewhere.
+A pin is **not** a one-shot. Once created (Ask page or Ask AI) it stays attached to
+the conversation and is **re-sent to the model on every turn**, injected as a system
+note **immediately before your latest question** — so it never gets buried as the
+chat grows, and follow-ups "just work" without re-attaching.
 
-**Visible only when:**
-- The chip has a `doc_id` (Ask page / Ask AI created it), AND
-- The doc is `indexed` (Section 5).
+This is close to how a normal ChatGPT/Gemini session keeps context in view, with one
+deliberate improvement: pasting text into a single message freezes it at that spot in
+the transcript, where it recedes turn after turn; a pin instead **floats to just
+before the current question every turn**, staying maximally relevant. (The
+conversation's user/assistant turns are still re-sent in full each turn, exactly like
+a normal chat — Ollama's `/api/chat` is stateless.)
 
-How it works on Send:
-1. The frontend embeds your typed question via Ollama (`/api/embeddings`).
-2. Hits `POST /v1/docs/{id}/search` with `k=3`.
-3. The returned chunks are folded into a *second* system message with bracketed citations (`[1] (page 5) ...`).
-4. The model is instructed to cite the bracketed numbers when it uses them.
+- **Multiple pins** accumulate as separate chips; remove any via its ✕.
+- **Dedupe** by `(doc_id, kind, text)` — re-pinning the same passage is a no-op.
+- **Bounded**: max **6 pins** and **~12 000 chars** total (each excerpt still caps at
+  ~8000); over that, adding is refused with a toast rather than silently ballooning.
+- **Saved with the chat session** (Section 7) — reopen the chat and the pins are back.
+- **Whole-document breadth is not a pin.** Pinning an entire document would blow the
+  budget; instead, index the doc and let **autonomous retrieval** (Section 6.4) pull
+  relevant passages on demand. Pins and retrieval compose: pins are the exact excerpts
+  you always want in view, retrieval fills in everything else.
+
+> **Note:** the older per-chip "Use whole document" checkbox (manual `k=3` retrieval
+> folded into the preamble) was **retired** with this feature — its job is now done by
+> the autonomous `search_document` tool below.
 
 ### 6.4. Autonomous tool calling
 
@@ -260,9 +276,14 @@ The sidebar merges both lists, newest-first, deduped by id.
 |---|---|
 | `content` / `thinking` | The model's reply text + reasoning trace. |
 | `attachments` | Image metadata (binary `dataUrl`/`base64` stripped on save). |
-| `docContext` | If the message had an explicit chip — kept verbatim so the chip re-renders on reload. |
+| `docContext` | Legacy per-message context (pre-pins). No longer written for new messages; retained so old sessions still re-render their chip. |
 | `stats` | Ollama's per-turn token + latency numbers (the `⚡` disclosure). |
 | `toolCalls` | Compact summary of any autonomous tool calls — `{name, arguments, result_summary}`. Used to re-render the 🔎 disclosure on reload. |
+
+**Pins are persisted at the *session* level** (not per message): a `pins` JSONB
+column on `chat_sessions` (migration `004_chat_pins.sql`). They're written **instantly**
+on add/remove via `PATCH /v1/chat/sessions/{id}` and again in the full `PUT` upsert, and
+restored into the pin-chip row when you reopen the session.
 
 ---
 
@@ -290,8 +311,8 @@ All under `http://localhost:8000` by default. Same FastAPI app as the existing K
 |---|---|---|
 | `GET` | `/v1/chat/sessions` | List session metadata (newest first). |
 | `GET` | `/v1/chat/sessions/{id}` | Full record: messages + events. |
-| `PUT` | `/v1/chat/sessions/{id}` | Transactional upsert of the whole session (matches the frontend's "save record" contract). |
-| `PATCH` | `/v1/chat/sessions/{id}` | Partial update — `title` and/or `model` only. |
+| `PUT` | `/v1/chat/sessions/{id}` | Transactional upsert of the whole session — messages, events, and `pins`. |
+| `PATCH` | `/v1/chat/sessions/{id}` | Partial update — any of `title`, `model`, `pins` (the last powers instant pin save). |
 | `DELETE` | `/v1/chat/sessions/{id}` | Cascade-deletes messages + events. |
 
 ### Documents + retrieval

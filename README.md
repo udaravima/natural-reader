@@ -69,10 +69,10 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 
 A full end-to-end walkthrough lives in [docs/CHAT_WITH_PDF.md](docs/CHAT_WITH_PDF.md). Headline capabilities:
 
-- **Ask page** — One toolbar click sends the current page text (~8000 char cap) to the model as a chat preamble. No indexing required.
-- **Ask AI on a selection** — Highlight any text on the rendered page and send just that snippet as context. Paired with the existing "Read Selection" TTS button.
+- **Ask page** — One toolbar click *pins* the current page text (~8000 char cap) to the chat. No indexing required.
+- **Ask AI on a selection** — Highlight any text on the rendered page and *pin* just that snippet. Paired with the existing "Read Selection" TTS button.
+- **Pinned context** — Ask page / Ask AI create **pins**: excerpts that stay attached to the conversation and are re-sent to the model on **every** turn — positioned right before your latest question so they never get buried — until you remove them. Multiple pins accumulate as removable chips, dedupe by content, are bounded (**6 pins / ~12 000 chars**), and are **saved with the chat session** (restored on reload). Whole-document breadth comes from autonomous retrieval (below), not a giant pin.
 - **Index this document** — Backed by **Postgres + pgvector**. Frontend extracts per-page (PDF), per-block (Markdown), or per-pseudo-page (TXT) chunks; backend embeds them via Ollama's `nomic-embed-text` (768-dim) and stores them in an HNSW-indexed `vector` column. Re-indexing is idempotent (`UNIQUE (doc_id, text_hash)`).
-- **Use whole document** — A checkbox on the doc-context chip folds the top-3 semantically-retrieved chunks from the indexed doc into the chat preamble with bracketed citations the model is told to use.
 - **Autonomous tool calling** — When a doc is indexed and the chat model supports Ollama's `tools` parameter, the model gets a `search_document` tool it can invoke on its own. The frontend executes it, hands the result back, and the model streams the final answer. Single-iteration cap to prevent loops; falls back gracefully on models without tool support (the field is silently ignored). Tool calls are persisted in a `tool_calls` JSONB column and re-rendered as a 🔎 disclosure on the assistant bubble.
 - **Postgres-backed chat sessions** — Sessions previously stored in IndexedDB now write to Postgres via a new `src/lib/sessionStore.js` abstraction. Legacy IDB sessions stay readable with a small **LOCAL** badge; the first edit on one forks to a fresh Postgres session, leaving the original intact.
 - **Pluggable tool registry** — `src/lib/chatTools/` houses one tool per file with `{name, definition, when(ctx), execute(args, ctx)}`. Adding `web_search`, `read_url`, etc. later is one new file + one line in the registry index. See `src/lib/chatTools/_example.js`.
@@ -225,7 +225,7 @@ Ollama serves at `http://localhost:11434` by default. In the app, toggle to **Ch
 
 ### 5. (Optional) Document Chat & RAG
 
-To use **Ask page**, **Index this document**, **Use whole document**, and **autonomous tool calling** (see the [walkthrough](docs/CHAT_WITH_PDF.md) for the full tour), you need Postgres + an embedding model.
+To use **Ask page**, **pinned context**, **Index this document**, and **autonomous tool calling** (see the [walkthrough](docs/CHAT_WITH_PDF.md) for the full tour), you need Postgres + an embedding model.
 
 ```bash
 # Bring up Postgres + pgvector (port 5433 on the host to avoid colliding with a system Postgres on 5432)
@@ -300,7 +300,7 @@ All endpoints return `503` when Postgres is unreachable.
 | `/v1/docs/{doc_id}` | `GET / DELETE` | Status (`state`, `chunk_count`, `embedded_count`, model, dim) or cascade delete. |
 | `/v1/docs/{doc_id}/chunks` | `POST` | Bulk insert/upsert chunks (batches of ~50). Idempotent on `(doc_id, text_hash)`. |
 | `/v1/docs/{doc_id}/index` | `POST` | Kick off the background embedding job; returns 202. Poll the doc status endpoint for progress. |
-| `/v1/docs/{doc_id}/search` | `POST` | `{query, k}` → top-k chunks by cosine similarity (HNSW). Used both by the "Use whole document" toggle and by the autonomous `search_document` tool. |
+| `/v1/docs/{doc_id}/search` | `POST` | `{query, k}` → top-k chunks by cosine similarity (HNSW). Used by the autonomous `search_document` tool. |
 
 #### Ollama (local LLM server, default `localhost:11434`, optional)
 
