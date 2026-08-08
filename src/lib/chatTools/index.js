@@ -18,8 +18,10 @@
  * See `_example.js` for the shape.
  */
 import searchDocument from './searchDocument';
+import webSearch from './webSearch';
+import currentTimeDate from './currentTimeDate';
 
-const REGISTRY = [searchDocument];
+const REGISTRY = [searchDocument, webSearch, currentTimeDate];
 
 /**
  * Build the `tools: [...]` array to send to Ollama. Tools whose `when(ctx)`
