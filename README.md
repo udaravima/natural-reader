@@ -47,7 +47,9 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 - **Per-Message Read Aloud** — A `🔊 Read aloud` / `■ Stop` button on every assistant bubble — works even with auto-TTS off, or to re-read finished messages later
 - **Markdown Rendering** — Lists, code blocks, tables, headings, links render natively in chat bubbles
 - **Markdown-Aware TTS** — Markup is stripped before synthesis so audio reads visible text only (no "star star bold")
-- **Reasoning Trace Toggle** — Enable thinking to send `think: true` to Ollama and see reasoning trace (deepseek-r1, qwen3-thinking, gpt-oss, …) in a collapsible disclosure that auto-expands while streaming
+- **Per-Model Inference Settings** — An `Inference` block in the chat sidebar sets the **context window** (`num_ctx`), **keep-alive**, **thinking level**, and **max reply tokens** for the selected model, saved per model so a 9.7B and a 3B can differ on the same machine. Every control defaults to **Auto**, which omits the key entirely and leaves Ollama's own memory-based sizing alone — nothing changes until you opt in. Note that changing the context window makes Ollama reload the model.
+- **Reasoning Trace Control** — The `Thinking` setting sends `think` to Ollama and surfaces the reasoning trace (deepseek-r1, qwen3-thinking, gpt-oss, …) in a collapsible disclosure that auto-expands while streaming. Five states: `Off` / `On` (booleans) plus the graduated `Low` / `Medium` / `High` levels — useful on slow hardware, where reasoning tokens are the most expensive output a model can produce. Models that accept the boolean but reject a level are retried automatically.
+- **Context Meter & Truncation Warning** — A `~3.3k / 16k ctx` readout above the composer estimates how full the window is (amber past 75%), and if a reply is cut off because the context filled up, a toast names the actual numbers instead of leaving `done_reason: length` buried in the stats disclosure.
 - **Per-Message Copy** — One-click copy of any chat message to clipboard
 
 ### 🧩 Chrome Read-Aloud Extension & Markdown Folder Workspace *(new in `v1.8.0`)*

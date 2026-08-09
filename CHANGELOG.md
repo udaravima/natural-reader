@@ -11,7 +11,32 @@ All notable changes to this project will be documented in this file.
   chat session (restored on reload), and are bounded (max 6 pins / 12k chars).
   Whole-document breadth continues to come from semantic retrieval.
 
+- **Per-model Ollama inference settings.** A new `Inference` block in the chat sidebar
+  exposes four request parameters — **context window** (`options.num_ctx`), **keep-alive**
+  (`keep_alive`, including *Always* = `-1`), **thinking level** (`think`), and **max reply
+  tokens** (`options.num_predict`) — stored per model name, because a 9.7B and a 3B want
+  different context sizes on the same machine. The thinking control replaces the old
+  boolean toggle with five states: `Off`/`On` send booleans (identical to previous
+  behaviour, and the old `enableThinking` preference migrates into it automatically),
+  while `Low`/`Medium`/`High` send Ollama's graduated levels. A model that accepts the
+  boolean but rejects a level is retried once with plain thinking rather than losing it.
+  Every setting defaults to **unset**, which omits the key from the request entirely — so
+  installing this changes nothing until you opt in. That is deliberate: Ollama already
+  sizes context from available memory (4k under 24 GB, 32k at 24–48 GB, 256k above), and a
+  hardcoded default would *downgrade* well-equipped machines. All of it is per-request, so
+  no `OLLAMA_CONTEXT_LENGTH`, no systemd override, and no daemon restart is needed.
+  ([src/hooks/inference.js](src/hooks/inference.js))
+- **Context meter + truncation warning.** A `~3.3k / 16k ctx` estimate sits above the
+  composer (amber past 75% of the window; no denominator when the window is left on Auto),
+  and a cut-off reply now raises a toast naming the real token counts.
+
 ### Fixed
+- **Silently truncated replies.** A reply could stop mid-sentence with the only evidence
+  being `done_reason: length` inside a collapsed stats disclosure. The cause was that the
+  chat engine never sent an `options` object at all, so Ollama applied its own default
+  context window — a real case hit prompt 3317 + generation 779 = exactly 4096. The window
+  is now configurable and exhaustion is surfaced, on both the initial response and the
+  tool follow-up (whose history is strictly larger, and so more likely to overflow).
 - Ask-AI context is no longer stranded at the front of a multi-turn chat (the model
   previously reported "no content attached" on follow-up questions).
 
