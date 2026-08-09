@@ -761,6 +761,25 @@ npm run lint     # Run ESLint
 
 ---
 
+## 📋 Logging
+
+The backend logs to **both the console and a size-rotating file** at
+`logs/server.log` (10 MB × 5 backups; `logs/` is gitignored). This captures TTS,
+chat, embedding, and `web_search` activity — including SSRF blocks and per-page
+fetch/summary fallbacks. Tune it with env vars (see `.env.example`):
+
+| Var | Default | Controls |
+|-----|---------|----------|
+| `LOG_LEVEL` | `INFO` | Verbosity (`DEBUG` / `INFO` / `WARNING` / …) |
+| `LOG_DIR` | `./logs` | Directory for the log file |
+| `LOG_FILE_MAX_MB` | `10` | Rotate the log after this many MB |
+| `LOG_FILE_BACKUPS` | `5` | How many rotated files to keep |
+
+Frontend logs stay in the browser devtools console; Postgres and SearXNG keep their
+own container logs (`docker-compose logs <service>`).
+
+---
+
 ## 🔧 Build Optimization
 
 The project uses Rolldown (via `rolldown-vite`) with optimized chunk splitting:
@@ -770,6 +789,14 @@ The project uses Rolldown (via `rolldown-vite`) with optimized chunk splitting:
 
 ---
 
+## 🤝 Contributing
+
+Contributions are welcome! See **[CONTRIBUTING.md](CONTRIBUTING.md)** for setup, the
+test/lint commands, branch and commit conventions, and how larger features are
+designed. In short: `./startup.sh init && ./startup.sh up`, keep both test suites
+green (`npm run test:run` and `.venv/bin/pytest server/tests`), and open PRs against
+`master` using [Conventional Commits](https://www.conventionalcommits.org/).
+
 ## 📄 License
 
-MIT
+Released under the [MIT License](LICENSE) © 2026 Udara Vimarsha.

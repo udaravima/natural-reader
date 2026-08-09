@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .db import close_db, init_db
+from .logging_config import configure_logging
 from .endpoints import router as tts_router
 from .routers.chat_sessions import router as chat_sessions_router
 from .routers.docs import PDF_STORAGE_DIR, router as docs_router
@@ -18,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
+    # Idempotent — also covers uvicorn worker subprocesses, which re-import the
+    # app module rather than going through run.py's __main__.
+    configure_logging()
     app = FastAPI()
 
     # Allow CORS so our React frontend can talk to this server

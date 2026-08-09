@@ -4,13 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Added
-- **Pinned chat context:** "Ask AI" on a selection (or "Ask page") now *pins* the
-  excerpt to the conversation — it stays attached across follow-ups instead of
-  being sent once. Multiple pins accumulate as removable chips, are saved with the
-  chat session (restored on reload), and are bounded (max 6 pins / 12k chars).
-  Whole-document breadth continues to come from semantic retrieval.
+## [1.9.0] - 2026-08-10
 
+### Added
+- **Web search (`web_search` tool).** The chat model can now search the live web
+  through a self-hosted **SearXNG** instance: for each result the backend fetches the
+  page, extracts the readable text with trafilatura, and summarizes it with a small
+  model (`llama3.2:3b` by default), returning per-result summaries the chat model
+  synthesizes and cites. Fan-out is bounded by a semaphore like the embedding
+  pipeline, and a page that fails (timeout, paywall, blocked) degrades to its search
+  snippet rather than dropping. The endpoint is synchronous (a tool call can't poll)
+  and **SSRF-guarded** — only `http`/`https` to hosts resolving to public IPs, every
+  redirect hop re-checked, so a result can't point the fetcher at your internal
+  network or a cloud metadata endpoint. SearXNG runs from `docker-compose` bound to
+  `127.0.0.1:18043` (API-only), and `./startup.sh up` bootstraps its config on first
+  run. New env: `SEARXNG_URL`, `WEB_SEARCH_*` (see `.env.example`).
+  ([server/services/web_search.py](server/services/web_search.py), [server/routers/tools.py](server/routers/tools.py), [src/lib/chatTools/webSearch.js](src/lib/chatTools/webSearch.js))
+- **File logging.** The backend now writes to a size-rotating `logs/server.log`
+  (10 MB × 5 backups) alongside the console, and finally wires up the app's own
+  loggers so `INFO` messages surface instead of being swallowed by the missing
+  handler. Tunable via `LOG_LEVEL`, `LOG_DIR`, `LOG_FILE_MAX_MB`, `LOG_FILE_BACKUPS`;
+  `logs/` is gitignored. ([server/logging_config.py](server/logging_config.py))
 - **Per-model Ollama inference settings.** A new `Inference` block in the chat sidebar
   exposes four request parameters — **context window** (`options.num_ctx`), **keep-alive**
   (`keep_alive`, including *Always* = `-1`), **thinking level** (`think`), and **max reply
@@ -30,6 +44,17 @@ All notable changes to this project will be documented in this file.
   composer (amber past 75% of the window; no denominator when the window is left on Auto),
   and a cut-off reply now raises a toast naming the real token counts.
 
+### Changed
+- **SearXNG is bound to `127.0.0.1` and API-only.** The search container publishes on
+  localhost instead of all interfaces (it's an unauthenticated meta-search), on a
+  non-default port (`18043`), and its config drops the HTML output format — leaving
+  only the JSON API the backend uses.
+
+### Project
+- Added an **MIT `LICENSE`** (the project had none) and a **`CONTRIBUTING.md`** plus a
+  Contributing section in the README, making the terms of use and how to contribute
+  explicit.
+
 ### Fixed
 - **Silently truncated replies.** A reply could stop mid-sentence with the only evidence
   being `done_reason: length` inside a collapsed stats disclosure. The cause was that the
@@ -37,6 +62,20 @@ All notable changes to this project will be documented in this file.
   context window — a real case hit prompt 3317 + generation 779 = exactly 4096. The window
   is now configurable and exhaustion is surfaced, on both the initial response and the
   tool follow-up (whose history is strictly larger, and so more likely to overflow).
+
+## [1.8.3] - 2026-08-09
+
+### Added
+- **Pinned chat context:** "Ask AI" on a selection (or "Ask page") now *pins* the
+  excerpt to the conversation — it stays attached across follow-ups instead of
+  being sent once. Multiple pins accumulate as removable chips, are saved with the
+  chat session (restored on reload), and are bounded (max 6 pins / 12k chars).
+  Whole-document breadth continues to come from semantic retrieval.
+- **Chat tool scaffold.** Frontend tool-calling gained a `current_time`/date tool and
+  the `web_search` tool stub, plus a refactor of the tool response structure that the
+  1.9.0 backend builds on.
+
+### Fixed
 - Ask-AI context is no longer stranded at the front of a multi-turn chat (the model
   previously reported "no content attached" on follow-up questions).
 
