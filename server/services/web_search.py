@@ -66,3 +66,49 @@ def is_url_fetchable(url: str) -> bool:
         except ValueError:
             return False
     return True
+
+
+_client: httpx.AsyncClient | None = None
+_semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+
+
+async def start_client() -> None:
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(headers={"User-Agent": _UA})
+
+
+async def stop_client() -> None:
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    if _client is None:
+        raise RuntimeError("Web-search HTTP client not started — call start_client() first")
+    return _client
+
+
+async def searxng_search(query: str, count: int) -> list[dict]:
+    """Query SearXNG's JSON API and return up to `count` {title,url,snippet}."""
+    client = _get_client()
+    resp = await client.get(
+        f"{SEARXNG_URL}/search",
+        params={"q": query, "format": "json"},
+        timeout=FETCH_TIMEOUT_S,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    out: list[dict] = []
+    for r in (data.get("results") or [])[:count]:
+        url = r.get("url") or ""
+        if not url:
+            continue
+        out.append({
+            "title": r.get("title") or url,
+            "url": url,
+            "snippet": r.get("content") or "",
+        })
+    return out
