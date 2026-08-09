@@ -112,3 +112,50 @@ async def searxng_search(query: str, count: int) -> list[dict]:
             "snippet": r.get("content") or "",
         })
     return out
+
+
+async def _safe_get(url: str) -> httpx.Response | None:
+    """GET with manual redirect handling — every hop is re-checked against the
+    SSRF guard so a public URL can't 30x us onto a private address."""
+    client = _get_client()
+    current = url
+    for _ in range(4):  # cap redirect hops
+        if not is_url_fetchable(current):
+            logger.warning("Blocked non-public URL: %s", current)
+            return None
+        try:
+            resp = await client.get(
+                current, timeout=FETCH_TIMEOUT_S, follow_redirects=False,
+            )
+        except httpx.HTTPError as e:
+            logger.warning("Fetch failed for %s: %s", current, e)
+            return None
+        if resp.is_redirect:
+            loc = resp.headers.get("location")
+            if not loc:
+                return None
+            current = str(httpx.URL(current).join(loc))
+            continue
+        return resp
+    return None
+
+
+async def fetch_and_extract(url: str) -> str | None:
+    """Fetch a page and return clean, truncated text — or None on block/failure."""
+    resp = await _safe_get(url)
+    if resp is None:
+        return None
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPError as e:
+        logger.warning("Non-2xx for %s: %s", url, e)
+        return None
+    raw = resp.content[:MAX_RESPONSE_BYTES]
+    html = raw.decode(resp.encoding or "utf-8", errors="ignore")
+    import trafilatura
+    # favor_recall keeps short pages from being dropped by trafilatura's
+    # precision heuristic — we'd rather summarize a thin page than lose it.
+    text = (trafilatura.extract(html, favor_recall=True) or "").strip()
+    if not text:
+        return None
+    return text[:MAX_PAGE_CHARS]

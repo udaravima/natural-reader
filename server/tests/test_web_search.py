@@ -1,7 +1,24 @@
+import socket
+
 import httpx
 import pytest
 import respx
 from server.services import web_search as ws
+
+
+@pytest.fixture
+def resolve_pub_test(monkeypatch):
+    """Make the mock host `pub.test` resolve to a public IP so the SSRF guard
+    lets respx-served requests through. Real IP literals (e.g. 169.254.169.254)
+    still pass to the real resolver, so the guard is genuinely exercised."""
+    real = socket.getaddrinfo
+
+    def fake(host, *args, **kwargs):
+        if host == "pub.test":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+        return real(host, *args, **kwargs)
+
+    monkeypatch.setattr(ws.socket, "getaddrinfo", fake)
 
 
 @pytest.mark.parametrize("url", [
@@ -44,3 +61,62 @@ async def test_searxng_search_parses_and_caps(monkeypatch):
     assert route.called
     assert [r["url"] for r in out] == ["http://a.test", "http://b.test"]
     assert out[0] == {"title": "A", "url": "http://a.test", "snippet": "sa"}
+
+
+@respx.mock
+async def test_fetch_and_extract_returns_clean_text(resolve_pub_test):
+    html = (
+        "<html><head><title>T</title></head><body><nav>home about</nav>"
+        "<article><h1>Findings</h1>"
+        "<p>The core measured value in this study is 42 across all trials. "
+        "The experiment was repeated ten times with consistent results. "
+        "Researchers concluded the effect is stable and reproducible.</p>"
+        "</article></body></html>"
+    )
+    respx.get("http://pub.test/a").mock(return_value=httpx.Response(200, html=html))
+    await ws.start_client()
+    try:
+        text = await ws.fetch_and_extract("http://pub.test/a")
+    finally:
+        await ws.stop_client()
+    assert text is not None
+    assert "42" in text
+    assert "home about" not in text  # nav/boilerplate stripped
+
+
+@respx.mock
+async def test_fetch_and_extract_truncates_to_max_page_chars(monkeypatch, resolve_pub_test):
+    monkeypatch.setattr(ws, "MAX_PAGE_CHARS", 50)
+    para = "This sentence provides ample readable content for extraction. " * 40
+    html = f"<html><body><article><h1>Doc</h1><p>{para}</p></article></body></html>"
+    respx.get("http://pub.test/big").mock(return_value=httpx.Response(200, html=html))
+    await ws.start_client()
+    try:
+        text = await ws.fetch_and_extract("http://pub.test/big")
+    finally:
+        await ws.stop_client()
+    assert text is not None
+    assert len(text) == 50
+
+
+@respx.mock
+async def test_fetch_and_extract_blocks_redirect_to_private(resolve_pub_test):
+    respx.get("http://pub.test/redir").mock(
+        return_value=httpx.Response(302, headers={"location": "http://169.254.169.254/"})
+    )
+    await ws.start_client()
+    try:
+        text = await ws.fetch_and_extract("http://pub.test/redir")
+    finally:
+        await ws.stop_client()
+    assert text is None
+
+
+async def test_fetch_and_extract_blocks_private_url_without_request():
+    # No respx route registered — if it tried to fetch, respx would raise.
+    await ws.start_client()
+    try:
+        text = await ws.fetch_and_extract("http://127.0.0.1/secret")
+    finally:
+        await ws.stop_client()
+    assert text is None

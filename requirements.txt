@@ -17,6 +17,9 @@ docling>=2.0
 # Required by FastAPI to parse multipart/form-data PDF uploads.
 python-multipart
 
+# HTML → clean text extraction for the web_search tool (strips nav/ads/boilerplate).
+trafilatura
+
 # Kokoro TTS (ONNX version for CPU efficiency)
 kokoro-onnx>=0.3.9
 
