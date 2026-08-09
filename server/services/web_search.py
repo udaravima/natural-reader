@@ -203,7 +203,9 @@ async def web_search(query: str, count: int) -> dict:
                     if summary:
                         source = "page"
                 except Exception as e:  # noqa: BLE001 — degrade, don't abort the batch
-                    logger.warning("Summary failed for %s: %s", hit["url"], e)
+                    # %r not %s: httpx timeout exceptions stringify to "", which
+                    # hides the cause — repr keeps the type (e.g. ReadTimeout('')).
+                    logger.warning("Summary failed for %s: %r", hit["url"], e)
             if not summary:
                 summary = hit.get("snippet") or "(no summary available)"
                 source = "snippet"
