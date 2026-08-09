@@ -471,11 +471,6 @@ export function useChatEngine({
         // Lock TTS mode + inference settings for THIS message — changing them mid-stream applies to the next message.
         const modeForThisMsg = chatTtsMode;
         const inferenceForThisMsg = inference;
-        // Sticky copy of the locked settings for this message. Stays equal to
-        // inferenceForThisMsg unless the think-level fallback below fires, in
-        // which case it picks up the forced `think: 'on'` so the tool
-        // follow-up request (if any) doesn't resend the already-rejected level.
-        let effectiveInference = inferenceForThisMsg;
 
         // Auto-create a session if this is the first message.
         let sessionTitleSet = false;
@@ -658,10 +653,6 @@ export function useChatEngine({
                     showToast?.('This model rejected the thinking level — used plain thinking instead.', 4000);
                 }
                 logEvent('think-fallback', `model rejected think level "${inferenceForThisMsg.think}" (HTTP ${res.status})`);
-                // Make the fallback sticky for the rest of this message — the
-                // tool follow-up request (if the model calls tools) reuses
-                // effectiveInference so it doesn't resend the rejected level.
-                effectiveInference = { ...inferenceForThisMsg, think: 'on' };
                 res = await fetch(ollamaUrl('/api/chat'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -669,7 +660,7 @@ export function useChatEngine({
                         model: selectedModel,
                         messages: history,
                         stream: true,
-                        ...buildRequestFields(effectiveInference),
+                        ...buildRequestFields({ ...inferenceForThisMsg, think: 'on' }),
                     }),
                     signal: controller.signal,
                 });
@@ -756,7 +747,7 @@ export function useChatEngine({
                         model: selectedModel,
                         messages: followupHistory,
                         stream: true,
-                        ...buildRequestFields(effectiveInference),
+                        ...buildRequestFields(inferenceForThisMsg),
                     }),
                     signal: controller.signal,
                 });
@@ -767,6 +758,11 @@ export function useChatEngine({
                     setMessages(prev => prev.map(m =>
                         m.id === assistantId ? { ...m, stats: second.stats } : m
                     ));
+                    const truncated2 = truncationMessage(second.stats);
+                    if (truncated2) {
+                        showToast?.(truncated2, 7000);
+                        logEvent('truncated', truncated2);
+                    }
                 }
             }
 
