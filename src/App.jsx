@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Loader2 } from 'lucide-react';
 
 // Hooks
@@ -13,6 +13,7 @@ import { makePin } from './hooks/pins';
 
 // Constants
 import { OLLAMA_DEFAULTS } from './constants';
+import { resolveForModel, patchForModel, migrateLegacyThinking } from './hooks/inference';
 
 // Utils
 import { buildApiUrl } from './utils/url';
@@ -63,11 +64,41 @@ export default function App() {
   const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', 'streaming');
   const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', true);
   const [enableThinking, setEnableThinking] = usePersistedState('enableThinking', false);
+  // Per-model Ollama inference settings (context window, keep-alive, thinking
+  // level, max reply tokens). Keyed by model name because a 9.7B and a 3B want
+  // different context sizes on the same machine.
+  const [inferenceByModel, setInferenceByModel] = usePersistedState('inferenceByModel', {});
   // Distraction-free reading: hides Header, sidebars, mobile bottom nav, and
   // the PdfViewer toolbar so only the page content + a small floating exit
   // pill remain. Persisted across reloads (some users prefer the immersive
   // layout as their default).
   const [distractionFree, setDistractionFree] = usePersistedState('distractionFree', false);
+
+  // One-time seed: carry the old global `enableThinking` boolean into this
+  // model's `think` setting the first time we see the model, so upgrading
+  // users keep the thinking behaviour they had. Read straight from
+  // localStorage rather than from React state — the `enableThinking` state is
+  // deleted in Task 4 and this effect must keep working after that.
+  useEffect(() => {
+    if (!selectedModel) return;
+    setInferenceByModel(prev => {
+      if (prev[selectedModel]) return prev;
+      let legacy = false;
+      try {
+        legacy = JSON.parse(localStorage.getItem('neural-pdf-enableThinking') || 'false');
+      } catch { legacy = false; }
+      return patchForModel(prev, selectedModel, { think: migrateLegacyThinking(legacy) });
+    });
+  }, [selectedModel, setInferenceByModel]);
+
+  const inference = useMemo(
+    () => resolveForModel(inferenceByModel, selectedModel),
+    [inferenceByModel, selectedModel]
+  );
+  const setInference = useCallback(
+    (patch) => setInferenceByModel(prev => patchForModel(prev, selectedModel, patch)),
+    [selectedModel, setInferenceByModel]
+  );
 
   // --- TRANSIENT UI STATE ---
   const [status, setStatus] = useState('Initializing PDF Engine...');
@@ -162,7 +193,7 @@ export default function App() {
   const currentDocIndexEntry = currentDocId ? docIndexByDocId[currentDocId] : null;
   const chatEngine = useChatEngine({
     ollamaHost, ollamaPort, selectedModel,
-    chatTtsMode, chatAutoTts, enableThinking,
+    chatTtsMode, chatAutoTts, enableThinking, inference,
     isLocalhost, selectedVoice, playbackSpeed, requestTimeout,
     apiHost, apiPort,
     currentDocId, currentDocIndexState: currentDocIndexEntry?.state || null,
@@ -1061,6 +1092,7 @@ export default function App() {
             chatTtsMode={chatTtsMode} setChatTtsMode={setChatTtsMode}
             chatAutoTts={chatAutoTts} setChatAutoTts={setChatAutoTts}
             enableThinking={enableThinking} setEnableThinking={setEnableThinking}
+            inference={inference} setInference={setInference}
             messages={chatMessages}
             clearHistory={chatClearHistory}
             sessions={chatSessions}
