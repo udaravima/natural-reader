@@ -32,7 +32,7 @@ export default {
                 type: 'object',
                 properties: {
                     query: { type: 'string', description: 'The optimized search query string used to look up information on the web.' },
-                    count: { type: 'integer', minimum: 1, maximum: 15, description: 'Number of results.' },
+                    count: { type: 'integer', minimum: 1, maximum: 10, description: 'Number of results.' },
                 },
                 required: ['query'],
             },
@@ -40,19 +40,19 @@ export default {
     },
     when: (_ctx) => true, // tighten: e.g. gate on a user preference
     execute: async (args, ctx) => {
+        const query = (args?.query || '').trim();
+        const count = args?.count ?? 5;
+        if (!query) return { error: 'query is required and must be non-empty.' };
+        if (count < 1 || count > 10) return { error: 'count must be between 1 and 10.' };
         const res = await fetch(
             buildApiUrl(ctx.apiHost, ctx.apiPort, '/v1/tools/web_search'),
-            { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(args) },
+            { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, count }) },
         );
-        const query = args?.query || '';
-        const count = args?.count || 5;
-        if (!query) return { error: 'query is required and must be non-empty.' };
-        if (count < 1 || count > 15) return { error: 'count must be between 1 and 15.' };
         if (!res.ok) return { error: `Web search HTTP ${res.status}` };
         const data = await res.json();
-        return { 
+        return {
             summary_text: `Web search for "${query}" returned ${data?.results?.length || 0} result(s).`,
-            agent_response: data 
+            agent_response: data,
         };
     },
 };
