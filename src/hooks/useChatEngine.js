@@ -6,7 +6,7 @@ import { makeSessionStore } from '../lib/sessionStore';
 import { executeToolCall, getToolDefinitions } from '../lib/chatTools';
 import { buildChatHistory, buildPinPreamble } from './chatHistory';
 import { addPin as addPinReducer, removePin as removePinReducer, MAX_PINS } from './pins';
-import { buildRequestFields, INFERENCE_DEFAULTS } from './inference';
+import { buildRequestFields, INFERENCE_DEFAULTS, truncationMessage } from './inference';
 
 const SENTENCE_TERMINATOR = /(?<=[.!?])\s+/;
 const MIN_TTS_LENGTH = 5;
@@ -59,6 +59,8 @@ export function useChatEngine({
 }) {
     // Toasted once per tool/thinking fallback so retries don't spam the user.
     const toolFallbackToastedRef = useRef(false);
+    // Toasted once per session so a model that rejects thinking levels doesn't spam.
+    const thinkLevelFallbackToastedRef = useRef(false);
     // Toast at most once per offline streak — avoid spamming on every save.
     const backendOfflineToastedRef = useRef(false);
     const sessionStore = useMemo(() => makeSessionStore({
@@ -469,6 +471,11 @@ export function useChatEngine({
         // Lock TTS mode + inference settings for THIS message — changing them mid-stream applies to the next message.
         const modeForThisMsg = chatTtsMode;
         const inferenceForThisMsg = inference;
+        // Sticky copy of the locked settings for this message. Stays equal to
+        // inferenceForThisMsg unless the think-level fallback below fires, in
+        // which case it picks up the forced `think: 'on'` so the tool
+        // follow-up request (if any) doesn't resend the already-rejected level.
+        let effectiveInference = inferenceForThisMsg;
 
         // Auto-create a session if this is the first message.
         let sessionTitleSet = false;
@@ -640,6 +647,33 @@ export function useChatEngine({
                     signal: controller.signal,
                 });
             }
+            // Some thinking-capable models accept the boolean but reject the
+            // graduated levels. Retry once with `think: true` rather than
+            // dropping thinking entirely.
+            const usedLevel = !['off', 'on'].includes(inferenceForThisMsg.think);
+            if (!res.ok && usedLevel && res.status >= 400 && res.status < 500) {
+                console.warn(`Ollama returned ${res.status} for think:"${inferenceForThisMsg.think}" — retrying with think:true.`);
+                if (!thinkLevelFallbackToastedRef.current) {
+                    thinkLevelFallbackToastedRef.current = true;
+                    showToast?.('This model rejected the thinking level — used plain thinking instead.', 4000);
+                }
+                logEvent('think-fallback', `model rejected think level "${inferenceForThisMsg.think}" (HTTP ${res.status})`);
+                // Make the fallback sticky for the rest of this message — the
+                // tool follow-up request (if the model calls tools) reuses
+                // effectiveInference so it doesn't resend the rejected level.
+                effectiveInference = { ...inferenceForThisMsg, think: 'on' };
+                res = await fetch(ollamaUrl('/api/chat'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        model: selectedModel,
+                        messages: history,
+                        stream: true,
+                        ...buildRequestFields(effectiveInference),
+                    }),
+                    signal: controller.signal,
+                });
+            }
             if (!res.ok || !res.body) throw new Error(`Ollama error: HTTP ${res.status}`);
 
             const first = await consumeStream(res);
@@ -647,6 +681,14 @@ export function useChatEngine({
                 setMessages(prev => prev.map(m =>
                     m.id === assistantId ? { ...m, stats: first.stats } : m
                 ));
+                // done_reason "length" means the context window filled up, not
+                // that the model finished. Without this the only evidence is a
+                // line inside a collapsed stats disclosure.
+                const truncated = truncationMessage(first.stats);
+                if (truncated) {
+                    showToast?.(truncated, 7000);
+                    logEvent('truncated', truncated);
+                }
             }
 
             // If the model called any tools, execute them and re-POST without
@@ -714,7 +756,7 @@ export function useChatEngine({
                         model: selectedModel,
                         messages: followupHistory,
                         stream: true,
-                        ...buildRequestFields(inferenceForThisMsg),
+                        ...buildRequestFields(effectiveInference),
                     }),
                     signal: controller.signal,
                 });
