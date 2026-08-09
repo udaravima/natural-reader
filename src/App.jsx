@@ -1159,6 +1159,7 @@ export default function App() {
             showToast={showToast}
             pins={chatPins}
             onRemovePin={chatRemovePin}
+            numCtx={inference.numCtx}
           />
         ) : (
         <WorkspaceProvider workspace={workspace} initialPath={workspaceEntryPath} onOpenDoc={onOpenDoc} onMissing={(path) => showToast(`"${path}" isn't in this folder`, 3000)}>
