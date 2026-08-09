@@ -15,6 +15,7 @@
 - Thinking control states: `off | on | low | medium | high`. `off` → `think: false`, `on` → `think: true` (boolean, byte-identical to today), levels → the string. `"max"` is deliberately not offered.
 - `keep_alive` values on the wire: `"5m"` / `"30m"` / `"1h"` strings, or `-1` for Always. Unset → key omitted.
 - Test commands: `npm run test:run` (all), `npx vitest run <path>` (one file). Lint: `npm run lint`.
+- **Lint baseline is 4 pre-existing errors, not zero.** `no-unused-vars` in `src/lib/chatTools/currentTimeDate.js` (3) and `src/lib/chatTools/webSearch.js` (1), both from the recent chat-tools commits and unrelated to this work. Verified by stashing: identical count with and without our changes. Tasks must not ADD errors — `npm run lint` must still report exactly `✖ 4 problems`. Do NOT fix those four; they are out of scope for this plan.
 - Do not commit without asking the user first — this repo requires explicit per-commit approval.
 - Existing 77 tests must stay green.
 
