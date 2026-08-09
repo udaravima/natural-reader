@@ -25,6 +25,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import AttachmentPreview from "./AttachmentPreview";
 import { estimateTokens } from "../hooks/inference";
+import { buildPinPreamble } from "../hooks/chatHistory";
 // VoiceRecorder is intentionally not imported — audio attachments are paused
 // until a Whisper-style transcription step is added (see plan file). The file
 // itself is kept on disk so re-enabling is a single import + a JSX block.
@@ -182,20 +183,19 @@ export default function ChatView({
     if (e.dataTransfer?.files?.length) ingestFiles(e.dataTransfer.files);
   };
 
-  // Rough prompt-size readout. Counts what actually gets sent: message contents
-  // plus pin text, which are re-sent in full on every turn.
+  // Counts what actually gets sent: message contents plus the FULL pin preamble
+  // (buildPinPreamble wraps each excerpt in ~57 tokens of framing), both of
+  // which are re-sent on every turn.
   const ctxTokens = estimateTokens([
     ...messages.map((m) => m.content),
-    ...pins.map((p) => p.text),
+    ...buildPinPreamble(pins).map((m) => m.content),
   ]);
   const ctxRatio = numCtx ? ctxTokens / numCtx : 0;
-  // Window sizes read better whole ("16k"), running totals need the decimal
-  // ("1.0k") so the number visibly moves as the conversation grows.
-  const fmtK = (n) => {
-    if (n >= 10000) return `${Math.round(n / 1000)}k`;
-    if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-    return String(n);
-  };
+  // The running total keeps a decimal so it visibly moves as the conversation
+  // grows; the window is a fixed preset and reads better whole. This is a
+  // difference of ROLE, not magnitude — 4096 is a window, 4096 tokens is not.
+  const fmtTotal = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+  const fmtWindow = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
 
   // A pin counts as send-worthy on its own (e.g. user clicked "Ask page"
   // and just wants the model's take without typing anything).
@@ -305,7 +305,7 @@ export default function ChatView({
               className={`text-[9px] font-bold px-1 ${ctxRatio >= 0.75 ? 'text-amber-500' : theme.textMuted}`}
               title="Estimated prompt size. Messages and pins are re-sent on every turn."
             >
-              ~{fmtK(ctxTokens)}{numCtx ? ` / ${fmtK(numCtx)}` : ''} ctx
+              ~{fmtTotal(ctxTokens)}{numCtx ? ` / ${fmtWindow(numCtx)}` : ''} ctx
             </div>
           )}
           {/* Pin row — docs/pages/selections pinned via "Ask page" or
