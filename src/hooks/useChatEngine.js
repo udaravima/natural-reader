@@ -6,6 +6,7 @@ import { makeSessionStore } from '../lib/sessionStore';
 import { executeToolCall, getToolDefinitions } from '../lib/chatTools';
 import { buildChatHistory, buildPinPreamble } from './chatHistory';
 import { addPin as addPinReducer, removePin as removePinReducer, MAX_PINS } from './pins';
+import { buildRequestFields, INFERENCE_DEFAULTS } from './inference';
 
 const SENTENCE_TERMINATOR = /(?<=[.!?])\s+/;
 const MIN_TTS_LENGTH = 5;
@@ -41,7 +42,7 @@ export function useChatEngine({
     selectedModel,
     chatTtsMode,        // 'streaming' | 'after-complete'
     chatAutoTts,        // bool — disables TTS entirely
-    enableThinking,     // bool — sends `think: true` to Ollama and surfaces message.thinking
+    inference = INFERENCE_DEFAULTS,  // per-model settings → think / keep_alive / options
     isLocalhost,        // bool — true means use Kokoro, false means Web Speech fallback
     selectedVoice,
     playbackSpeed,
@@ -465,9 +466,9 @@ export function useChatEngine({
         const assistantId = `a-${assistantTs}`;
         const assistantMsg = { role: 'assistant', content: '', thinking: '', id: assistantId, timestamp: assistantTs };
 
-        // Lock TTS mode + thinking flag for THIS message — toggling mid-stream applies to next message.
+        // Lock TTS mode + inference settings for THIS message — changing them mid-stream applies to the next message.
         const modeForThisMsg = chatTtsMode;
-        const thinkForThisMsg = !!enableThinking;
+        const inferenceForThisMsg = inference;
 
         // Auto-create a session if this is the first message.
         let sessionTitleSet = false;
@@ -615,7 +616,7 @@ export function useChatEngine({
                 model: selectedModel,
                 messages: history,
                 stream: true,
-                think: thinkForThisMsg,
+                ...buildRequestFields(inferenceForThisMsg),
                 ...extra,
             });
             const firstBody = tools.length > 0 ? buildBody({ tools }) : buildBody();
@@ -713,7 +714,7 @@ export function useChatEngine({
                         model: selectedModel,
                         messages: followupHistory,
                         stream: true,
-                        think: thinkForThisMsg,
+                        ...buildRequestFields(inferenceForThisMsg),
                     }),
                     signal: controller.signal,
                 });
@@ -772,7 +773,7 @@ export function useChatEngine({
             }).catch(err => console.error('Session save failed:', err));
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, enableThinking, ollamaHost, ollamaPort, apiHost, apiPort, currentDocId, currentDocIndexState, flushBufferedSentences, enqueueTts, logEvent, saveActiveSession]);
+    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, inference, ollamaHost, ollamaPort, apiHost, apiPort, currentDocId, currentDocIndexState, flushBufferedSentences, enqueueTts, logEvent, saveActiveSession]);
 
     const activeSession = sessions.find(s => s.id === activeSessionId) || null;
 
