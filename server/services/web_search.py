@@ -159,3 +159,27 @@ async def fetch_and_extract(url: str) -> str | None:
     if not text:
         return None
     return text[:MAX_PAGE_CHARS]
+
+
+_SUMMARY_PROMPT = (
+    "You are summarizing a web page for someone researching: \"{query}\".\n"
+    "Write 2-4 sentences capturing ONLY the information on the page relevant to "
+    "that query. If the page has nothing relevant, say so in one sentence. Do "
+    "not invent information that is not present.\n\nPAGE CONTENT:\n{text}"
+)
+
+
+async def summarize_one(query: str, text: str) -> str:
+    """Summarize one page's text with the small model via Ollama /api/generate."""
+    client = _get_client()
+    resp = await client.post(
+        f"{OLLAMA_URL}/api/generate",
+        json={
+            "model": SUMMARY_MODEL,
+            "prompt": _SUMMARY_PROMPT.format(query=query, text=text),
+            "stream": False,
+        },
+        timeout=SUMMARY_TIMEOUT_S,
+    )
+    resp.raise_for_status()
+    return (resp.json().get("response") or "").strip()

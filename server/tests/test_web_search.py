@@ -120,3 +120,20 @@ async def test_fetch_and_extract_blocks_private_url_without_request():
     finally:
         await ws.stop_client()
     assert text is None
+
+
+@respx.mock
+async def test_summarize_one_calls_ollama_generate(monkeypatch):
+    monkeypatch.setattr(ws, "OLLAMA_URL", "http://ollama.test")
+    route = respx.post("http://ollama.test/api/generate").mock(
+        return_value=httpx.Response(200, json={"response": "  A tidy summary.  "})
+    )
+    await ws.start_client()
+    try:
+        out = await ws.summarize_one("what is x", "long page text about x")
+    finally:
+        await ws.stop_client()
+    assert route.called
+    body = route.calls.last.request.content.decode()
+    assert '"stream": false' in body or '"stream":false' in body
+    assert out.strip() == "A tidy summary."
