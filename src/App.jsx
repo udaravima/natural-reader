@@ -63,7 +63,6 @@ export default function App() {
   const [selectedModel, setSelectedModel] = usePersistedState('selectedModel', '');
   const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', 'streaming');
   const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', true);
-  const [enableThinking, setEnableThinking] = usePersistedState('enableThinking', false);
   // Per-model Ollama inference settings (context window, keep-alive, thinking
   // level, max reply tokens). Keyed by model name because a 9.7B and a 3B want
   // different context sizes on the same machine.
@@ -1091,7 +1090,6 @@ export default function App() {
             refreshModels={refreshModels}
             chatTtsMode={chatTtsMode} setChatTtsMode={setChatTtsMode}
             chatAutoTts={chatAutoTts} setChatAutoTts={setChatAutoTts}
-            enableThinking={enableThinking} setEnableThinking={setEnableThinking}
             inference={inference} setInference={setInference}
             messages={chatMessages}
             clearHistory={chatClearHistory}
