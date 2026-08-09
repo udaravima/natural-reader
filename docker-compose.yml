@@ -17,5 +17,16 @@ services:
       retries: 10
     restart: unless-stopped
 
+  searxng:
+    image: searxng/searxng:latest   # pin to a dated tag for reproducibility
+    container_name: natural-reader-searxng
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8080/
+    restart: unless-stopped
+
 volumes:
   pgdata:

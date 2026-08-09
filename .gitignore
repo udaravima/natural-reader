@@ -34,6 +34,9 @@ HANDOVER.md
 .env
 **.pyc
 
+# SearXNG runtime config holds a real secret_key — commit the .example instead
+searxng/settings.yml
+
 # Backend-retained PDFs (uploaded for docling conversion)
 data/
 .aider*

@@ -1,0 +1,16 @@
+# SearXNG config for the web_search tool.
+#
+#   cp searxng/settings.yml.example searxng/settings.yml
+#   # then set a real secret_key:  openssl rand -hex 32
+#
+# JSON output is OFF by default in SearXNG — without it, /search?format=json
+# returns HTTP 403.
+use_default_settings: true
+server:
+  # Generate with: openssl rand -hex 32
+  secret_key: "CHANGE_ME_openssl_rand_hex_32"
+  limiter: false
+search:
+  formats:
+    - html
+    - json

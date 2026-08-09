@@ -242,6 +242,31 @@ ollama pull qwen2.5    # or llama3.1 / llama3.2 / mistral / gemma2
 
 `python run.py` applies migrations on startup and exposes the new endpoints under `/v1/chat/sessions/*` and `/v1/docs/*` — the existing Kokoro routes are unchanged. If Postgres is unreachable, those new routes return `503` but **TTS and the regular Ollama chat keep working** (the chat layer streams against Ollama directly; only session persistence depends on Postgres).
 
+### 6. (Optional) Web search (`web_search` tool)
+
+The chat model can search the live web via a self-hosted **SearXNG** instance. For each result it fetches the page, extracts the readable text, and summarizes it with a small model (`llama3.2:3b` by default); the summaries go back to the chat model, which writes the final answer and cites sources.
+
+```bash
+# Create the SearXNG config from the template and set a real secret_key
+cp searxng/settings.yml.example searxng/settings.yml
+sed -i "s/CHANGE_ME_openssl_rand_hex_32/$(openssl rand -hex 32)/" searxng/settings.yml
+
+# Start SearXNG (settings.yml is gitignored — it holds the secret_key)
+docker-compose up -d searxng
+
+# Pull the summary model
+ollama pull llama3.2:3b
+
+# Verify JSON search works — must return JSON, not a 403/HTML page
+curl -s "http://localhost:8080/search?q=test&format=json" | head -c 80
+```
+
+**A 403 means SearXNG's JSON format is disabled** — check that `searxng/settings.yml` lists `json` under `search.formats`.
+
+All knobs are optional; see the `WEB_SEARCH_*` and `SEARXNG_URL` entries in `.env.example`. The most impactful is `WEB_SEARCH_RESULT_COUNT` (default 5): each result is a full page fetch plus a model call, so it dominates latency.
+
+**Security note:** the backend only fetches URLs whose host resolves to a public IP — private/loopback/link-local addresses (including cloud metadata endpoints) are refused, and every redirect hop is re-checked.
+
 ### Hardware Acceleration
 
 The TTS backend automatically detects and uses the best available hardware:
