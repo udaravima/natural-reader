@@ -183,3 +183,36 @@ async def summarize_one(query: str, text: str) -> str:
     )
     resp.raise_for_status()
     return (resp.json().get("response") or "").strip()
+
+
+async def web_search(query: str, count: int) -> dict:
+    """Search, then fetch+summarize each result in parallel (semaphore-bounded).
+    Per-result failures degrade to the SearXNG snippet rather than dropping —
+    the caller always gets one entry per result."""
+    count = max(1, min(RESULT_COUNT_CAP, count))
+    hits = await searxng_search(query, count)
+
+    async def _one(hit: dict) -> dict:
+        async with _semaphore:
+            summary = ""
+            source = "snippet"
+            text = await fetch_and_extract(hit["url"])
+            if text:
+                try:
+                    summary = await summarize_one(query, text)
+                    if summary:
+                        source = "page"
+                except Exception as e:  # noqa: BLE001 — degrade, don't abort the batch
+                    logger.warning("Summary failed for %s: %s", hit["url"], e)
+            if not summary:
+                summary = hit.get("snippet") or "(no summary available)"
+                source = "snippet"
+            return {
+                "title": hit["title"],
+                "url": hit["url"],
+                "summary": summary.strip(),
+                "source": source,
+            }
+
+    results = await asyncio.gather(*(_one(h) for h in hits))
+    return {"query": query, "results": list(results)}

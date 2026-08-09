@@ -137,3 +137,30 @@ async def test_summarize_one_calls_ollama_generate(monkeypatch):
     body = route.calls.last.request.content.decode()
     assert '"stream": false' in body or '"stream":false' in body
     assert out.strip() == "A tidy summary."
+
+
+async def test_web_search_fans_out_with_snippet_fallback(monkeypatch):
+    async def fake_search(query, count):
+        return [
+            {"title": "T1", "url": "http://one.test", "snippet": "snip1"},
+            {"title": "T2", "url": "http://two.test", "snippet": "snip2"},
+        ]
+
+    async def fake_fetch(url):
+        return "page text" if url == "http://one.test" else None
+
+    async def fake_summarize(query, text):
+        return "SUMMARY"
+
+    monkeypatch.setattr(ws, "searxng_search", fake_search)
+    monkeypatch.setattr(ws, "fetch_and_extract", fake_fetch)
+    monkeypatch.setattr(ws, "summarize_one", fake_summarize)
+
+    out = await ws.web_search("q", 5)
+    assert out["query"] == "q"
+    assert len(out["results"]) == 2
+    first, second = out["results"]
+    assert first == {"title": "T1", "url": "http://one.test",
+                     "summary": "SUMMARY", "source": "page"}
+    assert second == {"title": "T2", "url": "http://two.test",
+                      "summary": "snip2", "source": "snippet"}
