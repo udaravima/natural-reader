@@ -10,6 +10,7 @@ from .db import close_db, init_db
 from .endpoints import router as tts_router
 from .routers.chat_sessions import router as chat_sessions_router
 from .routers.docs import PDF_STORAGE_DIR, router as docs_router
+from .routers.tools import router as tools_router
 from .services.embeddings import start_client as start_embeddings, stop_client as stop_embeddings
 from .services.web_search import start_client as start_web_search, stop_client as stop_web_search
 
@@ -31,6 +32,7 @@ def create_app() -> FastAPI:
     app.include_router(tts_router)
     app.include_router(chat_sessions_router)
     app.include_router(docs_router)
+    app.include_router(tools_router)
 
     @app.on_event("startup")
     async def _startup() -> None:
