@@ -37,3 +37,5 @@ HANDOVER.md
 # Backend-retained PDFs (uploaded for docling conversion)
 data/
 .aider*
+.backups/
+deploy.sh
