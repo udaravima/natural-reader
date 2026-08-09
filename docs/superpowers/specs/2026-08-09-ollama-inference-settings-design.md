@@ -220,10 +220,17 @@ Written through the existing `usePersistedState`, which already prefixes keys wi
 
 ### 6.1 Migrating `enableThinking`
 
-On first load, if `neural-pdf-enableThinking` exists and `inferenceByModel` has no
-entry for the currently selected model, seed that model's `think` from
-`migrateLegacyThinking(storedBool)`. The old key is left in place — harmless, and it
-keeps the migration idempotent across a downgrade.
+Whenever a model is selected that has no entry in `inferenceByModel`, seed that
+model's `think` from `migrateLegacyThinking(storedBool)`, reading
+`neural-pdf-enableThinking` directly from localStorage. The old key is left in
+place — harmless, and it keeps the migration idempotent across a downgrade.
+
+This seeds **per model on first sight, not once globally.** That is deliberate:
+seeding only the first model would silently turn thinking off for every other model
+the user has, which is a worse outcome than carrying the old preference forward. The
+cost is that a preference whose UI control no longer exists keeps propagating to
+models pulled much later. If that becomes undesirable, gate it behind a one-time
+`neural-pdf-inferenceMigrated` flag.
 
 ## 7. Error handling
 
