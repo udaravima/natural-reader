@@ -195,7 +195,10 @@ export default function ChatView({
   // grows; the window is a fixed preset and reads better whole. This is a
   // difference of ROLE, not magnitude — 4096 is a window, 4096 tokens is not.
   const fmtTotal = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
-  const fmtWindow = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+  // A context window is sized in binary units (4096 = 4*1024), not decimal —
+  // dividing by 1000 turns 32768 into "33k", a size nobody calls it. Divide by
+  // 1024 so the four presets read as 4k/8k/16k/32k.
+  const fmtWindow = (n) => (n >= 1024 ? `${Math.round(n / 1024)}k` : String(n));
 
   // A pin counts as send-worthy on its own (e.g. user clicked "Ask page"
   // and just wants the model's take without typing anything).

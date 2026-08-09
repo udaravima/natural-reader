@@ -3,6 +3,7 @@ import {
     Trash2, RefreshCw, Volume2, VolumeX, MessageSquare, Bot, Sliders,
     Plus, Pencil, ChevronDown, ChevronRight, ScrollText, Check, X,
 } from 'lucide-react';
+import { INFERENCE_DEFAULTS } from '../hooks/inference';
 
 export default function ChatSidebar({
     theme,
@@ -19,8 +20,8 @@ export default function ChatSidebar({
     // TTS preferences
     chatTtsMode, setChatTtsMode,
     chatAutoTts, setChatAutoTts,
-    // Model options
-    inference, setInference,
+    // Inference settings
+    inference = INFERENCE_DEFAULTS, setInference,
     // Chat state
     messages,
     clearHistory,
@@ -181,6 +182,7 @@ export default function ChatSidebar({
                             label="Context window"
                             value={inference.numCtx === null ? 'auto' : String(inference.numCtx)}
                             onChange={(v) => setInference({ numCtx: v === 'auto' ? null : Number(v) })}
+                            disabled={!selectedModel}
                             options={[
                                 ['auto', 'Auto'], ['4096', '4096'], ['8192', '8192'],
                                 ['16384', '16384'], ['32768', '32768'],
@@ -192,6 +194,7 @@ export default function ChatSidebar({
                             label="Keep model warm"
                             value={inference.keepAlive === null ? 'auto' : String(inference.keepAlive)}
                             onChange={(v) => setInference({ keepAlive: v === 'auto' ? null : (v === '-1' ? -1 : v) })}
+                            disabled={!selectedModel}
                             options={[
                                 ['auto', 'Auto (5m)'], ['5m', '5 minutes'], ['30m', '30 minutes'],
                                 ['1h', '1 hour'], ['-1', 'Always'],
@@ -203,6 +206,7 @@ export default function ChatSidebar({
                             label="Thinking"
                             value={inference.think}
                             onChange={(v) => setInference({ think: v })}
+                            disabled={!selectedModel}
                             options={[
                                 ['off', 'Off'], ['on', 'On'], ['low', 'Low'],
                                 ['medium', 'Medium'], ['high', 'High'],
@@ -214,6 +218,7 @@ export default function ChatSidebar({
                             label="Max reply tokens"
                             value={inference.numPredict === null ? 'auto' : String(inference.numPredict)}
                             onChange={(v) => setInference({ numPredict: v === 'auto' ? null : Number(v) })}
+                            disabled={!selectedModel}
                             options={[
                                 ['auto', 'Unlimited'], ['512', '512'], ['1024', '1024'],
                                 ['2048', '2048'], ['4096', '4096'],
@@ -403,18 +408,22 @@ export default function ChatSidebar({
 // One labelled dropdown in the Inference block. Discrete options rather than a
 // slider or free text: a num_ctx change forces Ollama to reload the model, so a
 // value that changed on every keystroke would thrash the runner.
-function InferenceRow({ theme, label, value, onChange, options }) {
+function InferenceRow({ theme, label, value, onChange, options, disabled = false }) {
+    // Whitespace is invalid in an HTML id and breaks `querySelector('#…')` —
+    // slugify the label instead of interpolating it raw.
+    const id = `inf-${label.toLowerCase().replace(/\s+/g, '-')}`;
     return (
         <div className="flex items-center gap-2">
-            <label className={`text-[10px] font-bold ${theme.textMuted} flex-1 min-w-0 truncate`} htmlFor={`inf-${label}`}>
+            <label className={`text-[10px] font-bold ${theme.textMuted} flex-1 min-w-0 truncate`} htmlFor={id}>
                 {label}
             </label>
             <select
-                id={`inf-${label}`}
+                id={id}
                 aria-label={label}
                 value={value}
                 onChange={(e) => onChange(e.target.value)}
-                className={`text-[11px] font-bold p-1.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors w-32 shrink-0`}
+                disabled={disabled}
+                className={`text-[11px] font-bold p-1.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors w-32 shrink-0 ${disabled ? 'opacity-60' : ''}`}
             >
                 {options.map(([val, text]) => (
                     <option key={val} value={val}>{text}</option>

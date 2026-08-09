@@ -95,7 +95,14 @@ export default function App() {
     [inferenceByModel, selectedModel]
   );
   const setInference = useCallback(
-    (patch) => setInferenceByModel(prev => patchForModel(prev, selectedModel, patch)),
+    (patch) => {
+      // With no model selected there is no key to patch under — writing
+      // anyway would land the entry under "" (resolveForModel('', map) still
+      // finds it, so the UI looks like it stuck) and orphan it in
+      // localStorage the moment a real model is picked.
+      if (!selectedModel) return;
+      setInferenceByModel(prev => patchForModel(prev, selectedModel, patch));
+    },
     [selectedModel, setInferenceByModel]
   );
 

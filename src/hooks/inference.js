@@ -52,13 +52,21 @@ export const migrateLegacyThinking = (bool) => (bool ? 'on' : 'off');
 export const estimateTokens = (texts = []) =>
     Math.ceil(texts.reduce((n, t) => n + (typeof t === 'string' ? t.length : 0), 0) / 4);
 
-// Ollama reports done_reason "length" when the context window filled up — the
-// model did not finish, it ran out of room. Returns null for every other
-// reason so the caller can toast unconditionally on a non-null result.
-export const truncationMessage = (stats) => {
+// Ollama reports done_reason "length" for TWO different events: the context
+// window filled up, OR num_predict (Max reply tokens) was reached. Those need
+// different advice — telling a user to raise the context window when their
+// reply cap fired sends them to the wrong control. Distinguish by comparing
+// the reply length against the numPredict cap that was actually in effect.
+// Returns null for every other done_reason so the caller can toast
+// unconditionally on a non-null result.
+export const truncationMessage = (stats, settings = INFERENCE_DEFAULTS) => {
     if (!stats || stats.doneReason !== 'length') return null;
     const prompt = stats.promptEvalCount || 0;
     const reply = stats.evalCount || 0;
+    if (settings?.numPredict && reply >= settings.numPredict) {
+        return `Reply hit the ${settings.numPredict}-token reply cap. `
+            + 'Raise "Max reply tokens" in Inference settings.';
+    }
     return `Reply was cut off — context full (${prompt} prompt + ${reply} reply = ${prompt + reply}). `
         + 'Raise the context window in Inference settings.';
 };

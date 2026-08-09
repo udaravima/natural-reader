@@ -35,6 +35,12 @@ describe('ChatView context meter', () => {
         expect(screen.getByTestId('context-meter')).toHaveTextContent('~1.0k / 16k ctx');
     });
 
+    it('renders the 32768 preset as 32k, not 33k (k means 1024, not 1000)', () => {
+        const messages = [{ role: 'user', content: 'a'.repeat(4000), id: 'u1' }];
+        render(<ChatView {...baseProps({ messages, numCtx: 32768 })} />);
+        expect(screen.getByTestId('context-meter')).toHaveTextContent('/ 32k ctx');
+    });
+
     it('counts pin text as well as messages', () => {
         // The meter counts buildPinPreamble's wrapped output, not raw p.text — the
         // preamble wraps the 4000-char excerpt in ~217 chars of framing (header,

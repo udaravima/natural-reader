@@ -114,4 +114,36 @@ describe('truncationMessage', () => {
         expect(msg).toContain('0 prompt + 0 reply = 0');
         expect(msg).not.toContain('undefined');
     });
+
+    // Ollama reports done_reason "length" for two different events: the
+    // context window filled up, OR num_predict (Max reply tokens) was
+    // reached. These need different advice, so the branch has to actually
+    // distinguish them rather than always blaming the context window.
+    it('names the reply cap when num_predict was reached', () => {
+        const msg = truncationMessage(
+            { doneReason: 'length', promptEvalCount: 100, evalCount: 512 },
+            { numPredict: 512 },
+        );
+        expect(msg).toContain('512-token reply cap');
+        expect(msg).toContain('Max reply tokens');
+        expect(msg).not.toContain('context window');
+    });
+
+    it('still blames the context window when num_predict is unset', () => {
+        const msg = truncationMessage(
+            { doneReason: 'length', promptEvalCount: 3317, evalCount: 779 },
+            { numPredict: null },
+        );
+        expect(msg).toContain('Raise the context window');
+        expect(msg).not.toContain('reply cap');
+    });
+
+    it('still blames the context window when num_predict is set but the reply came in under it', () => {
+        const msg = truncationMessage(
+            { doneReason: 'length', promptEvalCount: 4000, evalCount: 90 },
+            { numPredict: 512 },
+        );
+        expect(msg).toContain('Raise the context window');
+        expect(msg).not.toContain('reply cap');
+    });
 });

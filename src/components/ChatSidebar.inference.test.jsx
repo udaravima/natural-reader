@@ -90,4 +90,25 @@ describe('ChatSidebar inference controls', () => {
         render(<ChatSidebar {...baseProps()} />);
         expect(screen.queryByText('Enable thinking')).not.toBeInTheDocument();
     });
+
+    // With no model selected, setInference(patch) is a no-op in App.jsx (it
+    // would otherwise write the patch under the "" key and silently lose it
+    // the moment a model is picked). The controls must look inert, not just
+    // be functionally inert — otherwise a first-time user sets Context
+    // window, sees it "stick" via resolveForModel(map, ''), then loses it.
+    it('disables the inference selects when no model is selected', () => {
+        // Settings is open by default when selectedModel is falsy — no need to click it open.
+        render(<ChatSidebar {...baseProps({ selectedModel: '' })} />);
+        expect(screen.getByLabelText('Context window')).toBeDisabled();
+        expect(screen.getByLabelText('Keep model warm')).toBeDisabled();
+        expect(screen.getByLabelText('Thinking')).toBeDisabled();
+        expect(screen.getByLabelText('Max reply tokens')).toBeDisabled();
+    });
+
+    it('leaves the inference selects enabled once a model is selected', () => {
+        render(<ChatSidebar {...baseProps()} />);
+        openSettings();
+        expect(screen.getByLabelText('Context window')).not.toBeDisabled();
+        expect(screen.getByLabelText('Max reply tokens')).not.toBeDisabled();
+    });
 });

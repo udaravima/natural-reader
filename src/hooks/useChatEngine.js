@@ -611,14 +611,15 @@ export function useChatEngine({
             };
 
             // First /api/chat request. If tools is non-empty, include it. Some
-            // models 400 when `think: true` and `tools: [...]` are sent
-            // together — fall back to a tools-less retry in that case (we
-            // keep thinking on; only tools get dropped).
-            const buildBody = (extra = {}) => ({
+            // models 400 when `think: true`/a think LEVEL and `tools: [...]`
+            // are sent together — fall back in that case. `overrides` lets a
+            // retry replace individual inference fields (e.g. think) without
+            // ever hand-rolling a request body that forgets `tools`.
+            const buildBody = (extra = {}, overrides = {}) => ({
                 model: selectedModel,
                 messages: history,
                 stream: true,
-                ...buildRequestFields(inferenceForThisMsg),
+                ...buildRequestFields({ ...inferenceForThisMsg, ...overrides }),
                 ...extra,
             });
             const firstBody = tools.length > 0 ? buildBody({ tools }) : buildBody();
@@ -628,23 +629,14 @@ export function useChatEngine({
                 body: JSON.stringify(firstBody),
                 signal: controller.signal,
             });
-            if (!res.ok && tools.length > 0 && res.status >= 400 && res.status < 500) {
-                console.warn(`Ollama returned ${res.status} with tools+think — retrying without tools.`);
-                if (!toolFallbackToastedRef.current) {
-                    toolFallbackToastedRef.current = true;
-                    showToast?.('This model rejected tools — proceeded without them.', 4000);
-                }
-                logEvent('tool-fallback', `model rejected tools (HTTP ${res.status}); retrying without`);
-                res = await fetch(ollamaUrl('/api/chat'), {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(buildBody()),
-                    signal: controller.signal,
-                });
-            }
             // Some thinking-capable models accept the boolean but reject the
-            // graduated levels. Retry once with `think: true` rather than
-            // dropping thinking entirely.
+            // graduated levels. Try the think downgrade FIRST, keeping `tools`
+            // intact — if we tried the tools-drop first, a model that only
+            // objects to the think level would get blamed for rejecting tools
+            // (wrong toast) and would still lose `search_document` on the
+            // retry that actually fixes it, since that retry never restores
+            // tools. Retrying the level first means the tools fallback below
+            // only fires when tools are truly the problem.
             const usedLevel = !['off', 'on'].includes(inferenceForThisMsg.think);
             if (!res.ok && usedLevel && res.status >= 400 && res.status < 500) {
                 console.warn(`Ollama returned ${res.status} for think:"${inferenceForThisMsg.think}" — retrying with think:true.`);
@@ -656,31 +648,48 @@ export function useChatEngine({
                 res = await fetch(ollamaUrl('/api/chat'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        model: selectedModel,
-                        messages: history,
-                        stream: true,
-                        ...buildRequestFields({ ...inferenceForThisMsg, think: 'on' }),
-                    }),
+                    body: JSON.stringify(tools.length > 0 ? buildBody({ tools }, { think: 'on' }) : buildBody({}, { think: 'on' })),
+                    signal: controller.signal,
+                });
+            }
+            if (!res.ok && tools.length > 0 && res.status >= 400 && res.status < 500) {
+                console.warn(`Ollama returned ${res.status} with tools — retrying without tools.`);
+                if (!toolFallbackToastedRef.current) {
+                    toolFallbackToastedRef.current = true;
+                    showToast?.('This model rejected tools — proceeded without them.', 4000);
+                }
+                logEvent('tool-fallback', `model rejected tools (HTTP ${res.status}); retrying without`);
+                res = await fetch(ollamaUrl('/api/chat'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(buildBody({}, usedLevel ? { think: 'on' } : {})),
                     signal: controller.signal,
                 });
             }
             if (!res.ok || !res.body) throw new Error(`Ollama error: HTTP ${res.status}`);
 
-            const first = await consumeStream(res);
-            if (first.stats) {
+            // Attach the latest stats to the assistant bubble and surface
+            // truncation if this reply hit a cap. Shared by the initial
+            // stream and the tool follow-up stream below — both call sites
+            // did the same three things with different `stats`.
+            const applyStats = (stats) => {
+                if (!stats) return;
                 setMessages(prev => prev.map(m =>
-                    m.id === assistantId ? { ...m, stats: first.stats } : m
+                    m.id === assistantId ? { ...m, stats } : m
                 ));
-                // done_reason "length" means the context window filled up, not
-                // that the model finished. Without this the only evidence is a
-                // line inside a collapsed stats disclosure.
-                const truncated = truncationMessage(first.stats);
+                // done_reason "length" means the reply was capped — either
+                // the context window filled or num_predict was reached, not
+                // that the model finished. Without this the only evidence is
+                // a line inside a collapsed stats disclosure.
+                const truncated = truncationMessage(stats, inferenceForThisMsg);
                 if (truncated) {
                     showToast?.(truncated, 7000);
                     logEvent('truncated', truncated);
                 }
-            }
+            };
+
+            const first = await consumeStream(res);
+            applyStats(first.stats);
 
             // If the model called any tools, execute them and re-POST without
             // `tools` to force a text answer. Single round-trip cap — we don't
@@ -754,16 +763,7 @@ export function useChatEngine({
                 if (!res2.ok || !res2.body) throw new Error(`Ollama follow-up error: HTTP ${res2.status}`);
 
                 const second = await consumeStream(res2);
-                if (second.stats) {
-                    setMessages(prev => prev.map(m =>
-                        m.id === assistantId ? { ...m, stats: second.stats } : m
-                    ));
-                    const truncated2 = truncationMessage(second.stats);
-                    if (truncated2) {
-                        showToast?.(truncated2, 7000);
-                        logEvent('truncated', truncated2);
-                    }
-                }
+                applyStats(second.stats);
             }
 
             // End-of-stream cleanup: flush any remaining buffered text.
