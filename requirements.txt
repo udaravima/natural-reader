@@ -40,3 +40,8 @@ openvino>=2024.0.0
 
 # For CPU-only (lightest option):
 # onnxruntime
+
+# Backend test harness (dev). respx mocks httpx; pytest-asyncio runs async tests.
+pytest
+pytest-asyncio
+respx
