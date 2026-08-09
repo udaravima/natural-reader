@@ -653,7 +653,7 @@ export function useChatEngine({
             // loop, so a confused model can't spin forever.
             if (first.toolCalls.length > 0) {
                 setMessages(prev => prev.map(m =>
-                    m.id === assistantId ? { ...m, toolStatus: 'Searching document…' } : m
+                    m.id === assistantId ? { ...m, toolStatus: 'executing tool…' } : m
                 ));
                 logEvent('tool-call', `${first.toolCalls.length} tool call${first.toolCalls.length > 1 ? 's' : ''}`);
 
@@ -681,8 +681,9 @@ export function useChatEngine({
                         ? { error: tr.result.error }
                         : {
                             ok: true,
-                            chunk_count: tr.result?.chunk_count ?? null,
-                            query: tr.result?.query ?? null,
+                            chunk_count: tr.result?.agent_response?.chunk_count ?? null,
+                            query: tr.result?.agent_response?.query ?? null,
+                            summary_text: tr.result?.summary_text ?? null,
                         },
                 }));
                 setMessages(prev => prev.map(m =>
@@ -701,7 +702,7 @@ export function useChatEngine({
                     { role: 'assistant', content: assistantContent, tool_calls: first.toolCalls },
                     ...toolResults.map(tr => ({
                         role: 'tool',
-                        content: JSON.stringify(tr.result),
+                        content: JSON.stringify(tr.result.agent_response || tr.result, null, 2),
                     })),
                 ];
 

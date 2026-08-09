@@ -45,6 +45,10 @@
 //             { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(args) },
 //         );
 //         if (!res.ok) return { error: `Web search HTTP ${res.status}` };
-//         return await res.json();
+//         const data = await res.json();
+//         return { 
+//             summary_text: `Web search for "${args?.query || ''}" returned ${data?.results?.length || 0} result(s).`,
+//             agent_response: data 
+//         };
 //     },
 // };

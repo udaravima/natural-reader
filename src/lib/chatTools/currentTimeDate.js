@@ -27,7 +27,7 @@ export default {
         type: 'function',
         function: {
             name: 'current_time_date',
-            description: 'Get the current time and date.',
+            description: 'Get the current time and date. and locale. Use this tool whenever a user asks about the current time, date, or timezone information.',
             parameters: {
                 type: 'object',
                 properties: {},
@@ -36,6 +36,12 @@ export default {
     },
     when: (_ctx) => true,
     execute: async (args, ctx) => {
-        return new Date().toISOString();
+        const currentDateTimeLocale = new Date().toString();
+        return {
+            summary_text: currentDateTimeLocale,
+            agent_response:{
+                current_time_date: currentDateTimeLocale,
+            }
+        };
     },
 };
