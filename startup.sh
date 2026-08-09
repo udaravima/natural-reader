@@ -4,7 +4,7 @@
 #
 #   ./startup.sh init [podman|docker]   Check prerequisites, set up venv + deps,
 #                                       download models, install + build frontend.
-#   ./startup.sh up                     Start Postgres + the TTS backend (run.py).
+#   ./startup.sh up                     Start Postgres + SearXNG + the TTS backend (run.py).
 #   ./startup.sh down                   SIGTERM the TTS backend, then stop Postgres.
 #   ./startup.sh help                   Show usage.
 #
@@ -92,8 +92,8 @@ Commands:
   init [podman|docker]   Check prerequisites, create the Python venv, install
                          backend deps, download Kokoro models, install + build
                          the frontend. The engine choice is remembered.
-  up                     Start the Postgres container and the TTS backend (run.py).
-                         Runs in the foreground; Ctrl-C SIGTERMs the backend cleanly.
+  up                     Start the Postgres + SearXNG containers and the TTS backend
+                         (run.py). Foreground; Ctrl-C SIGTERMs the backend cleanly.
   down                   SIGTERM the TTS backend (if running) and stop Postgres.
   help                   Show this message.
 
@@ -200,6 +200,26 @@ stop_runner() {
 	rm -f "$RUNNER_PIDFILE"
 }
 
+# Bootstrap searxng/settings.yml from the committed template on first run, so
+# `up` brings SearXNG up with JSON output enabled (it's OFF by default → the
+# web_search tool would 403 and silently fall back to snippets). Mirrors copying
+# .env.example → .env: the real file is gitignored because it holds a secret_key.
+# Idempotent — a no-op once the file exists (including when a previous `up` left
+# it owned by the container's user, which we must not clobber).
+ensure_searxng_config() {
+	local example="searxng/settings.yml.example"
+	local target="searxng/settings.yml"
+	[[ -f "$target" ]] && return 0
+	[[ -f "$example" ]] || { warn "$example missing — SearXNG may 403 (no JSON) until you create $target."; return 0; }
+	log "Creating $target from template (first run)"
+	cp "$example" "$target"
+	if command -v openssl >/dev/null 2>&1; then
+		sed -i "s/CHANGE_ME_openssl_rand_hex_32/$(openssl rand -hex 32)/" "$target"
+	else
+		warn "openssl not found — set a real secret_key in $target before using web search."
+	fi
+}
+
 cmd_init() {
 	local engine
 	engine="$(resolve_engine "${1:-}")"
@@ -255,6 +275,8 @@ cmd_up() {
 	engine="$(resolve_engine)"
 
 	[[ -x "$VENV_DIR/bin/python" ]] || die "Python environment missing. Run '$0 init' first."
+
+	ensure_searxng_config
 
 	log "Starting containers ($engine)"
 	compose "$engine" up -d

@@ -21,11 +21,15 @@ services:
     image: searxng/searxng:latest   # pin to a dated tag for reproducibility
     container_name: natural-reader-searxng
     ports:
-      - "8080:8080"
+      # Bound to 127.0.0.1 — the FastAPI backend is the ONLY client; the browser
+      # never talks to SearXNG. Publishing on all interfaces would expose an
+      # unauthenticated open search proxy. Non-default host port (18043) also
+      # dodges the perpetually-busy 8080. Change it? Update SEARXNG_URL to match.
+      - "127.0.0.1:18043:8080"
     volumes:
       - ./searxng:/etc/searxng:rw
     environment:
-      SEARXNG_BASE_URL: http://localhost:8080/
+      SEARXNG_BASE_URL: http://localhost:18043/
     restart: unless-stopped
 
 volumes:

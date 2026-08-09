@@ -22,7 +22,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://localhost:8080").rstrip("/")
+SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://localhost:18043").rstrip("/")
 SUMMARY_MODEL = os.environ.get("WEB_SEARCH_SUMMARY_MODEL", "llama3.2:3b")
 RESULT_COUNT = int(os.environ.get("WEB_SEARCH_RESULT_COUNT", "5"))
 RESULT_COUNT_CAP = 10

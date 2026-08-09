@@ -246,19 +246,23 @@ ollama pull qwen2.5    # or llama3.1 / llama3.2 / mistral / gemma2
 
 The chat model can search the live web via a self-hosted **SearXNG** instance. For each result it fetches the page, extracts the readable text, and summarizes it with a small model (`llama3.2:3b` by default); the summaries go back to the chat model, which writes the final answer and cites sources.
 
+> `./startup.sh up` does the `settings.yml` bootstrap below automatically (copies the
+> template and injects a `secret_key`) and brings SearXNG up alongside Postgres.
+> The manual steps here are for running SearXNG on its own.
+
 ```bash
 # Create the SearXNG config from the template and set a real secret_key
 cp searxng/settings.yml.example searxng/settings.yml
 sed -i "s/CHANGE_ME_openssl_rand_hex_32/$(openssl rand -hex 32)/" searxng/settings.yml
 
-# Start SearXNG (settings.yml is gitignored — it holds the secret_key)
+# Start SearXNG on 127.0.0.1:18043 (settings.yml is gitignored — it holds the secret_key)
 docker-compose up -d searxng
 
 # Pull the summary model
 ollama pull llama3.2:3b
 
 # Verify JSON search works — must return JSON, not a 403/HTML page
-curl -s "http://localhost:8080/search?q=test&format=json" | head -c 80
+curl -s "http://localhost:18043/search?q=test&format=json" | head -c 80
 ```
 
 **A 403 means SearXNG's JSON format is disabled** — check that `searxng/settings.yml` lists `json` under `search.formats`.

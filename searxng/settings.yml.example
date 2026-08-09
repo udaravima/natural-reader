@@ -11,6 +11,8 @@ server:
   secret_key: "CHANGE_ME_openssl_rand_hex_32"
   limiter: false
 search:
+  # API-only: JSON is all the backend needs. There is no separate "no-UI"
+  # SearXNG image, but dropping "html" means the browser UI can't render search
+  # results — effectively API-only. Add "- html" back if you want to browse it.
   formats:
-    - html
     - json
