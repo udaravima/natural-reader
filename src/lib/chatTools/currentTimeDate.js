@@ -35,7 +35,7 @@ export default {
         },
     },
     when: (_ctx) => true,
-    execute: async (args, ctx) => {
+    execute: async () => {
         const currentDateTimeLocale = new Date().toString();
         return {
             summary_text: currentDateTimeLocale,
