@@ -20,7 +20,10 @@ if __name__ == "__main__":
     # replacing this config with its own console-only setup.
     logfile = configure_logging()
     workers = max(1, int(os.environ.get("WORKERS", "1")))
-    host = os.environ.get("HOST", "0.0.0.0")
+    # Bind localhost by default (SEC-2): off-box exposure must be opt-in. A
+    # containerized/proxied deployment sets HOST=0.0.0.0 explicitly so only the
+    # reverse proxy is internet-facing.
+    host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8000"))
     print(f"Starting Neural Voice Server on http://{host}:{port} (workers={workers}); logging to {logfile}")
     # When workers > 1 uvicorn needs an import string so each child can

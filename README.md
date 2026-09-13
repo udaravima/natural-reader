@@ -485,12 +485,12 @@ The frontend issues every API call directly from the browser — there's no auth
 | `GET  /api/tags` | List the names + sizes of every model you have pulled | Information disclosure / fingerprinting |
 | `GET  /api/version` | Probe the Ollama daemon version | Fingerprinting |
 
-In addition, [server/app.py](server/app.py) ships with `allow_origins=["*"]`, so even *other websites* can drive your Kokoro endpoint from JavaScript without anyone visiting your site. That makes Kokoro a free TTS-as-a-service for whoever knows the URL.
+In addition, [server/app.py](server/app.py) defaults to `allow_origins=["*"]` (with credentials disabled), so even *other websites* can drive your Kokoro endpoint from JavaScript without anyone visiting your site. That makes Kokoro a free TTS-as-a-service for whoever knows the URL. Set `FRONTEND_ORIGIN` to your real origin(s) to pin CORS (which also enables credentialed requests). TTS payloads are now size-capped (`TTS_MAX_*`, see [.env.example](.env.example)) so a single request can no longer pin the inference lock indefinitely.
 
 ### What is *not* a vulnerability (worth saying out loud)
 
 - **Chat history, sessions, document library** — all in IndexedDB, sandboxed per origin. Other websites can't read them.
-- **Bind addresses** — Kokoro and Ollama listen on `127.0.0.1` only (Ollama by default; Kokoro via [run.py](run.py) on `0.0.0.0` but firewalled by your nginx-only routing). Only the proxy is internet-facing.
+- **Bind addresses** — Kokoro and Ollama listen on `127.0.0.1` only by default (both now; Kokoro via [run.py](run.py) — set `HOST=0.0.0.0` explicitly for a container/proxy deployment). Only the proxy is internet-facing.
 - **TLS** — terminated at nginx with a real cert; in-transit traffic is fine.
 - **Input shapes** — both backends do ML inference. There's no shell-out, no eval, no SQL. The risk is *resource consumption*, not RCE.
 

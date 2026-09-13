@@ -2,10 +2,12 @@
 FastAPI application factory with CORS and router setup.
 """
 import logging
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .appconfig import cors_allow_credentials, parse_cors_origins
 from .db import close_db, init_db
 from .logging_config import configure_logging
 from .endpoints import router as tts_router
@@ -24,11 +26,14 @@ def create_app() -> FastAPI:
     configure_logging()
     app = FastAPI()
 
-    # Allow CORS so our React frontend can talk to this server
+    # CORS origins come from FRONTEND_ORIGIN (comma-separated). Default stays
+    # permissive so the content-script extension keeps working; credentials are
+    # enabled only when origins are pinned, avoiding the SEC-3 wildcard footgun.
+    cors_origins = parse_cors_origins(os.environ.get("FRONTEND_ORIGIN"))
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # In production, restrict this to your frontend URL
-        allow_credentials=True,
+        allow_origins=cors_origins,
+        allow_credentials=cors_allow_credentials(cors_origins),
         allow_methods=["*"],
         allow_headers=["*"],
     )

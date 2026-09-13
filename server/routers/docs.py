@@ -21,9 +21,9 @@ import hashlib
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Response, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Path as PathParam, Response, UploadFile
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
@@ -40,11 +40,19 @@ PDF_UPLOAD_MAX_MB = int(os.environ.get("PDF_UPLOAD_MAX_MB", "50"))
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/docs", tags=["docs"])
 
+# doc_id is a client-supplied sha256 hex digest. Constrain it to exactly that
+# shape everywhere it appears (SEC-1): the value is interpolated into a
+# filesystem path (`_pdf_storage_path`), so an unconstrained value like
+# "../../etc/x" would escape PDF_STORAGE_DIR. `DocId` applies the same rule to
+# path parameters, which FastAPI otherwise accepts as arbitrary strings.
+DOC_ID_PATTERN = r"^[0-9a-f]{64}$"
+DocId = Annotated[str, PathParam(pattern=DOC_ID_PATTERN)]
+
 
 # ---------- request / response models ----------
 
 class DocRegisterIn(BaseModel):
-    doc_id: str = Field(min_length=64, max_length=64)
+    doc_id: str = Field(pattern=DOC_ID_PATTERN)
     file_name: str
     file_type: str = Field(pattern="^(pdf|text|markdown)$")
     size_bytes: int = Field(ge=0)
@@ -191,7 +199,7 @@ async def register_document(payload: DocRegisterIn) -> dict[str, Any]:
 
 
 @router.get("/{doc_id}")
-async def get_document(doc_id: str) -> dict[str, Any]:
+async def get_document(doc_id: DocId) -> dict[str, Any]:
     _ensure_ready()
     pool = get_pool()
     async with pool.connection() as conn:
@@ -202,7 +210,7 @@ async def get_document(doc_id: str) -> dict[str, Any]:
 
 
 @router.post("/{doc_id}/chunks")
-async def upload_chunks(doc_id: str, payload: ChunksUploadIn) -> dict[str, Any]:
+async def upload_chunks(doc_id: DocId, payload: ChunksUploadIn) -> dict[str, Any]:
     """
     Bulk insert/upsert chunks. The frontend should call this in batches (~50)
     rather than one giant payload — keeps individual requests bounded and lets
@@ -262,7 +270,7 @@ async def upload_chunks(doc_id: str, payload: ChunksUploadIn) -> dict[str, Any]:
 
 
 @router.delete("/{doc_id}")
-async def delete_document(doc_id: str) -> dict[str, Any]:
+async def delete_document(doc_id: DocId) -> dict[str, Any]:
     _ensure_ready()
     pool = get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:
@@ -381,7 +389,7 @@ async def _run_index_job(doc_id: str) -> None:
 
 
 @router.post("/{doc_id}/index", status_code=202)
-async def start_index_job(doc_id: str, background: BackgroundTasks) -> dict[str, Any]:
+async def start_index_job(doc_id: DocId, background: BackgroundTasks) -> dict[str, Any]:
     """
     Kick off a background embedding job for `doc_id`. Returns 202 immediately;
     poll `GET /v1/docs/{doc_id}` for progress (`embedded_count` / `chunk_count`).
@@ -411,7 +419,7 @@ async def start_index_job(doc_id: str, background: BackgroundTasks) -> dict[str,
 
 
 @router.post("/{doc_id}/search")
-async def search_document(doc_id: str, req: SearchIn) -> dict[str, Any]:
+async def search_document(doc_id: DocId, req: SearchIn) -> dict[str, Any]:
     """
     Semantic search over `doc_id`'s embedded chunks. Returns top-k chunks
     by cosine similarity (higher `score` = closer).
@@ -463,11 +471,17 @@ async def search_document(doc_id: str, req: SearchIn) -> dict[str, Any]:
 
 def _pdf_storage_path(doc_id: str) -> Path:
     PDF_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    return PDF_STORAGE_DIR / f"{doc_id}.pdf"
+    # Defense in depth behind DocId validation: resolve and confirm the path
+    # stays inside PDF_STORAGE_DIR, so a doc_id that ever slips past the hex
+    # pattern still can't escape via `../` (SEC-1).
+    path = (PDF_STORAGE_DIR / f"{doc_id}.pdf").resolve()
+    if not path.is_relative_to(PDF_STORAGE_DIR):
+        raise HTTPException(status_code=400, detail="Invalid doc_id")
+    return path
 
 
 @router.post("/{doc_id}/pdf")
-async def upload_pdf_bytes(doc_id: str, file: UploadFile = File(...)) -> dict[str, Any]:
+async def upload_pdf_bytes(doc_id: DocId, file: UploadFile = File(...)) -> dict[str, Any]:
     """
     Persist the raw PDF bytes for `doc_id` to the backend filesystem so the
     convert job (and any future reconversion) can read them without another
@@ -512,7 +526,7 @@ async def upload_pdf_bytes(doc_id: str, file: UploadFile = File(...)) -> dict[st
 
 
 @router.delete("/{doc_id}/pdf")
-async def delete_pdf_bytes(doc_id: str) -> dict[str, Any]:
+async def delete_pdf_bytes(doc_id: DocId) -> dict[str, Any]:
     """Remove retained PDF bytes for `doc_id`. Keeps converted markdown / chunks."""
     _ensure_ready()
     pool = get_pool()
@@ -655,7 +669,7 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
 
 @router.post("/{doc_id}/convert", status_code=202)
 async def start_convert_job(
-    doc_id: str,
+    doc_id: DocId,
     options: ConvertOptionsIn,
     background: BackgroundTasks,
 ) -> dict[str, Any]:
@@ -702,7 +716,7 @@ async def start_convert_job(
 
 
 @router.get("/{doc_id}/markdown")
-async def get_document_markdown(doc_id: str, page: int | None = None) -> Response:
+async def get_document_markdown(doc_id: DocId, page: int | None = None) -> Response:
     """
     Return the docling-converted Markdown for this document. Without `page`
     the whole document is returned (pages joined with form-feed markers); with
@@ -736,7 +750,7 @@ async def get_document_markdown(doc_id: str, page: int | None = None) -> Respons
 
 
 @router.delete("/{doc_id}/markdown")
-async def delete_document_markdown(doc_id: str) -> dict[str, Any]:
+async def delete_document_markdown(doc_id: DocId) -> dict[str, Any]:
     """
     Wipe a document's converted markdown and the chunks/embeddings derived
     from it. The document row itself stays (so re-conversion is a single

@@ -4,10 +4,13 @@ services:
     container_name: natural-reader-postgres
     environment:
       POSTGRES_USER: natural_reader
-      POSTGRES_PASSWORD: natural_reader
+      # Override in a .env file / shell for anything past a local dev box.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-natural_reader}
       POSTGRES_DB: natural_reader
     ports:
-      - "5433:5432"
+      # Bound to 127.0.0.1 (SEC-5): the backend is the only client. Publishing
+      # on all interfaces exposes Postgres (and its creds) to the whole LAN.
+      - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
