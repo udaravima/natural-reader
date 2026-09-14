@@ -17,6 +17,7 @@ set -euo pipefail
 # Always operate from the project root (this script's own directory) so the
 # script works no matter where it is invoked from.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+DOCLING_ENABLED=true
 cd "$SCRIPT_DIR"
 
 readonly COMPOSE_FILE="docker-compose.yml"
