@@ -5,8 +5,9 @@ import os
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, Field
 
-from ..auth import deps, sessions, users
+from ..auth import deps, sessions, tokens as pat, users
 from ..auth.config import load_auth_config
 from ..auth.oidc import build_oauth
 
@@ -95,3 +96,41 @@ async def logout(request: Request, conn=Depends(deps.get_conn)):
 @router.get("/me")
 async def me(principal: deps.Principal = Depends(deps.get_current_user)):
     return {"id": principal.user_id, "email": principal.email, "role": principal.role}
+
+
+# ---------- Personal access tokens ----------
+
+class TokenCreateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    expires_at: str | None = None  # ISO-8601; None = no expiry
+
+
+@router.post("/tokens")
+async def create_pat(
+    body: TokenCreateIn,
+    principal: deps.Principal = Depends(deps.get_current_user),
+    conn=Depends(deps.get_conn),
+):
+    tid, raw = await pat.create_token(
+        conn, principal.user_id, body.name, expires_at=body.expires_at
+    )
+    return {"id": tid, "token": raw}
+
+
+@router.get("/tokens")
+async def list_pats(
+    principal: deps.Principal = Depends(deps.get_current_user),
+    conn=Depends(deps.get_conn),
+):
+    return await pat.list_tokens(conn, principal.user_id)
+
+
+@router.delete("/tokens/{token_id}", status_code=204)
+async def revoke_pat(
+    token_id: str,
+    principal: deps.Principal = Depends(deps.get_current_user),
+    conn=Depends(deps.get_conn),
+):
+    if not await pat.revoke_token(conn, principal.user_id, token_id):
+        raise HTTPException(status_code=404, detail="Token not found")
+    return Response(status_code=204)
