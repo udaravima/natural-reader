@@ -28,7 +28,6 @@ voices-v1.0.bin
 *.sln
 *.sw?
 .local/
-HANDOVER.md
 
 **/__pycache__/*
 .env
