@@ -1,3 +1,6 @@
+import pytest
+
+from server.auth.sessions import create_session, resolve_session
 from server.auth.users import resolve_or_provision_user, get_user, set_status
 
 SEED = "00000000-0000-0000-0000-000000000001"
@@ -13,10 +16,33 @@ async def test_first_login_links_seed_admin(db_conn):
     assert u["oidc_sub"] == "abc"
 
 
-async def test_email_links_preseeded_row(db_conn):
+async def test_verified_email_links_preseeded_row(db_conn):
     await db_conn.execute("UPDATE users SET email='real@x.io' WHERE id=%s", (SEED,))
-    u = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="real@x.io")
+    u = await resolve_or_provision_user(
+        db_conn, iss="i", sub="s1", email="real@x.io", email_verified=True
+    )
     assert u["id"] == SEED and u["oidc_sub"] == "s1"
+
+
+async def test_unverified_email_cannot_claim_preseeded_row(db_conn):
+    # An unverified email matching the pre-seeded admin must be refused, not linked.
+    await db_conn.execute("UPDATE users SET email='real@x.io' WHERE id=%s", (SEED,))
+    with pytest.raises(ValueError):
+        await resolve_or_provision_user(
+            db_conn, iss="i", sub="s1", email="real@x.io", email_verified=False
+        )
+    # Seed stays unlinked.
+    assert (await get_user(db_conn, SEED))["oidc_sub"] is None
+
+
+async def test_disabling_user_revokes_sessions(db_conn):
+    await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="a@x.io")  # admin
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io")
+    await set_status(db_conn, u["id"], "active")
+    tok = await create_session(db_conn, u["id"])
+    assert await resolve_session(db_conn, tok) is not None
+    await set_status(db_conn, u["id"], "disabled")
+    assert await resolve_session(db_conn, tok) is None
 
 
 async def test_second_identity_is_pending_member(db_conn):

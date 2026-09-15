@@ -2,11 +2,11 @@
 stays cheap to import from tests and CI."""
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass
 from typing import Mapping
 
 _TRUE = {"1", "true", "yes", "on"}
-_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 @dataclass(frozen=True)
@@ -42,6 +42,20 @@ def load_auth_config(env: Mapping[str, str]) -> AuthConfig:
     )
 
 
-def dev_bypass_allowed(cfg: AuthConfig, host: str) -> bool:
-    """The AUTH_ENABLED=false bypass is valid ONLY on a localhost bind."""
-    return (not cfg.enabled) and host in _LOCAL_HOSTS
+def dev_bypass_allowed(cfg: AuthConfig, bind_host: str) -> bool:
+    """The AUTH_ENABLED=false bypass is valid ONLY on a loopback bind.
+
+    `bind_host` MUST be the server's own bind address (the HOST env / the
+    listening socket) — NEVER a client-supplied Host header, which is trivially
+    spoofed (`Host: LOCALHOST.`, `Host: [::ffff:127.0.0.1]`, …). We resolve the
+    value through `ipaddress` so only genuine loopback addresses qualify.
+    """
+    if cfg.enabled:
+        return False
+    h = (bind_host or "").strip().lower().strip("[]")
+    if h in {"localhost", "localhost."}:
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False

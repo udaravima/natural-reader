@@ -33,6 +33,10 @@ async def set_status(conn, user_id: str, status: str) -> None:
     await conn.execute(
         "UPDATE users SET status=%s, updated_at=now() WHERE id=%s", (status, user_id)
     )
+    if status != "active":
+        # Hard-revoke: a disabled/pending user's live sessions die immediately.
+        # get_current_user also re-checks status on every request as a backstop.
+        await conn.execute("DELETE FROM sessions WHERE user_id=%s", (user_id,))
 
 
 async def set_role(conn, user_id: str, role: str) -> None:
@@ -46,15 +50,21 @@ async def _fetch_by(conn, where: str, params) -> dict[str, Any] | None:
     return _row(await cur.fetchone())
 
 
-async def _only_unlinked_seed(conn) -> bool:
-    cur = await conn.execute("SELECT count(*), count(oidc_sub) FROM users")
-    total, linked = await cur.fetchone()
-    return total == 1 and linked == 0
-
-
 async def resolve_or_provision_user(
-    conn, *, iss: str, sub: str, email: str, display_name: str | None = None
+    conn,
+    *,
+    iss: str,
+    sub: str,
+    email: str,
+    display_name: str | None = None,
+    email_verified: bool = False,
 ) -> dict[str, Any]:
+    """Resolve an OIDC identity to a local user, provisioning on first sight.
+
+    `email_verified` must reflect the OIDC `email_verified` claim: an email is
+    only trusted to CLAIM a pre-provisioned account when the IdP verified it.
+    The first-user-admin path (branch 3) is not email-based and so is unaffected.
+    """
     # 1) Known identity — refresh email/display_name, return it.
     found = await _fetch_by(conn, "oidc_iss=%s AND oidc_sub=%s", (iss, sub))
     if found:
@@ -65,26 +75,33 @@ async def resolve_or_provision_user(
         )
         return await get_user(conn, found["id"])
 
-    # 2) Pre-provisioned/seed row by email, not yet linked -> link it.
+    # 2) A row already carries this email.
     by_email = await _fetch_by(conn, "email=%s", (email,))
-    if by_email and by_email["oidc_sub"] is None:
+    if by_email:
+        if by_email["oidc_sub"] is not None:
+            raise ValueError("email already linked to another identity")
+        if not email_verified:
+            # An unverified email must never claim a pre-provisioned account —
+            # otherwise anyone who can mint a token with the admin's email wins.
+            raise ValueError("email not verified; cannot claim pre-provisioned account")
         await conn.execute(
             "UPDATE users SET oidc_iss=%s, oidc_sub=%s, "
             "display_name=COALESCE(%s, display_name), updated_at=now() WHERE id=%s",
             (iss, sub, display_name, by_email["id"]),
         )
         return await get_user(conn, by_email["id"])
-    if by_email:
-        raise ValueError("email already linked to another identity")
 
-    # 3) Brand-new identity. If only the unlinked seed exists, this first real
-    #    login claims it (first-user-admin); otherwise a pending member.
-    if await _only_unlinked_seed(conn):
-        await conn.execute(
-            "UPDATE users SET oidc_iss=%s, oidc_sub=%s, email=%s, "
-            "display_name=COALESCE(%s, display_name), updated_at=now() WHERE id=%s",
-            (iss, sub, email, display_name, SEED_ADMIN_ID),
-        )
+    # 3) Brand-new identity. Atomically claim the still-unlinked seed admin
+    #    (first-user-admin). The conditional UPDATE serializes concurrent first
+    #    logins via a row lock: exactly one flips oidc_sub from NULL, the rest
+    #    see rowcount 0 and fall through to a pending member.
+    cur = await conn.execute(
+        "UPDATE users SET oidc_iss=%s, oidc_sub=%s, email=%s, "
+        "display_name=COALESCE(%s, display_name), updated_at=now() "
+        "WHERE id=%s AND oidc_sub IS NULL",
+        (iss, sub, email, display_name, SEED_ADMIN_ID),
+    )
+    if cur.rowcount == 1:
         return await get_user(conn, SEED_ADMIN_ID)
 
     cur = await conn.execute(

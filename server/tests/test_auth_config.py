@@ -16,7 +16,12 @@ def test_disabled_flag_parsed():
 def test_dev_bypass_only_on_localhost():
     cfg = load_auth_config({"AUTH_ENABLED": "false"})
     assert dev_bypass_allowed(cfg, "127.0.0.1") is True
+    assert dev_bypass_allowed(cfg, "localhost") is True
+    assert dev_bypass_allowed(cfg, "::1") is True
     assert dev_bypass_allowed(cfg, "0.0.0.0") is False
+    # An IPv4-mapped spoof and a Host-header-style value must not qualify.
+    assert dev_bypass_allowed(cfg, "::ffff:127.0.0.1") is False
+    assert dev_bypass_allowed(cfg, "evil.example.com") is False
 
 
 def test_dev_bypass_false_when_auth_enabled():
