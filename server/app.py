@@ -3,6 +3,7 @@ FastAPI application factory with CORS and router setup.
 """
 import logging
 import os
+import secrets
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,9 +46,21 @@ def create_app() -> FastAPI:
     # Signed cookie holding the transient OIDC flow state (Authlib uses
     # request.session for state/nonce/PKCE). Separate from the app session.
     _auth_cfg = load_auth_config(os.environ)
+    session_secret = _auth_cfg.session_secret
+    if not session_secret:
+        # No configured secret: use a per-process random value rather than a
+        # known constant, so cookies can never be forged with a shared key. This
+        # is a loopback-dev convenience only — startup_guard() refuses to boot a
+        # non-loopback bind without a real SESSION_SECRET. The ephemeral secret
+        # won't survive a restart and won't validate across multiple workers.
+        session_secret = secrets.token_urlsafe(48)
+        logger.warning(
+            "SESSION_SECRET is not set — using an ephemeral per-process secret. "
+            "Set SESSION_SECRET for any real deployment (and whenever WORKERS>1)."
+        )
     app.add_middleware(
         SessionMiddleware,
-        secret_key=_auth_cfg.session_secret or "dev-insecure-change-me",
+        secret_key=session_secret,
         same_site="lax",
         https_only=_auth_cfg.cookie_secure,
     )
@@ -65,6 +78,7 @@ def create_app() -> FastAPI:
         startup_guard(
             auth_enabled=_auth_cfg.enabled,
             bind_host=os.environ.get("HOST", "127.0.0.1"),
+            session_secret=_auth_cfg.session_secret,
         )
         # init_db retries on its own and never raises — the app comes up even
         # when Postgres is down so TTS keeps serving. Chat routes will return

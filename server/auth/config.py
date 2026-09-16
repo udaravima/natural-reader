@@ -8,6 +8,10 @@ from typing import Mapping
 
 _TRUE = {"1", "true", "yes", "on"}
 
+# A signed-cookie secret shorter than this is treated as absent: too little
+# entropy to resist forgery of the OIDC-flow session cookie.
+MIN_SESSION_SECRET_LEN = 32
+
 
 @dataclass(frozen=True)
 class AuthConfig:
@@ -64,11 +68,32 @@ def dev_bypass_allowed(cfg: AuthConfig, bind_host: str) -> bool:
     return (not cfg.enabled) and _is_loopback(bind_host)
 
 
-def startup_guard(*, auth_enabled: bool, bind_host: str) -> None:
-    """Refuse to boot with the AUTH_ENABLED=false bypass on a non-loopback bind,
-    so the bypass can never silently become the posture on an exposed server."""
-    if not auth_enabled and not _is_loopback(bind_host):
+def _weak_session_secret(secret: str | None) -> bool:
+    """A missing or too-short secret can't safely sign the session cookie."""
+    return not secret or len(secret) < MIN_SESSION_SECRET_LEN
+
+
+def startup_guard(*, auth_enabled: bool, bind_host: str, session_secret: str | None) -> None:
+    """Fail fast on two exposed-server footguns:
+
+    1. The ``AUTH_ENABLED=false`` bypass on a non-loopback bind — it would
+       silently become the auth posture of an internet-facing server.
+    2. A missing/weak ``SESSION_SECRET`` on a non-loopback bind — the app would
+       fall back to an ephemeral (or, historically, a hardcoded) signing key,
+       letting anyone forge the OIDC-flow session cookie.
+
+    On a loopback bind both are allowed: the bypass is a local-dev escape hatch,
+    and a missing secret degrades to an ephemeral per-process one (see app.py).
+    """
+    loopback = _is_loopback(bind_host)
+    if not auth_enabled and not loopback:
         raise RuntimeError(
             "AUTH_ENABLED=false is only allowed on a loopback bind; "
             f"refusing to start with HOST={bind_host}"
+        )
+    if not loopback and _weak_session_secret(session_secret):
+        raise RuntimeError(
+            "SESSION_SECRET must be set to a strong random value "
+            f"(>= {MIN_SESSION_SECRET_LEN} chars) for a non-loopback bind "
+            f"(HOST={bind_host}); refusing to start with a missing or weak secret"
         )
