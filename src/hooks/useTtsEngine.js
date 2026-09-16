@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { KOKORO_VOICES } from '../constants';
-import { buildApiUrl } from '../utils/url';
+import { apiFetch } from '../utils/apiFetch';
 import { markdownToSpeech } from '../utils/markdownToSpeech';
 import { concatWavs } from '../utils/wavConcat';
 
@@ -50,17 +50,11 @@ export function useTtsEngine({
     const chatAudioRef = useRef(new Audio()); // Separate channel so chat TTS can't collide with reader TTS
     const retryCountRef = useRef(0);
 
-    // Helper to build API URL — empty `apiHost` produces a relative URL so
-    // reverse-proxied deployments (e.g. nginx routing /v1/* → Kokoro) work
-    // without needing host/port in settings.
-    const getApiUrl = (endpoint) => buildApiUrl(apiHost, apiPort, endpoint);
-
     // Pure synthesis: returns a blob URL (or null on error). Reused by reader playback,
     // selection read, voice preview, and chat sentence playback.
     const synthesizeText = useCallback(async (text, { voice, speed, signal } = {}) => {
         try {
-            const url = buildApiUrl(apiHost, apiPort, '/v1/synthesize');
-            const response = await fetch(url, {
+            const response = await apiFetch(apiHost, apiPort, '/v1/synthesize', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -354,7 +348,7 @@ export function useTtsEngine({
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
             try {
-                const response = await fetch(getApiUrl('/v1/synthesize'), {
+                const response = await apiFetch(apiHost, apiPort, '/v1/synthesize', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -418,7 +412,7 @@ export function useTtsEngine({
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
             try {
-                const response = await fetch(getApiUrl('/v1/synthesize'), {
+                const response = await apiFetch(apiHost, apiPort, '/v1/synthesize', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -486,7 +480,7 @@ export function useTtsEngine({
         }
 
         try {
-            const response = await fetch(getApiUrl('/v1/batch_synthesize'), {
+            const response = await apiFetch(apiHost, apiPort, '/v1/batch_synthesize', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -565,7 +559,7 @@ export function useTtsEngine({
             ? null
             : setTimeout(() => controller.abort(), requestTimeout * 4 * 1000);
         try {
-            const response = await fetch(buildApiUrl(apiHost, apiPort, '/v1/batch_synthesize'), {
+            const response = await apiFetch(apiHost, apiPort, '/v1/batch_synthesize', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -664,7 +658,7 @@ export function useTtsEngine({
                 if (sentences.length === 0) return;
 
                 try {
-                    const response = await fetch(buildApiUrl(apiHost, apiPort, '/v1/batch_synthesize'), {
+                    const response = await apiFetch(apiHost, apiPort, '/v1/batch_synthesize', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({

@@ -12,7 +12,7 @@
  * independent (it streams against Ollama directly).
  */
 import * as idb from '../db';
-import { buildApiUrl } from '../utils/url';
+import { apiFetch } from '../utils/apiFetch';
 
 const LOCAL_IDS = new Set();
 let lastBackendReachable = null; // null=unknown, true/false
@@ -20,10 +20,8 @@ let lastBackendReachable = null; // null=unknown, true/false
 const newId = () => `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 export function makeSessionStore({ apiHost, apiPort, onBackendOffline }) {
-    const url = (path) => buildApiUrl(apiHost, apiPort, path);
-
     const fetchJson = async (path, init) => {
-        const res = await fetch(url(path), init);
+        const res = await apiFetch(apiHost, apiPort, path, init);
         if (!res.ok) {
             const err = new Error(`HTTP ${res.status}`);
             err.status = res.status;

@@ -16,7 +16,7 @@ import { OLLAMA_DEFAULTS } from './constants';
 import { resolveForModel, patchForModel, migrateLegacyThinking } from './hooks/inference';
 
 // Utils
-import { buildApiUrl } from './utils/url';
+import { apiFetch } from './utils/apiFetch';
 import { getOrComputeDocHash } from './utils/docHash';
 import { getBook } from './db';
 import { saveWorkspaceState, clearWorkspaceState, getWorkspaceState } from './db';
@@ -254,7 +254,6 @@ export default function App() {
   const hasDocument = !!pdfDoc || ((fileType === 'text' || fileType === 'markdown') && numPages > 0);
 
   // --- BACKEND HEALTH CHECK ---
-  const getApiUrl = (endpoint) => buildApiUrl(apiHost, apiPort, endpoint);
 
   // Navigation helpers (used by PdfViewer, MobileBottomNav, keyboard shortcuts)
   const goToNextPage = useCallback(() => setCurrentPage(p => Math.min(numPages, p + 1)), [numPages, setCurrentPage]);
@@ -265,7 +264,7 @@ export default function App() {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
-      const response = await fetch(getApiUrl('/v1/health'), {
+      const response = await apiFetch(apiHost, apiPort, '/v1/health', {
         method: 'GET',
         signal: controller.signal,
       });
@@ -598,7 +597,7 @@ export default function App() {
       setCurrentDocId(docId);
       if (docIndexByDocId[docId] && docConvertByDocId[docId]) return; // already cached
       try {
-        const res = await fetch(getApiUrl(`/v1/docs/${encodeURIComponent(docId)}`));
+        const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}`);
         if (cancelled) return;
         if (res.status === 404) {
           setDocIndexByDocId((prev) => ({ ...prev, [docId]: { state: 'idle' } }));
@@ -643,13 +642,12 @@ export default function App() {
       return;
     }
     setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'uploading' } }));
-    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
 
     // 1. Register the document.
     let registerRes;
     try {
       const fileSize = (await getBook(pdfFileName))?.size ?? 0;
-      registerRes = await fetch(apiUrl('/v1/docs'), {
+      registerRes = await apiFetch(apiHost, apiPort, '/v1/docs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -691,7 +689,7 @@ export default function App() {
     try {
       for (let i = 0; i < chunks.length; i += BATCH) {
         const slice = chunks.slice(i, i + BATCH);
-        const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}/chunks`), {
+        const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/chunks`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ chunks: slice }),
@@ -718,7 +716,7 @@ export default function App() {
 
     // 4. Kick off the embedding job. Returns 202 immediately; we poll status.
     try {
-      const indexRes = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}/index`), { method: 'POST' });
+      const indexRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/index`, { method: 'POST' });
       if (!indexRes.ok) throw new Error(`HTTP ${indexRes.status}`);
     } catch (e) {
       console.error('Index kick-off failed:', e);
@@ -736,7 +734,7 @@ export default function App() {
     for (let i = 0; i < MAX_POLLS; i++) {
       await new Promise((r) => setTimeout(r, POLL_MS));
       try {
-        const sRes = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}`));
+        const sRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}`);
         if (!sRes.ok) continue;
         const sData = await sRes.json();
         setDocIndexByDocId((prev) => ({
@@ -773,8 +771,6 @@ export default function App() {
       showToast('Could not read document bytes — re-open the file and try again.', 4000);
       return;
     }
-    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
-
     setDocConvertByDocId((prev) => ({
       ...prev,
       [docId]: { ...(prev[docId] || {}), state: 'uploading', error: null },
@@ -783,7 +779,7 @@ export default function App() {
     // 1. Register the doc (idempotent).
     try {
       const fileSize = (await getBook(pdfFileName))?.size ?? 0;
-      const registerRes = await fetch(apiUrl('/v1/docs'), {
+      const registerRes = await apiFetch(apiHost, apiPort, '/v1/docs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -824,7 +820,7 @@ export default function App() {
       [docId]: { ...(prev[docId] || {}), state: 'converting', options, error: null },
     }));
     try {
-      const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}/convert`), {
+      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/convert`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(options),
@@ -858,7 +854,7 @@ export default function App() {
     for (let i = 0; i < MAX_POLLS; i++) {
       await new Promise((r) => setTimeout(r, POLL_MS));
       try {
-        const sRes = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}`));
+        const sRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}`);
         if (!sRes.ok) continue;
         const sData = await sRes.json();
         setDocConvertByDocId((prev) => ({
@@ -913,9 +909,8 @@ export default function App() {
   // bloat memory or hit URL length limits.
   const handleExportMarkdown = useCallback(async () => {
     if (!currentDocId) return;
-    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
     try {
-      const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(currentDocId)}/markdown`));
+      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(currentDocId)}/markdown`);
       if (!res.ok) {
         let detail = `HTTP ${res.status}`;
         try {
@@ -956,9 +951,8 @@ export default function App() {
       : true;
     if (!ok) return;
 
-    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
     try {
-      const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(currentDocId)}/markdown`), {
+      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(currentDocId)}/markdown`, {
         method: 'DELETE',
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
