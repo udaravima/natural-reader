@@ -42,16 +42,14 @@ def load_auth_config(env: Mapping[str, str]) -> AuthConfig:
     )
 
 
-def dev_bypass_allowed(cfg: AuthConfig, bind_host: str) -> bool:
-    """The AUTH_ENABLED=false bypass is valid ONLY on a loopback bind.
+def _is_loopback(bind_host: str) -> bool:
+    """True only for a genuine loopback bind address.
 
     `bind_host` MUST be the server's own bind address (the HOST env / the
     listening socket) — NEVER a client-supplied Host header, which is trivially
     spoofed (`Host: LOCALHOST.`, `Host: [::ffff:127.0.0.1]`, …). We resolve the
     value through `ipaddress` so only genuine loopback addresses qualify.
     """
-    if cfg.enabled:
-        return False
     h = (bind_host or "").strip().lower().strip("[]")
     if h in {"localhost", "localhost."}:
         return True
@@ -59,3 +57,18 @@ def dev_bypass_allowed(cfg: AuthConfig, bind_host: str) -> bool:
         return ipaddress.ip_address(h).is_loopback
     except ValueError:
         return False
+
+
+def dev_bypass_allowed(cfg: AuthConfig, bind_host: str) -> bool:
+    """The AUTH_ENABLED=false bypass is valid ONLY on a loopback bind."""
+    return (not cfg.enabled) and _is_loopback(bind_host)
+
+
+def startup_guard(*, auth_enabled: bool, bind_host: str) -> None:
+    """Refuse to boot with the AUTH_ENABLED=false bypass on a non-loopback bind,
+    so the bypass can never silently become the posture on an exposed server."""
+    if not auth_enabled and not _is_loopback(bind_host):
+        raise RuntimeError(
+            "AUTH_ENABLED=false is only allowed on a loopback bind; "
+            f"refusing to start with HOST={bind_host}"
+        )

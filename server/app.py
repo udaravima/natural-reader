@@ -6,11 +6,15 @@ import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 from .appconfig import cors_allow_credentials, parse_cors_origins
+from .auth.config import load_auth_config, startup_guard
 from .db import close_db, init_db
 from .logging_config import configure_logging
 from .endpoints import router as tts_router
+from .routers.admin import router as admin_router
+from .routers.auth import router as auth_router
 from .routers.chat_sessions import router as chat_sessions_router
 from .routers.docs import PDF_STORAGE_DIR, router as docs_router
 from .routers.tools import router as tools_router
@@ -38,13 +42,30 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Signed cookie holding the transient OIDC flow state (Authlib uses
+    # request.session for state/nonce/PKCE). Separate from the app session.
+    _auth_cfg = load_auth_config(os.environ)
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=_auth_cfg.session_secret or "dev-insecure-change-me",
+        same_site="lax",
+        https_only=_auth_cfg.cookie_secure,
+    )
+
     app.include_router(tts_router)
     app.include_router(chat_sessions_router)
     app.include_router(docs_router)
     app.include_router(tools_router)
+    app.include_router(auth_router)
+    app.include_router(admin_router)
 
     @app.on_event("startup")
     async def _startup() -> None:
+        # Fail fast if the auth bypass is on with a non-loopback bind.
+        startup_guard(
+            auth_enabled=_auth_cfg.enabled,
+            bind_host=os.environ.get("HOST", "127.0.0.1"),
+        )
         # init_db retries on its own and never raises — the app comes up even
         # when Postgres is down so TTS keeps serving. Chat routes will return
         # 503 until the DB is reachable.
