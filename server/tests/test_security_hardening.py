@@ -24,9 +24,16 @@ from pydantic import ValidationError
 
 def _docs_app() -> FastAPI:
     # Router only — no create_app(), so no startup DB init and no model load.
+    # The doc routes now require auth, and FastAPI resolves that dependency
+    # before validating the doc_id path pattern — so we stub an authenticated
+    # principal here to reach (and assert) the hex validation itself.
+    from server.auth import deps
     from server.routers import docs
 
     app = FastAPI()
+    app.dependency_overrides[deps.get_current_user] = lambda: deps.Principal(
+        user_id="00000000-0000-0000-0000-000000000001", email="a@x.io", role="admin"
+    )
     app.include_router(docs.router)
     return app
 
