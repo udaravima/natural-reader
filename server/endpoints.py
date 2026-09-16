@@ -13,8 +13,9 @@ import io
 
 import numpy as np
 import soundfile as sf
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from .auth.deps import Principal, get_current_user
 from .model import kokoro
 from .schemas import TTSRequest, BatchTTSRequest
 
@@ -42,7 +43,7 @@ async def health_check():
 
 
 @router.post("/v1/synthesize")
-async def synthesize(request: TTSRequest):
+async def synthesize(request: TTSRequest, _: Principal = Depends(get_current_user)):
     """
     Accepts text, returns Base64 encoded WAV audio.
     """
@@ -87,7 +88,9 @@ async def synthesize(request: TTSRequest):
 
 
 @router.post("/v1/batch_synthesize")
-async def batch_synthesize(request: BatchTTSRequest):
+async def batch_synthesize(
+    request: BatchTTSRequest, _: Principal = Depends(get_current_user)
+):
     """
     Accepts a list of sentences, returns a single merged WAV audio as Base64.
     Holds the lock for the entire batch to avoid per-sentence queue contention.

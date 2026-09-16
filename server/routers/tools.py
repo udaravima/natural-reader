@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from ..auth.deps import Principal, get_current_user
 from ..services.web_search import RESULT_COUNT, web_search
 
 logger = logging.getLogger(__name__)
@@ -23,7 +24,9 @@ class WebSearchIn(BaseModel):
 
 
 @router.post("/web_search")
-async def web_search_endpoint(req: WebSearchIn) -> dict:
+async def web_search_endpoint(
+    req: WebSearchIn, _: Principal = Depends(get_current_user)
+) -> dict:
     try:
         return await web_search(req.query, req.count)
     except Exception as e:  # noqa: BLE001 — surface as 502 so the tool can recover
