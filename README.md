@@ -473,9 +473,21 @@ Notes:
 
 ## 🔒 Security & Hardening
 
-The frontend issues every API call directly from the browser — there's no auth gateway, no per-user gating. If your deployment is reachable on the public internet (any domain pointed at it), anyone can hit `/v1/synthesize`, `/api/chat`, etc. with no credentials. For a `localhost`-only dev box this is fine; for a public domain it's not. This section is the recipe for locking it down.
+### Authentication (OIDC, multi-user)
 
-### Threat model
+The backend authenticates via **OpenID Connect** — it's an OIDC Relying Party, so you point it at any provider (Keycloak, Authentik, Auth0, …) and it stores no passwords. Every document and chat session is owned by a user; you only ever see your own. Set the `OIDC_*` vars plus `SESSION_SECRET` (see [.env.example](.env.example)) to turn it on.
+
+- **First-user-admin:** the first identity to log in becomes admin; everyone after is `pending` until an admin activates them (Admin → Users). Set `BOOTSTRAP_ADMIN_EMAIL` to pre-designate the admin by email and inherit any pre-existing single-user data.
+- **The web app** uses a revocable, `HttpOnly` session cookie. **The read-aloud extension and scripts** use a **personal access token** (Settings → Access tokens) sent as `Authorization: Bearer …`.
+- **Local dev without an IdP:** `AUTH_ENABLED=false` treats every request as the admin — but the server **refuses to start** with this set on a non-loopback bind.
+
+`/api/*` (Ollama) is not yet behind app auth — proxy-gate it, or wait for the model-router gateway that moves those calls server-side.
+
+### Threat model (pre-auth baseline)
+
+The table below is the *un-authenticated* exposure — i.e. what OIDC now closes for `/v1/*`, and what still applies to `/api/*` until it's gated.
+
+
 
 | Endpoint | What an unauthenticated caller can do | Cost to you |
 |---|---|---|
