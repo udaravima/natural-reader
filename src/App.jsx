@@ -9,6 +9,7 @@ import { useTheme } from './hooks/useTheme';
 import { usePdfEngine } from './hooks/usePdfEngine';
 import { useTtsEngine } from './hooks/useTtsEngine';
 import { useChatEngine } from './hooks/useChatEngine';
+import { useAuth } from './hooks/useAuth';
 import { makePin } from './hooks/pins';
 
 // Constants
@@ -27,6 +28,7 @@ import { createFsaWorkspace, createSnapshotWorkspace, pickEntryFile, isMarkdownP
 // Components
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
+import { AuthGate } from './components/auth/AuthGate';
 import PdfViewer from './components/PdfViewer';
 import ChatView from './components/ChatView';
 import ChatSidebar from './components/ChatSidebar';
@@ -51,6 +53,7 @@ export default function App() {
   const [isLocalhost, setIsLocalhost] = usePersistedState('isLocalhost', true);
   const [apiHost, setApiHost] = usePersistedState('apiHost', 'localhost');
   const [apiPort, setApiPort] = usePersistedState('apiPort', '8000');
+  const auth = useAuth(apiHost, apiPort);
   const [requestTimeout, setRequestTimeout] = usePersistedState('requestTimeout', 15);
   const [unlimitedBatchTimeout, setUnlimitedBatchTimeout] = usePersistedState('unlimitedBatchTimeout', true);
   const [mobileBreakpoint, setMobileBreakpoint] = usePersistedState('mobileBreakpoint', 768);
@@ -981,6 +984,22 @@ export default function App() {
     if (!currentDocId) return;
     setDocViewByDocId((prev) => ({ ...prev, [currentDocId]: mode }));
   }, [currentDocId]);
+
+  // --- AUTH GATE ---
+  // Runs after all hooks (rules-of-hooks safe) and before every render branch,
+  // so an unauthenticated visitor sees the login/pending/disabled screen rather
+  // than the app or its loading spinner. With AUTH_ENABLED=false on a loopback
+  // backend, /v1/auth/me returns the seed admin → state 'active' → app renders.
+  if (auth.state !== 'active') {
+    return (
+      <AuthGate
+        state={auth.state}
+        onLogin={auth.login}
+        onLogout={auth.logout}
+        onRetry={auth.refresh}
+      />
+    );
+  }
 
   // --- LOADING STATE ---
   if (!isLibLoaded) {
