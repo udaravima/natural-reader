@@ -51,7 +51,10 @@ async def get_current_user(request: Request, conn=Depends(get_conn)) -> Principa
     if row is None:
         raise HTTPException(status_code=401, detail="Authentication required")
     if row["status"] != "active":
-        raise HTTPException(status_code=403, detail=f"Account {row['status']}")
+        raise HTTPException(
+            status_code=403,
+            detail={"status": row["status"], "message": f"Account {row['status']}"},
+        )
     return _principal(row)
 
 

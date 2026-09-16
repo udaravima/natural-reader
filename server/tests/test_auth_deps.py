@@ -44,12 +44,24 @@ async def test_pat_authenticates_admin(db_conn):
     assert r.status_code == 200 and r.json()["role"] == "admin"
 
 
-async def test_pending_user_is_403(db_conn):
+async def test_pending_user_is_403_with_structured_status(db_conn):
     await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="a@x.io")
     u2 = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io")
     _, raw = await create_token(db_conn, u2["id"], "cli")
     r = await _get(_app(db_conn), "/whoami", {"Authorization": f"Bearer {raw}"})
     assert r.status_code == 403
+    assert r.json()["detail"]["status"] == "pending"
+
+
+async def test_disabled_user_403_status_is_disabled(db_conn):
+    await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="a@x.io")
+    u2 = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io")
+    await set_status(db_conn, u2["id"], "active")
+    await set_status(db_conn, u2["id"], "disabled")
+    _, raw = await create_token(db_conn, u2["id"], "cli")
+    r = await _get(_app(db_conn), "/whoami", {"Authorization": f"Bearer {raw}"})
+    assert r.status_code == 403
+    assert r.json()["detail"]["status"] == "disabled"
 
 
 async def test_require_admin_blocks_member(db_conn):
