@@ -124,7 +124,9 @@ async def test_fetch_and_extract_blocks_private_url_without_request():
 
 @respx.mock
 async def test_summarize_one_calls_ollama_generate(monkeypatch):
-    monkeypatch.setattr(ws, "OLLAMA_URL", "http://ollama.test")
+    # Ollama URL + summarize model both come from model_router (env-driven).
+    monkeypatch.setenv("OLLAMA_URL", "http://ollama.test")
+    monkeypatch.setenv("SUMMARIZE_MODEL", "my-summarizer")
     route = respx.post("http://ollama.test/api/generate").mock(
         return_value=httpx.Response(200, json={"response": "  A tidy summary.  "})
     )
@@ -136,6 +138,7 @@ async def test_summarize_one_calls_ollama_generate(monkeypatch):
     assert route.called
     body = route.calls.last.request.content.decode()
     assert '"stream": false' in body or '"stream":false' in body
+    assert '"model": "my-summarizer"' in body or '"model":"my-summarizer"' in body
     assert out.strip() == "A tidy summary."
 
 

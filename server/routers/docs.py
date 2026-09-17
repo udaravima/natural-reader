@@ -30,8 +30,8 @@ from pydantic import BaseModel, Field
 from ..auth.authz import assert_owns_doc
 from ..auth.deps import Principal, get_current_user
 from ..db import get_pool, is_ready
-from ..services import docling_convert
-from ..services.embeddings import EMBEDDING_DIM, EMBEDDING_MODEL, embed_batch, embed_one
+from ..services import docling_convert, model_router
+from ..services.embeddings import EMBEDDING_DIM, embed_batch, embed_one
 
 
 # Filesystem location for retained PDF bytes. Overridable via env so the
@@ -338,6 +338,9 @@ async def _run_index_job(doc_id: str) -> None:
     Held under a per-doc lock so concurrent /index calls coalesce instead of
     duplicating work.
     """
+    # Read once per job so the recorded metadata matches what embed_one
+    # actually used (both source from model_router).
+    embed_model = model_router.get_config().embed_model
     lock = _get_doc_lock(doc_id)
     async with lock:
         if not is_ready():
@@ -366,7 +369,7 @@ async def _run_index_job(doc_id: str) -> None:
                             error_message = NULL, updated_at = now()
                         WHERE doc_id = %s
                         """,
-                        (EMBEDDING_MODEL, EMBEDDING_DIM, doc_id),
+                        (embed_model, EMBEDDING_DIM, doc_id),
                     )
                 return
 
@@ -392,7 +395,7 @@ async def _run_index_job(doc_id: str) -> None:
                                 SET embedding = %s, embedding_model = %s
                                 WHERE id = %s
                                 """,
-                                (vec, EMBEDDING_MODEL, chunk_id),
+                                (vec, embed_model, chunk_id),
                             )
                             embedded_count += 1
 
@@ -404,7 +407,7 @@ async def _run_index_job(doc_id: str) -> None:
                         error_message = NULL, updated_at = now()
                     WHERE doc_id = %s
                     """,
-                    (EMBEDDING_MODEL, EMBEDDING_DIM, doc_id),
+                    (embed_model, EMBEDDING_DIM, doc_id),
                 )
             logger.info(
                 "Indexed %d chunks for doc %s (%d embedded, %d skipped)",
