@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from psycopg import errors as pg_errors
+
 SEED_ADMIN_ID = "00000000-0000-0000-0000-000000000001"
 
 _KEYS = [
@@ -123,3 +125,34 @@ async def resolve_or_provision_user(
     )
     new_id = (await cur.fetchone())[0]
     return await get_user(conn, str(new_id))
+
+
+async def enroll_user(
+    conn,
+    *,
+    email: str,
+    display_name: str | None = None,
+    role: str = "member",
+    status: str = "pending",
+    inference_daily_token_budget: int | None = None,
+) -> dict[str, Any]:
+    """Admin-side pre-provisioning: a row with oidc_sub NULL that waits for
+    its owner's first verified-email login (resolver branch 2 claims it,
+    preserving role/status/budget). Raises ValueError on a taken email."""
+    try:
+        cur = await conn.execute(
+            "INSERT INTO users (email, display_name, role, status, "
+            "inference_daily_token_budget) VALUES (%s, %s, %s, %s, %s) "
+            "RETURNING id",
+            (email, display_name, role, status, inference_daily_token_budget),
+        )
+    except pg_errors.UniqueViolation:
+        raise ValueError("email already exists")
+    return await get_user(conn, str((await cur.fetchone())[0]))
+
+
+async def delete_user(conn, user_id: str) -> None:
+    """Hard delete. Every referencing table cascades (sessions, PATs,
+    inference_usage, documents + chunks, chat_sessions + messages/events) —
+    callers must sweep user files (e.g. stored PDFs) BEFORE/around this."""
+    await conn.execute("DELETE FROM users WHERE id=%s", (user_id,))

@@ -1,18 +1,33 @@
 """/v1/admin/* — user administration. Admin manages accounts, not their data."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+import logging
+import uuid
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, Response
+from pydantic import BaseModel, ConfigDict
 
 from ..auth import deps, users
-from ..services import inference_budget
+from ..services import inference_budget, model_router
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
 
 class UserPatchIn(BaseModel):
     status: str | None = None
     role: str | None = None
+    inference_daily_token_budget: int | None = None
+
+
+class UserEnrollIn(BaseModel):
+    # House envelope style: unknown fields are a 422, not a silent ignore.
+    model_config = ConfigDict(extra="forbid")
+    email: str
+    display_name: str | None = None
+    role: str = "member"
+    status: str = "pending"
     inference_daily_token_budget: int | None = None
 
 
@@ -50,6 +65,104 @@ async def patch_user(
     if updated is None:
         raise HTTPException(status_code=404, detail="User not found")
     return updated
+
+
+@router.post("/users", status_code=201)
+async def enroll_user(
+    body: UserEnrollIn,
+    _: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn),
+):
+    """Pre-provision an account (oidc_sub NULL) that its owner claims on
+    first login with the exact verified email — resolver branch 2 preserves
+    the chosen role/status/budget."""
+    if body.role not in ("admin", "member"):
+        raise HTTPException(status_code=422, detail="bad role")
+    if body.status not in ("active", "pending", "disabled"):
+        raise HTTPException(status_code=422, detail="bad status")
+    if body.inference_daily_token_budget is not None and body.inference_daily_token_budget < 0:
+        raise HTTPException(status_code=422, detail="budget must be >= 0")
+    try:
+        return await users.enroll_user(
+            conn,
+            email=body.email,
+            display_name=body.display_name,
+            role=body.role,
+            status=body.status,
+            inference_daily_token_budget=body.inference_daily_token_budget,
+        )
+    except ValueError:
+        raise HTTPException(status_code=409, detail="email already exists")
+
+
+@router.delete("/users/{user_id}", status_code=204)
+async def delete_user(
+    user_id: str,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn),
+):
+    """Hard delete (admin-console spec §4): sessions, PATs, usage, documents
+    (+chunks) and chat history all cascade. Rails are server-side — the UI
+    hiding them is cosmetic. Reasons are machine-readable in detail.reason."""
+    try:
+        uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="User not found")
+    target = await users.get_user(conn, user_id)
+    if target is None:
+        # 404 for never-existed == already-deleted: no enumeration signal.
+        raise HTTPException(status_code=404, detail="User not found")
+    if target["id"] == principal.user_id:
+        raise HTTPException(status_code=409, detail={"reason": "self"})
+    if target["id"] == users.SEED_ADMIN_ID:
+        raise HTTPException(
+            status_code=409,
+            detail={"reason": "seed_admin"},
+        )
+    if target["role"] == "admin" and target["status"] == "active":
+        cur = await conn.execute(
+            "SELECT count(*) FROM users "
+            "WHERE role='admin' AND status='active' AND id <> %s",
+            (user_id,),
+        )
+        if (await cur.fetchone())[0] == 0:
+            raise HTTPException(
+                status_code=409, detail={"reason": "last_active_admin"}
+            )
+    # PDF sweep: collect the user's stored files BEFORE the rows cascade away.
+    # Best-effort — a failed unlink after the rows are gone is only a disk
+    # leak, never a correctness issue.
+    cur = await conn.execute(
+        "SELECT pdf_path FROM documents WHERE user_id=%s AND pdf_path IS NOT NULL",
+        (user_id,),
+    )
+    pdf_paths = [r[0] for r in await cur.fetchall()]
+    await users.delete_user(conn, user_id)
+    for raw in pdf_paths:
+        try:
+            Path(raw).unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove PDF %s for deleted user", raw)
+    return Response(status_code=204)
+
+
+@router.get("/inference/config")
+async def inference_config(
+    _: deps.Principal = Depends(deps.require_admin),
+):
+    """Read-only view of the effective model-router config — why a model
+    422s, without shell access. get_config() has no secrets in it."""
+    cfg = model_router.get_config()
+    return {
+        "ollama_url": cfg.ollama_url,
+        "timeout_s": cfg.timeout_s,
+        "allowed_models": (
+            list(cfg.allowed_models) if cfg.allowed_models is not None else None
+        ),
+        "summarize_model": cfg.summarize_model,
+        "embed_model": cfg.embed_model,
+        "daily_token_budget": cfg.daily_token_budget,
+    }
 
 
 @router.get("/inference/usage")
