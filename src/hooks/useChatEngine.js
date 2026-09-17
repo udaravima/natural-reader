@@ -129,7 +129,12 @@ export function useChatEngine({
             setInferenceBudget(detail);
             showToast?.(`Daily inference budget exhausted — resets at ${formatResetAt(detail.reset_at)}`, 6000);
             logEvent('budget', 'daily token budget exhausted');
-            throw new Error('Daily inference budget exhausted');
+            // Tagged so sendMessage's catch recognizes it: budget exhaustion
+            // is NOT unreachability (no reachable→false flip) and already has
+            // its own toast (no duplicate "Chat failed").
+            const err = new Error('Daily inference budget exhausted');
+            err.budgetExhausted = true;
+            throw err;
         }
         return res;
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -819,6 +824,10 @@ export function useChatEngine({
         } catch (e) {
             if (e.name === 'AbortError') {
                 logEvent('aborted', 'user stopped the stream');
+            } else if (e.budgetExhausted) {
+                // 429 path: toast + budget state were already set in callChat.
+                // The server IS reachable — leave that indicator alone.
+                logEvent('error', e.message);
             } else {
                 console.error('Chat error:', e);
                 setReachable(false);

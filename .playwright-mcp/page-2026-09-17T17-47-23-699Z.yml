@@ -1,0 +1,143 @@
+- generic [ref=f6e5]:
+  - banner [ref=f6e6]:
+    - generic [ref=f6e7]:
+      - button "Hide Sidebar" [ref=f6e8]
+      - generic [ref=f6e685]:
+        - heading "Neural PDF" [level=1] [ref=f6e686]
+        - paragraph [ref=f6e687]: Ready to Open PDF
+    - generic [ref=f6e17]:
+      - generic [ref=f6e18]:
+        - button "Reader" [ref=f6e19]
+        - button "Chat" [ref=f6e23]
+      - button "KOKORO" [ref=f6e691]
+      - button "Toggle Dark Mode (Ctrl+D)" [ref=f6e692]
+      - button "Keyboard Shortcuts" [ref=f6e699]
+  - main [ref=f6e27]:
+    - complementary [ref=f6e28]:
+      - generic [ref=f6e29]:
+        - heading "Chat" [level=3] [ref=f6e33]
+        - generic [ref=f6e34]:
+          - generic [ref=f6e35]:
+            - button [ref=f6e36] [cursor=pointer]:
+              - heading "Settings" [level=4] [ref=f6e40]
+            - generic [ref=f6e561]:
+              - generic [ref=f6e562]:
+                - text: INFERENCE SOURCE
+                - generic [ref=f6e563]:
+                  - button "Server" [ref=f6e564]
+                  - button "Local Ollama" [ref=f6e565]
+                - paragraph [ref=f6e566]: Runs through the Natural Reader backend — authenticated, with the deployment's model allowlist and daily token budget applied.
+              - generic [ref=f6e567]:
+                - generic [ref=f6e568]: ✓ Connected
+                - button "Refresh" [ref=f6e569]
+              - generic [ref=f6e575]:
+                - text: MODEL
+                - combobox [ref=f6e576]:
+                  - option "llama3.2:3b"
+                  - option "nomic-embed-text:latest"
+                  - option "gemma4:latest"
+                  - option "qwen3.5:latest" [selected]
+                - paragraph [ref=f6e577]: "Active: qwen3.5:latest"
+              - generic [ref=f6e582]:
+                - text: READ-ALOUD MODE
+                - generic [ref=f6e583]:
+                  - button "Streaming" [ref=f6e584]
+                  - button "After complete" [ref=f6e585]
+                - paragraph [ref=f6e586]: Reads each sentence as it streams in.
+                - button "Auto read-aloud" [ref=f6e587]
+              - generic [ref=f6e593]:
+                - generic [ref=f6e594]: INFERENCE
+                - generic [ref=f6e596]:
+                  - generic [ref=f6e597]: Context window
+                  - combobox "Context window" [ref=f6e598]:
+                    - option "Auto" [selected]
+                    - option "4096"
+                    - option "8192"
+                    - option "16384"
+                    - option "32768"
+                    - option "65536"
+                - generic [ref=f6e599]:
+                  - generic [ref=f6e600]: Keep model warm
+                  - combobox "Keep model warm" [ref=f6e601]:
+                    - option "Auto (5m)" [selected]
+                    - option "5 minutes"
+                    - option "30 minutes"
+                    - option "1 hour"
+                    - option "Always"
+                - generic [ref=f6e602]:
+                  - generic [ref=f6e603]: Thinking
+                  - combobox "Thinking" [active] [ref=f6e604]:
+                    - option "Off" [selected]
+                    - option "On"
+                    - option "Low"
+                    - option "Medium"
+                    - option "High"
+                - generic [ref=f6e605]:
+                  - generic [ref=f6e606]: Max reply tokens
+                  - combobox "Max reply tokens" [ref=f6e607]:
+                    - option "Unlimited" [selected]
+                    - option "512"
+                    - option "1024"
+                    - option "2048"
+                    - option "4096"
+                - paragraph [ref=f6e608]: Settings are saved per model. Changing the context window reloads the model.
+          - button "Sessions 40 New" [ref=f6e702] [cursor=pointer]:
+            - generic [ref=f6e43]:
+              - heading "Sessions" [level=4] [ref=f6e46]
+              - generic [ref=f6e47]: "40"
+            - button "New" [ref=f6e48]
+          - generic [ref=f6e520]:
+            - button [ref=f6e611] [cursor=pointer]:
+              - heading "Conversation" [level=4] [ref=f6e525]
+              - button "New chat" [ref=f6e612]
+            - generic [ref=f6e614]:
+              - paragraph [ref=f6e615]: Verify exhausted budget path
+              - paragraph [ref=f6e616]: 2 messages · 1 from you
+          - button "Session log 3" [ref=f6e705] [cursor=pointer]:
+            - generic [ref=f6e530]:
+              - heading "Session log" [level=4] [ref=f6e536]
+              - generic [ref=f6e537]: "3"
+    - generic [ref=f6e538]:
+      - generic [ref=f6e618]:
+        - generic [ref=f6e624]:
+          - paragraph [ref=f6e626]: Verify exhausted budget path
+          - button "Copy" [ref=f6e628]
+        - generic [ref=f6e647]:
+          - paragraph [ref=f6e708]:
+            - text: The phrase
+            - strong [ref=f6e709]: "\"verify exhausted budget path\""
+            - text: does not refer to a standard economic term or official government document. It is likely an attempt to understand the concept of
+            - strong [ref=f6e710]: fiscal exhaustion
+            - text: ", which occurs when a country runs out of fiscal space due to high debt levels, low revenue growth, or structural rigidities (such as excessive social security spending), making future budgets unsustainable without significant reforms or default risk rising sharply."
+          - generic [ref=f6e662]:
+            - button "Read aloud" [ref=f6e711]
+            - button "Audio" [ref=f6e668]
+            - button "Copy" [ref=f6e673]
+          - generic [ref=f6e678]:
+            - button "🔎 web_search" [ref=f6e679]
+            - list [ref=f6e718]:
+              - listitem [ref=f6e719]:
+                - generic [ref=f6e723]:
+                  - text: web_search(query="exhausted budget path fiscal sustainability debt trajectory")
+                  - generic [ref=f6e724]: → ok
+                  - text: Web search for "exhausted budget path fiscal sustainability debt trajectory" returned 0 result(s).
+          - generic [ref=f6e651]:
+            - button "82 tok · 16.01 s · 6.0 tok/s" [ref=f6e725]
+            - generic [ref=f6e728]:
+              - term [ref=f6e729]: Model
+              - definition [ref=f6e730]: qwen3.5:latest
+              - term [ref=f6e731]: Total
+              - definition [ref=f6e732]: 16.01 s
+              - term [ref=f6e733]: Load
+              - definition [ref=f6e734]: 316 ms
+              - term [ref=f6e735]: Prompt
+              - definition [ref=f6e736]: 88 tok in 1.91 s
+              - term [ref=f6e737]: Generation
+              - definition [ref=f6e738]: 82 tok in 13.72 s (6.0 tok/s)
+      - generic [ref=f6e549]:
+        - generic "Estimated prompt size. Messages and pins are re-sent on every turn." [ref=f6e642]: ~123 ctx
+        - generic [ref=f6e550]:
+          - button "Attach image" [ref=f6e551]
+          - textbox "Ask the model, drop / paste / attach an image… (Enter to send)" [ref=f6e554]:
+            - /placeholder: Ask the model, drop / paste / attach an image…  (Enter to send)
+          - button "Send (Enter)" [disabled] [ref=f6e739]

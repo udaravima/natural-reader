@@ -1,0 +1,340 @@
+- generic [ref=f6e5]:
+  - banner [ref=f6e6]:
+    - button "Hide Sidebar" [ref=f6e8]
+    - generic [ref=f6e18]:
+      - button "Reader" [ref=f6e19]
+      - button "Chat" [ref=f6e23]
+  - main [ref=f6e27]:
+    - complementary [ref=f6e28]:
+      - generic [ref=f6e29]:
+        - heading "Chat" [level=3] [ref=f6e33]
+        - generic [ref=f6e34]:
+          - generic [ref=f6e35]:
+            - button [ref=f6e36] [cursor=pointer]:
+              - heading "Settings" [level=4] [ref=f6e40]
+            - generic [ref=f6e561]:
+              - generic [ref=f6e562]:
+                - text: INFERENCE SOURCE
+                - generic [ref=f6e563]:
+                  - button "Server" [ref=f6e564]
+                  - button "Local Ollama" [ref=f6e565]
+                - paragraph [ref=f6e566]: Runs through the Natural Reader backend — authenticated, with the deployment's model allowlist and daily token budget applied.
+              - generic [ref=f6e567]:
+                - generic [ref=f6e568]: ✓ Connected
+                - button "Refresh" [ref=f6e569]
+              - generic [ref=f6e575]:
+                - text: MODEL
+                - combobox [ref=f6e576]:
+                  - option "llama3.2:3b"
+                  - option "nomic-embed-text:latest"
+                  - option "gemma4:latest"
+                  - option "qwen3.5:latest" [selected]
+                - paragraph [ref=f6e577]: "Active: qwen3.5:latest"
+              - generic [ref=f6e582]:
+                - text: READ-ALOUD MODE
+                - generic [ref=f6e583]:
+                  - button "Streaming" [ref=f6e584]
+                  - button "After complete" [ref=f6e585]
+                - paragraph [ref=f6e586]: Reads each sentence as it streams in.
+                - button "Auto read-aloud" [ref=f6e587]
+              - generic [ref=f6e593]:
+                - generic [ref=f6e594]: INFERENCE
+                - generic [ref=f6e596]:
+                  - generic [ref=f6e597]: Context window
+                  - combobox "Context window" [ref=f6e598]:
+                    - option "Auto" [selected]
+                    - option "4096"
+                    - option "8192"
+                    - option "16384"
+                    - option "32768"
+                    - option "65536"
+                - generic [ref=f6e599]:
+                  - generic [ref=f6e600]: Keep model warm
+                  - combobox "Keep model warm" [ref=f6e601]:
+                    - option "Auto (5m)" [selected]
+                    - option "5 minutes"
+                    - option "30 minutes"
+                    - option "1 hour"
+                    - option "Always"
+                - generic [ref=f6e602]:
+                  - generic [ref=f6e603]: Thinking
+                  - combobox "Thinking" [ref=f6e604]:
+                    - option "Off" [selected]
+                    - option "On"
+                    - option "Low"
+                    - option "Medium"
+                    - option "High"
+                - generic [ref=f6e605]:
+                  - generic [ref=f6e606]: Max reply tokens
+                  - combobox "Max reply tokens" [ref=f6e607]:
+                    - option "Unlimited" [selected]
+                    - option "512"
+                    - option "1024"
+                    - option "2048"
+                    - option "4096"
+                - paragraph [ref=f6e608]: Settings are saved per model. Changing the context window reloads the model.
+          - generic [ref=f6e41]:
+            - button "Sessions 39 New" [ref=f6e42] [cursor=pointer]:
+              - generic [ref=f6e43]:
+                - heading "Sessions" [level=4] [ref=f6e46]
+                - generic [ref=f6e47]: "39"
+              - button "New" [ref=f6e48]
+            - generic [ref=f6e51]:
+              - generic [ref=f6e52]:
+                - button [ref=f6e610]:
+                  - paragraph [ref=f6e54]: "Reply with exactly: gateway stream works"
+                  - paragraph [ref=f6e55]: 8 msg · 9m ago
+                - button "Rename" [ref=f6e56]
+                - button "Delete session" [ref=f6e60]
+              - generic [ref=f6e64]:
+                - button [ref=f6e65]:
+                  - paragraph [ref=f6e66]: Hi gemma, you there?
+                  - paragraph [ref=f6e67]: 2 msg · 9/8/2026
+                - button "Rename" [ref=f6e68]
+                - button "Delete session" [ref=f6e72]
+              - generic [ref=f6e76]:
+                - button [ref=f6e77]:
+                  - paragraph [ref=f6e78]: Hi gemma, I needed to get the details of latest weather tre…
+                  - paragraph [ref=f6e79]: 2 msg · 8/10/2026
+                - button "Rename" [ref=f6e80]
+                - button "Delete session" [ref=f6e84]
+              - generic [ref=f6e88]:
+                - button [ref=f6e89]:
+                  - paragraph [ref=f6e90]: Tell me about Udara Vimarsha, who is he? use web tools
+                  - paragraph [ref=f6e91]: 4 msg · 8/9/2026
+                - button "Rename" [ref=f6e92]
+                - button "Delete session" [ref=f6e96]
+              - generic [ref=f6e100]:
+                - button [ref=f6e101]:
+                  - paragraph [ref=f6e102]: I introduce you a web seach tool for you, would you first g…
+                  - paragraph [ref=f6e103]: 2 msg · 8/9/2026
+                - button "Rename" [ref=f6e104]
+                - button "Delete session" [ref=f6e108]
+              - generic [ref=f6e112]:
+                - button [ref=f6e113]:
+                  - paragraph [ref=f6e114]: from the document what are the instructions given to you to…
+                  - paragraph [ref=f6e115]: 6 msg · 8/9/2026
+                - button "Rename" [ref=f6e116]
+                - button "Delete session" [ref=f6e120]
+              - generic [ref=f6e124]:
+                - button [ref=f6e125]:
+                  - paragraph [ref=f6e126]: According to the document How should you explains things to…
+                  - paragraph [ref=f6e127]: 6 msg · 8/9/2026
+                - button "Rename" [ref=f6e128]
+                - button "Delete session" [ref=f6e132]
+              - generic [ref=f6e136]:
+                - button [ref=f6e137]:
+                  - paragraph [ref=f6e138]: what is the time now?
+                  - paragraph [ref=f6e139]: 4 msg · 8/9/2026
+                - button "Rename" [ref=f6e140]
+                - button "Delete session" [ref=f6e144]
+              - generic [ref=f6e148]:
+                - button [ref=f6e149]:
+                  - paragraph [ref=f6e150]: What is the opend document is about?
+                  - paragraph [ref=f6e151]: 8 msg · 8/8/2026
+                - button "Rename" [ref=f6e152]
+                - button "Delete session" [ref=f6e156]
+              - generic [ref=f6e160]:
+                - button [ref=f6e161]:
+                  - paragraph [ref=f6e162]: Hi gemma, this is a benchmark test in sandboxed development…
+                  - paragraph [ref=f6e163]: 2 msg · 8/8/2026
+                - button "Rename" [ref=f6e164]
+                - button "Delete session" [ref=f6e168]
+              - generic [ref=f6e172]:
+                - button [ref=f6e173]:
+                  - paragraph [ref=f6e174]: Well Shell is not working. Nothing is working as in the use…
+                  - paragraph [ref=f6e175]: 4 msg · 8/8/2026
+                - button "Rename" [ref=f6e176]
+                - button "Delete session" [ref=f6e180]
+              - generic [ref=f6e184]:
+                - button [ref=f6e185]:
+                  - paragraph [ref=f6e186]: Hi there,
+                  - paragraph [ref=f6e187]: 6 msg · 8/5/2026
+                - button "Rename" [ref=f6e188]
+                - button "Delete session" [ref=f6e192]
+              - generic [ref=f6e196]:
+                - button [ref=f6e197]:
+                  - paragraph [ref=f6e198]: Hi, what can you
+                  - paragraph [ref=f6e199]: 2 msg · 8/5/2026
+                - button "Rename" [ref=f6e200]
+                - button "Delete session" [ref=f6e204]
+              - generic [ref=f6e208]:
+                - button [ref=f6e209]:
+                  - paragraph [ref=f6e210]: whats this about ?
+                  - paragraph [ref=f6e211]: 2 msg · 8/5/2026
+                - button "Rename" [ref=f6e212]
+                - button "Delete session" [ref=f6e216]
+              - generic [ref=f6e220]:
+                - button [ref=f6e221]:
+                  - paragraph [ref=f6e222]: Before the design — a correction on the branch you asked ab…
+                  - paragraph [ref=f6e223]: 2 msg · 8/5/2026
+                - button "Rename" [ref=f6e224]
+                - button "Delete session" [ref=f6e228]
+              - generic [ref=f6e232]:
+                - button [ref=f6e233]:
+                  - paragraph [ref=f6e234]: Can you simplyfy these changes?
+                  - paragraph [ref=f6e235]: 4 msg · 8/3/2026
+                - button "Rename" [ref=f6e236]
+                - button "Delete session" [ref=f6e240]
+              - generic [ref=f6e244]:
+                - button [ref=f6e245]:
+                  - paragraph [ref=f6e246]: How does this vault work? Explain in a human-understandable…
+                  - paragraph [ref=f6e247]: 2 msg · 8/2/2026
+                - button "Rename" [ref=f6e248]
+                - button "Delete session" [ref=f6e252]
+              - generic [ref=f6e256]:
+                - button [ref=f6e257]:
+                  - paragraph [ref=f6e258]: Would you be able to simplyfy me this skill loader part in …
+                  - paragraph [ref=f6e259]: 4 msg · 8/2/2026
+                - button "Rename" [ref=f6e260]
+                - button "Delete session" [ref=f6e264]
+              - generic [ref=f6e268]:
+                - button [ref=f6e269]:
+                  - paragraph [ref=f6e270]: What is the meaning of ADR here?
+                  - paragraph [ref=f6e271]: 8 msg · 8/2/2026
+                - button "Rename" [ref=f6e272]
+                - button "Delete session" [ref=f6e276]
+              - generic [ref=f6e280]:
+                - button [ref=f6e281]:
+                  - paragraph [ref=f6e282]: I didn't get the part where this talk about UART and IOMUX …
+                  - paragraph [ref=f6e283]: 4 msg · 6/28/2026
+                - button "Rename" [ref=f6e284]
+                - button "Delete session" [ref=f6e288]
+              - generic [ref=f6e292]:
+                - button [ref=f6e293]:
+                  - paragraph [ref=f6e294]: what can you do for me? who are you exactly?
+                  - paragraph [ref=f6e295]: 2 msg · 6/28/2026
+                - button "Rename" [ref=f6e296]
+                - button "Delete session" [ref=f6e300]
+              - generic [ref=f6e304]:
+                - button [ref=f6e305]:
+                  - paragraph [ref=f6e306]: If you can go back in time to 2000 and open up a branch in …
+                  - paragraph [ref=f6e307]: 2 msg · 6/7/2026
+                - button "Rename" [ref=f6e308]
+                - button "Delete session" [ref=f6e312]
+              - generic [ref=f6e316]:
+                - button [ref=f6e317]:
+                  - paragraph [ref=f6e318]: Okay, Think little hard, and tell me this. If you have the …
+                  - paragraph [ref=f6e319]: 4 msg · 6/7/2026
+                - button "Rename" [ref=f6e320]
+                - button "Delete session" [ref=f6e324]
+              - generic [ref=f6e328]:
+                - button [ref=f6e329]:
+                  - paragraph [ref=f6e330]: Okay, Think little hard, and tell me this. If you have the …
+                  - paragraph [ref=f6e331]: 2 msg · 6/7/2026
+                - button "Rename" [ref=f6e332]
+                - button "Delete session" [ref=f6e336]
+              - generic [ref=f6e340]:
+                - button [ref=f6e341]:
+                  - paragraph [ref=f6e342]: This c sctipt is wrong right? related to assembly script. c…
+                  - paragraph [ref=f6e343]: 2 msg · 5/31/2026
+                - button "Rename" [ref=f6e344]
+                - button "Delete session" [ref=f6e348]
+              - generic [ref=f6e352]:
+                - button [ref=f6e353]:
+                  - paragraph [ref=f6e354]: What is this table of power on reset specification means? W…
+                  - paragraph [ref=f6e355]: 2 msg · 5/31/2026
+                - button "Rename" [ref=f6e356]
+                - button "Delete session" [ref=f6e360]
+              - generic [ref=f6e364]:
+                - button [ref=f6e365]:
+                  - paragraph [ref=f6e366]: Why this Sevaral different control registers envolve in sle…
+                  - paragraph [ref=f6e367]: 2 msg · 5/30/2026
+                - button "Rename" [ref=f6e368]
+                - button "Delete session" [ref=f6e372]
+              - generic [ref=f6e376]:
+                - button [ref=f6e377]:
+                  - paragraph [ref=f6e378]: Here is your story, Update any file, including your soul to…
+                  - paragraph [ref=f6e379]: 4 msg · 5/24/2026
+                - button "Rename" [ref=f6e380]
+                - button "Delete session" [ref=f6e384]
+              - generic [ref=f6e388]:
+                - button [ref=f6e389]:
+                  - paragraph [ref=f6e390]: Here is your story. Update any file, including your soul, t…
+                  - paragraph [ref=f6e391]: 4 msg · 5/24/2026
+                - button "Rename" [ref=f6e392]
+                - button "Delete session" [ref=f6e396]
+              - generic [ref=f6e400]:
+                - button [ref=f6e401]:
+                  - paragraph [ref=f6e402]: Here is your story. Update any file, including your soul, t…
+                  - paragraph [ref=f6e403]: 12 msg · 5/24/2026
+                - button "Rename" [ref=f6e404]
+                - button "Delete session" [ref=f6e408]
+              - generic [ref=f6e412]:
+                - button [ref=f6e413]:
+                  - paragraph [ref=f6e414]: Hi gemma
+                  - paragraph [ref=f6e415]: 4 msg · 5/23/2026
+                - button "Rename" [ref=f6e416]
+                - button "Delete session" [ref=f6e420]
+              - generic [ref=f6e424]:
+                - button [ref=f6e425]:
+                  - paragraph [ref=f6e426]: Here is your story. Update any file, including your soul, t…
+                  - paragraph [ref=f6e427]: 4 msg · 5/23/2026
+                - button "Rename" [ref=f6e428]
+                - button "Delete session" [ref=f6e432]
+              - generic [ref=f6e436]:
+                - button [ref=f6e437]:
+                  - paragraph [ref=f6e438]: What is this telling about. drop the riddles and litreture …
+                  - paragraph [ref=f6e439]: 8 msg · 5/23/2026
+                - button "Rename" [ref=f6e440]
+                - button "Delete session" [ref=f6e444]
+              - generic [ref=f6e448]:
+                - button [ref=f6e449]:
+                  - paragraph [ref=f6e450]: HI
+                  - paragraph [ref=f6e451]: 6 msg · 5/17/2026
+                - button "Rename" [ref=f6e452]
+                - button "Delete session" [ref=f6e456]
+              - generic [ref=f6e460]:
+                - button [ref=f6e461]:
+                  - paragraph [ref=f6e462]: How many GPIOs this chip has?
+                  - paragraph [ref=f6e463]: 2 msg · 5/17/2026
+                - button "Rename" [ref=f6e464]
+                - button "Delete session" [ref=f6e468]
+              - generic [ref=f6e472]:
+                - button [ref=f6e473]:
+                  - paragraph [ref=f6e474]: How this Story will end?
+                  - paragraph [ref=f6e475]: 6 msg · 5/16/2026
+                - button "Rename" [ref=f6e476]
+                - button "Delete session" [ref=f6e480]
+              - generic [ref=f6e484]:
+                - button [ref=f6e485]:
+                  - paragraph [ref=f6e486]: How was the ending
+                  - paragraph [ref=f6e487]: 10 msg · 5/16/2026
+                - button "Rename" [ref=f6e488]
+                - button "Delete session" [ref=f6e492]
+              - generic [ref=f6e496]:
+                - button [ref=f6e497]:
+                  - paragraph [ref=f6e498]: Tell me about the mill from document
+                  - paragraph [ref=f6e499]: 4 msg · 5/16/2026
+                - button "Rename" [ref=f6e500]
+                - button "Delete session" [ref=f6e504]
+              - generic [ref=f6e508]:
+                - button [ref=f6e509]:
+                  - paragraph [ref=f6e510]: Summerize this text
+                  - paragraph [ref=f6e511]: 2 msg · 5/16/2026
+                - button "Rename" [ref=f6e512]
+                - button "Delete session" [ref=f6e516]
+          - generic [ref=f6e520]:
+            - button [ref=f6e611] [cursor=pointer]:
+              - heading "Conversation" [level=4] [ref=f6e525]
+              - button "New chat" [ref=f6e612]
+            - generic [ref=f6e614]:
+              - paragraph [ref=f6e615]: New chat (unsaved)
+              - paragraph [ref=f6e616]: 2 messages · 1 from you
+          - button "Session log 1" [ref=f6e617] [cursor=pointer]:
+            - generic [ref=f6e530]:
+              - heading "Session log" [level=4] [ref=f6e536]
+              - generic [ref=f6e537]: "1"
+    - generic [ref=f6e538]:
+      - generic [ref=f6e618]:
+        - generic [ref=f6e624]:
+          - paragraph [ref=f6e626]: Verify exhausted budget path
+          - button "Copy" [ref=f6e628]
+        - generic [ref=f6e638]: Streaming…
+      - generic [ref=f6e549]:
+        - generic "Estimated prompt size. Messages and pins are re-sent on every turn." [ref=f6e642]: ~7 ctx
+        - generic [ref=f6e550]:
+          - button "Attach image" [disabled] [ref=f6e551]
+          - textbox "Ask the model, drop / paste / attach an image… (Enter to send)" [active] [ref=f6e554]:
+            - /placeholder: Ask the model, drop / paste / attach an image…  (Enter to send)
+          - button "Stop generation" [ref=f6e643]

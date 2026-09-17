@@ -198,6 +198,9 @@ describe('useChatEngine sendMessage fallback-retry sequencing', () => {
             expect.stringContaining('Daily inference budget exhausted'),
             6000,
         );
+        // The budget toast is the ONLY toast — the generic "Chat failed"
+        // catch must not pile a duplicate on top of it.
+        expect(showToast).toHaveBeenCalledTimes(1);
         // The budget state drives the composer's send-disable in ChatView.
         expect(result.current.inferenceBudget).toMatchObject({ remaining_tokens: 0 });
         // No self-heal, no fallback toasts — the failure is budget, not model.
