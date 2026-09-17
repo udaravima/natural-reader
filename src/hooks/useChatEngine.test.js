@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import { useChatEngine } from './useChatEngine';
 import { INFERENCE_DEFAULTS } from './inference';
 import { chatFetch } from '../lib/chatTransport';
@@ -216,5 +216,47 @@ describe('useChatEngine sendMessage fallback-retry sequencing', () => {
         expect(calls).toBe(3);
         expect(result.current.isStreaming).toBe(false);
         expect(showToast).toHaveBeenCalledWith(expect.stringContaining('Chat failed'), 5000);
+    });
+});
+
+describe('useChatEngine refreshModels model-list shapes', () => {
+    const jsonResponse = (obj) => ({ ok: true, status: 200, json: async () => obj });
+
+    // The 400ms debounce is real timers; waitFor rides it out.
+    const modelsFetch = (payload) => chatFetch.mockImplementation(async () => jsonResponse(payload));
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it('accepts the gateway shape: models as plain name strings', async () => {
+        // Regression: the gateway returns ["qwen3.5:latest", ...] — mapping
+        // .name over strings yielded undefined and rendered blank options.
+        modelsFetch({
+            models: ['qwen3.5:latest', 'llama3.2:3b'],
+            budget: { remaining_tokens: 500, reset_at: '2026-09-18T00:00:00Z' },
+        });
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await waitFor(() => {
+            expect(result.current.availableModels).toEqual(['qwen3.5:latest', 'llama3.2:3b']);
+        }, { timeout: 3000 });
+        // Server mode: the budget rides along with the model list.
+        expect(result.current.inferenceBudget).toMatchObject({ remaining_tokens: 500 });
+        expect(result.current.reachable).toBe(true);
+    });
+
+    it('accepts the local /api/tags shape: objects with .name, no budget', async () => {
+        modelsFetch({ models: [{ name: 'qwen3.5:latest' }, { name: 'llama3.2:3b' }] });
+        const { result } = renderHook(() => useChatEngine(baseProps({ inferenceSource: 'local' })));
+        await waitFor(() => {
+            expect(result.current.availableModels).toEqual(['qwen3.5:latest', 'llama3.2:3b']);
+        }, { timeout: 3000 });
+        // Local mode never carries a budget.
+        expect(result.current.inferenceBudget).toBeNull();
+        expect(result.current.reachable).toBe(true);
     });
 });

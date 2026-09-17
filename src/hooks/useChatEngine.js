@@ -377,9 +377,9 @@ export function useChatEngine({
         }
     }, [enqueueTts]);
 
-    // Model list — server mode via the authenticated gateway, local mode via
-    // a direct GET /api/tags. Both return {models: [...]}, so the parsing is
-    // identical. Debounced when host/port changes.
+    // Model list — server mode via the authenticated gateway (plain name
+    // strings), local mode via a direct GET /api/tags ({name} objects).
+    // Debounced when host/port changes.
     const refreshModels = useCallback(async () => {
         try {
             const controller = new AbortController();
@@ -388,7 +388,11 @@ export function useChatEngine({
             clearTimeout(t);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
-            const names = Array.isArray(data?.models) ? data.models.map(m => m.name) : [];
+            // Server gateway returns plain strings; local /api/tags returns
+            // objects with .name. Normalize both to a list of model names.
+            const names = Array.isArray(data?.models)
+                ? data.models.map(m => (typeof m === 'string' ? m : m.name)).filter(Boolean)
+                : [];
             setAvailableModels(names);
             setReachable(true);
             // Budget rides along with the model list (server mode). Absent
