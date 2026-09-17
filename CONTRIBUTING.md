@@ -8,6 +8,15 @@ bar, and how to propose changes.
 By contributing, you agree that your contributions are licensed under the
 project's [MIT License](LICENSE).
 
+## Understanding the codebase
+
+Before diving in, read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the
+developer guide to how the components fit together: the same-origin `/v1`
+rule (and why a persisted `apiHost` breaks cookie auth), the auth flow, the
+TTS/Kokoro serialization lock, the doc-indexing and docling pipelines, the
+chat engine's streaming/tool-call design, and the invariants you shouldn't
+break.
+
 ## Ways to contribute
 
 - **Bugs / features:** open an issue describing the problem or proposal before a

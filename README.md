@@ -828,7 +828,10 @@ The project uses Rolldown (via `rolldown-vite`) with optimized chunk splitting:
 
 Contributions are welcome! See **[CONTRIBUTING.md](CONTRIBUTING.md)** for setup, the
 test/lint commands, branch and commit conventions, and how larger features are
-designed. In short: `./startup.sh init && ./startup.sh up`, keep both test suites
+designed. **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** explains how the
+components fit together (the same-origin `/v1` rule, auth flow, TTS lock, chat
+engine, doc pipelines, and the invariants to keep intact). In short:
+`./startup.sh init && ./startup.sh up`, keep both test suites
 green (`npm run test:run` and `.venv/bin/pytest server/tests`), and open PRs against
 `master` using [Conventional Commits](https://www.conventionalcommits.org/).
 
