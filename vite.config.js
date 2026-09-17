@@ -11,6 +11,10 @@ export default defineConfig({
   // backend — the OIDC session cookie only rides same-origin fetches. In a real
   // deployment the system nginx does this (see deploy/nginx/natural-reader.conf).
   server: {
+    watch: {
+      // Avoid watching the large pdf.worker.min.js file from pdfjs-dist
+      ignored: ['**/.venv/**', '**/node_modules/**', '**/data/**', '**/logs/**'],
+    },
     proxy: {
       '/v1': 'http://localhost:8000',       // FastAPI backend
       '/api': 'http://localhost:11434',     // Ollama (matches the browser default)
