@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { markdownToSpeech } from '../utils/markdownToSpeech';
 import { stripAttachmentData, formatAttachmentSize } from '../utils/attachment';
-import { buildApiUrl } from '../utils/url';
 import { makeSessionStore } from '../lib/sessionStore';
 import { executeToolCall, getToolDefinitions } from '../lib/chatTools';
+import { CHAT_PATH, MODELS_PATH, chatFetch } from '../lib/chatTransport';
 import { buildChatHistory, buildPinPreamble } from './chatHistory';
 import { addPin as addPinReducer, removePin as removePinReducer, MAX_PINS } from './pins';
 import { buildRequestFields, INFERENCE_DEFAULTS, truncationMessage } from './inference';
@@ -39,6 +39,7 @@ const titleFromPrompt = (text) => {
 export function useChatEngine({
     ollamaHost,
     ollamaPort,
+    inferenceSource = 'server',  // 'server' = authenticated /v1 gateway, 'local' = browser→Ollama
     selectedModel,
     chatTtsMode,        // 'streaming' | 'after-complete'
     chatAutoTts,        // bool — disables TTS entirely
@@ -106,9 +107,20 @@ export function useChatEngine({
     const eventsRef = useRef([]);              // mirror used inside async callbacks
     const createdAtRef = useRef(null);         // start timestamp of the active session
 
-    // Empty `ollamaHost` returns a relative path — useful when the app sits
-    // behind a reverse proxy that routes /api/* to the local Ollama daemon.
-    const ollamaUrl = (path) => buildApiUrl(ollamaHost, ollamaPort, path);
+    // Inference transport: server mode rides the authenticated /v1 gateway
+    // (session cookie via apiFetch); local mode builds the same direct
+    // browser→Ollama URLs as before (blank host = same-origin /api/*).
+    const chatHosts = { apiHost, apiPort, ollamaHost, ollamaPort };
+    const callChat = useCallback((body, signal) => chatFetch(
+        inferenceSource, chatHosts, CHAT_PATH[inferenceSource],
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal,
+        },
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    ), [inferenceSource, apiHost, apiPort, ollamaHost, ollamaPort]);
 
     // Read latest values via refs so the playback loop and queued items pick up
     // voice/speed/volume changes for not-yet-fetched items without re-creating callbacks.
@@ -352,13 +364,14 @@ export function useChatEngine({
         }
     }, [enqueueTts]);
 
-    // GET /api/tags — populate the model dropdown. Debounced when host/port changes.
-    // Both being empty is valid: it means "use same origin" (reverse-proxied deploy).
+    // Model list — server mode via the authenticated gateway, local mode via
+    // a direct GET /api/tags. Both return {models: [...]}, so the parsing is
+    // identical. Debounced when host/port changes.
     const refreshModels = useCallback(async () => {
         try {
             const controller = new AbortController();
             const t = setTimeout(() => controller.abort(), 5000);
-            const res = await fetch(ollamaUrl('/api/tags'), { signal: controller.signal });
+            const res = await chatFetch(inferenceSource, chatHosts, MODELS_PATH[inferenceSource], { signal: controller.signal });
             clearTimeout(t);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
@@ -371,7 +384,7 @@ export function useChatEngine({
             setReachable(false);
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [ollamaHost, ollamaPort]);
+    }, [inferenceSource, apiHost, apiPort, ollamaHost, ollamaPort]);
 
     // Auto-refresh on host/port change (debounced so typing isn't a request storm)
     useEffect(() => {
@@ -623,12 +636,7 @@ export function useChatEngine({
                 ...extra,
             });
             const firstBody = tools.length > 0 ? buildBody({ tools }) : buildBody();
-            let res = await fetch(ollamaUrl('/api/chat'), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(firstBody),
-                signal: controller.signal,
-            });
+            let res = await callChat(firstBody, controller.signal);
             // Some thinking-capable models accept the boolean but reject the
             // graduated levels. Try the think downgrade FIRST, keeping `tools`
             // intact — if we tried the tools-drop first, a model that only
@@ -645,12 +653,10 @@ export function useChatEngine({
                     showToast?.('This model rejected the thinking level — used plain thinking instead.', 4000);
                 }
                 logEvent('think-fallback', `model rejected think level "${inferenceForThisMsg.think}" (HTTP ${res.status})`);
-                res = await fetch(ollamaUrl('/api/chat'), {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(tools.length > 0 ? buildBody({ tools }, { think: 'on' }) : buildBody({}, { think: 'on' })),
-                    signal: controller.signal,
-                });
+                res = await callChat(
+                    tools.length > 0 ? buildBody({ tools }, { think: 'on' }) : buildBody({}, { think: 'on' }),
+                    controller.signal,
+                );
             }
             if (!res.ok && tools.length > 0 && res.status >= 400 && res.status < 500) {
                 console.warn(`Ollama returned ${res.status} with tools — retrying without tools.`);
@@ -659,12 +665,10 @@ export function useChatEngine({
                     showToast?.('This model rejected tools — proceeded without them.', 4000);
                 }
                 logEvent('tool-fallback', `model rejected tools (HTTP ${res.status}); retrying without`);
-                res = await fetch(ollamaUrl('/api/chat'), {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(buildBody({}, usedLevel ? { think: 'on' } : {})),
-                    signal: controller.signal,
-                });
+                res = await callChat(
+                    buildBody({}, usedLevel ? { think: 'on' } : {}),
+                    controller.signal,
+                );
             }
             if (!res.ok || !res.body) throw new Error(`Ollama error: HTTP ${res.status}`);
 
@@ -749,17 +753,12 @@ export function useChatEngine({
                     })),
                 ];
 
-                const res2 = await fetch(ollamaUrl('/api/chat'), {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        model: selectedModel,
-                        messages: followupHistory,
-                        stream: true,
-                        ...buildRequestFields(inferenceForThisMsg),
-                    }),
-                    signal: controller.signal,
-                });
+                const res2 = await callChat({
+                    model: selectedModel,
+                    messages: followupHistory,
+                    stream: true,
+                    ...buildRequestFields(inferenceForThisMsg),
+                }, controller.signal);
                 if (!res2.ok || !res2.body) throw new Error(`Ollama follow-up error: HTTP ${res2.status}`);
 
                 const second = await consumeStream(res2);
@@ -811,7 +810,7 @@ export function useChatEngine({
             }).catch(err => console.error('Session save failed:', err));
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, inference, ollamaHost, ollamaPort, apiHost, apiPort, currentDocId, currentDocIndexState, flushBufferedSentences, enqueueTts, logEvent, saveActiveSession]);
+    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, inference, ollamaHost, ollamaPort, apiHost, apiPort, callChat, currentDocId, currentDocIndexState, flushBufferedSentences, enqueueTts, logEvent, saveActiveSession]);
 
     const activeSession = sessions.find(s => s.id === activeSessionId) || null;
 
