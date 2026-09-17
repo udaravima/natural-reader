@@ -30,6 +30,7 @@
   ],
   "users": [
     {
+      "id": "86095f7a-4c14-40a5-a3b8-145b7147febd",
       "username": "admin-user",
       "email": "admin@example.com",
       "emailVerified": true,
