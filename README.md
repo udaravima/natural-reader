@@ -214,6 +214,8 @@ Place both files in the project root directory.
 ./startup.sh up-with-dev-auth
 # → sign in at http://localhost:5173 as Keycloak user admin-user / password
 # Walkthrough (adding a second user, approval flow, PATs): deploy/README.md
+# End-user guide (signing in, personal access tokens, admin section,
+# chat budgets): docs/USER_GUIDE.md
 
 # Or, to run the backend manually (no containers, no chat persistence):
 python run.py
