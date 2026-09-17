@@ -4,6 +4,34 @@
 
 ---
 
+## 2026-09-17 — Model-router gateway (sub-project E) built on `feat/model-router-gateway`
+
+**Branch:** `feat/model-router-gateway` (branched off `feat/security-hardening` line) · **Tests:** backend 143, frontend 163, lint clean · **Working tree:** clean at last commit.
+
+### What happened
+- Implemented the full [gateway spec](docs/superpowers/specs/2026-09-17-model-router-gateway-design.md) (all phases E1–E3) via the 13-task TDD plan ([docs/superpowers/plans/2026-09-17-model-router-gateway.md](docs/superpowers/plans/2026-09-17-model-router-gateway.md)).
+- **The pipe (E1):** new `server/routers/inference.py` — `GET /v1/inference/models` + `POST /v1/inference/chat` behind `get_current_user`; strictly validated envelope (`extra="forbid"` down to per-message fields, incl. `images` + `tool_calls`); byte-faithful NDJSON passthrough (uses `client.send(stream=True)` + closes in the generator's `finally` — the StreamingResponse trap); upstream errors forwarded status+body so the SPA's think/tools fallback chain still branches correctly. Frontend: `src/lib/chatTransport.js` seam, `useChatEngine`'s four `/api/chat` sites collapsed into `callChat()`, model list via the gateway, persisted **Inference source: Server | Local Ollama** setting in ChatSidebar.
+- **The router (E2):** `server/services/model_router.py` owns everything — `INFERENCE_MODELS` allowlist (422 otherwise), task models (`SUMMARIZE_MODEL` w/ `WEB_SEARCH_SUMMARY_MODEL` fallback, `EMBEDDING_MODEL`), `INFERENCE_TIMEOUT_S`, `INFERENCE_DAILY_TOKEN_BUDGET`. `embeddings.py` / `web_search.py` / `docs.py` (embedding metadata) all read from it now — no service reads Ollama env directly anymore.
+- **The budgets (E3):** migration `007_inference_budgets.sql` (`inference_usage` PK (user_id, day) — **day computed in Python, UTC**, no SQL default; `users.inference_daily_token_budget` NULL=default/0=unlimited), `inference_budget.py` service, 429 pre-check + `_UsageTap` stream accounting (only counts completed generations; fresh pooled conn in the generator `finally`; fail-open on DB errors). Admin: `GET /v1/admin/inference/usage` + budget field on the user PATCH (`exclude_unset` semantics: absent=untouched, null=clear). Frontend: budget rides `/v1/inference/models`, meter in ChatSidebar, 429 intercepted in `callChat` BEFORE the retry chains, send disabled at zero.
+- **Docs/config:** `.env.example` gateway section; README (new Inference Gateway API table, threat-model `/api/*` rows removed, nginx `/api/` block deleted everywhere + `proxy_buffering off` moved to `/v1/`); CHANGELOG `[Unreleased]`.
+
+### Mid-session incident (resolved)
+- The branch was accidentally switched to `master` mid-implementation. **No commits were lost** — all were on `feat/model-router-gateway`; only uncommitted Task-6 scratch files were wiped by the force-checkout and were recreated. Note: `searxng/` is owned by a container uid; checkout errors there are fixed with `git checkout -f` (the files are identical).
+
+### Not verified here / next
+- **The live browser walk-through (plan Task 13 step 5) was NOT done** — needs Ollama + a real model: server-mode dropdown/streaming, tool loop through the gateway, image attach, local-mode parity, allowlist, and a budget-exhaustion 429. All of these are covered by unit tests with a mocked upstream; the manual pass is a final confidence check.
+- **AdminPanel UI** doesn't surface the usage view / budget knob yet (API only). Small follow-up.
+- **Document-library RAG is now unblocked** — its Phase 2 description generation routes through `model_router`'s `summarize` task, and Phase 3's multi-round loop checks budget via the 429 detail.
+- Then sub-project **D** (containerization/prod Keycloak/TLS).
+- The **admin usage endpoint returns `day` as a date object** — FastAPI serializes it; if the SPA later renders it, remember it's ISO date, not timestamp.
+
+### How to run / test
+- Postgres must be up: `env -u XDG_DATA_HOME podman-compose up -d postgres` (container stops between sessions).
+- Backend: `.venv/bin/pytest server/tests/` (143). Frontend: `npm run test:run` (163), `npm run lint`.
+- Manual: `./startup.sh up` (loopback dev bypass = seed admin) + `npm run dev`; chat defaults to Server mode → `/v1/inference/*`.
+
+---
+
 ## 2026-09-17 — SPA auth UI + local OIDC rig built; merged onto `feat/security-hardening`
 
 **Branch:** `feat/spa-auth-ui` (off, and merged back into, `feat/security-hardening`) · **Tests:** backend 92, frontend 150, lint clean · **Working tree:** clean.

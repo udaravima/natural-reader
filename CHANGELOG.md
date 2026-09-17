@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Inference gateway (model router).** The SPA's chat no longer talks to Ollama
+  directly — it goes through authenticated backend endpoints
+  (`GET /v1/inference/models`, `POST /v1/inference/chat`) using the session cookie
+  (or a PAT), so the previously unauthenticated browser→Ollama path is closed.
+  The chat passthrough is **byte-faithful NDJSON streaming** (the SPA's tool loop,
+  thinking-trace fallbacks, and image attachments are unchanged) behind a strictly
+  validated request envelope — unknown fields are a 422, never a silent
+  passthrough, and `/api/pull`/`/api/delete` & co. are unreachable through app
+  auth. A new **Inference source: Server | Local Ollama** setting in the chat
+  sidebar switches between the gateway (default) and the old direct mode.
+  ([server/routers/inference.py](server/routers/inference.py), [src/lib/chatTransport.js](src/lib/chatTransport.js))
+- **Model allowlist.** `INFERENCE_MODELS` (comma-separated) caps what the gateway
+  serves — the SPA's model dropdown only offers allowlisted models and
+  non-listed chat requests 422. Unset = all models (dev convenience). One config
+  module (`server/services/model_router.py`) now owns every server-side model
+  choice: chat allowlist, `SUMMARIZE_MODEL` (replaces `WEB_SEARCH_SUMMARY_MODEL`,
+  which still works), and `EMBEDDING_MODEL`.
+- **Per-user daily token budgets.** `INFERENCE_DAILY_TOKEN_BUDGET` sets a default
+  daily prompt+eval token allowance (from Ollama's final-chunk real counts,
+  UTC-midnight reset); over-budget requests get a 429 with remaining/reset detail
+  that the SPA surfaces as a toast + a "N tokens left today" meter, and the send
+  button disables at zero. Admins can override per user
+  (`PATCH /v1/admin/users/{id}`) and view usage via
+  `GET /v1/admin/inference/usage`. Aborted streams are never accounted; budget
+  checks fail open if Postgres is down — chat never dies with the DB.
+  (migration `007_inference_budgets.sql`, [server/services/inference_budget.py](server/services/inference_budget.py))
+
+### Changed
+- **nginx: delete the `/api/` block.** With the gateway live, Ollama becomes
+  backend-only (loopback bind, nothing proxied). The reference configs
+  (`deploy/nginx/natural-reader.conf`, `docs/chat.oraian.net.sample`) and the
+  README example have dropped it; `proxy_buffering off` now matters on `/v1/`
+  (that's where NDJSON streams).
+- Server-side summarize (web_search) and embedding calls route through
+  `model_router` instead of reading `OLLAMA_URL`/model env vars in each service.
+
 ## [1.9.0] - 2026-08-10
 
 ### Added
