@@ -74,6 +74,9 @@ export default function App() {
   const [viewMode, setViewMode] = usePersistedState('viewMode', 'reader');
   const [ollamaHost, setOllamaHost] = usePersistedState('ollamaHost', OLLAMA_DEFAULTS.host);
   const [ollamaPort, setOllamaPort] = usePersistedState('ollamaPort', OLLAMA_DEFAULTS.port);
+  // Where inference runs: 'server' = authenticated /v1/inference gateway on
+  // the backend, 'local' = browser→Ollama directly (pre-gateway behavior).
+  const [inferenceSource, setInferenceSource] = usePersistedState('inferenceSource', 'server');
   const [selectedModel, setSelectedModel] = usePersistedState('selectedModel', '');
   const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', 'streaming');
   const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', true);
@@ -212,7 +215,7 @@ export default function App() {
   // model. Both are null while no doc is open.
   const currentDocIndexEntry = currentDocId ? docIndexByDocId[currentDocId] : null;
   const chatEngine = useChatEngine({
-    ollamaHost, ollamaPort, selectedModel,
+    ollamaHost, ollamaPort, inferenceSource, selectedModel,
     chatTtsMode, chatAutoTts, inference,
     isLocalhost, selectedVoice, playbackSpeed, requestTimeout,
     apiHost, apiPort,
@@ -1115,6 +1118,7 @@ export default function App() {
             sidebarOpen={sidebarOpen}
             ollamaHost={ollamaHost} setOllamaHost={setOllamaHost}
             ollamaPort={ollamaPort} setOllamaPort={setOllamaPort}
+            inferenceSource={inferenceSource} setInferenceSource={setInferenceSource}
             selectedModel={selectedModel} setSelectedModel={setSelectedModel}
             availableModels={availableModels}
             reachable={ollamaReachable}
