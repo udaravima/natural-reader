@@ -327,7 +327,7 @@ check_backend_port_free() {
 # against a half-up Keycloak fails confusingly. Warn-and-continue on timeout:
 # TTS still serves; /v1/auth/login just 503s until Keycloak is actually up.
 wait_for_keycloak() {
-	local retries=30 i=1 ok=0
+	local retries=120 i=1 ok=0
 	log "Waiting for Keycloak realm import..."
 	for ((i = 1; i <= retries; i++)); do
 		if command -v curl >/dev/null 2>&1; then
