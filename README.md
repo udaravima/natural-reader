@@ -198,10 +198,26 @@ Place both files in the project root directory.
 
 ### 3. Start the Servers
 
+> **Auth note:** since the multi-user OIDC work, the backend **enables
+> authentication by default** (`AUTH_ENABLED=true`, see `.env.example`). The two
+> `startup.sh` modes below pick the posture for you: `up` runs with the
+> single-user dev bypass (no login screen), `up-with-dev-auth` runs the full
+> local OIDC rig against a Keycloak container.
+
 ```bash
-# Terminal 1 — Start the Kokoro TTS backend (port 8000)
+# Terminal 1 — quick single-user dev (Postgres + SearXNG + TTS backend, auth off)
+./startup.sh up
+
+# Or, the full local OIDC rig (also starts Keycloak on :18080, creates .env on
+# first run with the local realm values + a generated SESSION_SECRET, waits for
+# the realm import, then runs the backend with auth on):
+./startup.sh up-with-dev-auth
+# → sign in at http://localhost:5173 as Keycloak user admin-user / password
+# Walkthrough (adding a second user, approval flow, PATs): deploy/README.md
+
+# Or, to run the backend manually (no containers, no chat persistence):
 python run.py
-# Or, to fan TTS / audiobook synthesis across CPU cores (one Kokoro model
+# To fan TTS / audiobook synthesis across CPU cores (one Kokoro model
 # loaded per worker — budget ~300–500 MB each on the ONNX-CPU build):
 #   WORKERS=4 python run.py
 # HOST and PORT env vars are also honoured.
@@ -209,6 +225,13 @@ python run.py
 # Terminal 2 — Start the frontend dev server (port 5173)
 npm run dev
 ```
+
+`up-with-dev-auth` sources `.env` (created from the local-dev rig values on
+first run — see `deploy/README.md`); edit it to change ports or point at a
+different IdP. `up` also reads `.env` but forces `AUTH_ENABLED=false` (the
+backend's startup guard allows this only on a loopback bind). Ctrl-C on either
+SIGTERMs the backend and stops the containers cleanly; `./startup.sh down` does
+the same without starting anything.
 
 Open **http://localhost:5173** in your browser.
 
@@ -473,9 +496,21 @@ Notes:
 
 ## 🔒 Security & Hardening
 
-The frontend issues every API call directly from the browser — there's no auth gateway, no per-user gating. If your deployment is reachable on the public internet (any domain pointed at it), anyone can hit `/v1/synthesize`, `/api/chat`, etc. with no credentials. For a `localhost`-only dev box this is fine; for a public domain it's not. This section is the recipe for locking it down.
+### Authentication (OIDC, multi-user)
 
-### Threat model
+The backend authenticates via **OpenID Connect** — it's an OIDC Relying Party, so you point it at any provider (Keycloak, Authentik, Auth0, …) and it stores no passwords. Every document and chat session is owned by a user; you only ever see your own. Set the `OIDC_*` vars plus `SESSION_SECRET` (see [.env.example](.env.example)) to turn it on.
+
+- **First-user-admin:** the first identity to log in becomes admin; everyone after is `pending` until an admin activates them (Admin → Users). Set `BOOTSTRAP_ADMIN_EMAIL` to pre-designate the admin by email and inherit any pre-existing single-user data.
+- **The web app** uses a revocable, `HttpOnly` session cookie. **The read-aloud extension and scripts** use a **personal access token** (Settings → Access tokens) sent as `Authorization: Bearer …`.
+- **Local dev without an IdP:** `AUTH_ENABLED=false` treats every request as the admin — but the server **refuses to start** with this set on a non-loopback bind.
+
+`/api/*` (Ollama) is not yet behind app auth — proxy-gate it, or wait for the model-router gateway that moves those calls server-side.
+
+### Threat model (pre-auth baseline)
+
+The table below is the *un-authenticated* exposure — i.e. what OIDC now closes for `/v1/*`, and what still applies to `/api/*` until it's gated.
+
+
 
 | Endpoint | What an unauthenticated caller can do | Cost to you |
 |---|---|---|
@@ -485,12 +520,12 @@ The frontend issues every API call directly from the browser — there's no auth
 | `GET  /api/tags` | List the names + sizes of every model you have pulled | Information disclosure / fingerprinting |
 | `GET  /api/version` | Probe the Ollama daemon version | Fingerprinting |
 
-In addition, [server/app.py](server/app.py) ships with `allow_origins=["*"]`, so even *other websites* can drive your Kokoro endpoint from JavaScript without anyone visiting your site. That makes Kokoro a free TTS-as-a-service for whoever knows the URL.
+In addition, [server/app.py](server/app.py) defaults to `allow_origins=["*"]` (with credentials disabled), so even *other websites* can drive your Kokoro endpoint from JavaScript without anyone visiting your site. That makes Kokoro a free TTS-as-a-service for whoever knows the URL. Set `FRONTEND_ORIGIN` to your real origin(s) to pin CORS (which also enables credentialed requests). TTS payloads are now size-capped (`TTS_MAX_*`, see [.env.example](.env.example)) so a single request can no longer pin the inference lock indefinitely.
 
 ### What is *not* a vulnerability (worth saying out loud)
 
 - **Chat history, sessions, document library** — all in IndexedDB, sandboxed per origin. Other websites can't read them.
-- **Bind addresses** — Kokoro and Ollama listen on `127.0.0.1` only (Ollama by default; Kokoro via [run.py](run.py) on `0.0.0.0` but firewalled by your nginx-only routing). Only the proxy is internet-facing.
+- **Bind addresses** — Kokoro and Ollama listen on `127.0.0.1` only by default (both now; Kokoro via [run.py](run.py) — set `HOST=0.0.0.0` explicitly for a container/proxy deployment). Only the proxy is internet-facing.
 - **TLS** — terminated at nginx with a real cert; in-transit traffic is fine.
 - **Input shapes** — both backends do ML inference. There's no shell-out, no eval, no SQL. The risk is *resource consumption*, not RCE.
 
@@ -793,7 +828,10 @@ The project uses Rolldown (via `rolldown-vite`) with optimized chunk splitting:
 
 Contributions are welcome! See **[CONTRIBUTING.md](CONTRIBUTING.md)** for setup, the
 test/lint commands, branch and commit conventions, and how larger features are
-designed. In short: `./startup.sh init && ./startup.sh up`, keep both test suites
+designed. **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** explains how the
+components fit together (the same-origin `/v1` rule, auth flow, TTS lock, chat
+engine, doc pipelines, and the invariants to keep intact). In short:
+`./startup.sh init && ./startup.sh up`, keep both test suites
 green (`npm run test:run` and `.venv/bin/pytest server/tests`), and open PRs against
 `master` using [Conventional Commits](https://www.conventionalcommits.org/).
 

@@ -10,6 +10,11 @@ psycopg[binary,pool]>=3.2
 pgvector>=0.3
 httpx>=0.27
 
+# Multi-user auth: OIDC Relying Party (Authlib) + signed session cookie for the
+# transient OIDC flow state (itsdangerous, via Starlette SessionMiddleware).
+authlib>=1.3
+itsdangerous>=2.1
+
 # Document conversion (PDF/DOCX/PPTX/HTML/images → Markdown).
 # Only needed when DOCLING_ENABLED=true. Pulls in transformers + torch (CPU);
 # first conversion downloads layout/table models (~500 MB to ~2 GB total).

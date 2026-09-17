@@ -7,6 +7,19 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
+  // Dev-only reverse proxy so `npm run dev` (:5173) is same-origin with the
+  // backend — the OIDC session cookie only rides same-origin fetches. In a real
+  // deployment the system nginx does this (see deploy/nginx/natural-reader.conf).
+  server: {
+    watch: {
+      // Avoid watching the large pdf.worker.min.js file from pdfjs-dist
+      ignored: ['**/.venv/**', '**/node_modules/**', '**/data/**', '**/logs/**'],
+    },
+    proxy: {
+      '/v1': 'http://localhost:8000',       // FastAPI backend
+      '/api': 'http://localhost:11434',     // Ollama (matches the browser default)
+    },
+  },
   build: {
     // The pdf.worker.min.js from pdfjs-dist is ~1MB and cannot be split
     chunkSizeWarningLimit: 1100,

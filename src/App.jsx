@@ -2,13 +2,14 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Loader2 } from 'lucide-react';
 
 // Hooks
-import { usePersistedState } from './hooks/usePersistedState';
+import { usePersistedState, migratePersisted } from './hooks/usePersistedState';
 import { useMobileDetect } from './hooks/useMobileDetect';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useTheme } from './hooks/useTheme';
 import { usePdfEngine } from './hooks/usePdfEngine';
 import { useTtsEngine } from './hooks/useTtsEngine';
 import { useChatEngine } from './hooks/useChatEngine';
+import { useAuth } from './hooks/useAuth';
 import { makePin } from './hooks/pins';
 
 // Constants
@@ -16,7 +17,7 @@ import { OLLAMA_DEFAULTS } from './constants';
 import { resolveForModel, patchForModel, migrateLegacyThinking } from './hooks/inference';
 
 // Utils
-import { buildApiUrl } from './utils/url';
+import { apiFetch } from './utils/apiFetch';
 import { getOrComputeDocHash } from './utils/docHash';
 import { getBook } from './db';
 import { saveWorkspaceState, clearWorkspaceState, getWorkspaceState } from './db';
@@ -27,6 +28,7 @@ import { createFsaWorkspace, createSnapshotWorkspace, pickEntryFile, isMarkdownP
 // Components
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
+import { AuthGate } from './components/auth/AuthGate';
 import PdfViewer from './components/PdfViewer';
 import ChatView from './components/ChatView';
 import ChatSidebar from './components/ChatSidebar';
@@ -42,6 +44,14 @@ import KeyboardShortcutsModal from './components/overlays/KeyboardShortcutsModal
 import ReadSelectionButton from './components/overlays/ReadSelectionButton';
 
 export default function App() {
+  // One-time migration: 'localhost' was the pre-auth default apiHost, but every
+  // /v1 call now sends credentials — a cross-origin localhost:5173 →
+  // localhost:8000 fetch is always CORS-blocked (credentials + wildcard origin
+  // is rejected by browsers) and the OIDC session cookie only rides same-origin
+  // requests. Blank = same-origin (Vite dev proxy / reverse proxy), the
+  // supported setup. Must run before the usePersistedState hook reads the key.
+  migratePersisted('apiHost', 'localhost', '');
+
   // --- PERSISTED SETTINGS ---
   const [darkMode, setDarkMode] = usePersistedState('darkMode', false);
   const [volume, setVolume] = usePersistedState('volume', 1.0);
@@ -49,8 +59,9 @@ export default function App() {
   const [playbackSpeed, setPlaybackSpeed] = usePersistedState('playbackSpeed', 1.0);
   const [selectedVoice, setSelectedVoice] = usePersistedState('selectedVoice', 'af_heart');
   const [isLocalhost, setIsLocalhost] = usePersistedState('isLocalhost', true);
-  const [apiHost, setApiHost] = usePersistedState('apiHost', 'localhost');
+  const [apiHost, setApiHost] = usePersistedState('apiHost', '');
   const [apiPort, setApiPort] = usePersistedState('apiPort', '8000');
+  const auth = useAuth(apiHost, apiPort);
   const [requestTimeout, setRequestTimeout] = usePersistedState('requestTimeout', 15);
   const [unlimitedBatchTimeout, setUnlimitedBatchTimeout] = usePersistedState('unlimitedBatchTimeout', true);
   const [mobileBreakpoint, setMobileBreakpoint] = usePersistedState('mobileBreakpoint', 768);
@@ -254,7 +265,6 @@ export default function App() {
   const hasDocument = !!pdfDoc || ((fileType === 'text' || fileType === 'markdown') && numPages > 0);
 
   // --- BACKEND HEALTH CHECK ---
-  const getApiUrl = (endpoint) => buildApiUrl(apiHost, apiPort, endpoint);
 
   // Navigation helpers (used by PdfViewer, MobileBottomNav, keyboard shortcuts)
   const goToNextPage = useCallback(() => setCurrentPage(p => Math.min(numPages, p + 1)), [numPages, setCurrentPage]);
@@ -265,7 +275,7 @@ export default function App() {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
-      const response = await fetch(getApiUrl('/v1/health'), {
+      const response = await apiFetch(apiHost, apiPort, '/v1/health', {
         method: 'GET',
         signal: controller.signal,
       });
@@ -598,7 +608,7 @@ export default function App() {
       setCurrentDocId(docId);
       if (docIndexByDocId[docId] && docConvertByDocId[docId]) return; // already cached
       try {
-        const res = await fetch(getApiUrl(`/v1/docs/${encodeURIComponent(docId)}`));
+        const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}`);
         if (cancelled) return;
         if (res.status === 404) {
           setDocIndexByDocId((prev) => ({ ...prev, [docId]: { state: 'idle' } }));
@@ -643,13 +653,12 @@ export default function App() {
       return;
     }
     setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'uploading' } }));
-    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
 
     // 1. Register the document.
     let registerRes;
     try {
       const fileSize = (await getBook(pdfFileName))?.size ?? 0;
-      registerRes = await fetch(apiUrl('/v1/docs'), {
+      registerRes = await apiFetch(apiHost, apiPort, '/v1/docs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -691,7 +700,7 @@ export default function App() {
     try {
       for (let i = 0; i < chunks.length; i += BATCH) {
         const slice = chunks.slice(i, i + BATCH);
-        const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}/chunks`), {
+        const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/chunks`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ chunks: slice }),
@@ -718,7 +727,7 @@ export default function App() {
 
     // 4. Kick off the embedding job. Returns 202 immediately; we poll status.
     try {
-      const indexRes = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}/index`), { method: 'POST' });
+      const indexRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/index`, { method: 'POST' });
       if (!indexRes.ok) throw new Error(`HTTP ${indexRes.status}`);
     } catch (e) {
       console.error('Index kick-off failed:', e);
@@ -736,7 +745,7 @@ export default function App() {
     for (let i = 0; i < MAX_POLLS; i++) {
       await new Promise((r) => setTimeout(r, POLL_MS));
       try {
-        const sRes = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}`));
+        const sRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}`);
         if (!sRes.ok) continue;
         const sData = await sRes.json();
         setDocIndexByDocId((prev) => ({
@@ -773,8 +782,6 @@ export default function App() {
       showToast('Could not read document bytes — re-open the file and try again.', 4000);
       return;
     }
-    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
-
     setDocConvertByDocId((prev) => ({
       ...prev,
       [docId]: { ...(prev[docId] || {}), state: 'uploading', error: null },
@@ -783,7 +790,7 @@ export default function App() {
     // 1. Register the doc (idempotent).
     try {
       const fileSize = (await getBook(pdfFileName))?.size ?? 0;
-      const registerRes = await fetch(apiUrl('/v1/docs'), {
+      const registerRes = await apiFetch(apiHost, apiPort, '/v1/docs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -824,7 +831,7 @@ export default function App() {
       [docId]: { ...(prev[docId] || {}), state: 'converting', options, error: null },
     }));
     try {
-      const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}/convert`), {
+      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/convert`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(options),
@@ -858,7 +865,7 @@ export default function App() {
     for (let i = 0; i < MAX_POLLS; i++) {
       await new Promise((r) => setTimeout(r, POLL_MS));
       try {
-        const sRes = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}`));
+        const sRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}`);
         if (!sRes.ok) continue;
         const sData = await sRes.json();
         setDocConvertByDocId((prev) => ({
@@ -913,9 +920,8 @@ export default function App() {
   // bloat memory or hit URL length limits.
   const handleExportMarkdown = useCallback(async () => {
     if (!currentDocId) return;
-    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
     try {
-      const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(currentDocId)}/markdown`));
+      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(currentDocId)}/markdown`);
       if (!res.ok) {
         let detail = `HTTP ${res.status}`;
         try {
@@ -956,9 +962,8 @@ export default function App() {
       : true;
     if (!ok) return;
 
-    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
     try {
-      const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(currentDocId)}/markdown`), {
+      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(currentDocId)}/markdown`, {
         method: 'DELETE',
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -987,6 +992,22 @@ export default function App() {
     if (!currentDocId) return;
     setDocViewByDocId((prev) => ({ ...prev, [currentDocId]: mode }));
   }, [currentDocId]);
+
+  // --- AUTH GATE ---
+  // Runs after all hooks (rules-of-hooks safe) and before every render branch,
+  // so an unauthenticated visitor sees the login/pending/disabled screen rather
+  // than the app or its loading spinner. With AUTH_ENABLED=false on a loopback
+  // backend, /v1/auth/me returns the seed admin → state 'active' → app renders.
+  if (auth.state !== 'active') {
+    return (
+      <AuthGate
+        state={auth.state}
+        onLogin={auth.login}
+        onLogout={auth.logout}
+        onRetry={auth.refresh}
+      />
+    );
+  }
 
   // --- LOADING STATE ---
   if (!isLibLoaded) {
@@ -1122,6 +1143,7 @@ export default function App() {
           isLocalhost={isLocalhost} setIsLocalhost={setIsLocalhost}
           apiHost={apiHost} setApiHost={setApiHost}
           apiPort={apiPort} setApiPort={setApiPort}
+          user={auth.user} onLogout={auth.logout}
           requestTimeout={requestTimeout} setRequestTimeout={setRequestTimeout}
           unlimitedBatchTimeout={unlimitedBatchTimeout} setUnlimitedBatchTimeout={setUnlimitedBatchTimeout}
           backendAvailable={backendAvailable} setBackendAvailable={setBackendAvailable}

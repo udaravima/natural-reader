@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Loader2 } from 'lucide-react';
-import { buildApiUrl } from '../utils/url';
+import { apiFetch } from '../utils/apiFetch';
 
 /**
  * Render docling-converted Markdown for a document, organized by page.
@@ -42,9 +42,7 @@ export default function MarkdownReader({
         setError(null);
         (async () => {
             try {
-                const res = await fetch(
-                    buildApiUrl(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/markdown`),
-                );
+                const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/markdown`);
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const text = await res.text();
                 if (cancelled) return;

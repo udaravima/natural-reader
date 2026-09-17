@@ -8,6 +8,15 @@ bar, and how to propose changes.
 By contributing, you agree that your contributions are licensed under the
 project's [MIT License](LICENSE).
 
+## Understanding the codebase
+
+Before diving in, read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the
+developer guide to how the components fit together: the same-origin `/v1`
+rule (and why a persisted `apiHost` breaks cookie auth), the auth flow, the
+TTS/Kokoro serialization lock, the doc-indexing and docling pipelines, the
+chat engine's streaming/tool-call design, and the invariants you shouldn't
+break.
+
 ## Ways to contribute
 
 - **Bugs / features:** open an issue describing the problem or proposal before a
@@ -27,19 +36,24 @@ project's [MIT License](LICENSE).
 The `startup.sh` script bootstraps everything:
 
 ```bash
-./startup.sh init      # venv + Python deps, Kokoro models, npm install + build
-./startup.sh up        # Postgres + SearXNG containers, then the backend (run.py)
+./startup.sh init              # venv + Python deps, Kokoro models, npm install + build
+./startup.sh up                # Postgres + SearXNG containers, backend with auth off
+./startup.sh up-with-dev-auth  # also Keycloak + backend with the local OIDC rig (creates .env)
 ```
 
 `up` runs in the foreground; Ctrl-C stops the backend and the containers cleanly.
-For frontend development with hot-reload, run the dev server in a second shell:
+Both modes refuse to start if the backend port is already occupied. For frontend
+development with hot-reload, run the dev server in a second shell:
 
 ```bash
 npm run dev
 ```
 
 Copy `.env.example` to `.env` to override any defaults (DB URL, Ollama URL,
-embedding model, `WEB_SEARCH_*`, logging, …). `.env` is gitignored.
+embedding model, `WEB_SEARCH_*`, logging, …) — `.env` is gitignored and sourced
+by `up`/`up-with-dev-auth` before the backend starts (`up` forces
+`AUTH_ENABLED=false`; `up-with-dev-auth` creates `.env` from the local Keycloak
+rig values if it doesn't exist yet — see [deploy/README.md](deploy/README.md)).
 
 ## Running the tests
 

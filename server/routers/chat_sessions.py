@@ -16,10 +16,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
+from ..auth.authz import assert_owns_session
+from ..auth.deps import Principal, get_current_user
 from ..db import get_pool, is_ready
 
 logger = logging.getLogger(__name__)
@@ -84,10 +86,27 @@ def _ensure_ready() -> None:
         )
 
 
+# ---------- authz ----------
+
+async def _require_session_owner(
+    session_id: str,
+    principal: Principal = Depends(get_current_user),
+) -> Principal:
+    """Route dependency: 401 if unauthenticated, 404 unless the caller owns the
+    session (missing and not-owned are indistinguishable to the caller)."""
+    _ensure_ready()
+    pool = get_pool()
+    async with pool.connection() as conn:
+        await assert_owns_session(conn, session_id, principal.user_id)
+    return principal
+
+
 # ---------- routes ----------
 
 @router.get("")
-async def list_sessions() -> list[dict[str, Any]]:
+async def list_sessions(
+    principal: Principal = Depends(get_current_user),
+) -> list[dict[str, Any]]:
     _ensure_ready()
     pool = get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:
@@ -99,8 +118,10 @@ async def list_sessions() -> list[dict[str, Any]]:
             LEFT JOIN (
                 SELECT session_id, COUNT(*) AS cnt FROM chat_messages GROUP BY session_id
             ) m ON m.session_id = s.id
+            WHERE s.user_id = %s
             ORDER BY s.updated_at DESC
-            """
+            """,
+            (principal.user_id,),
         )
         rows = await cur.fetchall()
         cols = [d.name for d in cur.description]
@@ -108,7 +129,9 @@ async def list_sessions() -> list[dict[str, Any]]:
 
 
 @router.get("/{session_id}")
-async def get_session(session_id: str) -> dict[str, Any]:
+async def get_session(
+    session_id: str, _owner: Principal = Depends(_require_session_owner)
+) -> dict[str, Any]:
     _ensure_ready()
     pool = get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:
@@ -187,7 +210,11 @@ async def get_session(session_id: str) -> dict[str, Any]:
 
 
 @router.put("/{session_id}")
-async def upsert_session(session_id: str, payload: SessionIn) -> dict[str, Any]:
+async def upsert_session(
+    session_id: str,
+    payload: SessionIn,
+    principal: Principal = Depends(get_current_user),
+) -> dict[str, Any]:
     """
     Upsert the entire session record: replace the session row, then
     delete-and-reinsert its messages and events in one transaction.
@@ -198,15 +225,22 @@ async def upsert_session(session_id: str, payload: SessionIn) -> dict[str, Any]:
 
     pool = get_pool()
     async with pool.connection() as conn:
+        # A session id already owned by another user must not be hijackable.
+        cur = await conn.execute(
+            "SELECT user_id FROM chat_sessions WHERE id = %s", (payload.id,)
+        )
+        existing = await cur.fetchone()
+        if existing is not None and str(existing[0]) != principal.user_id:
+            raise HTTPException(status_code=404, detail="Session not found")
         async with conn.transaction():
             await conn.execute(
                 """
-                INSERT INTO chat_sessions (id, title, model, created_at, updated_at, pins)
+                INSERT INTO chat_sessions (id, title, model, created_at, updated_at, pins, user_id)
                 VALUES (
                     %s, %s, %s,
                     COALESCE(to_timestamp(%s::double precision / 1000.0), now()),
                     now(),
-                    %s
+                    %s, %s
                 )
                 ON CONFLICT (id) DO UPDATE SET
                     title = EXCLUDED.title,
@@ -220,6 +254,7 @@ async def upsert_session(session_id: str, payload: SessionIn) -> dict[str, Any]:
                     payload.model,
                     payload.createdAt,
                     Jsonb(payload.pins),
+                    principal.user_id,
                 ),
             )
 
@@ -261,7 +296,11 @@ async def upsert_session(session_id: str, payload: SessionIn) -> dict[str, Any]:
 
 
 @router.patch("/{session_id}")
-async def patch_session(session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+async def patch_session(
+    session_id: str,
+    body: dict[str, Any],
+    _owner: Principal = Depends(_require_session_owner),
+) -> dict[str, Any]:
     """
     Partial update of session metadata. Only `title` and `model` are honored;
     timestamps and message data must go through PUT.
@@ -295,7 +334,9 @@ async def patch_session(session_id: str, body: dict[str, Any]) -> dict[str, Any]
 
 
 @router.delete("/{session_id}")
-async def delete_session(session_id: str) -> dict[str, Any]:
+async def delete_session(
+    session_id: str, _owner: Principal = Depends(_require_session_owner)
+) -> dict[str, Any]:
     _ensure_ready()
     pool = get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:

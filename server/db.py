@@ -68,6 +68,7 @@ async def init_db() -> bool:
             _pool_ready.set()
             logger.info("Postgres pool opened (attempt %d)", attempt + 1)
             await _run_migrations()
+            await bootstrap_admin()
             # Reset any stale 'indexing' rows left over from a crash mid-job
             # so they show up as resumable instead of stuck. Same for
             # 'converting' rows — they were created by a doc-conversion job
@@ -121,6 +122,29 @@ def get_pool() -> AsyncConnectionPool:
 
 def is_ready() -> bool:
     return _pool is not None
+
+
+async def bootstrap_admin() -> None:
+    """If BOOTSTRAP_ADMIN_EMAIL is set, point the seed admin's email at it so the
+    real admin's first OIDC login links to (and inherits) that row. Idempotent;
+    only ever touches the still-unlinked seed row."""
+    email = os.environ.get("BOOTSTRAP_ADMIN_EMAIL")
+    if not email:
+        return
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_name = 'users'"
+            )
+            if not await cur.fetchone():
+                return
+        await conn.execute(
+            "UPDATE users SET email = %s, updated_at = now() "
+            "WHERE id = '00000000-0000-0000-0000-000000000001' AND oidc_sub IS NULL",
+            (email,),
+        )
+    logger.info("Bootstrap admin email set to %s", email)
 
 
 async def _run_migrations() -> None:
