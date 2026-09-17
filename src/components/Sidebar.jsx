@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import {
     ChevronDown, ChevronUp, Settings, PlayCircle, Square,
-    Clock, List, BookOpen, VolumeX, Volume1, Volume2, User
+    Clock, List, BookOpen, VolumeX, Volume1, Volume2, User, Shield
 } from 'lucide-react';
 import { KOKORO_VOICES } from '../constants';
 import { AccountPanel } from './account/AccountPanel';
+import { AdminPanel } from './admin/AdminPanel';
 
 export default function Sidebar({
     theme,
@@ -51,6 +52,7 @@ export default function Sidebar({
     const VolumeIcon = volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
     const currentVoice = KOKORO_VOICES.find(v => v.id === selectedVoice);
     const [accountOpen, setAccountOpen] = useState(false);
+    const [adminOpen, setAdminOpen] = useState(false);
 
     return (
         <aside className={`
@@ -284,6 +286,25 @@ export default function Sidebar({
                         <AccountPanel theme={theme} apiHost={apiHost} apiPort={apiPort} user={user} onLogout={onLogout} />
                     </div>
                 </div>
+
+                {/* Admin (admins only) */}
+                {user?.role === 'admin' && (
+                    <div className={`border-b ${theme.borderSecondary}`}>
+                        <button
+                            onClick={() => setAdminOpen(v => !v)}
+                            className="w-full flex items-center justify-between p-4 cursor-pointer hover:opacity-80 transition-opacity"
+                        >
+                            <div className="flex items-center gap-2">
+                                <Shield size={14} className={theme.textMuted} />
+                                <h3 className={`text-[10px] font-black ${theme.textMuted} uppercase tracking-widest`}>Admin</h3>
+                            </div>
+                            {adminOpen ? <ChevronUp size={14} className={theme.textMuted} /> : <ChevronDown size={14} className={theme.textMuted} />}
+                        </button>
+                        <div className={`overflow-hidden transition-all duration-300 ease-in-out ${adminOpen ? 'max-h-[70vh] opacity-100' : 'max-h-0 opacity-0'}`}>
+                            <AdminPanel theme={theme} apiHost={apiHost} apiPort={apiPort} currentUserId={user.id} />
+                        </div>
+                    </div>
+                )}
 
                 {/* Reading Stats */}
                 {hasDocument && (
