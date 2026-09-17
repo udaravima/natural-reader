@@ -4,10 +4,31 @@
 
 ---
 
+## 2026-09-17 (final) — post-1.9.0 documentation completeness pass + admin-console spec
+
+**Branch:** `feat/model-router-gateway` · **Tests:** backend 143, frontend 163, lint clean (re-verified after docs-only changes) · docs only, no code touched.
+
+### What happened
+User asked: comprehensive, ordered, complete docs + test cases for **everything after tag v1.9.0** (auth + model routing), plus a proper **separate admin page** design (implementation NOT on this branch). Audit → three real gaps found and fixed:
+- **CHANGELOG `[Unreleased]` was missing the entire auth feature set** (only inference items were listed). Added: multi-user OIDC auth (JIT provisioning, sessions, PATs, ownership, admin mgmt, migrations 005/006), the local Keycloak rig (with the persistence semantics), security hardening — plus a **Breaking: every route now requires auth** entry under Changed.
+- **ARCHITECTURE.md had zero inference-gateway coverage.** Added: `inference.py` in § Routers (validated envelope, byte-faithful streaming, 429 pre-check + `_UsageTap`, fail-open), `model_router.py` + `inference_budget.py` in § Services, migration 007, the `callChat()`/source-switch rewrite of the `useChatEngine` row, `inferenceSource` persisted setting, ChatSidebar/InferenceSourceSelect/budget-meter components, updated "one chat turn" flow.
+- **deploy/README.md was stale**: said Keycloak uses "embedded store" (now the persistent `keycloak` schema in Postgres — with the fresh-volume-only init-script semantics + hand-create-schema command), said admin console password is `admin/admin` (bootstrap creds only apply on first volume init; user has since changed it), had no inference-gateway env vars, no offboarding warning. All fixed; added the live-verified Keycloak-deletion-doesn't-propagate note to the two-user walkthrough.
+
+### New docs
+- **`docs/superpowers/specs/2026-09-17-admin-console-design.md`** — the approved-in-principle design for the separate admin page, to be built on a future `feat/admin-console` branch. Covers: `viewMode: 'admin'` + shield entry with boot-time coercion for demoted admins, Users section (incl. **user deletion** with rails: no self/last-admin/seed-row deletes; delete = full wipe via existing cascades + PDF sweep), Inference usage dashboard, read-only deployment config endpoint, 17-item TDD test plan, rollout, open questions (soft-delete, CSV export, session visibility).
+- **`docs/TESTING.md`** — the post-1.9.0 test map: every test case in every file and what it asserts (verified against source, not from memory), test conventions (ASGITransport/MockTransport/`db_conn`/`stream_response`), integration seams, the manual/live-verification ledger (gateway scripted pass + Keycloak propagation matrix), and known gaps (no E2E, OIDC flow mocked at claims level, usage/budget UI + user deletion pending admin console).
+- **`docs/README.md`** — docs index: all ten docs in reading order with quick-routing pointers ("why can't this user log in?", "what env vars?", "which tests guard this?").
+
+### Next
+- **`feat/admin-console`** branch (spec above) after the gateway branch merges — the usage/budget endpoints it consumes are this branch's work.
+- The remaining browser click-through (dropdown/meter/toast/local-mode parity) — still open, unit-covered.
+- `startup.sh` has an uncommitted user edit (Keycloak wait 30→60 retries) — left alone on purpose.
+
+---
+
 ## 2026-09-17 (later still) — Keycloak↔app propagation live-verified; user guide written
 
 **Branch:** `feat/model-router-gateway` · docs + live verification only · **Tests:** unchanged (143/163, lint clean).
-
 ### The question
 Does creating/deleting a user in Keycloak propagate to the app? **Live-verified end-to-end** against the running rig (Postgres + Keycloak + backend auth-on + Vite), using the Keycloak Admin API + a full scripted OIDC login dance (curl through `/v1/auth/login` → KC form → `/v1/auth/callback` → `nr_session`). Results:
 - **Create in KC → nothing happens app-side until first login.** Verified: created `prop-test`, users table unchanged; after the login dance, the row appeared as `pending`/`member` with `oidc_sub` = the KC UUID (JIT provisioning).

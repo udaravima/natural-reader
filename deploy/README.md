@@ -2,8 +2,9 @@
 
 How to run the multi-user auth flow end to end against a real Keycloak, on your
 own machine. This is a **local-dev** rig — the Keycloak container runs in
-`start-dev` mode (embedded store, no TLS). Production hardening (external DB,
-TLS, a real reverse proxy) is sub-project **D**.
+`start-dev` mode (no TLS, bootstrap admin creds). Production hardening
+(external DB user, TLS, a real reverse proxy, dedicated Keycloak credentials)
+is sub-project **D**.
 
 > **Shortcut:** `./startup.sh up-with-dev-auth` automates steps 1–3 below — it
 > starts the Postgres/Keycloak/SearXNG containers, creates `.env` on first run
@@ -16,10 +17,19 @@ Files here:
 
 - `keycloak/realm-export.json` — a reproducible `natural-reader` realm (a
   confidential client with PKCE + one verified test user), imported on first
-  container start.
+  container start **only if the realm doesn't already exist**.
+- `postgres/init/00-create-keycloak-schema.sql` — creates the `keycloak`
+  schema Keycloak stores its realm in. Runs **only on a fresh Postgres data
+  volume** (`docker-entrypoint-initdb.d` semantics). On an already-initialized
+  volume it never runs — create the schema once by hand:
+  `psql ... -c 'CREATE SCHEMA IF NOT EXISTS keycloak'`.
+  Realm state persists across container recreation, so the users' OIDC `sub`
+  UUIDs — and the app's `users.oidc_sub` links — stay stable. (With the old
+  embedded H2 store, every recreation minted new `sub`s and returning users
+  got 409 "email already linked to another identity".)
 - `nginx/natural-reader.conf` — a **reference** nginx site (SPA + same-origin
-  `/v1`,`/api` proxy). You install it into your own nginx; nothing here edits
-  system files.
+  `/v1` proxy; NDJSON needs `proxy_buffering off`). You install it into your
+  own nginx; nothing here edits system files.
 
 ## The one thing that matters: same origin
 
@@ -52,7 +62,10 @@ curl -s http://localhost:18080/realms/natural-reader/.well-known/openid-configur
 ```
 
 Keycloak admin console (to add a second user later): <http://localhost:18080/admin>
-— log in with `admin` / `admin`.
+— fresh volumes bootstrap `admin` / `admin` (from `KC_BOOTSTRAP_ADMIN_*` in
+`docker-compose.yml`); **change the password on first visit** — the bootstrap
+value is not re-applied on later container starts, and your changed password
+persists in the `keycloak` schema like everything else.
 
 ## 2. Start the backend with OIDC enabled
 
@@ -67,8 +80,16 @@ export SESSION_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(4
 export COOKIE_SECURE=false                 # local http, no TLS
 export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
 export HOST=127.0.0.1
+# Optional — inference gateway tuning (see .env.example § Inference gateway):
+# export INFERENCE_MODELS="llama3.2:3b,gemma3:4b"   # unset = allow all (dev)
+# export INFERENCE_DAILY_TOKEN_BUDGET=100000        # unset/0 = unlimited
 .venv/bin/python run.py
 ```
+
+With auth on, chat goes through the authenticated gateway
+(`/v1/inference/*`) using the session cookie — see
+[docs/USER_GUIDE.md](../docs/USER_GUIDE.md) for the user-facing behavior and
+`../README.md` § Inference Gateway for the operator view.
 
 ## 3. Start the SPA
 
@@ -95,6 +116,13 @@ screen you need a **second** user.
 6. Open Sidebar → **Account** → create a **Personal Access Token**; copy it once
    (this is what the browser extension / scripts use as a `Bearer` token).
 7. **Log out** from the Account section → back to the login screen.
+
+> **Offboarding note (live-verified):** deleting a user in the Keycloak console
+> does **not** remove them from the app — their account stays active with any
+> tokens still working, and their email stays blocked for future Keycloak users
+> (409 "email already linked to another identity"). To remove someone:
+> **Disable them in the app's Admin section first** (that revokes sessions and
+> tokens), then delete in Keycloak. Details: [docs/IDENTITY_AND_ROLES.md](../docs/IDENTITY_AND_ROLES.md).
 
 ## Prod-like variant (nginx)
 

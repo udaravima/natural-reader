@@ -31,8 +31,37 @@ All notable changes to this project will be documented in this file.
   `GET /v1/admin/inference/usage`. Aborted streams are never accounted; budget
   checks fail open if Postgres is down — chat never dies with the DB.
   (migration `007_inference_budgets.sql`, [server/services/inference_budget.py](server/services/inference_budget.py))
+- **Multi-user auth (OIDC) + per-user data.** The backend is now multi-user:
+  OIDC login (`/v1/auth/login|callback|logout|me`, any discovery-based provider,
+  PKCE S256), JIT user provisioning (first login becomes the admin; others land
+  `pending` until an admin activates them), DB-backed browser sessions and
+  personal access tokens (`nrp_…`, sha256-at-rest, shown once — for the browser
+  extension and scripts), per-user ownership of documents and chat sessions
+  (other users' rows are 404s, not 403s), and admin user management
+  (activate/disable/role; disabling hard-revokes sessions). The SPA is gated
+  behind an auth screen per account state. Migrations `005`/`006`.
+  Deep-dive: [docs/IDENTITY_AND_ROLES.md](docs/IDENTITY_AND_ROLES.md); user guide:
+  [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+- **Local OIDC rig.** `./startup.sh up-with-dev-auth` runs a Keycloak container
+  (realm `natural-reader`, seeded from `deploy/keycloak/realm-export.json`)
+  whose realm state persists in the shared Postgres (schema `keycloak`,
+  created on first volume init via `deploy/postgres/init/` — survives container
+  recreation, so `sub` UUIDs and the app's `users.oidc_sub` links stay stable).
+  Walkthrough: [deploy/README.md](deploy/README.md).
+- **Security hardening** on the API surface: loopback-only default bind, strict
+  `doc_id` (sha256 hex) validation blocking path traversal, SSRF guard on the
+  web-search fetcher (public IPs only, re-checked per redirect hop), TTS request
+  size caps, and startup guards that refuse insecure auth configs on
+  non-loopback binds.
 
 ### Changed
+- **Breaking: every API route now requires authentication.** Pre-1.9.0 the
+  backend was open; now `/v1/*` (TTS, docs, chat sessions, tools, inference)
+  resolves a principal from the session cookie or a Bearer PAT and denies by
+  default. Deployments that relied on the open API must set `AUTH_ENABLED=false`
+  (loopback only) or provision tokens. The SPA is same-origin with the backend
+  (blank `apiHost`) — the only cookie-compatible setup; a stale `localhost`
+  value is migrated away on boot.
 - **nginx: delete the `/api/` block.** With the gateway live, Ollama becomes
   backend-only (loopback bind, nothing proxied). The reference configs
   (`deploy/nginx/natural-reader.conf`, `docs/chat.oraian.net.sample`) and the
