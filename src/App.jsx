@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Loader2 } from 'lucide-react';
 
 // Hooks
-import { usePersistedState } from './hooks/usePersistedState';
+import { usePersistedState, migratePersisted } from './hooks/usePersistedState';
 import { useMobileDetect } from './hooks/useMobileDetect';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useTheme } from './hooks/useTheme';
@@ -44,6 +44,14 @@ import KeyboardShortcutsModal from './components/overlays/KeyboardShortcutsModal
 import ReadSelectionButton from './components/overlays/ReadSelectionButton';
 
 export default function App() {
+  // One-time migration: 'localhost' was the pre-auth default apiHost, but every
+  // /v1 call now sends credentials — a cross-origin localhost:5173 →
+  // localhost:8000 fetch is always CORS-blocked (credentials + wildcard origin
+  // is rejected by browsers) and the OIDC session cookie only rides same-origin
+  // requests. Blank = same-origin (Vite dev proxy / reverse proxy), the
+  // supported setup. Must run before the usePersistedState hook reads the key.
+  migratePersisted('apiHost', 'localhost', '');
+
   // --- PERSISTED SETTINGS ---
   const [darkMode, setDarkMode] = usePersistedState('darkMode', false);
   const [volume, setVolume] = usePersistedState('volume', 1.0);
@@ -51,7 +59,7 @@ export default function App() {
   const [playbackSpeed, setPlaybackSpeed] = usePersistedState('playbackSpeed', 1.0);
   const [selectedVoice, setSelectedVoice] = usePersistedState('selectedVoice', 'af_heart');
   const [isLocalhost, setIsLocalhost] = usePersistedState('isLocalhost', true);
-  const [apiHost, setApiHost] = usePersistedState('apiHost', 'localhost');
+  const [apiHost, setApiHost] = usePersistedState('apiHost', '');
   const [apiPort, setApiPort] = usePersistedState('apiPort', '8000');
   const auth = useAuth(apiHost, apiPort);
   const [requestTimeout, setRequestTimeout] = usePersistedState('requestTimeout', 15);
