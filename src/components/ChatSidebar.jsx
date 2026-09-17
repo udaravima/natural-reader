@@ -17,6 +17,7 @@ export default function ChatSidebar({
     inferenceSource = 'server', setInferenceSource,
     selectedModel, setSelectedModel,
     availableModels,
+    inferenceBudget,
     reachable,
     refreshModels,
     // TTS preferences
@@ -147,6 +148,11 @@ export default function ChatSidebar({
                         {selectedModel && (
                             <p className={`text-[9px] ${theme.textMuted} px-1 flex items-center gap-1`}>
                                 <Bot size={10} /> Active: {selectedModel}
+                            </p>
+                        )}
+                        {inferenceSource === 'server' && inferenceBudget?.remaining_tokens != null && (
+                            <p className={`text-[9px] px-1 ${inferenceBudget.remaining_tokens === 0 ? 'text-red-400 font-bold' : theme.textMuted}`}>
+                                {inferenceBudget.remaining_tokens.toLocaleString()} tokens left today
                             </p>
                         )}
                     </div>

@@ -14,3 +14,22 @@ export function chatFetch(source, hosts, path, opts = {}) {
   }
   return fetch(buildApiUrl(hosts.ollamaHost, hosts.ollamaPort, path), opts);
 }
+
+// 429 from the gateway means the daily token budget is gone. Callers must
+// handle it BEFORE any 4xx retry chain — retries re-spend tokens.
+export async function budgetDetail(res) {
+  if (res.status !== 429) return null;
+  try {
+    const body = await res.json();
+    const detail = body?.detail;
+    return detail && typeof detail === 'object' ? detail : null;
+  } catch {
+    return null;
+  }
+}
+
+export function formatResetAt(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}

@@ -43,6 +43,7 @@ export default function ChatView({
   isStreaming,
   selectedModel,
   reachable,
+  inferenceBudget,
   sendMessage,
   stopStream,
   speakingMessageId,
@@ -208,7 +209,8 @@ export default function ChatView({
       pins.length > 0) &&
     !isStreaming &&
     !!selectedModel &&
-    reachable !== false;
+    reachable !== false &&
+    inferenceBudget?.remaining_tokens !== 0;
 
   const handleSend = () => {
     if (!canSend) return;

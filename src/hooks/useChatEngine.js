@@ -3,7 +3,7 @@ import { markdownToSpeech } from '../utils/markdownToSpeech';
 import { stripAttachmentData, formatAttachmentSize } from '../utils/attachment';
 import { makeSessionStore } from '../lib/sessionStore';
 import { executeToolCall, getToolDefinitions } from '../lib/chatTools';
-import { CHAT_PATH, MODELS_PATH, chatFetch } from '../lib/chatTransport';
+import { CHAT_PATH, MODELS_PATH, budgetDetail, chatFetch, formatResetAt } from '../lib/chatTransport';
 import { buildChatHistory, buildPinPreamble } from './chatHistory';
 import { addPin as addPinReducer, removePin as removePinReducer, MAX_PINS } from './pins';
 import { buildRequestFields, INFERENCE_DEFAULTS, truncationMessage } from './inference';
@@ -79,6 +79,9 @@ export function useChatEngine({
     pinsRef.current = pins;
     const [isStreaming, setIsStreaming] = useState(false);
     const [availableModels, setAvailableModels] = useState([]);
+    // Daily inference budget from the gateway (server mode only): null =
+    // unknown or unlimited; {remaining_tokens, reset_at} otherwise.
+    const [inferenceBudget, setInferenceBudget] = useState(null);
     const [reachable, setReachable] = useState(null); // null=unknown, true/false
     const [speakingMessageId, setSpeakingMessageId] = useState(null); // which assistant msg is being read aloud
 
@@ -110,17 +113,26 @@ export function useChatEngine({
     // Inference transport: server mode rides the authenticated /v1 gateway
     // (session cookie via apiFetch); local mode builds the same direct
     // browser→Ollama URLs as before (blank host = same-origin /api/*).
+    // A 429 is intercepted HERE, before the caller's think-level/tools retry
+    // chains — retrying an exhausted budget would only re-spend tokens.
     const chatHosts = { apiHost, apiPort, ollamaHost, ollamaPort };
-    const callChat = useCallback((body, signal) => chatFetch(
-        inferenceSource, chatHosts, CHAT_PATH[inferenceSource],
-        {
+    const callChat = useCallback(async (body, signal) => {
+        const res = await chatFetch(inferenceSource, chatHosts, CHAT_PATH[inferenceSource], {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
             signal,
-        },
+        });
+        const detail = await budgetDetail(res);
+        if (detail) {
+            setInferenceBudget(detail);
+            showToast?.(`Daily inference budget exhausted — resets at ${formatResetAt(detail.reset_at)}`, 6000);
+            logEvent('budget', 'daily token budget exhausted');
+            throw new Error('Daily inference budget exhausted');
+        }
+        return res;
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    ), [inferenceSource, apiHost, apiPort, ollamaHost, ollamaPort]);
+    }, [inferenceSource, apiHost, apiPort, ollamaHost, ollamaPort, showToast]);
 
     // Read latest values via refs so the playback loop and queued items pick up
     // voice/speed/volume changes for not-yet-fetched items without re-creating callbacks.
@@ -378,6 +390,9 @@ export function useChatEngine({
             const names = Array.isArray(data?.models) ? data.models.map(m => m.name) : [];
             setAvailableModels(names);
             setReachable(true);
+            // Budget rides along with the model list (server mode). Absent
+            // key = unlimited/unknown → null; local mode has no budget.
+            setInferenceBudget(inferenceSource === 'server' ? (data?.budget ?? null) : null);
         } catch (e) {
             console.warn('Ollama unreachable:', e.message);
             setAvailableModels([]);
@@ -818,6 +833,7 @@ export function useChatEngine({
         messages,
         isStreaming,
         availableModels,
+        inferenceBudget,
         reachable,
         sendMessage,
         stopStream,

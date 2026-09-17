@@ -228,6 +228,7 @@ export default function App() {
     messages: chatMessages,
     isStreaming: chatIsStreaming,
     availableModels,
+    inferenceBudget: chatInferenceBudget,
     reachable: ollamaReachable,
     sendMessage: chatSendMessage,
     stopStream: chatStopStream,
@@ -1121,6 +1122,7 @@ export default function App() {
             inferenceSource={inferenceSource} setInferenceSource={setInferenceSource}
             selectedModel={selectedModel} setSelectedModel={setSelectedModel}
             availableModels={availableModels}
+            inferenceBudget={chatInferenceBudget}
             reachable={ollamaReachable}
             refreshModels={refreshModels}
             chatTtsMode={chatTtsMode} setChatTtsMode={setChatTtsMode}
@@ -1184,6 +1186,7 @@ export default function App() {
             messages={chatMessages}
             isStreaming={chatIsStreaming}
             selectedModel={selectedModel}
+            inferenceBudget={chatInferenceBudget}
             reachable={ollamaReachable}
             sendMessage={chatSendMessage}
             stopStream={chatStopStream}
