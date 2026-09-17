@@ -1,4 +1,0 @@
-- generic [ref=e5]:
-  - heading "Natural Reader" [level=1] [ref=e6]
-  - paragraph [ref=e7]: Sign in to continue.
-  - button "Sign in" [ref=e8] [cursor=pointer]

@@ -41,3 +41,6 @@ data/
 .aider*
 .backups/
 deploy.sh
+
+# Playwright MCP session snapshots
+.playwright-mcp/
