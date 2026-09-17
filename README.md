@@ -198,10 +198,26 @@ Place both files in the project root directory.
 
 ### 3. Start the Servers
 
+> **Auth note:** since the multi-user OIDC work, the backend **enables
+> authentication by default** (`AUTH_ENABLED=true`, see `.env.example`). The two
+> `startup.sh` modes below pick the posture for you: `up` runs with the
+> single-user dev bypass (no login screen), `up-with-dev-auth` runs the full
+> local OIDC rig against a Keycloak container.
+
 ```bash
-# Terminal 1 — Start the Kokoro TTS backend (port 8000)
+# Terminal 1 — quick single-user dev (Postgres + SearXNG + TTS backend, auth off)
+./startup.sh up
+
+# Or, the full local OIDC rig (also starts Keycloak on :18080, creates .env on
+# first run with the local realm values + a generated SESSION_SECRET, waits for
+# the realm import, then runs the backend with auth on):
+./startup.sh up-with-dev-auth
+# → sign in at http://localhost:5173 as Keycloak user admin-user / password
+# Walkthrough (adding a second user, approval flow, PATs): deploy/README.md
+
+# Or, to run the backend manually (no containers, no chat persistence):
 python run.py
-# Or, to fan TTS / audiobook synthesis across CPU cores (one Kokoro model
+# To fan TTS / audiobook synthesis across CPU cores (one Kokoro model
 # loaded per worker — budget ~300–500 MB each on the ONNX-CPU build):
 #   WORKERS=4 python run.py
 # HOST and PORT env vars are also honoured.
@@ -209,6 +225,13 @@ python run.py
 # Terminal 2 — Start the frontend dev server (port 5173)
 npm run dev
 ```
+
+`up-with-dev-auth` sources `.env` (created from the local-dev rig values on
+first run — see `deploy/README.md`); edit it to change ports or point at a
+different IdP. `up` also reads `.env` but forces `AUTH_ENABLED=false` (the
+backend's startup guard allows this only on a loopback bind). Ctrl-C on either
+SIGTERMs the backend and stops the containers cleanly; `./startup.sh down` does
+the same without starting anything.
 
 Open **http://localhost:5173** in your browser.
 

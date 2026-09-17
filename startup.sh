@@ -4,8 +4,18 @@
 #
 #   ./startup.sh init [podman|docker]   Check prerequisites, set up venv + deps,
 #                                       download models, install + build frontend.
-#   ./startup.sh up                     Start Postgres + SearXNG + the TTS backend (run.py).
-#   ./startup.sh down                   SIGTERM the TTS backend, then stop Postgres.
+#   ./startup.sh up                     Start Postgres + SearXNG + the TTS backend
+#                                       (run.py) with auth DISABLED — quick
+#                                       single-user dev (loopback bind only).
+#   ./startup.sh up-with-dev-auth       Local OIDC rig: also starts Keycloak,
+#                                       creates .env on first run (local realm
+#                                       values + a generated SESSION_SECRET),
+#                                       waits for the realm import, then runs
+#                                       the backend with auth ENABLED.
+#                                       Walkthrough: deploy/README.md.
+#   ./startup.sh down                   SIGTERM the TTS backend, then stop all
+#                                       the containers (Postgres, SearXNG,
+#                                       Keycloak).
 #   ./startup.sh help                   Show usage.
 #
 # The container engine is resolved in this order: explicit arg to `init` →
@@ -23,8 +33,11 @@ readonly COMPOSE_FILE="docker-compose.yml"
 readonly VENV_DIR=".venv"
 readonly POSTGRES_SERVICE="postgres"
 readonly POSTGRES_USER="natural_reader"
+readonly KEYCLOAK_SERVICE="keycloak"
+readonly KEYCLOAK_DISCOVERY_URL="http://localhost:18080/realms/natural-reader/.well-known/openid-configuration"
 readonly ENGINE_STATE_FILE=".local/container-engine"  # .local/ is gitignored
 readonly RUNNER_PIDFILE=".local/runner.pid"           # PID of the run.py backend
+readonly ENV_FILE=".env"                              # gitignored; sourced for run.py
 
 readonly MODEL_BASE_URL="https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0"
 readonly MODEL_FILES=("kokoro-v1.0.onnx" "voices-v1.0.bin")
@@ -92,14 +105,26 @@ Commands:
   init [podman|docker]   Check prerequisites, create the Python venv, install
                          backend deps, download Kokoro models, install + build
                          the frontend. The engine choice is remembered.
-  up                     Start the Postgres + SearXNG containers and the TTS backend
-                         (run.py). Foreground; Ctrl-C SIGTERMs the backend cleanly.
-  down                   SIGTERM the TTS backend (if running) and stop Postgres.
+  up                     Start Postgres + SearXNG containers and the TTS backend
+                         (run.py) with auth DISABLED — quick single-user dev.
+                         Refuses to start if the backend port is already in use.
+                         Foreground; Ctrl-C SIGTERMs the backend cleanly.
+  up-with-dev-auth       Full local OIDC rig: starts Postgres + SearXNG +
+                         Keycloak, creates .env on first run (local realm values
+                         + generated SESSION_SECRET), waits for the realm
+                         import, then runs the backend with auth ENABLED.
+                         Log in at http://localhost:5173 as admin-user/password.
+                         Walkthrough: deploy/README.md.
+  down                   SIGTERM the TTS backend (if running) and stop all the
+                         containers (Postgres, SearXNG, Keycloak).
   help                   Show this message.
 
 Environment:
   CONTAINER_ENGINE       Override the container engine (podman|docker).
   WORKERS, HOST, PORT    Passed through to run.py (see run.py for details).
+  AUTH_ENABLED, OIDC_*   Read from .env when it exists (see .env.example);
+                         'up' overrides AUTH_ENABLED to false for the
+                         single-user dev bypass (loopback bind only).
 EOF
 }
 
@@ -136,14 +161,22 @@ resolve_engine() {
 # docker-compose (fails with "Not supported URL scheme http+docker") even when the
 # podman socket is fine. For docker, prefer the v2 plugin ("docker compose"). Both
 # fall back to the standalone "<engine>-compose" binary.
+#
+# Every podman invocation is wrapped in `env -u XDG_DATA_HOME`: under snap-podman
+# an exported XDG_DATA_HOME breaks podman's socket resolution and every compose
+# call fails. The unset is scoped to the invocation only.
 compose() {
 	local engine="$1"; shift
+	local -a prefix=()
+	if [[ "$engine" == "podman" ]]; then
+		prefix=(env -u XDG_DATA_HOME)
+	fi
 	if [[ "$engine" == "podman" ]] && command -v podman-compose >/dev/null 2>&1; then
-		podman-compose -f "$COMPOSE_FILE" "$@"
-	elif "$engine" compose version >/dev/null 2>&1; then
-		"$engine" compose -f "$COMPOSE_FILE" "$@"
+		"${prefix[@]}" podman-compose -f "$COMPOSE_FILE" "$@"
+	elif "${prefix[@]}" "$engine" compose version >/dev/null 2>&1; then
+		"${prefix[@]}" "$engine" compose -f "$COMPOSE_FILE" "$@"
 	elif command -v "${engine}-compose" >/dev/null 2>&1; then
-		"${engine}-compose" -f "$COMPOSE_FILE" "$@"
+		"${prefix[@]}" "${engine}-compose" -f "$COMPOSE_FILE" "$@"
 	else
 		die "No compose support for $engine (need '$engine compose' or '${engine}-compose')."
 	fi
@@ -220,6 +253,99 @@ ensure_searxng_config() {
 	fi
 }
 
+# Generate a URL-safe random secret. Comfortably exceeds the backend's 32-char
+# SESSION_SECRET minimum (server/auth/config.py:MIN_SESSION_SECRET_LEN).
+generate_secret() {
+	if command -v python3 >/dev/null 2>&1; then
+		python3 -c 'import secrets; print(secrets.token_urlsafe(48))'
+	elif command -v openssl >/dev/null 2>&1; then
+		openssl rand -base64 48
+	else
+		die "Need python3 or openssl to generate a SESSION_SECRET; add one to $ENV_FILE manually."
+	fi
+}
+
+# Create .env on first `up-with-dev-auth` with the local Keycloak rig values
+# (mirrors deploy/README.md; the realm's client secret and admin user come from
+# deploy/keycloak/realm-export.json). Idempotent — an existing .env is never
+# touched, so manual edits survive.
+ensure_env_file() {
+	[[ -f "$ENV_FILE" ]] && return 0
+	log "Creating $ENV_FILE with the local-dev OIDC rig values (first run)"
+	{
+		echo "# Created by ./startup.sh up-with-dev-auth — local-dev OIDC rig."
+		echo "# Full annotated reference: .env.example. This file is gitignored."
+		echo "# bash-sourced: one KEY=value per line, no inline comments."
+		echo "OIDC_ISSUER=http://localhost:18080/realms/natural-reader"
+		echo "OIDC_CLIENT_ID=natural-reader"
+		echo "OIDC_CLIENT_SECRET=natural-reader-dev-secret"
+		echo "OIDC_REDIRECT_URL=http://localhost:5173/v1/auth/callback"
+		printf 'SESSION_SECRET=%s\n' "$(generate_secret)"
+		echo "COOKIE_SECURE=false"
+		echo "BOOTSTRAP_ADMIN_EMAIL=admin@example.com"
+	} >"$ENV_FILE"
+}
+
+# Export every KEY=value in .env into this shell (and thus into run.py's
+# environment — the backend has no dotenv loader of its own). docker-compose
+# also reads .env natively for its \${VAR:-default} interpolations.
+load_env_file() {
+	[[ -f "$ENV_FILE" ]] || return 0
+	log "Loading $ENV_FILE"
+	set -a
+	# shellcheck disable=SC1091
+	source "$ENV_FILE"
+	set +a
+}
+
+# True if something is already listening on host:port (bash /dev/tcp probe —
+# no dependency on ss/lsof/nc).
+port_in_use() {
+	local host="$1" port="$2"
+	(exec 3<>"/dev/tcp/$host/$port") >/dev/null 2>&1
+}
+
+# Refuse to start a second backend on an occupied port. Without this, run.py
+# dies instantly with "address already in use", `wait` returns, the EXIT trap
+# tears the freshly-started containers down, and `up` exits looking like it
+# worked while the OLD backend (possibly with stale env) keeps serving.
+check_backend_port_free() {
+	local host="${HOST:-127.0.0.1}" port="${PORT:-8000}"
+	if [[ -f "$RUNNER_PIDFILE" ]] && kill -0 "$(cat "$RUNNER_PIDFILE")" 2>/dev/null; then
+		die "Backend already running (pid $(<"$RUNNER_PIDFILE")) — run '$0 down' first."
+	fi
+	# A bind on all interfaces is reachable via loopback; probe that.
+	[[ "$host" == "0.0.0.0" || "$host" == "::" ]] && host="127.0.0.1"
+	if port_in_use "$host" "$port"; then
+		die "Port $port is already in use (HOST=$host) — another backend is likely still running. Stop it ('$0 down', or kill the process) and retry."
+	fi
+}
+
+# Poll until Keycloak serves the realm's OIDC discovery document. The realm
+# import takes ~20–40s on first container start, and an early login attempt
+# against a half-up Keycloak fails confusingly. Warn-and-continue on timeout:
+# TTS still serves; /v1/auth/login just 503s until Keycloak is actually up.
+wait_for_keycloak() {
+	local retries=30 i=1 ok=0
+	log "Waiting for Keycloak realm import..."
+	for ((i = 1; i <= retries; i++)); do
+		if command -v curl >/dev/null 2>&1; then
+			curl -sf -o /dev/null "$KEYCLOAK_DISCOVERY_URL" && { ok=1; break; }
+		elif command -v wget >/dev/null 2>&1; then
+			wget -q -O /dev/null "$KEYCLOAK_DISCOVERY_URL" && { ok=1; break; }
+		else
+			warn "Neither curl nor wget found — skipping the Keycloak readiness check."
+			return 0
+		fi
+		sleep 2
+	done
+	if ((ok)); then
+		log "Keycloak realm is ready."
+	else
+		warn "Keycloak discovery not answering after $((retries * 2))s; login will 503 until it is up."
+	fi
+}
+
 cmd_init() {
 	local engine
 	engine="$(resolve_engine "${1:-}")"
@@ -270,17 +396,43 @@ cmd_init() {
 	log "Init complete. Run '$0 up' to start."
 }
 
+# Shared `up` implementation. $1 = "dev-auth" (Keycloak rig, auth on) or ""
+# (quick single-user dev, auth bypassed). Foreground: Ctrl-C SIGTERMs the
+# backend and brings the containers down via the EXIT trap.
 cmd_up() {
+	local mode="$1"
 	local engine
 	engine="$(resolve_engine)"
 
 	[[ -x "$VENV_DIR/bin/python" ]] || die "Python environment missing. Run '$0 init' first."
 
+	if [[ "$mode" == "dev-auth" ]]; then
+		ensure_env_file
+		load_env_file
+		if [[ -z "${OIDC_ISSUER:-}" ]]; then
+			warn "OIDC_ISSUER is not set — login will return 503. Check $ENV_FILE."
+		fi
+		log "Auth ENABLED (OIDC issuer: ${OIDC_ISSUER:-<unset>})"
+	else
+		load_env_file
+		# Quick single-user dev: explicit bypass of the OIDC flow. The backend's
+		# startup guard refuses this on a non-loopback bind (server/app.py), so
+		# it can never leak onto an exposed server.
+		AUTH_ENABLED=false
+		export AUTH_ENABLED
+		log "Auth DISABLED (single-user dev bypass; loopback bind only)"
+	fi
+
+	check_backend_port_free
 	ensure_searxng_config
 
-	log "Starting containers ($engine)"
-	compose "$engine" up -d
+	local -a services=("$POSTGRES_SERVICE" "searxng")
+	[[ "$mode" == "dev-auth" ]] && services+=("$KEYCLOAK_SERVICE")
+
+	log "Starting containers ($engine): ${services[*]}"
+	compose "$engine" up -d "${services[@]}"
 	wait_for_postgres "$engine"
+	[[ "$mode" == "dev-auth" ]] && wait_for_keycloak
 
 	log "Starting Neural Voice Server (run.py)"
 	mkdir -p "$(dirname "$RUNNER_PIDFILE")"
@@ -298,6 +450,12 @@ cmd_up() {
 	# `engine` no longer exists — a deferred `$engine` would then abort teardown
 	# under `set -u` ("engine: unbound variable").
 	trap "trap - INT TERM EXIT; stop_runner; log 'Stopping containers ($engine)'; compose $engine down" INT TERM EXIT
+	if [[ "$mode" == "dev-auth" ]]; then
+		log "Ready — sign in at http://localhost:5173 (Keycloak user: admin-user / password)"
+		log "Add a second user at http://localhost:18080/admin (admin/admin) to test the approval flow — see deploy/README.md"
+	else
+		log "Ready — frontend: npm run dev (then http://localhost:5173)"
+	fi
 	wait "$runner_pid"
 }
 
@@ -317,7 +475,8 @@ main() {
 
 	case "$command" in
 		init)               cmd_init "${1:-}" ;;
-		up)                 cmd_up ;;
+		up)                 cmd_up "" ;;
+		up-with-dev-auth)   cmd_up "dev-auth" ;;
 		down)               cmd_down ;;
 		help | -h | --help) usage ;;
 		*)                  usage >&2; die "Unknown command: $command" ;;

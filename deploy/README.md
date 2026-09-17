@@ -5,6 +5,13 @@ own machine. This is a **local-dev** rig — the Keycloak container runs in
 `start-dev` mode (embedded store, no TLS). Production hardening (external DB,
 TLS, a real reverse proxy) is sub-project **D**.
 
+> **Shortcut:** `./startup.sh up-with-dev-auth` automates steps 1–3 below — it
+> starts the Postgres/Keycloak/SearXNG containers, creates `.env` on first run
+> (the local realm values + a generated `SESSION_SECRET`), waits for the realm
+> import, and runs the backend with those vars. The manual walkthrough
+> explains what each step does and how to customize it. `./startup.sh up`
+> (without the auth rig) runs the backend with `AUTH_ENABLED=false` instead.
+
 Files here:
 
 - `keycloak/realm-export.json` — a reproducible `natural-reader` realm (a
