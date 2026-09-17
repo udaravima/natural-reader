@@ -19,7 +19,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from ..auth import deps
-from ..services import model_router
+from ..db import get_pool
+from ..services import inference_budget, model_router
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +99,39 @@ class ChatRequest(BaseModel):
     options: ChatOptions | None = None
 
 
+class _UsageTap:
+    """Scans the NDJSON stream for the final chunk's token counts WITHOUT
+    altering a single forwarded byte. Only a completed generation (done:true
+    seen) counts — aborted streams never account (spec §8 retry semantics)."""
+
+    def __init__(self) -> None:
+        self._buf = b""
+        self.usage: dict | None = None
+
+    def feed(self, chunk: bytes) -> None:
+        if self.usage is not None:
+            return
+        self._buf += chunk
+        while b"\n" in self._buf:
+            line, self._buf = self._buf.split(b"\n", 1)
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                continue
+            if payload.get("done"):
+                self.usage = {
+                    "prompt_eval_count": payload.get("prompt_eval_count"),
+                    "eval_count": payload.get("eval_count"),
+                }
+
+
 @router.get("/models")
 async def list_models(
     principal: deps.Principal = Depends(deps.get_current_user),
+    conn=Depends(deps.get_conn),
 ):
     cfg = model_router.get_config()
     try:
@@ -115,13 +146,22 @@ async def list_models(
     ]
     if cfg.allowed_models is not None:
         names = [n for n in names if n in cfg.allowed_models]
-    return {"models": names}
+    out = {"models": names}
+    try:
+        out["budget"] = await inference_budget.budget_state(
+            conn, principal.user_id, cfg.daily_token_budget
+        )
+    except Exception:
+        # Fail open — the model list must survive a Postgres outage.
+        logger.warning("Budget lookup failed (fail-open)", exc_info=True)
+    return out
 
 
 @router.post("/chat")
 async def chat(
     body: ChatRequest,
     principal: deps.Principal = Depends(deps.get_current_user),
+    conn=Depends(deps.get_conn),
 ):
     cfg = model_router.get_config()
     if not model_router.is_model_allowed(cfg, body.model):
@@ -129,6 +169,21 @@ async def chat(
             status_code=422,
             detail=f"Model '{body.model}' is not allowed on this deployment",
         )
+    # Pre-check (advisory): a 429 before any upstream call saves the tokens a
+    # doomed request would spend. Accounting of actuals happens after the
+    # stream completes, from the final chunk's real counts.
+    try:
+        if await inference_budget.over_budget(conn, principal.user_id, cfg.daily_token_budget):
+            state = await inference_budget.budget_state(
+                conn, principal.user_id, cfg.daily_token_budget
+            )
+            raise HTTPException(status_code=429, detail=state)
+    except HTTPException:
+        raise
+    except Exception:
+        # Fail open — chat must survive a Postgres outage (like session
+        # persistence: degrade, don't die).
+        logger.warning("Budget pre-check failed (fail-open)", exc_info=True)
 
     client = _get_client()
     req = client.build_request(
@@ -152,6 +207,8 @@ async def chat(
             content = {"detail": raw[:2000]}
         return JSONResponse(status_code=upstream.status_code, content=content)
 
+    tap = _UsageTap()
+
     async def _passthrough():
         # STREAMING TRAP: StreamingResponse consumes this generator AFTER the
         # handler returns — an `async with client.stream(...)` here would
@@ -159,8 +216,26 @@ async def chat(
         # when the last byte has gone out (or the client hung up).
         try:
             async for chunk in upstream.aiter_raw():
+                tap.feed(chunk)
                 yield chunk
         finally:
             await upstream.aclose()
+            if tap.usage is not None:
+                # The handler's get_conn context is long closed by now — open
+                # a fresh pooled connection. A DB failure here only loses
+                # accounting, never the chat.
+                try:
+                    pool = get_pool()
+                    async with pool.connection() as conn2:
+                        await inference_budget.record_usage(
+                            conn2,
+                            principal.user_id,
+                            tap.usage["prompt_eval_count"] or 0,
+                            tap.usage["eval_count"] or 0,
+                        )
+                except Exception:
+                    logger.warning(
+                        "Usage accounting failed (fail-open)", exc_info=True
+                    )
 
     return StreamingResponse(_passthrough(), media_type="application/x-ndjson")

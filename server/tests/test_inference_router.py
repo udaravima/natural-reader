@@ -63,6 +63,12 @@ def upstream():
 async def app(db_conn, upstream):
     application = FastAPI()
     application.include_router(inf.router)
+    # The gateway's budget lookups need a conn — hand it the transactional
+    # test connection everywhere (individual tests may re-override).
+    async def _conn():
+        yield db_conn
+
+    application.dependency_overrides[deps.get_conn] = _conn
     await inf.start_client(transport=upstream["transport"])
     yield application
     await inf.stop_client()
@@ -206,3 +212,144 @@ async def test_chat_upstream_down_is_502(client, upstream):
         raise httpx.ConnectError("nope")
     upstream["handler"] = boom
     assert (await client.post("/v1/inference/chat", json=VALID_BODY)).status_code == 502
+
+
+# ---- Budgets (E3) ----
+
+class _PoolShim:
+    """Routes the router's post-stream accounting at the transactional test
+    connection (same pattern as test_docs_authz.py)."""
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def connection(self):
+        conn = self._conn
+
+        class _Ctx:
+            async def __aenter__(self):
+                return conn
+
+            async def __aexit__(self, *a):
+                return False
+
+        return _Ctx()
+
+
+async def _authed_db_client(app, db_conn):
+    """A client whose principal is a REAL users row (the inference_usage FK
+    requires it) and whose get_conn is the transactional test connection."""
+    from server.auth.users import resolve_or_provision_user
+
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="inf", email="inf@x.io")
+    app.dependency_overrides[deps.get_current_user] = lambda: deps.Principal(
+        user_id=u["id"], email=u["email"], role="member"
+    )
+
+    async def _conn():
+        yield db_conn
+
+    app.dependency_overrides[deps.get_conn] = _conn
+    return u["id"], httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t")
+
+
+async def test_chat_429_when_over_budget(db_conn, app, monkeypatch):
+    from server.services import inference_budget as ib
+
+    monkeypatch.setenv("INFERENCE_DAILY_TOKEN_BUDGET", "100")
+    uid, client = await _authed_db_client(app, db_conn)
+    await ib.record_usage(db_conn, uid, 100, 0)  # exhaust it
+
+    async with client:
+        r = await client.post("/v1/inference/chat", json=VALID_BODY)
+    assert r.status_code == 429
+    detail = r.json()["detail"]
+    assert detail["remaining_tokens"] == 0
+    assert detail["reset_at"].endswith("Z")
+
+
+async def test_chat_allowed_when_under_budget(db_conn, app, upstream, monkeypatch):
+    from server.services import inference_budget as ib
+
+    monkeypatch.setenv("INFERENCE_DAILY_TOKEN_BUDGET", "100000")
+    uid, client = await _authed_db_client(app, db_conn)
+    await ib.record_usage(db_conn, uid, 10, 5)
+
+    upstream["handler"] = lambda r: stream_response()
+    async with client:
+        r = await client.post("/v1/inference/chat", json=VALID_BODY)
+    assert r.status_code == 200
+
+
+async def test_models_includes_budget(db_conn, app, monkeypatch):
+    monkeypatch.setenv("INFERENCE_DAILY_TOKEN_BUDGET", "1000")
+    uid, client = await _authed_db_client(app, db_conn)
+
+    async with client:
+        r = await client.get("/v1/inference/models")
+    assert r.status_code == 200
+    assert r.json()["budget"]["remaining_tokens"] == 1000
+
+
+async def test_models_budget_absent_when_unlimited(db_conn, app, monkeypatch):
+    monkeypatch.delenv("INFERENCE_DAILY_TOKEN_BUDGET", raising=False)
+    uid, client = await _authed_db_client(app, db_conn)
+
+    async with client:
+        body = (await client.get("/v1/inference/models")).json()
+    assert body["budget"]["remaining_tokens"] is None
+
+
+async def test_stream_accounts_usage_from_final_chunk(db_conn, app, upstream, monkeypatch):
+    from server.services import inference_budget as ib
+
+    monkeypatch.setattr(inf, "get_pool", lambda: _PoolShim(db_conn))
+    uid, client = await _authed_db_client(app, db_conn)
+    upstream["handler"] = lambda r: stream_response()
+
+    async with client:
+        r = await client.post("/v1/inference/chat", json=VALID_BODY)
+    assert r.status_code == 200
+    assert await ib.spent_today(db_conn, uid) == (10, 5)
+
+
+async def test_aborted_stream_does_not_account(db_conn, app, upstream, monkeypatch):
+    from server.services import inference_budget as ib
+
+    monkeypatch.setattr(inf, "get_pool", lambda: _PoolShim(db_conn))
+    uid, client = await _authed_db_client(app, db_conn)
+    # No done:true chunk — a stream the client (or Ollama) cut short.
+    upstream["handler"] = lambda r: stream_response(
+        b'{"model":"m","message":{"role":"assistant","content":"Hel"}}\n')
+
+    async with client:
+        await client.post("/v1/inference/chat", json=VALID_BODY)
+    assert await ib.spent_today(db_conn, uid) == (0, 0)
+
+
+async def test_budget_pre_check_failure_fails_open(db_conn, app, upstream, monkeypatch):
+    async def boom(conn, user_id, budget):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(inf.inference_budget, "over_budget", boom)
+    uid, client = await _authed_db_client(app, db_conn)
+    upstream["handler"] = lambda r: stream_response()
+
+    async with client:
+        r = await client.post("/v1/inference/chat", json=VALID_BODY)
+    assert r.status_code == 200
+
+
+def test_usage_tap_handles_split_lines_and_stops_at_done():
+    tap = inf._UsageTap()
+    tap.feed(b'{"model":"m","message":{"content":"He"}')
+    tap.feed(b'"}\n{"done":true,"prompt_eval_count":7,"eval_count":3}\n')
+    # Everything after the final chunk is ignored — no double capture.
+    tap.feed(b'{"done":true,"prompt_eval_count":999,"eval_count":999}\n')
+    assert tap.usage == {"prompt_eval_count": 7, "eval_count": 3}
+
+
+def test_usage_tap_ignores_unparsable_lines():
+    tap = inf._UsageTap()
+    tap.feed(b'not json\n{"done":true,"prompt_eval_count":1,"eval_count":2}\n')
+    assert tap.usage == {"prompt_eval_count": 1, "eval_count": 2}
