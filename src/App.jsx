@@ -51,6 +51,9 @@ export default function App() {
   // requests. Blank = same-origin (Vite dev proxy / reverse proxy), the
   // supported setup. Must run before the usePersistedState hook reads the key.
   migratePersisted('apiHost', 'localhost', '');
+  // Same trap, different spelling: '127.0.0.1' is also a cross-origin host for
+  // the cookie (localhost ≠ 127.0.0.1), so it needs the same rewrite.
+  migratePersisted('apiHost', '127.0.0.1', '');
 
   // --- PERSISTED SETTINGS ---
   const [darkMode, setDarkMode] = usePersistedState('darkMode', false);
