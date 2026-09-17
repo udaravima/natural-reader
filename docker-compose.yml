@@ -35,5 +35,26 @@ services:
       SEARXNG_BASE_URL: http://localhost:18043/
     restart: unless-stopped
 
+  # Local-dev OIDC identity provider. NOT production: start-dev uses an embedded
+  # store and no TLS (production Keycloak — external DB, TLS, HA — is sub-project
+  # D). Imports the checked-in realm on first start.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: natural-reader-keycloak
+    command: ["start-dev", "--import-realm", "--http-port=8080"]
+    environment:
+      # Console bootstrap admin (Keycloak's own admin UI at :18080/admin).
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    ports:
+      # Non-default host port (18080) — Keycloak's default 8080 is avoided. Both
+      # the browser (redirect) and the backend (discovery/token exchange) use
+      # this exact URL, so they agree on the issuer. Bound to 127.0.0.1 for local
+      # dev; a real deployment fronts Keycloak with a proper hostname + TLS (D).
+      - "127.0.0.1:18080:8080"
+    volumes:
+      - ./deploy/keycloak:/opt/keycloak/data/import:ro
+    restart: unless-stopped
+
 volumes:
   pgdata:
