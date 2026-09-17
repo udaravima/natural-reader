@@ -112,6 +112,13 @@ Notes:
   hidden on your own row) — that's a lockout guard in the UI.
 - New users appear here automatically, as `pending`, the first time they log
   in.
+- **Offboarding order matters.** To remove someone: click **Disable here
+  first** — that signs them out everywhere and blocks their tokens — and only
+  then delete them in the login system (Keycloak), if that's how you manage
+  accounts. Deleting them in Keycloak *alone* does **not** remove them here:
+  their account stays active, any already-issued tokens keep working, and that
+  email address becomes permanently unusable (a new account with the same
+  email will be rejected with "email already linked to another identity").
 - Roles are managed **here, not in the login system** — your organization's
   login (Keycloak) only verifies who you are; whether you're an admin is a
   fact this application owns.
@@ -166,6 +173,20 @@ No. The server stores only a fingerprint. Lost token = revoke + create.
 **My colleague can't log in and sees "waiting for approval".**
 That's the `pending` state every brand-new account starts in. An admin must
 click **Activate** in the Admin section.
+
+**I created a user in Keycloak but they don't show in the list.**
+Expected — user *creation* only happens in your login system; the app first
+hears about a user when they **log in for the first time** (then they show up
+as pending, waiting for activation).
+
+**I deleted a user in Keycloak but they're still in the list — and a re-hire
+with the same email can't log in.**
+Deleting in the login system removes their ability to *log in*, but their app
+account — documents, tokens, and all — remains, and their email stays locked
+to it. To properly offboard: **Disable** them in the Admin section first
+(kills their sessions and tokens), then delete in Keycloak. To free the email
+for a future user, the old app row must be removed by an operator
+(database-level today; an admin-side "delete user" UI is a planned follow-up).
 
 **I was made admin but don't see the Admin section.**
 Reload the page — the app refreshes your role when it re-checks your account.

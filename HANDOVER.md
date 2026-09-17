@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-09-17 (later still) — Keycloak↔app propagation live-verified; user guide written
+
+**Branch:** `feat/model-router-gateway` · docs + live verification only · **Tests:** unchanged (143/163, lint clean).
+
+### The question
+Does creating/deleting a user in Keycloak propagate to the app? **Live-verified end-to-end** against the running rig (Postgres + Keycloak + backend auth-on + Vite), using the Keycloak Admin API + a full scripted OIDC login dance (curl through `/v1/auth/login` → KC form → `/v1/auth/callback` → `nr_session`). Results:
+- **Create in KC → nothing happens app-side until first login.** Verified: created `prop-test`, users table unchanged; after the login dance, the row appeared as `pending`/`member` with `oidc_sub` = the KC UUID (JIT provisioning).
+- **Delete in KC → NOTHING propagates.** Verified: row stayed `active`, and the user's **existing session still worked** (`/v1/auth/me` 200 after KC deletion — the app never re-checks the IdP).
+- **The email trap is real:** a second KC user with the same email got **409 "email already linked to another identity"** at login. And the dev DB already contained a **real orphan of this class**: `aakash.n@…` is `active` in the app but has no Keycloak identity at all (its sub has no `user_entity` row) — this is what happens when KC deletion happens without app-side disable, or a leftover from the H2-era store.
+- **Correct offboarding order: disable in the app first (hard-revokes sessions), then delete in Keycloak.** Documented in IDENTITY_AND_ROLES.md + USER_GUIDE.md.
+
+### Also this session
+- `docs/USER_GUIDE.md` — end-user guide (sign-in states, PATs & why they exist — "tokens are on the Account panel, not Admin", admin buttons, Server/Local source, budget meter/429/UTC-midnight, FAQ). Linked from README.
+- Test artifacts cleaned up: prop-test + prop-test2 removed from both stores (KC natural-reader realm back to just `udara.v`; app back to 2 rows).
+- Notes for replaying the dance: Keycloak's login form `action` URL needs `&amp;` → `&` unescaping; header matching must be case-insensitive (`Location:` from KC vs `location:` from uvicorn); form session codes are one-time — the whole login dance must run in one shot; KC Admin API access tokens expire in ~60s; Admin-API-created users hit `VERIFY_PROFILE` unless `firstName`/`lastName` are set. Master-realm admin password is not the bootstrap `admin/admin` (user-changed).
+
+### Next (unchanged from below, plus)
+- Admin-side **user deletion** (to free blocked emails / clean orphans) is now a motivated follow-up alongside the `viewMode: 'admin'` panel.
+
+---
+
 ## 2026-09-17 (later) — identity deep-dive doc + gateway live verification on `feat/model-router-gateway`
 
 **Branch:** `feat/model-router-gateway` · **Tests:** backend 143, frontend 163, lint clean · **Working tree:** docs only.

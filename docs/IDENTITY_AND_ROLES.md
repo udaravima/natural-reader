@@ -41,8 +41,17 @@ Consequences worth holding onto:
 - **Deleting a user in Keycloak does not delete the app row.** The app row
   (with all owned documents) goes orphan-but-intact; the identity can never log
   in again until a Keycloak user with the same `sub` exists again (practically:
-  never). Disabling the account in the *app* (`status='disabled'`) is the
-  supported kill switch.
+  never). Two consequences were **live-verified** on the dev rig (2026-09-17,
+  see HANDOVER): the deleted user's **existing app sessions and PATs remain
+  valid** — Keycloak deletion revokes nothing app-side, because the app never
+  re-checks with the IdP — and the orphaned row's **email is permanently
+  blocked**: a *new* Keycloak user with the same email gets **409 "email
+  already linked to another identity"** at login (branch 2 of the resolver).
+  Correct order of operations: **disable the user in the app first**
+  (`status='disabled'` — hard-revokes sessions), *then* delete in Keycloak if
+  desired. Creating a user in Keycloak, by contrast, is safe but invisible to
+  the app until that user's **first login** (JIT provisioning, `pending`
+  member).
 - **`users.email` is a cache, not a key.** It is refreshed from the IdP claims on
   every login of a known identity. The uniqueness constraint on it exists for
   the pre-provisioning flow (below), not because email identifies the user —
