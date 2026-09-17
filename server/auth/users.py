@@ -7,7 +7,10 @@ from typing import Any
 
 SEED_ADMIN_ID = "00000000-0000-0000-0000-000000000001"
 
-_KEYS = ["id", "email", "display_name", "role", "status", "oidc_iss", "oidc_sub"]
+_KEYS = [
+    "id", "email", "display_name", "role", "status", "oidc_iss", "oidc_sub",
+    "inference_daily_token_budget",
+]
 _COLS = ", ".join(_KEYS)
 
 
@@ -42,6 +45,15 @@ async def set_status(conn, user_id: str, status: str) -> None:
 async def set_role(conn, user_id: str, role: str) -> None:
     await conn.execute(
         "UPDATE users SET role=%s, updated_at=now() WHERE id=%s", (role, user_id)
+    )
+
+
+async def set_inference_budget(conn, user_id: str, budget: int | None) -> None:
+    """Daily inference token budget. NULL = deployment default; 0 = unlimited."""
+    await conn.execute(
+        "UPDATE users SET inference_daily_token_budget=%s, updated_at=now() "
+        "WHERE id=%s",
+        (budget, user_id),
     )
 
 
