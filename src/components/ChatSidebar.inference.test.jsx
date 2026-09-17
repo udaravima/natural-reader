@@ -62,6 +62,18 @@ describe('ChatSidebar inference controls', () => {
         expect(setInference).toHaveBeenCalledWith({ numCtx: null });
     });
 
+    // qwen3.5's native window is 262144 — a user whose prompt exceeds 32k
+    // used to read "raise the context window" advice with no preset to pick.
+    it('offers a 65536 context preset and stores it numerically', () => {
+        const setInference = vi.fn();
+        render(<ChatSidebar {...baseProps({ setInference })} />);
+        openSettings();
+        const select = screen.getByLabelText('Context window');
+        expect(select).toHaveValue('auto');
+        fireEvent.change(select, { target: { value: '65536' } });
+        expect(setInference).toHaveBeenCalledWith({ numCtx: 65536 });
+    });
+
     it('stores keep_alive Always as -1', () => {
         const setInference = vi.fn();
         render(<ChatSidebar {...baseProps({ setInference })} />);

@@ -216,7 +216,7 @@ export default function App() {
   const currentDocIndexEntry = currentDocId ? docIndexByDocId[currentDocId] : null;
   const chatEngine = useChatEngine({
     ollamaHost, ollamaPort, inferenceSource, selectedModel,
-    chatTtsMode, chatAutoTts, inference,
+    chatTtsMode, chatAutoTts, inference, onInferencePersist: setInference,
     isLocalhost, selectedVoice, playbackSpeed, requestTimeout,
     apiHost, apiPort,
     currentDocId, currentDocIndexState: currentDocIndexEntry?.state || null,

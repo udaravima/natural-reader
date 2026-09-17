@@ -44,6 +44,7 @@ export function useChatEngine({
     chatTtsMode,        // 'streaming' | 'after-complete'
     chatAutoTts,        // bool — disables TTS entirely
     inference = INFERENCE_DEFAULTS,  // per-model settings → think / keep_alive / options
+    onInferencePersist,  // optional (patch) => void — persists a settings patch when the engine self-heals
     isLocalhost,        // bool — true means use Kokoro, false means Web Speech fallback
     selectedVoice,
     playbackSpeed,
@@ -663,11 +664,16 @@ export function useChatEngine({
             const usedLevel = !['off', 'on'].includes(inferenceForThisMsg.think);
             if (!res.ok && usedLevel && res.status >= 400 && res.status < 500) {
                 console.warn(`Ollama returned ${res.status} for think:"${inferenceForThisMsg.think}" — retrying with think:true.`);
+                // Self-heal: persist the downgrade so the sidebar stops claiming
+                // the rejected level is active and the model stops paying a
+                // wasted round-trip on every message. Without this the fallback
+                // repeats forever, silently.
+                onInferencePersist?.({ think: 'on' });
                 if (!thinkLevelFallbackToastedRef.current) {
                     thinkLevelFallbackToastedRef.current = true;
-                    showToast?.('This model rejected the thinking level — used plain thinking instead.', 4000);
+                    showToast?.('This model rejected the thinking level — switched it to plain thinking for this model.', 4000);
                 }
-                logEvent('think-fallback', `model rejected think level "${inferenceForThisMsg.think}" (HTTP ${res.status})`);
+                logEvent('think-fallback', `model rejected think level "${inferenceForThisMsg.think}" (HTTP ${res.status}); persisted think:"on"`);
                 res = await callChat(
                     tools.length > 0 ? buildBody({ tools }, { think: 'on' }) : buildBody({}, { think: 'on' }),
                     controller.signal,
@@ -825,7 +831,7 @@ export function useChatEngine({
             }).catch(err => console.error('Session save failed:', err));
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, inference, ollamaHost, ollamaPort, apiHost, apiPort, callChat, currentDocId, currentDocIndexState, flushBufferedSentences, enqueueTts, logEvent, saveActiveSession]);
+    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, inference, onInferencePersist, ollamaHost, ollamaPort, apiHost, apiPort, callChat, currentDocId, currentDocIndexState, flushBufferedSentences, enqueueTts, logEvent, saveActiveSession]);
 
     const activeSession = sessions.find(s => s.id === activeSessionId) || null;
 
