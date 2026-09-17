@@ -10,6 +10,7 @@ import { usePdfEngine } from './hooks/usePdfEngine';
 import { useTtsEngine } from './hooks/useTtsEngine';
 import { useChatEngine } from './hooks/useChatEngine';
 import { useAuth } from './hooks/useAuth';
+import { useViewModeGuard } from './hooks/useViewModeGuard';
 import { makePin } from './hooks/pins';
 
 // Constants
@@ -32,6 +33,7 @@ import { AuthGate } from './components/auth/AuthGate';
 import PdfViewer from './components/PdfViewer';
 import ChatView from './components/ChatView';
 import ChatSidebar from './components/ChatSidebar';
+import { AdminConsole } from './components/admin/AdminConsole';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
 import DistractionFreeBar from './components/DistractionFreeBar';
@@ -189,6 +191,12 @@ export default function App() {
   } = pdfEngine;
 
   const inChat = viewMode === 'chat';
+  const inAdmin = viewMode === 'admin';
+
+  // Boot coercion (admin-console spec §3): a persisted viewMode 'admin' is
+  // only valid for an actual admin. Waits for the auth probe to resolve so a
+  // loading admin isn't bounced before /v1/auth/me answers.
+  useViewModeGuard({ viewMode, setViewMode, authState: auth.state, role: auth.user?.role });
 
   const ttsEngine = useTtsEngine({
     textItems, currentSentenceIndex, setCurrentSentenceIndex,
@@ -197,7 +205,7 @@ export default function App() {
     apiHost, apiPort, requestTimeout, unlimitedBatchTimeout,
     backendAvailable, pdfFileName,
     setStatus, showToast,
-    enabled: !inChat,
+    enabled: !inChat && !inAdmin,
   });
 
   const {
@@ -330,15 +338,15 @@ export default function App() {
   // out at the window level so the reader's DragOverlay never appears and the
   // file isn't routed through processFile() (which expects PDF/TXT).
   const handleDragOver = (e) => {
-    if (inChat) return;
+    if (inChat || inAdmin) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(true);
   };
   const handleDragLeave = (e) => {
-    if (inChat) return;
+    if (inChat || inAdmin) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
   };
   const handleDrop = (e) => {
-    if (inChat) return;
+    if (inChat || inAdmin) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
     const files = e.dataTransfer.files;
     if (files.length === 0) return;
@@ -1072,6 +1080,7 @@ export default function App() {
           darkMode={darkMode}
           hasDocument={hasDocument}
           viewMode={viewMode} setViewMode={setViewMode}
+          isAdmin={auth.user?.role === 'admin'}
           status={status}
           isPlaying={isPlaying}
           isLocalhost={isLocalhost} setIsLocalhost={setIsLocalhost}
@@ -1138,7 +1147,7 @@ export default function App() {
             deleteSession={chatDeleteSession}
             renameSession={chatRenameSession}
           />
-        ) : (
+        ) : inAdmin ? null : (
         <Sidebar
           theme={theme}
           darkMode={darkMode}
@@ -1200,6 +1209,20 @@ export default function App() {
             onRemovePin={chatRemovePin}
             numCtx={inference.numCtx}
           />
+        ) : inAdmin ? (
+          // Mount gate: the console renders nothing when the current user
+          // isn't an admin — hiding is cosmetic, server rails are the
+          // boundary, and the guard hook flips viewMode back to reader.
+          auth.user?.role === 'admin' && (
+            <AdminConsole
+              theme={theme}
+              apiHost={apiHost}
+              apiPort={apiPort}
+              currentUserId={auth.user.id}
+              onBack={() => setViewMode('reader')}
+              showToast={showToast}
+            />
+          )
         ) : (
         <WorkspaceProvider workspace={workspace} initialPath={workspaceEntryPath} onOpenDoc={onOpenDoc} onMissing={(path) => showToast(`"${path}" isn't in this folder`, 3000)}>
           <PdfViewer
@@ -1264,7 +1287,7 @@ export default function App() {
         <MobileBottomNav
           theme={theme}
           effectiveIsMobile={effectiveIsMobile}
-          hasDocument={hasDocument && !inChat}
+          hasDocument={hasDocument && !inChat && !inAdmin}
           currentPage={currentPage} setCurrentPage={setCurrentPage}
           numPages={numPages}
           currentSentenceIndex={currentSentenceIndex}
