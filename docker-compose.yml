@@ -13,6 +13,9 @@ services:
       - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Runs only on a FRESH data volume (docker-entrypoint-initdb.d semantics):
+      # prepares the schema Keycloak stores its realm in.
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U natural_reader"]
       interval: 5s
@@ -35,17 +38,30 @@ services:
       SEARXNG_BASE_URL: http://localhost:18043/
     restart: unless-stopped
 
-  # Local-dev OIDC identity provider. NOT production: start-dev uses an embedded
-  # store and no TLS (production Keycloak — external DB, TLS, HA — is sub-project
-  # D). Imports the checked-in realm on first start.
+  # Local-dev OIDC identity provider. NOT production: start-dev runs without
+  # TLS and ships bootstrap admin creds (production Keycloak — TLS, HA, dedicated
+  # DB credentials — is sub-project D). Realm state lives in the shared Postgres
+  # (schema "keycloak", created by deploy/postgres/init/) so identities — and
+  # their oidc sub UUIDs — survive container recreation. --import-realm only
+  # seeds the realm when it does not already exist. With the old embedded H2 the
+  # store died with the container and every recreate minted NEW sub UUIDs,
+  # desyncing the app's users.oidc_sub rows (409 "email already linked to
+  # another identity").
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
     container_name: natural-reader-keycloak
     command: ["start-dev", "--import-realm", "--http-port=8080"]
+    depends_on:
+      - postgres
     environment:
       # Console bootstrap admin (Keycloak's own admin UI at :18080/admin).
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
       KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/natural_reader
+      KC_DB_USERNAME: natural_reader
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-natural_reader}
+      KC_DB_SCHEMA: keycloak
     ports:
       # Non-default host port (18080) — Keycloak's default 8080 is avoided. Both
       # the browser (redirect) and the backend (discovery/token exchange) use
