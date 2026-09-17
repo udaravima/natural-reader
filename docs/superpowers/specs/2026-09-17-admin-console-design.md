@@ -38,6 +38,13 @@ gaps have no UI at all:
   by every admin, invisible to members.
 - **User management**: list, search/filter, activate, disable, role toggle
   (parity with today's AdminPanel) **plus delete** with safety rails.
+- **User enrollment**: admins create a **pre-provisioned** account (email,
+  display name, role, budget, status) that waits `oidc_sub NULL` until its
+  owner's first login claims it via verified email (resolver branch 2 — this
+  path already exists and is tested; the console just makes it creatable).
+  This is the app-native answer to "things we can't do in the Keycloak
+  console": onboarding decisions (role, budget, activation) become app-side
+  and *precede* the login instead of racing it.
 - **Inference governance**: per-user budget edit (respecting the PATCH's
   `exclude_unset` semantics) and the usage dashboard (N days × per-user rows).
 - **Read-only deployment info**: the effective model-router config (allowlist,
@@ -50,8 +57,17 @@ gaps have no UI at all:
 
 - Per-role member pages (members have no capability differences; nothing to
   build).
-- Keycloak management (creating IdP users stays in the IdP's console; the app
-  remains discovery-based and IdP-agnostic).
+- **Creating IdP users from the app** (calling Keycloak's Admin API). The app
+  stays discovery-based and IdP-agnostic; enrollment here is *account*
+  pre-provisioning, not credential creation. If one-click "also make the
+  Keycloak user" is wanted later, it goes behind a Keycloak-specific feature
+  flag (see §9).
+- **Keycloak→app sync** (webhooks, admin-event listeners, scheduled
+  reconciliation). Rejected deliberately: it couples the app to one IdP's
+  proprietary API, needs long-lived admin credentials in the backend, and
+  replaces a *policy* problem with a *drift* problem. The propagation rules
+  are solved by tooling + order-of-operations (§ User lifecycle), not by
+  mirroring.
 - Audit log, invitations, email flows, granular permissions beyond
   admin/member.
 
@@ -87,12 +103,21 @@ gaps have no UI at all:
 
 - Row per user: email · `role/status` · created date; inline actions
   **Activate / Disable / Make admin|member / Delete** (self-row hides Disable,
-  Demote, and Delete — extending today's lockout guard).
+  Demote, and Delete — extending today's lockout guard). Unlinked
+  pre-provisioned rows show an **"awaiting first login"** badge (distinguish
+  them from linked-but-pending).
 - **Budget field** per user: empty = deployment default (rendered as a
   placeholder), `0` = unlimited, number = tokens/day. PATCH semantics: the
   field is **omitted** from the request when untouched (never serialized as
   `null` by accident — `null` explicitly clears). UI hint text must say
   "empty = default, 0 = unlimited".
+- **Enroll form** (new, top of the section): email (required), display name,
+  role (default member), status (default pending), budget (default unset) →
+  `POST /v1/admin/users`. Result: a pre-provisioned row with `oidc_sub NULL`.
+  The console tells the admin the remaining step: *"have the user log in with
+  this exact (verified) email"* — the login claims the row and inherits the
+  chosen role/status/budget (resolver branch 2 preserves them; only
+  `oidc_iss/oidc_sub/display_name` are filled in).
 - **Delete flow** (new): a confirm step requiring the email to be typed
   (destructive-action guard), then `DELETE /v1/admin/users/{id}`. After delete,
   the list refreshes. A toast explains the consequence ("their documents were
@@ -118,6 +143,7 @@ gaps have no UI at all:
 
 | Endpoint | Method | Notes |
 |---|---|---|
+| `/v1/admin/users` | POST | **Enrollment.** Body `{email, display_name?, role?, status?, inference_daily_token_budget?}`; 422 on unknown fields (house envelope style); 409 if email taken; creates a row with `oidc_sub NULL`. `role/status` validated against the existing CHECK constraints. Admin-gated. |
 | `/v1/admin/users/{id}` | DELETE | 204. Rails: cannot delete self; cannot delete the **last active admin**; cannot delete the **seed admin row** (`00000000-…-0001`) — it owns all pre-multi-user documents and is the dev-bypass identity; deleting it bricks the dev bypass and orphans legacy docs. 409 with a machine-readable reason otherwise. |
 | `/v1/admin/inference/config` | GET | Read-only view of `model_router.get_config()` (no secrets — none exist in it). Admin-gated. |
 | `/v1/admin/inference/usage` | GET | Exists (gateway work). No change. |
@@ -140,7 +166,32 @@ The spec takes the simple, honest line:
   their PDF files best-effort (log failures; rows are already gone by then, so
   a failed unlink is only a disk leak, not a correctness issue).
 
-## 5. Security & invariants
+## 5. User lifecycle & propagation policy
+
+The operational answer to "how do we manage users?" — one table, three flows,
+built on the live-verified propagation rules (IDENTITY_AND_ROLES.md):
+
+**Division of ownership.** The IdP (Keycloak) owns **credentials** — who can
+log in, passwords, MFA. The app owns **accounts** — role, status, budgets,
+document ownership. Nothing syncs between them; the only bridge is the
+`(iss, sub)` claim pair recorded at first login. That is a feature (IdP-agnostic,
+no drift), provided the app-side lifecycle tools exist — which is this spec.
+
+| Flow | Steps | Why this order |
+|---|---|---|
+| **Onboard (enroll)** | Admin creates a pre-provisioned row (email + role + budget + status) → user logs in with that exact **verified** email → resolver branch 2 claims the row, inheriting role/status/budget | Account decisions precede the first login; no "pending, activate later" race. (Alternative, unchanged: user logs in cold → JIT `pending` row → admin activates.) |
+| **Change permissions** | Admin toggles role or budget in the console (`PATCH`) | Takes effect on the user's **next request** — the Principal is rebuilt from the DB row per request; no token/session invalidation needed. Their open tab re-probes on next page load. |
+| **Offboard** | 1. **Disable in the app** (hard-revokes sessions; blocks PATs) → 2. delete the IdP user in Keycloak if desired → 3. **Delete the app row** to free the email and wipe data | Live-verified: skipping step 1 leaves active sessions working; skipping step 3 permanently 409-blocks the email for any future IdP user with that address. |
+
+**Permissions model (unchanged by this spec).** Coarse by design: `admin`
+(user management + inference governance) vs `member` (own documents, chat,
+TTS), enforced by `require_admin` on `/v1/admin/*` and by row-ownership 404s
+everywhere else. The only resource-scoped permission today is the inference
+budget (per-user daily tokens, 429-enforced). If a third capability tier is
+ever needed (e.g. "reader only, no chat"), it's a new `role` CHECK value +
+gates at the routers — a migration, deliberately out of scope here.
+
+## 6. Security & invariants
 
 - Every new endpoint behind `require_admin` (existing dependency, no new
   authz machinery).
@@ -154,7 +205,7 @@ The spec takes the simple, honest line:
   `user.role !== 'admin'` — the view simply isn't mounted (and `viewMode`
   coercion on boot, §3).
 
-## 6. Test plan (TDD outline — mirror of the gateway plan's style)
+## 7. Test plan (TDD outline — mirror of the gateway plan's style)
 
 Backend (Postgres-backed, `db_conn` harness):
 
@@ -166,49 +217,67 @@ Backend (Postgres-backed, `db_conn` harness):
 6. DELETE removes the user's `data/pdfs/{doc_id}` files (tmp storage dir).
 7. GET config: returns parsed allowlist/task models/budget; member → 403.
 8. Existing admin router tests keep passing (list/patch/usage).
+9. POST enroll: creates unlinked row with given role/status/budget; duplicate
+   email → 409; member → 403; bad role/status → 422.
+10. Enroll → login claim: `resolve_or_provision_user` with a **verified**
+    matching email claims the row **and preserves** its role/status/budget;
+    unverified email still rejected (branch-2 guard, already tested in
+    `test_auth_users.py` — extend, don't duplicate).
 
 Frontend (vitest + Testing Library, `apiFetch` mocked):
 
-9. View switcher renders shield only for admin; member never sees it.
-10. Persisted `admin` viewMode for a member coerces to `reader` on boot.
-11. Users section: renders rows, PATCHes budget with **absent** field when
+11. View switcher renders shield only for admin; member never sees it.
+12. Persisted `admin` viewMode for a member coerces to `reader` on boot.
+13. Users section: renders rows, PATCHes budget with **absent** field when
     untouched; `0` vs empty distinction preserved.
-12. Delete flow: confirm requires typed email; calls DELETE; toast on success;
+14. Delete flow: confirm requires typed email; calls DELETE; toast on success;
     self-row shows no Delete.
-13. Usage section: renders date rows (ISO date string shown as-is), days
+15. Enroll form: happy path POSTs and shows "awaiting first login" badge;
+    duplicate-email 409 renders the error.
+16. Usage section: renders date rows (ISO date string shown as-is), days
     selector sends `?days=`.
-14. Config section: renders read-only values; empty allowlist renders
+17. Config section: renders read-only values; empty allowlist renders
     "all models allowed".
 
 Manual pass checklist (browser):
 
-15. Admin: enter console, edit a budget, verify the ChatSidebar meter reflects
+18. Admin: enter console, edit a budget, verify the ChatSidebar meter reflects
     it on the affected user's next `/v1/inference/models` refresh.
-16. Delete a throwaway user end-to-end (verify 409-email is freed: a new
+19. Enroll a user → have them log in with the matching email → they inherit
+    the chosen role/budget (no pending screen).
+20. Delete a throwaway user end-to-end (verify 409-email is freed: a new
     Keycloak user with the same email can now log in).
-17. Demote self attempt → blocked; demote other admin → reflected on their
+21. Demote self attempt → blocked; demote other admin → reflected on their
     next page load.
 
-## 7. Rollout
+## 8. Rollout
 
 - Branch `feat/admin-console` off the integration line after the gateway
   branch merges; the gateway's admin endpoints (usage/PATCH budget) are its
   foundation — building before that merge would fork.
 - Migration: **none required** (no schema change — delete uses existing
-  cascades; if the PDF-sweep or soft-delete decision changes, revisit).
-- Docs to touch in the same PR: USER_GUIDE admin section (Delete button,
+  cascades; enroll uses the existing nullable `oidc_sub`; if the PDF-sweep or
+  soft-delete decision changes, revisit).
+- Docs to touch in the same PR: USER_GUIDE admin section (Enroll + Delete,
   the offboarding order becomes fully self-serve), IDENTITY_AND_ROLES
-  (orphan-remedy paragraph → point at the console), TESTING.md (this spec's §6
+  (orphan-remedy paragraph → point at the console), TESTING.md (this spec's §7
   becomes a checked-off matrix), CHANGELOG.
 
-## 8. Open questions
+## 9. Open questions
 
 - **Soft delete / retention?** Some orgs want disable-only policies (legal
   hold). If that surfaces as a need, add `status='deleted'` + hide-from-list
   rather than row deletion. Default now: hard delete, clearly worded.
+- **One-click Keycloak user creation from the enroll form** (calling the
+  Keycloak Admin API so the admin never opens the KC console): possible
+  follow-up behind a Keycloak-specific feature flag (`KEYCLOAK_ADMIN_*` env,
+  service-account token). Deliberately out of scope — it breaks IdP-agnosticism
+  and stores IdP admin credentials in the app.
 - Should the usage table gain a **per-user totals row / CSV export**? Cheap to
   add server-side (the endpoint already returns rows); defer until someone
   asks.
 - **Session page for "active sessions" admin visibility** (list/revoke per
   user) — tempting, but low priority; the disable hard-revoke already covers
   the security need.
+- **A third role tier** ("reader only, no chat") — see §5; only if a real
+  need appears.
