@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-09-17 (later) — identity deep-dive doc + gateway live verification on `feat/model-router-gateway`
+
+**Branch:** `feat/model-router-gateway` · **Tests:** backend 143, frontend 163, lint clean · **Working tree:** docs only.
+
+### What happened
+- User commit `286fa41` ("Keycloak Presistent settings") moved the realm out of Keycloak's embedded H2 into the shared Postgres (schema `keycloak`, seeded by `deploy/postgres/init/` on first volume init). This fixed the recurring 409 "email already linked to another identity" desync: with H2, every container recreation minted new `sub` UUIDs, so returning users stopped matching `users.oidc_sub`.
+- Wrote **`docs/IDENTITY_AND_ROLES.md`** — the deep-dive answering "how do Keycloak users map to natural_reader users": two stores (Keycloak schema = credentials, `public.users` = accounts) joined only by the mirrored `(oidc_iss, oidc_sub)` pair; the three `resolve_or_provision_user` branches and their guards; roles live in the app (NOT Keycloak claims) and take effect immediately (Principal rebuilt from the users row per request); credentials (sessions/PATs, sha256-only); special identities (seed admin, dev bypass); and a **proposal** for a third `viewMode: 'admin'` (gated on `role === 'admin'`) to house users + the still-UI-less inference usage/budget endpoints. Cross-linked from ARCHITECTURE.md § auth.
+- **Task 13's manual pass (scripted subset) — done and green**, against a live backend (dev bypass) + real Ollama: models endpoint (allowlist filters to `gemma4:latest`; budget key with UTC-midnight `reset_at`), allowlist 422, real NDJSON streaming (thinking chunks byte-faithful), `INFERENCE_DAILY_TOKEN_BUDGET=1` → models shows `remaining_tokens: 0` + chat **429 with structured detail** (accounting had already recorded the earlier stream — recording is unconditional, budget only gates), tool_calls passthrough (gemma4 emitted a proper `current_time_date` call), `GET /v1/admin/inference/usage` (today's 27 tokens for the seed admin — the row's email is the user's real one, i.e. already linked via `BOOTSTRAP_ADMIN_EMAIL`/first-login).
+- Not yet human-clicked: the browser-side bits (Server/Local dropdown, budget meter, 429 toast, disabled send in local-mode parity). Unit-tested; final confidence click-through still open.
+
+### Next
+- **AdminPanel follow-up** (now designed in IDENTITY_AND_ROLES.md § last): `viewMode: 'admin'` surface with the usage view + per-user budget knob (`PATCH /v1/admin/users/{id}`; `day` from the usage endpoint is an ISO date, not a timestamp; absent field ≠ null in the PATCH semantics).
+- Document-library RAG (unblocked by the gateway), then sub-project D.
+- `origin/feat/model-router-gateway` is behind local — push only when asked.
+
+---
+
 ## 2026-09-17 — Model-router gateway (sub-project E) built on `feat/model-router-gateway`
 
 **Branch:** `feat/model-router-gateway` (branched off `feat/security-hardening` line) · **Tests:** backend 143, frontend 163, lint clean · **Working tree:** clean at last commit.

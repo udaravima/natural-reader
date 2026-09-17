@@ -141,6 +141,8 @@ The design theme is **"TTS never dies"**: Postgres down → 503s on chat/doc rou
 
 **The login round-trip** (`server/routers/auth.py`): `GET /v1/auth/login?next=...` stashes the post-login path in the signed cookie (validated same-site path only — no open redirects) and 302s to the IdP → `GET /v1/auth/callback` exchanges the code (Authlib verifies state + PKCE), provisions the user, creates the session row, and 303s back to `next` with the `nr_session` httponly cookie. The SPA has **no callback route** — it just re-probes `/v1/auth/me` after the reload.
 
+For the full identity map — how Keycloak's `keycloak` schema and the app's `users` table relate (and don't), why `sub` UUID persistence matters, and where roles live — see [IDENTITY_AND_ROLES.md](IDENTITY_AND_ROLES.md).
+
 ### Routers
 
 - **`docs.py`** — the RAG pipeline. State machine: `registered → chunks_uploaded → indexing → indexed|failed`. The `doc_id` is the client's sha256 (regex-gated `^[0-9a-f]{64}$`) because it's interpolated into filesystem paths. Chunks upsert idempotently; indexing embeds in batches of 16 under a per-doc lock; search is pgvector cosine distance. Docling conversion (PDF → per-page markdown) lives here too.
