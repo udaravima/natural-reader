@@ -1135,6 +1135,7 @@ export default function App() {
           isLocalhost={isLocalhost} setIsLocalhost={setIsLocalhost}
           apiHost={apiHost} setApiHost={setApiHost}
           apiPort={apiPort} setApiPort={setApiPort}
+          user={auth.user} onLogout={auth.logout}
           requestTimeout={requestTimeout} setRequestTimeout={setRequestTimeout}
           unlimitedBatchTimeout={unlimitedBatchTimeout} setUnlimitedBatchTimeout={setUnlimitedBatchTimeout}
           backendAvailable={backendAvailable} setBackendAvailable={setBackendAvailable}
