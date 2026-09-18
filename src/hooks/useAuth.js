@@ -46,9 +46,11 @@ export function useAuth(apiHost, apiPort) {
     window.location.assign(buildApiUrl(apiHost, apiPort, `/v1/auth/login?next=${next}`));
   }, [apiHost, apiPort]);
 
-  const logout = useCallback(async () => {
-    try { await apiFetch(apiHost, apiPort, '/v1/auth/logout', { method: 'POST' }); }
-    finally { setUser(null); setState('anonymous'); }
+  // Navigation, not fetch: the backend 303s to the IdP's end-session endpoint,
+  // and the browser must follow that redirect itself so the IdP can clear its
+  // SSO cookie on its own origin. The SPA state resets naturally on reload.
+  const logout = useCallback(() => {
+    window.location.assign(buildApiUrl(apiHost, apiPort, '/v1/auth/logout'));
   }, [apiHost, apiPort]);
 
   return { state, user, login, logout, refresh: check };
