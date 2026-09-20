@@ -273,3 +273,39 @@ async def test_delete_removes_kc_user(db_conn):
     async with _client(_app_kc(db_conn, p, kc)) as c:
         r = await c.delete(f"/v1/admin/users/{u['id']}")
     assert r.status_code == 204 and kc.deleted == ["sub-3"]
+
+
+async def test_disable_survives_kc_failure(db_conn):
+    """KC set_enabled failure must NOT 500 the PATCH; DB status change persists."""
+    from server.auth.users import enroll_linked_user, get_user
+    admin, p = await _admin(db_conn)
+    u = await enroll_linked_user(db_conn, iss="i", sub="sub-x", email="x@x.io",
+                                 capabilities=["reader"], status="active")
+
+    class _KC(_FakeKC):
+        async def set_enabled(self, sub, enabled):
+            raise Exception("kc down")
+
+    kc = _KC()
+    async with _client(_app_kc(db_conn, p, kc)) as c:
+        r = await c.patch(f"/v1/admin/users/{u['id']}", json={"status": "disabled"})
+    assert r.status_code == 200
+    assert (await get_user(db_conn, u["id"]))["status"] == "disabled"
+
+
+async def test_delete_survives_kc_failure(db_conn):
+    """KC delete_user failure must NOT 500 the DELETE; app row is still gone."""
+    from server.auth.users import enroll_linked_user, get_user
+    admin, p = await _admin(db_conn)
+    u = await enroll_linked_user(db_conn, iss="i", sub="sub-y", email="y@x.io",
+                                 capabilities=["reader"], status="active")
+
+    class _KC(_FakeKC):
+        async def delete_user(self, sub):
+            raise Exception("kc down")
+
+    kc = _KC()
+    async with _client(_app_kc(db_conn, p, kc)) as c:
+        r = await c.delete(f"/v1/admin/users/{u['id']}")
+    assert r.status_code == 204
+    assert await get_user(db_conn, u["id"]) is None
