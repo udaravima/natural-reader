@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import secrets
 import uuid
 from pathlib import Path
 
@@ -9,6 +11,9 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict
 
 from ..auth import deps, users
+from ..auth.capabilities import KNOWN_CAPABILITIES
+from ..auth.config import load_auth_config
+from ..auth.kc_admin import KCAdminError
 from ..services import inference_budget, model_router
 
 logger = logging.getLogger(__name__)
@@ -29,6 +34,7 @@ class UserEnrollIn(BaseModel):
     role: str = "member"
     status: str = "pending"
     inference_daily_token_budget: int | None = None
+    capabilities: list[str] = []
 
 
 @router.get("/users")
@@ -72,27 +78,66 @@ async def enroll_user(
     body: UserEnrollIn,
     _: deps.Principal = Depends(deps.require_admin),
     conn=Depends(deps.get_conn),
+    kc=Depends(deps.get_kc_admin),
 ):
-    """Pre-provision an account (oidc_sub NULL) that its owner claims on
-    first login with the exact verified email — resolver branch 2 preserves
-    the chosen role/status/budget."""
-    if body.role not in ("admin", "member"):
-        raise HTTPException(status_code=422, detail="bad role")
+    """Pre-provision an account. When a Keycloak admin client is configured,
+    this CREATES the Keycloak user, assigns its realm-role capabilities, and
+    inserts an already-linked row — with compensation (delete the just-created
+    Keycloak user) if the local insert fails afterward. Otherwise it falls
+    back to today's app-only behavior: an unlinked row (oidc_sub NULL) that
+    its owner claims on first verified-email login (resolver branch 2
+    preserves the chosen role/status/budget)."""
     if body.status not in ("active", "pending", "disabled"):
         raise HTTPException(status_code=422, detail="bad status")
+    caps = sorted(set(body.capabilities))
+    if not set(caps).issubset(KNOWN_CAPABILITIES):
+        raise HTTPException(status_code=422, detail="unknown capability")
     if body.inference_daily_token_budget is not None and body.inference_daily_token_budget < 0:
         raise HTTPException(status_code=422, detail="budget must be >= 0")
+
+    if kc is None:
+        try:
+            user = await users.enroll_user(
+                conn, email=body.email, display_name=body.display_name,
+                status=body.status, capabilities=caps,
+                inference_daily_token_budget=body.inference_daily_token_budget)
+        except ValueError:
+            raise HTTPException(status_code=409, detail="email already exists")
+        return {"user": user, "onboarding": "manual"}
+
+    if await kc.find_user_by_email(body.email):
+        raise HTTPException(status_code=409, detail="email already exists in Keycloak")
     try:
-        return await users.enroll_user(
-            conn,
-            email=body.email,
-            display_name=body.display_name,
-            role=body.role,
-            status=body.status,
-            inference_daily_token_budget=body.inference_daily_token_budget,
-        )
-    except ValueError:
-        raise HTTPException(status_code=409, detail="email already exists")
+        sub = await kc.create_user(email=body.email, display_name=body.display_name,
+                                   email_verified=True)
+    except KCAdminError as e:
+        raise HTTPException(status_code=502, detail=f"Keycloak create failed: {e}")
+    try:
+        await kc.assign_realm_roles(sub, caps)
+        onboarding, temp = "email", None
+        if await kc.realm_smtp_configured():
+            await kc.send_actions_email(sub, ["VERIFY_EMAIL", "UPDATE_PASSWORD"])
+        else:
+            temp = secrets.token_urlsafe(12)
+            await kc.set_temp_password(sub, temp, temporary=True)
+            onboarding = "temp_password"
+        iss = load_auth_config(os.environ).oidc_issuer
+        user = await users.enroll_linked_user(
+            conn, iss=iss, sub=sub, email=body.email,
+            display_name=body.display_name, capabilities=caps, status=body.status,
+            inference_daily_token_budget=body.inference_daily_token_budget)
+    except Exception as e:  # compensate: no orphaned Keycloak user
+        try:
+            await kc.delete_user(sub)
+        except Exception:
+            pass
+        if isinstance(e, ValueError):
+            raise HTTPException(status_code=409, detail="email already exists")
+        raise HTTPException(status_code=502, detail=f"enroll failed: {e}")
+    out = {"user": user, "onboarding": onboarding}
+    if temp:
+        out["temp_password"] = temp
+    return out
 
 
 @router.delete("/users/{user_id}", status_code=204)

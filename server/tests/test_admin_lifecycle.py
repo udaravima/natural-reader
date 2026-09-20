@@ -25,6 +25,10 @@ def _app(db_conn, principal):
 
     app.dependency_overrides[deps.get_conn] = _conn_override
     app.dependency_overrides[deps.get_current_user] = lambda: principal
+    # Deterministic app-only enroll path: these lifecycle tests exercise the
+    # fallback behavior, not live Keycloak provisioning (see test_admin_router.py
+    # for the Keycloak-integrated enroll tests with a fake KC admin client).
+    app.dependency_overrides[deps.get_kc_admin] = lambda: None
     app.include_router(admin_router.router)
     return app
 
@@ -229,12 +233,14 @@ async def test_enroll_creates_unlinked_row(db_conn):
         )
     assert r.status_code == 201
     body = r.json()
-    assert body["email"] == "new@x.io"
-    assert body["oidc_sub"] is None
-    assert body["role"] == "member"
-    assert body["status"] == "pending"
-    assert body["inference_daily_token_budget"] == 1234
-    assert body["display_name"] == "New Person"
+    assert body["onboarding"] == "manual"
+    user = body["user"]
+    assert user["email"] == "new@x.io"
+    assert user["oidc_sub"] is None
+    assert user["role"] == "member"
+    assert user["status"] == "pending"
+    assert user["inference_daily_token_budget"] == 1234
+    assert user["display_name"] == "New Person"
 
 
 async def test_enroll_defaults_minimal_body(db_conn):
@@ -243,9 +249,11 @@ async def test_enroll_defaults_minimal_body(db_conn):
         r = await client.post("/v1/admin/users", json={"email": "new@x.io"})
     assert r.status_code == 201
     body = r.json()
-    assert body["role"] == "member"
-    assert body["status"] == "pending"
-    assert body["inference_daily_token_budget"] is None
+    assert body["onboarding"] == "manual"
+    user = body["user"]
+    assert user["role"] == "member"
+    assert user["status"] == "pending"
+    assert user["inference_daily_token_budget"] is None
 
 
 async def test_enroll_duplicate_email_409(db_conn):
@@ -266,7 +274,10 @@ async def test_enroll_member_forbidden(db_conn):
 @pytest.mark.parametrize(
     "payload",
     [
-        {"email": "n@x.io", "role": "superadmin"},
+        # `role` is no longer independently validated by the enroll endpoint —
+        # `capabilities` (mapped to Keycloak realm roles / KNOWN_CAPABILITIES)
+        # is now the validated axis, so that case is replaced below.
+        {"email": "n@x.io", "capabilities": ["superadmin"]},
         {"email": "n@x.io", "status": "banned"},
         {"email": "n@x.io", "inference_daily_token_budget": -1},
         {"email": "n@x.io", "surprise": True},
@@ -293,7 +304,7 @@ async def test_enrolled_row_claimed_by_verified_login(db_conn):
                 "inference_daily_token_budget": 777,
             },
         )
-    enrolled_id = r.json()["id"]
+    enrolled_id = r.json()["user"]["id"]
 
     claimed = await resolve_or_provision_user(
         db_conn, iss="iss2", sub="sub2", email="new@x.io", email_verified=True
