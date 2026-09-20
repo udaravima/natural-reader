@@ -24,6 +24,7 @@ class UserPatchIn(BaseModel):
     status: str | None = None
     role: str | None = None
     inference_daily_token_budget: int | None = None
+    capabilities: list[str] | None = None
 
 
 class UserEnrollIn(BaseModel):
@@ -50,14 +51,42 @@ async def patch_user(
     body: UserPatchIn,
     _: deps.Principal = Depends(deps.require_admin),
     conn=Depends(deps.get_conn),
+    kc=Depends(deps.get_kc_admin),
 ):
     # exclude_unset distinguishes "field absent" (untouched) from "explicit
     # null" (clear back to the deployment default) — required for the budget.
     data = body.model_dump(exclude_unset=True)
+
+    target = await users.get_user(conn, user_id)  # need oidc_sub for KC calls
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    sub = target["oidc_sub"]
+
     if "status" in data:
         if data["status"] not in ("active", "pending", "disabled"):
             raise HTTPException(status_code=422, detail="bad status")
         await users.set_status(conn, user_id, data["status"])
+        if kc is not None and sub:
+            try:
+                await kc.set_enabled(sub, data["status"] == "active")
+            except Exception:
+                logger.warning("KC set_enabled failed for %s", sub)
+    if "capabilities" in data:
+        caps = sorted(set(data["capabilities"]))
+        if not set(caps).issubset(KNOWN_CAPABILITIES):
+            raise HTTPException(status_code=422, detail="unknown capability")
+        current = set(target["capabilities"])
+        if kc is not None and sub:
+            to_add = sorted(set(caps) - current)
+            to_remove = sorted(current - set(caps))
+            try:
+                if to_add:
+                    await kc.assign_realm_roles(sub, to_add)
+                if to_remove:
+                    await kc.remove_realm_roles(sub, to_remove)
+            except Exception:
+                logger.warning("KC role reconcile failed for %s", sub)
+        await users.set_capabilities(conn, user_id, caps)
     if "role" in data:
         if data["role"] not in ("admin", "member"):
             raise HTTPException(status_code=422, detail="bad role")
@@ -149,6 +178,7 @@ async def delete_user(
     user_id: str,
     principal: deps.Principal = Depends(deps.require_admin),
     conn=Depends(deps.get_conn),
+    kc=Depends(deps.get_kc_admin),
 ):
     """Hard delete (admin-console spec §4): sessions, PATs, usage, documents
     (+chunks) and chat history all cascade. Rails are server-side — the UI
@@ -187,6 +217,12 @@ async def delete_user(
     )
     pdf_paths = [r[0] for r in await cur.fetchall()]
     await users.delete_user(conn, user_id)
+    if kc is not None and target["oidc_sub"]:
+        try:
+            await kc.delete_user(target["oidc_sub"])
+        except Exception:
+            logger.warning("KC delete failed for %s (app row already removed)",
+                           target["oidc_sub"])
     for raw in pdf_paths:
         try:
             Path(raw).unlink(missing_ok=True)

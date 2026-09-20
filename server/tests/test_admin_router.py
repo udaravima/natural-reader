@@ -229,3 +229,47 @@ async def test_enroll_local_conflict_compensates(db_conn):
     # Compensation still fires for a LOCAL (app-side) failure, not just a
     # Keycloak-side one — the just-created Keycloak user is deleted.
     assert kc.deleted == ["sub-dupe@x.io"]
+
+
+async def test_patch_capabilities_reconciles_kc_and_db(db_conn):
+    _, p = await _admin(db_conn)
+    from server.auth.users import enroll_linked_user, get_user
+    u = await enroll_linked_user(db_conn, iss="i", sub="sub-1", email="c@x.io",
+                                 capabilities=["reader"], status="active")
+
+    class _KC(_FakeKC):
+        def __init__(self): super().__init__(); self.assigned=[]; self.removed=[]
+        async def assign_realm_roles(self, sub, names): self.assigned.append((sub, list(names)))
+        async def remove_realm_roles(self, sub, names): self.removed.append((sub, list(names)))
+    kc = _KC()
+    async with _client(_app_kc(db_conn, p, kc)) as c:
+        r = await c.patch(f"/v1/admin/users/{u['id']}",
+                          json={"capabilities": ["reader", "chat"]})
+    assert r.status_code == 200
+    assert set((await get_user(db_conn, u["id"]))["capabilities"]) == {"reader", "chat"}
+    assert kc.assigned == [("sub-1", ["chat"])] and kc.removed == []
+
+
+async def test_disable_propagates_enabled_false(db_conn):
+    _, p = await _admin(db_conn)
+    from server.auth.users import enroll_linked_user
+    u = await enroll_linked_user(db_conn, iss="i", sub="sub-2", email="d@x.io",
+                                 capabilities=["reader"], status="active")
+    class _KC(_FakeKC):
+        def __init__(self): super().__init__(); self.enabled=[]
+        async def set_enabled(self, sub, enabled): self.enabled.append((sub, enabled))
+    kc = _KC()
+    async with _client(_app_kc(db_conn, p, kc)) as c:
+        await c.patch(f"/v1/admin/users/{u['id']}", json={"status": "disabled"})
+    assert kc.enabled == [("sub-2", False)]
+
+
+async def test_delete_removes_kc_user(db_conn):
+    _, p = await _admin(db_conn)
+    from server.auth.users import enroll_linked_user
+    u = await enroll_linked_user(db_conn, iss="i", sub="sub-3", email="g@x.io",
+                                 capabilities=["reader"], status="active")
+    kc = _FakeKC()
+    async with _client(_app_kc(db_conn, p, kc)) as c:
+        r = await c.delete(f"/v1/admin/users/{u['id']}")
+    assert r.status_code == 204 and kc.deleted == ["sub-3"]
