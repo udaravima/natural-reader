@@ -34,3 +34,11 @@ async def test_me_returns_principal(db_conn):
 async def test_me_401_without_principal(db_conn):
     r = await _get(_app(db_conn), "/v1/auth/me")
     assert r.status_code == 401
+
+
+async def test_me_returns_capabilities(db_conn):
+    p = deps.Principal(user_id="u", email="e@x.io", role="member",
+                       capabilities=frozenset({"reader"}))
+    r = await _get(_app(db_conn, principal=p), "/v1/auth/me")
+    body = r.json()
+    assert body["capabilities"] == ["reader"] and body["role"] == "member"

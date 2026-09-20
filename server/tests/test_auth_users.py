@@ -62,3 +62,25 @@ async def test_set_status(db_conn):
     u = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io")
     await set_status(db_conn, u["id"], "active")
     assert (await get_user(db_conn, u["id"]))["status"] == "active"
+
+
+async def test_first_login_claims_seed_admin_with_bootstrap_caps(db_conn):
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="a@x.io")
+    assert u["id"] == SEED
+    assert set(u["capabilities"]) == {"admin", "reader", "chat"}
+
+
+async def test_brand_new_user_is_pending_with_no_caps(db_conn):
+    await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="a@x.io")  # seed
+    m = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io",
+                                        capabilities=[])
+    assert m["status"] == "pending" and m["capabilities"] == []
+
+
+async def test_known_identity_caps_synced_from_token(db_conn):
+    await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="a@x.io")  # seed
+    await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io",
+                                    capabilities=[])
+    synced = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io",
+                                             capabilities=["reader"])
+    assert set(synced["capabilities"]) == {"reader"} and synced["role"] == "member"

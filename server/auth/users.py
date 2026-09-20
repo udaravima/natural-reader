@@ -59,6 +59,17 @@ async def set_inference_budget(conn, user_id: str, budget: int | None) -> None:
     )
 
 
+async def set_capabilities(conn, user_id: str, capabilities) -> None:
+    """Overwrite a user's capabilities; keep the legacy role column in sync
+    (admin iff the admin capability is present)."""
+    caps = sorted(set(capabilities))
+    role = "admin" if "admin" in caps else "member"
+    await conn.execute(
+        "UPDATE users SET capabilities=%s, role=%s, updated_at=now() WHERE id=%s",
+        (caps, role, user_id),
+    )
+
+
 async def _fetch_by(conn, where: str, params) -> dict[str, Any] | None:
     cur = await conn.execute(f"SELECT {_COLS} FROM users WHERE {where}", params)
     return _row(await cur.fetchone())
@@ -72,12 +83,19 @@ async def resolve_or_provision_user(
     email: str,
     display_name: str | None = None,
     email_verified: bool = False,
+    capabilities: list[str] | None = None,
 ) -> dict[str, Any]:
     """Resolve an OIDC identity to a local user, provisioning on first sight.
 
     `email_verified` must reflect the OIDC `email_verified` claim: an email is
     only trusted to CLAIM a pre-provisioned account when the IdP verified it.
     The first-user-admin path (branch 3) is not email-based and so is unaffected.
+
+    `capabilities`, when not None, is the token's realm-role-derived capability
+    set (see `caps_from_claims`) and is synced onto the resolved user on every
+    login for known/linked identities. The seed admin's first claim always
+    forces `BOOTSTRAP_ADMIN_CAPABILITIES` regardless of the token, and a
+    brand-new self-registered user is provisioned with no capabilities.
     """
     # 1) Known identity — refresh email/display_name, return it.
     found = await _fetch_by(conn, "oidc_iss=%s AND oidc_sub=%s", (iss, sub))
@@ -87,6 +105,8 @@ async def resolve_or_provision_user(
             "updated_at=now() WHERE id=%s",
             (email, display_name, found["id"]),
         )
+        if capabilities is not None:
+            await set_capabilities(conn, found["id"], capabilities)
         return await get_user(conn, found["id"])
 
     # 2) A row already carries this email.
@@ -103,6 +123,8 @@ async def resolve_or_provision_user(
             "display_name=COALESCE(%s, display_name), updated_at=now() WHERE id=%s",
             (iss, sub, display_name, by_email["id"]),
         )
+        if capabilities is not None:
+            await set_capabilities(conn, by_email["id"], capabilities)
         return await get_user(conn, by_email["id"])
 
     # 3) Brand-new identity. Atomically claim the still-unlinked seed admin
@@ -116,6 +138,8 @@ async def resolve_or_provision_user(
         (iss, sub, email, display_name, SEED_ADMIN_ID),
     )
     if cur.rowcount == 1:
+        from .capabilities import BOOTSTRAP_ADMIN_CAPABILITIES
+        await set_capabilities(conn, SEED_ADMIN_ID, BOOTSTRAP_ADMIN_CAPABILITIES)
         return await get_user(conn, SEED_ADMIN_ID)
 
     cur = await conn.execute(

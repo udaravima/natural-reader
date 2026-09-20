@@ -9,6 +9,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from ..auth import deps, sessions, tokens as pat, users
+from ..auth.capabilities import caps_from_claims
 from ..auth.config import load_auth_config
 from ..auth.oidc import build_oauth
 
@@ -57,12 +58,14 @@ async def login(request: Request, next: str = "/"):
 
 
 @router.get("/callback")
-async def callback(request: Request, conn=Depends(deps.get_conn)):
+async def callback(request: Request, conn=Depends(deps.get_conn),
+                   kc=Depends(deps.get_kc_admin)):
     token = await _client().authorize_access_token(request)
     claims = token.get("userinfo") or {}
     sub, iss, email = claims.get("sub"), claims.get("iss"), claims.get("email")
     if not (sub and email):
         raise HTTPException(status_code=400, detail="OIDC token missing sub/email")
+    caps = caps_from_claims(claims)
     try:
         user = await users.resolve_or_provision_user(
             conn,
@@ -72,9 +75,17 @@ async def callback(request: Request, conn=Depends(deps.get_conn)):
             display_name=claims.get("name"),
             # Only a verified email may claim a pre-provisioned account.
             email_verified=bool(claims.get("email_verified")),
+            capabilities=caps,
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    # Bootstrap: the founder who claimed the seed admin must also hold the
+    # realm roles in Keycloak, or the next login's sync would demote them.
+    if kc is not None and user["id"] == users.SEED_ADMIN_ID:
+        try:
+            await kc.assign_realm_roles(sub, ["admin", "reader", "chat"])
+        except Exception:  # noqa: BLE001 — best-effort; app row is authoritative
+            pass
     raw = await sessions.create_session(
         conn, user["id"], user_agent=request.headers.get("user-agent")
     )
@@ -153,7 +164,8 @@ async def logout_redirect(request: Request, conn=Depends(deps.get_conn)):
 
 @router.get("/me")
 async def me(principal: deps.Principal = Depends(deps.get_current_user)):
-    return {"id": principal.user_id, "email": principal.email, "role": principal.role}
+    return {"id": principal.user_id, "email": principal.email,
+            "role": principal.role, "capabilities": sorted(principal.capabilities)}
 
 
 # ---------- Personal access tokens ----------
