@@ -84,7 +84,10 @@ class KeycloakAdmin:
             raise KCAdminError("user already exists in Keycloak")
         if r.status_code != 201:
             raise KCAdminError(f"create_user {r.status_code}")
-        return r.headers["Location"].rstrip("/").rsplit("/", 1)[-1]
+        loc = r.headers.get("Location")
+        if not loc:
+            raise KCAdminError("create_user: 201 without Location header")
+        return loc.rstrip("/").rsplit("/", 1)[-1]
 
     async def set_temp_password(self, sub: str, password: str,
                                 *, temporary: bool = True) -> None:

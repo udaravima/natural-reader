@@ -54,6 +54,16 @@ async def test_create_user_returns_sub_from_location():
     assert await kc.create_user(email="b@x.io", email_verified=True) == "abc-123"
 
 
+async def test_create_user_raises_on_missing_location():
+    from server.auth.kc_admin import KCAdminError
+    def handler(req):
+        return httpx.Response(201)  # 201 without Location header
+    kc = KeycloakAdmin(ISSUER, "svc", "sec", http=_authed(handler))
+    with pytest.raises(KCAdminError) as exc_info:
+        await kc.create_user(email="b@x.io")
+    assert "Location header" in str(exc_info.value)
+
+
 async def test_find_user_by_email_exact():
     def handler(req):
         assert req.url.params.get("email") == "b@x.io"
