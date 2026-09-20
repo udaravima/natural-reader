@@ -77,3 +77,17 @@ def require_capability(name: str):
             )
         return principal
     return _dep
+
+
+_kc_admin = None
+
+
+async def get_kc_admin():
+    """Yield a shared KeycloakAdmin, or None when the service account is
+    unconfigured (callers then use the app-only degraded path)."""
+    global _kc_admin
+    cfg = load_auth_config(os.environ)
+    from .kc_admin import build_kc_admin
+    if _kc_admin is None:
+        _kc_admin = build_kc_admin(cfg)
+    return _kc_admin
