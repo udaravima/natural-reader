@@ -1017,6 +1017,7 @@ export default function App() {
     return (
       <AuthGate
         state={auth.state}
+        user={auth.user}
         onLogin={auth.login}
         onLogout={auth.logout}
         onRetry={auth.refresh}
