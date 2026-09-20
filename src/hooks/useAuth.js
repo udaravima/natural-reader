@@ -17,7 +17,8 @@ export function useAuth(apiHost, apiPort) {
     try {
       const res = await apiFetch(apiHost, apiPort, '/v1/auth/me');
       if (res.ok) {
-        setUser(await res.json());
+        const body = await res.json();
+        setUser({ ...body, capabilities: body.capabilities ?? [] });
         setState('active');
       } else if (res.status === 401) {
         setUser(null);
