@@ -311,6 +311,59 @@ async def test_delete_survives_kc_failure(db_conn):
     assert await get_user(db_conn, u["id"]) is None
 
 
+async def test_patch_cannot_disable_last_active_admin(db_conn):
+    """PATCH parity with delete_user's last_active_admin rail: disabling the
+    sole remaining active admin must 409, not lock everyone out."""
+    from server.auth.users import get_user
+
+    admin, p = await _admin(db_conn)
+    async with _client(_app(db_conn, p)) as client:
+        r = await client.patch(
+            f"/v1/admin/users/{admin['id']}", json={"status": "disabled"}
+        )
+    assert r.status_code == 409
+    assert r.json()["detail"]["reason"] == "last_active_admin"
+    assert (await get_user(db_conn, admin["id"]))["status"] == "active"
+
+
+async def test_patch_cannot_strip_admin_from_last_admin(db_conn):
+    """Same rail, capabilities branch: dropping "admin" from the sole active
+    admin's capability set must 409 before any KC reconcile happens."""
+    from server.auth.users import get_user
+
+    admin, p = await _admin(db_conn)
+    async with _client(_app(db_conn, p)) as client:
+        r = await client.patch(
+            f"/v1/admin/users/{admin['id']}", json={"capabilities": ["reader"]}
+        )
+    assert r.status_code == 409
+    assert r.json()["detail"]["reason"] == "last_active_admin"
+    assert "admin" in (await get_user(db_conn, admin["id"]))["capabilities"]
+
+
+async def test_patch_can_demote_admin_when_another_exists(db_conn):
+    """Positive control: the guard only fires when the target IS the last
+    active admin — with a second active admin present, stripping "admin"
+    from the first is allowed."""
+    from server.auth.users import enroll_linked_user, get_user
+
+    admin, p = await _admin(db_conn)
+    await enroll_linked_user(
+        db_conn, iss="i", sub="second-admin", email="second@x.io",
+        capabilities=["admin", "reader"], status="active",
+    )
+    # No KC dependency override here (same as e.g. test_admin_lists_and_activates):
+    # in the test environment get_kc_admin() resolves to None (no service
+    # account configured), so the PATCH takes the app-only path and the KC
+    # reconcile — irrelevant to this guard — never runs.
+    async with _client(_app(db_conn, p)) as c:
+        r = await c.patch(
+            f"/v1/admin/users/{admin['id']}", json={"capabilities": ["reader"]}
+        )
+    assert r.status_code == 200
+    assert "admin" not in (await get_user(db_conn, admin["id"]))["capabilities"]
+
+
 async def test_capability_revoke_hard_fails_on_kc_error(db_conn):
     """A KC revoke failure must hard-fail (502) and leave the DB unchanged —
     a swallowed revoke would be re-granted from the token at next login

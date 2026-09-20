@@ -38,6 +38,18 @@ class UserEnrollIn(BaseModel):
     capabilities: list[str] = []
 
 
+async def _other_active_admins(conn, user_id: str) -> int:
+    """Count active admins OTHER than user_id — used to guard the last
+    remaining active admin from being demoted/disabled and locking everyone
+    out of admin (mirrors the rail delete_user already has)."""
+    cur = await conn.execute(
+        "SELECT count(*) FROM users WHERE role='admin' AND status='active' "
+        "AND id <> %s",
+        (user_id,),
+    )
+    return (await cur.fetchone())[0]
+
+
 @router.get("/users")
 async def list_all(
     _: deps.Principal = Depends(deps.require_admin), conn=Depends(deps.get_conn)
@@ -65,6 +77,15 @@ async def patch_user(
     if "status" in data:
         if data["status"] not in ("active", "pending", "disabled"):
             raise HTTPException(status_code=422, detail="bad status")
+        if (
+            data["status"] != "active"
+            and target["role"] == "admin"
+            and target["status"] == "active"
+            and await _other_active_admins(conn, user_id) == 0
+        ):
+            raise HTTPException(
+                status_code=409, detail={"reason": "last_active_admin"}
+            )
         await users.set_status(conn, user_id, data["status"])
         if kc is not None and sub:
             try:
@@ -75,6 +96,15 @@ async def patch_user(
         caps = sorted(set(data["capabilities"]))
         if not set(caps).issubset(KNOWN_CAPABILITIES):
             raise HTTPException(status_code=422, detail="unknown capability")
+        if (
+            "admin" in set(target["capabilities"])
+            and "admin" not in set(caps)
+            and target["status"] == "active"
+            and await _other_active_admins(conn, user_id) == 0
+        ):
+            raise HTTPException(
+                status_code=409, detail={"reason": "last_active_admin"}
+            )
         current = set(target["capabilities"])
         if kc is not None and sub:
             to_add = sorted(set(caps) - current)
