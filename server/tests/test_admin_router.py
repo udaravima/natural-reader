@@ -364,6 +364,42 @@ async def test_patch_can_demote_admin_when_another_exists(db_conn):
     assert "admin" not in (await get_user(db_conn, admin["id"]))["capabilities"]
 
 
+async def test_guard_counts_by_capability_not_role_column(db_conn):
+    """The last-active-admin guard must key off the `admin` CAPABILITY, not
+    the legacy `role` column. `role` is a best-effort mirror of capabilities
+    (kept in sync by set_capabilities/enroll_linked_user) but a vestigial
+    write path — or a raw UPDATE, as simulated here — can desync it: a row
+    with role='admin' but no 'admin' in capabilities. Real admin access is
+    gated on the capability alone (deps._principal), so a guard that counted
+    by the column would be fooled by such a row into thinking a second admin
+    exists, and let the sole real admin be demoted — locking everyone out."""
+    from server.auth.users import enroll_linked_user, get_user
+
+    admin, p = await _admin(db_conn)
+    # A normal member: no admin capability, role naturally 'member'.
+    m = await enroll_linked_user(
+        db_conn, iss="i", sub="s-desync", email="m@x.io",
+        capabilities=["reader"], status="active",
+    )
+    assert m["role"] == "member" and "admin" not in m["capabilities"]
+    # Simulate the desync this guard exists to defeat: role column flipped to
+    # 'admin' directly (bypassing set_capabilities), capabilities untouched.
+    await db_conn.execute("UPDATE users SET role='admin' WHERE id=%s", (m["id"],))
+    desynced = await get_user(db_conn, m["id"])
+    assert desynced["role"] == "admin" and "admin" not in desynced["capabilities"]
+
+    # The seed admin is the only REAL (capability) admin. Stripping its
+    # admin capability must still 409 — M's desynced role column must not
+    # be counted as "another active admin".
+    async with _client(_app(db_conn, p)) as client:
+        r = await client.patch(
+            f"/v1/admin/users/{admin['id']}", json={"capabilities": ["reader", "chat"]}
+        )
+    assert r.status_code == 409
+    assert r.json()["detail"]["reason"] == "last_active_admin"
+    assert "admin" in (await get_user(db_conn, admin["id"]))["capabilities"]
+
+
 async def test_capability_revoke_hard_fails_on_kc_error(db_conn):
     """A KC revoke failure must hard-fail (502) and leave the DB unchanged —
     a swallowed revoke would be re-granted from the token at next login

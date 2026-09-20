@@ -44,14 +44,6 @@ export function AdminPanel({ theme, apiHost, apiPort, currentUserId }) {
               {u.status === 'active' && !isSelf && (
                 <button onClick={() => patch(u.id, { status: 'disabled' })} className="text-[10px] text-red-500 underline">Disable</button>
               )}
-              {!isSelf && (
-                <button
-                  onClick={() => patch(u.id, { role: u.role === 'admin' ? 'member' : 'admin' })}
-                  className="text-[10px] underline"
-                >
-                  {u.role === 'admin' ? 'Make member' : 'Make admin'}
-                </button>
-              )}
             </span>
           </div>
         );

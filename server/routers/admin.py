@@ -22,7 +22,6 @@ router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
 class UserPatchIn(BaseModel):
     status: str | None = None
-    role: str | None = None
     inference_daily_token_budget: int | None = None
     capabilities: list[str] | None = None
 
@@ -32,7 +31,6 @@ class UserEnrollIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     email: str
     display_name: str | None = None
-    role: str = "member"
     status: str = "pending"
     inference_daily_token_budget: int | None = None
     capabilities: list[str] = []
@@ -41,10 +39,17 @@ class UserEnrollIn(BaseModel):
 async def _other_active_admins(conn, user_id: str) -> int:
     """Count active admins OTHER than user_id — used to guard the last
     remaining active admin from being demoted/disabled and locking everyone
-    out of admin (mirrors the rail delete_user already has)."""
+    out of admin (mirrors the rail delete_user already has).
+
+    Counts by the `admin` CAPABILITY, not the legacy `role` column: the
+    column is a best-effort mirror of capabilities (kept in sync by
+    set_capabilities), but real admin access is gated on the capability
+    alone (see deps._principal). Counting by column would let a desynced
+    row — role='admin' without the capability — masquerade as a real admin
+    and defeat this guard."""
     cur = await conn.execute(
-        "SELECT count(*) FROM users WHERE role='admin' AND status='active' "
-        "AND id <> %s",
+        "SELECT count(*) FROM users WHERE 'admin' = ANY(capabilities) "
+        "AND status='active' AND id <> %s",
         (user_id,),
     )
     return (await cur.fetchone())[0]
@@ -79,7 +84,7 @@ async def patch_user(
             raise HTTPException(status_code=422, detail="bad status")
         if (
             data["status"] != "active"
-            and target["role"] == "admin"
+            and "admin" in set(target["capabilities"])
             and target["status"] == "active"
             and await _other_active_admins(conn, user_id) == 0
         ):
@@ -123,10 +128,6 @@ async def patch_user(
                     detail="Keycloak role sync failed; capabilities unchanged",
                 )
         await users.set_capabilities(conn, user_id, caps)
-    if "role" in data:
-        if data["role"] not in ("admin", "member"):
-            raise HTTPException(status_code=422, detail="bad role")
-        await users.set_role(conn, user_id, data["role"])
     if "inference_daily_token_budget" in data:
         budget = data["inference_daily_token_budget"]
         if budget is not None and budget < 0:
@@ -234,16 +235,14 @@ async def delete_user(
             status_code=409,
             detail={"reason": "seed_admin"},
         )
-    if target["role"] == "admin" and target["status"] == "active":
-        cur = await conn.execute(
-            "SELECT count(*) FROM users "
-            "WHERE role='admin' AND status='active' AND id <> %s",
-            (user_id,),
+    if (
+        "admin" in set(target["capabilities"])
+        and target["status"] == "active"
+        and await _other_active_admins(conn, user_id) == 0
+    ):
+        raise HTTPException(
+            status_code=409, detail={"reason": "last_active_admin"}
         )
-        if (await cur.fetchone())[0] == 0:
-            raise HTTPException(
-                status_code=409, detail={"reason": "last_active_admin"}
-            )
     # PDF sweep: collect the user's stored files BEFORE the rows cascade away.
     # Best-effort — a failed unlink after the rows are gone is only a disk
     # leak, never a correctness issue.

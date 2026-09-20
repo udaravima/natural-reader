@@ -44,13 +44,20 @@ async def _admin(db_conn):
     return admin, p
 
 
-async def _make_user(db_conn, email, *, role="member", status="pending"):
+async def _make_user(db_conn, email, *, role="member", status="pending", capabilities=None):
     """A second user, directly shaped (PATCH exists but raw SQL is less
-    indirection here — these tests are about DELETE, not PATCH)."""
+    indirection here — these tests are about DELETE, not PATCH).
+
+    Real admin access is gated on the `admin` CAPABILITY, not the `role`
+    column (see admin.py's _other_active_admins) — so role="admin" here
+    also grants the capability by default, to keep these "make this user an
+    admin" call sites meaningful. Pass capabilities explicitly to construct
+    a desynced row (role='admin' with no capability) instead."""
+    caps = capabilities if capabilities is not None else (["admin"] if role == "admin" else [])
     cur = await db_conn.execute(
-        "INSERT INTO users (email, display_name, role, status) "
-        "VALUES (%s, %s, %s, %s) RETURNING id",
-        (email, email, role, status),
+        "INSERT INTO users (email, display_name, role, status, capabilities) "
+        "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+        (email, email, role, status, caps),
     )
     return str((await cur.fetchone())[0])
 
@@ -226,7 +233,6 @@ async def test_enroll_creates_unlinked_row(db_conn):
             json={
                 "email": "new@x.io",
                 "display_name": "New Person",
-                "role": "member",
                 "status": "pending",
                 "inference_daily_token_budget": 1234,
             },
@@ -299,7 +305,6 @@ async def test_enrolled_row_claimed_by_verified_login(db_conn):
             "/v1/admin/users",
             json={
                 "email": "new@x.io",
-                "role": "member",
                 "status": "active",
                 "inference_daily_token_budget": 777,
             },

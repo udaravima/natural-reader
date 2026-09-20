@@ -44,12 +44,6 @@ async def set_status(conn, user_id: str, status: str) -> None:
         await conn.execute("DELETE FROM sessions WHERE user_id=%s", (user_id,))
 
 
-async def set_role(conn, user_id: str, role: str) -> None:
-    await conn.execute(
-        "UPDATE users SET role=%s, updated_at=now() WHERE id=%s", (role, user_id)
-    )
-
-
 async def set_inference_budget(conn, user_id: str, budget: int | None) -> None:
     """Daily inference token budget. NULL = deployment default; 0 = unlimited."""
     await conn.execute(

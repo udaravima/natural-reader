@@ -52,7 +52,6 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
   // Enroll form
   const [enrollEmail, setEnrollEmail] = useState('');
   const [enrollName, setEnrollName] = useState('');
-  const [enrollRole, setEnrollRole] = useState('member');
   const [enrollStatus, setEnrollStatus] = useState('pending');
   const [enrollBudget, setEnrollBudget] = useState('');
   const [enrollCaps, setEnrollCaps] = useState({ reader: false, chat: false, admin: false });
@@ -133,7 +132,6 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
     if (!enrollEmail.trim()) return;
     const body = { email: enrollEmail.trim() };
     if (enrollName.trim()) body.display_name = enrollName.trim();
-    if (enrollRole !== 'member') body.role = enrollRole;
     if (enrollStatus !== 'pending') body.status = enrollStatus;
     const budget = enrollBudget.trim();
     if (budget !== '') body.inference_daily_token_budget = Number(budget);
@@ -167,7 +165,7 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
       }
       setEnrollNote({ kind: 'ok', text });
       setEnrollEmail(''); setEnrollName(''); setEnrollBudget('');
-      setEnrollRole('member'); setEnrollStatus('pending');
+      setEnrollStatus('pending');
       setEnrollCaps({ reader: false, chat: false, admin: false });
       await loadUsers();
     } catch (e) {
@@ -247,14 +245,6 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
               aria-label="Enroll display name"
               className={`px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-w-[120px]`}
             />
-            <select
-              value={enrollRole} onChange={(e) => setEnrollRole(e.target.value)}
-              aria-label="Enroll role"
-              className={`px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg}`}
-            >
-              <option value="member">member</option>
-              <option value="admin">admin</option>
-            </select>
             <select
               value={enrollStatus} onChange={(e) => setEnrollStatus(e.target.value)}
               aria-label="Enroll status"
