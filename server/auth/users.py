@@ -11,7 +11,7 @@ SEED_ADMIN_ID = "00000000-0000-0000-0000-000000000001"
 
 _KEYS = [
     "id", "email", "display_name", "role", "status", "oidc_iss", "oidc_sub",
-    "inference_daily_token_budget", "created_at",
+    "inference_daily_token_budget", "capabilities", "created_at",
 ]
 _COLS = ", ".join(_KEYS)
 
