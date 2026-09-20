@@ -7,11 +7,13 @@ import { apiFetch } from '../../utils/apiFetch';
  * Inference usage, Deployment config — one scroll, no tabs. Visual language
  * mirrors AdminPanel/AccountPanel (tiny text, list rows, underline buttons).
  *
- * All rails are server-side; this UI only hides affordances cosmetically
- * (self-row hides Disable / role toggle / Delete).
+ * All rails are server-side; this UI only hides/disables affordances
+ * cosmetically (self-row hides Disable / Delete and disables the admin
+ * capability checkbox, so an admin can't lock themselves out).
  */
 
 const DAY_OPTIONS = [1, 7, 14, 30, 90];
+const CAPABILITIES = ['reader', 'chat', 'admin'];
 
 function fmtBudget(budget) {
   if (budget === null || budget === undefined) return 'unlimited (unset)';
@@ -53,6 +55,7 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
   const [enrollRole, setEnrollRole] = useState('member');
   const [enrollStatus, setEnrollStatus] = useState('pending');
   const [enrollBudget, setEnrollBudget] = useState('');
+  const [enrollCaps, setEnrollCaps] = useState({ reader: false, chat: false, admin: false });
   const [enrollNote, setEnrollNote] = useState(null); // { kind: 'ok'|'err', text }
 
   // Delete flow
@@ -111,6 +114,20 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
     }
   };
 
+  // locked=true (self-lockout guard on the admin's own admin capability) is a
+  // belt-and-suspenders no-op: the checkbox that calls this is also disabled,
+  // so onChange never fires, but this keeps the guard co-located with the
+  // mutation rather than relying solely on the disabled prop.
+  const toggleCapability = (u, cap, locked) => {
+    if (locked) return;
+    const current = new Set(u.capabilities ?? []);
+    if (current.has(cap)) current.delete(cap); else current.add(cap);
+    patchUser(u.id, { capabilities: [...current].sort() });
+  };
+
+  const toggleEnrollCap = (cap) =>
+    setEnrollCaps((prev) => ({ ...prev, [cap]: !prev[cap] }));
+
   const submitEnroll = async (e) => {
     e.preventDefault();
     if (!enrollEmail.trim()) return;
@@ -120,6 +137,8 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
     if (enrollStatus !== 'pending') body.status = enrollStatus;
     const budget = enrollBudget.trim();
     if (budget !== '') body.inference_daily_token_budget = Number(budget);
+    const caps = CAPABILITIES.filter((cap) => enrollCaps[cap]);
+    if (caps.length) body.capabilities = caps;
     try {
       const res = await apiFetch(apiHost, apiPort, '/v1/admin/users', {
         method: 'POST',
@@ -131,12 +150,25 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
         return;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setEnrollNote({
-        kind: 'ok',
-        text: `Enrolled ${enrollEmail.trim()} — have the user log in with this exact verified email to claim the account.`,
-      });
+      // { user, onboarding, temp_password? } (current contract). A response
+      // without an onboarding field (e.g. an older/simpler mock) falls back
+      // to the original claim-by-email copy below.
+      const data = await res.json().catch(() => null);
+      const onboarding = data?.onboarding;
+      let text;
+      if (onboarding === 'temp_password' && data?.temp_password) {
+        text = `Enrolled ${enrollEmail.trim()} — temp password: ${data.temp_password} (share this once).`;
+      } else if (onboarding === 'email') {
+        text = `Enrolled ${enrollEmail.trim()} — invite emailed.`;
+      } else if (onboarding === 'manual') {
+        text = `Enrolled ${enrollEmail.trim()} — create this user in Keycloak — links on first verified-email login.`;
+      } else {
+        text = `Enrolled ${enrollEmail.trim()} — have the user log in with this exact verified email to claim the account.`;
+      }
+      setEnrollNote({ kind: 'ok', text });
       setEnrollEmail(''); setEnrollName(''); setEnrollBudget('');
       setEnrollRole('member'); setEnrollStatus('pending');
+      setEnrollCaps({ reader: false, chat: false, admin: false });
       await loadUsers();
     } catch (e) {
       setEnrollNote({ kind: 'err', text: `Enroll failed: ${e.message}` });
@@ -239,6 +271,19 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
               aria-label="Enroll budget"
               className={`px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} w-32`}
             />
+            <span className="flex items-center gap-2 text-[10px]">
+              {CAPABILITIES.map((cap) => (
+                <label key={cap} className="flex items-center gap-1 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={enrollCaps[cap]}
+                    onChange={() => toggleEnrollCap(cap)}
+                    className="h-3 w-3 accent-blue-500"
+                  />
+                  {cap}
+                </label>
+              ))}
+            </span>
             <button type="submit" className="text-xs underline text-blue-500">Enroll</button>
             {enrollNote && (
               <span className={`text-[10px] w-full ${enrollNote.kind === 'ok' ? 'text-green-600' : 'text-red-500'}`}>
@@ -280,19 +325,35 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
                     )}
                     {!isSelf && (
                       <button
-                        onClick={() => patchUser(u.id, { role: u.role === 'admin' ? 'member' : 'admin' })}
-                        className="text-[10px] underline"
-                      >
-                        {u.role === 'admin' ? 'Make member' : 'Make admin'}
-                      </button>
-                    )}
-                    {!isSelf && (
-                      <button
                         onClick={() => { setDeleteTarget(deleting ? null : u.id); setDeleteTyped(''); }}
                         className="text-[10px] text-red-500 underline"
                       >{deleting ? 'Cancel' : 'Delete'}</button>
                     )}
                   </span>
+                </div>
+                <div className="flex items-center gap-3 text-[10px]">
+                  <span className={theme.textMuted}>capabilities:</span>
+                  {CAPABILITIES.map((cap) => {
+                    // Self-lockout guard: an admin cannot strip their own
+                    // admin capability from their own row (server would
+                    // allow it and lock them out of the console).
+                    const locked = isSelf && cap === 'admin';
+                    return (
+                      <label
+                        key={cap}
+                        className={`flex items-center gap-1 ${locked ? 'opacity-50' : 'cursor-pointer'}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={(u.capabilities ?? []).includes(cap)}
+                          disabled={locked}
+                          onChange={() => toggleCapability(u, cap, locked)}
+                          className="h-3 w-3 accent-blue-500"
+                        />
+                        {cap}
+                      </label>
+                    );
+                  })}
                 </div>
                 {deleting && (
                   <div className="flex flex-wrap items-center gap-2 text-[10px] pt-1">

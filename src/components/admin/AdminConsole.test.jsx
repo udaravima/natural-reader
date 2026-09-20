@@ -11,21 +11,24 @@ const noContent = () => ({ ok: true, status: 204 });
 
 const user = (over = {}) => ({
   id: 'u1', email: 'a@x.io', display_name: null, role: 'member', status: 'active',
-  oidc_iss: 'https://kc', oidc_sub: 'sub-1',
+  oidc_iss: 'https://kc', oidc_sub: 'sub-1', capabilities: [],
   inference_daily_token_budget: null, created_at: '2026-09-17T00:00:00Z',
   ...over,
 });
 
 // Mounts the console with a mutable user list so PATCH/POST/DELETE handlers
 // can mutate it and the reload reflects the change, like the real backend.
-function mount({ users, usage = [], config = {}, showToast = vi.fn(), currentUserId = 'me' } = {}) {
+// enrollResponse(created) lets a test opt into the current
+// { user, onboarding, temp_password? } POST contract; by default the mock
+// returns the raw created-user row (the shape older/simpler tests assert on).
+function mount({ users, usage = [], config = {}, showToast = vi.fn(), currentUserId = 'me', enrollResponse } = {}) {
   apiFetch.mockImplementation(async (host, port, path, opts) => {
     if (path === '/v1/admin/users' && opts?.method === 'POST') {
       const body = JSON.parse(opts.body);
       if (users.some((u) => u.email === body.email)) return json(409, { detail: 'email already exists' });
       const created = user({ id: `u${users.length + 1}`, ...body, oidc_sub: null });
       users.push(created);
-      return json(201, created);
+      return json(201, enrollResponse ? enrollResponse(created) : created);
     }
     if (path.startsWith('/v1/admin/users/') && opts?.method === 'PATCH') return json(200, {});
     if (path.startsWith('/v1/admin/users/') && opts?.method === 'DELETE') {
@@ -83,13 +86,72 @@ describe('AdminConsole — users', () => {
     expect(lastBody('PATCH')).toEqual({ inference_daily_token_budget: null });
   });
 
-  it('hides Disable, role toggle and Delete on the self row', async () => {
-    mount({ users: [user({ id: 'me', role: 'admin' })] });
+  it('hides Disable and Delete, and locks the admin capability, on the self row', async () => {
+    mount({ users: [user({ id: 'me', role: 'admin', capabilities: ['admin', 'reader', 'chat'] })] });
     await screen.findByText('a@x.io');
     const row = screen.getByTestId('user-row-me');
     expect(within(row).queryByRole('button', { name: /disable/i })).toBeNull();
-    expect(within(row).queryByRole('button', { name: /make member/i })).toBeNull();
     expect(within(row).queryByRole('button', { name: /delete/i })).toBeNull();
+    // Self-lockout guard: the admin checkbox is checked (it reflects the
+    // real capability) but disabled, so the admin can't strip their own
+    // admin access from this row. reader/chat stay editable.
+    const adminBox = within(row).getByRole('checkbox', { name: 'admin' });
+    expect(adminBox).toBeChecked();
+    expect(adminBox).toBeDisabled();
+    expect(within(row).getByRole('checkbox', { name: 'reader' })).toBeEnabled();
+    fireEvent.click(adminBox);
+    expect(calls('PATCH').length).toBe(0);
+  });
+
+  it('PATCHes capabilities when a capability checkbox is toggled', async () => {
+    const users = [user({ id: 'u2', email: 'b@x.io', capabilities: ['reader'] })];
+    mount({ users });
+    await screen.findByText('b@x.io');
+    const row = screen.getByTestId('user-row-u2');
+    fireEvent.click(within(row).getByRole('checkbox', { name: 'chat' }));
+    await waitFor(() => expect(calls('PATCH').length).toBe(1));
+    expect(calls('PATCH')[0][2]).toBe('/v1/admin/users/u2');
+    const caps = lastBody('PATCH').capabilities;
+    expect(caps).toEqual(expect.arrayContaining(['reader', 'chat']));
+    expect(caps).toHaveLength(2);
+  });
+
+  it('includes selected capabilities in the enroll POST body', async () => {
+    mount({ users: [user({ id: 'me', role: 'admin' })] });
+    await screen.findByText('a@x.io');
+    const form = screen.getByLabelText(/enroll email/i).closest('form');
+    fireEvent.change(screen.getByLabelText(/enroll email/i), { target: { value: 'new3@x.io' } });
+    fireEvent.click(within(form).getByRole('checkbox', { name: 'reader' }));
+    fireEvent.click(within(form).getByRole('checkbox', { name: 'chat' }));
+    fireEvent.click(screen.getByRole('button', { name: /^enroll$/i }));
+    await waitFor(() => expect(calls('POST').length).toBe(1));
+    expect(lastBody('POST').capabilities).toEqual(expect.arrayContaining(['reader', 'chat']));
+  });
+
+  it('shows the temp password once after enroll', async () => {
+    mount({
+      users: [user({ id: 'me', role: 'admin' })],
+      enrollResponse: (created) => ({ user: created, onboarding: 'temp_password', temp_password: 'abc' }),
+    });
+    await screen.findByText('a@x.io');
+    fireEvent.change(screen.getByLabelText(/enroll email/i), { target: { value: 'new@x.io' } });
+    fireEvent.click(screen.getByRole('button', { name: /^enroll$/i }));
+    await waitFor(() => expect(calls('POST').length).toBe(1));
+    expect(await screen.findByText(/abc/)).toBeInTheDocument();
+    expect(screen.getByText(/share this once/i)).toBeInTheDocument();
+  });
+
+  it('shows an invite-emailed note, not a password, when onboarding is email', async () => {
+    mount({
+      users: [user({ id: 'me', role: 'admin' })],
+      enrollResponse: (created) => ({ user: created, onboarding: 'email' }),
+    });
+    await screen.findByText('a@x.io');
+    fireEvent.change(screen.getByLabelText(/enroll email/i), { target: { value: 'new2@x.io' } });
+    fireEvent.click(screen.getByRole('button', { name: /^enroll$/i }));
+    await waitFor(() => expect(calls('POST').length).toBe(1));
+    expect(await screen.findByText(/invite emailed/i)).toBeInTheDocument();
+    expect(screen.queryByText(/temp password/i)).toBeNull();
   });
 
   it('delete confirm requires the typed email, then DELETEs and toasts', async () => {
