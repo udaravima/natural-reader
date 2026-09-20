@@ -21,7 +21,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from ..auth.authz import assert_owns_session
-from ..auth.deps import Principal, get_current_user
+from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
 
 logger = logging.getLogger(__name__)
@@ -90,10 +90,11 @@ def _ensure_ready() -> None:
 
 async def _require_session_owner(
     session_id: str,
-    principal: Principal = Depends(get_current_user),
+    principal: Principal = Depends(require_capability("chat")),
 ) -> Principal:
-    """Route dependency: 401 if unauthenticated, 404 unless the caller owns the
-    session (missing and not-owned are indistinguishable to the caller)."""
+    """Route dependency: 401 if unauthenticated, 403 if the caller lacks the
+    `chat` capability, 404 unless the caller owns the session (missing and
+    not-owned are indistinguishable to the caller)."""
     _ensure_ready()
     pool = get_pool()
     async with pool.connection() as conn:
@@ -105,7 +106,7 @@ async def _require_session_owner(
 
 @router.get("")
 async def list_sessions(
-    principal: Principal = Depends(get_current_user),
+    principal: Principal = Depends(require_capability("chat")),
 ) -> list[dict[str, Any]]:
     _ensure_ready()
     pool = get_pool()
@@ -213,7 +214,7 @@ async def get_session(
 async def upsert_session(
     session_id: str,
     payload: SessionIn,
-    principal: Principal = Depends(get_current_user),
+    principal: Principal = Depends(require_capability("chat")),
 ) -> dict[str, Any]:
     """
     Upsert the entire session record: replace the session row, then

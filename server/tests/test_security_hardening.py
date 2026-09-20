@@ -32,7 +32,8 @@ def _docs_app() -> FastAPI:
 
     app = FastAPI()
     app.dependency_overrides[deps.get_current_user] = lambda: deps.Principal(
-        user_id="00000000-0000-0000-0000-000000000001", email="a@x.io", role="admin"
+        user_id="00000000-0000-0000-0000-000000000001", email="a@x.io", role="admin",
+        capabilities=frozenset({"reader"}),
     )
     app.include_router(docs.router)
     return app

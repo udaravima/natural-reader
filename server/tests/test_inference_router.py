@@ -8,7 +8,8 @@ from httpx import ASGITransport
 from server.auth import deps
 from server.routers import inference as inf
 
-PRINCIPAL = deps.Principal(user_id="u1", email="a@x.io", role="member")
+PRINCIPAL = deps.Principal(user_id="u1", email="a@x.io", role="member",
+                            capabilities=frozenset({"chat"}))
 
 NDJSON = (
     b'{"model":"m","message":{"role":"assistant","content":"Hel"}}\n'
@@ -243,7 +244,8 @@ async def _authed_db_client(app, db_conn):
 
     u = await resolve_or_provision_user(db_conn, iss="i", sub="inf", email="inf@x.io")
     app.dependency_overrides[deps.get_current_user] = lambda: deps.Principal(
-        user_id=u["id"], email=u["email"], role="member"
+        user_id=u["id"], email=u["email"], role="member",
+        capabilities=frozenset({"chat"}),
     )
 
     async def _conn():

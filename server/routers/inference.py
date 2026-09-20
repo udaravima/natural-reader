@@ -130,7 +130,7 @@ class _UsageTap:
 
 @router.get("/models")
 async def list_models(
-    principal: deps.Principal = Depends(deps.get_current_user),
+    principal: deps.Principal = Depends(deps.require_capability("chat")),
     conn=Depends(deps.get_conn),
 ):
     cfg = model_router.get_config()
@@ -160,7 +160,7 @@ async def list_models(
 @router.post("/chat")
 async def chat(
     body: ChatRequest,
-    principal: deps.Principal = Depends(deps.get_current_user),
+    principal: deps.Principal = Depends(deps.require_capability("chat")),
     conn=Depends(deps.get_conn),
 ):
     cfg = model_router.get_config()

@@ -28,7 +28,7 @@ from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
 from ..auth.authz import assert_owns_doc
-from ..auth.deps import Principal, get_current_user
+from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
 from ..services import docling_convert, model_router
 from ..services.embeddings import EMBEDDING_DIM, embed_batch, embed_one
@@ -170,10 +170,11 @@ async def _fetch_doc_status(conn, doc_id: str) -> dict[str, Any] | None:
 
 async def _require_doc_owner(
     doc_id: DocId,
-    principal: Principal = Depends(get_current_user),
+    principal: Principal = Depends(require_capability("reader")),
 ) -> Principal:
-    """Route dependency: 401 if unauthenticated, 404 unless the caller owns the
-    doc (missing and not-owned are indistinguishable to the caller)."""
+    """Route dependency: 401 if unauthenticated, 403 if the caller lacks the
+    `reader` capability, 404 unless the caller owns the doc (missing and
+    not-owned are indistinguishable to the caller)."""
     _ensure_ready()
     pool = get_pool()
     async with pool.connection() as conn:
@@ -186,7 +187,7 @@ async def _require_doc_owner(
 @router.post("")
 async def register_document(
     payload: DocRegisterIn,
-    principal: Principal = Depends(get_current_user),
+    principal: Principal = Depends(require_capability("reader")),
 ) -> dict[str, Any]:
     """
     Upsert a document row owned by the caller. Idempotent on `doc_id`;

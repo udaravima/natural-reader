@@ -11,7 +11,7 @@ def _app():
     # web_search now requires an authenticated principal; stub one so these
     # tests exercise the tool logic, not the auth layer (covered separately).
     app.dependency_overrides[deps.get_current_user] = lambda: deps.Principal(
-        user_id="u1", email="a@x.io", role="member"
+        user_id="u1", email="a@x.io", role="member", capabilities=frozenset({"chat"})
     )
     app.include_router(tools_router.router)
     return app

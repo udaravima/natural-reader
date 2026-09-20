@@ -30,7 +30,7 @@ async def test_web_search_allows_authenticated(db_conn, monkeypatch):
     monkeypatch.setattr(tools_router, "web_search", fake_web_search)
     app = FastAPI()
     app.dependency_overrides[deps.get_current_user] = lambda: deps.Principal(
-        user_id="u1", email="a@x.io", role="member"
+        user_id="u1", email="a@x.io", role="member", capabilities=frozenset({"chat"})
     )
     app.include_router(tools_router.router)
     async with _client(app) as client:
