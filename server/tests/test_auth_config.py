@@ -35,3 +35,22 @@ def test_oidc_values_parsed():
     )
     assert cfg.oidc_issuer == "https://kc/realms/nr"
     assert cfg.oidc_client_id == "app"
+
+
+def test_kc_admin_fields_and_availability():
+    from server.auth.config import kc_admin_available
+
+    cfg = load_auth_config({
+        "KC_ADMIN_CLIENT_ID": "natural-reader-admin",
+        "KC_ADMIN_CLIENT_SECRET": "s3cr3t",
+    })
+    assert cfg.kc_admin_client_id == "natural-reader-admin"
+    assert cfg.kc_admin_client_secret == "s3cr3t"
+    assert kc_admin_available(cfg) is True
+
+
+def test_kc_admin_unavailable_when_unset():
+    from server.auth.config import kc_admin_available
+
+    assert kc_admin_available(load_auth_config({})) is False
+    assert kc_admin_available(load_auth_config({"KC_ADMIN_CLIENT_ID": "x"})) is False

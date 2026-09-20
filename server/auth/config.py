@@ -25,6 +25,8 @@ class AuthConfig:
     cookie_secure: bool
     cookie_domain: str | None
     bootstrap_admin_email: str | None
+    kc_admin_client_id: str | None
+    kc_admin_client_secret: str | None
 
 
 def load_auth_config(env: Mapping[str, str]) -> AuthConfig:
@@ -43,7 +45,15 @@ def load_auth_config(env: Mapping[str, str]) -> AuthConfig:
         cookie_secure=flag("COOKIE_SECURE", True),
         cookie_domain=env.get("COOKIE_DOMAIN"),
         bootstrap_admin_email=env.get("BOOTSTRAP_ADMIN_EMAIL"),
+        kc_admin_client_id=env.get("KC_ADMIN_CLIENT_ID"),
+        kc_admin_client_secret=env.get("KC_ADMIN_CLIENT_SECRET"),
     )
+
+
+def kc_admin_available(cfg: "AuthConfig") -> bool:
+    """True only when both service-account credentials are configured — the
+    switch between full Keycloak provisioning and app-only degradation."""
+    return bool(cfg.kc_admin_client_id and cfg.kc_admin_client_secret)
 
 
 def _is_loopback(bind_host: str) -> bool:
