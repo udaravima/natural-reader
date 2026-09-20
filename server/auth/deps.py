@@ -19,6 +19,7 @@ class Principal:
     user_id: str
     email: str
     role: str
+    capabilities: frozenset[str] = frozenset()
 
 
 async def get_conn():
@@ -30,7 +31,9 @@ async def get_conn():
 
 
 def _principal(row: dict) -> Principal:
-    return Principal(user_id=row["id"], email=row["email"], role=row["role"])
+    caps = frozenset(row.get("capabilities") or [])
+    role = "admin" if "admin" in caps else "member"
+    return Principal(user_id=row["id"], email=row["email"], role=role, capabilities=caps)
 
 
 async def get_current_user(request: Request, conn=Depends(get_conn)) -> Principal:
@@ -62,3 +65,15 @@ async def require_admin(principal: Principal = Depends(get_current_user)) -> Pri
     if principal.role != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
     return principal
+
+
+def require_capability(name: str):
+    """Deny-by-default gate for a feature capability (reader/chat/admin)."""
+    async def _dep(principal: Principal = Depends(get_current_user)) -> Principal:
+        if name not in principal.capabilities:
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "missing_capability", "capability": name},
+            )
+        return principal
+    return _dep

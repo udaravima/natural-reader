@@ -71,3 +71,32 @@ async def test_require_admin_blocks_member(db_conn):
     _, raw = await create_token(db_conn, u2["id"], "cli")
     r = await _get(_app(db_conn), "/admin-only", {"Authorization": f"Bearer {raw}"})
     assert r.status_code == 403
+
+
+def _cap_app(principal):
+    app = FastAPI()
+    app.dependency_overrides[deps.get_current_user] = lambda: principal
+
+    @app.get("/needs-chat")
+    async def needs_chat(p: deps.Principal = Depends(deps.require_capability("chat"))):
+        return {"ok": p.email}
+
+    return app
+
+
+async def test_require_capability_allows_holder():
+    p = deps.Principal(user_id="u", email="e@x.io", role="member",
+                       capabilities=frozenset({"chat"}))
+    async with httpx.AsyncClient(transport=ASGITransport(app=_cap_app(p)),
+                                 base_url="http://t") as c:
+        assert (await c.get("/needs-chat")).status_code == 200
+
+
+async def test_require_capability_403s_without():
+    p = deps.Principal(user_id="u", email="e@x.io", role="member",
+                       capabilities=frozenset({"reader"}))
+    async with httpx.AsyncClient(transport=ASGITransport(app=_cap_app(p)),
+                                 base_url="http://t") as c:
+        r = await c.get("/needs-chat")
+        assert r.status_code == 403
+        assert r.json()["detail"] == {"error": "missing_capability", "capability": "chat"}
