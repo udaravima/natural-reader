@@ -80,12 +80,18 @@ async def patch_user(
             to_add = sorted(set(caps) - current)
             to_remove = sorted(current - set(caps))
             try:
-                if to_add:
-                    await kc.assign_realm_roles(sub, to_add)
+                # Revoke first and hard-fail: a swallowed KC revoke would be
+                # re-granted from the token at the user's next login (fail-open).
                 if to_remove:
                     await kc.remove_realm_roles(sub, to_remove)
-            except Exception:
-                logger.warning("KC role reconcile failed for %s", sub)
+                if to_add:
+                    await kc.assign_realm_roles(sub, to_add)
+            except Exception as e:
+                logger.warning("KC role reconcile failed for %s: %s", sub, e)
+                raise HTTPException(
+                    status_code=502,
+                    detail="Keycloak role sync failed; capabilities unchanged",
+                )
         await users.set_capabilities(conn, user_id, caps)
     if "role" in data:
         if data["role"] not in ("admin", "member"):

@@ -309,3 +309,23 @@ async def test_delete_survives_kc_failure(db_conn):
         r = await c.delete(f"/v1/admin/users/{u['id']}")
     assert r.status_code == 204
     assert await get_user(db_conn, u["id"]) is None
+
+
+async def test_capability_revoke_hard_fails_on_kc_error(db_conn):
+    """A KC revoke failure must hard-fail (502) and leave the DB unchanged —
+    a swallowed revoke would be re-granted from the token at next login
+    (fail-open), unlike the intentionally best-effort status/delete paths."""
+    from server.auth.users import enroll_linked_user, get_user
+    _, p = await _admin(db_conn)
+    u = await enroll_linked_user(db_conn, iss="i", sub="sub-r", email="r@x.io",
+                                 capabilities=["reader", "chat"], status="active")
+
+    class _KC(_FakeKC):
+        async def remove_realm_roles(self, sub, names):
+            raise Exception("kc down")
+
+    kc = _KC()
+    async with _client(_app_kc(db_conn, p, kc)) as c:
+        r = await c.patch(f"/v1/admin/users/{u['id']}", json={"capabilities": ["reader"]})
+    assert r.status_code == 502
+    assert set((await get_user(db_conn, u["id"]))["capabilities"]) == {"reader", "chat"}
