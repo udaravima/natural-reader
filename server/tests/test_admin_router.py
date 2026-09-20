@@ -192,3 +192,40 @@ async def test_enroll_falls_back_when_kc_absent(db_conn):
     assert r.status_code == 201 and body["onboarding"] == "manual"
     assert body["user"]["oidc_sub"] is None
     assert set(body["user"]["capabilities"]) == {"reader"}
+
+
+class _FakeKCBoom(_FakeKC):
+    """A KC fake that succeeds through create_user but fails on the very next
+    call — exercises the "ANY post-create failure compensates" safety
+    property (a generic, non-KCAdminError exception, to prove the except
+    Exception catch-all in the router's compensation block is reached, not
+    just the KCAdminError-specific paths)."""
+    async def assign_realm_roles(self, sub, names):
+        raise Exception("boom")
+
+
+async def test_enroll_generic_post_create_failure_compensates(db_conn):
+    _, p = await _admin(db_conn)
+    kc = _FakeKCBoom()
+    async with _client(_app_kc(db_conn, p, kc)) as c:
+        r = await c.post("/v1/admin/users", json={"email": "boom@x.io", "capabilities": []})
+    assert r.status_code == 502
+    # The compensation path deleted the just-created Keycloak user — no
+    # orphan left behind by the failed enroll.
+    assert kc.deleted == ["sub-boom@x.io"]
+
+
+async def test_enroll_local_conflict_compensates(db_conn):
+    _, p = await _admin(db_conn)
+    # A row already owns this email app-side (but NOT in Keycloak, per the
+    # fake's empty `existing` set below) — enroll_linked_user's INSERT hits
+    # the UNIQUE(email) constraint -> ValueError, AFTER kc.create_user already
+    # minted a Keycloak identity for it.
+    await resolve_or_provision_user(db_conn, iss="i", sub="pre", email="dupe@x.io")
+    kc = _FakeKC()
+    async with _client(_app_kc(db_conn, p, kc)) as c:
+        r = await c.post("/v1/admin/users", json={"email": "dupe@x.io", "capabilities": []})
+    assert r.status_code == 409
+    # Compensation still fires for a LOCAL (app-side) failure, not just a
+    # Keycloak-side one — the just-created Keycloak user is deleted.
+    assert kc.deleted == ["sub-dupe@x.io"]

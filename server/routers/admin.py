@@ -105,7 +105,11 @@ async def enroll_user(
             raise HTTPException(status_code=409, detail="email already exists")
         return {"user": user, "onboarding": "manual"}
 
-    if await kc.find_user_by_email(body.email):
+    try:
+        exists = await kc.find_user_by_email(body.email)
+    except KCAdminError as e:
+        raise HTTPException(status_code=502, detail=f"Keycloak lookup failed: {e}")
+    if exists:
         raise HTTPException(status_code=409, detail="email already exists in Keycloak")
     try:
         sub = await kc.create_user(email=body.email, display_name=body.display_name,
