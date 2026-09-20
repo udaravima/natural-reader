@@ -193,10 +193,20 @@ export default function App() {
   const inChat = viewMode === 'chat';
   const inAdmin = viewMode === 'admin';
 
-  // Boot coercion (admin-console spec §3): a persisted viewMode 'admin' is
-  // only valid for an actual admin. Waits for the auth probe to resolve so a
-  // loading admin isn't bounced before /v1/auth/me answers.
-  useViewModeGuard({ viewMode, setViewMode, authState: auth.state, role: auth.user?.role });
+  // Capabilities granted to the current user. The auth gate below already
+  // guarantees at least one of reader/chat/admin once the app renders, but
+  // hooks run before that gate, so this is computed unconditionally.
+  const caps = auth.user?.capabilities ?? [];
+  const canReader = caps.includes('reader');
+  const canChat = caps.includes('chat');
+  const canAdmin = caps.includes('admin');
+
+  // Boot coercion (admin-console spec §3, generalized to all three views): a
+  // persisted viewMode the user no longer (or never did) have the capability
+  // for gets coerced to the first permitted view (reader, then chat, then
+  // admin). Waits for the auth probe to resolve so a loading session isn't
+  // bounced before /v1/auth/me answers.
+  useViewModeGuard({ viewMode, setViewMode, authState: auth.state, caps });
 
   const ttsEngine = useTtsEngine({
     textItems, currentSentenceIndex, setCurrentSentenceIndex,
@@ -1082,7 +1092,9 @@ export default function App() {
           darkMode={darkMode}
           hasDocument={hasDocument}
           viewMode={viewMode} setViewMode={setViewMode}
-          isAdmin={auth.user?.role === 'admin'}
+          isAdmin={canAdmin}
+          canReader={canReader}
+          canChat={canChat}
           status={status}
           isPlaying={isPlaying}
           isLocalhost={isLocalhost} setIsLocalhost={setIsLocalhost}
@@ -1123,7 +1135,10 @@ export default function App() {
         )}
 
         {!distractionFree && (inChat ? (
-          <ChatSidebar
+          // Mount gate mirroring the admin console below: hiding via
+          // ViewSwitcher is cosmetic, this is the render-time boundary that
+          // covers the brief window before useViewModeGuard's effect fires.
+          canChat && <ChatSidebar
             theme={theme}
             darkMode={darkMode}
             effectiveIsMobile={effectiveIsMobile}
@@ -1150,7 +1165,7 @@ export default function App() {
             renameSession={chatRenameSession}
           />
         ) : inAdmin ? null : (
-        <Sidebar
+        canReader && <Sidebar
           theme={theme}
           darkMode={darkMode}
           effectiveIsMobile={effectiveIsMobile}
@@ -1190,7 +1205,10 @@ export default function App() {
         ))}
 
         {inChat ? (
-          <ChatView
+          // Mount gate mirroring the admin console below: hiding via
+          // ViewSwitcher is cosmetic, this is the render-time boundary that
+          // covers the brief window before useViewModeGuard's effect fires.
+          canChat && <ChatView
             theme={theme}
             darkMode={darkMode}
             effectiveIsMobile={effectiveIsMobile}
@@ -1226,6 +1244,10 @@ export default function App() {
             />
           )
         ) : (
+        // Mount gate mirroring the admin console above: hiding via
+        // ViewSwitcher is cosmetic, this is the render-time boundary that
+        // covers the brief window before useViewModeGuard's effect fires.
+        canReader && (
         <WorkspaceProvider workspace={workspace} initialPath={workspaceEntryPath} onOpenDoc={onOpenDoc} onMissing={(path) => showToast(`"${path}" isn't in this folder`, 3000)}>
           <PdfViewer
             theme={theme}
@@ -1272,6 +1294,7 @@ export default function App() {
             </div>
           )}
         </WorkspaceProvider>
+        )
         )}
       </main>
 

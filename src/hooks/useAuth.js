@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { apiFetch, setUnauthorizedHandler } from '../utils/apiFetch';
+import { apiFetch, setUnauthorizedHandler, setForbiddenHandler } from '../utils/apiFetch';
 import { buildApiUrl } from '../utils/url';
 
 /**
@@ -39,6 +39,14 @@ export function useAuth(apiHost, apiPort) {
     setUnauthorizedHandler(() => { setUser(null); setState('anonymous'); });
     return () => setUnauthorizedHandler(null);
   }, []);
+
+  // A 403 missing_capability from any call site means our capability set is
+  // stale (e.g. an admin revoked a capability mid-session) — re-probe /me
+  // rather than booting to the login gate, since the session itself is fine.
+  useEffect(() => {
+    setForbiddenHandler(() => { check(); });
+    return () => setForbiddenHandler(null);
+  }, [check]);
 
   useEffect(() => { check(); }, [check]);
 

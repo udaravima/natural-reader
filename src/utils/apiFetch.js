@@ -8,6 +8,17 @@ export function setUnauthorizedHandler(fn) {
   _onUnauthorized = fn;
 }
 
+// Parallel seam for 403s that specifically mean "your token is valid but you
+// lack a capability the server just started requiring" (e.g. an admin was
+// revoked mid-session). Distinct from a plain 401 — the user is still
+// authenticated, so we re-probe /v1/auth/me rather than booting them to the
+// login gate.
+let _onForbidden = null;
+
+export function setForbiddenHandler(fn) {
+  _onForbidden = fn;
+}
+
 /**
  * Fetch a backend `/v1` endpoint with the session cookie attached.
  *
@@ -23,5 +34,11 @@ export async function apiFetch(host, port, path, opts = {}) {
     ...opts,
   });
   if (res.status === 401 && _onUnauthorized) _onUnauthorized();
+  if (res.status === 403 && _onForbidden) {
+    // Best-effort: clone so the caller can still read the original body, and
+    // never let a malformed/empty 403 body throw out of apiFetch.
+    const body = await res.clone().json().catch(() => null);
+    if (body?.detail?.error === 'missing_capability') _onForbidden();
+  }
   return res;
 }

@@ -22,6 +22,8 @@ export default function Header({
     // View mode
     viewMode, setViewMode,
     isAdmin,
+    canReader,
+    canChat,
     // Playback controls
     handlePlayPause,
     stopPlayback,
@@ -111,7 +113,7 @@ export default function Header({
             {/* RIGHT CONTROLS */}
             <div className="flex items-center gap-1 md:gap-3">
                 {/* Reader / Chat / Admin toggle */}
-                <ViewSwitcher theme={theme} viewMode={viewMode} setViewMode={setViewMode} isAdmin={isAdmin} />
+                <ViewSwitcher theme={theme} viewMode={viewMode} setViewMode={setViewMode} isAdmin={isAdmin} canReader={canReader} canChat={canChat} />
 
                 {/* Estimated Time */}
                 {inReader && hasDocument && calculateEstimatedTimeRemaining(playbackSpeed) && (

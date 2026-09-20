@@ -3,10 +3,10 @@ import { renderHook } from '@testing-library/react';
 import { useViewModeGuard } from './useViewModeGuard';
 
 describe('useViewModeGuard', () => {
-  it('coerces a persisted admin viewMode to reader for a member once auth resolves', () => {
+  it('coerces a persisted admin viewMode to reader for a non-admin once auth resolves', () => {
     const setViewMode = vi.fn();
     renderHook(() => useViewModeGuard({
-      viewMode: 'admin', setViewMode, authState: 'active', role: 'member',
+      viewMode: 'admin', setViewMode, authState: 'active', caps: ['reader', 'chat'],
     }));
     expect(setViewMode).toHaveBeenCalledWith('reader');
   });
@@ -14,7 +14,7 @@ describe('useViewModeGuard', () => {
   it('keeps the admin view for an actual admin', () => {
     const setViewMode = vi.fn();
     renderHook(() => useViewModeGuard({
-      viewMode: 'admin', setViewMode, authState: 'active', role: 'admin',
+      viewMode: 'admin', setViewMode, authState: 'active', caps: ['admin'],
     }));
     expect(setViewMode).not.toHaveBeenCalled();
   });
@@ -22,15 +22,47 @@ describe('useViewModeGuard', () => {
   it('waits for the auth probe before coercing (boot race guard)', () => {
     const setViewMode = vi.fn();
     renderHook(() => useViewModeGuard({
-      viewMode: 'admin', setViewMode, authState: 'loading', role: null,
+      viewMode: 'admin', setViewMode, authState: 'loading', caps: [],
     }));
     expect(setViewMode).not.toHaveBeenCalled();
   });
 
-  it('leaves non-admin view modes alone', () => {
+  it('leaves a permitted non-admin view mode alone', () => {
     const setViewMode = vi.fn();
     renderHook(() => useViewModeGuard({
-      viewMode: 'chat', setViewMode, authState: 'active', role: 'member',
+      viewMode: 'chat', setViewMode, authState: 'active', caps: ['reader', 'chat'],
+    }));
+    expect(setViewMode).not.toHaveBeenCalled();
+  });
+
+  it('coerces chat to reader when the user lacks the chat capability', () => {
+    const setViewMode = vi.fn();
+    renderHook(() => useViewModeGuard({
+      viewMode: 'chat', setViewMode, authState: 'active', caps: ['reader'],
+    }));
+    expect(setViewMode).toHaveBeenCalledWith('reader');
+  });
+
+  it('coerces reader to chat when the user lacks the reader capability but has chat', () => {
+    const setViewMode = vi.fn();
+    renderHook(() => useViewModeGuard({
+      viewMode: 'reader', setViewMode, authState: 'active', caps: ['chat'],
+    }));
+    expect(setViewMode).toHaveBeenCalledWith('chat');
+  });
+
+  it('coerces reader to admin when the user only has the admin capability', () => {
+    const setViewMode = vi.fn();
+    renderHook(() => useViewModeGuard({
+      viewMode: 'reader', setViewMode, authState: 'active', caps: ['admin'],
+    }));
+    expect(setViewMode).toHaveBeenCalledWith('admin');
+  });
+
+  it('does nothing when caps is empty — AuthGate NoAccessScreen covers that case', () => {
+    const setViewMode = vi.fn();
+    renderHook(() => useViewModeGuard({
+      viewMode: 'reader', setViewMode, authState: 'active', caps: [],
     }));
     expect(setViewMode).not.toHaveBeenCalled();
   });
