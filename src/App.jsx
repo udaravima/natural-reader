@@ -1013,7 +1013,8 @@ export default function App() {
   // so an unauthenticated visitor sees the login/pending/disabled screen rather
   // than the app or its loading spinner. With AUTH_ENABLED=false on a loopback
   // backend, /v1/auth/me returns the seed admin → state 'active' → app renders.
-  if (auth.state !== 'active') {
+  // Also gate active users with no capabilities — they see NoAccessScreen.
+  if (auth.state !== 'active' || !(auth.user?.capabilities?.length)) {
     return (
       <AuthGate
         state={auth.state}
