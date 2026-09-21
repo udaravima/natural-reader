@@ -148,6 +148,84 @@ async def test_owner_cannot_assign_doc_to_foreign_project(db_conn, docs_app):
     assert (await cur.fetchone())[0] is None
 
 
+async def test_owner_member_can_assign_doc_to_a_project_they_belong_to(db_conn, docs_app):
+    # The OR EXISTS project_members arm of the injection guard: a doc owner who
+    # is a *member* (not owner) of the target project may file their doc into it.
+    owner = await _user(db_conn, "owner-patch-mem")
+    stranger = await _user(db_conn, "stranger-owns-proj")
+    doc_id = "2" + "a" * 63
+    await _insert_doc(db_conn, doc_id, owner.user_id)
+
+    cur = await db_conn.execute(
+        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'Shared') RETURNING id",
+        (stranger.user_id,),
+    )
+    project_id = str((await cur.fetchone())[0])
+    await db_conn.execute(
+        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)",
+        (project_id, owner.user_id),
+    )
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
+    async with _client(docs_app) as client:
+        r = await client.patch(f"/v1/docs/{doc_id}", json={"project_id": project_id})
+        assert r.status_code == 200
+        assert r.json()["project_id"] == project_id
+
+
+async def test_admin_cannot_edit_tags_on_a_doc_they_do_not_own(db_conn, docs_app):
+    # Admin's only special power on PATCH is ownership reassignment. A tags-only
+    # PATCH carries no owner_user_id, so it goes down the ownership check like
+    # anyone else — an admin editing a stranger's tags gets the plain 404.
+    owner = await _user(db_conn, "owner-patch-admtag")
+    admin = await _user(db_conn, "admin-patch-tag", role="admin")
+    doc_id = "3" + "a" * 63
+    await _insert_doc(db_conn, doc_id, owner.user_id)
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: admin
+    async with _client(docs_app) as client:
+        r = await client.patch(f"/v1/docs/{doc_id}", json={"tags": ["x"]})
+        assert r.status_code == 404
+
+    cur = await db_conn.execute("SELECT tags FROM documents WHERE doc_id = %s", (doc_id,))
+    assert (await cur.fetchone())[0] == []  # unchanged
+
+
+async def test_owner_clears_tags_with_null(db_conn, docs_app):
+    # `{"tags": null}` is schema-valid (tags is nullable) and means "clear" —
+    # it must 200 to an empty list, not 500 in set(None).
+    owner = await _user(db_conn, "owner-patch-nulltags")
+    doc_id = "4" + "a" * 63
+    await _insert_doc(db_conn, doc_id, owner.user_id)
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
+    async with _client(docs_app) as client:
+        r = await client.patch(f"/v1/docs/{doc_id}", json={"tags": ["keep", "me"]})
+        assert r.status_code == 200
+        assert r.json()["tags"] == ["keep", "me"]
+
+        r = await client.patch(f"/v1/docs/{doc_id}", json={"tags": None})
+        assert r.status_code == 200
+        assert r.json()["tags"] == []
+
+    cur = await db_conn.execute("SELECT tags FROM documents WHERE doc_id = %s", (doc_id,))
+    assert (await cur.fetchone())[0] == []
+
+
+async def test_malformed_project_id_is_422_not_500(db_conn, docs_app):
+    # A non-UUID project_id used to reach a UUID column and 500 (psycopg
+    # InvalidTextRepresentation). Typed as uuid.UUID, it's rejected at the
+    # boundary with a 422 before any DB work.
+    owner = await _user(db_conn, "owner-patch-badproj")
+    doc_id = "5" + "a" * 63
+    await _insert_doc(db_conn, doc_id, owner.user_id)
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
+    async with _client(docs_app) as client:
+        r = await client.patch(f"/v1/docs/{doc_id}", json={"project_id": "not-a-uuid"})
+        assert r.status_code == 422
+
+
 async def test_owner_can_assign_doc_to_own_project(db_conn, docs_app):
     owner = await _user(db_conn, "owner-patch6")
     doc_id = "f" * 64

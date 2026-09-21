@@ -82,7 +82,7 @@ class SearchIn(BaseModel):
 class DocPatchIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     tags: list[str] | None = None
-    project_id: str | None = None
+    project_id: uuid.UUID | None = None
     owner_user_id: str | None = None
 
 
@@ -208,7 +208,7 @@ async def _require_doc_reader(
 @router.get("")
 async def list_documents(
     q: str | None = None,
-    project_id: str | None = None,
+    project_id: uuid.UUID | None = None,
     tag: str | None = None,
     principal: Principal = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
@@ -351,7 +351,9 @@ async def patch_document(
 
         sets, params = [], []
         if "tags" in data:
-            sets.append("tags = %s"); params.append(sorted(set(data["tags"])))
+            # `{"tags": null}` is schema-valid (tags is nullable) and means
+            # "clear all tags" — coerce None to [] so it doesn't blow up in set().
+            sets.append("tags = %s"); params.append(sorted(set(data["tags"] or [])))
         if "project_id" in data:
             sets.append("project_id = %s"); params.append(data["project_id"])
         if "owner_user_id" in data:

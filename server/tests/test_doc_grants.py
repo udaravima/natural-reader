@@ -15,6 +15,7 @@ HEX2 = "b" * 64
 HEX3 = "c" * 64
 HEX4 = "d" * 64
 HEX5 = "e" * 64
+HEX6 = "f" * 64
 
 
 @pytest.fixture
@@ -59,6 +60,30 @@ async def test_owner_adds_and_removes_grant(db_conn, docs_app):
     async with _client(docs_app) as client:
         assert (await client.put(f"/v1/docs/{HEX}/grants/{grantee.user_id}", json={})).status_code == 204
         assert (await client.delete(f"/v1/docs/{HEX}/grants/{grantee.user_id}", )).status_code == 204
+
+
+async def test_revoked_grantee_loses_read(db_conn, docs_app):
+    # The security property of revocation: after the grant is removed, the
+    # ex-grantee's read access is actually gone (404), not just the DELETE 204.
+    owner = await _member(db_conn, "owner-rev")
+    grantee = await _member(db_conn, "grantee-rev")
+    await _insert_doc(db_conn, HEX6, owner.user_id)
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
+    async with _client(docs_app) as client:
+        assert (await client.put(f"/v1/docs/{HEX6}/grants/{grantee.user_id}", json={})).status_code == 204
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: grantee
+    async with _client(docs_app) as client:
+        assert (await client.get(f"/v1/docs/{HEX6}")).status_code == 200  # granted → readable
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
+    async with _client(docs_app) as client:
+        assert (await client.delete(f"/v1/docs/{HEX6}/grants/{grantee.user_id}")).status_code == 204
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: grantee
+    async with _client(docs_app) as client:
+        assert (await client.get(f"/v1/docs/{HEX6}")).status_code == 404  # revoked → gone
 
 
 async def test_non_owner_cannot_add_grant(db_conn, docs_app):

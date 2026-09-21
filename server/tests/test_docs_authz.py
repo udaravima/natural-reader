@@ -96,6 +96,23 @@ async def test_grantee_can_get_document_but_not_delete(db_conn, docs_app):
         assert r.status_code == 404
 
 
+async def test_stranger_denied_on_search_and_markdown(db_conn, docs_app):
+    # The two read routes besides GET /{id} must also enforce can_read: a
+    # stranger gets the same structural 404, not a 403 or a leaked result.
+    owner = await _member(db_conn, "owner-rd")
+    stranger = await _member(db_conn, "stranger-rd")
+    doc_id = "d" * 64
+    await _insert_doc(db_conn, doc_id, owner.user_id)
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: stranger
+    async with _client(docs_app) as client:
+        # Valid body so the reader guard (not body validation) is what rejects.
+        r = await client.post(f"/v1/docs/{doc_id}/search", json={"query": "x"})
+        assert r.status_code == 404
+        r = await client.get(f"/v1/docs/{doc_id}/markdown")
+        assert r.status_code == 404
+
+
 async def test_unauthenticated_is_401(db_conn, docs_app):
     # No get_current_user override -> real dependency -> 401 without credentials.
     async def _conn_override():

@@ -51,3 +51,22 @@ async def test_grantee_can_read(db_conn):
     await db_conn.execute(
         "INSERT INTO doc_grants (doc_id, grantee_user_id) VALUES ('d1',%s)", (g,))
     await authz.assert_can_read_doc(db_conn, "d1", g)  # no raise
+
+
+async def test_member_of_other_project_cannot_read(db_conn):
+    # Membership is scoped to the doc's OWN project: being a member of project A
+    # grants nothing over a doc filed under project B. Pins pm.project_id = d.project_id.
+    o = await _user(db_conn, "o", "o@x.io")
+    m = await _user(db_conn, "m", "m@x.io")
+    cur = await db_conn.execute(
+        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'A') RETURNING id", (o,))
+    proj_a = str((await cur.fetchone())[0])
+    cur = await db_conn.execute(
+        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'B') RETURNING id", (o,))
+    proj_b = str((await cur.fetchone())[0])
+    await db_conn.execute(
+        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)", (proj_a, m))
+    await _doc(db_conn, "d1", o, proj_b)  # doc lives in B, m only belongs to A
+    with pytest.raises(HTTPException) as e:
+        await authz.assert_can_read_doc(db_conn, "d1", m)
+    assert e.value.status_code == 404

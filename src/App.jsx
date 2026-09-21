@@ -1256,8 +1256,6 @@ export default function App() {
             apiHost={apiHost}
             apiPort={apiPort}
             showToast={showToast}
-            darkMode={darkMode}
-            effectiveIsMobile={effectiveIsMobile}
           />
         ) : (
         <WorkspaceProvider workspace={workspace} initialPath={workspaceEntryPath} onOpenDoc={onOpenDoc} onMissing={(path) => showToast(`"${path}" isn't in this folder`, 3000)}>
