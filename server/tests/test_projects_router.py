@@ -38,3 +38,17 @@ async def test_non_owner_cannot_patch(db_conn):
                                  base_url="http://t") as c:
         r = await c.patch(f"/v1/projects/{pid}", json={"name": "Hijack"})
         assert r.status_code == 404
+
+
+async def test_owner_adds_and_removes_member(db_conn):
+    owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
+    member = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="m@x.io")
+    cur = await db_conn.execute(
+        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
+        (owner["id"],))
+    pid = str((await cur.fetchone())[0])
+    p = deps.Principal(user_id=owner["id"], email=owner["email"], role="member")
+    async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
+                                 base_url="http://t") as c:
+        assert (await c.put(f"/v1/projects/{pid}/members/{member['id']}", json={})).status_code == 204
+        assert (await c.delete(f"/v1/projects/{pid}/members/{member['id']}", )).status_code == 204

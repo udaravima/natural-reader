@@ -84,3 +84,25 @@ async def delete_project(project_id: str,
     await _assert_owner(conn, project_id, principal.user_id)
     await conn.execute("DELETE FROM projects WHERE id = %s", (project_id,))
     return Response(status_code=204)
+
+
+@router.put("/{project_id}/members/{user_id}", status_code=204)
+async def add_member(project_id: str, user_id: str,
+                     principal: deps.Principal = Depends(deps.get_current_user),
+                     conn=Depends(deps.get_conn)):
+    await _assert_owner(conn, project_id, principal.user_id)
+    await conn.execute(
+        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s) "
+        "ON CONFLICT DO NOTHING", (project_id, user_id))
+    return Response(status_code=204)
+
+
+@router.delete("/{project_id}/members/{user_id}", status_code=204)
+async def remove_member(project_id: str, user_id: str,
+                        principal: deps.Principal = Depends(deps.get_current_user),
+                        conn=Depends(deps.get_conn)):
+    await _assert_owner(conn, project_id, principal.user_id)
+    await conn.execute(
+        "DELETE FROM project_members WHERE project_id=%s AND user_id=%s",
+        (project_id, user_id))
+    return Response(status_code=204)
