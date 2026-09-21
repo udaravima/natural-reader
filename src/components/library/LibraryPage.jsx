@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Search, FolderOpen, Share2, X, Check, Trash2 } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
 
@@ -76,13 +76,20 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
   const [search, setSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState('');
   const [deleteTarget, setDeleteTarget] = useState(null);
+  // Monotonic id so out-of-order responses can't clobber the list: fast typing
+  // across debounce windows can leave two GET /v1/docs in flight, and if the
+  // earlier one resolves last its stale results would overwrite the newer query.
+  const reqIdRef = useRef(0);
 
   const loadDocs = useCallback(async (q, projectId) => {
+    const reqId = ++reqIdRef.current;
     try {
       const res = await apiFetch(apiHost, apiPort, buildDocsPath({ q, projectId }));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setDocs(await res.json());
+      const data = await res.json();
+      if (reqId === reqIdRef.current) setDocs(data);
     } catch (e) {
+      if (reqId !== reqIdRef.current) return; // a newer request superseded this one
       setDocs([]);
       showToast(`Could not load documents: ${e.message}`, 5000);
     }

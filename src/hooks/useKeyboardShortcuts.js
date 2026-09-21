@@ -42,8 +42,11 @@ export function useKeyboardShortcuts({
             if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
 
             const cb = callbacksRef.current;
-            // Reader-only shortcuts (play/skip/page-nav) — dark-mode + zoom still work in chat.
-            const inReader = cb.viewMode !== 'chat';
+            // Reader-only shortcuts (play/skip/page-nav) — dark-mode + zoom still
+            // work everywhere. Only the reader view drives playback and page state;
+            // in chat/admin/library these keys must be inert, or (e.g.) Page-Up/Down
+            // would silently move the hidden reader's page and it would jump on return.
+            const inReader = cb.viewMode !== 'chat' && cb.viewMode !== 'admin' && cb.viewMode !== 'library';
 
             switch (e.key) {
                 case SHORTCUTS.PLAY_PAUSE:
