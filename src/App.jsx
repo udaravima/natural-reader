@@ -23,6 +23,7 @@ import { getOrComputeDocHash } from './utils/docHash';
 import { getBook } from './db';
 import { saveWorkspaceState, clearWorkspaceState, getWorkspaceState } from './db';
 import { uploadPdfBytesToBackend } from './lib/uploadPdf';
+import { registerDocument, parseTagsInput } from './lib/docMeta';
 import { WorkspaceProvider } from './lib/WorkspaceContext';
 import { createFsaWorkspace, createSnapshotWorkspace, pickEntryFile, isMarkdownPath } from './lib/workspace';
 
@@ -159,6 +160,15 @@ export default function App() {
   // Modal visibility for the docling options dialog.
   const [convertDialogOpen, setConvertDialogOpen] = useState(false);
 
+  // Optional project + tags picker for the register/upload surface (Task 9).
+  // Read at register time by handleIndexDocument / handleConvertDocument via
+  // registerDocument(); leaving both unset keeps the plain upload path free
+  // of any extra request. `projects` is fetched once per session (below) —
+  // null while loading, [] once loaded with no projects.
+  const [projects, setProjects] = useState(null);
+  const [docProjectId, setDocProjectId] = useState('');
+  const [docTagsText, setDocTagsText] = useState('');
+
   const pdfContainerRef = useRef(null);
   const [workspace, setWorkspace] = useState(null);
   const workspaceRef = useRef(null);
@@ -201,6 +211,26 @@ export default function App() {
   // only valid for an actual admin. Waits for the auth probe to resolve so a
   // loading admin isn't bounced before /v1/auth/me answers.
   useViewModeGuard({ viewMode, setViewMode, authState: auth.state, role: auth.user?.role });
+
+  // Populate the optional project picker (Task 9) once the user is signed
+  // in. Mirrors LibraryPage's loadProjects — same endpoint/shape, same
+  // fail-soft-to-empty-list behavior so the picker just shows "No project"
+  // options if this fetch fails rather than breaking the reader.
+  useEffect(() => {
+    if (auth.state !== 'active') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch(apiHost, apiPort, '/v1/projects');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!cancelled) setProjects(data);
+      } catch {
+        if (!cancelled) setProjects([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [auth.state, apiHost, apiPort]);
 
   const ttsEngine = useTtsEngine({
     textItems, currentSentenceIndex, setCurrentSentenceIndex,
@@ -673,22 +703,15 @@ export default function App() {
     }
     setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'uploading' } }));
 
-    // 1. Register the document.
-    let registerRes;
+    // 1. Register the document (and, if a project/tag was chosen in the
+    // picker, attach it via a follow-up PATCH — see registerDocument).
     try {
       const fileSize = (await getBook(pdfFileName))?.size ?? 0;
-      registerRes = await apiFetch(apiHost, apiPort, '/v1/docs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          doc_id: docId,
-          file_name: pdfFileName,
-          file_type: fileType,
-          size_bytes: fileSize,
-          page_count: numPages,
-        }),
+      await registerDocument({
+        apiHost, apiPort, docId,
+        fileName: pdfFileName, fileType, sizeBytes: fileSize, pageCount: numPages,
+        projectId: docProjectId, tags: parseTagsInput(docTagsText),
       });
-      if (!registerRes.ok) throw new Error(`HTTP ${registerRes.status}`);
     } catch (e) {
       console.error('Doc register failed:', e);
       setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
@@ -788,7 +811,7 @@ export default function App() {
       }
     }
     showToast('Indexing is taking unusually long — check the server logs.', 6000);
-  }, [pdfFileName, ensureDocHash, extractAllChunks, fileType, numPages, showToast, apiHost, apiPort]);
+  }, [pdfFileName, ensureDocHash, extractAllChunks, fileType, numPages, showToast, apiHost, apiPort, docProjectId, docTagsText]);
 
   // ---------- DOCLING CONVERSION ----------
   // Mirror of handleIndexDocument: registers (if needed) → uploads PDF bytes →
@@ -806,21 +829,15 @@ export default function App() {
       [docId]: { ...(prev[docId] || {}), state: 'uploading', error: null },
     }));
 
-    // 1. Register the doc (idempotent).
+    // 1. Register the doc (idempotent; and, if a project/tag was chosen in
+    // the picker, attach it via a follow-up PATCH — see registerDocument).
     try {
       const fileSize = (await getBook(pdfFileName))?.size ?? 0;
-      const registerRes = await apiFetch(apiHost, apiPort, '/v1/docs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          doc_id: docId,
-          file_name: pdfFileName,
-          file_type: fileType,
-          size_bytes: fileSize,
-          page_count: numPages,
-        }),
+      await registerDocument({
+        apiHost, apiPort, docId,
+        fileName: pdfFileName, fileType, sizeBytes: fileSize, pageCount: numPages,
+        projectId: docProjectId, tags: parseTagsInput(docTagsText),
       });
-      if (!registerRes.ok) throw new Error(`HTTP ${registerRes.status}`);
     } catch (e) {
       console.error('Doc register failed:', e);
       setDocConvertByDocId((prev) => ({
@@ -925,7 +942,7 @@ export default function App() {
       }
     }
     showToast('Conversion is taking unusually long — check the server logs.', 6000);
-  }, [pdfFileName, fileType, ensureDocHash, numPages, showToast, apiHost, apiPort]);
+  }, [pdfFileName, fileType, ensureDocHash, numPages, showToast, apiHost, apiPort, docProjectId, docTagsText]);
 
   const openConvertDialog = useCallback(() => setConvertDialogOpen(true), []);
   const closeConvertDialog = useCallback(() => setConvertDialogOpen(false), []);
@@ -1261,6 +1278,11 @@ export default function App() {
             onAskAboutPage={handleAskAboutPage}
             indexEntry={currentDocId ? docIndexByDocId[currentDocId] : null}
             onIndexDocument={handleIndexDocument}
+            projects={projects}
+            docProjectId={docProjectId}
+            setDocProjectId={setDocProjectId}
+            docTagsText={docTagsText}
+            setDocTagsText={setDocTagsText}
             docId={currentDocId}
             apiHost={apiHost}
             apiPort={apiPort}

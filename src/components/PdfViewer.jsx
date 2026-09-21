@@ -33,6 +33,14 @@ export default function PdfViewer({
     onAskAboutPage,
     indexEntry,
     onIndexDocument,
+    // Optional project + tags picker (Task 9) — read by App.jsx's register
+    // flow at click time. All optional; the picker only renders once there's
+    // a register-capable action (index or convert) to attach it to.
+    projects,
+    docProjectId,
+    setDocProjectId,
+    docTagsText,
+    setDocTagsText,
     // Docling conversion props (all optional — only render the controls when
     // the parent passed them down).
     docId,
@@ -156,6 +164,29 @@ export default function PdfViewer({
                                 <MessageSquare size={14} className="inline mr-1" />
                                 Ask page
                             </button>
+                        )}
+                        {((onIndexDocument && !isConverted) || canShowConvert) && setDocProjectId && setDocTagsText && (
+                            <div className="flex items-center gap-1" title="Optional: attach this document to a project and/or tags when it's sent to the server">
+                                <select
+                                    value={docProjectId || ''}
+                                    onChange={(e) => setDocProjectId(e.target.value)}
+                                    aria-label="Project for this document"
+                                    className={`text-xs px-1.5 py-1.5 rounded-lg border ${theme.border} ${theme.bgTertiary} ${theme.text} max-w-[110px]`}
+                                >
+                                    <option value="">No project</option>
+                                    {(projects || []).map((p) => (
+                                        <option key={p.id} value={p.id}>{p.name}</option>
+                                    ))}
+                                </select>
+                                <input
+                                    type="text"
+                                    value={docTagsText || ''}
+                                    onChange={(e) => setDocTagsText(e.target.value)}
+                                    placeholder="tags, comma-sep"
+                                    aria-label="Tags for this document"
+                                    className={`text-xs px-1.5 py-1.5 rounded-lg border ${theme.border} ${theme.bgTertiary} ${theme.text} w-24`}
+                                />
+                            </div>
                         )}
                         {onIndexDocument && !isConverted && (
                             <IndexButton
