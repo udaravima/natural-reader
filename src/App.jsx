@@ -34,6 +34,7 @@ import PdfViewer from './components/PdfViewer';
 import ChatView from './components/ChatView';
 import ChatSidebar from './components/ChatSidebar';
 import { AdminConsole } from './components/admin/AdminConsole';
+import LibraryPage from './components/library/LibraryPage';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
 import DistractionFreeBar from './components/DistractionFreeBar';
@@ -192,6 +193,9 @@ export default function App() {
 
   const inChat = viewMode === 'chat';
   const inAdmin = viewMode === 'admin';
+  // Library, unlike admin, is available to any authenticated active user —
+  // no boot-coercion entry needed in useViewModeGuard below.
+  const inLibrary = viewMode === 'library';
 
   // Boot coercion (admin-console spec §3): a persisted viewMode 'admin' is
   // only valid for an actual admin. Waits for the auth probe to resolve so a
@@ -205,7 +209,7 @@ export default function App() {
     apiHost, apiPort, requestTimeout, unlimitedBatchTimeout,
     backendAvailable, pdfFileName,
     setStatus, showToast,
-    enabled: !inChat && !inAdmin,
+    enabled: !inChat && !inAdmin && !inLibrary,
   });
 
   const {
@@ -338,15 +342,15 @@ export default function App() {
   // out at the window level so the reader's DragOverlay never appears and the
   // file isn't routed through processFile() (which expects PDF/TXT).
   const handleDragOver = (e) => {
-    if (inChat || inAdmin) return;
+    if (inChat || inAdmin || inLibrary) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(true);
   };
   const handleDragLeave = (e) => {
-    if (inChat || inAdmin) return;
+    if (inChat || inAdmin || inLibrary) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
   };
   const handleDrop = (e) => {
-    if (inChat || inAdmin) return;
+    if (inChat || inAdmin || inLibrary) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
     const files = e.dataTransfer.files;
     if (files.length === 0) return;
@@ -1147,7 +1151,7 @@ export default function App() {
             deleteSession={chatDeleteSession}
             renameSession={chatRenameSession}
           />
-        ) : inAdmin ? null : (
+        ) : inAdmin || inLibrary ? null : (
         <Sidebar
           theme={theme}
           darkMode={darkMode}
@@ -1223,6 +1227,15 @@ export default function App() {
               showToast={showToast}
             />
           )
+        ) : inLibrary ? (
+          <LibraryPage
+            theme={theme}
+            apiHost={apiHost}
+            apiPort={apiPort}
+            showToast={showToast}
+            darkMode={darkMode}
+            effectiveIsMobile={effectiveIsMobile}
+          />
         ) : (
         <WorkspaceProvider workspace={workspace} initialPath={workspaceEntryPath} onOpenDoc={onOpenDoc} onMissing={(path) => showToast(`"${path}" isn't in this folder`, 3000)}>
           <PdfViewer
@@ -1287,7 +1300,7 @@ export default function App() {
         <MobileBottomNav
           theme={theme}
           effectiveIsMobile={effectiveIsMobile}
-          hasDocument={hasDocument && !inChat && !inAdmin}
+          hasDocument={hasDocument && !inChat && !inAdmin && !inLibrary}
           currentPage={currentPage} setCurrentPage={setCurrentPage}
           numPages={numPages}
           currentSentenceIndex={currentSentenceIndex}
