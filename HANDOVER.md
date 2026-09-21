@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-09-21 — Document library (RAG Phase 0) built end-to-end
+
+**Branch:** `feat/document-library-rag` (off `feat/admin-console`) · **Tests:** backend **195**, frontend **208**, lint clean · Migration **009**. NOT merged, NOT on `master`.
+
+### What shipped
+The 10-task document-library plan (`docs/superpowers/plans/2026-09-20-document-library-rag-phase0.md`), executed subagent-driven with a per-task review gate. New owner doc: **`docs/LIBRARY.md`**.
+
+- **Access model** — `can_read` = owner OR project-member OR grantee, resolved entirely in SQL (`server/auth/authz.py`: `assert_can_read_doc`, `readable_docs_where`). **404-indistinguishable**: a doc you can't read is indistinguishable from one that doesn't exist, and a stranger's doc can never surface in a list even on a matching filter (no Python post-filter).
+- **Schema (009)** — `projects`, `project_members` (read membership), `doc_grants` (per-doc read), `documents.project_id` (FK, `ON DELETE SET NULL`) + `documents.tags` (`TEXT[]`). Self-registers v9. Independent of auth's 008.
+- **API** — read routes (`GET /v1/docs/{id}`, `/search`, `/markdown`) widened owner→`can_read`; `GET /v1/docs?q=&project_id=&tag=` list; `PATCH /v1/docs/{id}` (owner: tags/project with cross-tenant IDOR guard; admin: ownership reassignment); doc grants + a `projects` router (CRUD + members), all owner-only writes, idempotent.
+- **Frontend** — a **Library** view (`viewMode:'library'`, `LibraryPage.jsx`): list/search/project-filter, owner-only tag-edit/reassign/delete, read-only "shared" rows. Upload/register gained an optional project+tags picker (`src/lib/docMeta.js` `registerDocument`, per-document `useDocMetaPicker`).
+
+### Review-caught fixes (unit tests passed; review found these)
+- **IDOR / cross-tenant assignment** (2 security reviews): a doc owner could file their doc into a stranger's project → it surfaced in that project's members' lists. Fixed: non-admin must own/be-member of the target project (`b2655b7`).
+- **Search race** (Task 8): stale in-flight `GET /v1/docs` could overwrite a newer query → request-id guard (`98eecb0`).
+- **Keyboard leak** (Task 8): playback/Page-nav keys were live in library/admin, mutating the hidden reader → `inReader` excludes them (`98eecb0`; closed a pre-existing admin leak too).
+- **Cross-document metadata leak** (Task 9, Important): the upload picker was session-level, so a project/tag chosen for doc A silently carried onto doc B → per-document `useDocMetaPicker` reset (`6d575d9`).
+
+### Deferred / known
+- **Owner-row delete** in the Library was added beyond the literal spec (safe: server owner-gated + confirm) — flagged to the user for a keep/remove call.
+- A failed metadata `PATCH` after register is logged, not surfaced (doc still registers; the Library gives owners a recovery path). Could add a toast.
+- Read routes gain `require_capability("reader")` only at **integration with the auth branch** (`feat/keycloak-identity-permissions`, migration 008) — deliberately not in this branch.
+
+### Next
+- **Final whole-branch review (opus)** of `feat/document-library-rag`, then report.
+- Manual browser E2E (library list/search/share/upload-picker) — not yet walked.
+- **Merge decisions** for both this branch and the auth branch remain the user's — nothing goes to `master` until the UI and all are complete.
+
+---
+
 ## 2026-09-17 (final) — post-1.9.0 documentation completeness pass + admin-console spec
 
 **Branch:** `feat/model-router-gateway` · **Tests:** backend 143, frontend 163, lint clean (re-verified after docs-only changes) · docs only, no code touched.
