@@ -25,7 +25,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Path as PathParam, Response, UploadFile
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..auth.authz import assert_can_read_doc, assert_owns_doc, readable_docs_where
 from ..auth.deps import Principal, get_current_user
@@ -75,6 +75,13 @@ class ChunksUploadIn(BaseModel):
 class SearchIn(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     k: int = Field(default=5, ge=1, le=20)
+
+
+class DocPatchIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tags: list[str] | None = None
+    project_id: str | None = None
+    owner_user_id: str | None = None
 
 
 class ConvertOptionsIn(BaseModel):
@@ -133,7 +140,7 @@ async def _fetch_doc_status(conn, doc_id: str) -> dict[str, Any] | None:
                    d.state, d.embedding_model, d.embedding_dim, d.error_message,
                    d.created_at, d.updated_at,
                    d.conversion_state, d.conversion_options, d.conversion_error,
-                   d.converted_at, d.pdf_path,
+                   d.converted_at, d.pdf_path, d.tags, d.project_id,
                    COALESCE(c.cnt, 0) AS chunk_count,
                    COALESCE(c.embedded, 0) AS embedded_count,
                    COALESCE(p.page_cnt, 0) AS converted_page_count
@@ -163,6 +170,7 @@ async def _fetch_doc_status(conn, doc_id: str) -> dict[str, Any] | None:
         rec["converted_at"] = _epoch_ms(rec["converted_at"])
     # Don't leak the absolute filesystem path to the client.
     rec["has_pdf"] = bool(rec.pop("pdf_path", None))
+    rec["project_id"] = str(rec["project_id"]) if rec.get("project_id") else None
     return rec
 
 
@@ -288,6 +296,50 @@ async def get_document(
     _ensure_ready()
     pool = get_pool()
     async with pool.connection() as conn:
+        status = await _fetch_doc_status(conn, doc_id)
+    if not status:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return status
+
+
+@router.patch("/{doc_id}")
+async def patch_document(
+    doc_id: DocId, body: DocPatchIn,
+    principal: Principal = Depends(get_current_user),
+) -> dict[str, Any]:
+    """
+    Update tags/project (owner-only) or reassign ownership (admin-only). The
+    two authz paths are mutually exclusive per request: if `owner_user_id` is
+    present the caller must be an admin (the seed-admin-backfill escape
+    hatch); otherwise the caller must own the doc. Either way, a caller who
+    fails the check sees the same 404 a nonexistent doc would give (except
+    the admin-reassignment path, which is 403 — that's a capability gate, not
+    an ownership check, so it doesn't need to hide doc existence).
+    """
+    _ensure_ready()
+    data = body.model_dump(exclude_unset=True)
+    pool = get_pool()
+    async with pool.connection() as conn:
+        # reassignment is admin-only; everything else is owner-only
+        if "owner_user_id" in data:
+            if principal.role != "admin":
+                raise HTTPException(status_code=403, detail="Admin only for reassignment")
+        else:
+            await assert_owns_doc(conn, doc_id, principal.user_id)
+        sets, params = [], []
+        if "tags" in data:
+            sets.append("tags = %s"); params.append(sorted(set(data["tags"])))
+        if "project_id" in data:
+            sets.append("project_id = %s"); params.append(data["project_id"])
+        if "owner_user_id" in data:
+            sets.append("user_id = %s"); params.append(data["owner_user_id"])
+        if sets:
+            sets.append("updated_at = now()")
+            params.append(doc_id)
+            r = await conn.execute(
+                f"UPDATE documents SET {', '.join(sets)} WHERE doc_id = %s", params)
+            if r.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Document not found")
         status = await _fetch_doc_status(conn, doc_id)
     if not status:
         raise HTTPException(status_code=404, detail="Document not found")
