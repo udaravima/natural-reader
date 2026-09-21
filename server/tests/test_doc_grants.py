@@ -1,3 +1,4 @@
+import uuid
 from contextlib import asynccontextmanager
 
 import httpx
@@ -11,6 +12,9 @@ from server.routers import docs as docs_router
 
 HEX = "a" * 64
 HEX2 = "b" * 64
+HEX3 = "c" * 64
+HEX4 = "d" * 64
+HEX5 = "e" * 64
 
 
 @pytest.fixture
@@ -64,3 +68,42 @@ async def test_non_owner_cannot_add_grant(db_conn, docs_app):
     docs_app.dependency_overrides[deps.get_current_user] = lambda: other
     async with _client(docs_app) as client:
         assert (await client.put(f"/v1/docs/{HEX2}/grants/{other.user_id}", json={})).status_code == 404
+
+
+async def test_non_owner_cannot_remove_grant(db_conn, docs_app):
+    owner = await _member(db_conn, "owner3")
+    other = await _member(db_conn, "other3")
+    grantee = await _member(db_conn, "grantee3")
+    await _insert_doc(db_conn, HEX3, owner.user_id)
+    # Grant as the owner first so there's something a non-owner could try to remove.
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
+    async with _client(docs_app) as client:
+        assert (await client.put(f"/v1/docs/{HEX3}/grants/{grantee.user_id}", json={})).status_code == 204
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: other
+    async with _client(docs_app) as client:
+        r = await client.delete(f"/v1/docs/{HEX3}/grants/{grantee.user_id}")
+        assert r.status_code == 404
+
+
+async def test_grant_nonexistent_user_404(db_conn, docs_app):
+    owner = await _member(db_conn, "owner4")
+    await _insert_doc(db_conn, HEX4, owner.user_id)
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
+    fake_uid = str(uuid.uuid4())
+    async with _client(docs_app) as client:
+        r = await client.put(f"/v1/docs/{HEX4}/grants/{fake_uid}", json={})
+        assert r.status_code == 404
+        # Prove the FK-violation rollback (savepoint) didn't abort the
+        # outer transaction — a follow-up query on the same connection
+        # should still succeed.
+        r2 = await client.get(f"/v1/docs/{HEX4}")
+        assert r2.status_code == 200
+
+
+async def test_grant_malformed_user_404(db_conn, docs_app):
+    owner = await _member(db_conn, "owner5")
+    await _insert_doc(db_conn, HEX5, owner.user_id)
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
+    async with _client(docs_app) as client:
+        r = await client.put(f"/v1/docs/{HEX5}/grants/not-a-uuid", json={})
+        assert r.status_code == 404

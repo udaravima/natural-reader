@@ -20,10 +20,12 @@ import asyncio
 import hashlib
 import logging
 import os
+import uuid
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Path as PathParam, Response, UploadFile
+from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -459,12 +461,25 @@ async def delete_document(
 @router.put("/{doc_id}/grants/{user_id}", status_code=204)
 async def add_grant(doc_id: DocId, user_id: str,
                     principal: Principal = Depends(_require_doc_owner)):
+    # _require_doc_owner already 404'd a non-owner before we get here, so
+    # user_id validation below can't be used to probe doc existence.
     _ensure_ready()
+    try:
+        uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="User not found")
     pool = get_pool()
-    async with pool.connection() as conn:
-        await conn.execute(
-            "INSERT INTO doc_grants (doc_id, grantee_user_id) VALUES (%s,%s) "
-            "ON CONFLICT DO NOTHING", (doc_id, user_id))
+    try:
+        async with pool.connection() as conn:
+            # Nested transaction (savepoint when already inside one, e.g. the
+            # test harness's outer tx) so a caught FK violation rolls back
+            # just this INSERT and leaves the connection usable afterward.
+            async with conn.transaction():
+                await conn.execute(
+                    "INSERT INTO doc_grants (doc_id, grantee_user_id) VALUES (%s,%s) "
+                    "ON CONFLICT DO NOTHING", (doc_id, user_id))
+    except pg_errors.ForeignKeyViolation:
+        raise HTTPException(status_code=404, detail="User not found")
     return Response(status_code=204)
 
 
@@ -472,6 +487,10 @@ async def add_grant(doc_id: DocId, user_id: str,
 async def remove_grant(doc_id: DocId, user_id: str,
                        principal: Principal = Depends(_require_doc_owner)):
     _ensure_ready()
+    try:
+        uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="User not found")
     pool = get_pool()
     async with pool.connection() as conn:
         await conn.execute(

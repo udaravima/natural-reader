@@ -2,7 +2,10 @@
 returns owned + member-of. Not-owned writes 404 (no existence leak)."""
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, Response
+from psycopg import errors as pg_errors
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..auth import deps
@@ -90,10 +93,25 @@ async def delete_project(project_id: str,
 async def add_member(project_id: str, user_id: str,
                      principal: deps.Principal = Depends(deps.get_current_user),
                      conn=Depends(deps.get_conn)):
+    # Owner guard first — a non-owner must 404 before user_id is validated,
+    # so an invalid/nonexistent user_id can't be used to probe whether the
+    # project itself exists.
     await _assert_owner(conn, project_id, principal.user_id)
-    await conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s) "
-        "ON CONFLICT DO NOTHING", (project_id, user_id))
+    try:
+        uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="User not found")
+    try:
+        # Nested transaction (savepoint when already inside one, e.g. the
+        # test harness's outer tx) so a caught FK violation rolls back just
+        # this INSERT — the connection's transaction stays usable for
+        # whatever runs after we return.
+        async with conn.transaction():
+            await conn.execute(
+                "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s) "
+                "ON CONFLICT DO NOTHING", (project_id, user_id))
+    except pg_errors.ForeignKeyViolation:
+        raise HTTPException(status_code=404, detail="User not found")
     return Response(status_code=204)
 
 
@@ -102,6 +120,10 @@ async def remove_member(project_id: str, user_id: str,
                         principal: deps.Principal = Depends(deps.get_current_user),
                         conn=Depends(deps.get_conn)):
     await _assert_owner(conn, project_id, principal.user_id)
+    try:
+        uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="User not found")
     await conn.execute(
         "DELETE FROM project_members WHERE project_id=%s AND user_id=%s",
         (project_id, user_id))
