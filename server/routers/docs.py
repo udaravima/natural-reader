@@ -315,6 +315,13 @@ async def patch_document(
     fails the check sees the same 404 a nonexistent doc would give (except
     the admin-reassignment path, which is 403 — that's a capability gate, not
     an ownership check, so it doesn't need to hide doc existence).
+
+    Setting `project_id` is further gated for non-admins: the caller must own
+    or be a member of the target project. Without this, a doc owner could
+    file their doc into a project they have no relationship to, and it would
+    then surface in that project's members' `GET /v1/docs` listings — a
+    cross-tenant content injection. Clearing `project_id` (null) is always
+    allowed. Admins keep the cross-assign escape hatch.
     """
     _ensure_ready()
     data = body.model_dump(exclude_unset=True)
@@ -326,6 +333,20 @@ async def patch_document(
                 raise HTTPException(status_code=403, detail="Admin only for reassignment")
         else:
             await assert_owns_doc(conn, doc_id, principal.user_id)
+
+        # A non-admin may only file a doc into a project they own or belong to —
+        # otherwise a doc owner could inject their doc into a stranger's project
+        # (it would then surface in that project's members' library lists).
+        if data.get("project_id") is not None and principal.role != "admin":
+            cur = await conn.execute(
+                "SELECT 1 FROM projects p WHERE p.id = %s AND ("
+                "p.owner_user_id = %s OR EXISTS ("
+                "SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = %s))",
+                (data["project_id"], principal.user_id, principal.user_id),
+            )
+            if await cur.fetchone() is None:
+                raise HTTPException(status_code=404, detail="Project not found")
+
         sets, params = [], []
         if "tags" in data:
             sets.append("tags = %s"); params.append(sorted(set(data["tags"])))

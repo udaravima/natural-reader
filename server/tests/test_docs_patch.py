@@ -121,3 +121,78 @@ async def test_admin_reassigns_owner(db_conn, docs_app):
         "SELECT user_id FROM documents WHERE doc_id = %s", (doc_id,)
     )
     assert str((await cur.fetchone())[0]) == new_owner.user_id
+
+
+async def test_owner_cannot_assign_doc_to_foreign_project(db_conn, docs_app):
+    owner = await _user(db_conn, "owner-patch5")
+    stranger = await _user(db_conn, "stranger-patch")
+    doc_id = "e" * 64
+    await _insert_doc(db_conn, doc_id, owner.user_id)
+
+    cur = await db_conn.execute(
+        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'Foreign') RETURNING id",
+        (stranger.user_id,),
+    )
+    foreign_project_id = str((await cur.fetchone())[0])
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
+    async with _client(docs_app) as client:
+        r = await client.patch(
+            f"/v1/docs/{doc_id}", json={"project_id": foreign_project_id}
+        )
+        assert r.status_code == 404
+
+    cur = await db_conn.execute(
+        "SELECT project_id FROM documents WHERE doc_id = %s", (doc_id,)
+    )
+    assert (await cur.fetchone())[0] is None
+
+
+async def test_owner_can_assign_doc_to_own_project(db_conn, docs_app):
+    owner = await _user(db_conn, "owner-patch6")
+    doc_id = "f" * 64
+    await _insert_doc(db_conn, doc_id, owner.user_id)
+
+    cur = await db_conn.execute(
+        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'Mine') RETURNING id",
+        (owner.user_id,),
+    )
+    project_id = str((await cur.fetchone())[0])
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
+    async with _client(docs_app) as client:
+        r = await client.patch(f"/v1/docs/{doc_id}", json={"project_id": project_id})
+        assert r.status_code == 200
+        assert r.json()["project_id"] == project_id
+
+    cur = await db_conn.execute(
+        "SELECT project_id FROM documents WHERE doc_id = %s", (doc_id,)
+    )
+    assert str((await cur.fetchone())[0]) == project_id
+
+
+async def test_owner_can_clear_project(db_conn, docs_app):
+    owner = await _user(db_conn, "owner-patch7")
+    doc_id = "1" + "a" * 63
+    await _insert_doc(db_conn, doc_id, owner.user_id)
+
+    cur = await db_conn.execute(
+        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'Mine2') RETURNING id",
+        (owner.user_id,),
+    )
+    project_id = str((await cur.fetchone())[0])
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
+    async with _client(docs_app) as client:
+        r = await client.patch(f"/v1/docs/{doc_id}", json={"project_id": project_id})
+        assert r.status_code == 200
+        assert r.json()["project_id"] == project_id
+
+        r = await client.patch(f"/v1/docs/{doc_id}", json={"project_id": None})
+        assert r.status_code == 200
+        assert r.json()["project_id"] is None
+
+    cur = await db_conn.execute(
+        "SELECT project_id FROM documents WHERE doc_id = %s", (doc_id,)
+    )
+    assert (await cur.fetchone())[0] is None
