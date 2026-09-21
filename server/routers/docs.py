@@ -27,7 +27,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Pa
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
-from ..auth.authz import assert_can_read_doc, assert_owns_doc
+from ..auth.authz import assert_can_read_doc, assert_owns_doc, readable_docs_where
 from ..auth.deps import Principal, get_current_user
 from ..db import get_pool, is_ready
 from ..services import docling_convert, model_router
@@ -194,6 +194,50 @@ async def _require_doc_reader(
 
 
 # ---------- routes ----------
+
+@router.get("")
+async def list_documents(
+    q: str | None = None,
+    project_id: str | None = None,
+    tag: str | None = None,
+    principal: Principal = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    """
+    List documents the caller can read: own docs, docs in a project they're a
+    member of, and docs explicitly granted to them. Access is resolved in SQL
+    via `readable_docs_where` — never post-filtered in Python — so a doc a
+    stranger owns can never appear, even if it happens to match `q`/`tag`.
+    """
+    _ensure_ready()
+    uid = principal.user_id
+    where = [readable_docs_where("d")]
+    params: list[Any] = [uid, uid, uid]
+    if q:
+        where.append("(d.file_name ILIKE %s OR %s = ANY(d.tags))")
+        params += [f"%{q}%", q]
+    if project_id:
+        where.append("d.project_id = %s")
+        params.append(project_id)
+    if tag:
+        where.append("%s = ANY(d.tags)")
+        params.append(tag)
+    sql = (
+        "SELECT d.doc_id, d.file_name, d.state, d.tags, d.project_id, "
+        "p.name AS project_name, d.user_id "
+        "FROM documents d LEFT JOIN projects p ON p.id = d.project_id "
+        f"WHERE {' AND '.join(where)} ORDER BY d.updated_at DESC"
+    )
+    pool = get_pool()
+    async with pool.connection() as conn:
+        cur = await conn.execute(sql, params)
+        rows = await cur.fetchall()
+    return [
+        {"doc_id": r[0], "file_name": r[1], "state": r[2], "tags": r[3],
+         "project_id": str(r[4]) if r[4] else None, "project_name": r[5],
+         "owner_user_id": str(r[6]), "is_owner": str(r[6]) == uid}
+        for r in rows
+    ]
+
 
 @router.post("")
 async def register_document(
