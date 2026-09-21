@@ -11,6 +11,7 @@ import { useTtsEngine } from './hooks/useTtsEngine';
 import { useChatEngine } from './hooks/useChatEngine';
 import { useAuth } from './hooks/useAuth';
 import { useViewModeGuard } from './hooks/useViewModeGuard';
+import { useDocMetaPicker } from './hooks/useDocMetaPicker';
 import { makePin } from './hooks/pins';
 
 // Constants
@@ -160,14 +161,11 @@ export default function App() {
   // Modal visibility for the docling options dialog.
   const [convertDialogOpen, setConvertDialogOpen] = useState(false);
 
-  // Optional project + tags picker for the register/upload surface (Task 9).
-  // Read at register time by handleIndexDocument / handleConvertDocument via
-  // registerDocument(); leaving both unset keeps the plain upload path free
-  // of any extra request. `projects` is fetched once per session (below) —
-  // null while loading, [] once loaded with no projects.
+  // Project list for the optional register/upload picker (Task 9). Session-
+  // level (not per-document): fetched once when signed in (below) — null while
+  // loading, [] once loaded with no projects. The per-document picker *state*
+  // lives in useDocMetaPicker, wired after pdfFileName is available.
   const [projects, setProjects] = useState(null);
-  const [docProjectId, setDocProjectId] = useState('');
-  const [docTagsText, setDocTagsText] = useState('');
 
   const pdfContainerRef = useRef(null);
   const [workspace, setWorkspace] = useState(null);
@@ -200,6 +198,14 @@ export default function App() {
     loadMarkdownDocument,
     loadTextDocument,
   } = pdfEngine;
+
+  // Per-document project/tags picker: resets whenever the loaded document
+  // (pdfFileName) changes, so a selection made for one doc can't silently
+  // carry over and mis-tag the next (Task 9 review).
+  const {
+    projectId: docProjectId, setProjectId: setDocProjectId,
+    tagsText: docTagsText, setTagsText: setDocTagsText,
+  } = useDocMetaPicker(pdfFileName);
 
   const inChat = viewMode === 'chat';
   const inAdmin = viewMode === 'admin';
