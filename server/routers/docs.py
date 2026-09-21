@@ -27,7 +27,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Pa
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field
 
-from ..auth.authz import assert_owns_doc
+from ..auth.authz import assert_can_read_doc, assert_owns_doc
 from ..auth.deps import Principal, get_current_user
 from ..db import get_pool, is_ready
 from ..services import docling_convert, model_router
@@ -181,6 +181,18 @@ async def _require_doc_owner(
     return principal
 
 
+async def _require_doc_reader(
+    doc_id: DocId,
+    principal: Principal = Depends(get_current_user),
+) -> Principal:
+    """Read gate: owner OR project member OR grantee (404 otherwise)."""
+    _ensure_ready()
+    pool = get_pool()
+    async with pool.connection() as conn:
+        await assert_can_read_doc(conn, doc_id, principal.user_id)
+    return principal
+
+
 # ---------- routes ----------
 
 @router.post("")
@@ -227,7 +239,7 @@ async def register_document(
 
 @router.get("/{doc_id}")
 async def get_document(
-    doc_id: DocId, _owner: Principal = Depends(_require_doc_owner)
+    doc_id: DocId, _reader: Principal = Depends(_require_doc_reader)
 ) -> dict[str, Any]:
     _ensure_ready()
     pool = get_pool()
@@ -464,7 +476,7 @@ async def start_index_job(
 async def search_document(
     doc_id: DocId,
     req: SearchIn,
-    _owner: Principal = Depends(_require_doc_owner),
+    _reader: Principal = Depends(_require_doc_reader),
 ) -> dict[str, Any]:
     """
     Semantic search over `doc_id`'s embedded chunks. Returns top-k chunks
@@ -772,7 +784,7 @@ async def start_convert_job(
 async def get_document_markdown(
     doc_id: DocId,
     page: int | None = None,
-    _owner: Principal = Depends(_require_doc_owner),
+    _reader: Principal = Depends(_require_doc_reader),
 ) -> Response:
     """
     Return the docling-converted Markdown for this document. Without `page`

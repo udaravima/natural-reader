@@ -11,6 +11,7 @@ from server.routers import docs as docs_router
 
 HEX = "a" * 64
 HEX2 = "b" * 64
+HEX3 = "c" * 64
 
 
 @pytest.fixture
@@ -75,6 +76,24 @@ async def test_register_stamps_owner(db_conn, docs_app):
         assert r.status_code == 200
     cur = await db_conn.execute("SELECT user_id FROM documents WHERE doc_id=%s", (HEX,))
     assert str((await cur.fetchone())[0]) == owner.user_id
+
+
+async def test_grantee_can_get_document_but_not_delete(db_conn, docs_app):
+    # A doc_grants grantee (not the owner) can read via GET, but writes
+    # (DELETE) stay owner-only — grantee should get 404 there.
+    owner = await _member(db_conn, "owner3")
+    grantee = await _member(db_conn, "grantee")
+    await _insert_doc(db_conn, HEX3, owner.user_id)
+    await db_conn.execute(
+        "INSERT INTO doc_grants (doc_id, grantee_user_id) VALUES (%s,%s)",
+        (HEX3, grantee.user_id),
+    )
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: grantee
+    async with _client(docs_app) as client:
+        r = await client.get(f"/v1/docs/{HEX3}")
+        assert r.status_code == 200
+        r = await client.delete(f"/v1/docs/{HEX3}")
+        assert r.status_code == 404
 
 
 async def test_unauthenticated_is_401(db_conn, docs_app):
