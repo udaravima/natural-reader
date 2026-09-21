@@ -62,6 +62,15 @@ services:
       KC_DB_USERNAME: natural_reader
       KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-natural_reader}
       KC_DB_SCHEMA: keycloak
+      # Behind a TLS-terminating reverse proxy (e.g. nginx at https://auth.oraian.net)
+      # Keycloak must trust the proxy's forwarded headers AND know its public URL,
+      # or it emits http:// asset/iframe URLs that the browser blocks as mixed
+      # content, and its OIDC `issuer` won't match OIDC_ISSUER. Empty by default so
+      # direct localhost dev is unchanged; set both in .env for a proxied deploy:
+      #   KC_PROXY_HEADERS=xforwarded
+      #   KC_HOSTNAME=https://auth.oraian.net
+      KC_PROXY_HEADERS: ${KC_PROXY_HEADERS:-}
+      KC_HOSTNAME: ${KC_HOSTNAME:-}
     ports:
       # Non-default host port (18080) — Keycloak's default 8080 is avoided. Both
       # the browser (redirect) and the backend (discovery/token exchange) use

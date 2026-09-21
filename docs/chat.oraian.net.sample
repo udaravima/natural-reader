@@ -1,3 +1,8 @@
+# Production nginx site for Natural Reader — serves the built SPA AND proxies the
+# backend on ONE origin (required for the OIDC session cookie; see DEPLOYMENT.md
+# § "same origin"). Keycloak lives on a separate origin — its companion vhost is
+# auth.oraian.net.sample. Full walkthrough + traps: ./DEPLOYMENT.md.
+
 server {
     listen 80;
     server_name chat.oraian.net;
@@ -66,6 +71,14 @@ server {
 
         # Timeouts for long-lived chat connections
         proxy_read_timeout 86400;
+
+        # Large PDF uploads go through POST /v1/docs/{id}/pdf. nginx's default
+        # body cap is 1 MB, which silently 413s real documents — raise it here.
+        client_max_body_size 100m;
+
+        # Stream gateway chat tokens as they arrive instead of buffering the
+        # whole NDJSON/SSE response (see DEPLOYMENT.md, README § Streaming).
+        proxy_buffering off;
     }
 
     # NOTE: the old /api/ (Ollama) location block is REMOVED. The SPA's chat

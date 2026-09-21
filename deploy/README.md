@@ -6,6 +6,11 @@ own machine. This is a **local-dev** rig — the Keycloak container runs in
 (external DB user, TLS, a real reverse proxy, dedicated Keycloak credentials)
 is sub-project **D**.
 
+**Deploying for real?** See [../docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md) —
+production behind nginx + TLS on real hostnames, with the two nginx sample vhosts
+and the five config values that must agree, plus the traps (the biggest: editing
+`keycloak/realm-export.json` does **not** change an already-imported live realm).
+
 > **Shortcut:** `./startup.sh up-with-dev-auth` automates steps 1–3 below — it
 > starts the Postgres/Keycloak/SearXNG containers, creates `.env` on first run
 > (the local realm values + a generated `SESSION_SECRET`), waits for the realm
@@ -27,9 +32,11 @@ Files here:
   UUIDs — and the app's `users.oidc_sub` links — stay stable. (With the old
   embedded H2 store, every recreation minted new `sub`s and returning users
   got 409 "email already linked to another identity".)
-- `nginx/natural-reader.conf` — a **reference** nginx site (SPA + same-origin
-  `/v1` proxy; NDJSON needs `proxy_buffering off`). You install it into your
-  own nginx; nothing here edits system files.
+The reference nginx vhosts live under `../docs/` (they're copied into your own
+nginx by hand, so they sit with the docs rather than the tool-consumed artifacts
+above): [`chat.oraian.net.sample`](../docs/chat.oraian.net.sample) (SPA + same-origin
+`/v1` proxy) and [`auth.oraian.net.sample`](../docs/auth.oraian.net.sample)
+(Keycloak). See [../docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md).
 
 ## The one thing that matters: same origin
 
@@ -126,9 +133,14 @@ screen you need a **second** user.
 
 ## Prod-like variant (nginx)
 
-Instead of `npm run dev`: `npm run build`, point `nginx/natural-reader.conf`'s
-`root` at `dist/`, install it, and set `OIDC_REDIRECT_URL` to your nginx origin
-(and add that origin to the realm's redirect URIs). Everything else is the same.
+Instead of `npm run dev`: `npm run build`, point
+[`../docs/chat.oraian.net.sample`](../docs/chat.oraian.net.sample)'s `root` at
+`dist/`, install it, and set `OIDC_REDIRECT_URL` to your nginx origin. Then add
+that origin to the realm's redirect URIs — and note this must be done on the
+**live** realm (admin console or `kcadm`); editing `realm-export.json` only
+affects a *fresh* database, not the one already in Postgres. Full production
+walkthrough with TLS + Keycloak on its own hostname:
+[../docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md).
 
 ## Tear down
 

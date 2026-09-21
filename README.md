@@ -428,6 +428,8 @@ For production, the typical setup is to serve the frontend as static files from 
 
 A complete, battle-tested config (Ed25519 + RSA fallback, gzip, the works) lives at [`docs/chat.oraian.net.sample`](docs/chat.oraian.net.sample). The minimal version below is what's actually load-bearing:
 
+> **Running multi-user (OIDC/Keycloak)?** This section covers the SPA + backend vhost only. For the full production picture — the second vhost that fronts Keycloak ([`docs/auth.oraian.net.sample`](docs/auth.oraian.net.sample)), the same-origin cookie rule, `COOKIE_SECURE`, the Keycloak proxy-header env, and the live-realm redirect-URI trap — see **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
+
 ```nginx
 server {
     listen 80;
@@ -461,6 +463,8 @@ server {
         # tokens arrive live; long-lived synthesis needs the generous timeout.
         proxy_buffering off;
         proxy_read_timeout 86400;
+        # PDF uploads (POST /v1/docs/{id}/pdf) exceed nginx's 1 MB default → 413.
+        client_max_body_size 100m;
     }
 
     # Ollama: NO location block anymore. The SPA's chat goes through the
@@ -771,7 +775,9 @@ natural-reader/
 │   ├── CHAT_WITH_PDF.md       # End-to-end walkthrough for the doc-chat / RAG / tool-calling feature (+ §10 perf)
 │   ├── RELEASE_NOTES_v1.7.0.md # Tag-page notes for v1.7.0
 │   ├── RELEASE_NOTES_v1.7.1.md # Tag-page notes for v1.7.1
-│   └── chat.oraian.net.sample # Production nginx config (TLS + proxy + commented hardening recipes)
+│   ├── DEPLOYMENT.md          # Production behind nginx + TLS: topology, config table, the traps
+│   ├── chat.oraian.net.sample # Prod nginx vhost — SPA + same-origin /v1 proxy (TLS, hardening recipes)
+│   └── auth.oraian.net.sample # Prod nginx vhost — reverse-proxies Keycloak (auth.oraian.net)
 ├── run.py                     # Server entry point (uvicorn) — honours WORKERS / HOST / PORT env vars
 ├── requirements.txt           # Python dependencies
 ├── vite.config.js             # Vite + Rolldown config with chunk splitting

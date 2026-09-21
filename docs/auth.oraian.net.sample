@@ -1,0 +1,70 @@
+# Reference nginx site for Keycloak (the OIDC identity provider).
+#   Public:   https://auth.oraian.net
+#   Upstream: Keycloak 26 on 127.0.0.1:18080 (podman-compose, container port 8080)
+#
+# This is a REFERENCE. Copy to /etc/nginx/sites-available/, adjust server_name
+# and cert paths, symlink into sites-enabled/, then `nginx -t && systemctl reload
+# nginx`. Nothing here edits system files for you.
+#
+# Full walkthrough + the traps: ./DEPLOYMENT.md.
+#
+# PREREQUISITES — nginx alone does NOT make login work:
+#
+#   1. Keycloak must run with these env vars (see docker-compose.yml + .env), or
+#      it emits http:// URLs the browser blocks as mixed content and its OIDC
+#      `issuer` won't match OIDC_ISSUER (token rejected → login "does nothing"):
+#          KC_PROXY_HEADERS=xforwarded
+#          KC_HOSTNAME=https://auth.oraian.net
+#
+#   2. Backend .env:
+#          OIDC_ISSUER=https://auth.oraian.net/realms/natural-reader
+#          OIDC_CLIENT_ID=natural-reader
+#          OIDC_CLIENT_SECRET=<realm client secret>
+#          OIDC_REDIRECT_URL=https://chat.oraian.net/v1/auth/callback
+#
+#   3. In the LIVE realm (not just realm-export.json — the import is skipped once
+#      the realm exists in Postgres), the `natural-reader` client's Valid Redirect
+#      URIs must include  https://chat.oraian.net/v1/auth/callback  and Web Origins
+#      https://chat.oraian.net.  See ./DEPLOYMENT.md § "The live realm ≠ the export".
+
+server {
+    listen 80;
+    server_name auth.oraian.net;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name auth.oraian.net;
+
+    ssl_certificate     /etc/letsencrypt/live/auth.oraian.net/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/auth.oraian.net/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+
+    # Keycloak emits large response headers; give the proxy room or you get
+    # intermittent 502 "upstream sent too big header while reading response".
+    proxy_buffer_size       128k;
+    proxy_buffers           4 256k;
+    proxy_busy_buffers_size 256k;
+
+    # Admin/account consoles can post large forms.
+    client_max_body_size 10m;
+
+    location / {
+        proxy_pass http://127.0.0.1:18080;
+
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;   # KC trusts this via KC_PROXY_HEADERS=xforwarded
+        proxy_set_header X-Forwarded-Host  $host;
+        proxy_set_header X-Forwarded-Port  443;
+
+        proxy_http_version 1.1;
+    }
+}
