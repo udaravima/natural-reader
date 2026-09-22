@@ -9,6 +9,7 @@ import MarkdownPageRenderer from './MarkdownPageRenderer';
 import MarkdownReader from './MarkdownReader';
 import IndexButton from './IndexButton';
 import ConvertButton from './ConvertButton';
+import PdfToolbarMenu from './PdfToolbarMenu';
 import { WorkspaceNav } from './WorkspaceLink';
 
 export default function PdfViewer({
@@ -64,6 +65,18 @@ export default function PdfViewer({
     const canShowConvert = isPdf && !!onOpenConvertDialog;
     const isConverted = convertState === 'converted';
     const showingMdView = viewMode === 'md' && isConverted;
+    // Secondary toolbar actions, surfaced in the mobile "⋯" dropdown so the bar
+    // doesn't overflow on phones. The same actions stay as inline buttons at
+    // md+ (below). Falsy entries are skipped by PdfToolbarMenu.
+    const toolbarMenuActions = [
+        { key: 'fit', label: 'Fit page', Icon: Minimize, active: Math.abs(scale - 0.8) < 0.001, onClick: () => setScale(0.8) },
+        { key: 'width', label: 'Fit width', Icon: Maximize, active: Math.abs(scale - 1.2) < 0.001, onClick: () => setScale(1.2) },
+        onAskAboutPage && { key: 'ask', label: 'Ask about this page', Icon: MessageSquare, onClick: () => onAskAboutPage(currentPage) },
+        isConverted && setViewMode && { key: 'view-pdf', label: 'Show PDF', Icon: FileType, active: viewMode !== 'md', onClick: () => setViewMode('pdf') },
+        isConverted && setViewMode && { key: 'view-md', label: 'Show Markdown', Icon: FileText, active: viewMode === 'md', onClick: () => setViewMode('md') },
+        isConverted && onExportMarkdown && { key: 'export-md', label: 'Download Markdown', Icon: Download, onClick: onExportMarkdown },
+        isConverted && onDeleteMarkdown && { key: 'delete-md', label: 'Delete Markdown', Icon: Trash2, tone: 'danger', onClick: onDeleteMarkdown },
+    ];
     return (
         <section className={`flex-1 flex flex-col overflow-hidden ${theme.viewportBg} transition-colors duration-300`}>
 
@@ -138,6 +151,9 @@ export default function PdfViewer({
                         cluster wraps within itself on narrow screens instead of
                         running past the right edge (mobile toolbar overflow). */}
                     <div className="flex flex-wrap items-center gap-1">
+                      {/* Secondary controls: inline at md+, collapsed into the
+                          "⋯" dropdown on narrow/mobile screens (see below). */}
+                      <div className="hidden md:flex items-center gap-1">
                         <button
                             onClick={() => setScale(0.8)}
                             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${theme.hover} ${scale === 0.8 ? 'bg-blue-600 text-white' : theme.textSecondary}`}
@@ -167,6 +183,7 @@ export default function PdfViewer({
                                 Ask page
                             </button>
                         )}
+                      </div>
                         {((onIndexDocument && !isConverted) || canShowConvert) && setDocProjectId && setDocTagsText && (
                             <div className="flex items-center gap-1" title="Optional: attach this document to a project and/or tags when it's sent to the server">
                                 <select
@@ -208,6 +225,8 @@ export default function PdfViewer({
                                 onClick={onOpenConvertDialog}
                             />
                         )}
+                      {/* Converted-doc view/export controls: inline at md+. */}
+                      <div className="hidden md:flex items-center gap-1">
                         {isConverted && setViewMode && (
                             <div className={`flex items-center ml-1 rounded-lg border ${theme.border} overflow-hidden`}>
                                 <button
@@ -254,6 +273,8 @@ export default function PdfViewer({
                                 <Trash2 size={14} />
                             </button>
                         )}
+                      </div>
+                        <PdfToolbarMenu theme={theme} actions={toolbarMenuActions} />
                     </div>
                 </div>
             )}

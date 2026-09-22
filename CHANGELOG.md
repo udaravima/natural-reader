@@ -82,12 +82,15 @@ All notable changes to this project will be documented in this file.
   `model_router` instead of reading `OLLAMA_URL`/model env vars in each service.
 
 ### Fixed
-- **Reader toolbar buttons no longer run off-screen on mobile.** The PDF options
-  bar (page nav, zoom, Fit/Width, Ask-page, project/tags, index/convert) was a
-  single non-wrapping row, so on a phone the right-hand cluster was pushed past
-  the screen edge and became unreachable. The bar now wraps on narrow viewports
-  (and uses tighter side padding there); the desktop layout is unchanged.
-  ([src/components/PdfViewer.jsx](src/components/PdfViewer.jsx))
+- **Reader toolbar collapses into a "⋯" menu on mobile instead of running
+  off-screen.** The PDF options bar was a single non-wrapping row, so on a phone
+  the wide right-hand cluster (Fit/Width, Ask-page, and the converted-doc
+  view/export controls) was pushed past the screen edge and became unreachable.
+  Below the `md` breakpoint those secondary actions now collapse into a compact
+  "⋯ More" dropdown (`PdfToolbarMenu`, mirroring the header's overflow menu); the
+  bar also wraps as a fallback and uses tighter mobile padding. Desktop keeps the
+  full inline toolbar unchanged. ([src/components/PdfViewer.jsx](src/components/PdfViewer.jsx),
+  [src/components/PdfToolbarMenu.jsx](src/components/PdfToolbarMenu.jsx))
 - **Enroll and delete buttons now show a busy state while their request runs.**
   Clicking "Enroll" (admin console) or "Confirm delete" (library) fired an async
   request with no visible acknowledgement — it felt like the click hadn't
