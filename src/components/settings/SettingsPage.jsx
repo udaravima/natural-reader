@@ -3,6 +3,7 @@ import { KOKORO_VOICES } from '../../constants';
 import { PlayCircle, Square, Clock, VolumeX, Volume1, Volume2, Moon, Sun, Zap } from 'lucide-react';
 import { InferenceSourceSelect } from '../chat/InferenceSourceSelect';
 import { InferenceRow } from '../chat/InferenceRow';
+import { AccountPanel } from '../account/AccountPanel';
 import { resolveForModel, patchForModel } from '../../hooks/inference';
 
 // A titled settings section. `id` anchors nothing yet but keeps headings stable.
@@ -35,7 +36,7 @@ function Field({ theme, label, children }) {
  * The Chat & Inference and Account sections are filled by later tasks; the
  * scaffold renders all five headings.
  */
-export default function SettingsPage({ theme, voiceSettings, chatSettings, connectionSettings, appearanceSettings }) {
+export default function SettingsPage({ theme, voiceSettings, chatSettings, connectionSettings, appearanceSettings, accountProps }) {
     const v = voiceSettings;
     const ch = chatSettings;
     const c = connectionSettings;
@@ -238,9 +239,9 @@ export default function SettingsPage({ theme, voiceSettings, chatSettings, conne
                     </Field>
                 </Section>
 
-                {/* ---------- Account (filled in Task 6) ---------- */}
+                {/* ---------- Account ---------- */}
                 <Section theme={theme} title="Account">
-                    <p className={`text-xs ${theme.textMuted}`}>Account and access tokens.</p>
+                    <AccountPanel theme={theme} apiHost={accountProps.apiHost} apiPort={accountProps.apiPort} user={accountProps.user} />
                 </Section>
             </div>
         </div>

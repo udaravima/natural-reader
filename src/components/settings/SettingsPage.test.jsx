@@ -77,4 +77,9 @@ describe('SettingsPage — reader/global sections', () => {
     fireEvent.change(screen.getByLabelText(/context window/i), { target: { value: '8192' } });
     expect(setInferenceByModel).toHaveBeenCalled();
   });
+
+  it('renders the Account panel (PAT management) in the Account section', async () => {
+    render(<SettingsPage {...bags()} />);
+    expect(await screen.findByPlaceholderText(/token name/i)).toBeInTheDocument();
+  });
 });
