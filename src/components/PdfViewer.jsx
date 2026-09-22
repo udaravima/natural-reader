@@ -69,7 +69,7 @@ export default function PdfViewer({
 
             {/* PDF OPTIONS TOOLBAR */}
             {hasDoc && !distractionFree && (
-                <div className={`flex items-center justify-between px-4 py-2 ${theme.bgSecondary} border-b ${theme.border} shrink-0`}>
+                <div className={`flex flex-wrap items-center justify-start md:justify-between gap-2 px-2 md:px-4 py-2 ${theme.bgSecondary} border-b ${theme.border} shrink-0`}>
                     {/* LEFT: Page Navigation + Workspace Back/Forward */}
                     <div className="flex items-center gap-2">
                         <WorkspaceNav />
@@ -134,8 +134,10 @@ export default function PdfViewer({
                         </button>
                     </div>
 
-                    {/* RIGHT: Fit Options + Chat actions */}
-                    <div className="flex items-center gap-1">
+                    {/* RIGHT: Fit Options + Chat actions. flex-wrap so this wide
+                        cluster wraps within itself on narrow screens instead of
+                        running past the right edge (mobile toolbar overflow). */}
+                    <div className="flex flex-wrap items-center gap-1">
                         <button
                             onClick={() => setScale(0.8)}
                             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${theme.hover} ${scale === 0.8 ? 'bg-blue-600 text-white' : theme.textSecondary}`}
