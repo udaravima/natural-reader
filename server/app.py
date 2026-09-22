@@ -20,6 +20,7 @@ from .routers.chat_sessions import router as chat_sessions_router
 from .routers.docs import PDF_STORAGE_DIR, router as docs_router
 from .routers.inference import router as inference_router
 from .routers.inference import start_client as start_inference, stop_client as stop_inference
+from .routers.projects import router as projects_router
 from .routers.tools import router as tools_router
 from .services.embeddings import start_client as start_embeddings, stop_client as stop_embeddings
 from .services.web_search import start_client as start_web_search, stop_client as stop_web_search
@@ -73,6 +74,7 @@ def create_app() -> FastAPI:
     app.include_router(tools_router)
     app.include_router(auth_router)
     app.include_router(admin_router)
+    app.include_router(projects_router)
     app.include_router(inference_router)
 
     @app.on_event("startup")

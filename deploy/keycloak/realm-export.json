@@ -23,16 +23,16 @@
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
       "redirectUris": [
-        "http://localhost:5173/v1/auth/callback",
+        "https://chat.oraian.net/v1/auth/callback",
         "http://localhost:8080/v1/auth/callback"
       ],
       "webOrigins": [
-        "http://localhost:5173",
+        "https://chat.oraian.net",
         "http://localhost:8080"
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "http://localhost:5173/* http://localhost:18080/*"
+        "post.logout.redirect.uris": "https://chat.oraian.net/* https://auth.oraian.net/*"
       },
       "protocolMappers": [
         {

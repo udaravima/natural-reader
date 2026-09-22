@@ -11,6 +11,7 @@ import { useTtsEngine } from './hooks/useTtsEngine';
 import { useChatEngine } from './hooks/useChatEngine';
 import { useAuth } from './hooks/useAuth';
 import { useViewModeGuard } from './hooks/useViewModeGuard';
+import { useDocMetaPicker } from './hooks/useDocMetaPicker';
 import { makePin } from './hooks/pins';
 
 // Constants
@@ -23,6 +24,7 @@ import { getOrComputeDocHash } from './utils/docHash';
 import { getBook } from './db';
 import { saveWorkspaceState, clearWorkspaceState, getWorkspaceState } from './db';
 import { uploadPdfBytesToBackend } from './lib/uploadPdf';
+import { registerDocument, parseTagsInput } from './lib/docMeta';
 import { WorkspaceProvider } from './lib/WorkspaceContext';
 import { createFsaWorkspace, createSnapshotWorkspace, pickEntryFile, isMarkdownPath } from './lib/workspace';
 
@@ -34,6 +36,7 @@ import PdfViewer from './components/PdfViewer';
 import ChatView from './components/ChatView';
 import ChatSidebar from './components/ChatSidebar';
 import { AdminConsole } from './components/admin/AdminConsole';
+import LibraryPage from './components/library/LibraryPage';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
 import DistractionFreeBar from './components/DistractionFreeBar';
@@ -158,6 +161,12 @@ export default function App() {
   // Modal visibility for the docling options dialog.
   const [convertDialogOpen, setConvertDialogOpen] = useState(false);
 
+  // Project list for the optional register/upload picker (Task 9). Session-
+  // level (not per-document): fetched once when signed in (below) — null while
+  // loading, [] once loaded with no projects. The per-document picker *state*
+  // lives in useDocMetaPicker, wired after pdfFileName is available.
+  const [projects, setProjects] = useState(null);
+
   const pdfContainerRef = useRef(null);
   const [workspace, setWorkspace] = useState(null);
   const workspaceRef = useRef(null);
@@ -190,8 +199,19 @@ export default function App() {
     loadTextDocument,
   } = pdfEngine;
 
+  // Per-document project/tags picker: resets whenever the loaded document
+  // (pdfFileName) changes, so a selection made for one doc can't silently
+  // carry over and mis-tag the next (Task 9 review).
+  const {
+    projectId: docProjectId, setProjectId: setDocProjectId,
+    tagsText: docTagsText, setTagsText: setDocTagsText,
+  } = useDocMetaPicker(pdfFileName);
+
   const inChat = viewMode === 'chat';
   const inAdmin = viewMode === 'admin';
+  // Library, unlike admin, is available to any authenticated active user —
+  // no boot-coercion entry needed in useViewModeGuard below.
+  const inLibrary = viewMode === 'library';
 
   // Capabilities granted to the current user. The auth gate below already
   // guarantees at least one of reader/chat/admin once the app renders, but
@@ -208,6 +228,26 @@ export default function App() {
   // bounced before /v1/auth/me answers.
   useViewModeGuard({ viewMode, setViewMode, authState: auth.state, caps });
 
+  // Populate the optional project picker (Task 9) once the user is signed
+  // in. Mirrors LibraryPage's loadProjects — same endpoint/shape, same
+  // fail-soft-to-empty-list behavior so the picker just shows "No project"
+  // options if this fetch fails rather than breaking the reader.
+  useEffect(() => {
+    if (auth.state !== 'active') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch(apiHost, apiPort, '/v1/projects');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!cancelled) setProjects(data);
+      } catch {
+        if (!cancelled) setProjects([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [auth.state, apiHost, apiPort]);
+
   const ttsEngine = useTtsEngine({
     textItems, currentSentenceIndex, setCurrentSentenceIndex,
     playbackIndexRef, currentPage, setCurrentPage, numPages,
@@ -215,7 +255,7 @@ export default function App() {
     apiHost, apiPort, requestTimeout, unlimitedBatchTimeout,
     backendAvailable, pdfFileName,
     setStatus, showToast,
-    enabled: !inChat && !inAdmin,
+    enabled: !inChat && !inAdmin && !inLibrary,
   });
 
   const {
@@ -348,15 +388,15 @@ export default function App() {
   // out at the window level so the reader's DragOverlay never appears and the
   // file isn't routed through processFile() (which expects PDF/TXT).
   const handleDragOver = (e) => {
-    if (inChat || inAdmin) return;
+    if (inChat || inAdmin || inLibrary) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(true);
   };
   const handleDragLeave = (e) => {
-    if (inChat || inAdmin) return;
+    if (inChat || inAdmin || inLibrary) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
   };
   const handleDrop = (e) => {
-    if (inChat || inAdmin) return;
+    if (inChat || inAdmin || inLibrary) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
     const files = e.dataTransfer.files;
     if (files.length === 0) return;
@@ -679,22 +719,15 @@ export default function App() {
     }
     setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'uploading' } }));
 
-    // 1. Register the document.
-    let registerRes;
+    // 1. Register the document (and, if a project/tag was chosen in the
+    // picker, attach it via a follow-up PATCH — see registerDocument).
     try {
       const fileSize = (await getBook(pdfFileName))?.size ?? 0;
-      registerRes = await apiFetch(apiHost, apiPort, '/v1/docs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          doc_id: docId,
-          file_name: pdfFileName,
-          file_type: fileType,
-          size_bytes: fileSize,
-          page_count: numPages,
-        }),
+      await registerDocument({
+        apiHost, apiPort, docId,
+        fileName: pdfFileName, fileType, sizeBytes: fileSize, pageCount: numPages,
+        projectId: docProjectId, tags: parseTagsInput(docTagsText),
       });
-      if (!registerRes.ok) throw new Error(`HTTP ${registerRes.status}`);
     } catch (e) {
       console.error('Doc register failed:', e);
       setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
@@ -794,7 +827,7 @@ export default function App() {
       }
     }
     showToast('Indexing is taking unusually long — check the server logs.', 6000);
-  }, [pdfFileName, ensureDocHash, extractAllChunks, fileType, numPages, showToast, apiHost, apiPort]);
+  }, [pdfFileName, ensureDocHash, extractAllChunks, fileType, numPages, showToast, apiHost, apiPort, docProjectId, docTagsText]);
 
   // ---------- DOCLING CONVERSION ----------
   // Mirror of handleIndexDocument: registers (if needed) → uploads PDF bytes →
@@ -812,21 +845,15 @@ export default function App() {
       [docId]: { ...(prev[docId] || {}), state: 'uploading', error: null },
     }));
 
-    // 1. Register the doc (idempotent).
+    // 1. Register the doc (idempotent; and, if a project/tag was chosen in
+    // the picker, attach it via a follow-up PATCH — see registerDocument).
     try {
       const fileSize = (await getBook(pdfFileName))?.size ?? 0;
-      const registerRes = await apiFetch(apiHost, apiPort, '/v1/docs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          doc_id: docId,
-          file_name: pdfFileName,
-          file_type: fileType,
-          size_bytes: fileSize,
-          page_count: numPages,
-        }),
+      await registerDocument({
+        apiHost, apiPort, docId,
+        fileName: pdfFileName, fileType, sizeBytes: fileSize, pageCount: numPages,
+        projectId: docProjectId, tags: parseTagsInput(docTagsText),
       });
-      if (!registerRes.ok) throw new Error(`HTTP ${registerRes.status}`);
     } catch (e) {
       console.error('Doc register failed:', e);
       setDocConvertByDocId((prev) => ({
@@ -931,7 +958,7 @@ export default function App() {
       }
     }
     showToast('Conversion is taking unusually long — check the server logs.', 6000);
-  }, [pdfFileName, fileType, ensureDocHash, numPages, showToast, apiHost, apiPort]);
+  }, [pdfFileName, fileType, ensureDocHash, numPages, showToast, apiHost, apiPort, docProjectId, docTagsText]);
 
   const openConvertDialog = useCallback(() => setConvertDialogOpen(true), []);
   const closeConvertDialog = useCallback(() => setConvertDialogOpen(false), []);
@@ -1164,7 +1191,7 @@ export default function App() {
             deleteSession={chatDeleteSession}
             renameSession={chatRenameSession}
           />
-        ) : inAdmin ? null : (
+        ) : inAdmin || inLibrary ? null : (
         canReader && <Sidebar
           theme={theme}
           darkMode={darkMode}
@@ -1243,6 +1270,13 @@ export default function App() {
               showToast={showToast}
             />
           )
+        ) : inLibrary ? (
+          <LibraryPage
+            theme={theme}
+            apiHost={apiHost}
+            apiPort={apiPort}
+            showToast={showToast}
+          />
         ) : (
         // Mount gate mirroring the admin console above: hiding via
         // ViewSwitcher is cosmetic, this is the render-time boundary that
@@ -1272,6 +1306,11 @@ export default function App() {
             onAskAboutPage={handleAskAboutPage}
             indexEntry={currentDocId ? docIndexByDocId[currentDocId] : null}
             onIndexDocument={handleIndexDocument}
+            projects={projects}
+            docProjectId={docProjectId}
+            setDocProjectId={setDocProjectId}
+            docTagsText={docTagsText}
+            setDocTagsText={setDocTagsText}
             docId={currentDocId}
             apiHost={apiHost}
             apiPort={apiPort}
@@ -1312,7 +1351,7 @@ export default function App() {
         <MobileBottomNav
           theme={theme}
           effectiveIsMobile={effectiveIsMobile}
-          hasDocument={hasDocument && !inChat && !inAdmin}
+          hasDocument={hasDocument && !inChat && !inAdmin && !inLibrary}
           currentPage={currentPage} setCurrentPage={setCurrentPage}
           numPages={numPages}
           currentSentenceIndex={currentSentenceIndex}

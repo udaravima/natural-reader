@@ -1,16 +1,18 @@
-import { BookOpen, MessageSquare, Shield } from 'lucide-react';
+import { BookOpen, MessageSquare, Library, Shield } from 'lucide-react';
 
 /**
- * Reader / Chat / Admin view toggle. The SPA has no router — viewMode state
- * IS the routing. Each entry is rendered only when the caller says the user
- * holds the matching capability; a reader-only user never sees the Chat
- * switch, a non-admin never sees the Admin shield. The server-side rails +
- * boot coercion (useViewModeGuard) make that hiding cosmetic rather than the
- * security boundary. canReader/canChat default to true so existing callers
- * that don't pass them keep today's always-visible behavior.
+ * Reader / Chat / Library / Admin view toggle. The SPA has no router — viewMode
+ * state IS the routing. Reader and Chat are each rendered only when the caller
+ * says the user holds the matching capability (canReader/canChat, default true
+ * so existing callers keep always-visible behavior); the Admin shield only for
+ * admins. Library, unlike those, is available to any authenticated active user —
+ * no capability gate or guard entry needed. The server-side rails + boot
+ * coercion (useViewModeGuard) make this hiding cosmetic, not the security
+ * boundary.
  */
 export default function ViewSwitcher({ theme, viewMode, setViewMode, isAdmin, canReader = true, canChat = true }) {
     const inChat = viewMode === 'chat';
+    const inLibrary = viewMode === 'library';
     const inAdmin = viewMode === 'admin';
     const btn = (active) =>
         `px-2.5 py-1.5 rounded-lg text-[10px] font-bold flex items-center gap-1.5 transition-colors ${
@@ -21,7 +23,7 @@ export default function ViewSwitcher({ theme, viewMode, setViewMode, isAdmin, ca
             {canReader && (
                 <button
                     onClick={() => setViewMode('reader')}
-                    className={btn(!inChat && !inAdmin)}
+                    className={btn(!inChat && !inLibrary && !inAdmin)}
                     title="Reader mode"
                 >
                     <BookOpen size={12} />
@@ -38,6 +40,14 @@ export default function ViewSwitcher({ theme, viewMode, setViewMode, isAdmin, ca
                     <span className="hidden sm:inline">Chat</span>
                 </button>
             )}
+            <button
+                onClick={() => setViewMode('library')}
+                className={btn(inLibrary)}
+                title="Library"
+            >
+                <Library size={12} />
+                <span className="hidden sm:inline">Library</span>
+            </button>
             {isAdmin && (
                 <button
                     onClick={() => setViewMode('admin')}

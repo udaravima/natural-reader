@@ -42,6 +42,17 @@ All notable changes to this project will be documented in this file.
   behind an auth screen per account state. Migrations `005`/`006`.
   Deep-dive: [docs/IDENTITY_AND_ROLES.md](docs/IDENTITY_AND_ROLES.md); user guide:
   [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+- **Production deployment behind nginx + TLS.** New guide
+  [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) covers serving the SPA + backend on one
+  origin (`chat.oraian.net`) with Keycloak on its own (`auth.oraian.net`): two
+  nginx vhost samples ([docs/chat.oraian.net.sample](docs/chat.oraian.net.sample),
+  [docs/auth.oraian.net.sample](docs/auth.oraian.net.sample)), the five config
+  values that must agree, and the traps (KC proxy headers, live-realm ≠ export,
+  `COOKIE_SECURE`, `client_max_body_size`, stale QUIC). `docker-compose.yml` gains
+  `KC_PROXY_HEADERS`/`KC_HOSTNAME` passthrough (empty by default) so Keycloak emits
+  `https://` URLs and a matching `issuer` behind a TLS-terminating proxy. The two
+  nginx samples now live together under `docs/`; the old
+  `deploy/nginx/natural-reader.conf` is removed.
 - **Local OIDC rig.** `./startup.sh up-with-dev-auth` runs a Keycloak container
   (realm `natural-reader`, seeded from `deploy/keycloak/realm-export.json`)
   whose realm state persists in the shared Postgres (schema `keycloak`,

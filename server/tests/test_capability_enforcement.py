@@ -52,7 +52,8 @@ async def test_docs_get_allows_reader_capability_holder(db_conn, monkeypatch):
     monkeypatch.setattr(docs_router, "get_pool", lambda: _PoolShim())
     monkeypatch.setattr(docs_router, "is_ready", lambda: True)
 
-    p = deps.Principal(user_id="u", email="e@x.io", role="member",
+    p = deps.Principal(user_id="11111111-1111-1111-1111-111111111111",
+                        email="e@x.io", role="member",
                         capabilities=frozenset({"reader"}))
     doc_id = "1" * 64
     async with httpx.AsyncClient(
