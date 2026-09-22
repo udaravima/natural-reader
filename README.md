@@ -37,8 +37,8 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 
 ### 💬 Local AI Chat (Ollama)
 - **Reader ↔ Chat Toggle** — Switch the main view between document reader and chat mode from the header
-- **Streaming Replies** — Token-by-token streaming from a local Ollama server (`/api/chat`)
-- **Model Picker** — Auto-populated from `/api/tags`; configurable host/port (defaults to `localhost:11434`, leave blank for same-origin)
+- **Streaming Replies** — Token-by-token streaming, by default through the authenticated backend gateway (`/v1/inference/chat`) or directly against a local Ollama in Local mode
+- **Model Picker** — Auto-populated from the server gateway (deployment allowlist applies) or `/api/tags` in Local mode; configurable host/port (defaults to `localhost:11434`, leave blank for same-origin)
 - **Image Attachments** — Paperclip button, drag & drop onto the chat view, and `Ctrl + V` paste images from the clipboard. Thumbnails preview above the prompt and persist in user bubbles. Sent to vision-capable models via the per-message `images: [base64]` field. *(Audio attachments are temporarily paused — see CHANGELOG.)*
 - **Model Response Stats** — Every assistant bubble has a collapsible footer showing token count, total time, and tokens/sec. Expanded view breaks out load / prompt-eval / generation phases for fine-grained latency inspection.
 - **Stick-to-Bottom Scroll** — The chat list auto-tails streaming tokens when you're at the bottom; scrolling up pauses the auto-follow so you can read history during a long response, and resumes when you scroll back down.
@@ -214,6 +214,8 @@ Place both files in the project root directory.
 ./startup.sh up-with-dev-auth
 # → sign in at http://localhost:5173 as Keycloak user admin-user / password
 # Walkthrough (adding a second user, approval flow, PATs): deploy/README.md
+# End-user guide (signing in, personal access tokens, admin section,
+# chat budgets): docs/USER_GUIDE.md
 
 # Or, to run the backend manually (no containers, no chat persistence):
 python run.py
@@ -356,13 +358,24 @@ All endpoints return `503` when Postgres is unreachable.
 | `/v1/docs/{doc_id}/index` | `POST` | Kick off the background embedding job; returns 202. Poll the doc status endpoint for progress. |
 | `/v1/docs/{doc_id}/search` | `POST` | `{query, k}` → top-k chunks by cosine similarity (HNSW). Used by the autonomous `search_document` tool. |
 
-#### Ollama (local LLM server, default `localhost:11434`, optional)
+#### Inference Gateway (same FastAPI server)
 
-The chat side-mode talks to a locally running [Ollama](https://ollama.com/) daemon. Only needed if you use the Chat view — the Reader works without it.
+The SPA's chat mode talks to Ollama **through these authenticated endpoints** (session cookie or PAT) — never to Ollama directly. Toggle **Inference source: Local Ollama** in the chat sidebar to bypass the gateway and talk to your own daemon like before.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/tags` | `GET` | Lists installed models. Populates the model dropdown in the chat sidebar. Polled when the host/port changes (debounced). |
+| `/v1/inference/models` | `GET` | Allowlisted model list (proxies Ollama `/api/tags`) + the caller's daily budget `{remaining_tokens, reset_at}`. |
+| `/v1/inference/chat` | `POST` | Validated NDJSON streaming passthrough to Ollama `/api/chat`. Request envelope is strictly validated (unknown fields → 422); non-allowlisted models → 422; over budget → 429 with remaining/reset detail. |
+
+Admin knobs: `INFERENCE_MODELS` (allowlist), `INFERENCE_DAILY_TOKEN_BUDGET` (default per-user daily tokens, UTC-midnight reset), per-user overrides + usage view via `/v1/admin/users/{id}` and `/v1/admin/inference/usage`. See [.env.example](.env.example).
+
+#### Ollama (local LLM server, default `localhost:11434`, optional)
+
+Only used with **Inference source: Local Ollama** (the default Server mode goes through the [Inference Gateway](#inference-gateway-same-fastapi-server) above, and the backend itself uses Ollama for embeddings/summaries):
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/tags` | `GET` | Lists installed models. Populates the model dropdown in local mode. Polled when the host/port changes (debounced). |
 | `/api/chat` | `POST` | Streaming NDJSON chat. Body includes `{model, messages, stream: true, think}`. Per-message `images: [base64]` field carries vision attachments (audio routing is paused — see code comments in [src/hooks/useChatEngine.js](src/hooks/useChatEngine.js)). |
 
 <details>
@@ -409,7 +422,7 @@ The chat side-mode talks to a locally running [Ollama](https://ollama.com/) daem
 
 ## 🌐 Reverse Proxy / Production Deployment
 
-For production, the typical setup is to serve the frontend as static files from a web server (nginx, Caddy, …) and reverse-proxy both backends on the same hostname. The frontend supports this natively: leaving the **Host** field blank in either the reader or chat sidebar settings causes requests to be issued as same-origin paths (`/v1/synthesize`, `/api/chat`, …). nginx (or whatever sits in front) handles the routing.
+For production, the typical setup is to serve the frontend as static files from a web server (nginx, Caddy, …) and reverse-proxy the backend on the same hostname. The frontend supports this natively: leaving the **Host** field blank in the sidebar settings causes requests to be issued as same-origin paths (`/v1/synthesize`, `/v1/inference/chat`, …). nginx (or whatever sits in front) handles the routing. Chat inference goes through the backend gateway by default; only Local-Ollama mode ever needs an `/api/` proxy.
 
 ### Example nginx config
 
@@ -436,7 +449,7 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
-    # Kokoro TTS — running on 127.0.0.1:8000
+    # Backend (Kokoro TTS + doc RAG + the /v1/inference chat gateway)
     location /v1/ {
         proxy_pass http://127.0.0.1:8000/v1/;
         proxy_http_version 1.1;
@@ -444,22 +457,17 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        # Long-lived synthesis (especially batch) needs a generous timeout
-        proxy_read_timeout 86400;
-    }
-
-    # Ollama — running on 127.0.0.1:11434
-    location /api/ {
-        proxy_pass http://127.0.0.1:11434/api/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        # Streaming chat — disable response buffering so NDJSON tokens arrive live
+        # Streaming (gateway chat NDJSON) — disable response buffering so
+        # tokens arrive live; long-lived synthesis needs the generous timeout.
         proxy_buffering off;
         proxy_read_timeout 86400;
     }
+
+    # Ollama: NO location block anymore. The SPA's chat goes through the
+    # authenticated /v1/inference gateway on the backend; Ollama stays
+    # backend-only (loopback bind). Only proxy /api/ if you deliberately run
+    # the SPA in "Local Ollama" mode against a shared daemon — and then gate
+    # it (auth_basic / IP allowlist, see the hardening recipes below).
 }
 ```
 
@@ -470,10 +478,10 @@ In **both** sidebars (Reader → Voice API, Chat → Ollama Server), **clear the
 Notes:
 
 - **Ollama bind address.** By default Ollama listens on `127.0.0.1:11434`. That's fine here since nginx is the only thing talking to it. If you change `OLLAMA_HOST` to bind on a different interface, mirror it in the `proxy_pass` line.
-- **Streaming.** `proxy_buffering off` on `/api/` is required so chat responses stream token-by-token instead of arriving as one buffered chunk.
+- **Streaming.** `proxy_buffering off` on `/v1/` is required so gateway chat responses stream token-by-token instead of arriving as one buffered chunk.
 - **CORS.** Same-origin requests don't need CORS at all. The Kokoro server's permissive CORS header (set in [server/app.py](server/app.py)) is harmless but unused under this setup.
 - **Custom hostnames during development.** If you want to test against a non-localhost machine without proxying, set Host to an IP / hostname (e.g. `192.168.1.10`) and the matching Port. Bare hostnames default to `http://`; you can also paste a full `https://example.com` if you have HTTPS terminating elsewhere.
-- **Ollama 403 on the proxy.** Ollama has a built-in Host-header allowlist (defaults to `localhost` / `127.0.0.1`) that's separate from the bind address. When nginx forwards `Host: chat.example.com`, Ollama rejects with 403 and an empty body. Fix either by overriding the header at the proxy (`proxy_set_header Host localhost:11434;` inside the `/api/` block) or by adding your domain to `OLLAMA_ORIGINS` via systemd:
+- **Ollama 403 on the proxy** (only if you deliberately proxy `/api/` for Local-Ollama mode). Ollama has a built-in Host-header allowlist (defaults to `localhost` / `127.0.0.1`) that's separate from the bind address. When nginx forwards `Host: chat.example.com`, Ollama rejects with 403 and an empty body. Fix either by overriding the header at the proxy (`proxy_set_header Host localhost:11434;` inside the `/api/` block) or by adding your domain to `OLLAMA_ORIGINS` via systemd:
   ```bash
   sudo systemctl edit ollama
   # then add:
@@ -504,11 +512,11 @@ The backend authenticates via **OpenID Connect** — it's an OIDC Relying Party,
 - **The web app** uses a revocable, `HttpOnly` session cookie. **The read-aloud extension and scripts** use a **personal access token** (Settings → Access tokens) sent as `Authorization: Bearer …`.
 - **Local dev without an IdP:** `AUTH_ENABLED=false` treats every request as the admin — but the server **refuses to start** with this set on a non-loopback bind.
 
-`/api/*` (Ollama) is not yet behind app auth — proxy-gate it, or wait for the model-router gateway that moves those calls server-side.
+`/api/*` (Ollama) is **no longer used by the SPA** — chat runs through the authenticated [`/v1/inference/*`](#inference-gateway-same-fastapi-server) gateway, so the nginx `/api/` proxy block should be **deleted**: Ollama becomes backend-only (loopback bind, nothing proxied). A user may still point the SPA at their *own* Ollama via the **Inference source: Local Ollama** setting — that's their machine, their business.
 
 ### Threat model (pre-auth baseline)
 
-The table below is the *un-authenticated* exposure — i.e. what OIDC now closes for `/v1/*`, and what still applies to `/api/*` until it's gated.
+The table below is the *un-authenticated* exposure — i.e. what OIDC now closes for `/v1/*`. The old `/api/*` rows (direct Ollama) are gone: the SPA no longer calls them, and the proxy block is removed.
 
 
 
@@ -516,9 +524,8 @@ The table below is the *un-authenticated* exposure — i.e. what OIDC now closes
 |---|---|---|
 | `POST /v1/synthesize` | Generate arbitrary TTS audio of any length | GPU/CPU burn, electricity |
 | `POST /v1/batch_synthesize` | Submit huge sentence arrays; with **Unlimited batch timeout** on, a single request can pin Kokoro's inference lock for hours | Same, amplified — practical DoS surface |
-| `POST /api/chat` | Run any installed model with any prompt for as long as they want | LLM inference cost (the expensive one) |
-| `GET  /api/tags` | List the names + sizes of every model you have pulled | Information disclosure / fingerprinting |
-| `GET  /api/version` | Probe the Ollama daemon version | Fingerprinting |
+
+`/api/*` (direct Ollama) is closed now that the SPA goes through the authenticated inference gateway — **delete the nginx `/api/` block** and keep Ollama bound to loopback. If you still proxy `/api/*` for other clients, everything in the old rows applies: any unauthenticated caller could run any installed model (`POST /api/chat`) or list models (`GET /api/tags`) — proxy-gate it or remove it.
 
 In addition, [server/app.py](server/app.py) defaults to `allow_origins=["*"]` (with credentials disabled), so even *other websites* can drive your Kokoro endpoint from JavaScript without anyone visiting your site. That makes Kokoro a free TTS-as-a-service for whoever knows the URL. Set `FRONTEND_ORIGIN` to your real origin(s) to pin CORS (which also enables credentialed requests). TTS payloads are now size-capped (`TTS_MAX_*`, see [.env.example](.env.example)) so a single request can no longer pin the inference lock indefinitely.
 
@@ -551,6 +558,8 @@ location /v1/ {
     proxy_pass           http://127.0.0.1:8000/v1/;
     # ... existing headers / timeouts ...
 }
+# /api/ (Ollama) — only if you proxy it for Local-Ollama mode; DELETE this
+# block entirely on standard deployments (server-mode chat never touches it).
 location /api/ {
     auth_basic           "Neural Reader";
     auth_basic_user_file /etc/nginx/htpasswd;
@@ -593,7 +602,7 @@ location /v1/ {
     limit_req zone=tts burst=10 nodelay;
     # ...
 }
-location /api/chat {
+location /v1/inference/chat {
     limit_req zone=chat burst=3 nodelay;
     # ...
 }
@@ -627,7 +636,7 @@ For a more app-like UX than the browser's basic-auth dialog: nginx checks for `A
 |---|---|
 | **Personal — just you** | Basic auth + tighter CORS. Five lines of nginx, one line in `server/app.py`. |
 | **Small team / family** | Basic auth + rate limit + tighter CORS. Each user gets their own htpasswd entry. |
-| **Public-ish demo** | Basic auth + rate limit + restrict `selectedModel` server-side (don't expose your most expensive model on `/api/tags`). Consider token auth instead of basic. |
+| **Public-ish demo** | Basic auth + rate limit + `INFERENCE_MODELS` allowlist (the gateway never exposes models you don't list) + `INFERENCE_DAILY_TOKEN_BUDGET`. Consider token auth instead of basic. |
 
 The sample [docs/chat.oraian.net.sample](docs/chat.oraian.net.sample) includes the above mitigations as **commented-out blocks at the bottom of the file** — uncomment what you need and reload nginx.
 
@@ -739,12 +748,21 @@ natural-reader/
 │   ├── sql/
 │   │   ├── 001_init.sql       # Core schema: documents, doc_chunks (vector(768)), chat_sessions, chat_messages, chat_events
 │   │   ├── 002_tool_calls.sql # Adds tool_calls JSONB to chat_messages
-│   │   └── 003_docling.sql    # Docling lifecycle columns on documents + new doc_pages table
+│   │   ├── 003_docling.sql    # Docling lifecycle columns on documents + new doc_pages table
+│   │   ├── 005_users_ownership.sql # users table + per-user ownership (multi-user)
+│   │   ├── 006_auth_credentials.sql # sessions + personal_access_tokens
+│   │   └── 007_inference_budgets.sql # inference_usage + per-user daily token budget
 │   ├── routers/
 │   │   ├── chat_sessions.py   # /v1/chat/sessions/* — list / get / upsert / patch / delete
-│   │   └── docs.py            # /v1/docs/* — register / chunks / index / search / pdf / convert / markdown
+│   │   ├── docs.py            # /v1/docs/* — register / chunks / index / search / pdf / convert / markdown
+│   │   ├── inference.py       # /v1/inference/* — authenticated streaming chat gateway (validated envelope, budgets)
+│   │   ├── admin.py           # /v1/admin/* — user management + inference usage view
+│   │   └── auth.py            # /v1/auth/* — OIDC login/callback, sessions, PATs
 │   └── services/
-│       ├── embeddings.py      # httpx client → Ollama /api/embeddings, Semaphore(4), dim assertion
+│       ├── embeddings.py      # httpx client → Ollama /api/embeddings via model_router, Semaphore(4), dim assertion
+│       ├── model_router.py    # THE inference config: allowlist, task models (chat/summarize/embed), daily budget
+│       ├── inference_budget.py # per-user daily token accounting (UTC days)
+│       ├── web_search.py      # SearXNG + SSRF-guarded fetch + summarize (model via model_router)
 │       └── docling_convert.py # PDF → per-page Markdown via Docling (Fast/Standard/Accurate presets)
 ├── data/
 │   └── pdfs/                  # Retained PDF bytes (one file per doc_id; created on first conversion)

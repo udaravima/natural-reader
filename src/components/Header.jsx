@@ -1,9 +1,10 @@
 import {
     Play, Pause, Square, Upload, Volume2, SkipForward, SkipBack,
     Zap, Loader2, Moon, Sun, Download, Keyboard, Clock,
-    PanelLeftClose, Menu, BookOpen, MessageSquare, Home, Library, X, Maximize2
+    PanelLeftClose, Menu, Home, Library, X, Maximize2
 } from 'lucide-react';
 import HeaderOverflowMenu from './HeaderOverflowMenu';
+import ViewSwitcher from './ViewSwitcher';
 
 export default function Header({
     theme,
@@ -20,6 +21,9 @@ export default function Header({
     fileInputRef,
     // View mode
     viewMode, setViewMode,
+    isAdmin,
+    canReader,
+    canChat,
     // Playback controls
     handlePlayPause,
     stopPlayback,
@@ -39,7 +43,9 @@ export default function Header({
     onCloseWorkspace,
 }) {
     const isExportingBook = !!bookProgress;
-    const inChat = viewMode === 'chat';
+    // Reader-only chrome (playback, downloads, overflow menu, upload) shows
+    // in the reader view only — not in chat, not in the admin console.
+    const inReader = viewMode === 'reader';
     return (
         <header className={`h-16 ${theme.bgSecondary} border-b ${theme.border} px-4 md:px-6 flex items-center justify-between z-20 sticky top-0 shadow-sm transition-colors duration-300`}>
             <div className="flex items-center gap-2 md:gap-3">
@@ -67,7 +73,7 @@ export default function Header({
             </div>
 
             {/* PLAYBACK CONTROLS — reader mode only */}
-            {!inChat && (
+            {inReader && (
             <div className={`${showHeaderControlsOnMobile ? 'flex' : 'hidden md:flex'} items-center gap-2 ${theme.bgTertiary} p-1 rounded-xl border ${theme.border} shadow-inner`}>
                 <button
                     onClick={skipToPrevSentence}
@@ -106,28 +112,11 @@ export default function Header({
 
             {/* RIGHT CONTROLS */}
             <div className="flex items-center gap-1 md:gap-3">
-                {/* Reader / Chat toggle */}
-                <div className={`flex p-1 rounded-xl border ${theme.border} ${theme.bgTertiary}`}>
-                    <button
-                        onClick={() => setViewMode('reader')}
-                        className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold flex items-center gap-1.5 transition-colors ${!inChat ? 'bg-blue-600 text-white shadow' : `${theme.textSecondary} hover:text-blue-500`}`}
-                        title="Reader mode"
-                    >
-                        <BookOpen size={12} />
-                        <span className="hidden sm:inline">Reader</span>
-                    </button>
-                    <button
-                        onClick={() => setViewMode('chat')}
-                        className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold flex items-center gap-1.5 transition-colors ${inChat ? 'bg-blue-600 text-white shadow' : `${theme.textSecondary} hover:text-blue-500`}`}
-                        title="Chat mode"
-                    >
-                        <MessageSquare size={12} />
-                        <span className="hidden sm:inline">Chat</span>
-                    </button>
-                </div>
+                {/* Reader / Chat / Admin toggle */}
+                <ViewSwitcher theme={theme} viewMode={viewMode} setViewMode={setViewMode} isAdmin={isAdmin} canReader={canReader} canChat={canChat} />
 
                 {/* Estimated Time */}
-                {!inChat && hasDocument && calculateEstimatedTimeRemaining(playbackSpeed) && (
+                {inReader && hasDocument && calculateEstimatedTimeRemaining(playbackSpeed) && (
                     <div className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-lg border ${theme.border} text-[10px] font-bold ${theme.textSecondary}`}>
                         <Clock size={12} />
                         {calculateEstimatedTimeRemaining(playbackSpeed)}
@@ -155,7 +144,7 @@ export default function Header({
                 </button>
 
                 {/* Download Page Audio */}
-                {!inChat && hasDocument && isLocalhost && (
+                {inReader && hasDocument && isLocalhost && (
                     <button
                         onClick={downloadPageAudio}
                         disabled={isDownloading || textItems.length === 0 || isExportingBook}
@@ -169,7 +158,7 @@ export default function Header({
                 {/* Download Book Audio — full document → single .wav.
                     While exporting, this slot morphs into a small progress
                     indicator with a Cancel button. */}
-                {!inChat && hasDocument && isLocalhost && onDownloadBookAudio && (
+                {inReader && hasDocument && isLocalhost && onDownloadBookAudio && (
                     isExportingBook ? (
                         <div className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.textSecondary}`}>
                             <Loader2 size={14} className="animate-spin text-green-500" />
@@ -211,7 +200,7 @@ export default function Header({
                 {/* Distraction-free mode — hides Header, sidebar, bottom nav,
                     and the PDF toolbar. Keyboard shortcut F also toggles.
                     Desktop only — mobile uses the overflow menu. */}
-                {onEnterDistractionFree && hasDocument && (
+                {onEnterDistractionFree && inReader && hasDocument && (
                     <button
                         onClick={onEnterDistractionFree}
                         className={`hidden lg:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
@@ -222,7 +211,7 @@ export default function Header({
                 )}
 
                 {/* Home Button — desktop only; mobile uses the overflow menu. */}
-                {!inChat && hasDocument && onGoHome && (
+                {inReader && hasDocument && onGoHome && (
                     <button
                         onClick={onGoHome}
                         className={`hidden lg:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
@@ -238,7 +227,7 @@ export default function Header({
                     phones AND tablets (anything < 1024 px). Hidden in chat
                     mode where the sidebar already carries most of the same
                     settings. */}
-                {!inChat && (
+                {inReader && (
                     <HeaderOverflowMenu
                         theme={theme}
                         darkMode={darkMode}
@@ -258,7 +247,7 @@ export default function Header({
                 )}
 
                 {/* Upload Button — reader mode only */}
-                {!inChat && (
+                {inReader && (
                     <button
                         onClick={() => fileInputRef.current.click()}
                         className="p-2.5 bg-gradient-to-r from-slate-700 to-slate-800 text-white rounded-xl hover:from-slate-600 hover:to-slate-700 transition-all shadow-md"

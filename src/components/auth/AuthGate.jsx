@@ -59,9 +59,25 @@ function AuthErrorScreen({ onRetry }) {
   );
 }
 
-export function AuthGate({ state, onLogin, onLogout, onRetry, children }) {
+function NoAccessScreen({ onLogout, onRetry }) {
+  return (
+    <Screen title="Your account is active but has no access yet">
+      <p>Ask an administrator to grant Reader or Chat access.</p>
+      <div style={{ display: 'flex', gap: '0.75rem' }}>
+        <button style={btn} onClick={onRetry}>Retry</button>
+        <button style={btnGhost} onClick={onLogout}>Log out</button>
+      </div>
+    </Screen>
+  );
+}
+
+export function AuthGate({ state, user, onLogin, onLogout, onRetry, children }) {
   switch (state) {
-    case 'active': return <>{children}</>;
+    case 'active':
+      if (!user?.capabilities?.length) {
+        return <NoAccessScreen onLogout={onLogout} onRetry={onRetry} />;
+      }
+      return <>{children}</>;
     case 'anonymous': return <LoginScreen onLogin={onLogin} />;
     case 'pending': return <PendingScreen onLogout={onLogout} />;
     case 'disabled': return <DisabledScreen onLogout={onLogout} />;

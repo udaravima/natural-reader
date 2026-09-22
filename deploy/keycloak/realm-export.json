@@ -5,6 +5,13 @@
   "loginWithEmailAllowed": true,
   "verifyEmail": false,
   "sslRequired": "external",
+  "roles": {
+    "realm": [
+      { "name": "reader" },
+      { "name": "chat" },
+      { "name": "admin" }
+    ]
+  },
   "clients": [
     {
       "clientId": "natural-reader",
@@ -24,12 +31,40 @@
         "http://localhost:8080"
       ],
       "attributes": {
-        "pkce.code.challenge.method": "S256"
-      }
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:5173/* http://localhost:18080/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "realm roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String",
+            "multivalued": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "natural-reader-admin",
+      "name": "Natural Reader Admin (service account)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "natural-reader-admin-dev-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false
     }
   ],
   "users": [
     {
+      "id": "86095f7a-4c14-40a5-a3b8-145b7147febd",
       "username": "admin-user",
       "email": "admin@example.com",
       "emailVerified": true,
@@ -40,6 +75,14 @@
       "credentials": [
         { "type": "password", "value": "password", "temporary": false }
       ]
+    },
+    {
+      "username": "service-account-natural-reader-admin",
+      "enabled": true,
+      "serviceAccountClientId": "natural-reader-admin",
+      "clientRoles": {
+        "realm-management": ["manage-users", "view-realm", "query-users"]
+      }
     }
   ]
 }

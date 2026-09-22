@@ -10,6 +10,7 @@ import { usePdfEngine } from './hooks/usePdfEngine';
 import { useTtsEngine } from './hooks/useTtsEngine';
 import { useChatEngine } from './hooks/useChatEngine';
 import { useAuth } from './hooks/useAuth';
+import { useViewModeGuard } from './hooks/useViewModeGuard';
 import { makePin } from './hooks/pins';
 
 // Constants
@@ -32,6 +33,7 @@ import { AuthGate } from './components/auth/AuthGate';
 import PdfViewer from './components/PdfViewer';
 import ChatView from './components/ChatView';
 import ChatSidebar from './components/ChatSidebar';
+import { AdminConsole } from './components/admin/AdminConsole';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
 import DistractionFreeBar from './components/DistractionFreeBar';
@@ -74,6 +76,9 @@ export default function App() {
   const [viewMode, setViewMode] = usePersistedState('viewMode', 'reader');
   const [ollamaHost, setOllamaHost] = usePersistedState('ollamaHost', OLLAMA_DEFAULTS.host);
   const [ollamaPort, setOllamaPort] = usePersistedState('ollamaPort', OLLAMA_DEFAULTS.port);
+  // Where inference runs: 'server' = authenticated /v1/inference gateway on
+  // the backend, 'local' = browser→Ollama directly (pre-gateway behavior).
+  const [inferenceSource, setInferenceSource] = usePersistedState('inferenceSource', 'server');
   const [selectedModel, setSelectedModel] = usePersistedState('selectedModel', '');
   const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', 'streaming');
   const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', true);
@@ -186,6 +191,22 @@ export default function App() {
   } = pdfEngine;
 
   const inChat = viewMode === 'chat';
+  const inAdmin = viewMode === 'admin';
+
+  // Capabilities granted to the current user. The auth gate below already
+  // guarantees at least one of reader/chat/admin once the app renders, but
+  // hooks run before that gate, so this is computed unconditionally.
+  const caps = auth.user?.capabilities ?? [];
+  const canReader = caps.includes('reader');
+  const canChat = caps.includes('chat');
+  const canAdmin = caps.includes('admin');
+
+  // Boot coercion (admin-console spec §3, generalized to all three views): a
+  // persisted viewMode the user no longer (or never did) have the capability
+  // for gets coerced to the first permitted view (reader, then chat, then
+  // admin). Waits for the auth probe to resolve so a loading session isn't
+  // bounced before /v1/auth/me answers.
+  useViewModeGuard({ viewMode, setViewMode, authState: auth.state, caps });
 
   const ttsEngine = useTtsEngine({
     textItems, currentSentenceIndex, setCurrentSentenceIndex,
@@ -194,7 +215,7 @@ export default function App() {
     apiHost, apiPort, requestTimeout, unlimitedBatchTimeout,
     backendAvailable, pdfFileName,
     setStatus, showToast,
-    enabled: !inChat,
+    enabled: !inChat && !inAdmin,
   });
 
   const {
@@ -212,8 +233,8 @@ export default function App() {
   // model. Both are null while no doc is open.
   const currentDocIndexEntry = currentDocId ? docIndexByDocId[currentDocId] : null;
   const chatEngine = useChatEngine({
-    ollamaHost, ollamaPort, selectedModel,
-    chatTtsMode, chatAutoTts, inference,
+    ollamaHost, ollamaPort, inferenceSource, selectedModel,
+    chatTtsMode, chatAutoTts, inference, onInferencePersist: setInference,
     isLocalhost, selectedVoice, playbackSpeed, requestTimeout,
     apiHost, apiPort,
     currentDocId, currentDocIndexState: currentDocIndexEntry?.state || null,
@@ -225,6 +246,7 @@ export default function App() {
     messages: chatMessages,
     isStreaming: chatIsStreaming,
     availableModels,
+    inferenceBudget: chatInferenceBudget,
     reachable: ollamaReachable,
     sendMessage: chatSendMessage,
     stopStream: chatStopStream,
@@ -326,15 +348,15 @@ export default function App() {
   // out at the window level so the reader's DragOverlay never appears and the
   // file isn't routed through processFile() (which expects PDF/TXT).
   const handleDragOver = (e) => {
-    if (inChat) return;
+    if (inChat || inAdmin) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(true);
   };
   const handleDragLeave = (e) => {
-    if (inChat) return;
+    if (inChat || inAdmin) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
   };
   const handleDrop = (e) => {
-    if (inChat) return;
+    if (inChat || inAdmin) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
     const files = e.dataTransfer.files;
     if (files.length === 0) return;
@@ -1001,10 +1023,12 @@ export default function App() {
   // so an unauthenticated visitor sees the login/pending/disabled screen rather
   // than the app or its loading spinner. With AUTH_ENABLED=false on a loopback
   // backend, /v1/auth/me returns the seed admin → state 'active' → app renders.
-  if (auth.state !== 'active') {
+  // Also gate active users with no capabilities — they see NoAccessScreen.
+  if (auth.state !== 'active' || !(auth.user?.capabilities?.length)) {
     return (
       <AuthGate
         state={auth.state}
+        user={auth.user}
         onLogin={auth.login}
         onLogout={auth.logout}
         onRetry={auth.refresh}
@@ -1068,6 +1092,9 @@ export default function App() {
           darkMode={darkMode}
           hasDocument={hasDocument}
           viewMode={viewMode} setViewMode={setViewMode}
+          isAdmin={canAdmin}
+          canReader={canReader}
+          canChat={canChat}
           status={status}
           isPlaying={isPlaying}
           isLocalhost={isLocalhost} setIsLocalhost={setIsLocalhost}
@@ -1108,15 +1135,20 @@ export default function App() {
         )}
 
         {!distractionFree && (inChat ? (
-          <ChatSidebar
+          // Mount gate mirroring the admin console below: hiding via
+          // ViewSwitcher is cosmetic, this is the render-time boundary that
+          // covers the brief window before useViewModeGuard's effect fires.
+          canChat && <ChatSidebar
             theme={theme}
             darkMode={darkMode}
             effectiveIsMobile={effectiveIsMobile}
             sidebarOpen={sidebarOpen}
             ollamaHost={ollamaHost} setOllamaHost={setOllamaHost}
             ollamaPort={ollamaPort} setOllamaPort={setOllamaPort}
+            inferenceSource={inferenceSource} setInferenceSource={setInferenceSource}
             selectedModel={selectedModel} setSelectedModel={setSelectedModel}
             availableModels={availableModels}
+            inferenceBudget={chatInferenceBudget}
             reachable={ollamaReachable}
             refreshModels={refreshModels}
             chatTtsMode={chatTtsMode} setChatTtsMode={setChatTtsMode}
@@ -1132,8 +1164,8 @@ export default function App() {
             deleteSession={chatDeleteSession}
             renameSession={chatRenameSession}
           />
-        ) : (
-        <Sidebar
+        ) : inAdmin ? null : (
+        canReader && <Sidebar
           theme={theme}
           darkMode={darkMode}
           effectiveIsMobile={effectiveIsMobile}
@@ -1173,13 +1205,17 @@ export default function App() {
         ))}
 
         {inChat ? (
-          <ChatView
+          // Mount gate mirroring the admin console below: hiding via
+          // ViewSwitcher is cosmetic, this is the render-time boundary that
+          // covers the brief window before useViewModeGuard's effect fires.
+          canChat && <ChatView
             theme={theme}
             darkMode={darkMode}
             effectiveIsMobile={effectiveIsMobile}
             messages={chatMessages}
             isStreaming={chatIsStreaming}
             selectedModel={selectedModel}
+            inferenceBudget={chatInferenceBudget}
             reachable={ollamaReachable}
             sendMessage={chatSendMessage}
             stopStream={chatStopStream}
@@ -1193,7 +1229,25 @@ export default function App() {
             onRemovePin={chatRemovePin}
             numCtx={inference.numCtx}
           />
+        ) : inAdmin ? (
+          // Mount gate: the console renders nothing when the current user
+          // isn't an admin — hiding is cosmetic, server rails are the
+          // boundary, and the guard hook flips viewMode back to reader.
+          auth.user?.role === 'admin' && (
+            <AdminConsole
+              theme={theme}
+              apiHost={apiHost}
+              apiPort={apiPort}
+              currentUserId={auth.user.id}
+              onBack={() => setViewMode('reader')}
+              showToast={showToast}
+            />
+          )
         ) : (
+        // Mount gate mirroring the admin console above: hiding via
+        // ViewSwitcher is cosmetic, this is the render-time boundary that
+        // covers the brief window before useViewModeGuard's effect fires.
+        canReader && (
         <WorkspaceProvider workspace={workspace} initialPath={workspaceEntryPath} onOpenDoc={onOpenDoc} onMissing={(path) => showToast(`"${path}" isn't in this folder`, 3000)}>
           <PdfViewer
             theme={theme}
@@ -1240,6 +1294,7 @@ export default function App() {
             </div>
           )}
         </WorkspaceProvider>
+        )
         )}
       </main>
 
@@ -1257,7 +1312,7 @@ export default function App() {
         <MobileBottomNav
           theme={theme}
           effectiveIsMobile={effectiveIsMobile}
-          hasDocument={hasDocument && !inChat}
+          hasDocument={hasDocument && !inChat && !inAdmin}
           currentPage={currentPage} setCurrentPage={setCurrentPage}
           numPages={numPages}
           currentSentenceIndex={currentSentenceIndex}

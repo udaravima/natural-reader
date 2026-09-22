@@ -4,6 +4,93 @@
 
 ---
 
+## 2026-09-17 (final) — post-1.9.0 documentation completeness pass + admin-console spec
+
+**Branch:** `feat/model-router-gateway` · **Tests:** backend 143, frontend 163, lint clean (re-verified after docs-only changes) · docs only, no code touched.
+
+### What happened
+User asked: comprehensive, ordered, complete docs + test cases for **everything after tag v1.9.0** (auth + model routing), plus a proper **separate admin page** design (implementation NOT on this branch). Audit → three real gaps found and fixed:
+- **CHANGELOG `[Unreleased]` was missing the entire auth feature set** (only inference items were listed). Added: multi-user OIDC auth (JIT provisioning, sessions, PATs, ownership, admin mgmt, migrations 005/006), the local Keycloak rig (with the persistence semantics), security hardening — plus a **Breaking: every route now requires auth** entry under Changed.
+- **ARCHITECTURE.md had zero inference-gateway coverage.** Added: `inference.py` in § Routers (validated envelope, byte-faithful streaming, 429 pre-check + `_UsageTap`, fail-open), `model_router.py` + `inference_budget.py` in § Services, migration 007, the `callChat()`/source-switch rewrite of the `useChatEngine` row, `inferenceSource` persisted setting, ChatSidebar/InferenceSourceSelect/budget-meter components, updated "one chat turn" flow.
+- **deploy/README.md was stale**: said Keycloak uses "embedded store" (now the persistent `keycloak` schema in Postgres — with the fresh-volume-only init-script semantics + hand-create-schema command), said admin console password is `admin/admin` (bootstrap creds only apply on first volume init; user has since changed it), had no inference-gateway env vars, no offboarding warning. All fixed; added the live-verified Keycloak-deletion-doesn't-propagate note to the two-user walkthrough.
+
+### New docs
+- **`docs/superpowers/specs/2026-09-17-admin-console-design.md`** — the approved-in-principle design for the separate admin page, to be built on a future `feat/admin-console` branch. Covers: `viewMode: 'admin'` + shield entry with boot-time coercion for demoted admins, Users section (incl. **user deletion** with rails: no self/last-admin/seed-row deletes; delete = full wipe via existing cascades + PDF sweep), Inference usage dashboard, read-only deployment config endpoint, 17-item TDD test plan, rollout, open questions (soft-delete, CSV export, session visibility).
+- **`docs/TESTING.md`** — the post-1.9.0 test map: every test case in every file and what it asserts (verified against source, not from memory), test conventions (ASGITransport/MockTransport/`db_conn`/`stream_response`), integration seams, the manual/live-verification ledger (gateway scripted pass + Keycloak propagation matrix), and known gaps (no E2E, OIDC flow mocked at claims level, usage/budget UI + user deletion pending admin console).
+- **`docs/README.md`** — docs index: all ten docs in reading order with quick-routing pointers ("why can't this user log in?", "what env vars?", "which tests guard this?").
+
+### Next
+- **`feat/admin-console`** branch (spec above) after the gateway branch merges — the usage/budget endpoints it consumes are this branch's work.
+- The remaining browser click-through (dropdown/meter/toast/local-mode parity) — still open, unit-covered.
+- `startup.sh` has an uncommitted user edit (Keycloak wait 30→60 retries) — left alone on purpose.
+
+---
+
+## 2026-09-17 (later still) — Keycloak↔app propagation live-verified; user guide written
+
+**Branch:** `feat/model-router-gateway` · docs + live verification only · **Tests:** unchanged (143/163, lint clean).
+### The question
+Does creating/deleting a user in Keycloak propagate to the app? **Live-verified end-to-end** against the running rig (Postgres + Keycloak + backend auth-on + Vite), using the Keycloak Admin API + a full scripted OIDC login dance (curl through `/v1/auth/login` → KC form → `/v1/auth/callback` → `nr_session`). Results:
+- **Create in KC → nothing happens app-side until first login.** Verified: created `prop-test`, users table unchanged; after the login dance, the row appeared as `pending`/`member` with `oidc_sub` = the KC UUID (JIT provisioning).
+- **Delete in KC → NOTHING propagates.** Verified: row stayed `active`, and the user's **existing session still worked** (`/v1/auth/me` 200 after KC deletion — the app never re-checks the IdP).
+- **The email trap is real:** a second KC user with the same email got **409 "email already linked to another identity"** at login. And the dev DB already contained a **real orphan of this class**: `aakash.n@…` is `active` in the app but has no Keycloak identity at all (its sub has no `user_entity` row) — this is what happens when KC deletion happens without app-side disable, or a leftover from the H2-era store.
+- **Correct offboarding order: disable in the app first (hard-revokes sessions), then delete in Keycloak.** Documented in IDENTITY_AND_ROLES.md + USER_GUIDE.md.
+
+### Also this session
+- `docs/USER_GUIDE.md` — end-user guide (sign-in states, PATs & why they exist — "tokens are on the Account panel, not Admin", admin buttons, Server/Local source, budget meter/429/UTC-midnight, FAQ). Linked from README.
+- Test artifacts cleaned up: prop-test + prop-test2 removed from both stores (KC natural-reader realm back to just `udara.v`; app back to 2 rows).
+- Notes for replaying the dance: Keycloak's login form `action` URL needs `&amp;` → `&` unescaping; header matching must be case-insensitive (`Location:` from KC vs `location:` from uvicorn); form session codes are one-time — the whole login dance must run in one shot; KC Admin API access tokens expire in ~60s; Admin-API-created users hit `VERIFY_PROFILE` unless `firstName`/`lastName` are set. Master-realm admin password is not the bootstrap `admin/admin` (user-changed).
+
+### Next (unchanged from below, plus)
+- Admin-side **user deletion** (to free blocked emails / clean orphans) is now a motivated follow-up alongside the `viewMode: 'admin'` panel.
+
+---
+
+## 2026-09-17 (later) — identity deep-dive doc + gateway live verification on `feat/model-router-gateway`
+
+**Branch:** `feat/model-router-gateway` · **Tests:** backend 143, frontend 163, lint clean · **Working tree:** docs only.
+
+### What happened
+- User commit `286fa41` ("Keycloak Presistent settings") moved the realm out of Keycloak's embedded H2 into the shared Postgres (schema `keycloak`, seeded by `deploy/postgres/init/` on first volume init). This fixed the recurring 409 "email already linked to another identity" desync: with H2, every container recreation minted new `sub` UUIDs, so returning users stopped matching `users.oidc_sub`.
+- Wrote **`docs/IDENTITY_AND_ROLES.md`** — the deep-dive answering "how do Keycloak users map to natural_reader users": two stores (Keycloak schema = credentials, `public.users` = accounts) joined only by the mirrored `(oidc_iss, oidc_sub)` pair; the three `resolve_or_provision_user` branches and their guards; roles live in the app (NOT Keycloak claims) and take effect immediately (Principal rebuilt from the users row per request); credentials (sessions/PATs, sha256-only); special identities (seed admin, dev bypass); and a **proposal** for a third `viewMode: 'admin'` (gated on `role === 'admin'`) to house users + the still-UI-less inference usage/budget endpoints. Cross-linked from ARCHITECTURE.md § auth.
+- **Task 13's manual pass (scripted subset) — done and green**, against a live backend (dev bypass) + real Ollama: models endpoint (allowlist filters to `gemma4:latest`; budget key with UTC-midnight `reset_at`), allowlist 422, real NDJSON streaming (thinking chunks byte-faithful), `INFERENCE_DAILY_TOKEN_BUDGET=1` → models shows `remaining_tokens: 0` + chat **429 with structured detail** (accounting had already recorded the earlier stream — recording is unconditional, budget only gates), tool_calls passthrough (gemma4 emitted a proper `current_time_date` call), `GET /v1/admin/inference/usage` (today's 27 tokens for the seed admin — the row's email is the user's real one, i.e. already linked via `BOOTSTRAP_ADMIN_EMAIL`/first-login).
+- Not yet human-clicked: the browser-side bits (Server/Local dropdown, budget meter, 429 toast, disabled send in local-mode parity). Unit-tested; final confidence click-through still open.
+
+### Next
+- **AdminPanel follow-up** (now designed in IDENTITY_AND_ROLES.md § last): `viewMode: 'admin'` surface with the usage view + per-user budget knob (`PATCH /v1/admin/users/{id}`; `day` from the usage endpoint is an ISO date, not a timestamp; absent field ≠ null in the PATCH semantics).
+- Document-library RAG (unblocked by the gateway), then sub-project D.
+- `origin/feat/model-router-gateway` is behind local — push only when asked.
+
+---
+
+## 2026-09-17 — Model-router gateway (sub-project E) built on `feat/model-router-gateway`
+
+**Branch:** `feat/model-router-gateway` (branched off `feat/security-hardening` line) · **Tests:** backend 143, frontend 163, lint clean · **Working tree:** clean at last commit.
+
+### What happened
+- Implemented the full [gateway spec](docs/superpowers/specs/2026-09-17-model-router-gateway-design.md) (all phases E1–E3) via the 13-task TDD plan ([docs/superpowers/plans/2026-09-17-model-router-gateway.md](docs/superpowers/plans/2026-09-17-model-router-gateway.md)).
+- **The pipe (E1):** new `server/routers/inference.py` — `GET /v1/inference/models` + `POST /v1/inference/chat` behind `get_current_user`; strictly validated envelope (`extra="forbid"` down to per-message fields, incl. `images` + `tool_calls`); byte-faithful NDJSON passthrough (uses `client.send(stream=True)` + closes in the generator's `finally` — the StreamingResponse trap); upstream errors forwarded status+body so the SPA's think/tools fallback chain still branches correctly. Frontend: `src/lib/chatTransport.js` seam, `useChatEngine`'s four `/api/chat` sites collapsed into `callChat()`, model list via the gateway, persisted **Inference source: Server | Local Ollama** setting in ChatSidebar.
+- **The router (E2):** `server/services/model_router.py` owns everything — `INFERENCE_MODELS` allowlist (422 otherwise), task models (`SUMMARIZE_MODEL` w/ `WEB_SEARCH_SUMMARY_MODEL` fallback, `EMBEDDING_MODEL`), `INFERENCE_TIMEOUT_S`, `INFERENCE_DAILY_TOKEN_BUDGET`. `embeddings.py` / `web_search.py` / `docs.py` (embedding metadata) all read from it now — no service reads Ollama env directly anymore.
+- **The budgets (E3):** migration `007_inference_budgets.sql` (`inference_usage` PK (user_id, day) — **day computed in Python, UTC**, no SQL default; `users.inference_daily_token_budget` NULL=default/0=unlimited), `inference_budget.py` service, 429 pre-check + `_UsageTap` stream accounting (only counts completed generations; fresh pooled conn in the generator `finally`; fail-open on DB errors). Admin: `GET /v1/admin/inference/usage` + budget field on the user PATCH (`exclude_unset` semantics: absent=untouched, null=clear). Frontend: budget rides `/v1/inference/models`, meter in ChatSidebar, 429 intercepted in `callChat` BEFORE the retry chains, send disabled at zero.
+- **Docs/config:** `.env.example` gateway section; README (new Inference Gateway API table, threat-model `/api/*` rows removed, nginx `/api/` block deleted everywhere + `proxy_buffering off` moved to `/v1/`); CHANGELOG `[Unreleased]`.
+
+### Mid-session incident (resolved)
+- The branch was accidentally switched to `master` mid-implementation. **No commits were lost** — all were on `feat/model-router-gateway`; only uncommitted Task-6 scratch files were wiped by the force-checkout and were recreated. Note: `searxng/` is owned by a container uid; checkout errors there are fixed with `git checkout -f` (the files are identical).
+
+### Not verified here / next
+- **The live browser walk-through (plan Task 13 step 5) was NOT done** — needs Ollama + a real model: server-mode dropdown/streaming, tool loop through the gateway, image attach, local-mode parity, allowlist, and a budget-exhaustion 429. All of these are covered by unit tests with a mocked upstream; the manual pass is a final confidence check.
+- **AdminPanel UI** doesn't surface the usage view / budget knob yet (API only). Small follow-up.
+- **Document-library RAG is now unblocked** — its Phase 2 description generation routes through `model_router`'s `summarize` task, and Phase 3's multi-round loop checks budget via the 429 detail.
+- Then sub-project **D** (containerization/prod Keycloak/TLS).
+- The **admin usage endpoint returns `day` as a date object** — FastAPI serializes it; if the SPA later renders it, remember it's ISO date, not timestamp.
+
+### How to run / test
+- Postgres must be up: `env -u XDG_DATA_HOME podman-compose up -d postgres` (container stops between sessions).
+- Backend: `.venv/bin/pytest server/tests/` (143). Frontend: `npm run test:run` (163), `npm run lint`.
+- Manual: `./startup.sh up` (loopback dev bypass = seed admin) + `npm run dev`; chat defaults to Server mode → `/v1/inference/*`.
+
+---
+
 ## 2026-09-17 — SPA auth UI + local OIDC rig built; merged onto `feat/security-hardening`
 
 **Branch:** `feat/spa-auth-ui` (off, and merged back into, `feat/security-hardening`) · **Tests:** backend 92, frontend 150, lint clean · **Working tree:** clean.

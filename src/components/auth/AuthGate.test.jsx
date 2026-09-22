@@ -5,8 +5,8 @@ import { AuthGate } from './AuthGate';
 const child = <div data-testid="app">APP</div>;
 
 describe('AuthGate', () => {
-  it('renders children only when active', () => {
-    render(<AuthGate state="active">{child}</AuthGate>);
+  it('renders children only when active with capabilities', () => {
+    render(<AuthGate state="active" user={{ capabilities: ['reader'] }}>{child}</AuthGate>);
     expect(screen.getByTestId('app')).toBeInTheDocument();
   });
 
@@ -34,5 +34,24 @@ describe('AuthGate', () => {
     render(<AuthGate state="error" onRetry={onRetry}>{child}</AuthGate>);
     fireEvent.click(screen.getByRole('button', { name: /retry/i }));
     expect(onRetry).toHaveBeenCalledOnce();
+  });
+
+  it('shows access-not-granted when active but no capabilities', () => {
+    render(
+      <AuthGate state="active" user={{ capabilities: [] }}
+                onLogin={() => {}} onLogout={() => {}} onRetry={() => {}}>
+        <div>APP</div>
+      </AuthGate>);
+    expect(screen.queryByText('APP')).toBeNull();
+    expect(screen.getByRole('heading', { name: /active but has no access/i })).toBeInTheDocument();
+  });
+
+  it('renders children when active with a capability', () => {
+    render(
+      <AuthGate state="active" user={{ capabilities: ['reader'] }}
+                onLogin={() => {}} onLogout={() => {}} onRetry={() => {}}>
+        <div>APP</div>
+      </AuthGate>);
+    expect(screen.getByText('APP')).toBeInTheDocument();
   });
 });

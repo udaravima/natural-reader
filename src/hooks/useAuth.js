@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { apiFetch, setUnauthorizedHandler } from '../utils/apiFetch';
+import { apiFetch, setUnauthorizedHandler, setForbiddenHandler } from '../utils/apiFetch';
 import { buildApiUrl } from '../utils/url';
 
 /**
@@ -17,7 +17,8 @@ export function useAuth(apiHost, apiPort) {
     try {
       const res = await apiFetch(apiHost, apiPort, '/v1/auth/me');
       if (res.ok) {
-        setUser(await res.json());
+        const body = await res.json();
+        setUser({ ...body, capabilities: body.capabilities ?? [] });
         setState('active');
       } else if (res.status === 401) {
         setUser(null);
@@ -39,6 +40,14 @@ export function useAuth(apiHost, apiPort) {
     return () => setUnauthorizedHandler(null);
   }, []);
 
+  // A 403 missing_capability from any call site means our capability set is
+  // stale (e.g. an admin revoked a capability mid-session) — re-probe /me
+  // rather than booting to the login gate, since the session itself is fine.
+  useEffect(() => {
+    setForbiddenHandler(() => { check(); });
+    return () => setForbiddenHandler(null);
+  }, [check]);
+
   useEffect(() => { check(); }, [check]);
 
   const login = useCallback(() => {
@@ -46,9 +55,11 @@ export function useAuth(apiHost, apiPort) {
     window.location.assign(buildApiUrl(apiHost, apiPort, `/v1/auth/login?next=${next}`));
   }, [apiHost, apiPort]);
 
-  const logout = useCallback(async () => {
-    try { await apiFetch(apiHost, apiPort, '/v1/auth/logout', { method: 'POST' }); }
-    finally { setUser(null); setState('anonymous'); }
+  // Navigation, not fetch: the backend 303s to the IdP's end-session endpoint,
+  // and the browser must follow that redirect itself so the IdP can clear its
+  // SSO cookie on its own origin. The SPA state resets naturally on reload.
+  const logout = useCallback(() => {
+    window.location.assign(buildApiUrl(apiHost, apiPort, '/v1/auth/logout'));
   }, [apiHost, apiPort]);
 
   return { state, user, login, logout, refresh: check };

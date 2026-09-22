@@ -4,6 +4,72 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- **Inference gateway (model router).** The SPA's chat no longer talks to Ollama
+  directly — it goes through authenticated backend endpoints
+  (`GET /v1/inference/models`, `POST /v1/inference/chat`) using the session cookie
+  (or a PAT), so the previously unauthenticated browser→Ollama path is closed.
+  The chat passthrough is **byte-faithful NDJSON streaming** (the SPA's tool loop,
+  thinking-trace fallbacks, and image attachments are unchanged) behind a strictly
+  validated request envelope — unknown fields are a 422, never a silent
+  passthrough, and `/api/pull`/`/api/delete` & co. are unreachable through app
+  auth. A new **Inference source: Server | Local Ollama** setting in the chat
+  sidebar switches between the gateway (default) and the old direct mode.
+  ([server/routers/inference.py](server/routers/inference.py), [src/lib/chatTransport.js](src/lib/chatTransport.js))
+- **Model allowlist.** `INFERENCE_MODELS` (comma-separated) caps what the gateway
+  serves — the SPA's model dropdown only offers allowlisted models and
+  non-listed chat requests 422. Unset = all models (dev convenience). One config
+  module (`server/services/model_router.py`) now owns every server-side model
+  choice: chat allowlist, `SUMMARIZE_MODEL` (replaces `WEB_SEARCH_SUMMARY_MODEL`,
+  which still works), and `EMBEDDING_MODEL`.
+- **Per-user daily token budgets.** `INFERENCE_DAILY_TOKEN_BUDGET` sets a default
+  daily prompt+eval token allowance (from Ollama's final-chunk real counts,
+  UTC-midnight reset); over-budget requests get a 429 with remaining/reset detail
+  that the SPA surfaces as a toast + a "N tokens left today" meter, and the send
+  button disables at zero. Admins can override per user
+  (`PATCH /v1/admin/users/{id}`) and view usage via
+  `GET /v1/admin/inference/usage`. Aborted streams are never accounted; budget
+  checks fail open if Postgres is down — chat never dies with the DB.
+  (migration `007_inference_budgets.sql`, [server/services/inference_budget.py](server/services/inference_budget.py))
+- **Multi-user auth (OIDC) + per-user data.** The backend is now multi-user:
+  OIDC login (`/v1/auth/login|callback|logout|me`, any discovery-based provider,
+  PKCE S256), JIT user provisioning (first login becomes the admin; others land
+  `pending` until an admin activates them), DB-backed browser sessions and
+  personal access tokens (`nrp_…`, sha256-at-rest, shown once — for the browser
+  extension and scripts), per-user ownership of documents and chat sessions
+  (other users' rows are 404s, not 403s), and admin user management
+  (activate/disable/role; disabling hard-revokes sessions). The SPA is gated
+  behind an auth screen per account state. Migrations `005`/`006`.
+  Deep-dive: [docs/IDENTITY_AND_ROLES.md](docs/IDENTITY_AND_ROLES.md); user guide:
+  [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+- **Local OIDC rig.** `./startup.sh up-with-dev-auth` runs a Keycloak container
+  (realm `natural-reader`, seeded from `deploy/keycloak/realm-export.json`)
+  whose realm state persists in the shared Postgres (schema `keycloak`,
+  created on first volume init via `deploy/postgres/init/` — survives container
+  recreation, so `sub` UUIDs and the app's `users.oidc_sub` links stay stable).
+  Walkthrough: [deploy/README.md](deploy/README.md).
+- **Security hardening** on the API surface: loopback-only default bind, strict
+  `doc_id` (sha256 hex) validation blocking path traversal, SSRF guard on the
+  web-search fetcher (public IPs only, re-checked per redirect hop), TTS request
+  size caps, and startup guards that refuse insecure auth configs on
+  non-loopback binds.
+
+### Changed
+- **Breaking: every API route now requires authentication.** Pre-1.9.0 the
+  backend was open; now `/v1/*` (TTS, docs, chat sessions, tools, inference)
+  resolves a principal from the session cookie or a Bearer PAT and denies by
+  default. Deployments that relied on the open API must set `AUTH_ENABLED=false`
+  (loopback only) or provision tokens. The SPA is same-origin with the backend
+  (blank `apiHost`) — the only cookie-compatible setup; a stale `localhost`
+  value is migrated away on boot.
+- **nginx: delete the `/api/` block.** With the gateway live, Ollama becomes
+  backend-only (loopback bind, nothing proxied). The reference configs
+  (`deploy/nginx/natural-reader.conf`, `docs/chat.oraian.net.sample`) and the
+  README example have dropped it; `proxy_buffering off` now matters on `/v1/`
+  (that's where NDJSON streams).
+- Server-side summarize (web_search) and embedding calls route through
+  `model_router` instead of reading `OLLAMA_URL`/model env vars in each service.
+
 ## [1.9.0] - 2026-08-10
 
 ### Added

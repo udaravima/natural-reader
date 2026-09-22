@@ -36,7 +36,8 @@ def _client(app):
 async def _member(db_conn, sub):
     u = await resolve_or_provision_user(db_conn, iss="i", sub=sub, email=f"{sub}@x.io")
     await set_status(db_conn, u["id"], "active")
-    return deps.Principal(user_id=u["id"], email=u["email"], role="member")
+    return deps.Principal(user_id=u["id"], email=u["email"], role="member",
+                          capabilities=frozenset({"reader"}))
 
 
 async def _insert_doc(db_conn, doc_id, owner_id):

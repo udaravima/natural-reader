@@ -219,6 +219,25 @@ wait_for_postgres() {
 	warn "Postgres not ready after ${retries}s; continuing (TTS still works, RAG may 503)."
 }
 
+# Keycloak stores its realm in the app database's `keycloak` schema, which
+# deploy/postgres/init/00-create-keycloak-schema.sql only creates on a FRESH
+# data volume. On a reused volume that script never runs, Keycloak fails its
+# first migration against the missing schema, and the realm import dies
+# silently. Creating it here — BEFORE Keycloak starts — covers both cases
+# (CREATE SCHEMA IF NOT EXISTS is a no-op on fresh volumes). Best-effort,
+# warn-and-continue, mirroring wait_for_postgres.
+ensure_keycloak_schema() {
+	local engine="$1"
+	log "Ensuring 'keycloak' schema exists in Postgres..."
+	if compose "$engine" exec -T "$POSTGRES_SERVICE" \
+		psql -U "$POSTGRES_USER" -d "$POSTGRES_USER" \
+		-c 'CREATE SCHEMA IF NOT EXISTS keycloak' >/dev/null 2>&1; then
+		log "Keycloak schema present."
+	else
+		warn "Could not ensure the keycloak schema (Postgres not ready?). If the realm import fails, see deploy/postgres/init/00-create-keycloak-schema.sql."
+	fi
+}
+
 # SIGTERM the run.py backend recorded in RUNNER_PIDFILE (started by `up`), if it
 # is still alive, then remove the pidfile. Idempotent and safe to call when no
 # runner is recorded — used both by `down` and by the `up` shutdown trap.
@@ -327,7 +346,7 @@ check_backend_port_free() {
 # against a half-up Keycloak fails confusingly. Warn-and-continue on timeout:
 # TTS still serves; /v1/auth/login just 503s until Keycloak is actually up.
 wait_for_keycloak() {
-	local retries=30 i=1 ok=0
+	local retries=120 i=1 ok=0
 	log "Waiting for Keycloak realm import..."
 	for ((i = 1; i <= retries; i++)); do
 		if command -v curl >/dev/null 2>&1; then
@@ -427,13 +446,21 @@ cmd_up() {
 	check_backend_port_free
 	ensure_searxng_config
 
+	# Keycloak must NOT start in this first batch: it needs the `keycloak`
+	# schema, which is created right after Postgres is ready (see
+	# ensure_keycloak_schema). Starting it together with Postgres races its
+	# first migration against the schema creation on reused volumes.
 	local -a services=("$POSTGRES_SERVICE" "searxng")
-	[[ "$mode" == "dev-auth" ]] && services+=("$KEYCLOAK_SERVICE")
 
 	log "Starting containers ($engine): ${services[*]}"
 	compose "$engine" up -d "${services[@]}"
 	wait_for_postgres "$engine"
-	[[ "$mode" == "dev-auth" ]] && wait_for_keycloak
+	if [[ "$mode" == "dev-auth" ]]; then
+		ensure_keycloak_schema "$engine"
+		log "Starting containers ($engine): $KEYCLOAK_SERVICE"
+		compose "$engine" up -d "$KEYCLOAK_SERVICE"
+		wait_for_keycloak
+	fi
 
 	log "Starting Neural Voice Server (run.py)"
 	mkdir -p "$(dirname "$RUNNER_PIDFILE")"

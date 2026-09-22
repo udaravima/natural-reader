@@ -1,7 +1,9 @@
 import pytest
 
 from server.auth.sessions import create_session, resolve_session
-from server.auth.users import resolve_or_provision_user, get_user, set_status
+from server.auth.users import (
+    resolve_or_provision_user, get_user, set_status, set_capabilities,
+)
 
 SEED = "00000000-0000-0000-0000-000000000001"
 
@@ -62,3 +64,32 @@ async def test_set_status(db_conn):
     u = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io")
     await set_status(db_conn, u["id"], "active")
     assert (await get_user(db_conn, u["id"]))["status"] == "active"
+
+
+async def test_first_login_claims_seed_admin_with_bootstrap_caps(db_conn):
+    # Neutralize migration 008's backfill so this test can't pass on stale
+    # state alone — it must prove branch 3 itself forces the bootstrap set.
+    await set_capabilities(db_conn, SEED, [])
+    # Pass a non-bootstrap capabilities value to prove branch 3 ignores it.
+    u = await resolve_or_provision_user(
+        db_conn, iss="i", sub="s1", email="a@x.io", capabilities=["reader"]
+    )
+    assert u["id"] == SEED
+    assert set(u["capabilities"]) == {"admin", "reader", "chat"}
+    assert u["role"] == "admin"
+
+
+async def test_brand_new_user_is_pending_with_no_caps(db_conn):
+    await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="a@x.io")  # seed
+    m = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io",
+                                        capabilities=[])
+    assert m["status"] == "pending" and m["capabilities"] == []
+
+
+async def test_known_identity_caps_synced_from_token(db_conn):
+    await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="a@x.io")  # seed
+    await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io",
+                                    capabilities=[])
+    synced = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io",
+                                             capabilities=["reader"])
+    assert set(synced["capabilities"]) == {"reader"} and synced["role"] == "member"

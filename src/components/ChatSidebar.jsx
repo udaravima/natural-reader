@@ -4,6 +4,7 @@ import {
     Plus, Pencil, ChevronDown, ChevronRight, ScrollText, Check, X,
 } from 'lucide-react';
 import { INFERENCE_DEFAULTS } from '../hooks/inference';
+import { InferenceSourceSelect } from './chat/InferenceSourceSelect';
 
 export default function ChatSidebar({
     theme,
@@ -13,8 +14,10 @@ export default function ChatSidebar({
     // Ollama config
     ollamaHost, setOllamaHost,
     ollamaPort, setOllamaPort,
+    inferenceSource = 'server', setInferenceSource,
     selectedModel, setSelectedModel,
     availableModels,
+    inferenceBudget,
     reachable,
     refreshModels,
     // TTS preferences
@@ -64,7 +67,21 @@ export default function ChatSidebar({
                     defaultOpen={!selectedModel}
                     bodyClassName="px-4 py-4 space-y-4 max-h-[60vh] overflow-y-auto custom-scrollbar"
                 >
-                    {/* Ollama host/port */}
+                    {/* Inference source: authenticated backend gateway (default)
+                        or direct browser→Ollama (pre-gateway behavior). */}
+                    <div className="space-y-2">
+                        <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>INFERENCE SOURCE</span>
+                        <InferenceSourceSelect source={inferenceSource} onChange={setInferenceSource} theme={theme} />
+                        {inferenceSource === 'server' && (
+                            <p className={`text-[9px] ${theme.textMuted} px-1`}>
+                                Runs through the Natural Reader backend — authenticated, with the
+                                deployment's model allowlist and daily token budget applied.
+                            </p>
+                        )}
+                    </div>
+
+                    {/* Ollama host/port (local mode only — server mode targets the backend gateway) */}
+                    {inferenceSource === 'local' && (
                     <div className="space-y-2">
                         <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>OLLAMA SERVER</span>
                         <div className="flex items-center gap-2">
@@ -94,7 +111,9 @@ export default function ChatSidebar({
                                 Same-origin mode — requests go to <code>/api/*</code> on the page's host.
                             </p>
                         )}
-                        <div className="flex items-center justify-between gap-2 mt-1">
+                    </div>
+                    )}
+                    <div className="flex items-center justify-between gap-2 mt-1">
                             <span className={`text-[10px] ${reachable === null ? theme.textMuted : reachable ? 'text-green-500' : 'text-red-400'}`}>
                                 {reachable === null ? '⏳ Checking...' : reachable ? '✓ Connected' : '✗ Unreachable'}
                             </span>
@@ -105,7 +124,6 @@ export default function ChatSidebar({
                                 <RefreshCw size={10} /> Refresh
                             </button>
                         </div>
-                    </div>
 
                     {/* Model picker */}
                     <div className="space-y-1">
@@ -130,6 +148,11 @@ export default function ChatSidebar({
                         {selectedModel && (
                             <p className={`text-[9px] ${theme.textMuted} px-1 flex items-center gap-1`}>
                                 <Bot size={10} /> Active: {selectedModel}
+                            </p>
+                        )}
+                        {inferenceSource === 'server' && inferenceBudget?.remaining_tokens != null && (
+                            <p className={`text-[9px] px-1 ${inferenceBudget.remaining_tokens === 0 ? 'text-red-400 font-bold' : theme.textMuted}`}>
+                                {inferenceBudget.remaining_tokens.toLocaleString()} tokens left today
                             </p>
                         )}
                     </div>
@@ -185,7 +208,7 @@ export default function ChatSidebar({
                             disabled={!selectedModel}
                             options={[
                                 ['auto', 'Auto'], ['4096', '4096'], ['8192', '8192'],
-                                ['16384', '16384'], ['32768', '32768'],
+                                ['16384', '16384'], ['32768', '32768'], ['65536', '65536'],
                             ]}
                         />
 

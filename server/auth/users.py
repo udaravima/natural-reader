@@ -5,9 +5,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from psycopg import errors as pg_errors
+
 SEED_ADMIN_ID = "00000000-0000-0000-0000-000000000001"
 
-_KEYS = ["id", "email", "display_name", "role", "status", "oidc_iss", "oidc_sub"]
+_KEYS = [
+    "id", "email", "display_name", "role", "status", "oidc_iss", "oidc_sub",
+    "inference_daily_token_budget", "capabilities", "created_at",
+]
 _COLS = ", ".join(_KEYS)
 
 
@@ -39,9 +44,23 @@ async def set_status(conn, user_id: str, status: str) -> None:
         await conn.execute("DELETE FROM sessions WHERE user_id=%s", (user_id,))
 
 
-async def set_role(conn, user_id: str, role: str) -> None:
+async def set_inference_budget(conn, user_id: str, budget: int | None) -> None:
+    """Daily inference token budget. NULL = deployment default; 0 = unlimited."""
     await conn.execute(
-        "UPDATE users SET role=%s, updated_at=now() WHERE id=%s", (role, user_id)
+        "UPDATE users SET inference_daily_token_budget=%s, updated_at=now() "
+        "WHERE id=%s",
+        (budget, user_id),
+    )
+
+
+async def set_capabilities(conn, user_id: str, capabilities) -> None:
+    """Overwrite a user's capabilities; keep the legacy role column in sync
+    (admin iff the admin capability is present)."""
+    caps = sorted(set(capabilities))
+    role = "admin" if "admin" in caps else "member"
+    await conn.execute(
+        "UPDATE users SET capabilities=%s, role=%s, updated_at=now() WHERE id=%s",
+        (caps, role, user_id),
     )
 
 
@@ -58,12 +77,19 @@ async def resolve_or_provision_user(
     email: str,
     display_name: str | None = None,
     email_verified: bool = False,
+    capabilities: list[str] | None = None,
 ) -> dict[str, Any]:
     """Resolve an OIDC identity to a local user, provisioning on first sight.
 
     `email_verified` must reflect the OIDC `email_verified` claim: an email is
     only trusted to CLAIM a pre-provisioned account when the IdP verified it.
     The first-user-admin path (branch 3) is not email-based and so is unaffected.
+
+    `capabilities`, when not None, is the token's realm-role-derived capability
+    set (see `caps_from_claims`) and is synced onto the resolved user on every
+    login for known/linked identities. The seed admin's first claim always
+    forces `BOOTSTRAP_ADMIN_CAPABILITIES` regardless of the token, and a
+    brand-new self-registered user is provisioned with no capabilities.
     """
     # 1) Known identity — refresh email/display_name, return it.
     found = await _fetch_by(conn, "oidc_iss=%s AND oidc_sub=%s", (iss, sub))
@@ -73,6 +99,8 @@ async def resolve_or_provision_user(
             "updated_at=now() WHERE id=%s",
             (email, display_name, found["id"]),
         )
+        if capabilities is not None:
+            await set_capabilities(conn, found["id"], capabilities)
         return await get_user(conn, found["id"])
 
     # 2) A row already carries this email.
@@ -89,6 +117,8 @@ async def resolve_or_provision_user(
             "display_name=COALESCE(%s, display_name), updated_at=now() WHERE id=%s",
             (iss, sub, display_name, by_email["id"]),
         )
+        if capabilities is not None:
+            await set_capabilities(conn, by_email["id"], capabilities)
         return await get_user(conn, by_email["id"])
 
     # 3) Brand-new identity. Atomically claim the still-unlinked seed admin
@@ -102,6 +132,8 @@ async def resolve_or_provision_user(
         (iss, sub, email, display_name, SEED_ADMIN_ID),
     )
     if cur.rowcount == 1:
+        from .capabilities import BOOTSTRAP_ADMIN_CAPABILITIES
+        await set_capabilities(conn, SEED_ADMIN_ID, BOOTSTRAP_ADMIN_CAPABILITIES)
         return await get_user(conn, SEED_ADMIN_ID)
 
     cur = await conn.execute(
@@ -111,3 +143,55 @@ async def resolve_or_provision_user(
     )
     new_id = (await cur.fetchone())[0]
     return await get_user(conn, str(new_id))
+
+
+async def enroll_user(
+    conn,
+    *,
+    email: str,
+    display_name: str | None = None,
+    role: str = "member",
+    status: str = "pending",
+    inference_daily_token_budget: int | None = None,
+    capabilities: list[str] | None = None,
+) -> dict[str, Any]:
+    """Admin-side pre-provisioning: a row with oidc_sub NULL that waits for
+    its owner's first verified-email login (resolver branch 2 claims it,
+    preserving role/status/budget). Raises ValueError on a taken email."""
+    try:
+        cur = await conn.execute(
+            "INSERT INTO users (email, display_name, role, status, "
+            "inference_daily_token_budget, capabilities) "
+            "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (email, display_name, role, status, inference_daily_token_budget,
+             sorted(set(capabilities or []))),
+        )
+    except pg_errors.UniqueViolation:
+        raise ValueError("email already exists")
+    return await get_user(conn, str((await cur.fetchone())[0]))
+
+
+async def enroll_linked_user(conn, *, iss, sub, email, display_name=None,
+                             capabilities=None, status="active",
+                             inference_daily_token_budget=None) -> dict[str, Any]:
+    """A row already bound to its Keycloak identity (created via the admin API)."""
+    caps = sorted(set(capabilities or []))
+    role = "admin" if "admin" in caps else "member"
+    try:
+        cur = await conn.execute(
+            "INSERT INTO users (oidc_iss, oidc_sub, email, display_name, role, "
+            "status, inference_daily_token_budget, capabilities) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (iss, sub, email, display_name, role, status,
+             inference_daily_token_budget, caps),
+        )
+    except pg_errors.UniqueViolation:
+        raise ValueError("email already exists")
+    return await get_user(conn, str((await cur.fetchone())[0]))
+
+
+async def delete_user(conn, user_id: str) -> None:
+    """Hard delete. Every referencing table cascades (sessions, PATs,
+    inference_usage, documents + chunks, chat_sessions + messages/events) —
+    callers must sweep user files (e.g. stored PDFs) BEFORE/around this."""
+    await conn.execute("DELETE FROM users WHERE id=%s", (user_id,))
