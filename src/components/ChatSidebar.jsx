@@ -1,31 +1,20 @@
 import { useState } from 'react';
 import {
-    Trash2, RefreshCw, Volume2, VolumeX, MessageSquare, Bot, Sliders,
+    Trash2, RefreshCw, MessageSquare, Bot,
     Plus, Pencil, ChevronDown, ChevronRight, ScrollText, Check, X,
 } from 'lucide-react';
-import { INFERENCE_DEFAULTS } from '../hooks/inference';
-import { InferenceSourceSelect } from './chat/InferenceSourceSelect';
-import { InferenceRow } from './chat/InferenceRow';
 
 export default function ChatSidebar({
     theme,
     darkMode,
     effectiveIsMobile,
     sidebarOpen,
-    // Ollama config
-    ollamaHost, setOllamaHost,
-    ollamaPort, setOllamaPort,
-    inferenceSource = 'server', setInferenceSource,
+    inferenceSource = 'server',
     selectedModel, setSelectedModel,
     availableModels,
     inferenceBudget,
     reachable,
     refreshModels,
-    // TTS preferences
-    chatTtsMode, setChatTtsMode,
-    chatAutoTts, setChatAutoTts,
-    // Inference settings
-    inference = INFERENCE_DEFAULTS, setInference,
     // Chat state
     messages,
     clearHistory,
@@ -61,59 +50,14 @@ export default function ChatSidebar({
                     naturally and the user can scroll the whole sidebar when many are open. */}
                 <div className="flex-1 overflow-y-auto custom-scrollbar">
 
-                {/* SETTINGS — collapsed by default once a model is configured */}
+                {/* MODEL — pick the active model; full chat/inference settings
+                    now live on the Settings page. */}
                 <Section
                     theme={theme}
-                    title="Settings"
-                    defaultOpen={!selectedModel}
+                    title="Model"
+                    defaultOpen
                     bodyClassName="px-4 py-4 space-y-4 max-h-[60vh] overflow-y-auto custom-scrollbar"
                 >
-                    {/* Inference source: authenticated backend gateway (default)
-                        or direct browser→Ollama (pre-gateway behavior). */}
-                    <div className="space-y-2">
-                        <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>INFERENCE SOURCE</span>
-                        <InferenceSourceSelect source={inferenceSource} onChange={setInferenceSource} theme={theme} />
-                        {inferenceSource === 'server' && (
-                            <p className={`text-[9px] ${theme.textMuted} px-1`}>
-                                Runs through the Natural Reader backend — authenticated, with the
-                                deployment's model allowlist and daily token budget applied.
-                            </p>
-                        )}
-                    </div>
-
-                    {/* Ollama host/port (local mode only — server mode targets the backend gateway) */}
-                    {inferenceSource === 'local' && (
-                    <div className="space-y-2">
-                        <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>OLLAMA SERVER</span>
-                        <div className="flex items-center gap-2">
-                            <span className={`text-[10px] font-bold ${theme.textMuted} w-10 shrink-0`}>Host</span>
-                            <input
-                                type="text"
-                                value={ollamaHost}
-                                onChange={(e) => setOllamaHost(e.target.value)}
-                                placeholder="localhost (blank = same origin)"
-                                className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors min-w-0`}
-                                title="Ollama host. Leave blank to hit /api/* on the same origin (reverse-proxy mode)."
-                            />
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <span className={`text-[10px] font-bold ${theme.textMuted} w-10 shrink-0`}>Port</span>
-                            <input
-                                type="text"
-                                value={ollamaPort}
-                                onChange={(e) => setOllamaPort(e.target.value)}
-                                placeholder="11434"
-                                className={`flex-1 text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors min-w-0`}
-                                title="Ollama port. Ignored when Host is blank."
-                            />
-                        </div>
-                        {!ollamaHost?.trim() && (
-                            <p className={`text-[9px] ${theme.textMuted} px-1`}>
-                                Same-origin mode — requests go to <code>/api/*</code> on the page's host.
-                            </p>
-                        )}
-                    </div>
-                    )}
                     <div className="flex items-center justify-between gap-2 mt-1">
                             <span className={`text-[10px] ${reachable === null ? theme.textMuted : reachable ? 'text-green-500' : 'text-red-400'}`}>
                                 {reachable === null ? '⏳ Checking...' : reachable ? '✓ Connected' : '✗ Unreachable'}
@@ -158,101 +102,6 @@ export default function ChatSidebar({
                         )}
                     </div>
 
-                    {/* TTS mode toggle */}
-                    <div className="space-y-2">
-                        <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>READ-ALOUD MODE</span>
-                        <div className={`flex p-1 rounded-lg border ${theme.border} ${theme.bgTertiary}`}>
-                            <button
-                                onClick={() => setChatTtsMode('streaming')}
-                                className={`flex-1 text-[10px] font-bold py-1.5 rounded-md transition-colors ${chatTtsMode === 'streaming' ? 'bg-blue-600 text-white shadow' : `${theme.textSecondary} hover:text-blue-500`}`}
-                            >
-                                Streaming
-                            </button>
-                            <button
-                                onClick={() => setChatTtsMode('after-complete')}
-                                className={`flex-1 text-[10px] font-bold py-1.5 rounded-md transition-colors ${chatTtsMode === 'after-complete' ? 'bg-blue-600 text-white shadow' : `${theme.textSecondary} hover:text-blue-500`}`}
-                            >
-                                After complete
-                            </button>
-                        </div>
-                        <p className={`text-[9px] ${theme.textMuted} px-1`}>
-                            {chatTtsMode === 'streaming'
-                                ? 'Reads each sentence as it streams in.'
-                                : 'Waits for the full reply before reading.'}
-                        </p>
-                        <button
-                            onClick={() => setChatAutoTts(!chatAutoTts)}
-                            className={`w-full flex items-center justify-between p-2 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.hover} text-xs font-bold transition-colors`}
-                        >
-                            <span className={theme.textSecondary}>Auto read-aloud</span>
-                            {chatAutoTts ? (
-                                <Volume2 size={14} className="text-blue-500" />
-                            ) : (
-                                <VolumeX size={14} className={theme.textMuted} />
-                            )}
-                        </button>
-                    </div>
-
-                    {/* Inference — per-model Ollama request parameters. Every
-                        control's first option is the unset state, which removes
-                        the key from the request entirely. */}
-                    <div className="space-y-2">
-                        <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1 flex items-center gap-1.5`}>
-                            <Sliders size={11} /> INFERENCE
-                        </span>
-
-                        <InferenceRow
-                            theme={theme}
-                            label="Context window"
-                            value={inference.numCtx === null ? 'auto' : String(inference.numCtx)}
-                            onChange={(v) => setInference({ numCtx: v === 'auto' ? null : Number(v) })}
-                            disabled={!selectedModel}
-                            options={[
-                                ['auto', 'Auto'], ['4096', '4096'], ['8192', '8192'],
-                                ['16384', '16384'], ['32768', '32768'], ['65536', '65536'],
-                            ]}
-                        />
-
-                        <InferenceRow
-                            theme={theme}
-                            label="Keep model warm"
-                            value={inference.keepAlive === null ? 'auto' : String(inference.keepAlive)}
-                            onChange={(v) => setInference({ keepAlive: v === 'auto' ? null : (v === '-1' ? -1 : v) })}
-                            disabled={!selectedModel}
-                            options={[
-                                ['auto', 'Auto (5m)'], ['5m', '5 minutes'], ['30m', '30 minutes'],
-                                ['1h', '1 hour'], ['-1', 'Always'],
-                            ]}
-                        />
-
-                        <InferenceRow
-                            theme={theme}
-                            label="Thinking"
-                            value={inference.think}
-                            onChange={(v) => setInference({ think: v })}
-                            disabled={!selectedModel}
-                            options={[
-                                ['off', 'Off'], ['on', 'On'], ['low', 'Low'],
-                                ['medium', 'Medium'], ['high', 'High'],
-                            ]}
-                        />
-
-                        <InferenceRow
-                            theme={theme}
-                            label="Max reply tokens"
-                            value={inference.numPredict === null ? 'auto' : String(inference.numPredict)}
-                            onChange={(v) => setInference({ numPredict: v === 'auto' ? null : Number(v) })}
-                            disabled={!selectedModel}
-                            options={[
-                                ['auto', 'Unlimited'], ['512', '512'], ['1024', '1024'],
-                                ['2048', '2048'], ['4096', '4096'],
-                            ]}
-                        />
-
-                        <p className={`text-[9px] ${theme.textMuted} px-1`}>
-                            Settings are saved per model. Changing the context window reloads the model.
-                        </p>
-                    </div>
                 </Section>
 
                 {/* SESSIONS */}

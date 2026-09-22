@@ -1180,17 +1180,12 @@ export default function App() {
             darkMode={darkMode}
             effectiveIsMobile={effectiveIsMobile}
             sidebarOpen={sidebarOpen}
-            ollamaHost={ollamaHost} setOllamaHost={setOllamaHost}
-            ollamaPort={ollamaPort} setOllamaPort={setOllamaPort}
-            inferenceSource={inferenceSource} setInferenceSource={setInferenceSource}
+            inferenceSource={inferenceSource}
             selectedModel={selectedModel} setSelectedModel={setSelectedModel}
             availableModels={availableModels}
             inferenceBudget={chatInferenceBudget}
             reachable={ollamaReachable}
             refreshModels={refreshModels}
-            chatTtsMode={chatTtsMode} setChatTtsMode={setChatTtsMode}
-            chatAutoTts={chatAutoTts} setChatAutoTts={setChatAutoTts}
-            inference={inference} setInference={setInference}
             messages={chatMessages}
             clearHistory={chatClearHistory}
             sessions={chatSessions}
