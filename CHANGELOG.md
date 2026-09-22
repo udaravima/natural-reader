@@ -82,6 +82,14 @@ All notable changes to this project will be documented in this file.
   `model_router` instead of reading `OLLAMA_URL`/model env vars in each service.
 
 ### Fixed
+- **Chat draft lost when switching tabs.** The SPA has no router — each view
+  (reader/chat/library/admin) fully unmounts the others — and the chat composer's
+  in-progress text lived in `ChatView`'s local state, so leaving chat and coming
+  back discarded a half-typed message. The composer's draft (and pending image
+  attachments) now live in `App`; the text draft is persisted (it survives a
+  reload too), while attachments are kept in memory to avoid packing base64 blobs
+  into `localStorage`. ([src/components/ChatView.jsx](src/components/ChatView.jsx),
+  [src/App.jsx](src/App.jsx))
 - **Founder lockout on a fresh Keycloak realm ("account is active but has no
   access yet").** Capabilities are Keycloak realm roles mirrored into
   `users.capabilities`, and login sync treats Keycloak as authoritative — so a

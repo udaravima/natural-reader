@@ -55,6 +55,13 @@ export default function ChatView({
   pins = [],
   onRemovePin,
   numCtx = null,
+  // Composer in-progress state, owned by App so it survives ChatView's unmount
+  // when the user switches tabs. Defaults keep the component renderable in
+  // isolation (e.g. tests) without a controlling parent.
+  draft = '',
+  setDraft = () => {},
+  pendingAttachments = [],
+  setPendingAttachments = () => {},
 }) {
   const copyMessage = async (text) => {
     if (!text) return;
@@ -66,8 +73,6 @@ export default function ChatView({
       showToast?.("Copy failed — clipboard blocked", 3000);
     }
   };
-  const [draft, setDraft] = useState("");
-  const [pendingAttachments, setPendingAttachments] = useState([]);
   const [isDragging, setIsDragging] = useState(false);
   const dragCounterRef = useRef(0); // robust drag-leave detection across child elements
   const listRef = useRef(null);

@@ -85,6 +85,12 @@ export default function App() {
   const [selectedModel, setSelectedModel] = usePersistedState('selectedModel', '');
   const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', 'streaming');
   const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', true);
+  // Composer in-progress state lives here (not in ChatView) so switching tabs —
+  // which unmounts ChatView — doesn't discard a half-typed message. The text
+  // draft is persisted (survives a reload too); pending image attachments are
+  // in-memory only, to avoid packing base64 blobs into localStorage.
+  const [chatDraft, setChatDraft] = usePersistedState('chatDraft', '');
+  const [chatPendingAttachments, setChatPendingAttachments] = useState([]);
   // Per-model Ollama inference settings (context window, keep-alive, thinking
   // level, max reply tokens). Keyed by model name because a 9.7B and a 3B want
   // different context sizes on the same machine.
@@ -1256,6 +1262,10 @@ export default function App() {
             pins={chatPins}
             onRemovePin={chatRemovePin}
             numCtx={inference.numCtx}
+            draft={chatDraft}
+            setDraft={setChatDraft}
+            pendingAttachments={chatPendingAttachments}
+            setPendingAttachments={setChatPendingAttachments}
           />
         ) : inAdmin ? (
           // Mount gate: the console renders nothing when the current user
