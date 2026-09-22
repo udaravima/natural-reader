@@ -63,4 +63,18 @@ describe('SettingsPage — reader/global sections', () => {
     fireEvent.click(screen.getByLabelText(/dark mode/i));
     expect(setDarkMode).toHaveBeenCalled();
   });
+
+  it("edits the chosen model's context window via the model selector", () => {
+    const setInferenceByModel = vi.fn();
+    const b = bags();
+    b.chatSettings = {
+      ...b.chatSettings, availableModels: ['m1', 'm2'], selectedModel: 'm1',
+      inferenceByModel: { m1: {}, m2: {} }, setInferenceByModel,
+    };
+    render(<SettingsPage {...b} />);
+    // The config picker defaults to the active model (m1).
+    expect(screen.getByLabelText(/configuring model/i)).toHaveValue('m1');
+    fireEvent.change(screen.getByLabelText(/context window/i), { target: { value: '8192' } });
+    expect(setInferenceByModel).toHaveBeenCalled();
+  });
 });
