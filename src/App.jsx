@@ -37,6 +37,7 @@ import ChatView from './components/ChatView';
 import ChatSidebar from './components/ChatSidebar';
 import { AdminConsole } from './components/admin/AdminConsole';
 import LibraryPage from './components/library/LibraryPage';
+import SettingsPage from './components/settings/SettingsPage';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
 import DistractionFreeBar from './components/DistractionFreeBar';
@@ -219,6 +220,7 @@ export default function App() {
   // a capability-free view, listed in useViewModeGuard's CAP_FREE_VIEWS so the
   // guard doesn't bounce it to reader for lack of a matching capability.
   const inLibrary = viewMode === 'library';
+  const inSettings = viewMode === 'settings';
 
   // Capabilities granted to the current user. The auth gate below already
   // guarantees at least one of reader/chat/admin once the app renders, but
@@ -262,7 +264,7 @@ export default function App() {
     apiHost, apiPort, requestTimeout, unlimitedBatchTimeout,
     backendAvailable, pdfFileName,
     setStatus, showToast,
-    enabled: !inChat && !inAdmin && !inLibrary,
+    enabled: !inChat && !inAdmin && !inLibrary && !inSettings,
   });
 
   const {
@@ -395,15 +397,15 @@ export default function App() {
   // out at the window level so the reader's DragOverlay never appears and the
   // file isn't routed through processFile() (which expects PDF/TXT).
   const handleDragOver = (e) => {
-    if (inChat || inAdmin || inLibrary) return;
+    if (inChat || inAdmin || inLibrary || inSettings) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(true);
   };
   const handleDragLeave = (e) => {
-    if (inChat || inAdmin || inLibrary) return;
+    if (inChat || inAdmin || inLibrary || inSettings) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
   };
   const handleDrop = (e) => {
-    if (inChat || inAdmin || inLibrary) return;
+    if (inChat || inAdmin || inLibrary || inSettings) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
     const files = e.dataTransfer.files;
     if (files.length === 0) return;
@@ -1154,6 +1156,8 @@ export default function App() {
           onEnterDistractionFree={() => setDistractionFree(true)}
           workspaceName={workspace?.rootName}
           onCloseWorkspace={() => { setWorkspace(null); setWorkspaceEntryPath(null); clearWorkspaceState(); }}
+          user={auth.user}
+          onLogout={auth.logout}
         />
       )}
 
@@ -1198,7 +1202,7 @@ export default function App() {
             deleteSession={chatDeleteSession}
             renameSession={chatRenameSession}
           />
-        ) : inAdmin || inLibrary ? null : (
+        ) : inAdmin || inLibrary || inSettings ? null : (
         canReader && <Sidebar
           theme={theme}
           darkMode={darkMode}
@@ -1288,6 +1292,15 @@ export default function App() {
             apiPort={apiPort}
             showToast={showToast}
           />
+        ) : inSettings ? (
+          <SettingsPage
+            theme={theme}
+            voiceSettings={{ selectedVoice, setSelectedVoice, playbackSpeed, setPlaybackSpeed, volume, setVolume, isLocalhost, setIsLocalhost, requestTimeout, setRequestTimeout, unlimitedBatchTimeout, setUnlimitedBatchTimeout, isPreviewingVoice, previewVoice, stopVoicePreview, clearCache }}
+            chatSettings={{ inferenceSource, setInferenceSource, chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, inferenceByModel, setInferenceByModel, availableModels, selectedModel }}
+            connectionSettings={{ apiHost, setApiHost, apiPort, setApiPort, ollamaHost, setOllamaHost, ollamaPort, setOllamaPort, inferenceSource, backendAvailable }}
+            appearanceSettings={{ darkMode, setDarkMode, layoutMode, setLayoutMode, mobileBreakpoint, setMobileBreakpoint, showHeaderControlsOnMobile, setShowHeaderControlsOnMobile }}
+            accountProps={{ apiHost, apiPort, user: auth.user }}
+          />
         ) : (
         // Mount gate mirroring the admin console above: hiding via
         // ViewSwitcher is cosmetic, this is the render-time boundary that
@@ -1362,7 +1375,7 @@ export default function App() {
         <MobileBottomNav
           theme={theme}
           effectiveIsMobile={effectiveIsMobile}
-          hasDocument={hasDocument && !inChat && !inAdmin && !inLibrary}
+          hasDocument={hasDocument && !inChat && !inAdmin && !inLibrary && !inSettings}
           currentPage={currentPage} setCurrentPage={setCurrentPage}
           numPages={numPages}
           currentSentenceIndex={currentSentenceIndex}

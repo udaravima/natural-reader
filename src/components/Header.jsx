@@ -1,9 +1,10 @@
 import {
     Play, Pause, Square, Upload, Volume2, SkipForward, SkipBack,
-    Zap, Loader2, Moon, Sun, Download, Keyboard, Clock,
-    PanelLeftClose, Menu, Home, Library, X, Maximize2
+    Loader2, Download, Keyboard, Clock,
+    PanelLeftClose, Menu, Home, Library, X, Maximize2, Settings as SettingsIcon
 } from 'lucide-react';
 import HeaderOverflowMenu from './HeaderOverflowMenu';
+import ProfileMenu from './ProfileMenu';
 import ViewSwitcher from './ViewSwitcher';
 
 export default function Header({
@@ -41,11 +42,14 @@ export default function Header({
     onEnterDistractionFree,
     workspaceName,
     onCloseWorkspace,
+    user,
+    onLogout,
 }) {
     const isExportingBook = !!bookProgress;
     // Reader-only chrome (playback, downloads, overflow menu, upload) shows
     // in the reader view only — not in chat, not in the admin console.
     const inReader = viewMode === 'reader';
+    const inSettings = viewMode === 'settings';
     return (
         <header className={`h-16 ${theme.bgSecondary} border-b ${theme.border} px-4 md:px-6 flex items-center justify-between z-20 sticky top-0 shadow-sm transition-colors duration-300`}>
             <div className="flex items-center gap-2 md:gap-3">
@@ -115,6 +119,16 @@ export default function Header({
                 {/* Reader / Chat / Admin toggle */}
                 <ViewSwitcher theme={theme} viewMode={viewMode} setViewMode={setViewMode} isAdmin={isAdmin} canReader={canReader} canChat={canChat} />
 
+                {/* Settings gear + profile menu — persistent, all widths */}
+                <button
+                    onClick={() => setViewMode('settings')}
+                    className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${inSettings ? 'text-blue-500' : `${theme.textSecondary} hover:text-blue-500`}`}
+                    title="Settings"
+                >
+                    <SettingsIcon size={20} />
+                </button>
+                <ProfileMenu theme={theme} user={user} darkMode={darkMode} setDarkMode={setDarkMode} setViewMode={setViewMode} onLogout={onLogout} />
+
                 {/* Estimated Time */}
                 {inReader && hasDocument && calculateEstimatedTimeRemaining(playbackSpeed) && (
                     <div className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-lg border ${theme.border} text-[10px] font-bold ${theme.textSecondary}`}>
@@ -122,26 +136,6 @@ export default function Header({
                         {calculateEstimatedTimeRemaining(playbackSpeed)}
                     </div>
                 )}
-
-                {/* TTS Mode Toggle */}
-                <div className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[10px] font-black tracking-widest transition-colors ${isLocalhost
-                    ? 'bg-green-500/10 border-green-500/30 text-green-500'
-                    : `${theme.bgTertiary} ${theme.border} ${theme.textSecondary}`
-                    }`}>
-                    <Zap size={12} fill={isLocalhost ? "currentColor" : "none"} />
-                    <button onClick={() => setIsLocalhost(!isLocalhost)}>
-                        {isLocalhost ? "KOKORO" : "SYSTEM"}
-                    </button>
-                </div>
-
-                {/* Dark Mode Toggle (desktop — mobile uses overflow menu) */}
-                <button
-                    onClick={() => setDarkMode(!darkMode)}
-                    className={`hidden lg:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-amber-500`}
-                    title="Toggle Dark Mode (Ctrl+D)"
-                >
-                    {darkMode ? <Sun size={20} /> : <Moon size={20} />}
-                </button>
 
                 {/* Download Page Audio */}
                 {inReader && hasDocument && isLocalhost && (
