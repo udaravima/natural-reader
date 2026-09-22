@@ -28,9 +28,10 @@ normal, correct shape.
 
 ## What changes going from local dev to production
 
-Nothing in the application code changes. Deployment is entirely configuration,
-in five places that all have to **agree on scheme + host** or login fails in a
-different way at each mismatch:
+Nothing in the application code changes. Deployment is entirely configuration.
+The first five places all have to **agree on scheme + host** or login fails in a
+different way at each mismatch; the sixth is what makes admin/role management
+work at all:
 
 | # | File / place | Local dev | Production |
 | --- | --- | --- | --- |
@@ -39,6 +40,7 @@ different way at each mismatch:
 | 3 | `.env` → `COOKIE_SECURE` | `false` (plain http) | `true` (TLS) |
 | 4 | `.env` → `KC_PROXY_HEADERS` / `KC_HOSTNAME` | unset | `xforwarded` / `https://auth.oraian.net` |
 | 5 | the **live** Keycloak realm's client | `localhost` redirect URIs | add the `https://chat.oraian.net` callback + web origin |
+| 6 | `.env` → `KC_ADMIN_CLIENT_ID` / `KC_ADMIN_CLIENT_SECRET` | optional | **set** (secret must match the `natural-reader-admin` client in the live realm) — needed for the admin console's capability editor and the founder self-heal (Trap 4) |
 
 Plus two nginx vhosts (the two `.sample` files) and the DNS + TLS certs for both
 hostnames.
@@ -149,7 +151,64 @@ Two independent causes, both about the cookie being set but not stored/sent:
 - Leave `COOKIE_DOMAIN` **unset** unless you know you need it — a value that
   doesn't match the origin drops the cookie the same silent way.
 
-### Trap 4 — PDF uploads fail at ~1 MB (client_max_body_size)
+### Trap 4 — logged in, but "active but has no access yet" (the founder lockout)
+
+**Symptom:** login fully succeeds — Keycloak redirects back, the session cookie
+sticks, `/v1/auth/me` returns your user — but the app shows *"Your account is
+active but has no access yet. Ask an administrator to grant Reader or Chat
+access."* On a freshly-imported realm this hits the **admin too**, and then
+nobody can grant anything because the would-be admin is the one locked out.
+
+**Cause (the counterintuitive part):** capabilities are Keycloak **realm roles**
+(`reader`/`chat`/`admin`) mirrored into `users.capabilities`, and **Keycloak is
+authoritative** — every login overwrites the mirror with whatever roles the token
+carries. A brand-new realm assigns **no roles to anyone by default**, so the
+token's `realm_access.roles` is empty and the mirror is wiped to zero on login.
+Migration 008 backfilling the seed admin to `{admin,reader,chat}`, and the
+first-login bootstrap, are both **transient** — the next login re-syncs from the
+(empty) token. Three mechanisms are meant to seed the first admin, and it is easy
+to disarm all three at once:
+
+- **First-user-admin (branch 3)** force-grants `{admin,reader,chat}` to whoever
+  first claims the seed row — **but only via the race path.** Setting
+  `BOOTSTRAP_ADMIN_EMAIL` to the founder's email routes them through the
+  *email-claim* path (branch 2) instead, which has **no capability floor**, so the
+  empty token wins. Setting `BOOTSTRAP_ADMIN_EMAIL` (otherwise recommended) is
+  exactly what removes this net.
+- **The realm export can grant the founder the roles directly.** The `admin-user`
+  entry in [`../deploy/keycloak/realm-export.json`](../deploy/keycloak/realm-export.json)
+  now carries `"realmRoles": ["admin","reader","chat"]` — but only a **fresh
+  import** applies it (same `--import-realm` trap as Trap 2).
+- **The app self-heals via the Keycloak Admin API** — on founder bootstrap it
+  best-effort-assigns those three realm roles back into Keycloak so the next
+  login's sync doesn't demote the founder — **but only when `KC_ADMIN_CLIENT_ID`
+  / `KC_ADMIN_CLIENT_SECRET` are set** (row 6 above). Unset → it silently no-ops.
+
+**Fix — any one durably unlocks; do the first two for a working system:**
+
+- **Assign the roles in the live realm:** admin console → realm `natural-reader`
+  → **Users** → your user → **Role mapping** → **Assign role** → switch the filter
+  to *realm roles* → tick `admin`, `reader`, `chat` → Assign. Then **log out and
+  back in** — realm roles are only read into the token at issue time, so your
+  current session won't see them until you re-authenticate. This is the live
+  equivalent of the export edit and needs no re-import.
+- **Wire the admin service account** (row 6) so the self-heal *and* the whole
+  admin-console user-management path actually function:
+
+  ```ini
+  KC_ADMIN_CLIENT_ID=natural-reader-admin
+  KC_ADMIN_CLIENT_SECRET=<the natural-reader-admin client secret>   # dev: natural-reader-admin-dev-secret
+  ```
+
+- **Fresh install shortcut:** because the corrected export assigns the founder the
+  roles, a clean re-import (`podman compose down -v && … up -d`) makes the very
+  first login land as full admin with no console step.
+
+A DB-only `UPDATE users SET capabilities='{admin,reader,chat}'` lets you in this
+instant but is **reverted on the next login** (login sync is authoritative) —
+use it only as a throwaway, never as the fix.
+
+### Trap 5 — PDF uploads fail at ~1 MB (client_max_body_size)
 
 **Symptom:** small docs index fine; larger PDFs fail with `413 Request Entity
 Too Large`.
@@ -160,7 +219,7 @@ go through `POST /v1/docs/{id}/pdf` and are often much larger.
 **Fix:** the `chat.oraian.net.sample` sets `client_max_body_size 100m;` inside
 the `/v1/` block. Raise it if you expect bigger files.
 
-### Trap 5 (minor) — stale `ERR_QUIC_PROTOCOL_ERROR` in Chrome
+### Trap 6 (minor) — stale `ERR_QUIC_PROTOCOL_ERROR` in Chrome
 
 **Symptom:** Chrome shows `ERR_QUIC_PROTOCOL_ERROR` on one of the hosts.
 
@@ -185,13 +244,17 @@ browsers to forget the stale h3 mapping. Do **not** touch `proxy_http_version
 3. **nginx:** install both `.sample` files, adjust `server_name`/cert paths/`root`,
    `nginx -t && systemctl reload nginx`.
 4. **Build the SPA:** `npm run build`; point the chat vhost's `root` at `dist/`.
-5. **`.env`:** the five production values from the table above (start from
-   [`../.env.example`](../.env.example)).
+5. **`.env`:** the six production values from the table above — the five
+   scheme+host ones **and** `KC_ADMIN_CLIENT_ID`/`KC_ADMIN_CLIENT_SECRET` (start
+   from [`../.env.example`](../.env.example)).
 6. **Bring up services:** `env -u XDG_DATA_HOME .venv/bin/podman-compose up -d
    postgres keycloak searxng`, then run the backend (`HOST=0.0.0.0` or bound to
    the loopback nginx proxies to).
 7. **Fix the live realm** (Trap 2) — add the https redirect URI + web origin.
-8. **Verify the issuer** is `https://…` (Trap 1 curl), then log in.
+8. **Grant the founder their realm roles** (Trap 4) — either re-import the
+   corrected export into a fresh DB, or assign `admin`/`reader`/`chat` to your
+   user in the admin console and re-login. Skip and you log in to "no access yet".
+9. **Verify the issuer** is `https://…` (Trap 1 curl), then log in.
 
 ## See also
 

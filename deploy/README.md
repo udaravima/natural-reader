@@ -98,9 +98,11 @@ export HOST=127.0.0.1
 # export INFERENCE_MODELS="llama3.2:3b,gemma3:4b"   # unset = allow all (dev)
 # export INFERENCE_DAILY_TOKEN_BUDGET=100000        # unset/0 = unlimited
 # Optional — Keycloak admin service account (matches realm-export.json's
-# natural-reader-admin client). Without it, admin-console capability grants
-# still take effect immediately for the running session, but don't survive
-# the user's next Keycloak login — see docs/IDENTITY_AND_ROLES.md.
+# natural-reader-admin client). Without it: admin-console capability grants take
+# effect for the running session but don't survive the user's next Keycloak
+# login, AND the founder-bootstrap self-heal (which re-assigns the roles in
+# Keycloak so the seed admin isn't demoted) is skipped — see
+# docs/IDENTITY_AND_ROLES.md and docs/DEPLOYMENT.md Trap 4.
 # export KC_ADMIN_CLIENT_ID=natural-reader-admin
 # export KC_ADMIN_CLIENT_SECRET=natural-reader-admin-dev-secret
 .venv/bin/python run.py
@@ -119,10 +121,25 @@ npm run dev      # http://localhost:5173
 
 ## 4. Walk the two-user flow
 
-The **first** person to log in becomes the admin **regardless of email** (the
-backend claims the seed-admin row on first login, and is force-granted the
-`admin`/`reader`/`chat` capabilities). So to see the *pending* screen you need
-a **second** user.
+The **first** person to log in claims the seed-admin row and becomes the admin,
+so to see the *pending* screen you need a **second** user. **How** they get their
+capabilities depends on a subtlety worth pinning down, because it's a real
+lockout trap:
+
+- If `BOOTSTRAP_ADMIN_EMAIL` is **set** (as above, to `admin@example.com`) and
+  matches the founder's Keycloak email, they claim the seed row via the
+  *email-claim* path, which applies **no capability floor** — they get exactly
+  the realm roles their token carries.
+- If it's **unset**, the founder comes in via the *first-login race*, which
+  additionally **force-grants** `{admin,reader,chat}` regardless of their roles.
+
+So in this walkthrough `admin-user` renders as admin **because
+`realm-export.json` assigns `admin-user` the `reader`/`chat`/`admin` realm roles
+directly** (login sync mirrors them), *not* because of a force-grant. Strip those
+roles off `admin-user` while `BOOTSTRAP_ADMIN_EMAIL` is set and the founder lands
+on "active but no access" — see the founder-lockout trap in
+[docs/IDENTITY_AND_ROLES.md](../docs/IDENTITY_AND_ROLES.md) and
+[docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md) Trap 4.
 
 **Capabilities are opt-in, not opt-out:** the realm defines `reader`/`chat`/
 `admin` but grants none of them to anyone by default (`realm-export.json`).

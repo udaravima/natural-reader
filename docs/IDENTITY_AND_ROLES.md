@@ -95,9 +95,9 @@ see the next section for how one is derived from the other.
 
 | Branch | Condition | Action | Security rationale |
 |---|---|---|---|
-| 1. Known identity | `(oidc_iss, oidc_sub)` row exists | Refresh cached email/display_name, and overwrite `users.capabilities` with the token's `realm_access.roles` (intersected with the known vocabulary) | The happy path; `(iss, sub)` is the only fully-trusted key. This is also why capabilities are **self-healing on next login**: fix a role in Keycloak and the app row catches up without an admin-console edit |
-| 2. Email claim | No identity match, but a row carries this email **and** `oidc_sub IS NULL` (pre-provisioned) | If `email_verified` → link the identity to that row and apply the token's capabilities the same way; else **409** | An *unverified* email must never claim a pre-provisioned account — anyone who can mint a token with the admin's email string would otherwise win. Also 409 if the email is already linked to a *different* identity (`email already linked to another identity`) |
-| 3. Brand-new | Neither | **First-user-admin race**: atomic `UPDATE ... WHERE id = seed AND oidc_sub IS NULL` — exactly one concurrent first login wins (row lock serializes), inherits the seed admin row, and is force-granted `{admin, reader, chat}` (`BOOTSTRAP_ADMIN_CAPABILITIES`) regardless of what roles that Keycloak user happened to hold — the callback also best-effort-assigns those three realm roles to the winner in Keycloak so the *next* login's sync (row above) doesn't demote them; everyone else INSERTs as `role='member', status='pending'`, **zero capabilities** | Bootstrap without a provisioning UI: the first person to log in to a fresh install is the admin, and the conditional UPDATE makes it race-safe |
+| 1. Known identity | `(oidc_iss, oidc_sub)` row exists | Refresh cached email/display_name, and overwrite `users.capabilities` with the token's `realm_access.roles` (intersected with the known vocabulary) | The happy path; `(iss, sub)` is the only fully-trusted key. This is also why capabilities are **self-healing on next login**: fix a role in Keycloak and the app row catches up without an admin-console edit. **It heals *down* too** — a token whose `realm_access.roles` is empty zeroes the mirror. There is no floor here; a user with no assigned realm roles is wiped to zero capabilities on every login (see the founder-lockout note under [Special identities](#special-identities)) |
+| 2. Email claim | No identity match, but a row carries this email **and** `oidc_sub IS NULL` (pre-provisioned) | If `email_verified` → link the identity to that row and apply the token's capabilities the same way; else **409** | An *unverified* email must never claim a pre-provisioned account — anyone who can mint a token with the admin's email string would otherwise win. Also 409 if the email is already linked to a *different* identity (`email already linked to another identity`). **Trap:** unlike branch 3, branch 2 applies **no capability floor** — it mirrors exactly the token's roles. So a `BOOTSTRAP_ADMIN_EMAIL` founder whose Keycloak user has no realm roles is linked here and immediately left with **zero capabilities** — "active but no access". Setting `BOOTSTRAP_ADMIN_EMAIL` routes the founder through *this* branch instead of branch 3, forfeiting the force-grant below |
+| 3. Brand-new | Neither | **First-user-admin race**: atomic `UPDATE ... WHERE id = seed AND oidc_sub IS NULL` — exactly one concurrent first login wins (row lock serializes), inherits the seed admin row, and is force-granted `{admin, reader, chat}` (`BOOTSTRAP_ADMIN_CAPABILITIES`) regardless of what roles that Keycloak user happened to hold — the callback also best-effort-assigns those three realm roles to the winner in Keycloak so the *next* login's sync (row above) doesn't demote them (**only when the `natural-reader-admin` service account is configured** — else that assign is skipped and the *next* login zeroes them via branch 1); everyone else INSERTs as `role='member', status='pending'`, **zero capabilities** | Bootstrap without a provisioning UI: the first person to log in to a fresh install is the admin, and the conditional UPDATE makes it race-safe |
 
 Why branch 2 only links `oidc_sub IS NULL` rows: pre-provisioned accounts
 (seed admin, or rows an admin pre-created for onboarding) wait *unlinked* for
@@ -257,10 +257,49 @@ carries no scope narrower than its owning user's current capabilities.
   the first OIDC login *inherits* it (branch 3). `BOOTSTRAP_ADMIN_EMAIL`
   (`server/db.py: bootstrap_admin()`) re-points its email before that first
   login so a known address claims it via branch 2 instead of racing.
+  **Founder-lockout trap:** doing that (branch 2) forfeits branch 3's
+  `{admin,reader,chat}` force-grant, so if that Keycloak user holds no realm
+  roles the seed admin is wiped to zero capabilities on the first login and lands
+  on "active but no access". Migration 008's `capabilities='{admin,reader,chat}'`
+  backfill on the seed row is **transient** — login sync overwrites it. Guard it
+  by giving the founder the roles in Keycloak (the checked-in
+  `realm-export.json` assigns `admin-user` the `admin`/`reader`/`chat` realm
+  roles **directly**, applied only on a fresh import) and/or configuring the
+  service account so the branch-3 self-heal can run. See the recovery runbook
+  below and [DEPLOYMENT.md Trap 4](DEPLOYMENT.md).
 - **Dev bypass** — `AUTH_ENABLED=false` **and** loopback bind → every request
   is the seed admin, no credential at all (`dev_bypass_allowed`). Never
   possible on a non-loopback bind; `startup_guard()` refuses to boot that
   combination.
+
+### Runbook: bootstrapping (or recovering) the first admin
+
+The symptom is always the same — you log in successfully and see *"your account
+is active but has no access yet"* — and the cause is always the same: **your
+Keycloak user has no realm roles, and login sync mirrored that empty set onto the
+app row.** Because Keycloak is authoritative, the durable fix is *in Keycloak*,
+not in the `users` table. Pick by situation:
+
+| Situation | Do this |
+|---|---|
+| **Fresh install, nothing precious in the DB** | Re-import the corrected export: `podman compose down -v && … up -d`. The export assigns `admin-user` the three realm roles, so the first login lands as full admin. |
+| **Live realm, must not lose data** | Admin console → realm `natural-reader` → **Users** → your user → **Role mapping** → **Assign role** → filter *realm roles* → `admin`, `reader`, `chat` → Assign. **Log out and back in** (roles enter the token only at issue time). |
+| **Service account is wired (`KC_ADMIN_*` set)** | Once any admin exists, use this app's admin console capability editor — it writes the realm-role assignment through the Admin API *first*, then the mirror, so it's durable. |
+| **Locked out with no admin at all and no console access** | `UPDATE users SET capabilities='{admin,reader,chat}', role='admin' WHERE id='00000000-0000-0000-0000-000000000001';` gets you in **for one session** to fix Keycloak — it is reverted on your next login. Not a fix, a crowbar. |
+
+Verify what the token actually carries (the real source of truth) rather than
+guessing from the DB:
+
+```bash
+# What realm roles does Keycloak think the user has? (needs the admin service account)
+# Or just decode the ID token after login and inspect realm_access.roles —
+# if it's [], every login will zero users.capabilities no matter what you set.
+```
+
+Wire `KC_ADMIN_CLIENT_ID` / `KC_ADMIN_CLIENT_SECRET` (matching the
+`natural-reader-admin` client secret in the live realm) so the branch-3 self-heal
+and the admin console's two-way capability editor both work — see
+[`.env.example`](../.env.example) and [DEPLOYMENT.md Trap 4](DEPLOYMENT.md).
 
 ## Roles → UI: capability-gated views
 
@@ -330,3 +369,10 @@ path.
 `src/components/admin/AdminConsole.jsx`, `src/components/Sidebar.jsx`,
 `src/components/admin/AdminPanel.jsx`. (Earlier pass: `286fa41` on
 `feat/model-router-gateway`.)*
+
+*2026-09-22 addendum — the founder-lockout trap (branch 2 has no capability
+floor; empty realm roles zero the mirror on login), the branch-3 self-heal's
+dependency on `KC_ADMIN_*`, and the recovery runbook were verified against
+`server/auth/users.py`, `server/routers/auth.py:82-88`, `server/db.py:127-147`,
+`server/auth/config.py: kc_admin_available`, and
+`deploy/keycloak/realm-export.json` (now assigns `admin-user` the realm roles).*

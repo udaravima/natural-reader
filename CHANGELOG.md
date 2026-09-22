@@ -81,6 +81,22 @@ All notable changes to this project will be documented in this file.
 - Server-side summarize (web_search) and embedding calls route through
   `model_router` instead of reading `OLLAMA_URL`/model env vars in each service.
 
+### Fixed
+- **Founder lockout on a fresh Keycloak realm ("account is active but has no
+  access yet").** Capabilities are Keycloak realm roles mirrored into
+  `users.capabilities`, and login sync treats Keycloak as authoritative — so a
+  founder whose Keycloak user had **no realm roles** was wiped to zero
+  capabilities on login and locked out, with the seed-admin bootstrap unable to
+  save them: setting `BOOTSTRAP_ADMIN_EMAIL` routes the founder through the
+  email-claim path (no capability floor) instead of the first-login force-grant,
+  and the app's self-heal that re-assigns the roles in Keycloak is a no-op unless
+  `KC_ADMIN_CLIENT_ID`/`KC_ADMIN_CLIENT_SECRET` are set. The checked-in
+  `deploy/keycloak/realm-export.json` now assigns `admin-user` the
+  `reader`/`chat`/`admin` realm roles **directly** (applied on a fresh import),
+  and the trap + a recovery runbook are documented in `docs/DEPLOYMENT.md`
+  (Trap 4), `docs/IDENTITY_AND_ROLES.md`, and `.env.example`. No code change —
+  the fix is realm config + operator guidance.
+
 ## [1.9.0] - 2026-08-10
 
 ### Added

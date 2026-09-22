@@ -512,7 +512,7 @@ Notes:
 
 The backend authenticates via **OpenID Connect** — it's an OIDC Relying Party, so you point it at any provider (Keycloak, Authentik, Auth0, …) and it stores no passwords. Every document and chat session is owned by a user; you only ever see your own. Set the `OIDC_*` vars plus `SESSION_SECRET` (see [.env.example](.env.example)) to turn it on.
 
-- **First-user-admin:** the first identity to log in becomes admin; everyone after is `pending` until an admin activates them (Admin → Users). Set `BOOTSTRAP_ADMIN_EMAIL` to pre-designate the admin by email and inherit any pre-existing single-user data.
+- **First-user-admin:** the first identity to log in becomes admin; everyone after is `pending` until an admin activates them (Admin → Users). Set `BOOTSTRAP_ADMIN_EMAIL` to pre-designate the admin by email and inherit any pre-existing single-user data. **Caveat:** doing so routes that founder through the email-claim path, which does *not* force-grant capabilities — the pre-designated user must actually hold the `reader`/`chat`/`admin` realm roles in your IdP (or `KC_ADMIN_*` must be set for the app to self-heal them), or they log in to "active but no access". See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) Trap 4.
 - **The web app** uses a revocable, `HttpOnly` session cookie. **The read-aloud extension and scripts** use a **personal access token** (Settings → Access tokens) sent as `Authorization: Bearer …`.
 - **Local dev without an IdP:** `AUTH_ENABLED=false` treats every request as the admin — but the server **refuses to start** with this set on a non-loopback bind.
 
