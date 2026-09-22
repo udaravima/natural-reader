@@ -4,6 +4,49 @@
 
 ---
 
+## 2026-09-22 — Fresh-deploy debugging: founder lockout, login-flow bugs, library bounce, and the docs-404 (ownership guard) + access-model design discussion
+
+**Branch:** `development` · **Commits:** `175ef05`, `df82ef3`, `b20a0cc` (all today) · **Tests:** backend 245, frontend 229 (guard 10/10) · Nothing merged to `master`. Two threads got fixed-and-committed; the last (docs-404) was **diagnosis only — no code**, and opened a design discussion the user is still deciding.
+
+### Deployment topology (verified live this session — keep this, it's not written elsewhere)
+- **This box IS the deployment host.** nginx `sites-enabled/`: `chat.oraian.net` (443, root `/var/www/chat.oraian.net/dist`), **`chat-ip-fallback`** (`server_name 192.168.11.245`, port 80 — Android/no-DNS access), `auth.oraian.net`, `default`. Both chat vhosts proxy `/v1/` → `http://127.0.0.1:8000/v1/` and `/api/` → `127.0.0.1:11434` (Ollama).
+- **Backend is a bare uvicorn on `:8000` — NOT containerized** (sub-project D still pending). Compose only runs `postgres` (`127.0.0.1:5433`), `searxng`, `keycloak` (`18080`).
+- **Postgres:** `127.0.0.1:5433`, db/user `natural_reader`, pw default `natural_reader`. Query: `PGPASSWORD=natural_reader psql -h 127.0.0.1 -p 5433 -U natural_reader -d natural_reader`.
+- **`podman ps` on this box needs `env -u XDG_DATA_HOME`** (snap-storage mismatch) — see memory `startup-podman-env-gotchas`.
+
+### Fixed & committed
+- **Founder lockout — "account is active but has no access" for the pruned admin** (`175ef05`). Three disarmed safety nets aligned: (1) `admin-user` had **no realm roles** in `realm-export.json`; (2) `BOOTSTRAP_ADMIN_EMAIL` set routes the founder through JIT **branch 2** (email-match, **no capability floor**) instead of **branch 3** (first-user, force-grants `{admin,reader,chat}`); (3) `KC_ADMIN_*` unset ⇒ the callback self-heal ([auth.py](server/routers/auth.py) `if kc is not None`) is dead. Fix: added `"realmRoles": ["admin","reader","chat"]` to admin-user; wired `KC_ADMIN_CLIENT_ID/SECRET` in `.env` (gitignored); documented across DEPLOYMENT/IDENTITY_AND_ROLES/.env.example/deploy README/README/ARCHITECTURE. **`--import-realm` drift trap:** editing the export only seeds a **fresh** DB — the live realm (Postgres `keycloak` schema) is never re-seeded; must `down -v` + re-import or do live-realm surgery.
+- **OIDC callback 500** (`df82ef3`). Keycloak returned `error=temporarily_unavailable` (no code) → `authorize_access_token` raised an unhandled `OAuthError` → 500. Fix: error-param short-circuit + `try/except OAuthError` → 303 redirect to login. Test `test_callback_idp_error_redirects_not_500`.
+- **Logout "Invalid redirect uri"** (`df82ef3`). Two causes: live-realm drift (post-logout URI not registered) **and** an export bug — `post.logout.redirect.uris` was space-delimited but Keycloak splits on **`##`** (`Constants.CFG_DELIMITER`). Fixed the delimiter in the export; the **live realm still needs the URI registered**.
+- **Library view bounce** (`b20a0cc`). `useViewModeGuard` coerced `library` (not a capability) back to reader; Library is intentionally **ungated**. Fix: `CAP_FREE_VIEWS = ['library']`. Answer to the user's question: **no, Library does not need its own capability** — the guard was the bug. Frontend-only ⇒ needs `npm run build` + redeploy to `/var/www/chat.oraian.net/dist` to take effect live.
+
+### `POST /v1/docs 404` while indexing — diagnosed, NOT a bug, no code change
+- **Not a routing 404.** Route is live (unauth `POST` → 401). It's the **anti-hijack ownership guard** in `register_document` ([docs.py:271](server/routers/docs.py#L271)): a `doc_id` that already exists owned by a **different** user → `404 "Document not found"` (deliberately vague to hide existence). `doc_id = sha256(file bytes)` ([docHash.js](src/utils/docHash.js)) ⇒ same file = same id across accounts.
+- **DB state:** users = `udaravima@gmail.com` (`f7432eb4`, caps `{reader,projects}`) + `admin@example.com` (`00000000-…0001`, caps `{admin,chat,reader}`). **Both docs (README.md, OpenCode…pdf) owned by udaravima.** So indexing from `admin@example.com` a file udaravima owns → collision → 404.
+- **The real knot:** identities are split two ways — the account that **owns** docs (udaravima) lacks `chat`; the account with `chat` (admin) owns nothing and can't re-register. Neither can own-and-chat the same file. Same identity-churn class as the founder lockout.
+
+### Access model reference (verified this session — for whoever builds the design changes)
+- **Ownership-gated** (`assert_owns_doc`, non-owner→404): register/index/chunks/convert/**delete**, and grant add/remove (`_require_doc_owner`, **no admin escape hatch** — admin can't self-grant via API; use SQL or act as owner).
+- **Read-gated** (`assert_can_read_doc` = owner OR project-member OR grantee, [authz.py:26](server/auth/authz.py#L26)): `GET /{id}`, `/search`, `/markdown`, list — **no admin bypass**.
+- **Delete cascade:** `doc_chunks`/`doc_pages`/`doc_grants` are all `ON DELETE CASCADE` on `documents(doc_id)` → no storage orphans. But other users' grants vanish **silently**, chat/pins citing the doc dangle, and per-browser IndexedDB copies are untouched.
+- **Projects:** `POST /v1/projects`; members `PUT /v1/projects/{id}/members/{uid}`; file a doc `PATCH /v1/docs/{id} {"project_id":…}` (owner-only; must own/belong to target project). **No create-project UI in the frontend yet** — it only *lists* projects. A doc lives in **≤1 project**.
+- **Admin asymmetry:** admin **can reassign** any doc's ownership (admin-only PATCH path, [docs.py:336](server/routers/docs.py#L336)) but **cannot read** it. Give-away without open.
+
+### Design decisions raised — user is deciding, NOTHING built
+1. **Same-file collision → auto-grant read instead of 404** (possession of bytes ⇒ read right; tradeoff: loses the existence-hiding the 404 provides).
+2. **Delete → pre-delete dependency preflight** (surface other users' grants / chat refs before destroying; storage cascade already safe).
+3. **Admin-read-all** — currently no; if added, keep opt-in/audited and **split from delete** (admin read ≠ admin delete).
+4. **Build a real "New Project" + doc-assignment UI.**
+- **Open question that shapes all four:** single-tenant (few trusted identities → collapse to one shared library) vs. genuinely multi-user (isolation is a feature)?
+- **Given to the user as the immediate no-code fix:** create a shared *project* (owner udaravima, member admin, file both docs in) → both identities read+chat. Alternatives: grant udaravima `chat` in Keycloak, or grant admin read on the two docs (SQL, since grant API is owner-only).
+
+### Next
+- User decides tenancy model + which of the 4 changes to build → then brainstorm → spec → plan.
+- **Deploy still pending:** `npm run build` + redeploy `dist` for the Library fix; **re-import realm (or live surgery)** for founder roles + the logout post-logout URI + granting udaravima/admin the roles they're missing.
+- Nothing to `master` (standing rule).
+
+---
+
 ## 2026-09-21 — Document library (RAG Phase 0) built end-to-end
 
 **Branch:** `feat/document-library-rag` (off `feat/admin-console`) · **Tests:** backend **195**, frontend **208**, lint clean · Migration **009**. NOT merged, NOT on `master`.
