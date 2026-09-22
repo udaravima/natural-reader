@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowLeft, Shield } from 'lucide-react';
+import { ArrowLeft, Shield, Loader2 } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
 
 /**
@@ -56,6 +56,7 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
   const [enrollBudget, setEnrollBudget] = useState('');
   const [enrollCaps, setEnrollCaps] = useState({ reader: false, chat: false, admin: false });
   const [enrollNote, setEnrollNote] = useState(null); // { kind: 'ok'|'err', text }
+  const [enrolling, setEnrolling] = useState(false); // POST in flight → busy button
 
   // Delete flow
   const [deleteTarget, setDeleteTarget] = useState(null); // user id
@@ -137,6 +138,7 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
     if (budget !== '') body.inference_daily_token_budget = Number(budget);
     const caps = CAPABILITIES.filter((cap) => enrollCaps[cap]);
     if (caps.length) body.capabilities = caps;
+    setEnrolling(true);
     try {
       const res = await apiFetch(apiHost, apiPort, '/v1/admin/users', {
         method: 'POST',
@@ -170,6 +172,8 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
       await loadUsers();
     } catch (e) {
       setEnrollNote({ kind: 'err', text: `Enroll failed: ${e.message}` });
+    } finally {
+      setEnrolling(false);
     }
   };
 
@@ -274,7 +278,13 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
                 </label>
               ))}
             </span>
-            <button type="submit" className="text-xs underline text-blue-500">Enroll</button>
+            <button
+              type="submit"
+              disabled={enrolling}
+              className="text-xs underline text-blue-500 flex items-center gap-1 disabled:opacity-60 disabled:no-underline"
+            >
+              {enrolling ? (<><Loader2 size={12} className="animate-spin" /> Enrolling…</>) : 'Enroll'}
+            </button>
             {enrollNote && (
               <span className={`text-[10px] w-full ${enrollNote.kind === 'ok' ? 'text-green-600' : 'text-red-500'}`}>
                 {enrollNote.text}

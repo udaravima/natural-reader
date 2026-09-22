@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Search, FolderOpen, Share2, X, Check, Trash2 } from 'lucide-react';
+import { Search, FolderOpen, Share2, X, Check, Trash2, Loader2 } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
 
 // Typing pauses this long before a search-as-you-type request fires. Keeps
@@ -76,6 +76,9 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
   const [search, setSearch] = useState('');
   const [projectFilter, setProjectFilter] = useState('');
   const [deleteTarget, setDeleteTarget] = useState(null);
+  // doc_id whose DELETE is currently in flight — drives the busy state on the
+  // confirm button so a click clearly registers (and can't be double-fired).
+  const [deletingId, setDeletingId] = useState(null);
   // Monotonic id so out-of-order responses can't clobber the list: fast typing
   // across debounce windows can leave two GET /v1/docs in flight, and if the
   // earlier one resolves last its stale results would overwrite the newer query.
@@ -131,6 +134,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
   };
 
   const deleteDoc = async (doc) => {
+    setDeletingId(doc.doc_id);
     try {
       const res = await apiFetch(apiHost, apiPort, `/v1/docs/${doc.doc_id}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -138,6 +142,8 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
       await loadDocs(search, projectFilter);
     } catch (e) {
       showToast(`Delete failed: ${e.message}`, 5000);
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -206,12 +212,23 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
                     {doc.is_owner && (
                       deleting ? (
                         <span className="flex items-center gap-1 shrink-0">
-                          <button onClick={() => deleteDoc(doc)} className="text-[10px] underline text-red-500">
-                            Confirm delete
-                          </button>
-                          <button onClick={() => setDeleteTarget(null)} className="text-[10px] underline">
-                            Cancel
-                          </button>
+                          {deletingId === doc.doc_id ? (
+                            <button
+                              disabled
+                              className="flex items-center gap-1 text-[10px] text-red-500 cursor-default"
+                            >
+                              <Loader2 size={10} className="animate-spin" /> Deleting…
+                            </button>
+                          ) : (
+                            <>
+                              <button onClick={() => deleteDoc(doc)} className="text-[10px] underline text-red-500">
+                                Confirm delete
+                              </button>
+                              <button onClick={() => setDeleteTarget(null)} className="text-[10px] underline">
+                                Cancel
+                              </button>
+                            </>
+                          )}
                         </span>
                       ) : (
                         <button

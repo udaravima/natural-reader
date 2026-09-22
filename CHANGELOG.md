@@ -82,6 +82,14 @@ All notable changes to this project will be documented in this file.
   `model_router` instead of reading `OLLAMA_URL`/model env vars in each service.
 
 ### Fixed
+- **Enroll and delete buttons now show a busy state while their request runs.**
+  Clicking "Enroll" (admin console) or "Confirm delete" (library) fired an async
+  request with no visible acknowledgement — it felt like the click hadn't
+  registered, and the button could be clicked again mid-flight. Both now disable
+  and show a spinner ("Enrolling…" / "Deleting…") until the request settles,
+  which also blocks accidental double-submits.
+  ([src/components/admin/AdminConsole.jsx](src/components/admin/AdminConsole.jsx),
+  [src/components/library/LibraryPage.jsx](src/components/library/LibraryPage.jsx))
 - **Chat draft lost when switching tabs.** The SPA has no router — each view
   (reader/chat/library/admin) fully unmounts the others — and the chat composer's
   in-progress text lived in `ChatView`'s local state, so leaving chat and coming
