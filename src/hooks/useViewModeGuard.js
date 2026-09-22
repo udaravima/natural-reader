@@ -6,12 +6,12 @@ const VIEW_ORDER = ['reader', 'chat', 'admin'];
 
 // Views any active user may occupy without a matching capability. The
 // reader/chat/admin views are gated by a same-named capability (view name ===
-// capability name), but Library is intentionally ungated (see ViewSwitcher):
-// available to every authenticated active user. It has no capability to match,
-// so without listing it here the guard would treat it as an unknown view and
-// bounce it to the first held capability — the "click Library, land on reader"
-// bug.
-const CAP_FREE_VIEWS = ['library'];
+// capability name), but Library and Settings are intentionally ungated:
+// available to every authenticated active user. They have no capability to
+// match, so without listing them here the guard would treat them as unknown
+// views and bounce to the first held capability — the "click it, land on
+// reader" bug.
+const CAP_FREE_VIEWS = ['library', 'settings'];
 
 /**
  * Boot coercion for the capability-gated views (reader/chat/admin): a persisted

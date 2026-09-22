@@ -84,4 +84,12 @@ describe('useViewModeGuard', () => {
     }));
     expect(setViewMode).not.toHaveBeenCalled();
   });
+
+  it('leaves the ungated Settings view alone (like Library)', () => {
+    const setViewMode = vi.fn();
+    renderHook(() => useViewModeGuard({
+      viewMode: 'settings', setViewMode, authState: 'active', caps: ['reader'],
+    }));
+    expect(setViewMode).not.toHaveBeenCalled();
+  });
 });
