@@ -7,7 +7,7 @@ import { apiFetch } from '../../utils/apiFetch';
 
 const theme = { bgSecondary: '', border: '', text: '', textSecondary: '', textMuted: '', hover: '' };
 const json = (status, body) => new Response(JSON.stringify(body), { status });
-const baseProps = (over = {}) => ({ theme, apiHost: '', apiPort: '', user: { email: 'a@x.io', role: 'admin' }, onLogout: vi.fn(), ...over });
+const baseProps = (over = {}) => ({ theme, apiHost: '', apiPort: '', user: { email: 'a@x.io', role: 'admin' }, ...over });
 
 describe('AccountPanel', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -35,5 +35,12 @@ describe('AccountPanel', () => {
     render(<AccountPanel {...baseProps()} />);
     fireEvent.click(await screen.findByRole('button', { name: /revoke/i }));
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/auth/tokens/t1', expect.objectContaining({ method: 'DELETE' })));
+  });
+
+  it('does not render a Log out button (logout lives in the profile menu)', async () => {
+    apiFetch.mockResolvedValueOnce(json(200, []));
+    render(<AccountPanel {...baseProps()} />);
+    await screen.findByPlaceholderText(/token name/i);
+    expect(screen.queryByRole('button', { name: /log out/i })).toBeNull();
   });
 });

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../utils/apiFetch';
 
-export function AccountPanel({ theme, apiHost, apiPort, user, onLogout }) {
+export function AccountPanel({ theme, apiHost, apiPort, user }) {
   const [tokens, setTokens] = useState([]);
   const [name, setName] = useState('');
   const [freshToken, setFreshToken] = useState(null); // shown once, on create
@@ -85,8 +85,6 @@ export function AccountPanel({ theme, apiHost, apiPort, user, onLogout }) {
           </li>
         ))}
       </ul>
-
-      <button onClick={onLogout} className={`text-[10px] ${theme.textMuted} underline self-start`}>Log out</button>
     </div>
   );
 }
