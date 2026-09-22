@@ -1,9 +1,11 @@
 """/v1/auth/* — OIDC login/callback, logout, and the current-user probe."""
 from __future__ import annotations
 
+import logging
 import os
 from urllib.parse import urlencode, urlsplit
 
+from authlib.integrations.starlette_client import OAuthError
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
@@ -13,9 +15,22 @@ from ..auth.capabilities import caps_from_claims
 from ..auth.config import load_auth_config
 from ..auth.oidc import build_oauth
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
 _oauth = None
+
+
+def _frontend_root() -> str:
+    """The SPA origin's root, derived from OIDC_REDIRECT_URL (same-origin with
+    the backend). Where a failed or abandoned login flow is bounced back to —
+    the SPA re-probes /auth/me, sees 401, and shows the login screen."""
+    cfg = load_auth_config(os.environ)
+    if cfg.oidc_redirect_url:
+        parts = urlsplit(cfg.oidc_redirect_url)
+        return f"{parts.scheme}://{parts.netloc}/"
+    return "/"
 
 
 def _client():
@@ -60,7 +75,25 @@ async def login(request: Request, next: str = "/"):
 @router.get("/callback")
 async def callback(request: Request, conn=Depends(deps.get_conn),
                    kc=Depends(deps.get_kc_admin)):
-    token = await _client().authorize_access_token(request)
+    # Keycloak can redirect back with an error instead of a code — an expired
+    # auth flow (temporarily_unavailable / authentication_expired), a cancelled
+    # login, or a consent denial. authorize_access_token would raise OAuthError,
+    # which was surfacing as an unhandled 500. Treat any of these as a failed
+    # login: bounce to the SPA, which re-probes /auth/me → 401 → login screen.
+    if request.query_params.get("error"):
+        logger.info(
+            "OIDC callback returned error=%s (%s); redirecting to login",
+            request.query_params.get("error"),
+            request.query_params.get("error_description"),
+        )
+        return RedirectResponse(url=_frontend_root(), status_code=303)
+    try:
+        token = await _client().authorize_access_token(request)
+    except OAuthError as e:
+        # State/PKCE mismatch, an error param we didn't catch above, or an IdP
+        # hiccup during the code exchange — same UX, never a 500.
+        logger.info("OIDC token exchange failed (%s); redirecting to login", e)
+        return RedirectResponse(url=_frontend_root(), status_code=303)
     claims = token.get("userinfo") or {}
     sub, iss, email = claims.get("sub"), claims.get("iss"), claims.get("email")
     if not (sub and email):
@@ -120,10 +153,7 @@ async def _post_logout_url(request: Request) -> str:
     through the still-live IdP session and "logout" appears to do nothing.
     """
     cfg = load_auth_config(os.environ)
-    frontend = "/"
-    if cfg.oidc_redirect_url:
-        parts = urlsplit(cfg.oidc_redirect_url)
-        frontend = f"{parts.scheme}://{parts.netloc}/"
+    frontend = _frontend_root()
     end_session = None
     try:
         client = _client()

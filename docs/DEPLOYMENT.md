@@ -127,6 +127,19 @@ for a *fresh* database.
 Keep the export in sync anyway (done already) so a rebuilt database starts
 correct — it's documentation, not the live config.
 
+**Same trap, different field — logout ("Invalid redirect uri" on
+`/protocol/openid-connect/logout`).** RP-initiated logout sends
+`post_logout_redirect_uri=https://chat.oraian.net/` (the SPA root, *not* the
+callback path), matched against the client's separate **Valid post logout
+redirect URIs** allow-list. A drifted live realm rejects it exactly like the
+login case. Fix it the same two ways — console (Clients → `natural-reader` →
+Settings → **Valid post logout redirect URIs**: add `https://chat.oraian.net/*`)
+or `kcadm` (`-s 'attributes."post.logout.redirect.uris"=https://chat.oraian.net/*##https://auth.oraian.net/*'`).
+**Gotcha:** in the realm-export/attribute form, multiple post-logout URIs are
+delimited by **`##`**, not spaces or commas (`+` is the special token meaning
+"reuse the Valid Redirect URIs"). A space-delimited value is silently parsed as
+one bogus URI and matches nothing.
+
 > **Master admin password:** `KC_BOOTSTRAP_ADMIN_USERNAME/PASSWORD` in compose
 > create the master admin **only on the first boot against an empty database**.
 > Because the realm persists in Postgres, later container recreations ignore

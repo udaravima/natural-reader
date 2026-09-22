@@ -42,3 +42,16 @@ async def test_me_returns_capabilities(db_conn):
     r = await _get(_app(db_conn, principal=p), "/v1/auth/me")
     body = r.json()
     assert body["capabilities"] == ["reader"] and body["role"] == "member"
+
+
+async def test_callback_idp_error_redirects_not_500(db_conn):
+    # Keycloak can bounce the callback with error=... instead of a code — an
+    # expired auth flow (temporarily_unavailable / authentication_expired), a
+    # cancelled login, a denied consent. That must redirect back to login, not
+    # surface OAuthError as an unhandled 500.
+    r = await _get(
+        _app(db_conn),
+        "/v1/auth/callback?error=temporarily_unavailable"
+        "&error_description=authentication_expired&state=abc",
+    )
+    assert r.status_code == 303

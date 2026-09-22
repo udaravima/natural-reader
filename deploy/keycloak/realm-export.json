@@ -32,7 +32,7 @@
       ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "https://chat.oraian.net/* https://auth.oraian.net/*"
+        "post.logout.redirect.uris": "https://chat.oraian.net/*##https://auth.oraian.net/*"
       },
       "protocolMappers": [
         {

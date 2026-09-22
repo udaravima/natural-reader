@@ -96,6 +96,19 @@ All notable changes to this project will be documented in this file.
   and the trap + a recovery runbook are documented in `docs/DEPLOYMENT.md`
   (Trap 4), `docs/IDENTITY_AND_ROLES.md`, and `.env.example`. No code change —
   the fix is realm config + operator guidance.
+- **OIDC callback 500 on an IdP error redirect.** When Keycloak bounced back to
+  `/v1/auth/callback` with `error=...` instead of a `code` (an expired auth flow,
+  a cancelled login, a denied consent), Authlib raised `OAuthError` and it
+  surfaced as an unhandled **500**. The callback now detects an `error` param and
+  catches `OAuthError` around the token exchange, redirecting to the SPA (which
+  re-probes `/auth/me` → 401 → login) instead. ([server/routers/auth.py](server/routers/auth.py))
+- **Logout "Invalid redirect uri".** The `natural-reader` client's
+  `post.logout.redirect.uris` in `realm-export.json` was space-delimited;
+  Keycloak splits that attribute on `##`, so both URIs were parsed as one bogus
+  value and `post_logout_redirect_uri=https://chat.oraian.net/` matched nothing.
+  Fixed the delimiter; documented the login-vs-logout allow-list drift (a live
+  realm still needs the URI added by hand — `--import-realm` only seeds a fresh
+  DB) in `docs/DEPLOYMENT.md` Trap 2.
 
 ## [1.9.0] - 2026-08-10
 
