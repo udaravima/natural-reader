@@ -149,7 +149,6 @@ export default function App() {
   }, []);
   const [contextMenu, setContextMenu] = useState(null);
   const [sidebarTab, setSidebarTab] = useState('sentences');
-  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Per-document index status keyed by sha256 doc_id. Shape:
   //   { state: 'idle' | 'chunks_uploaded' | 'indexing' | 'indexed' | 'failed' | 'uploading',
@@ -1207,34 +1206,14 @@ export default function App() {
           theme={theme}
           darkMode={darkMode}
           effectiveIsMobile={effectiveIsMobile}
-          sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen}
-          settingsOpen={settingsOpen} setSettingsOpen={setSettingsOpen}
+          sidebarOpen={sidebarOpen}
           sidebarTab={sidebarTab} setSidebarTab={setSidebarTab}
-          selectedVoice={selectedVoice} setSelectedVoice={setSelectedVoice}
-          playbackSpeed={playbackSpeed} setPlaybackSpeed={setPlaybackSpeed}
-          volume={volume} setVolume={setVolume}
-          isLocalhost={isLocalhost} setIsLocalhost={setIsLocalhost}
-          apiHost={apiHost} setApiHost={setApiHost}
-          apiPort={apiPort} setApiPort={setApiPort}
-          user={auth.user} onLogout={auth.logout}
-          requestTimeout={requestTimeout} setRequestTimeout={setRequestTimeout}
-          unlimitedBatchTimeout={unlimitedBatchTimeout} setUnlimitedBatchTimeout={setUnlimitedBatchTimeout}
-          backendAvailable={backendAvailable} setBackendAvailable={setBackendAvailable}
-          layoutMode={layoutMode} setLayoutMode={setLayoutMode}
-          mobileBreakpoint={mobileBreakpoint} setMobileBreakpoint={setMobileBreakpoint}
-          showHeaderControlsOnMobile={showHeaderControlsOnMobile} setShowHeaderControlsOnMobile={setShowHeaderControlsOnMobile}
-          isPreviewingVoice={isPreviewingVoice}
-          previewVoice={previewVoice}
-          stopVoicePreview={stopVoicePreview}
           hasDocument={hasDocument}
           pdfDoc={pdfDoc}
           pdfOutline={pdfOutline}
           textItems={textItems}
           currentSentenceIndex={currentSentenceIndex}
           sentenceRefs={sentenceRefs}
-          clearCache={clearCache}
-          checkBackend={checkBackend}
-          setStatus={setStatus}
           calculateReadingProgress={calculateReadingProgress}
           handleMobileSentenceClick={handleMobileSentenceClick}
           handleSentenceContextMenu={handleSentenceContextMenu}
