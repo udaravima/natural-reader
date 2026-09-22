@@ -109,6 +109,12 @@ All notable changes to this project will be documented in this file.
   Fixed the delimiter; documented the login-vs-logout allow-list drift (a live
   realm still needs the URI added by hand — `--import-realm` only seeds a fresh
   DB) in `docs/DEPLOYMENT.md` Trap 2.
+- **Library view bounced back to reader.** `useViewModeGuard` permitted a view
+  only when the user held a capability of the same name — but Library is
+  intentionally ungated (no `library` capability), so opening it was coerced to
+  the first held capability view. The guard now recognizes capability-free views
+  (`CAP_FREE_VIEWS = ['library']`) and leaves them alone.
+  ([src/hooks/useViewModeGuard.js](src/hooks/useViewModeGuard.js))
 
 ## [1.9.0] - 2026-08-10
 

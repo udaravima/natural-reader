@@ -66,4 +66,22 @@ describe('useViewModeGuard', () => {
     }));
     expect(setViewMode).not.toHaveBeenCalled();
   });
+
+  it('leaves the ungated Library view alone (no matching capability needed)', () => {
+    // Regression: Library is capability-free, so a reader-only user opening it
+    // must not be bounced back to reader.
+    const setViewMode = vi.fn();
+    renderHook(() => useViewModeGuard({
+      viewMode: 'library', setViewMode, authState: 'active', caps: ['reader'],
+    }));
+    expect(setViewMode).not.toHaveBeenCalled();
+  });
+
+  it('leaves Library alone for a chat-only user too', () => {
+    const setViewMode = vi.fn();
+    renderHook(() => useViewModeGuard({
+      viewMode: 'library', setViewMode, authState: 'active', caps: ['chat'],
+    }));
+    expect(setViewMode).not.toHaveBeenCalled();
+  });
 });

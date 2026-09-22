@@ -209,8 +209,9 @@ export default function App() {
 
   const inChat = viewMode === 'chat';
   const inAdmin = viewMode === 'admin';
-  // Library, unlike admin, is available to any authenticated active user —
-  // no boot-coercion entry needed in useViewModeGuard below.
+  // Library, unlike admin, is available to any authenticated active user — it's
+  // a capability-free view, listed in useViewModeGuard's CAP_FREE_VIEWS so the
+  // guard doesn't bounce it to reader for lack of a matching capability.
   const inLibrary = viewMode === 'library';
 
   // Capabilities granted to the current user. The auth gate below already
