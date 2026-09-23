@@ -79,6 +79,17 @@ A full end-to-end walkthrough lives in [docs/CHAT_WITH_PDF.md](docs/CHAT_WITH_PD
 - **Postgres-backed chat sessions** — Sessions previously stored in IndexedDB now write to Postgres via a new `src/lib/sessionStore.js` abstraction. Legacy IDB sessions stay readable with a small **LOCAL** badge; the first edit on one forks to a fresh Postgres session, leaving the original intact.
 - **Pluggable tool registry** — `src/lib/chatTools/` houses one tool per file with `{name, definition, when(ctx), execute(args, ctx)}`. Adding `web_search`, `read_url`, etc. later is one new file + one line in the registry index. See `src/lib/chatTools/_example.js`.
 
+### 👥 Accounts, Document Library & App Shell *(new in `v2.0.0`)*
+
+Natural Reader is now a **multi-user, authenticated application**. End-user walkthrough: [docs/USER_GUIDE.md](docs/USER_GUIDE.md); operator setup: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and [docs/IDENTITY_AND_ROLES.md](docs/IDENTITY_AND_ROLES.md).
+
+- **Sign in (OIDC / Keycloak)** — Every API route requires an authenticated principal. First login becomes admin; others wait for activation. **Personal access tokens** (`nrp_…`) let the Chrome extension and scripts authenticate outside the browser. Set `AUTH_ENABLED=false` for a loopback-only single-user box.
+- **Capabilities (reader / chat / admin)** — Feature access is governed by Keycloak realm roles enforced on the server and reflected in the UI: you only see the views you're entitled to, and an activated user with no capabilities gets a clear "access not yet granted" screen.
+- **Admin console** — A dedicated Admin view (shield icon in the top switcher, admins only): enroll users (invite or one-time temp password), edit capabilities, disable/delete — propagated to Keycloak, with a last-active-admin guard so you can't lock the org out.
+- **Inference gateway & daily budgets** — Chat streams through an authenticated server gateway (`/v1/inference/chat`) with a deployment **model allowlist** and an optional **per-user daily token budget** (a "N tokens left today" meter; send disables at zero). A **Server ⇄ Local Ollama** switch keeps the old direct mode for local use.
+- **Document Library** — Documents are private by default and **shareable** via projects and per-document read grants. A **Library** view lists, searches, and filters your documents (by project and tags) with share indicators; assign a project + tags on upload. Owner-only writes; non-readers get a 404, never a hint the document exists.
+- **Consolidated Settings + profile menu** — Voice, chat/inference (per-model), connection, appearance, and account (tokens) settings live on one **Settings** page, reached from a header gear and a profile menu (identity, Settings, dark mode, log out). The reader and chat sidebars are trimmed to navigation and model/sessions. The chat composer draft now survives switching tabs.
+
 ### 🎨 User Experience
 - **Dark Mode** — Beautiful dark/light theme toggle with smooth transitions
 - **Sentence Highlighting** — Visual highlighting of the current sentence during playback

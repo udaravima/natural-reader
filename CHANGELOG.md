@@ -101,8 +101,9 @@ API-auth change is breaking for pre-1.9.0 open deployments — see **Changed**.
   project/tag filters, share indicators, and optional project + tags on
   upload/register. Migration `009` adds `projects`, `project_members`,
   `doc_grants`, and `documents.project_id`/`tags`. Access model:
-  [docs](docs/) library Phase 0 notes.
-  ([server/routers/library.py](server/routers/library.py),
+  [docs/LIBRARY.md](docs/LIBRARY.md).
+  ([server/routers/docs.py](server/routers/docs.py),
+  [server/routers/projects.py](server/routers/projects.py),
   [src/components/library/LibraryPage.jsx](src/components/library/LibraryPage.jsx))
 - **Consolidated Settings page + profile menu (app shell).** Voice & reading,
   chat & inference (with a per-model inference selector), connection, appearance,

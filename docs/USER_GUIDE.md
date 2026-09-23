@@ -7,9 +7,9 @@ budget. (For developer internals see [ARCHITECTURE.md](ARCHITECTURE.md) and
 the [README](../README.md).)
 
 - [Signing in](#signing-in)
-- [The sidebar's account-area sections](#the-sidebars-account-area-sections)
-- [Account section: your profile and personal access tokens](#account-section-your-profile-and-personal-access-tokens)
-- [Admin section (admins only)](#admin-section-admins-only)
+- [Where things live: Settings, profile menu, Admin](#where-things-live-settings-profile-menu-admin)
+- [Account: your profile and personal access tokens](#account-your-profile-and-personal-access-tokens)
+- [Admin console (admins only)](#admin-console-admins-only)
 - [Chat: Server vs Local Ollama](#chat-server-vs-local-ollama)
 - [The daily token budget](#the-daily-token-budget)
 - [FAQ](#faq)
@@ -31,25 +31,28 @@ Depending on your account state you may see one of these screens instead:
 | **Backend error / not responding** | The server is down or unreachable | Check with whoever runs the deployment |
 
 You stay signed in on that browser (a cookie, valid ~7 days by default) until
-you click **Log out** at the bottom of the Account section.
+you click **Log out** in the **profile menu** (top-right of the header).
 
-## The sidebar's account-area sections
+## Where things live: Settings, profile menu, Admin
 
-The reader sidebar (left panel) ends with two collapsible sections, one after
-the other — this is the mix-up to avoid:
+Accounts, tokens, and settings are **not in the sidebar** — the sidebars hold
+navigation (reader) and the model picker + sessions (chat). Everything about
+*you* lives at the top of the window:
 
-- **Account** — everyone has it. Your email + role, **personal access tokens**,
-  and Log out. This is the only place tokens are created.
-- **Admin** — only visible if your role is `admin`. User management: activate,
-  disable, promote/demote. **No token creation happens here.**
+- **Profile menu** — the person icon at the top-right of the header. Your
+  identity, a **Settings** shortcut, the dark-mode toggle, and **Log out**.
+- **Settings** page — open it from the header **gear**, or from the profile
+  menu. One page with sections for Voice & reading, Chat & inference,
+  Connection, Appearance, and **Account** (your email + role and **personal
+  access tokens** — the only place tokens are created).
+- **Admin** console — a separate view opened from the **shield** button in the
+  top view switcher (Reader / Chat / Library / Admin). Only admins see it. User
+  management only; **no token creation happens here.**
 
-Both have a small header (person icon / shield icon) you click to expand. They
-look similar because they're both plain lists in the same sidebar — but they
-answer to different permissions and do different jobs.
+## Account: your profile and personal access tokens
 
-## Account section: your profile and personal access tokens
-
-The first line shows `your@email · role` (role is `admin` or `member`).
+Open **Settings** (header gear, or the profile menu) and go to the **Account**
+section. The first line shows `your@email · role` (role is `admin` or `member`).
 
 Below that is the **token manager**: a name box, a **Create** button, your list
 of tokens, and a **Revoke** button next to each.
@@ -79,7 +82,7 @@ purely optional.
 
 ### Creating one
 
-1. Expand **Account** in the sidebar.
+1. Open **Settings** and go to the **Account** section.
 2. Type a name (e.g. `my-laptop-extension`) and click **Create**.
 3. The token appears once, with a **Copy** button. **Copy it now** — the server
    stores only a hash, so it can never be shown again. If you lose it, revoke
@@ -95,10 +98,11 @@ Click **Revoke** next to a token's name. Whatever was using it stops working
 immediately. Revoking is the correct move for a lost laptop, a shared
 screenshot, or just cleaning house.
 
-## Admin section (admins only)
+## Admin console (admins only)
 
-If you see a shield-icon **Admin** section, you're an admin. It lists every
-account with buttons per user:
+If you see a **shield** button in the top view switcher (Reader / Chat /
+Library / Admin), you're an admin — click it to open the Admin console. It
+lists every account with buttons per user:
 
 | Button | Effect |
 |---|---|
@@ -128,7 +132,8 @@ Notes:
 
 ## Chat: Server vs Local Ollama
 
-In the chat sidebar, **Inference source** picks where chat requests go:
+On the **Settings** page (Chat & inference section), **Inference source** picks
+where chat requests go:
 
 - **Server** (default) — requests go through the server's gateway. The model
   list shows only models the deployment allows, and your usage counts against
@@ -160,9 +165,9 @@ legitimately need more, ask yours.
 
 ## FAQ
 
-**Why is there token stuff "in the admin panel"?**
-There isn't — it's the neighboring **Account** section, which every user has.
-The Admin section has no token features at all.
+**Where do I create a personal access token?**
+On the **Settings** page, in the **Account** section (open Settings from the
+header gear or the profile menu). The Admin console has no token features at all.
 
 **Do I need a personal access token to use the app or the extension?**
 App: no. Extension: yes — it's the only way it can authenticate.
@@ -188,7 +193,7 @@ to it. To properly offboard: **Disable** them in the Admin section first
 for a future user, the old app row must be removed by an operator
 (database-level today; an admin-side "delete user" UI is a planned follow-up).
 
-**I was made admin but don't see the Admin section.**
+**I was made admin but don't see the Admin button.**
 Reload the page — the app refreshes your role when it re-checks your account.
 
 **Budget says "0 tokens left" but I haven't chatted today.**
@@ -198,4 +203,4 @@ in the toast and the sidebar.
 
 ---
 
-*UI references: `src/components/account/AccountPanel.jsx`, `src/components/admin/AdminPanel.jsx`, `src/components/Sidebar.jsx`, `src/components/chat/InferenceSourceSelect.jsx`, `src/components/ChatSidebar.jsx`, `src/hooks/useChatEngine.js`.*
+*UI references: `src/components/settings/SettingsPage.jsx`, `src/components/ProfileMenu.jsx`, `src/components/account/AccountPanel.jsx`, `src/components/admin/AdminConsole.jsx`, `src/components/Header.jsx`, `src/components/ViewSwitcher.jsx`, `src/components/chat/InferenceSourceSelect.jsx`, `src/components/ChatSidebar.jsx`.*
