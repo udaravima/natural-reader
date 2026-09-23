@@ -28,7 +28,6 @@ voices-v1.0.bin
 *.sln
 *.sw?
 .local/
-HANDOVER.md
 
 **/__pycache__/*
 .env
@@ -42,3 +41,6 @@ data/
 .aider*
 .backups/
 deploy.sh
+
+# Playwright MCP session snapshots
+.playwright-mcp/

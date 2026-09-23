@@ -18,8 +18,7 @@
  * tools shouldn't reach into React state directly.
  */
 
-// Uncomment + customize to use:
-import { buildApiUrl } from '../../utils/url';
+import { apiFetch } from '../../utils/apiFetch';
 
 export default {
     name: 'web_search',
@@ -38,14 +37,14 @@ export default {
             },
         },
     },
-    when: (_ctx) => true, // tighten: e.g. gate on a user preference
+    when: () => true, // tighten: e.g. gate on a user preference
     execute: async (args, ctx) => {
         const query = (args?.query || '').trim();
         const count = args?.count ?? 5;
         if (!query) return { error: 'query is required and must be non-empty.' };
         if (count < 1 || count > 10) return { error: 'count must be between 1 and 10.' };
-        const res = await fetch(
-            buildApiUrl(ctx.apiHost, ctx.apiPort, '/v1/tools/web_search'),
+        const res = await apiFetch(
+            ctx.apiHost, ctx.apiPort, '/v1/tools/web_search',
             { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, count }) },
         );
         if (!res.ok) return { error: `Web search HTTP ${res.status}` };

@@ -1,0 +1,39 @@
+#!/bin/bash
+set -euo pipefail
+
+DEPLOY_DIR=/var/www/chat.oraian.net/dist
+TARGET_DIR="$(dirname "$DEPLOY_DIR")"
+DATA_USER=www-data
+
+if [[ "$EUID" -ne 0 ]]; then
+	echo "This has to be run as root to deploy in /var/www as $DATA_USER" >&2
+	exit 1
+fi
+
+command -v sudo >/dev/null || { echo "sudo binary not found!" >&2; exit 1; }
+
+if [[ ! -d dist ]]; then
+	echo "build dir 'dist' not found in $PWD — run 'npm run build' first" >&2
+	exit 1
+fi
+
+mkdir -p .backups
+
+# Back up the currently-deployed dist, if one exists (skip on first deploy).
+if [[ -d "$DEPLOY_DIR" ]]; then
+	BACKUP_FILENAME="dist-$(date +'%Y%m%d-%H%M').tar.gz"
+	tar -czf ".backups/${BACKUP_FILENAME}" -C "$TARGET_DIR" dist
+	echo "Backup created .backups/${BACKUP_FILENAME}"
+else
+	echo "No existing deploy to back up — first deploy?"
+fi
+
+echo "Removing existing deploy at $DEPLOY_DIR"
+rm -rf "$DEPLOY_DIR"
+[[ ! -d "$DEPLOY_DIR" ]] || { echo "removal failed" >&2; exit 1; }
+
+echo "Copying dist -> $TARGET_DIR/"
+sudo -u "$DATA_USER" cp -r dist "$TARGET_DIR/"
+[[ -d "$DEPLOY_DIR" ]] || { echo "deploy failed!" >&2; exit 1; }
+
+echo "Deploy successful."

@@ -1,3 +1,8 @@
+# Production nginx site for Natural Reader — serves the built SPA AND proxies the
+# backend on ONE origin (required for the OIDC session cookie; see DEPLOYMENT.md
+# § "same origin"). Keycloak lives on a separate origin — its companion vhost is
+# auth.oraian.net.sample. Full walkthrough + traps: ./DEPLOYMENT.md.
+
 server {
     listen 80;
     server_name chat.oraian.net;
@@ -66,34 +71,22 @@ server {
 
         # Timeouts for long-lived chat connections
         proxy_read_timeout 86400;
+
+        # Large PDF uploads go through POST /v1/docs/{id}/pdf. nginx's default
+        # body cap is 1 MB, which silently 413s real documents — raise it here.
+        client_max_body_size 100m;
+
+        # Stream gateway chat tokens as they arrive instead of buffering the
+        # whole NDJSON/SSE response (see DEPLOYMENT.md, README § Streaming).
+        proxy_buffering off;
     }
 
-    location /api/ {
-        # Assuming your local chat app runs on port 3000
-        proxy_pass http://127.0.0.1:11434/api/;
-
-        # Standard Proxy Headers
-        proxy_set_header Host localhost:11434;
-        # Ollama 403s cross-origin requests: its CORS check compares the browser's
-        # Origin against Host / OLLAMA_ORIGINS, and the browser sends Origin on
-        # every non-GET (so POST /api/chat fails while GET /api/tags passes). We
-        # already rewrite Host to localhost:11434, so strip Origin here → Ollama
-        # treats it as a same-origin (non-CORS) request and allows it.
-        proxy_set_header Origin "";
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-	proxy_set_header X-Forwarded-Host $host;
-
-        # WebSocket Support (Crucial for chat)
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-
-        # Timeouts for long-lived chat connections
-        proxy_read_timeout 86400;
-	proxy_buffering off;
-    }
+    # NOTE: the old /api/ (Ollama) location block is REMOVED. The SPA's chat
+    # now runs through the authenticated /v1/inference gateway on the backend
+    # above; Ollama is backend-only (loopback bind). Re-add an /api/ block only
+    # for "Inference source: Local Ollama" against a shared daemon — and gate
+    # it (auth_basic / IP allowlist), since that path bypasses app auth,
+    # the model allowlist, and the daily budgets entirely.
 }
 
 # ---------------------------------------------------------------------------
@@ -107,7 +100,7 @@ server {
 #     sudo htpasswd -B -c /etc/nginx/htpasswd you
 # Add more users with:
 #     sudo htpasswd -B    /etc/nginx/htpasswd teammate
-# Then paste these two lines INSIDE both `location /v1/ {}` and `location /api/ {}`:
+# Then paste these two lines INSIDE the `location /v1/ {}` block:
 #
 #     auth_basic           "Neural Reader";
 #     auth_basic_user_file /etc/nginx/htpasswd;
@@ -131,10 +124,10 @@ server {
 #
 # Then inside this server block, apply per-location:
 #
-#     location /v1/      { limit_req zone=tts  burst=10 nodelay; ... }
-#     location /api/chat { limit_req zone=chat burst=3  nodelay; ... }
+#     location /v1/               { limit_req zone=tts   burst=10 nodelay; ... }
+#     location /v1/inference/chat { limit_req zone=chat  burst=3  nodelay; ... }
 #
-# (The chat zone needs its own sub-location since /api/tags etc. shouldn't be
+# (The gateway chat path gets its own sub-location so TTS requests aren't
 #  rate-limited as aggressively.)
 #
 #

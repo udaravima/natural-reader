@@ -15,10 +15,12 @@ import os
 
 import httpx
 
+from . import model_router
+
 logger = logging.getLogger(__name__)
 
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
-EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "nomic-embed-text")
+# OLLAMA_URL / EMBEDDING_MODEL live in model_router now — one config module
+# owns every "which model serves which task" decision (gateway spec §4.2).
 EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", "768"))
 EMBEDDING_TIMEOUT_S = float(os.environ.get("EMBEDDING_TIMEOUT_S", "30"))
 # Ollama's default context for nomic-embed-text is often 2048 tokens.
@@ -61,9 +63,10 @@ async def embed_one(text: str) -> list[float]:
         )
         text = text[:MAX_INPUT_CHARS]
     async with _semaphore:
+        cfg = model_router.get_config()
         resp = await client.post(
-            f"{OLLAMA_URL}/api/embeddings",
-            json={"model": EMBEDDING_MODEL, "prompt": text},
+            f"{cfg.ollama_url}/api/embeddings",
+            json={"model": cfg.embed_model, "prompt": text},
         )
         resp.raise_for_status()
         data = resp.json()

@@ -27,6 +27,23 @@ export function usePersistedState(key, defaultValue) {
 }
 
 /**
+ * One-time migration of a persisted value: rewrite `from` → `to` in place.
+ * Call at the top of a component body (before the matching usePersistedState
+ * hook reads the key on first render). Values are compared by JSON identity,
+ * so it only rewrites what was actually stored — a deliberate value is kept.
+ */
+export function migratePersisted(key, from, to) {
+    try {
+        const stored = localStorage.getItem(`${PREFIX}${key}`);
+        if (stored === JSON.stringify(from)) {
+            localStorage.setItem(`${PREFIX}${key}`, JSON.stringify(to));
+        }
+    } catch (e) {
+        console.warn(`Failed to migrate ${key} in localStorage`, e);
+    }
+}
+
+/**
  * Save/load reading progress per PDF file.
  */
 export function saveReadingProgress(fileName, currentPage, currentSentenceIndex) {

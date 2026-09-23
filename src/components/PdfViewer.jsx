@@ -9,6 +9,7 @@ import MarkdownPageRenderer from './MarkdownPageRenderer';
 import MarkdownReader from './MarkdownReader';
 import IndexButton from './IndexButton';
 import ConvertButton from './ConvertButton';
+import PdfToolbarMenu from './PdfToolbarMenu';
 import { WorkspaceNav } from './WorkspaceLink';
 
 export default function PdfViewer({
@@ -33,6 +34,14 @@ export default function PdfViewer({
     onAskAboutPage,
     indexEntry,
     onIndexDocument,
+    // Optional project + tags picker (Task 9) — read by App.jsx's register
+    // flow at click time. All optional; the picker only renders once there's
+    // a register-capable action (index or convert) to attach it to.
+    projects,
+    docProjectId,
+    setDocProjectId,
+    docTagsText,
+    setDocTagsText,
     // Docling conversion props (all optional — only render the controls when
     // the parent passed them down).
     docId,
@@ -56,12 +65,24 @@ export default function PdfViewer({
     const canShowConvert = isPdf && !!onOpenConvertDialog;
     const isConverted = convertState === 'converted';
     const showingMdView = viewMode === 'md' && isConverted;
+    // Secondary toolbar actions, surfaced in the mobile "⋯" dropdown so the bar
+    // doesn't overflow on phones. The same actions stay as inline buttons at
+    // md+ (below). Falsy entries are skipped by PdfToolbarMenu.
+    const toolbarMenuActions = [
+        { key: 'fit', label: 'Fit page', Icon: Minimize, active: Math.abs(scale - 0.8) < 0.001, onClick: () => setScale(0.8) },
+        { key: 'width', label: 'Fit width', Icon: Maximize, active: Math.abs(scale - 1.2) < 0.001, onClick: () => setScale(1.2) },
+        onAskAboutPage && { key: 'ask', label: 'Ask about this page', Icon: MessageSquare, onClick: () => onAskAboutPage(currentPage) },
+        isConverted && setViewMode && { key: 'view-pdf', label: 'Show PDF', Icon: FileType, active: viewMode !== 'md', onClick: () => setViewMode('pdf') },
+        isConverted && setViewMode && { key: 'view-md', label: 'Show Markdown', Icon: FileText, active: viewMode === 'md', onClick: () => setViewMode('md') },
+        isConverted && onExportMarkdown && { key: 'export-md', label: 'Download Markdown', Icon: Download, onClick: onExportMarkdown },
+        isConverted && onDeleteMarkdown && { key: 'delete-md', label: 'Delete Markdown', Icon: Trash2, tone: 'danger', onClick: onDeleteMarkdown },
+    ];
     return (
         <section className={`flex-1 flex flex-col overflow-hidden ${theme.viewportBg} transition-colors duration-300`}>
 
             {/* PDF OPTIONS TOOLBAR */}
             {hasDoc && !distractionFree && (
-                <div className={`flex items-center justify-between px-4 py-2 ${theme.bgSecondary} border-b ${theme.border} shrink-0`}>
+                <div className={`flex flex-wrap items-center justify-start md:justify-between gap-2 px-2 md:px-4 py-2 ${theme.bgSecondary} border-b ${theme.border} shrink-0`}>
                     {/* LEFT: Page Navigation + Workspace Back/Forward */}
                     <div className="flex items-center gap-2">
                         <WorkspaceNav />
@@ -126,8 +147,13 @@ export default function PdfViewer({
                         </button>
                     </div>
 
-                    {/* RIGHT: Fit Options + Chat actions */}
-                    <div className="flex items-center gap-1">
+                    {/* RIGHT: Fit Options + Chat actions. flex-wrap so this wide
+                        cluster wraps within itself on narrow screens instead of
+                        running past the right edge (mobile toolbar overflow). */}
+                    <div className="flex flex-wrap items-center gap-1">
+                      {/* Secondary controls: inline at md+, collapsed into the
+                          "⋯" dropdown on narrow/mobile screens (see below). */}
+                      <div className="hidden md:flex items-center gap-1">
                         <button
                             onClick={() => setScale(0.8)}
                             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${theme.hover} ${scale === 0.8 ? 'bg-blue-600 text-white' : theme.textSecondary}`}
@@ -157,6 +183,30 @@ export default function PdfViewer({
                                 Ask page
                             </button>
                         )}
+                      </div>
+                        {((onIndexDocument && !isConverted) || canShowConvert) && setDocProjectId && setDocTagsText && (
+                            <div className="flex items-center gap-1" title="Optional: attach this document to a project and/or tags when it's sent to the server">
+                                <select
+                                    value={docProjectId || ''}
+                                    onChange={(e) => setDocProjectId(e.target.value)}
+                                    aria-label="Project for this document"
+                                    className={`text-xs px-1.5 py-1.5 rounded-lg border ${theme.border} ${theme.bgTertiary} ${theme.text} max-w-[110px]`}
+                                >
+                                    <option value="">No project</option>
+                                    {(projects || []).map((p) => (
+                                        <option key={p.id} value={p.id}>{p.name}</option>
+                                    ))}
+                                </select>
+                                <input
+                                    type="text"
+                                    value={docTagsText || ''}
+                                    onChange={(e) => setDocTagsText(e.target.value)}
+                                    placeholder="tags, comma-sep"
+                                    aria-label="Tags for this document"
+                                    className={`text-xs px-1.5 py-1.5 rounded-lg border ${theme.border} ${theme.bgTertiary} ${theme.text} w-24`}
+                                />
+                            </div>
+                        )}
                         {onIndexDocument && !isConverted && (
                             <IndexButton
                                 theme={theme}
@@ -175,6 +225,8 @@ export default function PdfViewer({
                                 onClick={onOpenConvertDialog}
                             />
                         )}
+                      {/* Converted-doc view/export controls: inline at md+. */}
+                      <div className="hidden md:flex items-center gap-1">
                         {isConverted && setViewMode && (
                             <div className={`flex items-center ml-1 rounded-lg border ${theme.border} overflow-hidden`}>
                                 <button
@@ -221,6 +273,8 @@ export default function PdfViewer({
                                 <Trash2 size={14} />
                             </button>
                         )}
+                      </div>
+                        <PdfToolbarMenu theme={theme} actions={toolbarMenuActions} />
                     </div>
                 </div>
             )}

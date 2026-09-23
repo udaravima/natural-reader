@@ -4,6 +4,193 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-23
+
+Major release: Natural Reader becomes a **multi-user, authenticated, hosted
+application**. Every API route now requires a principal (OIDC session or personal
+access token); inference is brokered through a server-side gateway with per-user
+budgets; documents gain a projects/grants sharing model with a browsable Library;
+capabilities (reader/chat/admin) are Keycloak realm roles enforced end to end; and
+the SPA is reorganized around a dedicated Settings page and a profile menu. The
+API-auth change is breaking for pre-1.9.0 open deployments — see **Changed**.
+
+### Added
+- **Inference gateway (model router).** The SPA's chat no longer talks to Ollama
+  directly — it goes through authenticated backend endpoints
+  (`GET /v1/inference/models`, `POST /v1/inference/chat`) using the session cookie
+  (or a PAT), so the previously unauthenticated browser→Ollama path is closed.
+  The chat passthrough is **byte-faithful NDJSON streaming** (the SPA's tool loop,
+  thinking-trace fallbacks, and image attachments are unchanged) behind a strictly
+  validated request envelope — unknown fields are a 422, never a silent
+  passthrough, and `/api/pull`/`/api/delete` & co. are unreachable through app
+  auth. A new **Inference source: Server | Local Ollama** setting in the chat
+  sidebar switches between the gateway (default) and the old direct mode.
+  ([server/routers/inference.py](server/routers/inference.py), [src/lib/chatTransport.js](src/lib/chatTransport.js))
+- **Model allowlist.** `INFERENCE_MODELS` (comma-separated) caps what the gateway
+  serves — the SPA's model dropdown only offers allowlisted models and
+  non-listed chat requests 422. Unset = all models (dev convenience). One config
+  module (`server/services/model_router.py`) now owns every server-side model
+  choice: chat allowlist, `SUMMARIZE_MODEL` (replaces `WEB_SEARCH_SUMMARY_MODEL`,
+  which still works), and `EMBEDDING_MODEL`.
+- **Per-user daily token budgets.** `INFERENCE_DAILY_TOKEN_BUDGET` sets a default
+  daily prompt+eval token allowance (from Ollama's final-chunk real counts,
+  UTC-midnight reset); over-budget requests get a 429 with remaining/reset detail
+  that the SPA surfaces as a toast + a "N tokens left today" meter, and the send
+  button disables at zero. Admins can override per user
+  (`PATCH /v1/admin/users/{id}`) and view usage via
+  `GET /v1/admin/inference/usage`. Aborted streams are never accounted; budget
+  checks fail open if Postgres is down — chat never dies with the DB.
+  (migration `007_inference_budgets.sql`, [server/services/inference_budget.py](server/services/inference_budget.py))
+- **Multi-user auth (OIDC) + per-user data.** The backend is now multi-user:
+  OIDC login (`/v1/auth/login|callback|logout|me`, any discovery-based provider,
+  PKCE S256), JIT user provisioning (first login becomes the admin; others land
+  `pending` until an admin activates them), DB-backed browser sessions and
+  personal access tokens (`nrp_…`, sha256-at-rest, shown once — for the browser
+  extension and scripts), per-user ownership of documents and chat sessions
+  (other users' rows are 404s, not 403s), and admin user management
+  (activate/disable/role; disabling hard-revokes sessions). The SPA is gated
+  behind an auth screen per account state. Migrations `005`/`006`.
+  Deep-dive: [docs/IDENTITY_AND_ROLES.md](docs/IDENTITY_AND_ROLES.md); user guide:
+  [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+- **Production deployment behind nginx + TLS.** New guide
+  [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) covers serving the SPA + backend on one
+  origin (`chat.oraian.net`) with Keycloak on its own (`auth.oraian.net`): two
+  nginx vhost samples ([docs/chat.oraian.net.sample](docs/chat.oraian.net.sample),
+  [docs/auth.oraian.net.sample](docs/auth.oraian.net.sample)), the five config
+  values that must agree, and the traps (KC proxy headers, live-realm ≠ export,
+  `COOKIE_SECURE`, `client_max_body_size`, stale QUIC). `docker-compose.yml` gains
+  `KC_PROXY_HEADERS`/`KC_HOSTNAME` passthrough (empty by default) so Keycloak emits
+  `https://` URLs and a matching `issuer` behind a TLS-terminating proxy. The two
+  nginx samples now live together under `docs/`; the old
+  `deploy/nginx/natural-reader.conf` is removed.
+- **Local OIDC rig.** `./startup.sh up-with-dev-auth` runs a Keycloak container
+  (realm `natural-reader`, seeded from `deploy/keycloak/realm-export.json`)
+  whose realm state persists in the shared Postgres (schema `keycloak`,
+  created on first volume init via `deploy/postgres/init/` — survives container
+  recreation, so `sub` UUIDs and the app's `users.oidc_sub` links stay stable).
+  Walkthrough: [deploy/README.md](deploy/README.md).
+- **Security hardening** on the API surface: loopback-only default bind, strict
+  `doc_id` (sha256 hex) validation blocking path traversal, SSRF guard on the
+  web-search fetcher (public IPs only, re-checked per redirect hop), TTS request
+  size caps, and startup guards that refuse insecure auth configs on
+  non-loopback binds.
+- **Capabilities: Keycloak realm roles enforced end to end.** Feature access is
+  no longer a single `role` column — `reader`, `chat`, and `admin` are Keycloak
+  realm roles mirrored into `users.capabilities` (migration `008`) and enforced
+  deny-by-default on the feature routes (`require_capability`). The SPA reads
+  capabilities from `/v1/auth/me`, gates the reader/chat/admin views on them, and
+  re-probes on a `403 missing_capability`; an active user with no capabilities
+  lands on a distinct "access not yet granted" screen rather than a broken app.
+  Admins enroll users (creating the Keycloak user with an invite or one-time
+  temp password, with a graceful fallback when SMTP is absent), edit
+  capabilities, and disable/delete — all propagated to Keycloak, with a
+  last-active-admin guard on every path that could remove the final admin and
+  hard-fail (never fail-open) if the Keycloak write errors.
+  ([server/services/keycloak_admin.py](server/services/keycloak_admin.py),
+  [server/deps/capabilities.py](server/deps/capabilities.py),
+  [src/components/admin/AdminConsole.jsx](src/components/admin/AdminConsole.jsx))
+- **Document Library with a projects / grants sharing model (RAG Phase 0).**
+  Documents move from strictly private to *shareable*: a document is readable by
+  its owner, by members of a project it's assigned to, or by an explicit
+  per-document grantee — writes stay owner-only, and non-readers still get a 404
+  (never a 403 that would leak existence). New endpoints back it —
+  `GET /v1/docs` (own / member / granted, with `q`/project/tag filters),
+  `PATCH /v1/docs/{id}` (tags, project assignment, admin reassignment), owner-only
+  project CRUD, project members, and per-doc read grants — with IDOR guards on
+  cross-tenant project assignment. The SPA gains a **Library** page: list, search,
+  project/tag filters, share indicators, and optional project + tags on
+  upload/register. Migration `009` adds `projects`, `project_members`,
+  `doc_grants`, and `documents.project_id`/`tags`. Access model:
+  [docs](docs/) library Phase 0 notes.
+  ([server/routers/library.py](server/routers/library.py),
+  [src/components/library/LibraryPage.jsx](src/components/library/LibraryPage.jsx))
+- **Consolidated Settings page + profile menu (app shell).** Voice & reading,
+  chat & inference (with a per-model inference selector), connection, appearance,
+  and account (personal access tokens) settings — previously scattered across the
+  reader sidebar and chat sidebar — now live on one dedicated **Settings** view
+  reachable from a header gear button and a new profile menu (identity, Settings,
+  dark-mode toggle, log out). The reader sidebar keeps navigation only; the chat
+  sidebar keeps the model picker and sessions. The chat composer draft also moved
+  up to `App`, so it now survives switching tabs.
+  ([src/components/settings/SettingsPage.jsx](src/components/settings/SettingsPage.jsx),
+  [src/components/ProfileMenu.jsx](src/components/ProfileMenu.jsx))
+
+### Changed
+- **Breaking: every API route now requires authentication.** Pre-1.9.0 the
+  backend was open; now `/v1/*` (TTS, docs, chat sessions, tools, inference)
+  resolves a principal from the session cookie or a Bearer PAT and denies by
+  default. Deployments that relied on the open API must set `AUTH_ENABLED=false`
+  (loopback only) or provision tokens. The SPA is same-origin with the backend
+  (blank `apiHost`) — the only cookie-compatible setup; a stale `localhost`
+  value is migrated away on boot.
+- **nginx: delete the `/api/` block.** With the gateway live, Ollama becomes
+  backend-only (loopback bind, nothing proxied). The reference configs
+  (`deploy/nginx/natural-reader.conf`, `docs/chat.oraian.net.sample`) and the
+  README example have dropped it; `proxy_buffering off` now matters on `/v1/`
+  (that's where NDJSON streams).
+- Server-side summarize (web_search) and embedding calls route through
+  `model_router` instead of reading `OLLAMA_URL`/model env vars in each service.
+
+### Fixed
+- **Reader toolbar collapses into a "⋯" menu on mobile instead of running
+  off-screen.** The PDF options bar was a single non-wrapping row, so on a phone
+  the wide right-hand cluster (Fit/Width, Ask-page, and the converted-doc
+  view/export controls) was pushed past the screen edge and became unreachable.
+  Below the `md` breakpoint those secondary actions now collapse into a compact
+  "⋯ More" dropdown (`PdfToolbarMenu`, mirroring the header's overflow menu); the
+  bar also wraps as a fallback and uses tighter mobile padding. Desktop keeps the
+  full inline toolbar unchanged. ([src/components/PdfViewer.jsx](src/components/PdfViewer.jsx),
+  [src/components/PdfToolbarMenu.jsx](src/components/PdfToolbarMenu.jsx))
+- **Enroll and delete buttons now show a busy state while their request runs.**
+  Clicking "Enroll" (admin console) or "Confirm delete" (library) fired an async
+  request with no visible acknowledgement — it felt like the click hadn't
+  registered, and the button could be clicked again mid-flight. Both now disable
+  and show a spinner ("Enrolling…" / "Deleting…") until the request settles,
+  which also blocks accidental double-submits.
+  ([src/components/admin/AdminConsole.jsx](src/components/admin/AdminConsole.jsx),
+  [src/components/library/LibraryPage.jsx](src/components/library/LibraryPage.jsx))
+- **Chat draft lost when switching tabs.** The SPA has no router — each view
+  (reader/chat/library/admin) fully unmounts the others — and the chat composer's
+  in-progress text lived in `ChatView`'s local state, so leaving chat and coming
+  back discarded a half-typed message. The composer's draft (and pending image
+  attachments) now live in `App`; the text draft is persisted (it survives a
+  reload too), while attachments are kept in memory to avoid packing base64 blobs
+  into `localStorage`. ([src/components/ChatView.jsx](src/components/ChatView.jsx),
+  [src/App.jsx](src/App.jsx))
+- **Founder lockout on a fresh Keycloak realm ("account is active but has no
+  access yet").** Capabilities are Keycloak realm roles mirrored into
+  `users.capabilities`, and login sync treats Keycloak as authoritative — so a
+  founder whose Keycloak user had **no realm roles** was wiped to zero
+  capabilities on login and locked out, with the seed-admin bootstrap unable to
+  save them: setting `BOOTSTRAP_ADMIN_EMAIL` routes the founder through the
+  email-claim path (no capability floor) instead of the first-login force-grant,
+  and the app's self-heal that re-assigns the roles in Keycloak is a no-op unless
+  `KC_ADMIN_CLIENT_ID`/`KC_ADMIN_CLIENT_SECRET` are set. The checked-in
+  `deploy/keycloak/realm-export.json` now assigns `admin-user` the
+  `reader`/`chat`/`admin` realm roles **directly** (applied on a fresh import),
+  and the trap + a recovery runbook are documented in `docs/DEPLOYMENT.md`
+  (Trap 4), `docs/IDENTITY_AND_ROLES.md`, and `.env.example`. No code change —
+  the fix is realm config + operator guidance.
+- **OIDC callback 500 on an IdP error redirect.** When Keycloak bounced back to
+  `/v1/auth/callback` with `error=...` instead of a `code` (an expired auth flow,
+  a cancelled login, a denied consent), Authlib raised `OAuthError` and it
+  surfaced as an unhandled **500**. The callback now detects an `error` param and
+  catches `OAuthError` around the token exchange, redirecting to the SPA (which
+  re-probes `/auth/me` → 401 → login) instead. ([server/routers/auth.py](server/routers/auth.py))
+- **Logout "Invalid redirect uri".** The `natural-reader` client's
+  `post.logout.redirect.uris` in `realm-export.json` was space-delimited;
+  Keycloak splits that attribute on `##`, so both URIs were parsed as one bogus
+  value and `post_logout_redirect_uri=https://chat.oraian.net/` matched nothing.
+  Fixed the delimiter; documented the login-vs-logout allow-list drift (a live
+  realm still needs the URI added by hand — `--import-realm` only seeds a fresh
+  DB) in `docs/DEPLOYMENT.md` Trap 2.
+- **Library view bounced back to reader.** `useViewModeGuard` permitted a view
+  only when the user held a capability of the same name — but Library is
+  intentionally ungated (no `library` capability), so opening it was coerced to
+  the first held capability view. The guard now recognizes capability-free views
+  (`CAP_FREE_VIEWS = ['library']`) and leaves them alone.
+  ([src/hooks/useViewModeGuard.js](src/hooks/useViewModeGuard.js))
+
 ## [1.9.0] - 2026-08-10
 
 ### Added

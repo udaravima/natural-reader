@@ -19,11 +19,13 @@ from urllib.parse import urlparse
 
 import httpx
 
+from . import model_router
+
 logger = logging.getLogger(__name__)
 
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+# OLLAMA_URL / SUMMARY_MODEL live in model_router now (SUMMARIZE_MODEL env,
+# falling back to the pre-gateway WEB_SEARCH_SUMMARY_MODEL).
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://localhost:18043").rstrip("/")
-SUMMARY_MODEL = os.environ.get("WEB_SEARCH_SUMMARY_MODEL", "llama3.2:3b")
 RESULT_COUNT = int(os.environ.get("WEB_SEARCH_RESULT_COUNT", "5"))
 RESULT_COUNT_CAP = 10
 MAX_CONCURRENCY = int(os.environ.get("WEB_SEARCH_MAX_CONCURRENCY", "4"))
@@ -172,10 +174,11 @@ _SUMMARY_PROMPT = (
 async def summarize_one(query: str, text: str) -> str:
     """Summarize one page's text with the small model via Ollama /api/generate."""
     client = _get_client()
+    cfg = model_router.get_config()
     resp = await client.post(
-        f"{OLLAMA_URL}/api/generate",
+        f"{cfg.ollama_url}/api/generate",
         json={
-            "model": SUMMARY_MODEL,
+            "model": cfg.summarize_model,
             "prompt": _SUMMARY_PROMPT.format(query=query, text=text),
             "stream": False,
         },

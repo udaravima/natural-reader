@@ -2,13 +2,16 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Loader2 } from 'lucide-react';
 
 // Hooks
-import { usePersistedState } from './hooks/usePersistedState';
+import { usePersistedState, migratePersisted } from './hooks/usePersistedState';
 import { useMobileDetect } from './hooks/useMobileDetect';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useTheme } from './hooks/useTheme';
 import { usePdfEngine } from './hooks/usePdfEngine';
 import { useTtsEngine } from './hooks/useTtsEngine';
 import { useChatEngine } from './hooks/useChatEngine';
+import { useAuth } from './hooks/useAuth';
+import { useViewModeGuard } from './hooks/useViewModeGuard';
+import { useDocMetaPicker } from './hooks/useDocMetaPicker';
 import { makePin } from './hooks/pins';
 
 // Constants
@@ -16,20 +19,25 @@ import { OLLAMA_DEFAULTS } from './constants';
 import { resolveForModel, patchForModel, migrateLegacyThinking } from './hooks/inference';
 
 // Utils
-import { buildApiUrl } from './utils/url';
+import { apiFetch } from './utils/apiFetch';
 import { getOrComputeDocHash } from './utils/docHash';
 import { getBook } from './db';
 import { saveWorkspaceState, clearWorkspaceState, getWorkspaceState } from './db';
 import { uploadPdfBytesToBackend } from './lib/uploadPdf';
+import { registerDocument, parseTagsInput } from './lib/docMeta';
 import { WorkspaceProvider } from './lib/WorkspaceContext';
 import { createFsaWorkspace, createSnapshotWorkspace, pickEntryFile, isMarkdownPath } from './lib/workspace';
 
 // Components
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
+import { AuthGate } from './components/auth/AuthGate';
 import PdfViewer from './components/PdfViewer';
 import ChatView from './components/ChatView';
 import ChatSidebar from './components/ChatSidebar';
+import { AdminConsole } from './components/admin/AdminConsole';
+import LibraryPage from './components/library/LibraryPage';
+import SettingsPage from './components/settings/SettingsPage';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
 import DistractionFreeBar from './components/DistractionFreeBar';
@@ -42,6 +50,17 @@ import KeyboardShortcutsModal from './components/overlays/KeyboardShortcutsModal
 import ReadSelectionButton from './components/overlays/ReadSelectionButton';
 
 export default function App() {
+  // One-time migration: 'localhost' was the pre-auth default apiHost, but every
+  // /v1 call now sends credentials — a cross-origin localhost:5173 →
+  // localhost:8000 fetch is always CORS-blocked (credentials + wildcard origin
+  // is rejected by browsers) and the OIDC session cookie only rides same-origin
+  // requests. Blank = same-origin (Vite dev proxy / reverse proxy), the
+  // supported setup. Must run before the usePersistedState hook reads the key.
+  migratePersisted('apiHost', 'localhost', '');
+  // Same trap, different spelling: '127.0.0.1' is also a cross-origin host for
+  // the cookie (localhost ≠ 127.0.0.1), so it needs the same rewrite.
+  migratePersisted('apiHost', '127.0.0.1', '');
+
   // --- PERSISTED SETTINGS ---
   const [darkMode, setDarkMode] = usePersistedState('darkMode', false);
   const [volume, setVolume] = usePersistedState('volume', 1.0);
@@ -49,8 +68,9 @@ export default function App() {
   const [playbackSpeed, setPlaybackSpeed] = usePersistedState('playbackSpeed', 1.0);
   const [selectedVoice, setSelectedVoice] = usePersistedState('selectedVoice', 'af_heart');
   const [isLocalhost, setIsLocalhost] = usePersistedState('isLocalhost', true);
-  const [apiHost, setApiHost] = usePersistedState('apiHost', 'localhost');
+  const [apiHost, setApiHost] = usePersistedState('apiHost', '');
   const [apiPort, setApiPort] = usePersistedState('apiPort', '8000');
+  const auth = useAuth(apiHost, apiPort);
   const [requestTimeout, setRequestTimeout] = usePersistedState('requestTimeout', 15);
   const [unlimitedBatchTimeout, setUnlimitedBatchTimeout] = usePersistedState('unlimitedBatchTimeout', true);
   const [mobileBreakpoint, setMobileBreakpoint] = usePersistedState('mobileBreakpoint', 768);
@@ -60,9 +80,18 @@ export default function App() {
   const [viewMode, setViewMode] = usePersistedState('viewMode', 'reader');
   const [ollamaHost, setOllamaHost] = usePersistedState('ollamaHost', OLLAMA_DEFAULTS.host);
   const [ollamaPort, setOllamaPort] = usePersistedState('ollamaPort', OLLAMA_DEFAULTS.port);
+  // Where inference runs: 'server' = authenticated /v1/inference gateway on
+  // the backend, 'local' = browser→Ollama directly (pre-gateway behavior).
+  const [inferenceSource, setInferenceSource] = usePersistedState('inferenceSource', 'server');
   const [selectedModel, setSelectedModel] = usePersistedState('selectedModel', '');
   const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', 'streaming');
   const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', true);
+  // Composer in-progress state lives here (not in ChatView) so switching tabs —
+  // which unmounts ChatView — doesn't discard a half-typed message. The text
+  // draft is persisted (survives a reload too); pending image attachments are
+  // in-memory only, to avoid packing base64 blobs into localStorage.
+  const [chatDraft, setChatDraft] = usePersistedState('chatDraft', '');
+  const [chatPendingAttachments, setChatPendingAttachments] = useState([]);
   // Per-model Ollama inference settings (context window, keep-alive, thinking
   // level, max reply tokens). Keyed by model name because a 9.7B and a 3B want
   // different context sizes on the same machine.
@@ -120,7 +149,6 @@ export default function App() {
   }, []);
   const [contextMenu, setContextMenu] = useState(null);
   const [sidebarTab, setSidebarTab] = useState('sentences');
-  const [settingsOpen, setSettingsOpen] = useState(false);
 
   // Per-document index status keyed by sha256 doc_id. Shape:
   //   { state: 'idle' | 'chunks_uploaded' | 'indexing' | 'indexed' | 'failed' | 'uploading',
@@ -138,6 +166,12 @@ export default function App() {
   const [docViewByDocId, setDocViewByDocId] = useState({});
   // Modal visibility for the docling options dialog.
   const [convertDialogOpen, setConvertDialogOpen] = useState(false);
+
+  // Project list for the optional register/upload picker (Task 9). Session-
+  // level (not per-document): fetched once when signed in (below) — null while
+  // loading, [] once loaded with no projects. The per-document picker *state*
+  // lives in useDocMetaPicker, wired after pdfFileName is available.
+  const [projects, setProjects] = useState(null);
 
   const pdfContainerRef = useRef(null);
   const [workspace, setWorkspace] = useState(null);
@@ -171,7 +205,56 @@ export default function App() {
     loadTextDocument,
   } = pdfEngine;
 
+  // Per-document project/tags picker: resets whenever the loaded document
+  // (pdfFileName) changes, so a selection made for one doc can't silently
+  // carry over and mis-tag the next (Task 9 review).
+  const {
+    projectId: docProjectId, setProjectId: setDocProjectId,
+    tagsText: docTagsText, setTagsText: setDocTagsText,
+  } = useDocMetaPicker(pdfFileName);
+
   const inChat = viewMode === 'chat';
+  const inAdmin = viewMode === 'admin';
+  // Library, unlike admin, is available to any authenticated active user — it's
+  // a capability-free view, listed in useViewModeGuard's CAP_FREE_VIEWS so the
+  // guard doesn't bounce it to reader for lack of a matching capability.
+  const inLibrary = viewMode === 'library';
+  const inSettings = viewMode === 'settings';
+
+  // Capabilities granted to the current user. The auth gate below already
+  // guarantees at least one of reader/chat/admin once the app renders, but
+  // hooks run before that gate, so this is computed unconditionally.
+  const caps = auth.user?.capabilities ?? [];
+  const canReader = caps.includes('reader');
+  const canChat = caps.includes('chat');
+  const canAdmin = caps.includes('admin');
+
+  // Boot coercion (admin-console spec §3, generalized to all three views): a
+  // persisted viewMode the user no longer (or never did) have the capability
+  // for gets coerced to the first permitted view (reader, then chat, then
+  // admin). Waits for the auth probe to resolve so a loading session isn't
+  // bounced before /v1/auth/me answers.
+  useViewModeGuard({ viewMode, setViewMode, authState: auth.state, caps });
+
+  // Populate the optional project picker (Task 9) once the user is signed
+  // in. Mirrors LibraryPage's loadProjects — same endpoint/shape, same
+  // fail-soft-to-empty-list behavior so the picker just shows "No project"
+  // options if this fetch fails rather than breaking the reader.
+  useEffect(() => {
+    if (auth.state !== 'active') return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch(apiHost, apiPort, '/v1/projects');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!cancelled) setProjects(data);
+      } catch {
+        if (!cancelled) setProjects([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [auth.state, apiHost, apiPort]);
 
   const ttsEngine = useTtsEngine({
     textItems, currentSentenceIndex, setCurrentSentenceIndex,
@@ -180,7 +263,7 @@ export default function App() {
     apiHost, apiPort, requestTimeout, unlimitedBatchTimeout,
     backendAvailable, pdfFileName,
     setStatus, showToast,
-    enabled: !inChat,
+    enabled: !inChat && !inAdmin && !inLibrary && !inSettings,
   });
 
   const {
@@ -198,8 +281,8 @@ export default function App() {
   // model. Both are null while no doc is open.
   const currentDocIndexEntry = currentDocId ? docIndexByDocId[currentDocId] : null;
   const chatEngine = useChatEngine({
-    ollamaHost, ollamaPort, selectedModel,
-    chatTtsMode, chatAutoTts, inference,
+    ollamaHost, ollamaPort, inferenceSource, selectedModel,
+    chatTtsMode, chatAutoTts, inference, onInferencePersist: setInference,
     isLocalhost, selectedVoice, playbackSpeed, requestTimeout,
     apiHost, apiPort,
     currentDocId, currentDocIndexState: currentDocIndexEntry?.state || null,
@@ -211,6 +294,7 @@ export default function App() {
     messages: chatMessages,
     isStreaming: chatIsStreaming,
     availableModels,
+    inferenceBudget: chatInferenceBudget,
     reachable: ollamaReachable,
     sendMessage: chatSendMessage,
     stopStream: chatStopStream,
@@ -254,7 +338,6 @@ export default function App() {
   const hasDocument = !!pdfDoc || ((fileType === 'text' || fileType === 'markdown') && numPages > 0);
 
   // --- BACKEND HEALTH CHECK ---
-  const getApiUrl = (endpoint) => buildApiUrl(apiHost, apiPort, endpoint);
 
   // Navigation helpers (used by PdfViewer, MobileBottomNav, keyboard shortcuts)
   const goToNextPage = useCallback(() => setCurrentPage(p => Math.min(numPages, p + 1)), [numPages, setCurrentPage]);
@@ -265,7 +348,7 @@ export default function App() {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
-      const response = await fetch(getApiUrl('/v1/health'), {
+      const response = await apiFetch(apiHost, apiPort, '/v1/health', {
         method: 'GET',
         signal: controller.signal,
       });
@@ -313,15 +396,15 @@ export default function App() {
   // out at the window level so the reader's DragOverlay never appears and the
   // file isn't routed through processFile() (which expects PDF/TXT).
   const handleDragOver = (e) => {
-    if (inChat) return;
+    if (inChat || inAdmin || inLibrary || inSettings) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(true);
   };
   const handleDragLeave = (e) => {
-    if (inChat) return;
+    if (inChat || inAdmin || inLibrary || inSettings) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
   };
   const handleDrop = (e) => {
-    if (inChat) return;
+    if (inChat || inAdmin || inLibrary || inSettings) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
     const files = e.dataTransfer.files;
     if (files.length === 0) return;
@@ -598,7 +681,7 @@ export default function App() {
       setCurrentDocId(docId);
       if (docIndexByDocId[docId] && docConvertByDocId[docId]) return; // already cached
       try {
-        const res = await fetch(getApiUrl(`/v1/docs/${encodeURIComponent(docId)}`));
+        const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}`);
         if (cancelled) return;
         if (res.status === 404) {
           setDocIndexByDocId((prev) => ({ ...prev, [docId]: { state: 'idle' } }));
@@ -643,24 +726,16 @@ export default function App() {
       return;
     }
     setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'uploading' } }));
-    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
 
-    // 1. Register the document.
-    let registerRes;
+    // 1. Register the document (and, if a project/tag was chosen in the
+    // picker, attach it via a follow-up PATCH — see registerDocument).
     try {
       const fileSize = (await getBook(pdfFileName))?.size ?? 0;
-      registerRes = await fetch(apiUrl('/v1/docs'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          doc_id: docId,
-          file_name: pdfFileName,
-          file_type: fileType,
-          size_bytes: fileSize,
-          page_count: numPages,
-        }),
+      await registerDocument({
+        apiHost, apiPort, docId,
+        fileName: pdfFileName, fileType, sizeBytes: fileSize, pageCount: numPages,
+        projectId: docProjectId, tags: parseTagsInput(docTagsText),
       });
-      if (!registerRes.ok) throw new Error(`HTTP ${registerRes.status}`);
     } catch (e) {
       console.error('Doc register failed:', e);
       setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
@@ -691,7 +766,7 @@ export default function App() {
     try {
       for (let i = 0; i < chunks.length; i += BATCH) {
         const slice = chunks.slice(i, i + BATCH);
-        const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}/chunks`), {
+        const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/chunks`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ chunks: slice }),
@@ -718,7 +793,7 @@ export default function App() {
 
     // 4. Kick off the embedding job. Returns 202 immediately; we poll status.
     try {
-      const indexRes = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}/index`), { method: 'POST' });
+      const indexRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/index`, { method: 'POST' });
       if (!indexRes.ok) throw new Error(`HTTP ${indexRes.status}`);
     } catch (e) {
       console.error('Index kick-off failed:', e);
@@ -736,7 +811,7 @@ export default function App() {
     for (let i = 0; i < MAX_POLLS; i++) {
       await new Promise((r) => setTimeout(r, POLL_MS));
       try {
-        const sRes = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}`));
+        const sRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}`);
         if (!sRes.ok) continue;
         const sData = await sRes.json();
         setDocIndexByDocId((prev) => ({
@@ -760,7 +835,7 @@ export default function App() {
       }
     }
     showToast('Indexing is taking unusually long — check the server logs.', 6000);
-  }, [pdfFileName, ensureDocHash, extractAllChunks, fileType, numPages, showToast, apiHost, apiPort]);
+  }, [pdfFileName, ensureDocHash, extractAllChunks, fileType, numPages, showToast, apiHost, apiPort, docProjectId, docTagsText]);
 
   // ---------- DOCLING CONVERSION ----------
   // Mirror of handleIndexDocument: registers (if needed) → uploads PDF bytes →
@@ -773,28 +848,20 @@ export default function App() {
       showToast('Could not read document bytes — re-open the file and try again.', 4000);
       return;
     }
-    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
-
     setDocConvertByDocId((prev) => ({
       ...prev,
       [docId]: { ...(prev[docId] || {}), state: 'uploading', error: null },
     }));
 
-    // 1. Register the doc (idempotent).
+    // 1. Register the doc (idempotent; and, if a project/tag was chosen in
+    // the picker, attach it via a follow-up PATCH — see registerDocument).
     try {
       const fileSize = (await getBook(pdfFileName))?.size ?? 0;
-      const registerRes = await fetch(apiUrl('/v1/docs'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          doc_id: docId,
-          file_name: pdfFileName,
-          file_type: fileType,
-          size_bytes: fileSize,
-          page_count: numPages,
-        }),
+      await registerDocument({
+        apiHost, apiPort, docId,
+        fileName: pdfFileName, fileType, sizeBytes: fileSize, pageCount: numPages,
+        projectId: docProjectId, tags: parseTagsInput(docTagsText),
       });
-      if (!registerRes.ok) throw new Error(`HTTP ${registerRes.status}`);
     } catch (e) {
       console.error('Doc register failed:', e);
       setDocConvertByDocId((prev) => ({
@@ -824,7 +891,7 @@ export default function App() {
       [docId]: { ...(prev[docId] || {}), state: 'converting', options, error: null },
     }));
     try {
-      const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}/convert`), {
+      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/convert`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(options),
@@ -858,7 +925,7 @@ export default function App() {
     for (let i = 0; i < MAX_POLLS; i++) {
       await new Promise((r) => setTimeout(r, POLL_MS));
       try {
-        const sRes = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(docId)}`));
+        const sRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}`);
         if (!sRes.ok) continue;
         const sData = await sRes.json();
         setDocConvertByDocId((prev) => ({
@@ -899,7 +966,7 @@ export default function App() {
       }
     }
     showToast('Conversion is taking unusually long — check the server logs.', 6000);
-  }, [pdfFileName, fileType, ensureDocHash, numPages, showToast, apiHost, apiPort]);
+  }, [pdfFileName, fileType, ensureDocHash, numPages, showToast, apiHost, apiPort, docProjectId, docTagsText]);
 
   const openConvertDialog = useCallback(() => setConvertDialogOpen(true), []);
   const closeConvertDialog = useCallback(() => setConvertDialogOpen(false), []);
@@ -913,9 +980,8 @@ export default function App() {
   // bloat memory or hit URL length limits.
   const handleExportMarkdown = useCallback(async () => {
     if (!currentDocId) return;
-    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
     try {
-      const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(currentDocId)}/markdown`));
+      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(currentDocId)}/markdown`);
       if (!res.ok) {
         let detail = `HTTP ${res.status}`;
         try {
@@ -956,9 +1022,8 @@ export default function App() {
       : true;
     if (!ok) return;
 
-    const apiUrl = (path) => buildApiUrl(apiHost, apiPort, path);
     try {
-      const res = await fetch(apiUrl(`/v1/docs/${encodeURIComponent(currentDocId)}/markdown`), {
+      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(currentDocId)}/markdown`, {
         method: 'DELETE',
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -987,6 +1052,24 @@ export default function App() {
     if (!currentDocId) return;
     setDocViewByDocId((prev) => ({ ...prev, [currentDocId]: mode }));
   }, [currentDocId]);
+
+  // --- AUTH GATE ---
+  // Runs after all hooks (rules-of-hooks safe) and before every render branch,
+  // so an unauthenticated visitor sees the login/pending/disabled screen rather
+  // than the app or its loading spinner. With AUTH_ENABLED=false on a loopback
+  // backend, /v1/auth/me returns the seed admin → state 'active' → app renders.
+  // Also gate active users with no capabilities — they see NoAccessScreen.
+  if (auth.state !== 'active' || !(auth.user?.capabilities?.length)) {
+    return (
+      <AuthGate
+        state={auth.state}
+        user={auth.user}
+        onLogin={auth.login}
+        onLogout={auth.logout}
+        onRetry={auth.refresh}
+      />
+    );
+  }
 
   // --- LOADING STATE ---
   if (!isLibLoaded) {
@@ -1044,6 +1127,9 @@ export default function App() {
           darkMode={darkMode}
           hasDocument={hasDocument}
           viewMode={viewMode} setViewMode={setViewMode}
+          isAdmin={canAdmin}
+          canReader={canReader}
+          canChat={canChat}
           status={status}
           isPlaying={isPlaying}
           isLocalhost={isLocalhost} setIsLocalhost={setIsLocalhost}
@@ -1069,6 +1155,8 @@ export default function App() {
           onEnterDistractionFree={() => setDistractionFree(true)}
           workspaceName={workspace?.rootName}
           onCloseWorkspace={() => { setWorkspace(null); setWorkspaceEntryPath(null); clearWorkspaceState(); }}
+          user={auth.user}
+          onLogout={auth.logout}
         />
       )}
 
@@ -1084,20 +1172,20 @@ export default function App() {
         )}
 
         {!distractionFree && (inChat ? (
-          <ChatSidebar
+          // Mount gate mirroring the admin console below: hiding via
+          // ViewSwitcher is cosmetic, this is the render-time boundary that
+          // covers the brief window before useViewModeGuard's effect fires.
+          canChat && <ChatSidebar
             theme={theme}
             darkMode={darkMode}
             effectiveIsMobile={effectiveIsMobile}
             sidebarOpen={sidebarOpen}
-            ollamaHost={ollamaHost} setOllamaHost={setOllamaHost}
-            ollamaPort={ollamaPort} setOllamaPort={setOllamaPort}
+            inferenceSource={inferenceSource}
             selectedModel={selectedModel} setSelectedModel={setSelectedModel}
             availableModels={availableModels}
+            inferenceBudget={chatInferenceBudget}
             reachable={ollamaReachable}
             refreshModels={refreshModels}
-            chatTtsMode={chatTtsMode} setChatTtsMode={setChatTtsMode}
-            chatAutoTts={chatAutoTts} setChatAutoTts={setChatAutoTts}
-            inference={inference} setInference={setInference}
             messages={chatMessages}
             clearHistory={chatClearHistory}
             sessions={chatSessions}
@@ -1108,38 +1196,19 @@ export default function App() {
             deleteSession={chatDeleteSession}
             renameSession={chatRenameSession}
           />
-        ) : (
-        <Sidebar
+        ) : inAdmin || inLibrary || inSettings ? null : (
+        canReader && <Sidebar
           theme={theme}
           darkMode={darkMode}
           effectiveIsMobile={effectiveIsMobile}
-          sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen}
-          settingsOpen={settingsOpen} setSettingsOpen={setSettingsOpen}
+          sidebarOpen={sidebarOpen}
           sidebarTab={sidebarTab} setSidebarTab={setSidebarTab}
-          selectedVoice={selectedVoice} setSelectedVoice={setSelectedVoice}
-          playbackSpeed={playbackSpeed} setPlaybackSpeed={setPlaybackSpeed}
-          volume={volume} setVolume={setVolume}
-          isLocalhost={isLocalhost} setIsLocalhost={setIsLocalhost}
-          apiHost={apiHost} setApiHost={setApiHost}
-          apiPort={apiPort} setApiPort={setApiPort}
-          requestTimeout={requestTimeout} setRequestTimeout={setRequestTimeout}
-          unlimitedBatchTimeout={unlimitedBatchTimeout} setUnlimitedBatchTimeout={setUnlimitedBatchTimeout}
-          backendAvailable={backendAvailable} setBackendAvailable={setBackendAvailable}
-          layoutMode={layoutMode} setLayoutMode={setLayoutMode}
-          mobileBreakpoint={mobileBreakpoint} setMobileBreakpoint={setMobileBreakpoint}
-          showHeaderControlsOnMobile={showHeaderControlsOnMobile} setShowHeaderControlsOnMobile={setShowHeaderControlsOnMobile}
-          isPreviewingVoice={isPreviewingVoice}
-          previewVoice={previewVoice}
-          stopVoicePreview={stopVoicePreview}
           hasDocument={hasDocument}
           pdfDoc={pdfDoc}
           pdfOutline={pdfOutline}
           textItems={textItems}
           currentSentenceIndex={currentSentenceIndex}
           sentenceRefs={sentenceRefs}
-          clearCache={clearCache}
-          checkBackend={checkBackend}
-          setStatus={setStatus}
           calculateReadingProgress={calculateReadingProgress}
           handleMobileSentenceClick={handleMobileSentenceClick}
           handleSentenceContextMenu={handleSentenceContextMenu}
@@ -1148,13 +1217,17 @@ export default function App() {
         ))}
 
         {inChat ? (
-          <ChatView
+          // Mount gate mirroring the admin console below: hiding via
+          // ViewSwitcher is cosmetic, this is the render-time boundary that
+          // covers the brief window before useViewModeGuard's effect fires.
+          canChat && <ChatView
             theme={theme}
             darkMode={darkMode}
             effectiveIsMobile={effectiveIsMobile}
             messages={chatMessages}
             isStreaming={chatIsStreaming}
             selectedModel={selectedModel}
+            inferenceBudget={chatInferenceBudget}
             reachable={ollamaReachable}
             sendMessage={chatSendMessage}
             stopStream={chatStopStream}
@@ -1167,8 +1240,46 @@ export default function App() {
             pins={chatPins}
             onRemovePin={chatRemovePin}
             numCtx={inference.numCtx}
+            draft={chatDraft}
+            setDraft={setChatDraft}
+            pendingAttachments={chatPendingAttachments}
+            setPendingAttachments={setChatPendingAttachments}
+          />
+        ) : inAdmin ? (
+          // Mount gate: the console renders nothing when the current user
+          // isn't an admin — hiding is cosmetic, server rails are the
+          // boundary, and the guard hook flips viewMode back to reader.
+          auth.user?.role === 'admin' && (
+            <AdminConsole
+              theme={theme}
+              apiHost={apiHost}
+              apiPort={apiPort}
+              currentUserId={auth.user.id}
+              onBack={() => setViewMode('reader')}
+              showToast={showToast}
+            />
+          )
+        ) : inLibrary ? (
+          <LibraryPage
+            theme={theme}
+            apiHost={apiHost}
+            apiPort={apiPort}
+            showToast={showToast}
+          />
+        ) : inSettings ? (
+          <SettingsPage
+            theme={theme}
+            voiceSettings={{ selectedVoice, setSelectedVoice, playbackSpeed, setPlaybackSpeed, volume, setVolume, isLocalhost, setIsLocalhost, requestTimeout, setRequestTimeout, unlimitedBatchTimeout, setUnlimitedBatchTimeout, isPreviewingVoice, previewVoice, stopVoicePreview, clearCache }}
+            chatSettings={{ inferenceSource, setInferenceSource, chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, inferenceByModel, setInferenceByModel, availableModels, selectedModel }}
+            connectionSettings={{ apiHost, setApiHost, apiPort, setApiPort, ollamaHost, setOllamaHost, ollamaPort, setOllamaPort, inferenceSource, backendAvailable }}
+            appearanceSettings={{ darkMode, setDarkMode, layoutMode, setLayoutMode, mobileBreakpoint, setMobileBreakpoint, showHeaderControlsOnMobile, setShowHeaderControlsOnMobile }}
+            accountProps={{ apiHost, apiPort, user: auth.user }}
           />
         ) : (
+        // Mount gate mirroring the admin console above: hiding via
+        // ViewSwitcher is cosmetic, this is the render-time boundary that
+        // covers the brief window before useViewModeGuard's effect fires.
+        canReader && (
         <WorkspaceProvider workspace={workspace} initialPath={workspaceEntryPath} onOpenDoc={onOpenDoc} onMissing={(path) => showToast(`"${path}" isn't in this folder`, 3000)}>
           <PdfViewer
             theme={theme}
@@ -1193,6 +1304,11 @@ export default function App() {
             onAskAboutPage={handleAskAboutPage}
             indexEntry={currentDocId ? docIndexByDocId[currentDocId] : null}
             onIndexDocument={handleIndexDocument}
+            projects={projects}
+            docProjectId={docProjectId}
+            setDocProjectId={setDocProjectId}
+            docTagsText={docTagsText}
+            setDocTagsText={setDocTagsText}
             docId={currentDocId}
             apiHost={apiHost}
             apiPort={apiPort}
@@ -1215,6 +1331,7 @@ export default function App() {
             </div>
           )}
         </WorkspaceProvider>
+        )
         )}
       </main>
 
@@ -1232,7 +1349,7 @@ export default function App() {
         <MobileBottomNav
           theme={theme}
           effectiveIsMobile={effectiveIsMobile}
-          hasDocument={hasDocument && !inChat}
+          hasDocument={hasDocument && !inChat && !inAdmin && !inLibrary && !inSettings}
           currentPage={currentPage} setCurrentPage={setCurrentPage}
           numPages={numPages}
           currentSentenceIndex={currentSentenceIndex}

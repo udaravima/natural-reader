@@ -4,12 +4,18 @@ services:
     container_name: natural-reader-postgres
     environment:
       POSTGRES_USER: natural_reader
-      POSTGRES_PASSWORD: natural_reader
+      # Override in a .env file / shell for anything past a local dev box.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-natural_reader}
       POSTGRES_DB: natural_reader
     ports:
-      - "5433:5432"
+      # Bound to 127.0.0.1 (SEC-5): the backend is the only client. Publishing
+      # on all interfaces exposes Postgres (and its creds) to the whole LAN.
+      - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Runs only on a FRESH data volume (docker-entrypoint-initdb.d semantics):
+      # prepares the schema Keycloak stores its realm in.
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U natural_reader"]
       interval: 5s
@@ -30,6 +36,49 @@ services:
       - ./searxng:/etc/searxng:rw
     environment:
       SEARXNG_BASE_URL: http://localhost:18043/
+    restart: unless-stopped
+
+  # Local-dev OIDC identity provider. NOT production: start-dev runs without
+  # TLS and ships bootstrap admin creds (production Keycloak — TLS, HA, dedicated
+  # DB credentials — is sub-project D). Realm state lives in the shared Postgres
+  # (schema "keycloak", created by deploy/postgres/init/) so identities — and
+  # their oidc sub UUIDs — survive container recreation. --import-realm only
+  # seeds the realm when it does not already exist. With the old embedded H2 the
+  # store died with the container and every recreate minted NEW sub UUIDs,
+  # desyncing the app's users.oidc_sub rows (409 "email already linked to
+  # another identity").
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: natural-reader-keycloak
+    command: ["start-dev", "--import-realm", "--http-port=8080"]
+    depends_on:
+      - postgres
+    environment:
+      # Console bootstrap admin (Keycloak's own admin UI at :18080/admin).
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/natural_reader
+      KC_DB_USERNAME: natural_reader
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-natural_reader}
+      KC_DB_SCHEMA: keycloak
+      # Behind a TLS-terminating reverse proxy (e.g. nginx at https://auth.oraian.net)
+      # Keycloak must trust the proxy's forwarded headers AND know its public URL,
+      # or it emits http:// asset/iframe URLs that the browser blocks as mixed
+      # content, and its OIDC `issuer` won't match OIDC_ISSUER. Empty by default so
+      # direct localhost dev is unchanged; set both in .env for a proxied deploy:
+      #   KC_PROXY_HEADERS=xforwarded
+      #   KC_HOSTNAME=https://auth.oraian.net
+      KC_PROXY_HEADERS: ${KC_PROXY_HEADERS:-}
+      KC_HOSTNAME: ${KC_HOSTNAME:-}
+    ports:
+      # Non-default host port (18080) — Keycloak's default 8080 is avoided. Both
+      # the browser (redirect) and the backend (discovery/token exchange) use
+      # this exact URL, so they agree on the issuer. Bound to 127.0.0.1 for local
+      # dev; a real deployment fronts Keycloak with a proper hostname + TLS (D).
+      - "127.0.0.1:18080:8080"
+    volumes:
+      - ./deploy/keycloak:/opt/keycloak/data/import:ro
     restart: unless-stopped
 
 volumes:

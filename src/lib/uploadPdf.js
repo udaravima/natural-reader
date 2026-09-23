@@ -1,5 +1,5 @@
 import { getBook } from '../db';
-import { buildApiUrl } from '../utils/url';
+import { apiFetch } from '../utils/apiFetch';
 
 /**
  * Push the raw PDF bytes for `fileName` (pulled out of IndexedDB) to the
@@ -25,8 +25,7 @@ export async function uploadPdfBytesToBackend({
     const form = new FormData();
     form.append('file', blob, fileName);
 
-    const url = buildApiUrl(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/pdf`);
-    const res = await fetch(url, { method: 'POST', body: form });
+    const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/pdf`, { method: 'POST', body: form });
     if (!res.ok) {
         let detail = `HTTP ${res.status}`;
         try {

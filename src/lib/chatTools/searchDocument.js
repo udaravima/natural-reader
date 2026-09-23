@@ -10,7 +10,7 @@
  * and k (capped 1-10). Returns trimmed results — page, score, and a text
  * preview capped per-chunk so the follow-up Ollama request stays bounded.
  */
-import { buildApiUrl } from "../../utils/url";
+import { apiFetch } from "../../utils/apiFetch";
 
 const PER_CHUNK_TEXT_CAP = 1500;
 
@@ -56,16 +56,16 @@ export default {
       Math.min(10, Number.isFinite(args?.k) ? Math.floor(args.k) : 5),
     );
 
-    const url = buildApiUrl(
+    const res = await apiFetch(
       ctx.apiHost,
       ctx.apiPort,
       `/v1/docs/${encodeURIComponent(ctx.currentDocId)}/search`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, k }),
+      },
     );
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, k }),
-    });
     if (!res.ok) {
       return { error: `Search backend returned HTTP ${res.status}` };
     }
