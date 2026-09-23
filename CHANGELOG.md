@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-23
+
+Major release: Natural Reader becomes a **multi-user, authenticated, hosted
+application**. Every API route now requires a principal (OIDC session or personal
+access token); inference is brokered through a server-side gateway with per-user
+budgets; documents gain a projects/grants sharing model with a browsable Library;
+capabilities (reader/chat/admin) are Keycloak realm roles enforced end to end; and
+the SPA is reorganized around a dedicated Settings page and a profile menu. The
+API-auth change is breaking for pre-1.9.0 open deployments — see **Changed**.
+
 ### Added
 - **Inference gateway (model router).** The SPA's chat no longer talks to Ollama
   directly — it goes through authenticated backend endpoints
@@ -64,6 +74,46 @@ All notable changes to this project will be documented in this file.
   web-search fetcher (public IPs only, re-checked per redirect hop), TTS request
   size caps, and startup guards that refuse insecure auth configs on
   non-loopback binds.
+- **Capabilities: Keycloak realm roles enforced end to end.** Feature access is
+  no longer a single `role` column — `reader`, `chat`, and `admin` are Keycloak
+  realm roles mirrored into `users.capabilities` (migration `008`) and enforced
+  deny-by-default on the feature routes (`require_capability`). The SPA reads
+  capabilities from `/v1/auth/me`, gates the reader/chat/admin views on them, and
+  re-probes on a `403 missing_capability`; an active user with no capabilities
+  lands on a distinct "access not yet granted" screen rather than a broken app.
+  Admins enroll users (creating the Keycloak user with an invite or one-time
+  temp password, with a graceful fallback when SMTP is absent), edit
+  capabilities, and disable/delete — all propagated to Keycloak, with a
+  last-active-admin guard on every path that could remove the final admin and
+  hard-fail (never fail-open) if the Keycloak write errors.
+  ([server/services/keycloak_admin.py](server/services/keycloak_admin.py),
+  [server/deps/capabilities.py](server/deps/capabilities.py),
+  [src/components/admin/AdminConsole.jsx](src/components/admin/AdminConsole.jsx))
+- **Document Library with a projects / grants sharing model (RAG Phase 0).**
+  Documents move from strictly private to *shareable*: a document is readable by
+  its owner, by members of a project it's assigned to, or by an explicit
+  per-document grantee — writes stay owner-only, and non-readers still get a 404
+  (never a 403 that would leak existence). New endpoints back it —
+  `GET /v1/docs` (own / member / granted, with `q`/project/tag filters),
+  `PATCH /v1/docs/{id}` (tags, project assignment, admin reassignment), owner-only
+  project CRUD, project members, and per-doc read grants — with IDOR guards on
+  cross-tenant project assignment. The SPA gains a **Library** page: list, search,
+  project/tag filters, share indicators, and optional project + tags on
+  upload/register. Migration `009` adds `projects`, `project_members`,
+  `doc_grants`, and `documents.project_id`/`tags`. Access model:
+  [docs](docs/) library Phase 0 notes.
+  ([server/routers/library.py](server/routers/library.py),
+  [src/components/library/LibraryPage.jsx](src/components/library/LibraryPage.jsx))
+- **Consolidated Settings page + profile menu (app shell).** Voice & reading,
+  chat & inference (with a per-model inference selector), connection, appearance,
+  and account (personal access tokens) settings — previously scattered across the
+  reader sidebar and chat sidebar — now live on one dedicated **Settings** view
+  reachable from a header gear button and a new profile menu (identity, Settings,
+  dark-mode toggle, log out). The reader sidebar keeps navigation only; the chat
+  sidebar keeps the model picker and sessions. The chat composer draft also moved
+  up to `App`, so it now survives switching tabs.
+  ([src/components/settings/SettingsPage.jsx](src/components/settings/SettingsPage.jsx),
+  [src/components/ProfileMenu.jsx](src/components/ProfileMenu.jsx))
 
 ### Changed
 - **Breaking: every API route now requires authentication.** Pre-1.9.0 the
