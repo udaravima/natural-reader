@@ -202,8 +202,13 @@ brings `added_by` back (§4).
     anyway. An invisible project id returns an empty list, not an error.
   - Each row returns `projects: [{id, name}]` (sorted by name) in place of `project_id` and
     `project_name`.
-  - **Only projects visible to the caller are listed.** A doc shared by grant may also sit in
-    projects the caller has no access to. Listing those would leak their names.
+  - **Only projects visible to the caller are listed — except that a doc's owner sees every
+    project their doc is linked to.** A doc shared by grant may also sit in projects the caller
+    has no access to. Listing those would leak their names. The owner exception closes a
+    management gap: if the owner is removed from a project, their doc stays linked to it (and
+    readable by its members). Hiding that link would leave the owner unable to see, or remove
+    in the UI, where their own document is shared. It leaks nothing new: every link on the doc
+    was made by them or a previous owner.
 - **`GET /v1/docs/{doc_id}`, register, chunk upload, PATCH responses**
   - `_fetch_doc_status` returns `projects` instead of `project_id`, filtered the same way.
   - Its signature gains `user_id`. All four call sites already hold the principal.
@@ -237,8 +242,9 @@ Backend (pytest, table-driven where it's a matrix):
   §6; admin cross-link of own doc ✓; idempotent re-link; malformed ids → 422.
 - **Unlink rules:** every cell of the §6 resolution table (link exists/missing × doc owner /
   project owner / other).
-- **Visibility:** `GET /v1/docs` never lists a project name the caller can't see, and
-  `?project_id=` with an invisible project returns an empty list.
+- **Visibility:** `GET /v1/docs` never lists a project name a non-owner can't see; a doc's
+  owner sees all its links, including projects they have left; `?project_id=` with an
+  invisible project returns an empty list.
 - **PATCH:** `project_id` in the body → 422; tags and owner reassignment unchanged.
 - **Placeholder guard:** placeholder count == `len(readable_docs_params(uid))`; the same for
   `assert_can_read_doc`'s full query (leading `doc_id`) and for the project helpers.
@@ -288,6 +294,6 @@ Frontend (vitest):
 |---|---|
 | Dropping `project_id` loses data if the backfill is wrong | Single-transaction migration + the scratch-database backfill test in §9 |
 | Parameter-count drift in the read predicate | `*_params()` helpers + the placeholder-count tests |
-| Leaking foreign project names through `projects[]` or `?project_id=` | Visibility filter on both + dedicated tests |
+| Leaking foreign project names through `projects[]` or `?project_id=` | Visibility filter on both (doc owners excepted, §7.2) + dedicated tests |
 | Old SPA build sends `{project_id, tags}` in one `PATCH` → 422, so **the tags are lost too**, not just the project | SPA and backend ship together (same origin, same deploy). The register flow logs the failure rather than throwing, so indexing still proceeds. *Assumed, not verified:* that every deployment updates both at once. That depends on your deploy setup |
 | Read predicate cost (two `EXISTS` with a join) on large libraries | Covered by `project_documents_doc_idx`, the `projects` PK and `project_members` PK / `project_members_user_idx`; check `EXPLAIN` on `GET /v1/docs` with a seeded library during implementation |
