@@ -58,11 +58,9 @@ async def create_project(body: ProjectIn,
 async def list_projects(principal: deps.Principal = Depends(deps.get_current_user),
                         conn=Depends(deps.get_conn)):
     cur = await conn.execute(
-        "SELECT id, owner_user_id, name, description FROM projects "
-        "WHERE owner_user_id = %s OR id IN "
-        "(SELECT project_id FROM project_members WHERE user_id = %s) "
-        "ORDER BY created_at DESC",
-        (principal.user_id, principal.user_id))
+        f"SELECT p.id, p.owner_user_id, p.name, p.description FROM projects p "
+        f"WHERE {visible_projects_where('p')} ORDER BY p.created_at DESC",
+        visible_projects_params(principal.user_id))
     rows = await cur.fetchall()
     return [{**_row(r), "is_owner": str(r[1]) == principal.user_id} for r in rows]
 

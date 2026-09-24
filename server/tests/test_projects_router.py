@@ -311,6 +311,23 @@ async def test_deleting_project_keeps_doc_and_drops_link(db_conn):
     assert await cur.fetchone() is not None
 
 
+async def test_link_routes_require_reader_capability(db_conn):
+    # A principal with no capabilities at all must 403 on both link routes —
+    # before any ownership/visibility check — even for a project and doc the
+    # caller genuinely owns, so only the missing capability can explain it.
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="capless", email="capless@x.io")
+    pid = await _mk_project(db_conn, u["id"])
+    await _mk_doc(db_conn, DOC_A, u["id"])
+    no_caps = deps.Principal(user_id=u["id"], email=u["email"], role="member",
+                             capabilities=frozenset())
+    async with _client_for(db_conn, no_caps) as c:
+        r = await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")
+        assert r.status_code == 403
+        r = await c.delete(f"/v1/projects/{pid}/docs/{DOC_A}")
+        assert r.status_code == 403
+    assert not await _linked(db_conn, pid, DOC_A)
+
+
 async def test_new_owner_after_reassignment_can_unlink(db_conn):
     # Review Focus 4: links survive an admin ownership reassignment.
     old = await resolve_or_provision_user(db_conn, iss="i", sub="rf4a", email="rf4a@x.io")

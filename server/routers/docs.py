@@ -225,9 +225,10 @@ async def _require_doc_reader(
     doc_id: DocId,
     principal: Principal = Depends(require_capability("reader")),
 ) -> Principal:
-    """Read gate: 403 if the caller lacks the `reader` capability, then owner
-    OR project member OR grantee for this doc (404 otherwise — missing and
-    not-readable are indistinguishable to the caller)."""
+    """Read gate: 403 if the caller lacks the `reader` capability, then owner,
+    grantee, or owner/member of any project this doc is linked to (404
+    otherwise — missing and not-readable are indistinguishable to the
+    caller). See `server/auth/authz.py`'s `readable_docs_where`."""
     _ensure_ready()
     pool = get_pool()
     async with pool.connection() as conn:
@@ -245,10 +246,12 @@ async def list_documents(
     principal: Principal = Depends(require_capability("reader")),
 ) -> list[dict[str, Any]]:
     """
-    List documents the caller can read: own docs, docs in a project they're a
-    member of, and docs explicitly granted to them. Access is resolved in SQL
-    via `readable_docs_where` — never post-filtered in Python — so a doc a
-    stranger owns can never appear, even if it happens to match `q`/`tag`.
+    List documents the caller can read: docs they own, docs explicitly
+    granted to them, and docs linked to any project they own or are a member
+    of. Access is resolved in SQL via `readable_docs_where` — never
+    post-filtered in Python — so a doc a stranger owns can never appear, even
+    if it happens to match `q`/`tag`. See `server/auth/authz.py`'s
+    `readable_docs_where`.
     """
     _ensure_ready()
     uid = principal.user_id

@@ -22,6 +22,17 @@ DEFAULT_DATABASE_URL = (
     "postgresql://natural_reader:natural_reader@localhost:5433/natural_reader"
 )
 
+# Measured: the planner overestimates `GET /v1/docs` rows ~12x (an OR of
+# hashed subplans), so Postgres JIT — on by default in pgvector/pgvector:pg16
+# once a query's estimated cost passes jit_above_cost=100000 — starts firing
+# once the whole instance holds ~2.2k documents (+~10ms/request), and full
+# inline/optimize kicks in around ~11k documents (+175-340ms/request). With
+# JIT off the same query runs in ~10ms at 20k docs. This is an OLTP workload
+# that never benefits from JIT compilation. Passed as connection `options` so
+# it's scoped to this app's own pool — Keycloak's separate DB connections are
+# unaffected.
+POOL_CONN_KWARGS = {"options": "-c jit=off"}
+
 _pool: AsyncConnectionPool | None = None
 _pool_ready = asyncio.Event()
 
@@ -59,7 +70,8 @@ async def init_db() -> bool:
                     logger.debug("pgvector codec registration deferred: %s", e)
 
             pool = AsyncConnectionPool(
-                url, min_size=1, max_size=10, open=False, configure=_configure
+                url, min_size=1, max_size=10, open=False, configure=_configure,
+                kwargs=POOL_CONN_KWARGS,
             )
             await pool.open(wait=True, timeout=10)
             async with pool.connection() as conn:

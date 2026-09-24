@@ -136,6 +136,41 @@ describe('LibraryPage', () => {
     await waitFor(() => expect(docsCalls().length).toBeGreaterThan(before));
   });
 
+  it('guards against a double-click on × — only one DELETE fires while the link change is in flight', async () => {
+    let resolveDelete;
+    apiFetch.mockImplementation(async (host, port, path, opts) => {
+      if (path === '/v1/projects/p1/docs/d2' && opts?.method === 'DELETE') {
+        return new Promise((resolve) => {
+          resolveDelete = () => resolve(json(204, {}));
+        });
+      }
+      if (path.startsWith('/v1/docs')) return json(200, docs);
+      if (path === '/v1/projects') return json(200, projects);
+      if (path.startsWith('/v1/projects/')) return json(204, {});
+      return json(404, {});
+    });
+    render(
+      <LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} darkMode={false} effectiveIsMobile={false} />
+    );
+    await screen.findByText('Teammate.pdf');
+    const row = screen.getByTestId('doc-row-d2');
+    const removeBtn = within(row).getByLabelText(/remove teammate\.pdf from project a/i);
+
+    fireEvent.click(removeBtn);
+    fireEvent.click(removeBtn);
+
+    const deleteCalls = () => apiFetch.mock.calls.filter(
+      ([, , path, opts]) => path === '/v1/projects/p1/docs/d2' && opts?.method === 'DELETE'
+    );
+    // Give the second click's event handler a chance to run before asserting
+    // only one request actually went out.
+    await waitFor(() => expect(deleteCalls().length).toBe(1));
+
+    const before = docsCalls().length;
+    resolveDelete();
+    await waitFor(() => expect(docsCalls().length).toBeGreaterThan(before));
+  });
+
   it('offers only unlinked projects in the add select', async () => {
     mount();
     await screen.findByText('Owned.pdf');

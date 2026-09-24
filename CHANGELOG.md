@@ -24,6 +24,22 @@ All notable changes to this project will be documented in this file.
   status responses return `projects: [{id, name}]` (projects you can see; a doc's
   owner sees all of its links) instead of `project_id`/`project_name`.
 
+### Upgrade notes
+
+- Migration `010` is the first migration that **drops data**
+  (`documents.project_id`, after copying it into `project_documents`). The
+  backend applies it automatically on its next start — not on merge. **Back up
+  first**, e.g.
+  `podman exec natural-reader-postgres pg_dump -U natural_reader natural_reader > natural_reader-pre-010.sql`
+  (docker: same command with `docker exec`).
+- **Deploy the SPA and the backend together** (rebuild + `deploy.sh` in the
+  same window as the backend restart). Mixed versions lose data silently: an
+  old SPA against the new backend gets a 422 on `PATCH /v1/docs` (the tags in
+  that request are lost too); a new SPA against the old backend has no
+  `PUT /v1/projects/{id}/docs/{doc_id}` route, so project links are silently
+  dropped (logged to the browser console only).
+- There is **no code rollback past 010** without restoring the backup.
+
 ## [2.0.0] - 2026-09-23
 
 Major release: Natural Reader becomes a **multi-user, authenticated, hosted

@@ -65,7 +65,7 @@ function TagEditor({ doc, theme, onSave }) {
 // One chip per linked project. The owner of the doc can add it to any
 // project they can see and remove it from any; a project owner can remove
 // someone else's doc from THEIR project (never add it — spec §6).
-function ProjectChips({ doc, projects, theme, onLink, onUnlink }) {
+function ProjectChips({ doc, projects, theme, onLink, onUnlink, busy }) {
   const linked = doc.projects || [];
   const linkedIds = new Set(linked.map((p) => p.id));
   const ownedProjectIds = new Set((projects || []).filter((p) => p.is_owner).map((p) => p.id));
@@ -85,7 +85,8 @@ function ProjectChips({ doc, projects, theme, onLink, onUnlink }) {
             <button
               onClick={() => onUnlink(doc, p)}
               aria-label={`Remove ${doc.file_name} from ${p.name}`}
-              className="hover:text-red-500"
+              disabled={busy}
+              className="hover:text-red-500 disabled:opacity-50 disabled:cursor-default"
             >
               <X size={10} />
             </button>
@@ -97,6 +98,7 @@ function ProjectChips({ doc, projects, theme, onLink, onUnlink }) {
           value=""
           onChange={(e) => { if (e.target.value) onLink(doc, e.target.value); }}
           aria-label={`Add ${doc.file_name} to project`}
+          disabled={busy}
           className={`px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg}`}
         >
           <option value="">+ project</option>
@@ -127,6 +129,11 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
   // doc_id whose DELETE is currently in flight — drives the busy state on the
   // confirm button so a click clearly registers (and can't be double-fired).
   const [deletingId, setDeletingId] = useState(null);
+  // doc_id whose project link/unlink is currently in flight — disables that
+  // row's add-select and × buttons so a double-click can't fire a second
+  // request (a project owner double-clicking × would otherwise see a false
+  // "Update failed: HTTP 404" toast from the second, already-unlinked DELETE).
+  const [linkingId, setLinkingId] = useState(null);
   // Monotonic id so out-of-order responses can't clobber the list: fast typing
   // across debounce windows can leave two GET /v1/docs in flight, and if the
   // earlier one resolves last its stale results would overwrite the newer query.
@@ -182,12 +189,15 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
   };
 
   const changeLink = async (doc, projectId, method) => {
+    setLinkingId(doc.doc_id);
     try {
       const res = await apiFetch(apiHost, apiPort, `/v1/projects/${projectId}/docs/${doc.doc_id}`, { method });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await loadDocs(search, projectFilter);
     } catch (e) {
       showToast(`Update failed: ${e.message}`, 5000);
+    } finally {
+      setLinkingId(null);
     }
   };
   const linkDoc = (doc, projectId) => changeLink(doc, projectId, 'PUT');
@@ -309,6 +319,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
                       theme={theme}
                       onLink={linkDoc}
                       onUnlink={unlinkDoc}
+                      busy={linkingId === doc.doc_id}
                     />
                   </div>
 

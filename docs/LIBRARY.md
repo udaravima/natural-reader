@@ -7,8 +7,7 @@ roadmap — it builds the ownership/sharing/organization substrate that later
 phases (cross-document search, descriptions + routing, multi-round retrieval)
 sit on top of. It adds no search intelligence itself.
 
-Branch: `feat/document-library-rag` (off `feat/admin-console`). Migration
-**009**. Nothing here is on `master`.
+Lives on `development`. Migrations **009** and **010**. Not yet on `master`.
 
 ## The one idea: `can_read`
 
@@ -18,8 +17,8 @@ Every read decision reduces to one predicate, resolved entirely in SQL:
 > linked to, OR they are a member of a project it's linked to, OR they hold a
 > per-document grant on it.**
 
-Four ways in, checked in that order — a document can be linked to any number
-of projects, so "the project" below is really "any linked project":
+Four ways in — a document can be linked to any number of projects, so "the
+project" below is really "any linked project":
 
 | Path | Table | Meaning |
 |------|-------|---------|
