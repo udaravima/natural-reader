@@ -70,3 +70,14 @@ async def test_member_of_other_project_cannot_read(db_conn):
     with pytest.raises(HTTPException) as e:
         await authz.assert_can_read_doc(db_conn, "d1", m)
     assert e.value.status_code == 404
+
+
+async def test_readable_predicate_placeholders_match_params():
+    # The predicate and its params are defined side by side; a caller that
+    # hand-counts user ids is exactly how a uid gets bound to the wrong column.
+    assert authz.readable_docs_where("d").count("%s") == len(authz.readable_docs_params("u"))
+
+
+async def test_can_read_one_doc_query_placeholders_match_params():
+    # The single-doc query has a LEADING doc_id before the user ids.
+    assert authz.CAN_READ_ONE_DOC_SQL.count("%s") == 1 + len(authz.readable_docs_params("u"))

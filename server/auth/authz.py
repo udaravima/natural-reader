@@ -23,37 +23,35 @@ async def assert_owns_session(conn, session_id: str, user_id: str) -> None:
         raise HTTPException(status_code=404, detail="Session not found")
 
 
-async def assert_can_read_doc(conn, doc_id: str, user_id: str) -> None:
-    """Read access = owner OR project member OR explicit grantee. Missing and
-    not-readable are both 404 (no existence leak)."""
-    cur = await conn.execute(
-        """
-        SELECT 1 FROM documents d
-        WHERE d.doc_id = %s AND (
-            d.user_id = %s
-            OR EXISTS (SELECT 1 FROM project_members pm
-                       WHERE pm.project_id = d.project_id AND pm.user_id = %s)
-            OR EXISTS (SELECT 1 FROM doc_grants g
-                       WHERE g.doc_id = d.doc_id AND g.grantee_user_id = %s)
-        )
-        """,
-        (doc_id, user_id, user_id, user_id),
-    )
-    if await cur.fetchone() is None:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-
 def readable_docs_where(alias: str = "d") -> str:
-    """Reusable predicate for list/search: `<alias>` is a `documents` row and
-    the caller passes the user id THREE times positionally after any earlier
-    params. Keeps access resolution in SQL, never post-filtered in Python."""
+    """The ONE definition of "can read this document". `<alias>` is a
+    `documents` row. Bind it with `readable_docs_params(user_id)` — never a
+    hand-counted list. Subquery aliases are underscore-prefixed so they can't
+    shadow a table alias in the caller's query. Access is resolved in SQL,
+    never post-filtered in Python."""
     return (
         f"({alias}.user_id = %s "
-        f"OR EXISTS (SELECT 1 FROM project_members pm "
-        f"WHERE pm.project_id = {alias}.project_id AND pm.user_id = %s) "
-        f"OR EXISTS (SELECT 1 FROM doc_grants g "
-        f"WHERE g.doc_id = {alias}.doc_id AND g.grantee_user_id = %s))"
+        f"OR EXISTS (SELECT 1 FROM project_members _rpm "
+        f"WHERE _rpm.project_id = {alias}.project_id AND _rpm.user_id = %s) "
+        f"OR EXISTS (SELECT 1 FROM doc_grants _rg "
+        f"WHERE _rg.doc_id = {alias}.doc_id AND _rg.grantee_user_id = %s))"
     )
+
+
+def readable_docs_params(user_id: str) -> list[str]:
+    """Exactly the parameters `readable_docs_where` needs, in order."""
+    return [user_id, user_id, user_id]
 
 
 CAN_READ_DOCS_SQL = readable_docs_where()
+CAN_READ_ONE_DOC_SQL = (
+    f"SELECT 1 FROM documents d WHERE d.doc_id = %s AND {readable_docs_where('d')}"
+)
+
+
+async def assert_can_read_doc(conn, doc_id: str, user_id: str) -> None:
+    """404 unless `user_id` can read `doc_id`. Missing and not-readable are
+    indistinguishable (no existence leak)."""
+    cur = await conn.execute(CAN_READ_ONE_DOC_SQL, [doc_id, *readable_docs_params(user_id)])
+    if await cur.fetchone() is None:
+        raise HTTPException(status_code=404, detail="Document not found")

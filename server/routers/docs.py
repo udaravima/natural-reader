@@ -29,7 +29,12 @@ from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..auth.authz import assert_can_read_doc, assert_owns_doc, readable_docs_where
+from ..auth.authz import (
+    assert_can_read_doc,
+    assert_owns_doc,
+    readable_docs_params,
+    readable_docs_where,
+)
 from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
 from ..services import docling_convert, model_router
@@ -224,7 +229,7 @@ async def list_documents(
     _ensure_ready()
     uid = principal.user_id
     where = [readable_docs_where("d")]
-    params: list[Any] = [uid, uid, uid]
+    params: list[Any] = readable_docs_params(uid)
     if q:
         where.append("(d.file_name ILIKE %s OR %s = ANY(d.tags))")
         params += [f"%{q}%", q]
