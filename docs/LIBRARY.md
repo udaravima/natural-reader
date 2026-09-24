@@ -14,14 +14,16 @@ Branch: `feat/document-library-rag` (off `feat/admin-console`). Migration
 
 Every read decision reduces to one predicate, resolved entirely in SQL:
 
-> **A user can read a document iff they own it, OR they are a member of the
-> project it belongs to, OR they hold a per-document grant on it.**
+> **A user can read a document iff they own it, OR they own a project it's
+> linked to, OR they are a member of a project it's linked to, OR they hold a
+> per-document grant on it.**
 
-Three ways in, checked in that order:
+Four ways in, checked in that order — a document can be linked to any number
+of projects, so "the project" below is really "any linked project":
 
 | Path | Table | Meaning |
 |------|-------|---------|
-| Owner | `documents.owner_user_id` | You uploaded/registered it. Full read + write. |
+| Owner | `documents.user_id` | You uploaded/registered it. Full read + write. |
 | Project member | `project_members` + `project_documents` | You were added to a project the doc is linked to. Read-only. |
 | Project owner | `projects.owner_user_id` + `project_documents` | You own a project the doc is linked to. Read-only (plus remove-from-project). |
 | Grantee | `doc_grants` | You were handed this one specific document. Read-only. |
@@ -30,10 +32,12 @@ Projects are the **primary sharing unit** (share a folder of docs by adding a
 member); per-doc grants are the **exception path** (hand someone a single file
 without giving them the whole project).
 
-**Writes never widen.** Membership and grants grant *read* only. Editing tags,
-reassigning the project, deleting, uploading PDF bytes, indexing, converting —
-all stay **owner-only**. Admin reassignment of ownership is the sole exception
-(below).
+**Writes mostly stay owner-only.** Membership and grants grant *read* only.
+Editing tags, deleting, uploading PDF bytes, indexing, converting, and
+*linking* a document to a project are all owner-only. Two exceptions: a
+project owner can *unlink* someone else's document from their own project
+(see "Decision: curation is asymmetric," below), and an admin can reassign a
+document's owner (also below).
 
 ### 404, not 403 — the indistinguishability posture
 
@@ -51,13 +55,15 @@ There is no Python-side post-filter that could be bypassed.
 projects(id, owner_user_id→users, name, description, created_at)
 project_members(project_id→projects, user_id→users)          PK(project_id, user_id)
 doc_grants(doc_id→documents, grantee_user_id→users)           PK(doc_id, grantee_user_id)
-documents.project_id  UUID → projects(id) ON DELETE SET NULL  -- deleting a project un-files, never deletes, its docs
+project_documents(project_id→projects ON DELETE CASCADE,
+                   doc_id→documents ON DELETE CASCADE, added_at) PK(project_id, doc_id)
 documents.tags        TEXT[] NOT NULL DEFAULT '{}'
 ```
 
-Indexes back the three access paths + the two filters: `documents(project_id)`,
-GIN on `documents(tags)`, `doc_grants(grantee_user_id)`,
-`project_members(user_id)`. The migration self-registers as version 9
+Indexes back the four access paths + the two filters: `project_documents_doc_idx`
+on `project_documents(doc_id)` (the PK covers project→docs), GIN on
+`documents(tags)`, `doc_grants(grantee_user_id)`, `project_members(user_id)`.
+The migration self-registers as version 9
 (`INSERT INTO schema_migrations(version) VALUES (9) ON CONFLICT DO NOTHING`),
 so the test harness and startup apply it exactly once. **009 is independent of
 auth's 008** (`users.capabilities`); the two migration numbers were
@@ -95,16 +101,22 @@ be in any number of projects.
 A **Library** view (`viewMode: 'library'`, `src/components/library/LibraryPage.jsx`)
 in the reader window's view switcher, available to any active user. It lists
 readable docs with search-as-you-type (`?q=`), a project filter, and — on rows
-you **own** — inline tag editing, project reassignment, and delete. Rows shared
-with you (`is_owner: false`) show a "shared" badge and are read-only.
+you **own** — inline tag editing, one chip per linked project with add/remove,
+and delete. A doc owner can add the doc to any project they can see and remove
+it from any; a project owner can also remove someone else's doc from **their**
+project, but never add one (the "curation is asymmetric" decision, below).
+Rows shared with you (`is_owner: false`) show a "shared" badge and are
+read-only.
 
 The **upload/register surface** (`src/components/PdfViewer.jsx` toolbar +
 `src/lib/docMeta.js`) gained an optional project select + tags input. When a
-document registers (via index or convert) and a project/tag was chosen, one
-follow-up `PATCH /v1/docs/{id}` attaches it; choosing neither leaves the plain
-register path byte-for-byte unchanged. The picker is per-document
-(`useDocMetaPicker`) — it resets when the loaded document changes, so a
-selection can't leak onto the next document.
+document registers (via index or convert) and a project/tag was chosen, two
+independent, fail-soft follow-ups run: `PATCH /v1/docs/{id}` for the tags and
+`PUT /v1/projects/{id}/docs/{doc_id}` for the project link — either can fail
+without blocking the other, or the indexing/conversion that runs right after.
+Choosing neither leaves the plain register path byte-for-byte unchanged. The
+picker is per-document (`useDocMetaPicker`) — it resets when the loaded
+document changes, so a selection can't leak onto the next document.
 
 ## Backfilled documents and the admin reassignment path
 
