@@ -56,25 +56,18 @@ async def _insert_doc(db_conn, doc_id, owner_id):
     )
 
 
-async def test_owner_sets_tags_and_project_reflected_in_response(db_conn, docs_app):
+async def test_owner_sets_tags_reflected_in_response(db_conn, docs_app):
     owner = await _user(db_conn, "owner-patch")
     await _insert_doc(db_conn, HEX, owner.user_id)
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner.user_id,),
-    )
-    project_id = str((await cur.fetchone())[0])
 
     docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
     async with _client(docs_app) as client:
-        r = await client.patch(
-            f"/v1/docs/{HEX}",
-            json={"tags": ["b", "a", "a"], "project_id": project_id},
-        )
+        r = await client.patch(f"/v1/docs/{HEX}", json={"tags": ["b", "a", "a"]})
         assert r.status_code == 200
         body = r.json()
         assert body["tags"] == ["a", "b"]  # sorted + deduped
-        assert body["project_id"] == project_id
+        assert body["projects"] == []
+        assert "project_id" not in body
 
 
 async def test_non_owner_patch_is_404(db_conn, docs_app):
@@ -123,56 +116,6 @@ async def test_admin_reassigns_owner(db_conn, docs_app):
     assert str((await cur.fetchone())[0]) == new_owner.user_id
 
 
-async def test_owner_cannot_assign_doc_to_foreign_project(db_conn, docs_app):
-    owner = await _user(db_conn, "owner-patch5")
-    stranger = await _user(db_conn, "stranger-patch")
-    doc_id = "e" * 64
-    await _insert_doc(db_conn, doc_id, owner.user_id)
-
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'Foreign') RETURNING id",
-        (stranger.user_id,),
-    )
-    foreign_project_id = str((await cur.fetchone())[0])
-
-    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
-    async with _client(docs_app) as client:
-        r = await client.patch(
-            f"/v1/docs/{doc_id}", json={"project_id": foreign_project_id}
-        )
-        assert r.status_code == 404
-
-    cur = await db_conn.execute(
-        "SELECT project_id FROM documents WHERE doc_id = %s", (doc_id,)
-    )
-    assert (await cur.fetchone())[0] is None
-
-
-async def test_owner_member_can_assign_doc_to_a_project_they_belong_to(db_conn, docs_app):
-    # The OR EXISTS project_members arm of the injection guard: a doc owner who
-    # is a *member* (not owner) of the target project may file their doc into it.
-    owner = await _user(db_conn, "owner-patch-mem")
-    stranger = await _user(db_conn, "stranger-owns-proj")
-    doc_id = "2" + "a" * 63
-    await _insert_doc(db_conn, doc_id, owner.user_id)
-
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'Shared') RETURNING id",
-        (stranger.user_id,),
-    )
-    project_id = str((await cur.fetchone())[0])
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)",
-        (project_id, owner.user_id),
-    )
-
-    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
-    async with _client(docs_app) as client:
-        r = await client.patch(f"/v1/docs/{doc_id}", json={"project_id": project_id})
-        assert r.status_code == 200
-        assert r.json()["project_id"] == project_id
-
-
 async def test_admin_cannot_edit_tags_on_a_doc_they_do_not_own(db_conn, docs_app):
     # Admin's only special power on PATCH is ownership reassignment. A tags-only
     # PATCH carries no owner_user_id, so it goes down the ownership check like
@@ -212,65 +155,20 @@ async def test_owner_clears_tags_with_null(db_conn, docs_app):
     assert (await cur.fetchone())[0] == []
 
 
-async def test_malformed_project_id_is_422_not_500(db_conn, docs_app):
-    # A non-UUID project_id used to reach a UUID column and 500 (psycopg
-    # InvalidTextRepresentation). Typed as uuid.UUID, it's rejected at the
-    # boundary with a 422 before any DB work.
+@pytest.mark.parametrize("project_id", ["not-a-uuid", "00000000-0000-0000-0000-000000000009"])
+async def test_patch_rejects_project_id(db_conn, docs_app, project_id):
+    # Project links moved to PUT/DELETE /v1/projects/{id}/docs/{doc_id}.
+    # A stale client sending project_id gets 422 — and so does any tag
+    # change in the same request (the whole body is rejected).
     owner = await _user(db_conn, "owner-patch-badproj")
     doc_id = "5" + "a" * 63
     await _insert_doc(db_conn, doc_id, owner.user_id)
 
     docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
     async with _client(docs_app) as client:
-        r = await client.patch(f"/v1/docs/{doc_id}", json={"project_id": "not-a-uuid"})
+        r = await client.patch(f"/v1/docs/{doc_id}",
+                               json={"project_id": project_id, "tags": ["t"]})
         assert r.status_code == 422
 
-
-async def test_owner_can_assign_doc_to_own_project(db_conn, docs_app):
-    owner = await _user(db_conn, "owner-patch6")
-    doc_id = "f" * 64
-    await _insert_doc(db_conn, doc_id, owner.user_id)
-
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'Mine') RETURNING id",
-        (owner.user_id,),
-    )
-    project_id = str((await cur.fetchone())[0])
-
-    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
-    async with _client(docs_app) as client:
-        r = await client.patch(f"/v1/docs/{doc_id}", json={"project_id": project_id})
-        assert r.status_code == 200
-        assert r.json()["project_id"] == project_id
-
-    cur = await db_conn.execute(
-        "SELECT project_id FROM documents WHERE doc_id = %s", (doc_id,)
-    )
-    assert str((await cur.fetchone())[0]) == project_id
-
-
-async def test_owner_can_clear_project(db_conn, docs_app):
-    owner = await _user(db_conn, "owner-patch7")
-    doc_id = "1" + "a" * 63
-    await _insert_doc(db_conn, doc_id, owner.user_id)
-
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'Mine2') RETURNING id",
-        (owner.user_id,),
-    )
-    project_id = str((await cur.fetchone())[0])
-
-    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
-    async with _client(docs_app) as client:
-        r = await client.patch(f"/v1/docs/{doc_id}", json={"project_id": project_id})
-        assert r.status_code == 200
-        assert r.json()["project_id"] == project_id
-
-        r = await client.patch(f"/v1/docs/{doc_id}", json={"project_id": None})
-        assert r.status_code == 200
-        assert r.json()["project_id"] is None
-
-    cur = await db_conn.execute(
-        "SELECT project_id FROM documents WHERE doc_id = %s", (doc_id,)
-    )
-    assert (await cur.fetchone())[0] is None
+    cur = await db_conn.execute("SELECT tags FROM documents WHERE doc_id = %s", (doc_id,))
+    assert (await cur.fetchone())[0] == []

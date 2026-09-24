@@ -24,23 +24,39 @@ async def assert_owns_session(conn, session_id: str, user_id: str) -> None:
 
 
 def readable_docs_where(alias: str = "d") -> str:
-    """The ONE definition of "can read this document". `<alias>` is a
-    `documents` row. Bind it with `readable_docs_params(user_id)` — never a
-    hand-counted list. Subquery aliases are underscore-prefixed so they can't
-    shadow a table alias in the caller's query. Access is resolved in SQL,
-    never post-filtered in Python."""
+    """The ONE definition of "can read this document": owner, grantee, owner of
+    a linked project, or member of a linked project. `<alias>` is a `documents`
+    row. Bind it with `readable_docs_params(user_id)` — never a hand-counted
+    list. Subquery aliases are underscore-prefixed so they can't shadow a table
+    alias in the caller's query. Access is resolved in SQL, never in Python."""
     return (
         f"({alias}.user_id = %s "
-        f"OR EXISTS (SELECT 1 FROM project_members _rpm "
-        f"WHERE _rpm.project_id = {alias}.project_id AND _rpm.user_id = %s) "
         f"OR EXISTS (SELECT 1 FROM doc_grants _rg "
-        f"WHERE _rg.doc_id = {alias}.doc_id AND _rg.grantee_user_id = %s))"
+        f"WHERE _rg.doc_id = {alias}.doc_id AND _rg.grantee_user_id = %s) "
+        f"OR EXISTS (SELECT 1 FROM project_documents _rpd "
+        f"JOIN projects _rp ON _rp.id = _rpd.project_id "
+        f"WHERE _rpd.doc_id = {alias}.doc_id AND (_rp.owner_user_id = %s "
+        f"OR EXISTS (SELECT 1 FROM project_members _rpm "
+        f"WHERE _rpm.project_id = _rp.id AND _rpm.user_id = %s))))"
     )
 
 
 def readable_docs_params(user_id: str) -> list[str]:
     """Exactly the parameters `readable_docs_where` needs, in order."""
-    return [user_id, user_id, user_id]
+    return [user_id, user_id, user_id, user_id]
+
+
+def visible_projects_where(alias: str = "p") -> str:
+    """A `projects` row the user owns or is a member of. Bind with
+    `visible_projects_params(user_id)`."""
+    return (
+        f"({alias}.owner_user_id = %s OR EXISTS (SELECT 1 FROM project_members _vpm "
+        f"WHERE _vpm.project_id = {alias}.id AND _vpm.user_id = %s))"
+    )
+
+
+def visible_projects_params(user_id: str) -> list[str]:
+    return [user_id, user_id]
 
 
 CAN_READ_DOCS_SQL = readable_docs_where()

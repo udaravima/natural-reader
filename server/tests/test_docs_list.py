@@ -45,12 +45,22 @@ async def _member(db_conn, sub):
     return deps.Principal(user_id=u["id"], email=u["email"], role="member", capabilities=frozenset({"reader"}))
 
 
-async def _doc(db_conn, doc_id, owner_id, *, tags=None, project_id=None, file_name="f.pdf"):
+async def _doc(db_conn, doc_id, owner_id, *, tags=None, project_ids=(), file_name="f.pdf"):
     await db_conn.execute(
-        "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, user_id, "
-        "project_id, tags) VALUES (%s,%s,'pdf',1,%s,%s,%s)",
-        (doc_id, file_name, owner_id, project_id, tags or []),
+        "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, user_id, tags) "
+        "VALUES (%s,%s,'pdf',1,%s,%s)",
+        (doc_id, file_name, owner_id, tags or []),
     )
+    for pid in project_ids:
+        await db_conn.execute(
+            "INSERT INTO project_documents (project_id, doc_id) VALUES (%s,%s)", (pid, doc_id))
+
+
+async def _project(db_conn, owner_id, name):
+    cur = await db_conn.execute(
+        "INSERT INTO projects (owner_user_id, name) VALUES (%s,%s) RETURNING id",
+        (owner_id, name))
+    return str((await cur.fetchone())[0])
 
 
 async def _grant(db_conn, doc_id, grantee_id):
@@ -117,7 +127,7 @@ async def test_list_project_member_sees_project_doc_stranger_still_excluded(db_c
         "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)",
         (project_id, member.user_id),
     )
-    await _doc(db_conn, DOC_P, owner.user_id, project_id=project_id)
+    await _doc(db_conn, DOC_P, owner.user_id, project_ids=[project_id])
     await _doc(db_conn, DOC_S, stranger.user_id)
 
     docs_app.dependency_overrides[deps.get_current_user] = lambda: member
@@ -130,8 +140,7 @@ async def test_list_project_member_sees_project_doc_stranger_still_excluded(db_c
         assert DOC_S not in ids
 
         row = next(row for row in body if row["doc_id"] == DOC_P)
-        assert row["project_id"] == project_id
-        assert row["project_name"] == "P"
+        assert row["projects"] == [{"id": project_id, "name": "P"}]
         assert row["is_owner"] is False
 
         # project_id filter narrows within the readable set.
@@ -164,3 +173,87 @@ async def test_list_unauthenticated_is_401(db_conn, docs_app):
     docs_app.dependency_overrides[deps.get_conn] = _conn_override
     async with _client(docs_app) as client:
         assert (await client.get("/v1/docs")).status_code == 401
+
+
+async def test_list_projects_hide_names_the_caller_cannot_see(db_conn, docs_app):
+    owner = await _member(db_conn, "owner4")
+    caller = await _member(db_conn, "caller4")
+    visible = await _project(db_conn, owner.user_id, "Visible")
+    hidden = await _project(db_conn, owner.user_id, "Hidden")
+    await db_conn.execute(
+        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)",
+        (visible, caller.user_id))
+    await _doc(db_conn, DOC_P, owner.user_id, project_ids=[visible, hidden])
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: caller
+    async with _client(docs_app) as client:
+        row = next(r for r in (await client.get("/v1/docs")).json() if r["doc_id"] == DOC_P)
+        assert row["projects"] == [{"id": visible, "name": "Visible"}]
+
+
+async def test_doc_owner_sees_links_to_projects_they_left(db_conn, docs_app):
+    # Review Focus 2 / spec §7.2 owner exception: removed from the project,
+    # the owner must still see (and so be able to withdraw) the link.
+    owner = await _member(db_conn, "owner8")
+    proj_owner = await _member(db_conn, "projowner8")
+    pid = await _project(db_conn, proj_owner.user_id, "TheirProject")
+    await _doc(db_conn, DOC_C, owner.user_id, project_ids=[pid])  # owner is NOT a member
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
+    async with _client(docs_app) as client:
+        row = (await client.get("/v1/docs")).json()[0]
+        assert row["projects"] == [{"id": pid, "name": "TheirProject"}]
+        status = (await client.get(f"/v1/docs/{DOC_C}")).json()
+        assert status["projects"] == [{"id": pid, "name": "TheirProject"}]
+
+
+async def test_doc_projects_placeholders_match_params():
+    assert docs_router._doc_projects_sql("d").count("%s") == len(
+        docs_router._doc_projects_params("u"))
+
+
+async def test_list_filter_by_invisible_project_is_empty(db_conn, docs_app):
+    owner = await _member(db_conn, "owner5")
+    caller = await _member(db_conn, "caller5")
+    hidden = await _project(db_conn, owner.user_id, "Hidden")
+    await _doc(db_conn, DOC_G, owner.user_id, project_ids=[hidden])
+    await _grant(db_conn, DOC_G, caller.user_id)  # readable, but the project is not
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: caller
+    async with _client(docs_app) as client:
+        r = await client.get("/v1/docs", params={"project_id": hidden})
+        assert r.status_code == 200 and r.json() == []
+
+
+async def test_list_all_three_filters_bind_in_order(db_conn, docs_app):
+    # Review Focus 1: the projects sub-select's params come BEFORE the WHERE
+    # params. All three filters together exercise every placeholder.
+    caller = await _member(db_conn, "caller6")
+    pid = await _project(db_conn, caller.user_id, "Mine")
+    await _doc(db_conn, DOC_C, caller.user_id, tags=["alpha"], file_name="report.pdf",
+               project_ids=[pid])
+    await _doc(db_conn, "2" * 64, caller.user_id, tags=["alpha"], file_name="report2.pdf")
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: caller
+    async with _client(docs_app) as client:
+        r = await client.get("/v1/docs",
+                             params={"q": "report", "project_id": pid, "tag": "alpha"})
+        assert r.status_code == 200
+        assert [row["doc_id"] for row in r.json()] == [DOC_C]
+
+
+async def test_list_same_named_projects_are_both_listed_in_stable_order(db_conn, docs_app):
+    # Review Focus 5: own "Infra" + member of someone else's "Infra".
+    caller = await _member(db_conn, "caller7")
+    other = await _member(db_conn, "other7")
+    mine = await _project(db_conn, caller.user_id, "Infra")
+    theirs = await _project(db_conn, other.user_id, "Infra")
+    await db_conn.execute(
+        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)",
+        (theirs, caller.user_id))
+    await _doc(db_conn, DOC_C, caller.user_id, project_ids=[mine, theirs])
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: caller
+    async with _client(docs_app) as client:
+        row = (await client.get("/v1/docs")).json()[0]
+        assert row["projects"] == [{"id": i, "name": "Infra"} for i in sorted([mine, theirs])]

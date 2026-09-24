@@ -34,6 +34,8 @@ from ..auth.authz import (
     assert_owns_doc,
     readable_docs_params,
     readable_docs_where,
+    visible_projects_params,
+    visible_projects_where,
 )
 from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
@@ -87,7 +89,6 @@ class SearchIn(BaseModel):
 class DocPatchIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     tags: list[str] | None = None
-    project_id: uuid.UUID | None = None
     owner_user_id: str | None = None
 
 
@@ -139,15 +140,39 @@ def _text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-async def _fetch_doc_status(conn, doc_id: str) -> dict[str, Any] | None:
+def _doc_projects_sql(alias: str) -> str:
+    """JSON array `[{id, name}]` of the projects `<alias>` is linked to. The
+    doc's OWNER sees every link, even to projects they've since left, so they
+    can always see and withdraw where their document is shared. Everyone else
+    sees only projects they own or belong to: a doc shared by grant may also sit
+    in projects the caller has no access to, and listing those would leak their
+    names. Sorted by name, then id, so same-named projects keep a stable order.
+    Bind with `_doc_projects_params(user_id)`. Used in a SELECT list, so its
+    params come BEFORE any WHERE params."""
+    return (
+        "COALESCE((SELECT json_agg(json_build_object('id', _vp.id, 'name', _vp.name) "
+        "ORDER BY _vp.name, _vp.id) "
+        "FROM project_documents _vpd JOIN projects _vp ON _vp.id = _vpd.project_id "
+        f"WHERE _vpd.doc_id = {alias}.doc_id "
+        f"AND ({alias}.user_id = %s OR {visible_projects_where('_vp')})), '[]'::json)"
+    )
+
+
+def _doc_projects_params(user_id: str) -> list[str]:
+    """Exactly the parameters `_doc_projects_sql` needs, in order."""
+    return [user_id, *visible_projects_params(user_id)]
+
+
+async def _fetch_doc_status(conn, doc_id: str, user_id: str) -> dict[str, Any] | None:
     async with conn.cursor() as cur:
         await cur.execute(
-            """
+            f"""
             SELECT d.doc_id, d.file_name, d.file_type, d.size_bytes, d.page_count,
                    d.state, d.embedding_model, d.embedding_dim, d.error_message,
                    d.created_at, d.updated_at,
                    d.conversion_state, d.conversion_options, d.conversion_error,
-                   d.converted_at, d.pdf_path, d.tags, d.project_id,
+                   d.converted_at, d.pdf_path, d.tags,
+                   {_doc_projects_sql('d')} AS projects,
                    COALESCE(c.cnt, 0) AS chunk_count,
                    COALESCE(c.embedded, 0) AS embedded_count,
                    COALESCE(p.page_cnt, 0) AS converted_page_count
@@ -164,7 +189,7 @@ async def _fetch_doc_status(conn, doc_id: str) -> dict[str, Any] | None:
             ) p ON p.doc_id = d.doc_id
             WHERE d.doc_id = %s
             """,
-            (doc_id,),
+            [*_doc_projects_params(user_id), doc_id],
         )
         row = await cur.fetchone()
         if not row:
@@ -177,7 +202,6 @@ async def _fetch_doc_status(conn, doc_id: str) -> dict[str, Any] | None:
         rec["converted_at"] = _epoch_ms(rec["converted_at"])
     # Don't leak the absolute filesystem path to the client.
     rec["has_pdf"] = bool(rec.pop("pdf_path", None))
-    rec["project_id"] = str(rec["project_id"]) if rec.get("project_id") else None
     return rec
 
 
@@ -229,30 +253,38 @@ async def list_documents(
     _ensure_ready()
     uid = principal.user_id
     where = [readable_docs_where("d")]
-    params: list[Any] = readable_docs_params(uid)
+    where_params: list[Any] = readable_docs_params(uid)
     if q:
         where.append("(d.file_name ILIKE %s OR %s = ANY(d.tags))")
-        params += [f"%{q}%", q]
+        where_params += [f"%{q}%", q]
     if project_id:
-        where.append("d.project_id = %s")
-        params.append(project_id)
+        # Only a project the caller can see: filtering a granted doc by a
+        # guessed project id must not reveal whether its owner linked it there.
+        where.append(
+            "EXISTS (SELECT 1 FROM project_documents _fpd "
+            "JOIN projects _fp ON _fp.id = _fpd.project_id "
+            f"WHERE _fpd.doc_id = d.doc_id AND _fpd.project_id = %s "
+            f"AND {visible_projects_where('_fp')})"
+        )
+        where_params += [project_id, *visible_projects_params(uid)]
     if tag:
         where.append("%s = ANY(d.tags)")
-        params.append(tag)
+        where_params.append(tag)
     sql = (
-        "SELECT d.doc_id, d.file_name, d.state, d.tags, d.project_id, "
-        "p.name AS project_name, d.user_id "
-        "FROM documents d LEFT JOIN projects p ON p.id = d.project_id "
+        "SELECT d.doc_id, d.file_name, d.state, d.tags, d.user_id, "
+        f"{_doc_projects_sql('d')} AS projects "
+        "FROM documents d "
         f"WHERE {' AND '.join(where)} ORDER BY d.updated_at DESC"
     )
+    # SELECT-list params first, then WHERE params: psycopg binds by position.
+    params = [*_doc_projects_params(uid), *where_params]
     pool = get_pool()
     async with pool.connection() as conn:
         cur = await conn.execute(sql, params)
         rows = await cur.fetchall()
     return [
         {"doc_id": r[0], "file_name": r[1], "state": r[2], "tags": r[3],
-         "project_id": str(r[4]) if r[4] else None, "project_name": r[5],
-         "owner_user_id": str(r[6]), "is_owner": str(r[6]) == uid}
+         "projects": r[5], "owner_user_id": str(r[4]), "is_owner": str(r[4]) == uid}
         for r in rows
     ]
 
@@ -295,18 +327,18 @@ async def register_document(
                 principal.user_id,
             ),
         )
-        status = await _fetch_doc_status(conn, payload.doc_id)
+        status = await _fetch_doc_status(conn, payload.doc_id, principal.user_id)
     return status
 
 
 @router.get("/{doc_id}")
 async def get_document(
-    doc_id: DocId, _reader: Principal = Depends(_require_doc_reader)
+    doc_id: DocId, reader: Principal = Depends(_require_doc_reader)
 ) -> dict[str, Any]:
     _ensure_ready()
     pool = get_pool()
     async with pool.connection() as conn:
-        status = await _fetch_doc_status(conn, doc_id)
+        status = await _fetch_doc_status(conn, doc_id, reader.user_id)
     if not status:
         raise HTTPException(status_code=404, detail="Document not found")
     return status
@@ -318,7 +350,7 @@ async def patch_document(
     principal: Principal = Depends(require_capability("reader")),
 ) -> dict[str, Any]:
     """
-    Update tags/project (owner-only) or reassign ownership (admin-only). The
+    Update tags (owner-only) or reassign ownership (admin-only). The
     two authz paths are mutually exclusive per request: if `owner_user_id` is
     present the caller must be an admin (the seed-admin-backfill escape
     hatch); otherwise the caller must own the doc. Either way, a caller who
@@ -326,12 +358,8 @@ async def patch_document(
     the admin-reassignment path, which is 403 — that's a capability gate, not
     an ownership check, so it doesn't need to hide doc existence).
 
-    Setting `project_id` is further gated for non-admins: the caller must own
-    or be a member of the target project. Without this, a doc owner could
-    file their doc into a project they have no relationship to, and it would
-    then surface in that project's members' `GET /v1/docs` listings — a
-    cross-tenant content injection. Clearing `project_id` (null) is always
-    allowed. Admins keep the cross-assign escape hatch.
+    Project links are managed by PUT/DELETE /v1/projects/{id}/docs/{doc_id};
+    project_id here is a 422 (extra="forbid").
     """
     _ensure_ready()
     data = body.model_dump(exclude_unset=True)
@@ -344,26 +372,11 @@ async def patch_document(
         else:
             await assert_owns_doc(conn, doc_id, principal.user_id)
 
-        # A non-admin may only file a doc into a project they own or belong to —
-        # otherwise a doc owner could inject their doc into a stranger's project
-        # (it would then surface in that project's members' library lists).
-        if data.get("project_id") is not None and principal.role != "admin":
-            cur = await conn.execute(
-                "SELECT 1 FROM projects p WHERE p.id = %s AND ("
-                "p.owner_user_id = %s OR EXISTS ("
-                "SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = %s))",
-                (data["project_id"], principal.user_id, principal.user_id),
-            )
-            if await cur.fetchone() is None:
-                raise HTTPException(status_code=404, detail="Project not found")
-
         sets, params = [], []
         if "tags" in data:
             # `{"tags": null}` is schema-valid (tags is nullable) and means
             # "clear all tags" — coerce None to [] so it doesn't blow up in set().
             sets.append("tags = %s"); params.append(sorted(set(data["tags"] or [])))
-        if "project_id" in data:
-            sets.append("project_id = %s"); params.append(data["project_id"])
         if "owner_user_id" in data:
             sets.append("user_id = %s"); params.append(data["owner_user_id"])
         if sets:
@@ -373,7 +386,7 @@ async def patch_document(
                 f"UPDATE documents SET {', '.join(sets)} WHERE doc_id = %s", params)
             if r.rowcount == 0:
                 raise HTTPException(status_code=404, detail="Document not found")
-        status = await _fetch_doc_status(conn, doc_id)
+        status = await _fetch_doc_status(conn, doc_id, principal.user_id)
     if not status:
         raise HTTPException(status_code=404, detail="Document not found")
     return status
@@ -383,7 +396,7 @@ async def patch_document(
 async def upload_chunks(
     doc_id: DocId,
     payload: ChunksUploadIn,
-    _owner: Principal = Depends(_require_doc_owner),
+    owner: Principal = Depends(_require_doc_owner),
 ) -> dict[str, Any]:
     """
     Bulk insert/upsert chunks. The frontend should call this in batches (~50)
@@ -438,7 +451,7 @@ async def upload_chunks(
                     (doc_id,),
                 )
 
-        status = await _fetch_doc_status(conn, doc_id)
+        status = await _fetch_doc_status(conn, doc_id, owner.user_id)
 
     return {"ok": True, "inserted": len(payload.chunks), "doc_id": doc_id, "status": status}
 
