@@ -62,12 +62,60 @@ function TagEditor({ doc, theme, onSave }) {
   );
 }
 
+// One chip per linked project. The owner of the doc can add it to any
+// project they can see and remove it from any; a project owner can remove
+// someone else's doc from THEIR project (never add it — spec §6).
+function ProjectChips({ doc, projects, theme, onLink, onUnlink }) {
+  const linked = doc.projects || [];
+  const linkedIds = new Set(linked.map((p) => p.id));
+  const ownedProjectIds = new Set((projects || []).filter((p) => p.is_owner).map((p) => p.id));
+  const addable = (projects || []).filter((p) => !linkedIds.has(p.id));
+
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <FolderOpen size={10} className={theme.textSecondary} />
+      {linked.length === 0 && <span className={theme.textSecondary}>No project</span>}
+      {linked.map((p) => (
+        <span
+          key={p.id}
+          className={`flex items-center gap-1 px-1.5 py-0.5 rounded ${theme.bgTertiary} ${theme.textSecondary}`}
+        >
+          {p.name}
+          {(doc.is_owner || ownedProjectIds.has(p.id)) && (
+            <button
+              onClick={() => onUnlink(doc, p)}
+              aria-label={`Remove ${doc.file_name} from ${p.name}`}
+              className="hover:text-red-500"
+            >
+              <X size={10} />
+            </button>
+          )}
+        </span>
+      ))}
+      {doc.is_owner && addable.length > 0 && (
+        <select
+          value=""
+          onChange={(e) => { if (e.target.value) onLink(doc, e.target.value); }}
+          aria-label={`Add ${doc.file_name} to project`}
+          className={`px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg}`}
+        >
+          <option value="">+ project</option>
+          {addable.map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
+}
+
 /**
  * Library: a flat list/search/filter view over every document the caller
  * can read (own docs, project-member docs, explicitly-granted docs — the
  * split is resolved server-side via readable_docs_where and just arrives
  * here as `is_owner`). No chat wiring — that's Phase 1. Owner rows get
- * inline tag + project-reassign affordances; shared rows are read-only and
+ * inline tag editing and project chips (add/remove); project owners can also
+ * remove others' docs from their projects; shared rows are read-only and
  * carry a "shared" badge instead.
  */
 export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
@@ -132,6 +180,18 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
       showToast(`Update failed: ${e.message}`, 5000);
     }
   };
+
+  const changeLink = async (doc, projectId, method) => {
+    try {
+      const res = await apiFetch(apiHost, apiPort, `/v1/projects/${projectId}/docs/${doc.doc_id}`, { method });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await loadDocs(search, projectFilter);
+    } catch (e) {
+      showToast(`Update failed: ${e.message}`, 5000);
+    }
+  };
+  const linkDoc = (doc, projectId) => changeLink(doc, projectId, 'PUT');
+  const unlinkDoc = (doc, project) => changeLink(doc, project.id, 'DELETE');
 
   const deleteDoc = async (doc) => {
     setDeletingId(doc.doc_id);
@@ -242,24 +302,14 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
                     )}
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-3 text-[10px]">
-                    <span className={`flex items-center gap-1 ${theme.textSecondary}`}>
-                      <FolderOpen size={10} />
-                      {doc.project_name || 'No project'}
-                    </span>
-                    {doc.is_owner && (
-                      <select
-                        value={doc.project_id || ''}
-                        onChange={(e) => patchDoc(doc, { project_id: e.target.value || null })}
-                        aria-label={`Reassign project for ${doc.file_name}`}
-                        className={`px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg}`}
-                      >
-                        <option value="">No project</option>
-                        {(projects || []).map((p) => (
-                          <option key={p.id} value={p.id}>{p.name}</option>
-                        ))}
-                      </select>
-                    )}
+                  <div className="text-[10px]">
+                    <ProjectChips
+                      doc={doc}
+                      projects={projects}
+                      theme={theme}
+                      onLink={linkDoc}
+                      onUnlink={unlinkDoc}
+                    />
                   </div>
 
                   {doc.is_owner ? (

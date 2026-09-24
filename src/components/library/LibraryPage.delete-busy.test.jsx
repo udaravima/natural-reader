@@ -14,7 +14,7 @@ const json = (status, body) => ({ ok: status < 400, status, json: async () => bo
 const docs = [
   {
     doc_id: 'd1', file_name: 'Owned.pdf', state: 'indexed', tags: [],
-    project_id: null, project_name: null, owner_user_id: 'me', is_owner: true,
+    projects: [], owner_user_id: 'me', is_owner: true,
   },
 ];
 const projects = [];
