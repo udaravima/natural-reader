@@ -14,23 +14,58 @@ const baseArgs = {
 describe('registerDocument', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('issues a PATCH carrying project_id and tags after a chosen project + tags', async () => {
+  it('PATCHes tags and PUTs the project link after register', async () => {
     apiFetch.mockImplementation(async (host, port, path, opts) => {
       if (path === '/v1/docs' && opts?.method === 'POST') return json(200, { doc_id: 'd1' });
       if (path === '/v1/docs/d1' && opts?.method === 'PATCH') return json(200, { doc_id: 'd1' });
+      if (path === '/v1/projects/p1/docs/d1' && opts?.method === 'PUT') return json(204, {});
       return json(404, {});
     });
 
     await registerDocument({ ...baseArgs, projectId: 'p1', tags: ['a', 'b'] });
 
-    // Real sequencing: register first, then the follow-up PATCH.
-    expect(apiFetch).toHaveBeenCalledTimes(2);
-    const [postCall, patchCall] = apiFetch.mock.calls;
+    const [postCall, patchCall, putCall] = apiFetch.mock.calls;
+    expect(apiFetch).toHaveBeenCalledTimes(3);
     expect(postCall[2]).toBe('/v1/docs');
-    expect(postCall[3].method).toBe('POST');
     expect(patchCall[2]).toBe('/v1/docs/d1');
-    expect(patchCall[3].method).toBe('PATCH');
-    expect(JSON.parse(patchCall[3].body)).toEqual({ project_id: 'p1', tags: ['a', 'b'] });
+    expect(JSON.parse(patchCall[3].body)).toEqual({ tags: ['a', 'b'] });
+    expect(putCall[2]).toBe('/v1/projects/p1/docs/d1');
+    expect(putCall[3].method).toBe('PUT');
+  });
+
+  it('only PUTs the link when tags are empty (no PATCH)', async () => {
+    apiFetch.mockImplementation(async (host, port, path, opts) => {
+      if (path === '/v1/docs' && opts?.method === 'POST') return json(200, { doc_id: 'd1' });
+      if (path === '/v1/projects/p1/docs/d1' && opts?.method === 'PUT') return json(204, {});
+      return json(404, {});
+    });
+
+    await registerDocument({ ...baseArgs, projectId: 'p1', tags: [] });
+
+    expect(apiFetch).toHaveBeenCalledTimes(2);
+    expect(apiFetch.mock.calls[1][2]).toBe('/v1/projects/p1/docs/d1');
+    expect(apiFetch.mock.calls.some(([, , , o]) => o?.method === 'PATCH')).toBe(false);
+  });
+
+  it('logs but does not throw when the link fails, and still sends tags', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    apiFetch.mockImplementation(async (host, port, path, opts) => {
+      if (path === '/v1/docs' && opts?.method === 'POST') return json(200, { doc_id: 'd1' });
+      if (path === '/v1/docs/d1' && opts?.method === 'PATCH') return json(200, { doc_id: 'd1' });
+      if (opts?.method === 'PUT') return json(404, {});
+      return json(404, {});
+    });
+
+    await expect(registerDocument({ ...baseArgs, projectId: 'p1', tags: ['a'] })).resolves.toBeDefined();
+    expect(apiFetch.mock.calls.some(([, , p, o]) => p === '/v1/docs/d1' && o?.method === 'PATCH')).toBe(true);
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it('throws when the register call fails, without attempting follow-ups', async () => {
+    apiFetch.mockResolvedValue(json(500, {}));
+    await expect(registerDocument({ ...baseArgs, projectId: 'p1', tags: ['a'] })).rejects.toThrow('HTTP 500');
+    expect(apiFetch).toHaveBeenCalledTimes(1);
   });
 
   it('issues NO PATCH when neither a project nor tags were chosen', async () => {
@@ -43,26 +78,6 @@ describe('registerDocument', () => {
 
     expect(apiFetch).toHaveBeenCalledTimes(1);
     expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/docs', expect.objectContaining({ method: 'POST' }));
-  });
-
-  it('issues a PATCH with only project_id when tags are empty', async () => {
-    apiFetch.mockImplementation(async (host, port, path, opts) => {
-      if (path === '/v1/docs' && opts?.method === 'POST') return json(200, { doc_id: 'd1' });
-      if (path === '/v1/docs/d1' && opts?.method === 'PATCH') return json(200, { doc_id: 'd1' });
-      return json(404, {});
-    });
-
-    await registerDocument({ ...baseArgs, projectId: 'p1', tags: [] });
-
-    const patchCall = apiFetch.mock.calls[1];
-    expect(JSON.parse(patchCall[3].body)).toEqual({ project_id: 'p1' });
-  });
-
-  it('throws when the register call fails, without attempting a PATCH', async () => {
-    apiFetch.mockImplementation(async () => json(500, {}));
-
-    await expect(registerDocument({ ...baseArgs, projectId: 'p1', tags: [] })).rejects.toThrow('HTTP 500');
-    expect(apiFetch).toHaveBeenCalledTimes(1);
   });
 });
 
