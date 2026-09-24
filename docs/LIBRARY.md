@@ -22,7 +22,8 @@ Three ways in, checked in that order:
 | Path | Table | Meaning |
 |------|-------|---------|
 | Owner | `documents.owner_user_id` | You uploaded/registered it. Full read + write. |
-| Project member | `project_members` | You were added to the project the doc is filed under. Read-only. |
+| Project member | `project_members` + `project_documents` | You were added to a project the doc is linked to. Read-only. |
+| Project owner | `projects.owner_user_id` + `project_documents` | You own a project the doc is linked to. Read-only (plus remove-from-project). |
 | Grantee | `doc_grants` | You were handed this one specific document. Read-only. |
 
 Projects are the **primary sharing unit** (share a folder of docs by adding a
@@ -62,15 +63,19 @@ so the test harness and startup apply it exactly once. **009 is independent of
 auth's 008** (`users.capabilities`); the two migration numbers were
 deconflicted so the two tracks can land in either order.
 
+Migration 010 replaced `documents.project_id` with `project_documents(project_id,
+doc_id, added_at)`, PK `(project_id, doc_id)`, index on `doc_id`. A document can
+be in any number of projects.
+
 ## API surface
 
 ### Documents (`server/routers/docs.py`)
 
 | Route | Guard | Notes |
 |-------|-------|-------|
-| `GET /v1/docs?q=&project_id=&tag=` | any signed-in user | Lists **readable** docs only. `q` matches file name (ILIKE) or a tag; `project_id`/`tag` filter. Returns `{doc_id, file_name, state, tags, project_id, project_name, owner_user_id, is_owner}`. |
+| `GET /v1/docs?q=&project_id=&tag=` | any signed-in user | Lists **readable** docs only. `q` matches file name (ILIKE) or a tag; `project_id`/`tag` filter. Returns `{doc_id, file_name, state, tags, projects: [{id, name}], owner_user_id, is_owner}`. `projects` lists the projects the caller owns or belongs to — except a doc's owner, who sees **all** of its links, including projects they've since left. The `project_id` filter only accepts projects the caller owns or belongs to. |
 | `GET /v1/docs/{id}` · `POST /v1/docs/{id}/search` · `GET /v1/docs/{id}/markdown` | **reader** (`can_read`) | The read routes — widened from owner-only to `can_read`. |
-| `PATCH /v1/docs/{id}` | owner (tags/project) · admin (owner) | Owner sets `tags`/`project_id`; admin-only sets `owner_user_id` (reassignment). Owner assigning `project_id` must own or be a member of the target project (else 404) — blocks cross-tenant injection (IDOR). |
+| `PATCH /v1/docs/{id}` | owner (tags) · admin (owner) | Owner sets tags; admin-only sets `owner_user_id`. `project_id` is rejected (422) — use the project link routes. |
 | `DELETE /v1/docs/{id}` + all write/index/convert/pdf routes | owner | Unchanged owner-only surface. |
 | `PUT` · `DELETE /v1/docs/{id}/grants/{user_id}` | doc owner | Idempotent (204). Grant/revoke per-doc read. Unknown `user_id` → 404 (not 500). |
 
@@ -80,8 +85,10 @@ deconflicted so the two tracks can land in either order.
 |-------|-------|-------|
 | `POST /v1/projects` | any signed-in user | Creates a project you own. |
 | `GET /v1/projects` | any signed-in user | Lists projects you **own or are a member of**; each row carries `is_owner`. |
-| `GET` · `PATCH` · `DELETE /v1/projects/{id}` | owner (404 otherwise) | Read/rename/delete your own project. Delete un-files its docs (`ON DELETE SET NULL`), never deletes them. |
+| `GET` · `PATCH` · `DELETE /v1/projects/{id}` | owner (404 otherwise) | Read/rename/delete your own project. Delete removes its doc links; the documents survive. |
 | `PUT` · `DELETE /v1/projects/{id}/members/{user_id}` | owner | Idempotent (204). Add/remove a read-member. Unknown `user_id` → 404. |
+| `PUT /v1/projects/{id}/docs/{doc_id}` | doc owner who can see the project (admins: any project) | Link (204, idempotent). Invisible project → 404 "Project not found"; not your doc → 404 "Document not found". |
+| `DELETE /v1/projects/{id}/docs/{doc_id}` | doc owner, or project owner if linked | Unlink (204). Doc owner always 204; project owner 404 when not linked; anyone else 404. |
 
 ## Frontend
 
@@ -115,6 +122,15 @@ read routes and the Library view additionally gain
 `require_capability("reader")` — a user needs both the `reader` capability *and*
 `can_read` on the specific document. That gate is **deliberately not in this
 branch**, to avoid a cross-branch dependency; it's applied at integration.
+
+## Decision: curation is asymmetric
+
+A project owner can **remove** anyone's document from their project but can only
+**add** documents they own. Adding a doc you merely read (say, one granted to you)
+would be coherent too — read access already spreads through membership — but C0
+keeps the least-privilege rule that matched the old `PATCH project_id`. This is
+deliberate, not a bug. Relaxing it is a subsystem A question, and would bring
+back an `added_by` column (it carries no information while only doc owners link).
 
 ## What's next (out of scope here)
 

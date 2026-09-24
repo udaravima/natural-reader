@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Documents can belong to several projects.** New `project_documents` join table
+  (migration `010`, backfilled from `documents.project_id`, which is dropped).
+  Link/unlink with `PUT`/`DELETE /v1/projects/{id}/docs/{doc_id}`; the Library shows
+  one chip per project with add/remove.
+
+### Fixed
+
+- **Project owners can read documents members file into their project.** The read
+  check only looked at `project_members`, and owners never get a membership row.
+  "Can read" is now one SQL definition shared by every read path.
+
+### Changed
+
+- **Breaking:** `PATCH /v1/docs/{id}` no longer accepts `project_id` (422), which
+  also fails any tag change sent in the same request. `GET /v1/docs` and document
+  status responses return `projects: [{id, name}]` (projects you can see; a doc's
+  owner sees all of its links) instead of `project_id`/`project_name`.
+
 ## [2.0.0] - 2026-09-23
 
 Major release: Natural Reader becomes a **multi-user, authenticated, hosted
