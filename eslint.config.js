@@ -36,4 +36,12 @@ export default defineConfig([
       },
     },
   },
+  {
+    // Fixture-generating tests read/write files by node:fs and gate the
+    // write path on an env var — both are Node-only, not browser globals.
+    files: ['src/utils/segmentation.fixtures.test.js'],
+    languageOptions: {
+      globals: { ...globals.browser, process: 'readonly' },
+    },
+  },
 ])
