@@ -80,16 +80,20 @@ async def test_register_gives_caller_an_upload_entry(db_conn, docs_app):
 
 
 async def test_recipient_can_read_but_not_change_content(db_conn, docs_app):
-    # A share recipient reads via GET, but upload-holder routes (index,
-    # convert, markdown delete, sharing) stay closed to them — 404.
+    # A share recipient reads via GET, but upload-holder routes (convert,
+    # markdown delete, sharing) stay closed to them — 404. Re-indexing
+    # `indexed` content is a content op: 409 content_shared (spec §4; a
+    # recipient MAY resume content that isn't indexed — test_doc_pipeline).
     owner = await _member(db_conn, "owner3")
     recipient = await _member(db_conn, "recipient")
-    await _insert_doc(db_conn, HEX3, owner.user_id)
+    await seed.seed_doc(db_conn, HEX3, owner.user_id, file_name="f", file_type="text",
+                        state="indexed")
     await seed.share_doc(db_conn, HEX3, owner.user_id, recipient.user_id)
     docs_app.dependency_overrides[deps.get_current_user] = lambda: recipient
     async with _client(docs_app) as client:
         assert (await client.get(f"/v1/docs/{HEX3}")).status_code == 200
-        assert (await client.post(f"/v1/docs/{HEX3}/index")).status_code == 404
+        r = await client.post(f"/v1/docs/{HEX3}/index")
+        assert r.status_code == 409 and r.json()["detail"]["error"] == "content_shared"
         assert (await client.delete(f"/v1/docs/{HEX3}/markdown")).status_code == 404
 
 

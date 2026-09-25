@@ -16,8 +16,6 @@ button is safe — the existing rows are upserted in place.
 """
 from __future__ import annotations
 
-import asyncio
-import hashlib
 import logging
 import os
 import uuid
@@ -41,8 +39,8 @@ from ..auth.authz import (
 from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
 from ..http_errors import refusal
-from ..services import doc_content, docling_convert, model_router
-from ..services.embeddings import EMBEDDING_DIM, embed_batch, embed_one
+from ..services import doc_content, doc_pipeline, docling_convert
+from ..services.embeddings import embed_one
 
 
 # Filesystem location for retained PDF bytes. Overridable via env so the
@@ -103,24 +101,14 @@ class ConvertOptionsIn(BaseModel):
     page_range: list[int] | None = None
 
 
-# Per-doc lock prevents concurrent /index *or* /convert calls for the same doc
-# from stomping each other. Shared between embedding and conversion jobs since
-# they touch the same doc_chunks rows.
-_doc_job_locks: dict[str, asyncio.Lock] = {}
-# Back-compat alias for the original name used in PR 4. Kept so any external
-# call sites (none in-repo, but easy to grep for) still resolve.
+# Background jobs live in services/doc_pipeline.py. The old private names are
+# kept as aliases so the convert job below and existing call sites resolve.
+_doc_job_locks = doc_pipeline._doc_job_locks
+_get_doc_lock = doc_pipeline.doc_lock
+_run_index_job = doc_pipeline.run_embed
+_chunks_from_pages = doc_pipeline.chunks_from_pages
+# Back-compat aliases for the original PR 4 names.
 _index_locks = _doc_job_locks
-
-
-def _get_doc_lock(doc_id: str) -> asyncio.Lock:
-    lock = _doc_job_locks.get(doc_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _doc_job_locks[doc_id] = lock
-    return lock
-
-
-# Retained for backwards reference to the PR 4 helper name.
 _get_index_lock = _get_doc_lock
 
 
@@ -136,10 +124,6 @@ def _ensure_ready() -> None:
 
 def _epoch_ms(ts) -> int:
     return int(ts.timestamp() * 1000)
-
-
-def _text_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _doc_projects_sql(alias: str) -> str:
@@ -420,7 +404,7 @@ async def upload_chunks(
                     text = chunk.text.strip()
                     if not text:
                         continue
-                    th = _text_hash(text)
+                    th = doc_pipeline.text_hash(text)
                     await cur.execute(
                         """
                         INSERT INTO doc_chunks
@@ -507,135 +491,44 @@ async def remove_share(doc_id: DocId, user_id: str,
 
 # ---------- embeddings + retrieval ----------
 
-async def _run_index_job(doc_id: str) -> None:
-    """
-    Background task: pulls all chunks for `doc_id` with NULL embeddings,
-    embeds them in batches, and writes the vectors back. Updates the
-    document state to `indexed` on success or `failed` on error.
+_CONTENT_SHARED_MESSAGES = {
+    "other_holders": "Other people also use this document, so it can't be changed here. Ask an admin.",
+    "in_project": ("This document is in a project, so changing it would change it for the project "
+                   "too. Remove it from the project first, or ask an admin."),
+}
 
-    Held under a per-doc lock so concurrent /index calls coalesce instead of
-    duplicating work.
-    """
-    # Read once per job so the recorded metadata matches what embed_one
-    # actually used (both source from model_router).
-    embed_model = model_router.get_config().embed_model
-    lock = _get_doc_lock(doc_id)
-    async with lock:
-        if not is_ready():
-            logger.warning("Skipping index job for %s — DB not ready", doc_id)
-            return
-        pool = get_pool()
-        try:
-            async with pool.connection() as conn:
-                # Pull only the chunks we still need to embed. The model name
-                # is captured per row so a swap (which requires re-creating
-                # the column) doesn't silently mix dims.
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        "SELECT id, text FROM doc_chunks WHERE doc_id = %s AND embedding IS NULL ORDER BY ord",
-                        (doc_id,),
-                    )
-                    rows = await cur.fetchall()
 
-            if not rows:
-                # Nothing left to embed — mark indexed and bail.
-                async with pool.connection() as conn:
-                    await conn.execute(
-                        """
-                        UPDATE documents
-                        SET state = 'indexed', embedding_model = %s, embedding_dim = %s,
-                            error_message = NULL, updated_at = now()
-                        WHERE doc_id = %s
-                        """,
-                        (embed_model, EMBEDDING_DIM, doc_id),
-                    )
-                return
-
-            # Embed in moderate batches; the semaphore in embed_batch caps
-            # parallelism per call. Persist after each batch so a partial
-            # failure halfway through still saves progress.
-            BATCH = 16
-            embedded_count = 0
-            skipped_count = 0
-            for i in range(0, len(rows), BATCH):
-                slice_ = rows[i : i + BATCH]
-                texts = [r[1] for r in slice_]
-                vectors = await embed_batch(texts)
-                async with pool.connection() as conn:
-                    async with conn.cursor() as cur:
-                        for (chunk_id, _text), vec in zip(slice_, vectors):
-                            if vec is None:
-                                skipped_count += 1
-                                continue
-                            await cur.execute(
-                                """
-                                UPDATE doc_chunks
-                                SET embedding = %s, embedding_model = %s
-                                WHERE id = %s
-                                """,
-                                (vec, embed_model, chunk_id),
-                            )
-                            embedded_count += 1
-
-            async with pool.connection() as conn:
-                await conn.execute(
-                    """
-                    UPDATE documents
-                    SET state = 'indexed', embedding_model = %s, embedding_dim = %s,
-                        error_message = NULL, updated_at = now()
-                    WHERE doc_id = %s
-                    """,
-                    (embed_model, EMBEDDING_DIM, doc_id),
-                )
-            logger.info(
-                "Indexed %d chunks for doc %s (%d embedded, %d skipped)",
-                len(rows), doc_id, embedded_count, skipped_count,
-            )
-        except Exception as e:
-            logger.exception("Index job failed for %s", doc_id)
-            try:
-                pool = get_pool()
-                async with pool.connection() as conn:
-                    await conn.execute(
-                        "UPDATE documents SET state = 'failed', error_message = %s, updated_at = now() WHERE doc_id = %s",
-                        (str(e)[:500], doc_id),
-                    )
-            except Exception:
-                logger.exception("Could not record failure state for %s", doc_id)
+def _content_shared(reason: str, doc_id: str, user_id: str) -> HTTPException:
+    logger.warning("content_shared refusal: user %s doc %s reason %s", user_id, doc_id, reason)
+    return refusal(409, "content_shared", _CONTENT_SHARED_MESSAGES[reason], reason=reason)
 
 
 @router.post("/{doc_id}/index", status_code=202)
-async def start_index_job(
-    doc_id: DocId,
-    background: BackgroundTasks,
-    _holder: Principal = Depends(_require_upload_holder),
-) -> dict[str, Any]:
-    """
-    Kick off a background embedding job for `doc_id`. Returns 202 immediately;
-    poll `GET /v1/docs/{doc_id}` for progress (`embedded_count` / `chunk_count`).
-
-    Safe to call repeatedly — the per-doc lock serializes runs and the
-    embedding query only picks up chunks with NULL embeddings, so a re-run
-    after a partial failure only does the leftover work.
-    """
+async def start_index_job(doc_id: DocId, background: BackgroundTasks,
+                          principal: Principal = Depends(_require_doc_reader)) -> dict[str, Any]:
+    """Resume or re-index (spec §4). On content that isn't `indexed`, any entry
+    holder may RESUME it (a crash, a failure). On `indexed` content this is a
+    RE-INDEX from the stored bytes — a content-changing op, so only the sole
+    holder or an admin (else 409 content_shared)."""
     _ensure_ready()
-    pool = get_pool()
-    async with pool.connection() as conn, conn.cursor() as cur:
-        await cur.execute(
-            "SELECT state FROM documents WHERE doc_id = %s",
-            (doc_id,),
-        )
-        row = await cur.fetchone()
-        if not row:
+    async with get_pool().connection() as conn:
+        cur = await conn.execute("SELECT state FROM documents WHERE doc_id = %s", (doc_id,))
+        state = (await cur.fetchone())[0]
+        if state == "indexed":
+            reason = await doc_content.content_ops_refusal(
+                conn, doc_id, principal.user_id, is_admin=principal.role == "admin")
+            if reason:
+                raise _content_shared(reason, doc_id, principal.user_id)
+        elif not await doc_content.holds_entry(conn, principal.user_id, doc_id):
             raise HTTPException(status_code=404, detail="Document not found")
-        # Mark as indexing — the bg task will flip to indexed/failed when done.
-        await conn.execute(
-            "UPDATE documents SET state = 'indexing', error_message = NULL, updated_at = now() WHERE doc_id = %s",
-            (doc_id,),
-        )
-
-    background.add_task(_run_index_job, doc_id)
-    return {"ok": True, "doc_id": doc_id, "state": "indexing"}
+        if state in ("extracting", "indexing"):
+            return {"ok": True, "doc_id": doc_id, "state": state}  # already running
+        if state in ("indexed", "failed", "registered"):
+            await conn.execute(
+                "UPDATE documents SET state = 'stored', error_message = NULL, updated_at = now() "
+                "WHERE doc_id = %s", (doc_id,))
+    background.add_task(doc_pipeline.run_pipeline, doc_id)
+    return {"ok": True, "doc_id": doc_id, "state": "extracting"}
 
 
 @router.post("/{doc_id}/search")
@@ -776,42 +669,6 @@ async def delete_pdf_bytes(
         except OSError as e:
             logger.warning("Could not remove PDF for %s: %s", doc_id, e)
     return {"ok": True, "doc_id": doc_id}
-
-
-async def _chunks_from_pages(doc_id: str) -> int:
-    """
-    After conversion: wipe existing chunks for `doc_id` and seed new ones from
-    `doc_pages` (one chunk per page). Embeddings will be (re)generated by the
-    indexing job. Returns the number of inserted chunk rows.
-    """
-    pool = get_pool()
-    async with pool.connection() as conn:
-        async with conn.transaction():
-            async with conn.cursor() as cur:
-                await cur.execute("DELETE FROM doc_chunks WHERE doc_id = %s", (doc_id,))
-                await cur.execute(
-                    "SELECT page, markdown FROM doc_pages WHERE doc_id = %s ORDER BY page",
-                    (doc_id,),
-                )
-                pages = await cur.fetchall()
-                inserted = 0
-                for ord_, (page, markdown) in enumerate(pages):
-                    text = (markdown or "").strip()
-                    if not text:
-                        continue
-                    await cur.execute(
-                        """
-                        INSERT INTO doc_chunks
-                            (doc_id, ord, page, chunk_type, text, text_hash)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (doc_id, text_hash) DO UPDATE SET
-                            ord = EXCLUDED.ord, page = EXCLUDED.page,
-                            chunk_type = EXCLUDED.chunk_type
-                        """,
-                        (doc_id, ord_, page, "page-md", text, _text_hash(text)),
-                    )
-                    inserted += 1
-    return inserted
 
 
 async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
