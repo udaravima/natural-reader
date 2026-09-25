@@ -507,19 +507,31 @@ def _content_shared(reason: str, doc_id: str, user_id: str) -> HTTPException:
 async def start_index_job(doc_id: DocId, background: BackgroundTasks,
                           principal: Principal = Depends(_require_doc_reader)) -> dict[str, Any]:
     """Resume or re-index (spec §4). On content that isn't `indexed`, any entry
-    holder may RESUME it (a crash, a failure). On `indexed` content this is a
-    RE-INDEX from the stored bytes — a content-changing op, so only the sole
-    holder or an admin (else 409 content_shared)."""
+    holder — or an admin, even without one — may RESUME it (a crash, a
+    failure). On `indexed` content this is a RE-INDEX from the stored bytes —
+    a content-changing op, so only the sole holder or an admin (else 409
+    content_shared), and only when there's something to rebuild from: no
+    stored bytes and no conversion means re-indexing would destroy a working
+    index, so that's refused too (409 bytes_missing), state untouched."""
     _ensure_ready()
+    is_admin = principal.role == "admin"
     async with get_pool().connection() as conn:
-        cur = await conn.execute("SELECT state FROM documents WHERE doc_id = %s", (doc_id,))
-        state = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "SELECT state, bytes_path, conversion_state FROM documents WHERE doc_id = %s",
+            (doc_id,))
+        row = await cur.fetchone()
+        if row is None:
+            raise refusal(404, "not_found", "Document not found")
+        state, bytes_path, conversion_state = row
         if state == "indexed":
             reason = await doc_content.content_ops_refusal(
-                conn, doc_id, principal.user_id, is_admin=principal.role == "admin")
+                conn, doc_id, principal.user_id, is_admin=is_admin)
             if reason:
                 raise _content_shared(reason, doc_id, principal.user_id)
-        elif not await doc_content.holds_entry(conn, principal.user_id, doc_id):
+            has_bytes = bool(bytes_path) and Path(bytes_path).is_file()
+            if not has_bytes and conversion_state != "converted":
+                raise refusal(409, "bytes_missing", "Upload the file again first.")
+        elif not is_admin and not await doc_content.holds_entry(conn, principal.user_id, doc_id):
             raise HTTPException(status_code=404, detail="Document not found")
         if state in ("extracting", "indexing"):
             return {"ok": True, "doc_id": doc_id, "state": state}  # already running

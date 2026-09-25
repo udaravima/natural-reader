@@ -35,6 +35,13 @@ async def _member(db_conn, sub):
                           capabilities=frozenset({"reader"}))
 
 
+async def _admin(db_conn, sub):
+    u = await resolve_or_provision_user(db_conn, iss="i", sub=sub, email=f"{sub}@x.io")
+    await set_status(db_conn, u["id"], "active")
+    return deps.Principal(user_id=u["id"], email=u["email"], role="admin",
+                          capabilities=frozenset({"reader"}))
+
+
 def _write(store, doc_id, ext, data):
     path = store / f"{doc_id}.{ext}"
     path.write_bytes(data)
@@ -255,3 +262,91 @@ async def test_index_by_project_only_reader_is_404(db_conn, harness, store):
         r = await client.post(f"/v1/docs/{DOC}/index")
     assert r.status_code == 404  # ...but no entry, so nothing to resume
     assert (await _doc(db_conn))["state"] == "failed"
+
+
+# ---------- controller-ruled follow-ups ----------
+
+async def test_index_reindex_sole_holder_without_bytes_is_refused(db_conn, harness, store):
+    """A sole holder re-indexing an `indexed` doc that has no stored bytes and
+    no conversion (e.g. legacy client-indexed content) must not lose its
+    working index: 409 bytes_missing, state and chunks untouched."""
+    _, as_user = harness
+    owner = await _member(db_conn, "nb-owner")
+    await seed.seed_doc(db_conn, DOC, owner.user_id, file_type="text", state="indexed",
+                        bytes_path=None)
+    vec = "[" + ",".join(["1"] + ["0"] * (EMBEDDING_DIM - 1)) + "]"
+    await db_conn.execute(
+        "INSERT INTO doc_chunks (doc_id, ord, page, chunk_type, text, text_hash, embedding, "
+        "embedding_model) VALUES (%s, 0, 1, 'page', 'KEEP', %s, %s::vector, 'm')",
+        (DOC, doc_pipeline.text_hash("KEEP"), vec))
+
+    async with as_user(owner) as client:
+        r = await client.post(f"/v1/docs/{DOC}/index")
+
+    assert r.status_code == 409
+    assert r.json()["detail"]["error"] == "bytes_missing"
+    doc = await _doc(db_conn)
+    assert doc["state"] == "indexed"
+    rows = await _chunks(db_conn)
+    assert [row[3] for row in rows] == ["KEEP"]
+
+
+async def test_index_admin_without_entry_resumes_via_project_placement(db_conn, harness, store):
+    """An admin holding no library entry may still RESUME (not re-index) a
+    non-indexed doc, as long as they can read it — here, via a project they
+    own containing the doc."""
+    _, as_user = harness
+    owner = await _member(db_conn, "ad-owner")
+    admin = await _admin(db_conn, "ad-admin")
+    cur = await db_conn.execute(
+        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
+        (admin.user_id,))
+    pid = (await cur.fetchone())[0]
+    path = _write(store, DOC, "txt", TEXT)
+    await seed.seed_doc(db_conn, DOC, owner.user_id, file_type="text", state="failed",
+                        bytes_path=path, project_ids=[pid])
+
+    async with as_user(admin) as client:
+        r = await client.post(f"/v1/docs/{DOC}/index")
+
+    assert r.status_code == 202
+    doc = await _doc(db_conn)
+    assert doc["state"] == "indexed"
+    assert doc["extracted_by"] == "server"
+
+
+async def test_index_missing_row_is_404_not_found(db_conn, harness, store, monkeypatch):
+    """Simulates the GC race the brief calls out: the read gate confirms the
+    doc is readable, but by the time the route's own state lookup runs the
+    row is gone (a concurrent GC won the race). Reproducing that with real
+    concurrency needs two DB connections mid-request; the harness pins both
+    docs.py and doc_pipeline to this test's single transactional connection,
+    so instead we monkeypatch db_conn.execute to make exactly that one query
+    (docs.py's post-gate `SELECT state, bytes_path, conversion_state`) return
+    no row — deterministic, and it exercises the same `row is None` branch a
+    real race would hit. Every other query (the read gate, seeding, the
+    post-call assertion) passes through unchanged."""
+    _, as_user = harness
+    owner = await _member(db_conn, "mr-owner")
+    await seed.seed_doc(db_conn, DOC, owner.user_id, file_type="text", state="failed")
+
+    real_execute = db_conn.execute
+    target = "SELECT state, bytes_path, conversion_state FROM documents"
+
+    class _EmptyCursor:
+        async def fetchone(self):
+            return None
+
+    async def patched_execute(query, params=None, *a, **kw):
+        if isinstance(query, str) and query.startswith(target):
+            return _EmptyCursor()
+        return await real_execute(query, params, *a, **kw)
+
+    monkeypatch.setattr(db_conn, "execute", patched_execute)
+
+    async with as_user(owner) as client:
+        r = await client.post(f"/v1/docs/{DOC}/index")
+
+    assert r.status_code == 404
+    assert r.json()["detail"]["error"] == "not_found"
+    assert (await _doc(db_conn))["state"] == "failed"  # untouched — the real row was fine
