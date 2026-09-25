@@ -10,7 +10,7 @@ from server import logging_config
 def isolate_logging():
     """Snapshot and restore logging state so this test's handlers (which point at
     a tmp dir that gets deleted) don't leak into other tests."""
-    names = ["", "server", "uvicorn", "uvicorn.error", "uvicorn.access"]
+    names = ["", "server", "server.audit", "uvicorn", "uvicorn.error", "uvicorn.access"]
     saved = {
         n: (logging.getLogger(n).handlers[:], logging.getLogger(n).level,
             logging.getLogger(n).propagate)
@@ -73,3 +73,10 @@ def test_audit_file_override(tmp_path, monkeypatch, isolate_logging):
     for h in logging.getLogger("server.audit").handlers:
         h.flush()
     assert "content.gc doc=d1 trigger=entry_removed" in target.read_text()
+
+
+def test_audit_logger_handlers_isolated(isolate_logging):
+    """Verify that server.audit handlers are properly restored after tests.
+    Proves the isolate_logging fixture includes server.audit in its snapshot."""
+    # Before configure_logging, server.audit should have no handlers
+    assert logging.getLogger("server.audit").handlers == []
