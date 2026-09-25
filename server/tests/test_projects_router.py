@@ -356,3 +356,29 @@ async def test_placement_outlives_uploaders_entry_and_last_unlink_gcs(db_conn, t
         assert (await c.delete(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 204
     assert not await _content_exists(db_conn, DOC_A)
     assert not f.exists()
+
+
+async def test_deleting_project_gcs_docs_with_no_other_holder(db_conn, tmp_path):
+    # Task 7: deleting a project drops its placements, and content nobody
+    # else holds is GC'd along with it — bytes included.
+    owner = await resolve_or_provision_user(db_conn, iss="i", sub="pd1", email="pd1@x.io")
+    pid = await _mk_project(db_conn, owner["id"])
+    f = tmp_path / f"{DOC_A}.pdf"
+    f.write_bytes(b"%PDF-1.4")
+    await seed.seed_doc(db_conn, DOC_A, None, project_ids=[pid], bytes_path=f)
+    async with _client_for(db_conn, _reader(owner)) as c:
+        assert (await c.delete(f"/v1/projects/{pid}")).status_code == 204
+    assert not await _content_exists(db_conn, DOC_A)
+    assert not f.exists()
+
+
+async def test_deleting_project_keeps_doc_held_in_someones_library(db_conn):
+    # A doc placed in the deleted project but also held via a library entry
+    # (upload or shared) survives — the project was never its only holder.
+    owner = await resolve_or_provision_user(db_conn, iss="i", sub="pd2o", email="pd2o@x.io")
+    holder = await resolve_or_provision_user(db_conn, iss="i", sub="pd2h", email="pd2h@x.io")
+    pid = await _mk_project(db_conn, owner["id"])
+    await seed.seed_doc(db_conn, DOC_A, holder["id"], project_ids=[pid])
+    async with _client_for(db_conn, _reader(owner)) as c:
+        assert (await c.delete(f"/v1/projects/{pid}")).status_code == 204
+    assert await _content_exists(db_conn, DOC_A)

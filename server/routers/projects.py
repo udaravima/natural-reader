@@ -96,7 +96,12 @@ async def delete_project(project_id: str,
                          principal: deps.Principal = Depends(deps.get_current_user),
                          conn=Depends(deps.get_conn)):
     await _assert_owner(conn, project_id, principal.user_id)
+    cur = await conn.execute(
+        "SELECT doc_id FROM project_documents WHERE project_id = %s", (project_id,))
+    doc_ids = [r[0] for r in await cur.fetchall()]
     await conn.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+    for doc_id in doc_ids:
+        await doc_content.gc_content_if_orphaned(conn, doc_id, trigger="project_deleted")
     return Response(status_code=204)
 
 

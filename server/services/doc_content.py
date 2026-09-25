@@ -122,3 +122,28 @@ async def gc_content_if_orphaned(conn, doc_id, *, trigger: str) -> bool:
         await conn.execute("DELETE FROM documents WHERE doc_id = %s", (doc_id,))
     audit("content.gc", doc=doc_id, trigger=trigger)
     return True
+
+
+async def sweep_orphans(conn) -> int:
+    """Startup safety net (spec §3): GC any content with no entry and no
+    placement — catches a future code path that removed references without
+    calling gc_content_if_orphaned."""
+    cur = await conn.execute(
+        "SELECT d.doc_id FROM documents d "
+        "WHERE NOT EXISTS (SELECT 1 FROM library_entries e WHERE e.doc_id = d.doc_id) "
+        "AND NOT EXISTS (SELECT 1 FROM project_documents pd WHERE pd.doc_id = d.doc_id)")
+    removed = 0
+    for (doc_id,) in await cur.fetchall():
+        if await gc_content_if_orphaned(conn, doc_id, trigger="startup_sweep"):
+            removed += 1
+    if removed:
+        logger.warning("Startup sweep removed %d orphaned documents", removed)
+    return removed
+
+
+async def recover_states(conn) -> None:
+    """A crash mid-job leaves docs mid-state; make them resumable (spec §4)."""
+    await conn.execute(
+        "UPDATE documents SET state = 'stored', updated_at = now() WHERE state = 'extracting'")
+    await conn.execute(
+        "UPDATE documents SET state = 'extracted', updated_at = now() WHERE state = 'indexing'")

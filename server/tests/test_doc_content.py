@@ -87,3 +87,21 @@ async def test_docs_referenced_by_user_includes_owned_project_placements(db_conn
     p = await _project(db_conn, a)
     await seed_doc(db_conn, "e" * 64, b, project_ids=[p])
     assert set(await doc_content.docs_referenced_by_user(db_conn, a)) == {D, "e" * 64}
+
+
+async def test_sweep_removes_orphans_only(db_conn):
+    a = await _user(db_conn, "a")
+    await seed_doc(db_conn, D, a)
+    await seed_doc(db_conn, "e" * 64, None)  # planted orphan
+    assert await doc_content.sweep_orphans(db_conn) >= 1
+    cur = await db_conn.execute("SELECT doc_id FROM documents WHERE doc_id IN (%s,%s)", (D, "e" * 64))
+    assert [r[0] for r in await cur.fetchall()] == [D]
+
+
+async def test_recover_states(db_conn):
+    a = await _user(db_conn, "a")
+    await seed_doc(db_conn, D, a, state="extracting")
+    await seed_doc(db_conn, "e" * 64, a, state="indexing")
+    await doc_content.recover_states(db_conn)
+    cur = await db_conn.execute("SELECT doc_id, state FROM documents WHERE doc_id IN (%s,%s)", (D, "e" * 64))
+    assert dict(await cur.fetchall()) == {D: "stored", "e" * 64: "extracted"}

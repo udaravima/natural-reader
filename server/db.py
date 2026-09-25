@@ -16,6 +16,8 @@ from pathlib import Path
 from pgvector.psycopg import register_vector_async
 from psycopg_pool import AsyncConnectionPool
 
+from .services import doc_content
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_DATABASE_URL = (
@@ -81,14 +83,14 @@ async def init_db() -> bool:
             logger.info("Postgres pool opened (attempt %d)", attempt + 1)
             await _run_migrations()
             await bootstrap_admin()
-            # Reset any stale 'indexing' rows left over from a crash mid-job
-            # so they show up as resumable instead of stuck. Same for
-            # 'converting' rows — they were created by a doc-conversion job
-            # that didn't get a chance to flip to 'converted'/'conversion_failed'.
+            # A crash mid-job leaves docs mid-state: make them resumable, then
+            # GC any content nothing references (A1 spec §3, §4). Same for
+            # 'converting' rows below — they were created by a doc-conversion
+            # job that didn't get a chance to flip to
+            # 'converted'/'conversion_failed'.
             async with pool.connection() as conn:
-                await conn.execute(
-                    "UPDATE documents SET state = 'chunks_uploaded' WHERE state = 'indexing'"
-                )
+                await doc_content.recover_states(conn)
+                await doc_content.sweep_orphans(conn)
                 # `conversion_state` column only exists after migration 3 is
                 # applied — guard with a column lookup so a fresh DB at
                 # migration 1 doesn't blow up startup.
