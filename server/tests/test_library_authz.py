@@ -1,6 +1,9 @@
+"""The read predicate (A1 §3): a library entry (upload or shared) or a
+placement in a project the user owns or belongs to."""
 import pytest
 from fastapi import HTTPException
 from server.auth import authz
+from server.services import doc_content
 from server.tests import seed
 pytestmark = pytest.mark.asyncio
 
@@ -12,8 +15,14 @@ async def _user(conn, sub, email):
     return str((await cur.fetchone())[0])
 
 
-async def _doc(conn, doc_id, owner, project_ids=()):
-    await seed.seed_doc(conn, doc_id, owner, file_name="f.pdf", project_ids=project_ids)
+async def _doc(conn, doc_id, holder, project_ids=()):
+    await seed.seed_doc(conn, doc_id, holder, file_name="f.pdf", project_ids=project_ids)
+
+
+async def _denied(conn, doc_id, user):
+    with pytest.raises(HTTPException) as e:
+        await authz.assert_can_read_doc(conn, doc_id, user)
+    return e.value.status_code == 404
 
 
 async def _project(conn, owner, name="P"):
@@ -22,7 +31,7 @@ async def _project(conn, owner, name="P"):
     return str((await cur.fetchone())[0])
 
 
-async def test_owner_can_read(db_conn):
+async def test_upload_holder_can_read(db_conn):
     o = await _user(db_conn, "o", "o@x.io")
     await _doc(db_conn, "d1", o)
     await authz.assert_can_read_doc(db_conn, "d1", o)  # no raise
@@ -49,7 +58,7 @@ async def test_project_member_can_read(db_conn):
     await authz.assert_can_read_doc(db_conn, "d1", m)  # no raise
 
 
-async def test_grantee_can_read(db_conn):
+async def test_share_recipient_can_read(db_conn):
     o = await _user(db_conn, "o", "o@x.io")
     g = await _user(db_conn, "g", "g@x.io")
     await _doc(db_conn, "d1", o)
@@ -116,3 +125,38 @@ async def test_member_of_either_linked_project_can_read(db_conn):
 
 async def test_visible_projects_placeholders_match_params():
     assert authz.visible_projects_where("p").count("%s") == len(authz.visible_projects_params("u"))
+
+
+async def test_placement_alone_grants_read(db_conn):
+    # Content nobody holds in a library, kept alive by a placement only.
+    o = await _user(db_conn, "o", "o@x.io")
+    m = await _user(db_conn, "m", "m@x.io")
+    s = await _user(db_conn, "s", "s@x.io")
+    pid = await _project(db_conn, o)
+    await db_conn.execute(
+        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)", (pid, m))
+    await _doc(db_conn, "d1", None, [pid])
+    await authz.assert_can_read_doc(db_conn, "d1", o)
+    await authz.assert_can_read_doc(db_conn, "d1", m)
+    assert await _denied(db_conn, "d1", s)
+
+
+async def test_recipient_removing_their_entry_leaves_the_sharers(db_conn):
+    o = await _user(db_conn, "o", "o@x.io")
+    g = await _user(db_conn, "g", "g@x.io")
+    await _doc(db_conn, "d1", o)
+    await seed.share_doc(db_conn, "d1", o, g)
+    assert await doc_content.remove_entry(db_conn, g, "d1")
+    assert await _denied(db_conn, "d1", g)
+    await authz.assert_can_read_doc(db_conn, "d1", o)  # no raise
+
+
+async def test_sharer_removing_their_entry_keeps_the_recipients(db_conn):
+    # Spec §5: removing my own upload entry does NOT revoke shares I created.
+    o = await _user(db_conn, "o", "o@x.io")
+    g = await _user(db_conn, "g", "g@x.io")
+    await _doc(db_conn, "d1", o)
+    await seed.share_doc(db_conn, "d1", o, g)
+    assert await doc_content.remove_entry(db_conn, o, "d1")
+    assert await _denied(db_conn, "d1", o)
+    await authz.assert_can_read_doc(db_conn, "d1", g)  # no raise

@@ -192,6 +192,7 @@ async def enroll_linked_user(conn, *, iss, sub, email, display_name=None,
 
 async def delete_user(conn, user_id: str) -> None:
     """Hard delete. Every referencing table cascades (sessions, PATs,
-    inference_usage, documents + chunks, chat_sessions + messages/events) —
-    callers must sweep user files (e.g. stored PDFs) BEFORE/around this."""
+    inference_usage, library entries, owned projects, chat_sessions +
+    messages/events). Content is NOT deleted by the cascade — callers must
+    collect the user's docs BEFORE this and GC them after (A1 spec §3)."""
     await conn.execute("DELETE FROM users WHERE id=%s", (user_id,))

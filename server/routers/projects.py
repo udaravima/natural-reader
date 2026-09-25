@@ -1,6 +1,8 @@
 """/v1/projects — grouping + primary sharing unit. Owner-only project writes; listing
-returns owned + member-of. Doc links: doc owners add, doc owners or project owners remove.
-Not-permitted is 404 (no existence leak)."""
+returns owned + member-of. Documents (A1 §5): a holder of an upload entry files
+them in; only the project (`can_manage_project_docs`; A1: its owner) removes
+them — the uploader has no special power over a placement. Not-permitted is
+404 (no existence leak)."""
 from __future__ import annotations
 
 import uuid
@@ -9,8 +11,15 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from psycopg import errors as pg_errors
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..audit import audit
 from ..auth import deps
-from ..auth.authz import assert_owns_doc, visible_projects_params, visible_projects_where
+from ..auth.authz import (
+    assert_holds_upload,
+    can_manage_project_docs,
+    visible_projects_params,
+    visible_projects_where,
+)
+from ..services import doc_content
 from .docs import DocId
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
@@ -135,11 +144,13 @@ async def remove_member(project_id: str, user_id: str,
 async def link_doc(project_id: uuid.UUID, doc_id: DocId,
                    principal: deps.Principal = Depends(deps.require_capability("reader")),
                    conn=Depends(deps.get_conn)):
-    """File a doc into a project. Caller must OWN the doc and be able to SEE
-    the project (owner or member); admins skip the visibility check, as the
-    old PATCH project_id path did. The project is checked first, so an
-    invisible project 404s before doc ids can be used to probe it. Only doc
-    owners add — a project owner can't pull in a doc they merely read (spec §6)."""
+    """File a doc into a project. Caller must hold an UPLOAD entry for the doc
+    (they proved possession) and be able to SEE the project (owner or member);
+    admins skip the visibility check, as the old PATCH project_id path did. The
+    project is checked first, so an invisible project 404s before doc ids can
+    be used to probe it. A doc someone merely shared with me, or that I only
+    read through another project, can't be filed (A1 §5). Idempotent: an
+    existing placement keeps its original `added_by`."""
     if principal.role == "admin":
         cur = await conn.execute("SELECT 1 FROM projects WHERE id = %s", (project_id,))
     else:
@@ -148,10 +159,12 @@ async def link_doc(project_id: uuid.UUID, doc_id: DocId,
             [project_id, *visible_projects_params(principal.user_id)])
     if await cur.fetchone() is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    await assert_owns_doc(conn, doc_id, principal.user_id)
-    await conn.execute(
-        "INSERT INTO project_documents (project_id, doc_id) VALUES (%s,%s) "
-        "ON CONFLICT DO NOTHING", (project_id, doc_id))
+    await assert_holds_upload(conn, doc_id, principal.user_id)
+    cur = await conn.execute(
+        "INSERT INTO project_documents (project_id, doc_id, added_by) VALUES (%s,%s,%s) "
+        "ON CONFLICT DO NOTHING", (project_id, doc_id, principal.user_id))
+    if cur.rowcount:
+        audit("placement.added", project=project_id, doc=doc_id, by=principal.user_id)
     return Response(status_code=204)
 
 
@@ -159,22 +172,16 @@ async def link_doc(project_id: uuid.UUID, doc_id: DocId,
 async def unlink_doc(project_id: uuid.UUID, doc_id: DocId,
                      principal: deps.Principal = Depends(deps.require_capability("reader")),
                      conn=Depends(deps.get_conn)):
-    """Remove a doc from a project. The doc owner always gets 204 (idempotent,
-    and it reveals nothing about the project). The project owner gets 204 only
-    when the link exists — they can already see their own project's docs.
-    Everyone else, including plain members, gets 404."""
-    cur = await conn.execute("SELECT user_id FROM documents WHERE doc_id = %s", (doc_id,))
-    row = await cur.fetchone()
-    if row is not None and str(row[0]) == principal.user_id:
-        await conn.execute(
-            "DELETE FROM project_documents WHERE project_id = %s AND doc_id = %s",
-            (project_id, doc_id))
-        return Response(status_code=204)
+    """Remove a doc from a project. Projects govern their documents (A1 §5):
+    only `can_manage_project_docs` (A1: the project owner) may — the uploader
+    has no special power. Everyone else, and a missing link, gets 404."""
+    if not await can_manage_project_docs(conn, principal.user_id, project_id):
+        raise HTTPException(status_code=404, detail="Not found")
     cur = await conn.execute(
-        "DELETE FROM project_documents pd USING projects p "
-        "WHERE pd.project_id = %s AND pd.doc_id = %s "
-        "AND p.id = pd.project_id AND p.owner_user_id = %s",
-        (project_id, doc_id, principal.user_id))
+        "DELETE FROM project_documents WHERE project_id = %s AND doc_id = %s",
+        (project_id, doc_id))
     if cur.rowcount == 0:
         raise HTTPException(status_code=404, detail="Not found")
+    audit("placement.removed", project=project_id, doc=doc_id, by=principal.user_id)
+    await doc_content.gc_content_if_orphaned(conn, doc_id, trigger="placement_removed")
     return Response(status_code=204)

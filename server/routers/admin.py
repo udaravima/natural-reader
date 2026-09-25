@@ -5,7 +5,6 @@ import logging
 import os
 import secrets
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict
@@ -14,7 +13,7 @@ from ..auth import deps, users
 from ..auth.capabilities import KNOWN_CAPABILITIES
 from ..auth.config import load_auth_config
 from ..auth.kc_admin import KCAdminError
-from ..services import inference_budget, model_router
+from ..services import doc_content, inference_budget, model_router
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -217,8 +216,9 @@ async def delete_user(
     conn=Depends(deps.get_conn),
     kc=Depends(deps.get_kc_admin),
 ):
-    """Hard delete (admin-console spec §4): sessions, PATs, usage, documents
-    (+chunks) and chat history all cascade. Rails are server-side — the UI
+    """Hard delete (admin-console spec §4): sessions, PATs, usage, library
+    entries, owned projects and chat history all cascade; content nobody else
+    holds is then garbage-collected (A1 §3). Rails are server-side — the UI
     hiding them is cosmetic. Reasons are machine-readable in detail.reason."""
     try:
         uuid.UUID(user_id)
@@ -243,14 +243,10 @@ async def delete_user(
         raise HTTPException(
             status_code=409, detail={"reason": "last_active_admin"}
         )
-    # PDF sweep: collect the user's stored files BEFORE the rows cascade away.
-    # Best-effort — a failed unlink after the rows are gone is only a disk
-    # leak, never a correctness issue.
-    cur = await conn.execute(
-        "SELECT pdf_path FROM documents WHERE user_id=%s AND pdf_path IS NOT NULL",
-        (user_id,),
-    )
-    pdf_paths = [r[0] for r in await cur.fetchall()]
+    # Collect every doc this deletion can orphan BEFORE the rows cascade away:
+    # the user's entries, and placements in projects they own (A1 §3). GC runs
+    # after — a cascade never runs app code.
+    doc_ids = await doc_content.docs_referenced_by_user(conn, user_id)
     await users.delete_user(conn, user_id)
     if kc is not None and target["oidc_sub"]:
         try:
@@ -258,11 +254,8 @@ async def delete_user(
         except Exception:
             logger.warning("KC delete failed for %s (app row already removed)",
                            target["oidc_sub"])
-    for raw in pdf_paths:
-        try:
-            Path(raw).unlink(missing_ok=True)
-        except OSError:
-            logger.warning("Could not remove PDF %s for deleted user", raw)
+    for doc_id in doc_ids:
+        await doc_content.gc_content_if_orphaned(conn, doc_id, trigger="user_deleted")
     return Response(status_code=204)
 
 

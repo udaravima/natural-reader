@@ -55,7 +55,7 @@ async def test_get_others_doc_is_404(db_conn, docs_app):
         assert (await client.get(f"/v1/docs/{HEX}")).status_code == 404
 
 
-async def test_owner_can_get(db_conn, docs_app):
+async def test_upload_holder_can_get(db_conn, docs_app):
     owner = await _member(db_conn, "owner")
     await _insert_doc(db_conn, HEX2, owner.user_id)
     docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
@@ -63,32 +63,60 @@ async def test_owner_can_get(db_conn, docs_app):
         assert (await client.get(f"/v1/docs/{HEX2}")).status_code == 200
 
 
-async def test_register_stamps_owner(db_conn, docs_app):
-    owner = await _member(db_conn, "owner")
+async def test_register_gives_caller_an_upload_entry(db_conn, docs_app):
+    first = await _member(db_conn, "first")
+    second = await _member(db_conn, "second")
+    body = {"doc_id": HEX, "file_name": "f", "file_type": "text", "size_bytes": 1}
+    for who in (first, second):  # content has no owner: nobody can "hijack" it
+        docs_app.dependency_overrides[deps.get_current_user] = lambda who=who: who
+        async with _client(docs_app) as client:
+            r = await client.post("/v1/docs", json=body)
+            assert r.status_code == 200
+            assert r.json()["added_via"] == "upload"
+    cur = await db_conn.execute(
+        "SELECT user_id, added_via FROM library_entries WHERE doc_id=%s", (HEX,))
+    assert {(str(u), v) for u, v in await cur.fetchall()} == {
+        (first.user_id, "upload"), (second.user_id, "upload")}
+
+
+async def test_recipient_can_read_but_not_change_content(db_conn, docs_app):
+    # A share recipient reads via GET, but upload-holder routes (index,
+    # convert, markdown delete, sharing) stay closed to them — 404.
+    owner = await _member(db_conn, "owner3")
+    recipient = await _member(db_conn, "recipient")
+    await _insert_doc(db_conn, HEX3, owner.user_id)
+    await seed.share_doc(db_conn, HEX3, owner.user_id, recipient.user_id)
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: recipient
+    async with _client(docs_app) as client:
+        assert (await client.get(f"/v1/docs/{HEX3}")).status_code == 200
+        assert (await client.post(f"/v1/docs/{HEX3}/index")).status_code == 404
+        assert (await client.delete(f"/v1/docs/{HEX3}/markdown")).status_code == 404
+
+
+async def test_recipient_delete_removes_only_their_entry(db_conn, docs_app):
+    owner = await _member(db_conn, "owner4")
+    recipient = await _member(db_conn, "recipient4")
+    await _insert_doc(db_conn, HEX3, owner.user_id)
+    await seed.share_doc(db_conn, HEX3, owner.user_id, recipient.user_id)
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: recipient
+    async with _client(docs_app) as client:
+        assert (await client.delete(f"/v1/docs/{HEX3}")).status_code == 204
+        assert (await client.get(f"/v1/docs/{HEX3}")).status_code == 404
+        assert (await client.delete(f"/v1/docs/{HEX3}")).status_code == 404  # nothing left to remove
     docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
     async with _client(docs_app) as client:
-        r = await client.post(
-            "/v1/docs",
-            json={"doc_id": HEX, "file_name": "f", "file_type": "text", "size_bytes": 1},
-        )
-        assert r.status_code == 200
-    cur = await db_conn.execute("SELECT user_id FROM documents WHERE doc_id=%s", (HEX,))
-    assert str((await cur.fetchone())[0]) == owner.user_id
-
-
-async def test_grantee_can_get_document_but_not_delete(db_conn, docs_app):
-    # A doc_grants grantee (not the owner) can read via GET, but writes
-    # (DELETE) stay owner-only — grantee should get 404 there.
-    owner = await _member(db_conn, "owner3")
-    grantee = await _member(db_conn, "grantee")
-    await _insert_doc(db_conn, HEX3, owner.user_id)
-    await seed.share_doc(db_conn, HEX3, owner.user_id, grantee.user_id)
-    docs_app.dependency_overrides[deps.get_current_user] = lambda: grantee
-    async with _client(docs_app) as client:
         r = await client.get(f"/v1/docs/{HEX3}")
-        assert r.status_code == 200
-        r = await client.delete(f"/v1/docs/{HEX3}")
-        assert r.status_code == 404
+        assert r.status_code == 200 and r.json()["added_via"] == "upload"
+
+
+async def test_sole_holder_delete_gcs_content(db_conn, docs_app):
+    owner = await _member(db_conn, "owner5")
+    await _insert_doc(db_conn, HEX2, owner.user_id)
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
+    async with _client(docs_app) as client:
+        assert (await client.delete(f"/v1/docs/{HEX2}")).status_code == 204
+    cur = await db_conn.execute("SELECT 1 FROM documents WHERE doc_id=%s", (HEX2,))
+    assert await cur.fetchone() is None
 
 
 async def test_stranger_denied_on_search_and_markdown(db_conn, docs_app):

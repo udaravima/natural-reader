@@ -1,4 +1,5 @@
-"""PATCH /v1/docs/{doc_id} — tags, project, admin-only owner reassignment.
+"""PATCH /v1/docs/{doc_id} — MY library entry's file_name and tags (A1 §5, §7).
+Content has no owner, so there is no reassignment; other holders are untouched.
 
 Harness: this router does all DB work via `get_pool()` (see test_docs_authz.py
 and test_docs_list.py), not `Depends(get_conn)`, so we follow the same
@@ -53,6 +54,14 @@ async def _insert_doc(db_conn, doc_id, owner_id):
     await seed.seed_doc(db_conn, doc_id, owner_id, file_name="f", file_type="text")
 
 
+async def _entry(db_conn, user_id, doc_id):
+    """(file_name, tags) of one user's entry."""
+    cur = await db_conn.execute(
+        "SELECT file_name, tags FROM library_entries WHERE user_id = %s AND doc_id = %s",
+        (user_id, doc_id))
+    return await cur.fetchone()
+
+
 async def test_owner_sets_tags_reflected_in_response(db_conn, docs_app):
     owner = await _user(db_conn, "owner-patch")
     await _insert_doc(db_conn, HEX, owner.user_id)
@@ -67,7 +76,7 @@ async def test_owner_sets_tags_reflected_in_response(db_conn, docs_app):
         assert "project_id" not in body
 
 
-async def test_non_owner_patch_is_404(db_conn, docs_app):
+async def test_non_holder_patch_is_404(db_conn, docs_app):
     owner = await _user(db_conn, "owner-patch2")
     other = await _user(db_conn, "other-patch")
     await _insert_doc(db_conn, HEX2, owner.user_id)
@@ -78,45 +87,81 @@ async def test_non_owner_patch_is_404(db_conn, docs_app):
         assert r.status_code == 404
 
 
-async def test_non_admin_passing_owner_user_id_is_403(db_conn, docs_app):
+async def test_owner_user_id_is_422(db_conn, docs_app):
+    # Reassignment is gone: content has no owner. A stale client sending the
+    # field gets 422 (extra="forbid") — for admins too.
     owner = await _user(db_conn, "owner-patch3")
     new_owner = await _user(db_conn, "new-owner")
+    admin = await _user(db_conn, "admin-patch", role="admin")
     await _insert_doc(db_conn, HEX3, owner.user_id)
 
-    # Even the current owner can't self-serve a reassignment without admin role.
+    for who in (owner, admin):
+        docs_app.dependency_overrides[deps.get_current_user] = lambda who=who: who
+        async with _client(docs_app) as client:
+            r = await client.patch(f"/v1/docs/{HEX3}", json={"owner_user_id": new_owner.user_id})
+            assert r.status_code == 422
+
+
+async def test_rename_changes_only_my_entry(db_conn, docs_app):
+    owner = await _user(db_conn, "owner-rename")
+    other = await _user(db_conn, "other-rename")
+    await _insert_doc(db_conn, HEX, owner.user_id)
+    await seed.share_doc(db_conn, HEX, owner.user_id, other.user_id)
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: other
+    async with _client(docs_app) as client:
+        r = await client.patch(f"/v1/docs/{HEX}", json={"file_name": "  mine.txt  "})
+        assert r.status_code == 200
+        assert r.json()["file_name"] == "mine.txt"
     docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
     async with _client(docs_app) as client:
-        r = await client.patch(
-            f"/v1/docs/{HEX3}", json={"owner_user_id": new_owner.user_id}
-        )
-        assert r.status_code == 403
+        assert (await client.get(f"/v1/docs/{HEX}")).json()["file_name"] == "f"  # canonical
+
+    cur = await db_conn.execute("SELECT file_name FROM documents WHERE doc_id = %s", (HEX,))
+    assert (await cur.fetchone())[0] == "f"  # the content's own name is untouched
+    assert (await _entry(db_conn, owner.user_id, HEX))[0] is None
 
 
-async def test_admin_reassigns_owner(db_conn, docs_app):
-    owner = await _user(db_conn, "owner-patch4")
-    new_owner = await _user(db_conn, "new-owner2")
-    admin = await _user(db_conn, "admin-patch", role="admin")
-    doc_id = "d" * 64
-    await _insert_doc(db_conn, doc_id, owner.user_id)
+@pytest.mark.parametrize("reset", ["", "   ", None])
+async def test_empty_file_name_resets_to_canonical(db_conn, docs_app, reset):
+    owner = await _user(db_conn, "owner-reset")
+    await _insert_doc(db_conn, HEX, owner.user_id)
 
-    docs_app.dependency_overrides[deps.get_current_user] = lambda: admin
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
     async with _client(docs_app) as client:
-        r = await client.patch(
-            f"/v1/docs/{doc_id}", json={"owner_user_id": new_owner.user_id}
-        )
+        r = await client.patch(f"/v1/docs/{HEX}", json={"file_name": "renamed"})
+        assert r.json()["file_name"] == "renamed"
+        r = await client.patch(f"/v1/docs/{HEX}", json={"file_name": reset})
         assert r.status_code == 200
-        assert r.json()["doc_id"] == doc_id
+        assert r.json()["file_name"] == "f"
+    assert (await _entry(db_conn, owner.user_id, HEX))[0] is None
 
+
+async def test_patch_doc_seen_only_via_project_is_404(db_conn, docs_app):
+    # Reading through a project gives no entry to edit.
+    owner = await _user(db_conn, "owner-proj")
+    member = await _user(db_conn, "member-proj")
     cur = await db_conn.execute(
-        "SELECT user_id FROM documents WHERE doc_id = %s", (doc_id,)
-    )
-    assert str((await cur.fetchone())[0]) == new_owner.user_id
+        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
+        (owner.user_id,))
+    pid = (await cur.fetchone())[0]
+    await db_conn.execute(
+        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)",
+        (pid, member.user_id))
+    await seed.seed_doc(db_conn, HEX, owner.user_id, file_name="f", file_type="text",
+                        project_ids=[pid])
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: member
+    async with _client(docs_app) as client:
+        assert (await client.get(f"/v1/docs/{HEX}")).status_code == 200  # readable...
+        r = await client.patch(f"/v1/docs/{HEX}", json={"tags": ["x"]})
+        assert r.status_code == 404  # ...but nothing of mine to edit
+    assert await _entry(db_conn, member.user_id, HEX) is None
 
 
 async def test_admin_cannot_edit_tags_on_a_doc_they_do_not_own(db_conn, docs_app):
-    # Admin's only special power on PATCH is ownership reassignment. A tags-only
-    # PATCH carries no owner_user_id, so it goes down the ownership check like
-    # anyone else — an admin editing a stranger's tags gets the plain 404.
+    # Admins have no special power on PATCH: it edits the caller's own entry,
+    # and an admin with no entry for a stranger's doc gets the plain 404.
     owner = await _user(db_conn, "owner-patch-admtag")
     admin = await _user(db_conn, "admin-patch-tag", role="admin")
     doc_id = "3" + "a" * 63
@@ -127,8 +172,8 @@ async def test_admin_cannot_edit_tags_on_a_doc_they_do_not_own(db_conn, docs_app
         r = await client.patch(f"/v1/docs/{doc_id}", json={"tags": ["x"]})
         assert r.status_code == 404
 
-    cur = await db_conn.execute("SELECT tags FROM documents WHERE doc_id = %s", (doc_id,))
-    assert (await cur.fetchone())[0] == []  # unchanged
+    assert (await _entry(db_conn, owner.user_id, doc_id))[1] == []  # unchanged
+    assert await _entry(db_conn, admin.user_id, doc_id) is None
 
 
 async def test_owner_clears_tags_with_null(db_conn, docs_app):
@@ -148,8 +193,7 @@ async def test_owner_clears_tags_with_null(db_conn, docs_app):
         assert r.status_code == 200
         assert r.json()["tags"] == []
 
-    cur = await db_conn.execute("SELECT tags FROM documents WHERE doc_id = %s", (doc_id,))
-    assert (await cur.fetchone())[0] == []
+    assert (await _entry(db_conn, owner.user_id, doc_id))[1] == []
 
 
 @pytest.mark.parametrize("project_id", ["not-a-uuid", "00000000-0000-0000-0000-000000000009"])
@@ -167,5 +211,4 @@ async def test_patch_rejects_project_id(db_conn, docs_app, project_id):
                                json={"project_id": project_id, "tags": ["t"]})
         assert r.status_code == 422
 
-    cur = await db_conn.execute("SELECT tags FROM documents WHERE doc_id = %s", (doc_id,))
-    assert (await cur.fetchone())[0] == []
+    assert (await _entry(db_conn, owner.user_id, doc_id))[1] == []

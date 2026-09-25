@@ -1,6 +1,8 @@
 """Access matrix: every role x (doc in 0 / 1 / 2 projects), checked through
 BOTH read paths — assert_can_read_doc (single-doc routes) and GET /v1/docs
-(the list) — so the two can never disagree."""
+(the list) — so the two can never disagree. Roles use A1's vocabulary: the
+uploader holds an `upload` entry, the recipient a `shared` entry; project
+owners/members hold nothing and read only through a placement."""
 from contextlib import asynccontextmanager
 
 import httpx
@@ -16,7 +18,7 @@ from server.tests import seed
 pytestmark = pytest.mark.asyncio
 
 DOC = "e" * 64
-ROLES = ["doc_owner", "grantee", "p1_owner", "p1_member", "p2_owner", "p2_member", "stranger"]
+ROLES = ["uploader", "recipient", "p1_owner", "p1_member", "p2_owner", "p2_member", "stranger"]
 
 
 @pytest.fixture
@@ -41,7 +43,7 @@ async def _member(db_conn, sub):
 
 
 def _expected(role, n_projects):
-    if role in ("doc_owner", "grantee"):
+    if role in ("uploader", "recipient"):
         return True
     if role in ("p1_owner", "p1_member"):
         return n_projects >= 1
@@ -68,9 +70,9 @@ async def test_access_matrix(db_conn, docs_app, role, n_projects):
             (pid, uid[member_role]))
         projects.append(pid)
 
-    await seed.seed_doc(db_conn, DOC, uid["doc_owner"], file_name="f.pdf",
+    await seed.seed_doc(db_conn, DOC, uid["uploader"], file_name="f.pdf",
                         project_ids=projects[:n_projects])
-    await seed.share_doc(db_conn, DOC, uid["doc_owner"], uid["grantee"])
+    await seed.share_doc(db_conn, DOC, uid["uploader"], uid["recipient"])
 
     readable = _expected(role, n_projects)
     if readable:

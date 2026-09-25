@@ -58,19 +58,13 @@ async def _project(db_conn, owner_id, name):
     return str((await cur.fetchone())[0])
 
 
-async def _grant(db_conn, doc_id, grantee_id):
-    cur = await db_conn.execute("SELECT user_id FROM documents WHERE doc_id=%s", (doc_id,))
-    owner_id = str((await cur.fetchone())[0])
-    await seed.share_doc(db_conn, doc_id, owner_id, grantee_id)
-
-
-DOC_C = "c" * 64  # caller's own doc
+DOC_C = "c" * 64  # caller's own upload
 DOC_S = "s" * 64  # stranger's doc — must NEVER appear for the caller
-DOC_G = "9" * 64  # owner's doc, granted to the caller
-DOC_P = "1" * 64  # owner's doc, shared via project membership
+DOC_G = "9" * 64  # owner's upload, shared with the caller
+DOC_P = "1" * 64  # owner's upload, reachable via project membership
 
 
-async def test_list_returns_own_and_granted_not_stranger(db_conn, docs_app):
+async def test_list_returns_own_and_shared_not_stranger(db_conn, docs_app):
     caller = await _member(db_conn, "caller")
     owner = await _member(db_conn, "owner")
     stranger = await _member(db_conn, "stranger")
@@ -78,7 +72,7 @@ async def test_list_returns_own_and_granted_not_stranger(db_conn, docs_app):
     await _doc(db_conn, DOC_C, caller.user_id, tags=["mine"])
     await _doc(db_conn, DOC_S, stranger.user_id, tags=["secret"])
     await _doc(db_conn, DOC_G, owner.user_id, tags=["shared"])
-    await _grant(db_conn, DOC_G, caller.user_id)
+    await seed.share_doc(db_conn, DOC_G, owner.user_id, caller.user_id)
 
     docs_app.dependency_overrides[deps.get_current_user] = lambda: caller
     async with _client(docs_app) as client:
@@ -90,10 +84,17 @@ async def test_list_returns_own_and_granted_not_stranger(db_conn, docs_app):
         assert DOC_S not in ids
 
         by_id = {row["doc_id"]: row for row in body}
-        assert by_id[DOC_C]["is_owner"] is True
-        assert by_id[DOC_C]["owner_user_id"] == caller.user_id
-        assert by_id[DOC_G]["is_owner"] is False
-        assert by_id[DOC_G]["owner_user_id"] == owner.user_id
+        own, shared = by_id[DOC_C], by_id[DOC_G]
+        assert set(own) == {"doc_id", "state", "file_name", "tags", "added_via",
+                            "shared_by", "in_library", "projects"}  # no owner fields
+        assert own["in_library"] is True
+        assert own["added_via"] == "upload"
+        assert own["shared_by"] is None
+        assert own["tags"] == ["mine"]
+        assert shared["in_library"] is True
+        assert shared["added_via"] == "shared"
+        assert shared["shared_by"] == {"id": owner.user_id, "name": "owner@x.io"}
+        assert shared["tags"] == []  # the sharer's tags are theirs, not mine
 
         # The stranger's doc must stay invisible even when a q/tag filter
         # would otherwise match it — access is resolved in SQL, not by
@@ -135,7 +136,11 @@ async def test_list_project_member_sees_project_doc_stranger_still_excluded(db_c
 
         row = next(row for row in body if row["doc_id"] == DOC_P)
         assert row["projects"] == [{"id": project_id, "name": "P"}]
-        assert row["is_owner"] is False
+        # Project-only: no entry of mine, so canonical name and no tags.
+        assert row["in_library"] is False
+        assert row["added_via"] is None
+        assert row["shared_by"] is None
+        assert row["file_name"] == "f.pdf" and row["tags"] == []
 
         # project_id filter narrows within the readable set.
         r = await client.get("/v1/docs", params={"project_id": project_id})
@@ -185,9 +190,10 @@ async def test_list_projects_hide_names_the_caller_cannot_see(db_conn, docs_app)
         assert row["projects"] == [{"id": visible, "name": "Visible"}]
 
 
-async def test_doc_owner_sees_links_to_projects_they_left(db_conn, docs_app):
-    # Review Focus 2 / spec §7.2 owner exception: removed from the project,
-    # the owner must still see (and so be able to withdraw) the link.
+async def test_uploader_does_not_see_links_to_projects_they_cannot_see(db_conn, docs_app):
+    # A1 §3 (inverts C0's owner exception): the uploader, removed from the
+    # project, no longer sees the link — they can't unlink it anyway, and
+    # listing it would leak the project's name.
     owner = await _member(db_conn, "owner8")
     proj_owner = await _member(db_conn, "projowner8")
     pid = await _project(db_conn, proj_owner.user_id, "TheirProject")
@@ -196,9 +202,30 @@ async def test_doc_owner_sees_links_to_projects_they_left(db_conn, docs_app):
     docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
     async with _client(docs_app) as client:
         row = (await client.get("/v1/docs")).json()[0]
-        assert row["projects"] == [{"id": pid, "name": "TheirProject"}]
+        assert row["projects"] == []
         status = (await client.get(f"/v1/docs/{DOC_C}")).json()
-        assert status["projects"] == [{"id": pid, "name": "TheirProject"}]
+        assert status["projects"] == []
+
+
+async def test_list_tags_and_q_use_my_entry(db_conn, docs_app):
+    # Each holder's name and tags are personal: filters match MY entry only.
+    owner = await _member(db_conn, "owner9")
+    caller = await _member(db_conn, "caller9")
+    await _doc(db_conn, DOC_G, owner.user_id, tags=["theirs"], file_name="canon.pdf")
+    await seed.share_doc(db_conn, DOC_G, owner.user_id, caller.user_id)
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: caller
+    async with _client(docs_app) as client:
+        r = await client.patch(f"/v1/docs/{DOC_G}",
+                               json={"file_name": "my-name.pdf", "tags": ["mine"]})
+        assert r.status_code == 200
+        row = (await client.get("/v1/docs")).json()[0]
+        assert row["file_name"] == "my-name.pdf" and row["tags"] == ["mine"]
+        for params, hit in (({"tag": "mine"}, True), ({"tag": "theirs"}, False),
+                            ({"q": "my-name"}, True), ({"q": "mine"}, True),
+                            ({"q": "theirs"}, False), ({"q": "canon"}, False)):
+            ids = {r["doc_id"] for r in (await client.get("/v1/docs", params=params)).json()}
+            assert (DOC_G in ids) is hit, params
 
 
 async def test_doc_projects_placeholders_match_params():
@@ -211,7 +238,7 @@ async def test_list_filter_by_invisible_project_is_empty(db_conn, docs_app):
     caller = await _member(db_conn, "caller5")
     hidden = await _project(db_conn, owner.user_id, "Hidden")
     await _doc(db_conn, DOC_G, owner.user_id, project_ids=[hidden])
-    await _grant(db_conn, DOC_G, caller.user_id)  # readable, but the project is not
+    await seed.share_doc(db_conn, DOC_G, owner.user_id, caller.user_id)  # readable, but the project is not
 
     docs_app.dependency_overrides[deps.get_current_user] = lambda: caller
     async with _client(docs_app) as client:
