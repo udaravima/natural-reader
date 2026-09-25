@@ -89,6 +89,7 @@ async def test_non_holder_cannot_share(db_conn, docs_app):
     await _insert_doc(db_conn, HEX, holder.user_id)
     r = await _as(docs_app, other, "PUT", f"/v1/docs/{HEX}/shares/{other.user_id}")
     assert r.status_code == 404
+    assert r.json()["detail"] == {"error": "not_found", "message": "Document not found"}
     assert await _entry(db_conn, other.user_id) is None
 
 
@@ -106,6 +107,7 @@ async def test_share_with_malformed_user_404(db_conn, docs_app):
     await _insert_doc(db_conn, HEX, holder.user_id)
     r = await _as(docs_app, holder, "PUT", f"/v1/docs/{HEX}/shares/not-a-uuid")
     assert r.status_code == 404
+    assert r.json()["detail"] == {"error": "not_found", "message": "User not found"}
 
 
 async def test_share_never_downgrades_recipients_upload_entry(db_conn, docs_app):
@@ -136,6 +138,7 @@ async def test_revoking_someone_elses_share_is_404(db_conn, docs_app):
     await doc_content.add_entry(db_conn, c.user_id, HEX, via="upload")  # c uploaded it too
     r = await _as(docs_app, c, "DELETE", f"/v1/docs/{HEX}/shares/{b.user_id}")
     assert r.status_code == 404
+    assert r.json()["detail"] == {"error": "not_found", "message": "Share not found"}
     assert await _entry(db_conn, b.user_id) == ("shared", a.user_id)
 
 

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
+from ..http_errors import refusal
+
 
 async def _owner(conn, table: str, key_col: str, key: str) -> str | None:
     cur = await conn.execute(
@@ -49,7 +51,7 @@ async def assert_holds_upload(conn, doc_id: str, user_id: str) -> None:
         "SELECT 1 FROM library_entries WHERE doc_id = %s AND user_id = %s "
         "AND added_via = 'upload'", (doc_id, user_id))
     if await cur.fetchone() is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise refusal(404, "not_found", "Document not found")
 
 
 async def can_manage_project_docs(conn, user_id: str, project_id) -> bool:

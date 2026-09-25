@@ -40,6 +40,7 @@ from ..auth.authz import (
 )
 from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
+from ..http_errors import refusal
 from ..services import doc_content, docling_convert, model_router
 from ..services.embeddings import EMBEDDING_DIM, embed_batch, embed_one
 
@@ -364,7 +365,7 @@ async def patch_document(
     pool = get_pool()
     async with pool.connection() as conn:
         if not await doc_content.holds_entry(conn, principal.user_id, doc_id):
-            raise HTTPException(status_code=404, detail="Document not found")
+            raise refusal(404, "not_found", "Document not found")
         sets, params = [], []
         if "tags" in data:
             # `{"tags": null}` is schema-valid and means "clear all tags".
@@ -456,7 +457,7 @@ async def delete_document(
     _ensure_ready()
     async with get_pool().connection() as conn:
         if not await doc_content.remove_entry(conn, principal.user_id, doc_id):
-            raise HTTPException(status_code=404, detail="Document not found")
+            raise refusal(404, "not_found", "Document not found")
         audit("entry.removed", user=principal.user_id, doc=doc_id)
         if await doc_content.gc_content_if_orphaned(conn, doc_id, trigger="entry_removed"):
             _doc_job_locks.pop(doc_id, None)
@@ -473,14 +474,14 @@ async def add_share(doc_id: DocId, user_id: str,
     try:
         uuid.UUID(user_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise refusal(404, "not_found", "User not found")
     try:
         async with get_pool().connection() as conn:
             async with conn.transaction():  # savepoint: a caught FK error leaves conn usable
                 outcome = await doc_content.add_entry(
                     conn, user_id, doc_id, via="shared", shared_by=principal.user_id)
     except pg_errors.ForeignKeyViolation:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise refusal(404, "not_found", "User not found")
     if outcome == "created":
         audit("share.created", by=principal.user_id, to=user_id, doc=doc_id)
     return Response(status_code=204)
@@ -495,10 +496,10 @@ async def remove_share(doc_id: DocId, user_id: str,
     try:
         uuid.UUID(user_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise refusal(404, "not_found", "User not found")
     async with get_pool().connection() as conn:
         if not await doc_content.revoke_share(conn, principal.user_id, user_id, doc_id):
-            raise HTTPException(status_code=404, detail="Share not found")
+            raise refusal(404, "not_found", "Share not found")
         audit("share.revoked", by=principal.user_id, to=user_id, doc=doc_id)
         await doc_content.gc_content_if_orphaned(conn, doc_id, trigger="share_revoked")
     return Response(status_code=204)

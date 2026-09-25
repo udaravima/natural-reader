@@ -102,7 +102,9 @@ async def test_recipient_delete_removes_only_their_entry(db_conn, docs_app):
     async with _client(docs_app) as client:
         assert (await client.delete(f"/v1/docs/{HEX3}")).status_code == 204
         assert (await client.get(f"/v1/docs/{HEX3}")).status_code == 404
-        assert (await client.delete(f"/v1/docs/{HEX3}")).status_code == 404  # nothing left to remove
+        r = await client.delete(f"/v1/docs/{HEX3}")  # nothing left to remove
+        assert r.status_code == 404
+        assert r.json()["detail"] == {"error": "not_found", "message": "Document not found"}
     docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
     async with _client(docs_app) as client:
         r = await client.get(f"/v1/docs/{HEX3}")

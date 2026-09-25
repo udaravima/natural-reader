@@ -29,6 +29,7 @@ async def test_missing_doc_is_404(db_conn):
     with pytest.raises(HTTPException) as e:
         await assert_holds_upload(db_conn, "nope", SEED)
     assert e.value.status_code == 404
+    assert e.value.detail == {"error": "not_found", "message": "Document not found"}
 
 
 async def test_non_holder_is_404_not_403(db_conn):

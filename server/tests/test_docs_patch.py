@@ -85,6 +85,7 @@ async def test_non_holder_patch_is_404(db_conn, docs_app):
     async with _client(docs_app) as client:
         r = await client.patch(f"/v1/docs/{HEX2}", json={"tags": ["x"]})
         assert r.status_code == 404
+        assert r.json()["detail"] == {"error": "not_found", "message": "Document not found"}
 
 
 async def test_owner_user_id_is_422(db_conn, docs_app):

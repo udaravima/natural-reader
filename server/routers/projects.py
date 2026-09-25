@@ -19,6 +19,7 @@ from ..auth.authz import (
     visible_projects_params,
     visible_projects_where,
 )
+from ..http_errors import refusal
 from ..services import doc_content
 from .docs import DocId
 
@@ -176,12 +177,12 @@ async def unlink_doc(project_id: uuid.UUID, doc_id: DocId,
     only `can_manage_project_docs` (A1: the project owner) may — the uploader
     has no special power. Everyone else, and a missing link, gets 404."""
     if not await can_manage_project_docs(conn, principal.user_id, project_id):
-        raise HTTPException(status_code=404, detail="Not found")
+        raise refusal(404, "not_found", "Not found")
     cur = await conn.execute(
         "DELETE FROM project_documents WHERE project_id = %s AND doc_id = %s",
         (project_id, doc_id))
     if cur.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise refusal(404, "not_found", "Not found")
     audit("placement.removed", project=project_id, doc=doc_id, by=principal.user_id)
     await doc_content.gc_content_if_orphaned(conn, doc_id, trigger="placement_removed")
     return Response(status_code=204)

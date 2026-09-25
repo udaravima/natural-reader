@@ -230,7 +230,8 @@ async def test_link_foreign_doc_is_404(db_conn):
     await _mk_doc(db_conn, DOC_A, other["id"])
     async with _client_for(db_conn, _reader(u)) as c:
         r = await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")
-        assert r.status_code == 404 and r.json()["detail"] == "Document not found"
+        assert r.status_code == 404
+        assert r.json()["detail"] == {"error": "not_found", "message": "Document not found"}
 
 
 async def test_project_owner_cannot_link_a_shared_doc(db_conn):
@@ -288,7 +289,10 @@ async def test_unlink_resolution_table(db_conn, linked, caller, expected):
         await seed.place_doc(db_conn, pid, DOC_A, doc_owner["id"])
     who = {"doc_owner": doc_owner, "project_owner": proj_owner, "other": other}[caller]
     async with _client_for(db_conn, _reader(who)) as c:
-        assert (await c.delete(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == expected
+        r = await c.delete(f"/v1/projects/{pid}/docs/{DOC_A}")
+        assert r.status_code == expected
+        if expected == 404:
+            assert r.json()["detail"] == {"error": "not_found", "message": "Not found"}
     assert await _linked(db_conn, pid, DOC_A) is (linked and expected == 404)
     assert await _content_exists(db_conn, DOC_A)  # the uploader's entry still holds it
 
