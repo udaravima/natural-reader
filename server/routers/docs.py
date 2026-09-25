@@ -217,6 +217,20 @@ async def _require_doc_reader(
     return principal
 
 
+async def _require_content_op(doc_id: DocId,
+                              principal: Principal = Depends(_require_doc_reader)) -> Principal:
+    """Content-changing ops (convert, delete converted markdown) change the
+    document for everyone who uses it: only the sole holder or an admin
+    (spec §5). Readers who may not get 409 content_shared with a reason;
+    non-readers already got 404 from _require_doc_reader."""
+    async with get_pool().connection() as conn:
+        reason = await doc_content.content_ops_refusal(
+            conn, doc_id, principal.user_id, is_admin=principal.role == "admin")
+    if reason:
+        raise _content_shared(reason, doc_id, principal.user_id)
+    return principal
+
+
 # ---------- routes ----------
 
 @router.get("")
@@ -716,12 +730,14 @@ async def start_convert_job(
     doc_id: DocId,
     options: ConvertOptionsIn,
     background: BackgroundTasks,
-    _holder: Principal = Depends(_require_upload_holder),
+    _principal: Principal = Depends(_require_content_op),
 ) -> dict[str, Any]:
     """
-    Kick off a docling conversion in the background. Requires that
-    POST /v1/docs/{doc_id}/pdf has stored the bytes first. Returns 202; poll
-    GET /v1/docs/{doc_id} to watch `conversion_state` and then `state`.
+    Kick off a docling conversion in the background. Requires that the
+    document's bytes are already stored (registration stores them). A
+    content-changing op: only the sole holder or an admin (else 409
+    content_shared, spec §5). Returns 202; poll GET /v1/docs/{doc_id} to
+    watch `conversion_state` and then `state`.
     """
     _ensure_ready()
     if not docling_convert.is_enabled():
@@ -740,10 +756,7 @@ async def start_convert_job(
         if not row:
             raise HTTPException(status_code=404, detail="Document not found")
         if not row[0]:
-            raise HTTPException(
-                status_code=409,
-                detail="Upload the PDF bytes first via POST /v1/docs/{doc_id}/pdf",
-            )
+            raise refusal(409, "bytes_missing", "Upload the file again first.")
         await conn.execute(
             """
             UPDATE documents
@@ -800,17 +813,21 @@ async def get_document_markdown(
 
 @router.delete("/{doc_id}/markdown")
 async def delete_document_markdown(
-    doc_id: DocId, _holder: Principal = Depends(_require_upload_holder)
+    doc_id: DocId, background: BackgroundTasks,
+    _principal: Principal = Depends(_require_content_op),
 ) -> dict[str, Any]:
     """
     Wipe a document's converted markdown and the chunks/embeddings derived
     from it. The document row itself stays (so re-conversion is a single
-    click), as does the retained PDF (delete via DELETE /pdf if needed).
+    click), as does the retained bytes — content ops never touch bytes_path.
+    A content-changing op: only the sole holder or an admin (else 409
+    content_shared, spec §5).
 
     Sets `conversion_state=NULL` so the toolbar shows the inviting "Convert"
-    label again. The doc-level `state` flips back to `registered` because the
-    chunks are gone — the user can either re-run convert or fall back to the
-    native client-side `Index` flow.
+    label again, and falls back to the server's native extraction from the
+    stored bytes: `state` flips to `stored` and a background job re-extracts
+    and re-embeds, landing the doc at `indexed` (or `failed` if the stored
+    bytes are missing or don't verify against this doc_id).
     """
     _ensure_ready()
     pool = get_pool()
@@ -829,7 +846,7 @@ async def delete_document_markdown(
                 SET conversion_state = NULL,
                     conversion_error = NULL,
                     converted_at = NULL,
-                    state = 'registered',
+                    state = 'stored',
                     embedding_model = NULL,
                     embedding_dim = NULL,
                     error_message = NULL,
@@ -838,4 +855,5 @@ async def delete_document_markdown(
                 """,
                 (doc_id,),
             )
-    return {"ok": True, "doc_id": doc_id}
+    background.add_task(doc_pipeline.run_pipeline, doc_id)
+    return {"ok": True, "doc_id": doc_id, "state": "extracting"}
