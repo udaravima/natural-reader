@@ -355,7 +355,19 @@ async def _after_upload(doc_id: str, staged, created: bool, existing):
     """Put verified bytes in place (after the INSERT committed) and decide
     what, if anything, runs next. Returns the job to schedule, or None."""
     if created:
-        await _set_bytes_path(doc_id, doc_storage.place(staged, doc_id))
+        try:
+            await _set_bytes_path(doc_id, doc_storage.place(staged, doc_id))
+        except Exception:
+            logger.exception("Could not store uploaded bytes for %s", doc_id)
+            try:
+                async with get_pool().connection() as conn:
+                    await conn.execute(
+                        "UPDATE documents SET state = 'failed', error_message = %s, "
+                        "updated_at = now() WHERE doc_id = %s",
+                        ("Could not store the uploaded file — upload it again.", doc_id))
+            except Exception:
+                logger.exception("Could not record failure state for %s", doc_id)
+            raise
         return doc_pipeline.run_pipeline
     state, extracted_by, bytes_path, conversion_state = existing
     old_file_ok = bool(bytes_path) and doc_storage.sha256_file(Path(bytes_path)) == doc_id

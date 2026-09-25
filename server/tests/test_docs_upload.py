@@ -8,6 +8,7 @@ the hash of those bytes.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import logging
 
@@ -16,7 +17,7 @@ import pytest
 from server.auth import deps
 from server.auth.users import resolve_or_provision_user, set_status
 from server.routers import docs as docs_router
-from server.services import doc_pipeline
+from server.services import doc_pipeline, doc_storage
 from server.tests import seed
 from server.tests.docs_harness import build_docs_app, fake_embed
 from server.tests.pdfgen import make_pdf
@@ -381,6 +382,44 @@ async def test_lost_race_with_gc_retries_once_as_new_content(db_conn, as_user, m
     assert (await _doc(db_conn, doc_id))["state"] == "indexed"
     assert any("retry" in rec.getMessage() and rec.levelno == logging.WARNING
                for rec in caplog.records)
+
+
+async def test_failed_byte_placement_marks_doc_failed_and_is_resumable(
+        db_conn, as_user, monkeypatch, caplog):
+    # A failed placement (disk full, permissions, ...) must not strand new
+    # content in 'extracting' forever: it lands in 'failed', which a plain
+    # re-upload can resume (state='failed' is in the new-content branch of
+    # _after_upload already).
+    alice = await _member(db_conn, "fp-alice")
+    doc_id = _sha(TEXT)
+    real_place = doc_storage.place
+    calls = []
+
+    def place_fails_once(staged, did):
+        calls.append(did)
+        if len(calls) == 1:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_place(staged, did)
+
+    monkeypatch.setattr(doc_storage, "place", place_fails_once)
+
+    with caplog.at_level(logging.ERROR, logger=docs_router.logger.name):
+        async with as_user(alice) as c:
+            with pytest.raises(OSError):
+                await _upload(c, "a.txt", TEXT)
+    doc = await _doc(db_conn, doc_id)
+    assert doc["state"] == "failed"
+    cur = await db_conn.execute(
+        "SELECT error_message FROM documents WHERE doc_id = %s", (doc_id,))
+    assert (await cur.fetchone())[0] == "Could not store the uploaded file — upload it again."
+    assert any(rec.levelno == logging.ERROR and doc_id in rec.getMessage()
+               for rec in caplog.records)
+
+    async with as_user(alice) as c:
+        r = await _upload(c, "a.txt", TEXT)
+    assert r.status_code == 202
+    assert calls == [doc_id, doc_id]  # placement retried exactly once, on the re-upload
+    assert (await _doc(db_conn, doc_id))["state"] == "indexed"
 
 
 # ---------- file names ----------
