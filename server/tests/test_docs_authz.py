@@ -1,3 +1,4 @@
+import hashlib
 from contextlib import asynccontextmanager
 
 import httpx
@@ -9,6 +10,7 @@ from server.auth import deps
 from server.auth.users import resolve_or_provision_user, set_status
 from server.routers import docs as docs_router
 from server.tests import seed
+from server.tests.docs_harness import build_docs_app
 
 HEX = "a" * 64
 HEX2 = "b" * 64
@@ -63,18 +65,21 @@ async def test_upload_holder_can_get(db_conn, docs_app):
         assert (await client.get(f"/v1/docs/{HEX2}")).status_code == 200
 
 
-async def test_register_gives_caller_an_upload_entry(db_conn, docs_app):
+async def test_upload_gives_each_caller_an_upload_entry(db_conn, monkeypatch, tmp_path):
+    # Content has no owner: a second uploader of the same bytes can't "hijack"
+    # it — they just get their own entry beside the first.
     first = await _member(db_conn, "first")
     second = await _member(db_conn, "second")
-    body = {"doc_id": HEX, "file_name": "f", "file_type": "text", "size_bytes": 1}
-    for who in (first, second):  # content has no owner: nobody can "hijack" it
-        docs_app.dependency_overrides[deps.get_current_user] = lambda who=who: who
-        async with _client(docs_app) as client:
-            r = await client.post("/v1/docs", json=body)
-            assert r.status_code == 200
-            assert r.json()["added_via"] == "upload"
+    _app, as_user = build_docs_app(db_conn, monkeypatch, storage_dir=tmp_path)
+    data = b"Some text to upload. It has two sentences."
+    doc_id = hashlib.sha256(data).hexdigest()
+    for who in (first, second):
+        async with as_user(who) as client:
+            r = await client.post("/v1/docs", files={"file": ("f.txt", data)})
+            assert r.status_code in (200, 202) and r.json()["doc_id"] == doc_id
+            assert (await client.get(f"/v1/docs/{doc_id}")).json()["added_via"] == "upload"
     cur = await db_conn.execute(
-        "SELECT user_id, added_via FROM library_entries WHERE doc_id=%s", (HEX,))
+        "SELECT user_id, added_via FROM library_entries WHERE doc_id=%s", (doc_id,))
     assert {(str(u), v) for u, v in await cur.fetchall()} == {
         (first.user_id, "upload"), (second.user_id, "upload")}
 

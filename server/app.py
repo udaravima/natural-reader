@@ -17,11 +17,12 @@ from .endpoints import router as tts_router
 from .routers.admin import router as admin_router
 from .routers.auth import router as auth_router
 from .routers.chat_sessions import router as chat_sessions_router
-from .routers.docs import PDF_STORAGE_DIR, router as docs_router
+from .routers.docs import router as docs_router
 from .routers.inference import router as inference_router
 from .routers.inference import start_client as start_inference, stop_client as stop_inference
 from .routers.projects import router as projects_router
 from .routers.tools import router as tools_router
+from .services import doc_storage
 from .services.embeddings import start_client as start_embeddings, stop_client as stop_embeddings
 from .services.web_search import start_client as start_web_search, stop_client as stop_web_search
 
@@ -94,12 +95,13 @@ def create_app() -> FastAPI:
         await start_embeddings()
         await start_web_search()
         await start_inference()
-        # Make sure the PDF-retention directory exists before the first upload
-        # hits — Path.mkdir in the route is a fallback, not the primary owner.
+        # Make sure the document storage directory exists before the first
+        # upload hits — stage_upload's mkdir is a fallback, not the owner.
+        storage = doc_storage.storage_dir()
         try:
-            PDF_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+            storage.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            logger.warning("Could not create PDF storage dir %s: %s", PDF_STORAGE_DIR, e)
+            logger.warning("Could not create document storage dir %s: %s", storage, e)
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:

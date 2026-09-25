@@ -17,12 +17,15 @@ button is safe — the existing rows are upserted in place.
 from __future__ import annotations
 
 import logging
-import os
+import re
 import uuid
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Path as PathParam, Response, UploadFile
+from fastapi import (
+    APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Path as PathParam, Response,
+    UploadFile,
+)
 from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
@@ -39,47 +42,22 @@ from ..auth.authz import (
 from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
 from ..http_errors import refusal
-from ..services import doc_content, doc_pipeline, docling_convert
+from ..services import doc_content, doc_pipeline, doc_storage, docling_convert
 from ..services.embeddings import embed_one
 
-
-# Filesystem location for retained PDF bytes. Overridable via env so the
-# docker-compose mount can park them on a named volume in production.
-PDF_STORAGE_DIR = Path(os.environ.get("PDF_STORAGE_DIR", "./data/pdfs")).resolve()
-PDF_UPLOAD_MAX_MB = int(os.environ.get("PDF_UPLOAD_MAX_MB", "50"))
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/docs", tags=["docs"])
 
-# doc_id is a client-supplied sha256 hex digest. Constrain it to exactly that
-# shape everywhere it appears (SEC-1): the value is interpolated into a
-# filesystem path (`_pdf_storage_path`), so an unconstrained value like
-# "../../etc/x" would escape PDF_STORAGE_DIR. `DocId` applies the same rule to
-# path parameters, which FastAPI otherwise accepts as arbitrary strings.
+# doc_id is the server-computed sha256 hex digest of the content's bytes.
+# Path parameters are constrained to exactly that shape (SEC-1): FastAPI
+# otherwise accepts arbitrary strings, and a doc id ends up in SQL, logs and
+# (via doc_storage.place) a filesystem path.
 DOC_ID_PATTERN = r"^[0-9a-f]{64}$"
 DocId = Annotated[str, PathParam(pattern=DOC_ID_PATTERN)]
 
 
 # ---------- request / response models ----------
-
-class DocRegisterIn(BaseModel):
-    doc_id: str = Field(pattern=DOC_ID_PATTERN)
-    file_name: str
-    file_type: str = Field(pattern="^(pdf|text|markdown)$")
-    size_bytes: int = Field(ge=0)
-    page_count: int | None = Field(default=None, ge=0)
-
-
-class ChunkIn(BaseModel):
-    ord: int = Field(ge=0)
-    page: int | None = Field(default=None, ge=0)
-    chunk_type: str | None = None
-    text: str
-
-
-class ChunksUploadIn(BaseModel):
-    chunks: list[ChunkIn]
-
 
 class SearchIn(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
@@ -291,28 +269,133 @@ async def list_documents(
     return [_entry_fields(r) for r in rows]
 
 
+async def _lock_existing(conn, doc_id: str):
+    """Lock existing content FOR SHARE before adding an entry, so a concurrent
+    GC (FOR UPDATE) either finishes first — we then see no row — or waits for
+    us. Returns (state, extracted_by, bytes_path, conversion_state) or None."""
+    cur = await conn.execute(
+        "SELECT state, extracted_by, bytes_path, conversion_state FROM documents "
+        "WHERE doc_id = %s FOR SHARE", (doc_id,))
+    return await cur.fetchone()
+
+
 @router.post("")
 async def register_document(
-    payload: DocRegisterIn,
+    background: BackgroundTasks,
+    response: Response,
+    file: UploadFile = File(...),
+    file_name: str | None = Form(None),
+    tags: list[str] = Form(default=[]),
+    client_doc_id: str | None = Form(None),
     principal: Principal = Depends(require_capability("reader")),
 ) -> dict[str, Any]:
-    """
-    Interim JSON registration (Task 9 replaces it with a verified multipart
-    upload): creates the content row if new — an existing row's metadata is
-    left alone — and gives the caller an upload entry for it.
-    """
+    """Add a file to my library (A1 spec §4). The server hashes the uploaded
+    bytes — that hash IS the doc id; `client_doc_id` is only a hint. Existing
+    content → 200 dedupe, no rework. New content → 202 and a background
+    extract + embed job. Proof of possession: nobody gets an entry without
+    sending the bytes."""
     _ensure_ready()
-    pool = get_pool()
-    async with pool.connection() as conn:
+    name = (file_name or file.filename or "").strip()[:255] or "document"
+    staged = await doc_storage.stage_upload(file, name)
+    try:
+        doc_id = staged.sha256
+        if client_doc_id and client_doc_id != doc_id:
+            # The hint is free text from the client: log it only when it has
+            # the shape of an id, so a WARNING line never carries anything else.
+            hint = client_doc_id if re.fullmatch(DOC_ID_PATTERN, client_doc_id) else "(malformed)"
+            logger.warning("Client hash hint mismatch for user %s: hint %s, server %s",
+                           principal.user_id, hint, doc_id)
+        created, existing = await _add_upload_entry(principal.user_id, staged, name, tags)
+        job = await _after_upload(doc_id, staged, created, existing)
+    finally:
+        doc_storage.discard(staged)  # no-op once placed
+    if job is not None:
+        background.add_task(job, doc_id)
+    async with get_pool().connection() as conn:
+        cur = await conn.execute("SELECT state FROM documents WHERE doc_id = %s", (doc_id,))
+        state = (await cur.fetchone())[0]
+    scheduled_new_work = job is doc_pipeline.run_pipeline
+    response.status_code = 202 if scheduled_new_work else 200
+    return {"doc_id": doc_id, "dedup": not created, "state": state}
+
+
+async def _add_upload_entry(user_id: str, staged, name: str, tags: list[str]):
+    """Create-or-find the content and give the user an upload entry, in one
+    transaction. Retries ONCE if a GC removed the row between our conflicting
+    INSERT and our lock (spec §3, races) — the caller never sees a 5xx."""
+    for attempt in (1, 2):
+        async with get_pool().connection() as conn:
+            async with conn.transaction():
+                cur = await conn.execute(
+                    "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, state, "
+                    "extracted_by) VALUES (%s,%s,%s,%s,'extracting','server') "
+                    "ON CONFLICT (doc_id) DO NOTHING RETURNING doc_id",
+                    (staged.sha256, name, staged.file_type, staged.size))
+                created = await cur.fetchone() is not None
+                existing = None
+                if not created:
+                    existing = await _lock_existing(conn, staged.sha256)
+                    if existing is None:
+                        if attempt == 1:
+                            logger.warning("Upload of %s lost a race with GC; retrying once",
+                                           staged.sha256)
+                            continue
+                        raise refusal(503, "busy", "Please try again.")
+                outcome = await doc_content.add_entry(
+                    conn, user_id, staged.sha256, via="upload", tags=tags,
+                    file_name=None if created else name)
+        if outcome != "exists":
+            audit("entry.added", user=user_id, doc=staged.sha256, via="upload",
+                  dedup=str(not created).lower())
+        return created, existing
+    raise AssertionError("unreachable")
+
+
+async def _after_upload(doc_id: str, staged, created: bool, existing):
+    """Put verified bytes in place (after the INSERT committed) and decide
+    what, if anything, runs next. Returns the job to schedule, or None."""
+    if created:
+        await _set_bytes_path(doc_id, doc_storage.place(staged, doc_id))
+        return doc_pipeline.run_pipeline
+    state, extracted_by, bytes_path, conversion_state = existing
+    old_file_ok = bool(bytes_path) and doc_storage.sha256_file(Path(bytes_path)) == doc_id
+    if not old_file_ok or extracted_by == "client":
+        if bytes_path and not Path(bytes_path).exists():
+            logger.warning("Content %s had missing bytes; restored from this upload", doc_id)
+        await _set_bytes_path(doc_id, doc_storage.place(staged, doc_id))
+    if extracted_by == "client":
+        if state == "indexed":
+            if conversion_state == "converted" and old_file_ok:
+                # Its converted pages came from bytes that hash to the id: already
+                # server-derived. Trust it without rework.
+                async with get_pool().connection() as conn:
+                    await conn.execute(
+                        "UPDATE documents SET extracted_by = 'server', updated_at = now() "
+                        "WHERE doc_id = %s", (doc_id,))
+                return None
+            return doc_pipeline.run_legacy_swap
+        await _set_state(doc_id, "stored")
+        return doc_pipeline.run_pipeline
+    if state in ("stored", "failed", "registered"):
+        await _set_state(doc_id, "stored")
+        return doc_pipeline.run_pipeline
+    if state == "extracted":
+        return doc_pipeline.run_pipeline
+    return None  # extracting / indexing / indexed: dedupe, nothing to redo
+
+
+async def _set_bytes_path(doc_id: str, path: Path) -> None:
+    async with get_pool().connection() as conn:
         await conn.execute(
-            "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, page_count) "
-            "VALUES (%s,%s,%s,%s,%s) ON CONFLICT (doc_id) DO NOTHING",
-            (payload.doc_id, payload.file_name, payload.file_type, payload.size_bytes,
-             payload.page_count))
-        if await doc_content.add_entry(conn, principal.user_id, payload.doc_id, via="upload") != "exists":
-            audit("entry.added", user=principal.user_id, doc=payload.doc_id, via="upload")
-        status = await _fetch_doc_status(conn, payload.doc_id, principal.user_id)
-    return status
+            "UPDATE documents SET bytes_path = %s, updated_at = now() WHERE doc_id = %s",
+            (str(path), doc_id))
+
+
+async def _set_state(doc_id: str, state: str) -> None:
+    async with get_pool().connection() as conn:
+        await conn.execute(
+            "UPDATE documents SET state = %s, error_message = NULL, updated_at = now() "
+            "WHERE doc_id = %s", (state, doc_id))
 
 
 @router.get("/{doc_id}")
@@ -365,70 +448,6 @@ async def patch_document(
     if not status:
         raise HTTPException(status_code=404, detail="Document not found")
     return status
-
-
-@router.post("/{doc_id}/chunks")
-async def upload_chunks(
-    doc_id: DocId,
-    payload: ChunksUploadIn,
-    holder: Principal = Depends(_require_upload_holder),
-) -> dict[str, Any]:
-    """
-    Bulk insert/upsert chunks. The frontend should call this in batches (~50)
-    rather than one giant payload — keeps individual requests bounded and lets
-    the UI show incremental progress.
-
-    Chunks are upserted on (doc_id, text_hash): re-indexing the same doc reuses
-    existing rows (preserving any embeddings from PR 4) rather than duplicating.
-    The doc's state advances to `extracted` on the first successful batch
-    (stays at `indexed` / `indexing` if it had already progressed past that).
-    """
-    _ensure_ready()
-    if not payload.chunks:
-        return {"ok": True, "inserted": 0, "doc_id": doc_id}
-
-    pool = get_pool()
-    async with pool.connection() as conn:
-        # Verify the document exists — chunks for an unregistered doc_id would
-        # FK-violate, but a clean 404 is friendlier than a 500.
-        async with conn.cursor() as cur:
-            await cur.execute("SELECT state FROM documents WHERE doc_id = %s", (doc_id,))
-            row = await cur.fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="Register the document first")
-            current_state = row[0]
-
-        async with conn.transaction():
-            async with conn.cursor() as cur:
-                for chunk in payload.chunks:
-                    text = chunk.text.strip()
-                    if not text:
-                        continue
-                    th = doc_pipeline.text_hash(text)
-                    await cur.execute(
-                        """
-                        INSERT INTO doc_chunks
-                            (doc_id, ord, page, chunk_type, text, text_hash)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (doc_id, text_hash) DO UPDATE SET
-                            ord        = EXCLUDED.ord,
-                            page       = EXCLUDED.page,
-                            chunk_type = EXCLUDED.chunk_type
-                        """,
-                        (doc_id, chunk.ord, chunk.page, chunk.chunk_type, text, th),
-                    )
-
-            # Only nudge state forward from the pre-embedding stages — don't
-            # rewind a doc that's already `indexed` back to `extracted`.
-            if current_state in (None, "registered"):
-                await conn.execute(
-                    "UPDATE documents SET state = 'extracted', updated_at = now() WHERE doc_id = %s",
-                    (doc_id,),
-                )
-
-        status = await _fetch_doc_status(conn, doc_id, holder.user_id)
-
-    return {"ok": True, "inserted": len(payload.chunks), "doc_id": doc_id, "status": status}
 
 
 @router.delete("/{doc_id}", status_code=204)
@@ -597,91 +616,6 @@ async def search_document(
 
 
 # ---------- Docling conversion (PDF → Markdown) ----------
-
-def _pdf_storage_path(doc_id: str) -> Path:
-    PDF_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    # Defense in depth behind DocId validation: resolve and confirm the path
-    # stays inside PDF_STORAGE_DIR, so a doc_id that ever slips past the hex
-    # pattern still can't escape via `../` (SEC-1).
-    path = (PDF_STORAGE_DIR / f"{doc_id}.pdf").resolve()
-    if not path.is_relative_to(PDF_STORAGE_DIR):
-        raise HTTPException(status_code=400, detail="Invalid doc_id")
-    return path
-
-
-@router.post("/{doc_id}/pdf")
-async def upload_pdf_bytes(
-    doc_id: DocId,
-    file: UploadFile = File(...),
-    _holder: Principal = Depends(_require_upload_holder),
-) -> dict[str, Any]:
-    """
-    Persist the raw PDF bytes for `doc_id` to the backend filesystem so the
-    convert job (and any future reconversion) can read them without another
-    upload from the browser. Re-upload overwrites in place.
-    """
-    _ensure_ready()
-    pool = get_pool()
-    # Confirm the row exists first — otherwise we'd happily park bytes for a
-    # doc that was never registered.
-    async with pool.connection() as conn, conn.cursor() as cur:
-        await cur.execute("SELECT 1 FROM documents WHERE doc_id = %s", (doc_id,))
-        if not await cur.fetchone():
-            raise HTTPException(status_code=404, detail="Register the document first")
-
-    max_bytes = PDF_UPLOAD_MAX_MB * 1024 * 1024
-    path = _pdf_storage_path(doc_id)
-    written = 0
-    try:
-        with open(path, "wb") as out:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                written += len(chunk)
-                if written > max_bytes:
-                    out.close()
-                    path.unlink(missing_ok=True)
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"PDF exceeds {PDF_UPLOAD_MAX_MB} MB limit",
-                    )
-                out.write(chunk)
-    finally:
-        await file.close()
-
-    async with pool.connection() as conn:
-        await conn.execute(
-            "UPDATE documents SET bytes_path = %s, updated_at = now() WHERE doc_id = %s",
-            (str(path), doc_id),
-        )
-    return {"ok": True, "doc_id": doc_id, "size_bytes": written}
-
-
-@router.delete("/{doc_id}/pdf")
-async def delete_pdf_bytes(
-    doc_id: DocId, _holder: Principal = Depends(_require_upload_holder)
-) -> dict[str, Any]:
-    """Remove retained PDF bytes for `doc_id`. Keeps converted markdown / chunks."""
-    _ensure_ready()
-    pool = get_pool()
-    async with pool.connection() as conn, conn.cursor() as cur:
-        await cur.execute("SELECT bytes_path FROM documents WHERE doc_id = %s", (doc_id,))
-        row = await cur.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Document not found")
-        bytes_path = row[0]
-        await cur.execute(
-            "UPDATE documents SET bytes_path = NULL, updated_at = now() WHERE doc_id = %s",
-            (doc_id,),
-        )
-    if bytes_path:
-        try:
-            Path(bytes_path).unlink(missing_ok=True)
-        except OSError as e:
-            logger.warning("Could not remove PDF for %s: %s", doc_id, e)
-    return {"ok": True, "doc_id": doc_id}
-
 
 async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
     """
