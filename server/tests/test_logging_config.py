@@ -47,3 +47,29 @@ def test_configure_logging_writes_to_rotating_file(tmp_path, monkeypatch, isolat
 
     # Root carries a size-based rotating file handler.
     assert any(isinstance(h, RotatingFileHandler) for h in logging.getLogger().handlers)
+
+
+def test_audit_logger_writes_its_own_file(tmp_path, monkeypatch, isolate_logging):
+    from server.audit import audit
+
+    monkeypatch.setenv("LOG_DIR", str(tmp_path))
+    monkeypatch.delenv("LOG_AUDIT_FILE", raising=False)
+    logging_config.configure_logging()
+    audit("entry.added", user="u1", doc="d1", via="upload")
+    for h in logging.getLogger("server.audit").handlers:
+        h.flush()
+    line = (tmp_path / "audit.log").read_text()
+    assert "entry.added user=u1 doc=d1 via=upload" in line
+
+
+def test_audit_file_override(tmp_path, monkeypatch, isolate_logging):
+    from server.audit import audit
+
+    target = tmp_path / "elsewhere" / "trail.log"
+    monkeypatch.setenv("LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("LOG_AUDIT_FILE", str(target))
+    logging_config.configure_logging()
+    audit("content.gc", doc="d1", trigger="entry_removed")
+    for h in logging.getLogger("server.audit").handlers:
+        h.flush()
+    assert "content.gc doc=d1 trigger=entry_removed" in target.read_text()
