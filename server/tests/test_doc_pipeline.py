@@ -2,6 +2,8 @@
 one-time legacy swap, and POST /index's resume-vs-re-index rule."""
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from server.auth import deps
@@ -12,8 +14,16 @@ from server.tests import seed
 from server.tests.docs_harness import build_docs_app
 from server.tests.pdfgen import make_pdf
 
-DOC = "e" * 64
+DOC = "e" * 64  # an arbitrary hex id — NOT the hash of TEXT, so it's a mismatch
 TEXT = b"The first sentence is here. The second one follows! Is this the third one?"
+
+
+def _sha256(data: bytes) -> str:
+    """Real doc ids are sha256 of the bytes (spec §4). Tests that exercise
+    native extraction or the legacy swap must seed a doc_id that actually
+    matches its stored file, or the bytes-verification check (Review round 1,
+    finding 1) fails them before extraction ever runs."""
+    return hashlib.sha256(data).hexdigest()
 
 
 @pytest.fixture
@@ -73,18 +83,19 @@ async def _entry_count(db_conn, doc_id=DOC):
 
 async def test_pipeline_extracts_stored_text_and_embeds(db_conn, harness, store):
     owner = await _member(db_conn, "p-owner")
-    path = _write(store, DOC, "txt", TEXT)
-    await seed.seed_doc(db_conn, DOC, owner.user_id, file_type="text", state="stored",
+    doc_id = _sha256(TEXT)
+    path = _write(store, doc_id, "txt", TEXT)
+    await seed.seed_doc(db_conn, doc_id, owner.user_id, file_type="text", state="stored",
                         bytes_path=path)
 
-    await doc_pipeline.run_pipeline(DOC)
+    await doc_pipeline.run_pipeline(doc_id)
 
     expected = extract.extract_file(path, "text")
-    doc = await _doc(db_conn)
+    doc = await _doc(db_conn, doc_id)
     assert doc["state"] == "indexed"
     assert doc["extracted_by"] == "server"
     assert doc["page_count"] == expected.page_count
-    rows = await _chunks(db_conn)
+    rows = await _chunks(db_conn, doc_id)
     assert [r[:4] for r in rows] == [(c.ord, c.page, c.chunk_type, c.text) for c in expected.chunks]
     assert rows and all(r[4] for r in rows)
 
@@ -92,17 +103,37 @@ async def test_pipeline_extracts_stored_text_and_embeds(db_conn, harness, store)
 async def test_pipeline_corrupt_pdf_fails_readably_and_keeps_entry(db_conn, harness, store):
     # Review Focus 2: passes the %PDF- magic check but pdfium can't open it.
     owner = await _member(db_conn, "p-corrupt")
-    path = _write(store, DOC, "pdf", b"%PDF-1.4 garbage")
-    await seed.seed_doc(db_conn, DOC, owner.user_id, file_type="pdf", state="stored",
+    data = b"%PDF-1.4 garbage"
+    doc_id = _sha256(data)
+    path = _write(store, doc_id, "pdf", data)
+    await seed.seed_doc(db_conn, doc_id, owner.user_id, file_type="pdf", state="stored",
                         bytes_path=path)
 
-    await doc_pipeline.run_pipeline(DOC)  # must not raise
+    await doc_pipeline.run_pipeline(doc_id)  # must not raise
+
+    doc = await _doc(db_conn, doc_id)
+    assert doc["state"] == "failed"
+    assert doc["error_message"] and doc["error_message"].startswith("Could not extract text")
+    assert await _chunks(db_conn, doc_id) == []
+    assert await _entry_count(db_conn, doc_id) == 1
+
+
+async def test_pipeline_bytes_mismatch_fails_without_marking_server(db_conn, harness, store):
+    """Fix round 1, finding 1: a legacy doc's bytes_path predates the
+    hash-equals-doc_id guarantee. Stored bytes that don't hash to doc_id must
+    fail readably instead of being native-extracted and marked server-derived."""
+    owner = await _member(db_conn, "mm-owner")
+    path = _write(store, DOC, "txt", TEXT)  # DOC != sha256(TEXT): a mismatch
+    await seed.seed_doc(db_conn, DOC, owner.user_id, file_type="text", state="stored",
+                        bytes_path=path)  # seed.seed_doc defaults extracted_by='client'
+
+    await doc_pipeline.run_pipeline(DOC)
 
     doc = await _doc(db_conn)
     assert doc["state"] == "failed"
-    assert doc["error_message"] and doc["error_message"].startswith("Could not extract text")
-    assert await _chunks(db_conn) == []
-    assert await _entry_count(db_conn) == 1
+    assert doc["error_message"] == (
+        "Stored file doesn't match this document — upload the file again.")
+    assert doc["extracted_by"] == "client"  # unchanged — never reached the update
 
 
 async def test_pipeline_without_bytes_asks_for_reupload(db_conn, harness):
@@ -141,38 +172,43 @@ async def test_pipeline_on_converted_doc_seeds_from_pages(db_conn, harness, stor
 
 # ---------- run_legacy_swap ----------
 
-async def _seed_legacy(db_conn, store, sub):
+async def _seed_legacy(db_conn, store, sub, *, doc_id=None):
+    """Seeds a legacy (client-extracted) indexed doc with an old embedded
+    "OLD" chunk. `doc_id` defaults to the real sha256 of TEXT, so the bytes
+    pass the hash-verification guard; pass an explicit mismatched id to test
+    that guard itself."""
     owner = await _member(db_conn, sub)
-    path = _write(store, DOC, "txt", TEXT)
-    await seed.seed_doc(db_conn, DOC, owner.user_id, file_type="text", state="indexed",
+    doc_id = doc_id or _sha256(TEXT)
+    path = _write(store, doc_id, "txt", TEXT)
+    await seed.seed_doc(db_conn, doc_id, owner.user_id, file_type="text", state="indexed",
                         bytes_path=path, extracted_by="client")
     await db_conn.execute(
-        "UPDATE documents SET conversion_state = 'converted' WHERE doc_id = %s", (DOC,))
+        "UPDATE documents SET conversion_state = 'converted' WHERE doc_id = %s", (doc_id,))
     await db_conn.execute(
-        "INSERT INTO doc_pages (doc_id, page, markdown) VALUES (%s, 1, 'old md')", (DOC,))
+        "INSERT INTO doc_pages (doc_id, page, markdown) VALUES (%s, 1, 'old md')", (doc_id,))
     vec = "[" + ",".join(["1"] + ["0"] * (EMBEDDING_DIM - 1)) + "]"
     await db_conn.execute(
         "INSERT INTO doc_chunks (doc_id, ord, page, chunk_type, text, text_hash, embedding, "
         "embedding_model) VALUES (%s, 0, 1, 'page', 'OLD', %s, %s::vector, 'm')",
-        (DOC, doc_pipeline.text_hash("OLD"), vec))
-    return path
+        (doc_id, doc_pipeline.text_hash("OLD"), vec))
+    return doc_id, path
 
 
 async def test_legacy_swap_replaces_client_chunks(db_conn, harness, store):
-    path = await _seed_legacy(db_conn, store, "l-owner")
+    doc_id, path = await _seed_legacy(db_conn, store, "l-owner")
 
-    await doc_pipeline.run_legacy_swap(DOC)
+    await doc_pipeline.run_legacy_swap(doc_id)
 
-    rows = await _chunks(db_conn)
+    rows = await _chunks(db_conn, doc_id)
     expected = extract.extract_file(path, "text").chunks
     assert [r[3] for r in rows] == [c.text for c in expected]
     assert "OLD" not in [r[3] for r in rows]
     assert all(r[4] for r in rows)
-    doc = await _doc(db_conn)
+    doc = await _doc(db_conn, doc_id)
     assert doc["state"] == "indexed"
     assert doc["extracted_by"] == "server"
     assert doc["conversion_state"] is None
-    cur = await db_conn.execute("SELECT count(*) FROM doc_pages WHERE doc_id = %s", (DOC,))
+    cur = await db_conn.execute("SELECT count(*) FROM doc_pages WHERE doc_id = %s", (doc_id,))
     assert (await cur.fetchone())[0] == 0
 
 
@@ -181,13 +217,55 @@ async def test_legacy_swap_keeps_old_index_when_embedding_fails(db_conn, monkeyp
         raise RuntimeError("embedding service down")
 
     build_docs_app(db_conn, monkeypatch, storage_dir=store, embed=broken_embed)
-    await _seed_legacy(db_conn, store, "l-broken")
+    doc_id, _ = await _seed_legacy(db_conn, store, "l-broken")
 
-    await doc_pipeline.run_legacy_swap(DOC)
+    await doc_pipeline.run_legacy_swap(doc_id)
 
-    rows = await _chunks(db_conn)
+    rows = await _chunks(db_conn, doc_id)
     assert [(r[3], r[4]) for r in rows] == [("OLD", True)]
-    doc = await _doc(db_conn)
+    doc = await _doc(db_conn, doc_id)
+    assert doc["extracted_by"] == "client"
+    assert doc["state"] == "indexed"
+
+
+async def test_legacy_swap_bytes_mismatch_keeps_old_index(db_conn, harness, store):
+    """Fix round 1, finding 1: run_legacy_swap must verify bytes before
+    re-extracting too, or an unverified legacy bytes_path gets promoted to
+    extracted_by='server' and served to every later verified uploader."""
+    doc_id, _ = await _seed_legacy(db_conn, store, "l-mismatch", doc_id=DOC)
+
+    await doc_pipeline.run_legacy_swap(doc_id)
+
+    rows = await _chunks(db_conn, doc_id)
+    assert [(r[3], r[4]) for r in rows] == [("OLD", True)]
+    doc = await _doc(db_conn, doc_id)
+    assert doc["extracted_by"] == "client"
+    assert doc["state"] == "indexed"
+
+
+async def test_legacy_swap_no_extractable_text_keeps_old_index(db_conn, harness, store):
+    """Fix round 1, finding 2: native extraction of a text-less (scanned) PDF
+    finds zero chunks. That must not wipe a working legacy index — the old
+    embedded "OCR TEXT" chunk must survive."""
+    owner = await _member(db_conn, "l-notext")
+    pdf_bytes = make_pdf([""])  # one page, no text layer -> extract_pdf finds 0 chunks
+    doc_id = _sha256(pdf_bytes)
+    path = _write(store, doc_id, "pdf", pdf_bytes)
+    await seed.seed_doc(db_conn, doc_id, owner.user_id, file_type="pdf", state="indexed",
+                        bytes_path=path, extracted_by="client")
+    await db_conn.execute(
+        "UPDATE documents SET conversion_state = 'converted' WHERE doc_id = %s", (doc_id,))
+    vec = "[" + ",".join(["1"] + ["0"] * (EMBEDDING_DIM - 1)) + "]"
+    await db_conn.execute(
+        "INSERT INTO doc_chunks (doc_id, ord, page, chunk_type, text, text_hash, embedding, "
+        "embedding_model) VALUES (%s, 0, 1, 'page-md', 'OCR TEXT', %s, %s::vector, 'm')",
+        (doc_id, doc_pipeline.text_hash("OCR TEXT"), vec))
+
+    await doc_pipeline.run_legacy_swap(doc_id)
+
+    rows = await _chunks(db_conn, doc_id)
+    assert [(r[3], r[4]) for r in rows] == [("OCR TEXT", True)]
+    doc = await _doc(db_conn, doc_id)
     assert doc["extracted_by"] == "client"
     assert doc["state"] == "indexed"
 
@@ -198,15 +276,16 @@ async def test_index_resumes_failed_doc_for_shared_holder(db_conn, harness, stor
     _, as_user = harness
     owner = await _member(db_conn, "i-owner")
     recipient = await _member(db_conn, "i-recipient")
-    path = _write(store, DOC, "txt", TEXT)
-    await seed.seed_doc(db_conn, DOC, owner.user_id, file_type="text", state="failed",
+    doc_id = _sha256(TEXT)  # must match: this resume actually runs the pipeline
+    path = _write(store, doc_id, "txt", TEXT)
+    await seed.seed_doc(db_conn, doc_id, owner.user_id, file_type="text", state="failed",
                         bytes_path=path)
-    await seed.share_doc(db_conn, DOC, owner.user_id, recipient.user_id)
+    await seed.share_doc(db_conn, doc_id, owner.user_id, recipient.user_id)
 
     async with as_user(recipient) as client:
-        r = await client.post(f"/v1/docs/{DOC}/index")
+        r = await client.post(f"/v1/docs/{doc_id}/index")
     assert r.status_code == 202
-    assert (await _doc(db_conn))["state"] == "indexed"
+    assert (await _doc(db_conn, doc_id))["state"] == "indexed"
 
 
 async def test_index_reindex_by_shared_holder_is_content_shared(db_conn, harness, store):
@@ -229,17 +308,18 @@ async def test_index_reindex_by_shared_holder_is_content_shared(db_conn, harness
 async def test_index_reindex_by_sole_holder(db_conn, harness, store):
     _, as_user = harness
     owner = await _member(db_conn, "s-owner")
-    path = _write(store, DOC, "txt", TEXT)
-    await seed.seed_doc(db_conn, DOC, owner.user_id, file_type="text", state="indexed",
+    doc_id = _sha256(TEXT)  # must match: this re-index actually runs the pipeline
+    path = _write(store, doc_id, "txt", TEXT)
+    await seed.seed_doc(db_conn, doc_id, owner.user_id, file_type="text", state="indexed",
                         bytes_path=path)
 
     async with as_user(owner) as client:
-        r = await client.post(f"/v1/docs/{DOC}/index")
+        r = await client.post(f"/v1/docs/{doc_id}/index")
     assert r.status_code == 202
-    doc = await _doc(db_conn)
+    doc = await _doc(db_conn, doc_id)
     assert doc["state"] == "indexed"
     assert doc["extracted_by"] == "server"
-    rows = await _chunks(db_conn)
+    rows = await _chunks(db_conn, doc_id)
     assert rows and all(r[4] for r in rows)
 
 
@@ -261,6 +341,7 @@ async def test_index_by_project_only_reader_is_404(db_conn, harness, store):
         assert (await client.get(f"/v1/docs/{DOC}")).status_code == 200  # readable...
         r = await client.post(f"/v1/docs/{DOC}/index")
     assert r.status_code == 404  # ...but no entry, so nothing to resume
+    assert r.json()["detail"]["error"] == "not_found"  # structured, not a plain string
     assert (await _doc(db_conn))["state"] == "failed"
 
 
@@ -302,15 +383,16 @@ async def test_index_admin_without_entry_resumes_via_project_placement(db_conn, 
         "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
         (admin.user_id,))
     pid = (await cur.fetchone())[0]
-    path = _write(store, DOC, "txt", TEXT)
-    await seed.seed_doc(db_conn, DOC, owner.user_id, file_type="text", state="failed",
+    doc_id = _sha256(TEXT)  # must match: this resume actually runs the pipeline
+    path = _write(store, doc_id, "txt", TEXT)
+    await seed.seed_doc(db_conn, doc_id, owner.user_id, file_type="text", state="failed",
                         bytes_path=path, project_ids=[pid])
 
     async with as_user(admin) as client:
-        r = await client.post(f"/v1/docs/{DOC}/index")
+        r = await client.post(f"/v1/docs/{doc_id}/index")
 
     assert r.status_code == 202
-    doc = await _doc(db_conn)
+    doc = await _doc(db_conn, doc_id)
     assert doc["state"] == "indexed"
     assert doc["extracted_by"] == "server"
 

@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 
 from ..db import get_pool, is_ready
-from . import extract, model_router
+from . import doc_storage, extract, model_router
 from .embeddings import EMBEDDING_DIM, embed_batch
 
 logger = logging.getLogger(__name__)
@@ -225,6 +225,15 @@ async def run_pipeline(doc_id: str) -> None:
                 else:
                     if not bytes_path or not Path(bytes_path).is_file():
                         raise RuntimeError("No stored file — upload the file again.")
+                    # Legacy bytes (pre-A1) were never verified against doc_id:
+                    # a resume/re-index of one would otherwise native-extract
+                    # from unverified content and mark it server-derived.
+                    actual_hash = await asyncio.to_thread(doc_storage.sha256_file, Path(bytes_path))
+                    if actual_hash != doc_id:
+                        logger.warning("Stored bytes don't match doc %s (hash=%s)", doc_id, actual_hash)
+                        await _fail(doc_id, "Stored file doesn't match this document — "
+                                             "upload the file again.")
+                        return
                     async with get_pool().connection() as conn:
                         await conn.execute(
                             "UPDATE documents SET state = 'extracting', error_message = NULL, "
@@ -271,8 +280,21 @@ async def run_legacy_swap(doc_id: str) -> None:
             row = await cur.fetchone()
         if not row or row[0] != "indexed" or row[1] != "client" or not row[2]:
             return
+        bytes_path = row[2]
+        # Legacy doc ids ARE the sha256 of their bytes (spec §4), so benign
+        # legacy bytes always pass this. A mismatch means the bytes were
+        # swapped in unverified (e.g. via the old, unverified /pdf route).
+        actual_hash = await asyncio.to_thread(doc_storage.sha256_file, Path(bytes_path))
+        if actual_hash != doc_id:
+            logger.warning("Stored bytes don't match doc %s; skipping legacy swap (hash=%s)",
+                            doc_id, actual_hash)
+            return
         try:
-            result = await asyncio.to_thread(extract.extract_file, Path(row[2]), row[3])
+            result = await asyncio.to_thread(extract.extract_file, Path(bytes_path), row[3])
+            if not result.chunks:
+                logger.warning("Legacy re-extraction of %s produced no chunks; "
+                                "keeping the old index", doc_id)
+                return
             texts = [c.text for c in result.chunks]
             vectors = []
             for i in range(0, len(texts), EMBED_BATCH):

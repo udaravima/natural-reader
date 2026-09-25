@@ -532,7 +532,7 @@ async def start_index_job(doc_id: DocId, background: BackgroundTasks,
             if not has_bytes and conversion_state != "converted":
                 raise refusal(409, "bytes_missing", "Upload the file again first.")
         elif not is_admin and not await doc_content.holds_entry(conn, principal.user_id, doc_id):
-            raise HTTPException(status_code=404, detail="Document not found")
+            raise refusal(404, "not_found", "Document not found")
         if state in ("extracting", "indexing"):
             return {"ok": True, "doc_id": doc_id, "state": state}  # already running
         if state in ("indexed", "failed", "registered"):
