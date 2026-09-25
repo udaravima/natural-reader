@@ -15,6 +15,7 @@ from server.auth.users import (
     resolve_or_provision_user,
 )
 from server.routers import admin as admin_router
+from server.tests import seed
 
 
 def _app(db_conn, principal):
@@ -88,11 +89,7 @@ async def test_delete_user_happy_path_cascades(db_conn):
     await db_conn.execute(
         "INSERT INTO chat_sessions (id, user_id) VALUES (%s, %s)", ("cs1", victim)
     )
-    await db_conn.execute(
-        "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, user_id) "
-        "VALUES (%s, 'd.pdf', 'pdf', 1, %s)",
-        ("d1", victim),
-    )
+    await seed.seed_doc(db_conn, "d1", victim, file_name="d.pdf", file_type="pdf")
 
     async with _client(_app(db_conn, p)) as client:
         r = await client.delete(f"/v1/admin/users/{victim}")
@@ -170,11 +167,8 @@ async def test_delete_sweeps_users_pdf_files(db_conn, tmp_path):
         ("d2", victim, victim_pdf2),
         ("d3", admin["id"], admin_pdf),
     ):
-        await db_conn.execute(
-            "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, "
-            "user_id, pdf_path) VALUES (%s, 'x.pdf', 'pdf', 1, %s, %s)",
-            (doc_id, user_id, str(pdf)),
-        )
+        await seed.seed_doc(db_conn, doc_id, user_id, file_name="x.pdf", file_type="pdf",
+                            bytes_path=pdf)
 
     async with _client(_app(db_conn, p)) as client:
         r = await client.delete(f"/v1/admin/users/{victim}")

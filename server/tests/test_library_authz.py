@@ -1,6 +1,7 @@
 import pytest
 from fastapi import HTTPException
 from server.auth import authz
+from server.tests import seed
 pytestmark = pytest.mark.asyncio
 
 
@@ -12,12 +13,7 @@ async def _user(conn, sub, email):
 
 
 async def _doc(conn, doc_id, owner, project_ids=()):
-    await conn.execute(
-        "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, user_id) "
-        "VALUES (%s,'f.pdf','pdf',1,%s)", (doc_id, owner))
-    for pid in project_ids:
-        await conn.execute(
-            "INSERT INTO project_documents (project_id, doc_id) VALUES (%s,%s)", (pid, doc_id))
+    await seed.seed_doc(conn, doc_id, owner, file_name="f.pdf", project_ids=project_ids)
 
 
 async def _project(conn, owner, name="P"):
@@ -57,8 +53,7 @@ async def test_grantee_can_read(db_conn):
     o = await _user(db_conn, "o", "o@x.io")
     g = await _user(db_conn, "g", "g@x.io")
     await _doc(db_conn, "d1", o)
-    await db_conn.execute(
-        "INSERT INTO doc_grants (doc_id, grantee_user_id) VALUES ('d1',%s)", (g,))
+    await seed.share_doc(db_conn, "d1", o, g)
     await authz.assert_can_read_doc(db_conn, "d1", g)  # no raise
 
 

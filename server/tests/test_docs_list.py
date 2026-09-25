@@ -16,6 +16,7 @@ from httpx import ASGITransport
 from server.auth import deps
 from server.auth.users import resolve_or_provision_user, set_status
 from server.routers import docs as docs_router
+from server.tests import seed
 
 pytestmark = pytest.mark.asyncio
 
@@ -46,14 +47,8 @@ async def _member(db_conn, sub):
 
 
 async def _doc(db_conn, doc_id, owner_id, *, tags=None, project_ids=(), file_name="f.pdf"):
-    await db_conn.execute(
-        "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, user_id, tags) "
-        "VALUES (%s,%s,'pdf',1,%s,%s)",
-        (doc_id, file_name, owner_id, tags or []),
-    )
-    for pid in project_ids:
-        await db_conn.execute(
-            "INSERT INTO project_documents (project_id, doc_id) VALUES (%s,%s)", (pid, doc_id))
+    await seed.seed_doc(db_conn, doc_id, owner_id, file_name=file_name, tags=tags or (),
+                        project_ids=project_ids)
 
 
 async def _project(db_conn, owner_id, name):
@@ -64,10 +59,9 @@ async def _project(db_conn, owner_id, name):
 
 
 async def _grant(db_conn, doc_id, grantee_id):
-    await db_conn.execute(
-        "INSERT INTO doc_grants (doc_id, grantee_user_id) VALUES (%s,%s)",
-        (doc_id, grantee_id),
-    )
+    cur = await db_conn.execute("SELECT user_id FROM documents WHERE doc_id=%s", (doc_id,))
+    owner_id = str((await cur.fetchone())[0])
+    await seed.share_doc(db_conn, doc_id, owner_id, grantee_id)
 
 
 DOC_C = "c" * 64  # caller's own doc

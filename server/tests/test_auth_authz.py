@@ -3,16 +3,13 @@ from fastapi import HTTPException
 
 from server.auth.authz import assert_owns_doc, assert_owns_session
 from server.auth.users import resolve_or_provision_user
+from server.tests import seed
 
 SEED = "00000000-0000-0000-0000-000000000001"
 
 
 async def _doc(db_conn, doc_id, owner):
-    await db_conn.execute(
-        "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, user_id) "
-        "VALUES (%s,'f','text',1,%s)",
-        (doc_id, owner),
-    )
+    await seed.seed_doc(db_conn, doc_id, owner, file_name="f", file_type="text")
 
 
 async def test_owner_ok(db_conn):

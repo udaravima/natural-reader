@@ -9,6 +9,7 @@ from httpx import ASGITransport
 from server.auth import deps
 from server.auth.users import resolve_or_provision_user, set_status
 from server.routers import docs as docs_router
+from server.tests import seed
 
 HEX = "a" * 64
 HEX2 = "b" * 64
@@ -45,11 +46,7 @@ async def _member(db_conn, sub):
 
 
 async def _insert_doc(db_conn, doc_id, owner_id):
-    await db_conn.execute(
-        "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, user_id) "
-        "VALUES (%s,'f','text',1,%s)",
-        (doc_id, owner_id),
-    )
+    await seed.seed_doc(db_conn, doc_id, owner_id, file_name="f", file_type="text")
 
 
 async def test_owner_adds_and_removes_grant(db_conn, docs_app):

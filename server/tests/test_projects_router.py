@@ -7,6 +7,7 @@ from httpx import ASGITransport
 from server.auth import deps
 from server.auth.users import resolve_or_provision_user
 from server.routers import projects as projects_router
+from server.tests import seed
 
 
 def _app(db_conn, principal):
@@ -167,9 +168,7 @@ async def _mk_project(db_conn, owner_id, name="P"):
 
 
 async def _mk_doc(db_conn, doc_id, owner_id):
-    await db_conn.execute(
-        "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, user_id) "
-        "VALUES (%s,'f.pdf','pdf',1,%s)", (doc_id, owner_id))
+    await seed.seed_doc(db_conn, doc_id, owner_id, file_name="f.pdf")
 
 
 async def _linked(db_conn, pid, doc_id):
@@ -231,8 +230,7 @@ async def test_project_owner_cannot_link_a_granted_doc(db_conn):
     other = await resolve_or_provision_user(db_conn, iss="i", sub="l5x", email="l5x@x.io")
     pid = await _mk_project(db_conn, u["id"])
     await _mk_doc(db_conn, DOC_A, other["id"])
-    await db_conn.execute(
-        "INSERT INTO doc_grants (doc_id, grantee_user_id) VALUES (%s,%s)", (DOC_A, u["id"]))
+    await seed.share_doc(db_conn, DOC_A, other["id"], u["id"])
     async with _client_for(db_conn, _reader(u)) as c:
         assert (await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 404
     assert not await _linked(db_conn, pid, DOC_A)
@@ -276,8 +274,7 @@ async def test_unlink_resolution_table(db_conn, linked, caller, expected):
         (pid, doc_owner["id"], pid, other["id"]))
     await _mk_doc(db_conn, DOC_A, doc_owner["id"])
     if linked:
-        await db_conn.execute(
-            "INSERT INTO project_documents (project_id, doc_id) VALUES (%s,%s)", (pid, DOC_A))
+        await seed.place_doc(db_conn, pid, DOC_A, doc_owner["id"])
     who = {"doc_owner": doc_owner, "project_owner": proj_owner, "other": other}[caller]
     async with _client_for(db_conn, _reader(who)) as c:
         assert (await c.delete(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == expected
@@ -291,8 +288,7 @@ async def test_doc_owner_who_left_the_project_can_still_unlink(db_conn):
     proj_owner = await resolve_or_provision_user(db_conn, iss="i", sub="rf2p", email="rf2p@x.io")
     pid = await _mk_project(db_conn, proj_owner["id"])
     await _mk_doc(db_conn, DOC_A, doc_owner["id"])
-    await db_conn.execute(
-        "INSERT INTO project_documents (project_id, doc_id) VALUES (%s,%s)", (pid, DOC_A))
+    await seed.place_doc(db_conn, pid, DOC_A, doc_owner["id"])
     async with _client_for(db_conn, _reader(doc_owner)) as c:
         assert (await c.delete(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 204
     assert not await _linked(db_conn, pid, DOC_A)
@@ -334,8 +330,7 @@ async def test_new_owner_after_reassignment_can_unlink(db_conn):
     new = await resolve_or_provision_user(db_conn, iss="i", sub="rf4b", email="rf4b@x.io")
     pid = await _mk_project(db_conn, old["id"])
     await _mk_doc(db_conn, DOC_A, old["id"])
-    await db_conn.execute(
-        "INSERT INTO project_documents (project_id, doc_id) VALUES (%s,%s)", (pid, DOC_A))
+    await seed.place_doc(db_conn, pid, DOC_A, old["id"])
     await db_conn.execute("UPDATE documents SET user_id=%s WHERE doc_id=%s", (new["id"], DOC_A))
     async with _client_for(db_conn, _reader(new)) as c:
         assert (await c.delete(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 204

@@ -8,6 +8,7 @@ from httpx import ASGITransport
 from server.auth import deps
 from server.auth.users import resolve_or_provision_user, set_status
 from server.routers import docs as docs_router
+from server.tests import seed
 
 HEX = "a" * 64
 HEX2 = "b" * 64
@@ -42,11 +43,7 @@ async def _member(db_conn, sub):
 
 
 async def _insert_doc(db_conn, doc_id, owner_id):
-    await db_conn.execute(
-        "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, user_id) "
-        "VALUES (%s,'f','text',1,%s)",
-        (doc_id, owner_id),
-    )
+    await seed.seed_doc(db_conn, doc_id, owner_id, file_name="f", file_type="text")
 
 
 async def test_get_others_doc_is_404(db_conn, docs_app):
@@ -85,10 +82,7 @@ async def test_grantee_can_get_document_but_not_delete(db_conn, docs_app):
     owner = await _member(db_conn, "owner3")
     grantee = await _member(db_conn, "grantee")
     await _insert_doc(db_conn, HEX3, owner.user_id)
-    await db_conn.execute(
-        "INSERT INTO doc_grants (doc_id, grantee_user_id) VALUES (%s,%s)",
-        (HEX3, grantee.user_id),
-    )
+    await seed.share_doc(db_conn, HEX3, owner.user_id, grantee.user_id)
     docs_app.dependency_overrides[deps.get_current_user] = lambda: grantee
     async with _client(docs_app) as client:
         r = await client.get(f"/v1/docs/{HEX3}")

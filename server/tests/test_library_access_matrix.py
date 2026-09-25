@@ -11,6 +11,7 @@ from httpx import ASGITransport
 from server.auth import authz, deps
 from server.auth.users import resolve_or_provision_user, set_status
 from server.routers import docs as docs_router
+from server.tests import seed
 
 pytestmark = pytest.mark.asyncio
 
@@ -67,14 +68,9 @@ async def test_access_matrix(db_conn, docs_app, role, n_projects):
             (pid, uid[member_role]))
         projects.append(pid)
 
-    await db_conn.execute(
-        "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, user_id) "
-        "VALUES (%s,'f.pdf','pdf',1,%s)", (DOC, uid["doc_owner"]))
-    for pid in projects[:n_projects]:
-        await db_conn.execute(
-            "INSERT INTO project_documents (project_id, doc_id) VALUES (%s,%s)", (pid, DOC))
-    await db_conn.execute(
-        "INSERT INTO doc_grants (doc_id, grantee_user_id) VALUES (%s,%s)", (DOC, uid["grantee"]))
+    await seed.seed_doc(db_conn, DOC, uid["doc_owner"], file_name="f.pdf",
+                        project_ids=projects[:n_projects])
+    await seed.share_doc(db_conn, DOC, uid["doc_owner"], uid["grantee"])
 
     readable = _expected(role, n_projects)
     if readable:
