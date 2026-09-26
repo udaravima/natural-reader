@@ -14,7 +14,7 @@ const json = (status, body) => ({ ok: status < 400, status, json: async () => bo
 const docs = [
   {
     doc_id: 'd1', file_name: 'Owned.pdf', state: 'indexed', tags: [],
-    projects: [], owner_user_id: 'me', is_owner: true,
+    projects: [], in_library: true, added_via: 'upload', shared_by: null,
   },
 ];
 const projects = [];
@@ -22,7 +22,7 @@ const projects = [];
 describe('LibraryPage delete — in-flight feedback', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('disables the confirm button and shows a Deleting state while the DELETE is in flight', async () => {
+  it('disables the confirm button and shows a Removing state while the DELETE is in flight', async () => {
     let resolveDelete;
     apiFetch.mockImplementation(async (host, port, path, opts) => {
       if (path.startsWith('/v1/docs/') && opts?.method === 'DELETE') {
@@ -38,16 +38,16 @@ describe('LibraryPage delete — in-flight feedback', () => {
     await screen.findByText('Owned.pdf');
     const row = screen.getByTestId('doc-row-d1');
 
-    fireEvent.click(within(row).getByRole('button', { name: 'Delete Owned.pdf' }));
-    fireEvent.click(within(row).getByRole('button', { name: /confirm delete/i }));
+    fireEvent.click(within(row).getByRole('button', { name: 'Remove Owned.pdf from my library' }));
+    fireEvent.click(within(row).getByRole('button', { name: /confirm remove/i }));
 
     // While the request is pending the button reports a busy state and can't be
     // clicked again — no more silent "did that even register?" clicks.
-    const busy = await within(row).findByRole('button', { name: /deleting/i });
+    const busy = await within(row).findByRole('button', { name: /removing/i });
     expect(busy).toBeDisabled();
 
     resolveDelete();
     await waitFor(() =>
-      expect(within(row).queryByRole('button', { name: /deleting/i })).toBeNull());
+      expect(within(row).queryByRole('button', { name: /removing/i })).toBeNull());
   });
 });

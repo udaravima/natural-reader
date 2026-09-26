@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Search, FolderOpen, Share2, X, Check, Trash2, Loader2 } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
+import { describeRefusal } from '../../lib/apiErrors';
 
 // Typing pauses this long before a search-as-you-type request fires. Keeps
 // GET /v1/docs?q=... from firing on every keystroke while staying fast
@@ -15,7 +16,8 @@ function buildDocsPath({ q, projectId }) {
   return qs ? `/v1/docs?${qs}` : '/v1/docs';
 }
 
-// Inline tag editor for a row the caller owns. Adding or removing a chip
+// Inline tag editor for a row the caller has in their library (uploaded or
+// shared with them — both are their own entry). Adding or removing a chip
 // PATCHes the whole replacement array in one shot — the backend
 // dedupes/sorts it server-side, so the client doesn't need to.
 function TagEditor({ doc, theme, onSave }) {
@@ -62,9 +64,10 @@ function TagEditor({ doc, theme, onSave }) {
   );
 }
 
-// One chip per linked project. The owner of the doc can add it to any
-// project they can see and remove it from any; a project owner can remove
-// someone else's doc from THEIR project (never add it — spec §6).
+// One chip per linked project. Projects govern their own documents: only a
+// user holding an upload entry can file a document into a project they can
+// see, and only that project's owner can remove a document from it — never
+// the uploader, and never anyone else who merely holds a library entry.
 function ProjectChips({ doc, projects, theme, onLink, onUnlink, busy }) {
   const linked = doc.projects || [];
   const linkedIds = new Set(linked.map((p) => p.id));
@@ -81,7 +84,7 @@ function ProjectChips({ doc, projects, theme, onLink, onUnlink, busy }) {
           className={`flex items-center gap-1 px-1.5 py-0.5 rounded ${theme.bgTertiary} ${theme.textSecondary}`}
         >
           {p.name}
-          {(doc.is_owner || ownedProjectIds.has(p.id)) && (
+          {ownedProjectIds.has(p.id) && (
             <button
               onClick={() => onUnlink(doc, p)}
               aria-label={`Remove ${doc.file_name} from ${p.name}`}
@@ -93,7 +96,7 @@ function ProjectChips({ doc, projects, theme, onLink, onUnlink, busy }) {
           )}
         </span>
       ))}
-      {doc.is_owner && addable.length > 0 && (
+      {doc.added_via === 'upload' && addable.length > 0 && (
         <select
           value=""
           onChange={(e) => { if (e.target.value) onLink(doc, e.target.value); }}
@@ -113,12 +116,13 @@ function ProjectChips({ doc, projects, theme, onLink, onUnlink, busy }) {
 
 /**
  * Library: a flat list/search/filter view over every document the caller
- * can read (own docs, project-member docs, explicitly-granted docs — the
- * split is resolved server-side via readable_docs_where and just arrives
- * here as `is_owner`). No chat wiring — that's Phase 1. Owner rows get
- * inline tag editing and project chips (add/remove); project owners can also
- * remove others' docs from their projects; shared rows are read-only and
- * carry a "shared" badge instead.
+ * can read — rows in my library (uploaded by me, or shared with me) plus
+ * documents reached only through a project I can see. No chat wiring —
+ * that's Phase 1. A row I have in my library gets inline tag editing, a
+ * remove-from-my-library control, and (if I uploaded it) a project chip
+ * selector; removing only ever affects my own copy, never anyone else's
+ * entry or a project's placement. A row I only see via a project has
+ * neither: it isn't mine to remove or retag.
  */
 export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
   const [docs, setDocs] = useState(null);
@@ -181,7 +185,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(await describeRefusal(res));
       await loadDocs(search, projectFilter);
     } catch (e) {
       showToast(`Update failed: ${e.message}`, 5000);
@@ -192,7 +196,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
     setLinkingId(doc.doc_id);
     try {
       const res = await apiFetch(apiHost, apiPort, `/v1/projects/${projectId}/docs/${doc.doc_id}`, { method });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(await describeRefusal(res));
       await loadDocs(search, projectFilter);
     } catch (e) {
       showToast(`Update failed: ${e.message}`, 5000);
@@ -207,7 +211,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
     setDeletingId(doc.doc_id);
     try {
       const res = await apiFetch(apiHost, apiPort, `/v1/docs/${doc.doc_id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(await describeRefusal(res));
       setDeleteTarget(null);
       await loadDocs(search, projectFilter);
     } catch (e) {
@@ -273,13 +277,18 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
                       <span className={`text-[10px] px-1.5 py-0.5 rounded ${theme.bgTertiary} ${theme.textSecondary}`}>
                         {doc.state}
                       </span>
-                      {!doc.is_owner && (
+                      {doc.added_via === 'shared' && (
                         <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-500">
-                          <Share2 size={10} /> shared
+                          <Share2 size={10} /> shared by {doc.shared_by?.name || 'someone'}
+                        </span>
+                      )}
+                      {!doc.in_library && (
+                        <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-500">
+                          <FolderOpen size={10} /> via project
                         </span>
                       )}
                     </div>
-                    {doc.is_owner && (
+                    {doc.in_library && (
                       deleting ? (
                         <span className="flex items-center gap-1 shrink-0">
                           {deletingId === doc.doc_id ? (
@@ -287,12 +296,15 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
                               disabled
                               className="flex items-center gap-1 text-[10px] text-red-500 cursor-default"
                             >
-                              <Loader2 size={10} className="animate-spin" /> Deleting…
+                              <Loader2 size={10} className="animate-spin" /> Removing…
                             </button>
                           ) : (
                             <>
+                              <span className={`text-[10px] ${theme.textSecondary}`}>
+                                Remove from your library? People and projects that have it keep their copies.
+                              </span>
                               <button onClick={() => deleteDoc(doc)} className="text-[10px] underline text-red-500">
-                                Confirm delete
+                                Confirm remove
                               </button>
                               <button onClick={() => setDeleteTarget(null)} className="text-[10px] underline">
                                 Cancel
@@ -303,7 +315,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
                       ) : (
                         <button
                           onClick={() => setDeleteTarget(doc.doc_id)}
-                          aria-label={`Delete ${doc.file_name}`}
+                          aria-label={`Remove ${doc.file_name} from my library`}
                           className={`shrink-0 hover:text-red-500 ${theme.textSecondary}`}
                         >
                           <Trash2 size={12} />
@@ -323,7 +335,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
                     />
                   </div>
 
-                  {doc.is_owner ? (
+                  {doc.in_library ? (
                     <TagEditor doc={doc} theme={theme} onSave={(tags) => patchDoc(doc, { tags })} />
                   ) : (
                     (doc.tags || []).length > 0 && (
