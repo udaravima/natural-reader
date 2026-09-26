@@ -133,7 +133,7 @@ Content indexed before A1 from browser chunks is marked `extracted_by='client'`.
 - The admin's "reassign document owner" path is removed. Content has no owner, and entries are personal.
 - `can_manage_project_docs(conn, user, project_id)` in `authz.py` is the one seam for "may remove from project". A1 implements it as "project owner"; A0 swaps its body to "role ≥ Maintainer".
 
-## 6. Schema — migration `011_content_entries.sql` (A0's becomes `013`; see §6b for `012`)
+## 6. Schema — migration `011_content_entries.sql` (A0's becomes `014`, after C1's `013`; see §6b for `012`)
 
 1. `documents`:
    - add `extracted_by TEXT NOT NULL DEFAULT 'client' CHECK (extracted_by IN ('client','server'))`;
