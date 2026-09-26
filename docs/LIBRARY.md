@@ -3,10 +3,11 @@
 The library turns the single-owner document store into a **shared,
 organizable library**: documents can be grouped into projects, shared with
 other users, and tagged, while every read stays access-controlled. Today,
-creating projects, adding members and sharing a document with one person
-are **API-only** until the project-management UI (subsystem A0) ships; in
-the app you can tag your documents and file them into projects you can
-already see (a project's owner can also remove them there). This is Phase 0
+adding members to a project and sharing a document with one person are
+**API-only** until the project-management UI (subsystem A0) ships. In the
+app you can create a project (Library → **New project**), tag your
+documents, and file them into projects you can see (a project's owner can
+also remove them there). This is Phase 0
 of the RAG roadmap — it builds the sharing/organization substrate
 that later phases (cross-document search, descriptions + routing,
 multi-round retrieval) sit on top of. It adds no search intelligence itself.
@@ -94,11 +95,13 @@ last entry and the very last placement are both gone.
 
 Sharing a single document with one other person works today, but **only
 through the API** — there's no share button in the app yet. The same goes
-for creating a project and adding members to it: both are API-only
-(`POST /v1/projects`, `PUT /v1/projects/{id}/members/{user_id}`) until the
-project-management UI (subsystem A0) ships. The only project actions in the
-app today are filing a document you uploaded into a project you can already
-see, and — for that project's owner — removing it again.
+for adding members to a project: it's API-only
+(`PUT /v1/projects/{id}/members/{user_id}`) until the project-management UI
+(subsystem A0) ships, because the app has no way yet to find another
+person's user id. The project actions in the app today are creating a
+project (Library → **New project**: a name and an optional description; you
+own what you create), filing a document you uploaded into a project you can
+see, and, for that project's owner, removing it again.
 
 Sharing needs curl (or a script) and a personal access token (see
 [USER_GUIDE.md](USER_GUIDE.md) for creating one), plus two ids:
@@ -285,7 +288,7 @@ after upgrading:
 
 | Route | Guard | Notes |
 |-------|-------|-------|
-| `POST /v1/projects` | any signed-in user | Creates a project you own. API-only until A0. |
+| `POST /v1/projects` | any signed-in user | Creates a project you own. In the app: Library → **New project**. |
 | `GET /v1/projects` | any signed-in user | Lists projects you **own or are a member of**; each row carries `is_owner`. |
 | `GET` · `PATCH` · `DELETE /v1/projects/{id}` | owner (404 otherwise) | Read/rename/delete your own project. Delete removes its doc links (garbage-collecting any content that was only reachable through it); the documents themselves survive if anyone else holds them. |
 | `PUT` · `DELETE /v1/projects/{id}/members/{user_id}` | owner | Idempotent (204). Add/remove a read-member. Unknown `user_id` → 404. API-only until A0. |

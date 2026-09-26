@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Search, FolderOpen, Share2, X, Check, Trash2, Loader2 } from 'lucide-react';
+import { Search, FolderOpen, FolderPlus, Share2, X, Check, Trash2, Loader2 } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
 import { describeRefusal } from '../../lib/apiErrors';
 
@@ -114,6 +114,72 @@ function ProjectChips({ doc, projects, theme, onLink, onUnlink, busy }) {
   );
 }
 
+// Inline "New project" card. Name is required (the server caps it at 200
+// characters); an empty description is sent as null. The card stays open with
+// what was typed when the server refuses, so nothing has to be re-entered.
+function NewProjectForm({ theme, busy, onCreate, onCancel }) {
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const canCreate = name.trim().length > 0 && !busy;
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (canCreate) onCreate({ name: name.trim(), description: description.trim() || null });
+  };
+
+  return (
+    <form
+      onSubmit={submit}
+      onKeyDown={(e) => { if (e.key === 'Escape' && !busy) onCancel(); }}
+      aria-label="New project"
+      className={`flex flex-col gap-2 p-3 rounded-lg border ${theme.border} ${theme.bgSecondary}`}
+    >
+      <div className="flex flex-wrap gap-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Project name"
+          aria-label="Project name"
+          maxLength={200}
+          autoFocus
+          disabled={busy}
+          className={`flex-1 min-w-[160px] px-2 py-1.5 text-xs rounded-lg border ${theme.border} ${theme.bg} ${theme.text}`}
+        />
+        <input
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Description (optional)"
+          aria-label="Project description"
+          disabled={busy}
+          className={`flex-[2] min-w-[200px] px-2 py-1.5 text-xs rounded-lg border ${theme.border} ${theme.bg} ${theme.text}`}
+        />
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <p className={`text-[10px] ${theme.textMuted}`}>
+          You'll own it. File your documents into it from their rows below.
+        </p>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className={`px-2 py-1 text-xs rounded ${theme.textSecondary} hover:text-red-500 disabled:opacity-50`}
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={!canCreate}
+            className="flex items-center gap-1 px-2.5 py-1 text-xs rounded bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-default"
+          >
+            {busy ? <><Loader2 size={12} className="animate-spin" /> Creating…</> : 'Create'}
+          </button>
+        </div>
+      </div>
+    </form>
+  );
+}
+
 /**
  * Library: a flat list/search/filter view over every document the caller
  * can read — rows in my library (uploaded by me, or shared with me) plus
@@ -122,9 +188,11 @@ function ProjectChips({ doc, projects, theme, onLink, onUnlink, busy }) {
  * remove-from-my-library control, and (if I uploaded it) a project chip
  * selector; removing only ever affects my own copy, never anyone else's
  * entry or a project's placement. A row I only see via a project has
- * neither: it isn't mine to remove or retag.
+ * neither: it isn't mine to remove or retag. "New project" creates a project
+ * I own; `onProjectsChanged` tells the reader to refresh its project picker.
+ * Adding members has no screen until A0.
  */
-export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
+export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProjectsChanged }) {
   const [docs, setDocs] = useState(null);
   const [projects, setProjects] = useState(null);
   const [search, setSearch] = useState('');
@@ -138,6 +206,8 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
   // request (a project owner double-clicking × would otherwise see a false
   // "Update failed: HTTP 404" toast from the second, already-unlinked DELETE).
   const [linkingId, setLinkingId] = useState(null);
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [projectBusy, setProjectBusy] = useState(false);
   // Monotonic id so out-of-order responses can't clobber the list: fast typing
   // across debounce windows can leave two GET /v1/docs in flight, and if the
   // earlier one resolves last its stale results would overwrite the newer query.
@@ -207,6 +277,26 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
   const linkDoc = (doc, projectId) => changeLink(doc, projectId, 'PUT');
   const unlinkDoc = (doc, project) => changeLink(doc, project.id, 'DELETE');
 
+  const createProject = async (body) => {
+    setProjectBusy(true);
+    try {
+      const res = await apiFetch(apiHost, apiPort, '/v1/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await describeRefusal(res));
+      setCreatingProject(false);
+      showToast(`Project "${body.name}" created.`, 3000);
+      await loadProjects();
+      onProjectsChanged?.();
+    } catch (e) {
+      showToast(`Could not create project: ${e.message}`, 5000);
+    } finally {
+      setProjectBusy(false);
+    }
+  };
+
   const deleteDoc = async (doc) => {
     setDeletingId(doc.doc_id);
     try {
@@ -229,7 +319,24 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
             <FolderOpen size={18} className="text-blue-500" />
             Library
           </h1>
+          {!creatingProject && (
+            <button
+              onClick={() => setCreatingProject(true)}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border ${theme.border} ${theme.bgTertiary} hover:text-blue-500`}
+            >
+              <FolderPlus size={14} /> New project
+            </button>
+          )}
         </div>
+
+        {creatingProject && (
+          <NewProjectForm
+            theme={theme}
+            busy={projectBusy}
+            onCreate={createProject}
+            onCancel={() => setCreatingProject(false)}
+          />
+        )}
 
         {/* Search + project filter */}
         <div className="flex flex-wrap items-center gap-2">

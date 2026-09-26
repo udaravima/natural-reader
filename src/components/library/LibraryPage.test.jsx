@@ -277,3 +277,95 @@ describe('LibraryPage', () => {
     expect(message).toMatch(/doesn't exist or you don't have access/i);
   });
 });
+
+describe('LibraryPage — New project', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  // Projects the server holds; a successful POST adds to it, so the reload
+  // after creating shows the new project exactly as the real server would.
+  function mountWithProjects({ postStatus = 201, onProjectsChanged = vi.fn(), showToast = vi.fn() } = {}) {
+    const serverProjects = [];
+    apiFetch.mockImplementation(async (host, port, path, opts) => {
+      if (path === '/v1/projects' && opts?.method === 'POST') {
+        if (postStatus >= 400) {
+          return { ok: false, status: postStatus, json: async () => ({ detail: 'boom' }) };
+        }
+        const body = JSON.parse(opts.body);
+        const created = { id: 'p9', owner_user_id: 'me', ...body, is_owner: true };
+        serverProjects.push(created);
+        return json(201, created);
+      }
+      if (path === '/v1/projects') return json(200, [...serverProjects]);
+      if (path.startsWith('/v1/docs')) return json(200, [docs[0]]);
+      return json(404, {});
+    });
+    render(
+      <LibraryPage theme={theme} apiHost="" apiPort="" showToast={showToast}
+        onProjectsChanged={onProjectsChanged} />
+    );
+    return { onProjectsChanged, showToast };
+  }
+  const postCalls = () => apiFetch.mock.calls.filter(([, , p, o]) => p === '/v1/projects' && o?.method === 'POST');
+
+  it('creates a project, then offers it in the filter and on the row\'s + project select', async () => {
+    const { onProjectsChanged, showToast } = mountWithProjects();
+    await screen.findByText('Owned.pdf');
+    // No projects yet: nothing to file into.
+    expect(screen.queryByLabelText(/add owned\.pdf to project/i)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /new project/i }));
+    const create = screen.getByRole('button', { name: 'Create' });
+    expect(create).toBeDisabled(); // a name is required
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: '  Thesis  ' } });
+    fireEvent.click(create);
+
+    await waitFor(() => expect(postCalls()).toHaveLength(1));
+    expect(JSON.parse(postCalls()[0][3].body)).toEqual({ name: 'Thesis', description: null });
+    const picker = await screen.findByLabelText(/add owned\.pdf to project/i);
+    expect(within(picker).getByRole('option', { name: 'Thesis' })).toBeInTheDocument();
+    expect(within(screen.getByLabelText(/filter by project/i)).getByRole('option', { name: 'Thesis' }))
+      .toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'New project' })).toBeNull();
+    expect(onProjectsChanged).toHaveBeenCalledTimes(1);
+    expect(showToast).toHaveBeenCalledWith('Project "Thesis" created.', 3000);
+  });
+
+  it('sends the description when one is given', async () => {
+    mountWithProjects();
+    await screen.findByText('Owned.pdf');
+    fireEvent.click(screen.getByRole('button', { name: /new project/i }));
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'Lab' } });
+    fireEvent.change(screen.getByLabelText('Project description'), { target: { value: ' Shared papers ' } });
+    fireEvent.submit(screen.getByRole('form', { name: 'New project' }));
+    await waitFor(() => expect(postCalls()).toHaveLength(1));
+    expect(JSON.parse(postCalls()[0][3].body)).toEqual({ name: 'Lab', description: 'Shared papers' });
+  });
+
+  it('keeps the form and what was typed when the server refuses, with a notice instead of "HTTP 500"', async () => {
+    const { onProjectsChanged, showToast } = mountWithProjects({ postStatus: 500 });
+    await screen.findByText('Owned.pdf');
+    fireEvent.click(screen.getByRole('button', { name: /new project/i }));
+    fireEvent.change(screen.getByLabelText('Project name'), { target: { value: 'Thesis' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => expect(showToast).toHaveBeenCalled());
+    const [message] = showToast.mock.calls[0];
+    expect(message).toMatch(/could not create project: something went wrong on the server/i);
+    expect(message).not.toMatch(/HTTP 500/);
+    expect(screen.getByLabelText('Project name')).toHaveValue('Thesis');
+    expect(onProjectsChanged).not.toHaveBeenCalled();
+  });
+
+  it('Cancel and Escape close the form without creating anything', async () => {
+    mountWithProjects();
+    await screen.findByText('Owned.pdf');
+    fireEvent.click(screen.getByRole('button', { name: /new project/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByLabelText('Project name')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /new project/i }));
+    fireEvent.keyDown(screen.getByLabelText('Project name'), { key: 'Escape' });
+    expect(screen.queryByLabelText('Project name')).toBeNull();
+    expect(postCalls()).toHaveLength(0);
+  });
+});

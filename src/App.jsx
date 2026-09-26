@@ -175,6 +175,8 @@ export default function App() {
   // loading, [] once loaded with no projects. The per-document picker *state*
   // lives in useDocMetaPicker, wired after pdfFileName is available.
   const [projects, setProjects] = useState(null);
+  // Bumped when the Library creates a project, so the reader's picker refetches.
+  const [projectsVersion, setProjectsVersion] = useState(0);
 
   const pdfContainerRef = useRef(null);
   const [workspace, setWorkspace] = useState(null);
@@ -257,7 +259,7 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [auth.state, apiHost, apiPort]);
+  }, [auth.state, apiHost, apiPort, projectsVersion]);
 
   const ttsEngine = useTtsEngine({
     textItems, currentSentenceIndex, setCurrentSentenceIndex,
@@ -1155,6 +1157,7 @@ export default function App() {
             apiHost={apiHost}
             apiPort={apiPort}
             showToast={showToast}
+            onProjectsChanged={() => setProjectsVersion((v) => v + 1)}
           />
         ) : inSettings ? (
           <SettingsPage
