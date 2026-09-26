@@ -98,7 +98,7 @@ A citation carries a chunk's `page`, and the reader jumps to its **own** page wi
 
 - `chunks_uploaded` is retired. Migration 011 maps it to `extracted`. `registered` rows have neither bytes nor chunks; they stay as they are until their first verified upload, which runs the new-content path.
 - **Startup recovery** (`server/db.py`, which today resets `indexing` → `chunks_uploaded`): `extracting` → `stored`, `indexing` → `extracted`.
-- **Resuming vs re-indexing:** `POST /{id}/index` on content that isn't `indexed` **resumes** it, and any entry holder may do that. On `indexed` content it **re-indexes**, which is a content-changing op (§5).
+- **Resuming vs re-indexing:** `POST /{id}/index` on content that isn't `indexed` **resumes** it, and any entry holder who can read it may do that. On `indexed` content it **re-indexes**, which is a content-changing op (§5).
 - Frontend label maps (`IndexButton.jsx`, the state list in `App.jsx`, `useChatEngine.js`'s gating comment) move to these states.
 
 ### Legacy content
@@ -121,7 +121,7 @@ Content indexed before A1 from browser chunks is marked `extracted_by='client'`.
 | Revoke a share | the sharer (removes only entries they created); the recipient can remove their own | 404 |
 | File into a project | holds an **upload** entry and can see the project (A0: role ≥ Contributor) | 404 |
 | Remove from a project | **the project** (A1: project owner; A0: Maintainer+). The uploader has no special power. | 404 (see below) |
-| Content-changing ops (Docling convert/re-convert, delete converted markdown, re-index an `indexed` doc) | the **sole holder** (exactly one entry, theirs, and no placements), or an **admin** | 409 `content_shared` |
+| Content-changing ops (Docling convert/re-convert, delete converted markdown, re-index an `indexed` doc) | the **sole holder** (exactly one verified entry, theirs, and no verified placements; §6b), or an **admin** | 409 `content_shared` |
 
 - **Refusal codes in A1 are 404 only**, the repo's convention for projects (`projects.py` docstring, C0). A0 introduces 403 `insufficient_role` for members whose role is too low. Until then, "not allowed" and "not there" look the same.
 - **Share semantics, pinned to SQL:**
@@ -154,7 +154,8 @@ Tested in a scratch database, the same way as migration 010's test: build to v10
 Added after the final review. Before A1 the browser sent only a hash, so 011's backfilled `upload` entries — and the shares and placements those owners made — record who *claimed* a document, not who had its bytes. Without a fix, someone who registered a hash they never had would read the real author's text as soon as the author uploaded the file, breaking §1's "knowing an ID is never access" across the upgrade.
 
 - `library_entries.verified` and `project_documents.verified`, `BOOLEAN NOT NULL DEFAULT false`. Every row that exists at upgrade came from 011's backfill, so all start false.
-- **Read** (`readable_docs_where`, still one predicate): an entry or placement grants read only if it is `verified` **or** the content is still legacy (`extracted_by = 'client'`, today's trust). Once verified bytes make the content server-derived, unverified holdings stop granting read. Project links shown on a row and the `project_id` filter use the same rule.
+- **Read** (`readable_docs_where`, still one predicate): an entry or placement grants read only if it is `verified`. Project links shown on a row and the `project_id` filter use the same rule. Unverified rows also don't count as holders for content ops (§5), so a leftover claim can't make the author's convert or re-index fail with `content_shared`.
+- *Revised after the final re-review (B1).* The first version also trusted unverified rows while the content was still legacy (`extracted_by = 'client'`). That label stays `'client'` when the author's verified upload yields no text, when extraction fails, or when a legacy swap keeps the old index, and convert never changes it; so the squatter kept reading the author's text. Unverified rows now grant nothing. Cost: after the upgrade every pre-A1 document is unreadable until a holder uploads the file.
 - **Share and file** need a **verified** upload entry. A share or placement made by such a holder is verified (a verified share or filing replaces an unverified legacy one in the same slot; upload entries are never touched).
 - **Verification**: a user's multipart upload of the bytes verifies their entry (created, upgraded from shared, or an existing unverified upload entry) and every share they created (`shared_by = me`) and placement they added (`added_by = me`) for that doc. Nothing else verifies.
 - Old holders regain access by uploading the file (the Index button does it from their local copy); `docs/LIBRARY.md` upgrade notes say so.
@@ -169,7 +170,7 @@ Added after the final review. Before A1 the browser sent only a hash, so 011's b
 | `PATCH /{id}` | my entry's `file_name` / `tags` only (`owner_user_id` removed) |
 | `DELETE /{id}` | remove **my entry** (204), then GC. Never touches other people or projects. |
 | `PUT` / `DELETE /{id}/shares/{user_id}` | replaces `/grants/{user_id}`; semantics in §5 |
-| `POST /{id}/index` | resume (any entry holder) or re-index (sole holder or admin), §4 States |
+| `POST /{id}/index` | resume (an entry holder who can read it) or re-index (sole holder or admin), §4 States |
 | `POST /{id}/convert`, `DELETE /{id}/markdown` | sole holder or admin, else 409 `content_shared` with `reason` |
 | `POST /{id}/chunks`, `POST /{id}/pdf`, `DELETE /{id}/pdf` | **removed** (bytes arrive at registration; chunks are server-derived) |
 | `PUT` / `DELETE /v1/projects/{id}/docs/{doc}` | link: caller holds an upload entry. Unlink: `can_manage_project_docs` only (C0's doc-owner branch removed), then GC. |
@@ -240,7 +241,7 @@ Introduced here and reused by A0:
   - convert on shared content → 409 `other_holders`; on content with only my placement → 409 `in_project`; allowed for the sole holder and for an admin.
 - **Project links:** a row never lists a project the caller can't see, including for the uploader.
 - **Migration 011:** scratch-DB test (owners → upload entries, grants → shared entries, placements get `added_by`, `chunks_uploaded` → `extracted`, columns gone).
-- **States:** startup recovery maps `extracting` → `stored` and `indexing` → `extracted`; resume is allowed for any holder, re-index is not.
+- **States:** startup recovery maps `extracting` → `stored` and `indexing` → `extracted`; resume is allowed for any entry holder who can read the doc, re-index is not.
 - **Legacy upgrade:** client-extracted indexed content is re-extracted once on the first verified upload; search returns the old chunks until the swap commits, then only the new ones.
 - **Extraction parity:** the §4 fixtures (PDF, `.txt`, `.md`) produce the committed `(ord, page, chunk_type)` sequences.
 - **Frontend:** upload paths (200 / 202 / 413 / 415), new state labels, the Library remove copy and badges, and the error mapper including both 409 reasons.
@@ -252,6 +253,7 @@ Introduced here and reused by A0:
 - Recognizing the "same document with different bytes" (a re-saved PDF is new content).
 - Per-user storage quotas; project-level tags; per-entry conversion variants; a GIN index on entry tags.
 - A UI for sharing (A0) and for listing the shares I created.
+- **Follow-up: keep uploaded bytes only while processing them.** Today the server keeps each uploaded file (`bytes_path`) indefinitely, for three uses only: background extraction, Convert (OCR) and re-index. Nothing serves the file back to anyone. Holding it only until extraction finishes would cut disk use and stop the server holding users' original files. What changes: Convert takes the file with the request (the reader has it open); re-index rebuilds from the stored page text; the self-heal and "bytes_missing" paths mostly go away. Needs its own spec change; not part of A1.
 
 ## 13. Risks
 
@@ -263,4 +265,4 @@ Introduced here and reused by A0:
 | Server segmentation drifts from the reader's, so citations land on the wrong page | Rules replicated exactly (§4) and pinned by committed parity fixtures for all three types |
 | `pypdfium2` text differs slightly from pdf.js | Only search wording changes; page numbering is pinned by the fixtures |
 | A future code path removes entries or placements by cascade and skips GC | The rule in §3, plus the startup orphan sweep |
-| Legacy client-extracted content stays until its first verified upload | Same trust as today; marked `extracted_by='client'` |
+| Legacy client-extracted content stays until its first verified upload | Marked `extracted_by='client'` and re-extracted from the first verified upload; readable only through verified holdings (§6b) |

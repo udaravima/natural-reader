@@ -35,8 +35,8 @@ re-embedded (see "Uploading," below).
 they hold a library entry for it, **or** the content is placed in a project
 they own or belong to — and that entry or placement is **verified**: it
 traces back to someone who uploaded the bytes to this server (a holding
-from before A1, which only ever claimed a hash, counts until verified bytes
-arrive; see "Upgrade notes (migration 012)"). It's resolved entirely in SQL (`readable_docs_where` /
+from before A1, which only ever claimed a hash, doesn't count until its
+holder uploads the file; see "Upgrade notes (migration 012)"). It's resolved entirely in SQL (`readable_docs_where` /
 `readable_docs_params` in `server/auth/authz.py`) — never filtered in
 Python — so a document nobody gave you can never appear in a result, not
 even one that happens to match your search or tag filter.
@@ -151,8 +151,9 @@ placement.
 Docling conversion, deleting the converted Markdown, and re-indexing an
 already-indexed document all **change the content itself** — everyone who
 reads that document sees the result. So each is refused unless you're the
-**sole holder**: exactly one entry for the document, and it's yours, and it
-isn't placed in any project. An admin can always do it.
+**sole holder**: exactly one verified entry for the document, and it's
+yours, and it isn't placed (verified) in any project. Unverified pre-A1 rows
+don't count; see "Migration 012". An admin can always do it.
 
 That includes a project **you filed the document into yourself** — a
 placement counts as another reader, even one you created. If you see the
@@ -232,10 +233,10 @@ content/entries/placements model described above:
 `library_entries` and `project_documents` each gain `verified BOOLEAN NOT
 NULL DEFAULT false`. `verified` means the holding traces back to someone
 who uploaded the bytes to this server: an upload entry whose user sent
-them, or a share or placement made by such a user. An entry or placement
-grants read only if it is verified **or** the content is still legacy
-(`extracted_by = 'client'`); sharing and filing need a verified upload
-entry. Uploading a document's bytes verifies your entry and every share and
+them, or a share or placement made by such a user. Only a verified entry
+or placement grants read, and sharing and filing need a verified upload
+entry. An unverified one grants nothing: it doesn't count as another holder
+either, so it never blocks the uploader's convert or re-index. Uploading a document's bytes verifies your entry and every share and
 placement you made for it.
 
 ### Upgrade notes (migration 012)
@@ -246,18 +247,23 @@ Migration 011 still turned every pre-A1 owner into an upload entry, so 012
 marks every existing entry and placement as unverified. What that means
 after upgrading:
 
-- **A document registered before A1 stays readable by its old holders only
-  until someone uploads the real file.** Once verified bytes arrive, the
-  server re-extracts the text itself, and old, unverified holders stop
-  seeing it (404, like any document they were never given).
-- **Old holders get access back by uploading the file** — the Index button
-  in the reader does this from their local copy. That also re-activates the
-  shares they made and the project placements they added for it.
-- **The same goes for old shares and project placements**: a pre-A1 share
-  or placement keeps working on legacy content and stops once verified
-  bytes arrive, until the person who made it uploads the file.
-- Until an old holder re-uploads, they also can't share the document or
-  file it into a project (404), even while it's still readable.
+- **Every document registered before A1 disappears from its old holders'
+  libraries, search and chat right after the upgrade** (404, like any
+  document they were never given). Nothing is deleted: the entries, shares,
+  placements and the text already indexed all stay.
+- **Old holders get access back by uploading the file**: open it in the
+  reader and press Index, which uploads the local copy. The server checks
+  the bytes against the document's ID, and if the old text came from the
+  browser it re-extracts it from the file. That upload also re-activates
+  the shares the holder made and the project placements they added for it.
+- **A recipient of an old share, or a member of a project an old document
+  was filed into, gets it back when the person who shared or filed it
+  uploads the file**, or by uploading their own copy.
+- Why so strict: a pre-A1 holding proves only that someone once knew the
+  document's ID, and IDs show up in shares, project lists and URLs.
+  Trusting those holdings "until the real file arrives" was tried and
+  leaked: when the author's upload produced no text, the content still
+  looked legacy and a squatter kept reading it.
 
 ## API surface
 
@@ -271,7 +277,7 @@ after upgrading:
 | `PATCH /v1/docs/{id}` | your own entry, on a doc you can read | Sets **your** `file_name`/`tags` only — there's no more `owner_user_id` to reassign. |
 | `DELETE /v1/docs/{id}` | your own entry | Removes your entry (204), then garbage-collects the content if nothing else holds it. Never touches other people's entries or any project. |
 | `PUT` / `DELETE /v1/docs/{id}/shares/{user_id}` | a verified upload-entry holder (PUT) · the sharer (DELETE) | Replaces the old `/grants/{user_id}`. See "Sharing," above. |
-| `POST /v1/docs/{id}/index` | any entry holder (resume) · sole holder or admin (re-index) | Resumes a document that isn't `indexed` yet from wherever it stopped; re-runs extraction and embedding on one that already is `indexed`. `409 bytes_missing` when there are no stored bytes to rebuild from — upload the file (the app's Index button does). |
+| `POST /v1/docs/{id}/index` | an entry holder who can read it (resume) · sole holder or admin (re-index) | Resumes a document that isn't `indexed` yet from wherever it stopped; re-runs extraction and embedding on one that already is `indexed`. `409 bytes_missing` when there are no stored bytes to rebuild from — upload the file (the app's Index button does). |
 | `POST /v1/docs/{id}/convert` · `DELETE /v1/docs/{id}/markdown` | sole holder or admin | `409 content_shared` otherwise (see "Why can't I re-convert?"). |
 | ~~`POST /v1/docs/{id}/chunks`~~ · ~~`POST`/`DELETE /v1/docs/{id}/pdf`~~ | — | **Removed.** Bytes arrive at registration; chunks are always server-derived, never client-supplied. |
 

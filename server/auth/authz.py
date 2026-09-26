@@ -25,32 +25,31 @@ async def assert_owns_session(conn, session_id: str, user_id: str) -> None:
 def readable_docs_where(alias: str = "d") -> str:
     """The ONE definition of "can read this document" (A1 spec §3): the user
     has a library entry for it, or it is placed in a project the user owns or
-    belongs to — and that entry or placement is PROVED (migration 012): it is
-    `verified`, or the content is still legacy (`extracted_by = 'client'`,
-    today's trust). A pre-A1 claim nobody backed with bytes stops granting
-    read once verified bytes make the content server-derived. `<alias>` is a
+    belongs to — and that entry or placement is PROVED (migration 012):
+    `verified`, i.e. it traces back to someone who sent this server the
+    bytes. A pre-A1 row (the browser sent only a hash) is a claim, and never
+    grants read until its holder uploads the file. `<alias>` is a
     `documents` row. Bind with `readable_docs_params(user_id)`. Subquery
     aliases are underscore-prefixed so they can't shadow the caller's.
     Resolved in SQL, never in Python."""
     return (
         f"(EXISTS (SELECT 1 FROM library_entries _re "
         f"WHERE _re.doc_id = {alias}.doc_id AND _re.user_id = %s "
-        f"AND {effective_holding_sql('_re', alias)}) "
+        f"AND {effective_holding_sql('_re')}) "
         f"OR EXISTS (SELECT 1 FROM project_documents _rpd "
         f"JOIN projects _rp ON _rp.id = _rpd.project_id "
-        f"WHERE _rpd.doc_id = {alias}.doc_id AND {effective_holding_sql('_rpd', alias)} "
+        f"WHERE _rpd.doc_id = {alias}.doc_id AND {effective_holding_sql('_rpd')} "
         f"AND (_rp.owner_user_id = %s "
         f"OR EXISTS (SELECT 1 FROM project_members _rpm "
         f"WHERE _rpm.project_id = _rp.id AND _rpm.user_id = %s))))"
     )
 
 
-def effective_holding_sql(holding: str, doc: str) -> str:
-    """An entry or placement row (`holding`) that grants read on the
-    `documents` row `doc`: verified, or the content is still legacy. Takes no
-    parameters. Used by `readable_docs_where` and by anything that shows
-    which projects hold a doc, so the two can't disagree."""
-    return f"({holding}.verified OR {doc}.extracted_by = 'client')"
+def effective_holding_sql(holding: str) -> str:
+    """An entry or placement row (`holding`) that grants read: a verified
+    one. Takes no parameters. Used by `readable_docs_where` and by anything
+    that shows which projects hold a doc, so the two can't disagree."""
+    return f"{holding}.verified"
 
 
 def readable_docs_params(user_id: str) -> list[str]:

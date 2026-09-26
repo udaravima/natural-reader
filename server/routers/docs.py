@@ -113,15 +113,14 @@ def _doc_projects_sql(alias: str) -> str:
     caller can see. Everyone — including whoever uploaded it — sees only
     projects they own or belong to: listing others would leak their names, and
     under A1 an uploader can't unlink from a project anyway. A placement that
-    doesn't grant read (unverified, on server-derived content — migration
-    012) isn't listed either. Sorted by name,
-    then id. Bind with `_doc_projects_params(user_id)`; SELECT-list params come
+    doesn't grant read (unverified — migration 012) isn't listed either.
+    Sorted by name, then id. Bind with `_doc_projects_params(user_id)`; SELECT-list params come
     BEFORE join and WHERE params."""
     return (
         "COALESCE((SELECT json_agg(json_build_object('id', _vp.id, 'name', _vp.name) "
         "ORDER BY _vp.name, _vp.id) "
         "FROM project_documents _vpd JOIN projects _vp ON _vp.id = _vpd.project_id "
-        f"WHERE _vpd.doc_id = {alias}.doc_id AND {effective_holding_sql('_vpd', alias)} "
+        f"WHERE _vpd.doc_id = {alias}.doc_id AND {effective_holding_sql('_vpd')} "
         f"AND {visible_projects_where('_vp')}), '[]'::json)"
     )
 
@@ -147,7 +146,7 @@ _DISPLAY_NAME = (
     "JOIN projects _np ON _np.id = _npd.project_id "
     "JOIN library_entries _ne ON _ne.user_id = _npd.added_by AND _ne.doc_id = _npd.doc_id "
     "WHERE _npd.doc_id = d.doc_id AND _ne.file_name IS NOT NULL "
-    f"AND {effective_holding_sql('_npd', 'd')} AND {visible_projects_where('_np')} "
+    f"AND {effective_holding_sql('_npd')} AND {visible_projects_where('_np')} "
     "ORDER BY _npd.added_at, _npd.project_id LIMIT 1) END, d.file_name)"
 )
 
@@ -291,7 +290,7 @@ async def list_documents(
             "EXISTS (SELECT 1 FROM project_documents _fpd "
             "JOIN projects _fp ON _fp.id = _fpd.project_id "
             f"WHERE _fpd.doc_id = d.doc_id AND _fpd.project_id = %s "
-            f"AND {effective_holding_sql('_fpd', 'd')} AND {visible_projects_where('_fp')})"
+            f"AND {effective_holding_sql('_fpd')} AND {visible_projects_where('_fp')})"
         )
         where_params += [project_id, *visible_projects_params(uid)]
     if tag:
@@ -496,8 +495,8 @@ async def patch_document(
     content's canonical name; `tags` null clears them. 404 unless I hold an
     entry (seeing a doc only through a project doesn't count) that lets me
     read the doc — the response is the doc's status, and an unverified pre-A1
-    entry on server-derived content (migration 012) doesn't grant that. Such
-    a holder can still DELETE their entry.
+    entry (migration 012) doesn't grant that. Such a holder can still DELETE
+    their entry, or upload the file to verify it.
 
     Content has no owner, so the old owner-reassignment field (and the admin
     path behind it) is gone — sending it is a 422 (extra="forbid"), as is
@@ -614,7 +613,7 @@ def _content_shared(reason: str, doc_id: str, user_id: str) -> HTTPException:
 async def start_index_job(doc_id: DocId, background: BackgroundTasks,
                           principal: Principal = Depends(_require_doc_reader)) -> dict[str, Any]:
     """Resume or re-index (spec §4). On content that isn't `indexed`, any entry
-    holder — or an admin, even without one — may RESUME it (a crash, a
+    holder who can read it — or an admin, even without one — may RESUME it (a crash, a
     failure). On `indexed` content this is a RE-INDEX from the stored bytes —
     a content-changing op, so only the sole holder or an admin (else 409
     content_shared), and only when there's something to rebuild from: no

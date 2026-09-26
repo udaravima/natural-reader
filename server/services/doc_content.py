@@ -113,17 +113,20 @@ async def holds_upload(conn, user_id, doc_id) -> bool:
 async def content_ops_refusal(conn, doc_id, user_id, *, is_admin) -> str | None:
     """None when `user_id` may change the content itself (convert, delete
     converted markdown, re-index): an admin, or the sole holder — exactly one
-    entry, theirs, and no placements. Otherwise the reason for the 409."""
+    verified entry, theirs, and no verified placements. Otherwise the reason
+    for the 409. Unverified pre-A1 rows (migration 012) grant nobody read, so
+    they don't count: a leftover hash claim must not block the uploader."""
     if is_admin:
         return None
     cur = await conn.execute(
         "SELECT count(*) FILTER (WHERE user_id <> %s), count(*) FILTER (WHERE user_id = %s) "
-        "FROM library_entries WHERE doc_id = %s", (user_id, user_id, doc_id))
+        "FROM library_entries WHERE doc_id = %s AND verified", (user_id, user_id, doc_id))
     others, mine = await cur.fetchone()
     if others or not mine:
         return "other_holders"
     cur = await conn.execute(
-        "SELECT EXISTS (SELECT 1 FROM project_documents WHERE doc_id = %s)", (doc_id,))
+        "SELECT EXISTS (SELECT 1 FROM project_documents WHERE doc_id = %s AND verified)",
+        (doc_id,))
     return "in_project" if (await cur.fetchone())[0] else None
 
 

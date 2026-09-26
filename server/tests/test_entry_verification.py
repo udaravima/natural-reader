@@ -2,10 +2,12 @@
 
 Before A1 the browser sent only a hash, so migration 011 turned every pre-A1
 *claim* into an upload entry (plus the claimant's shares and placements).
-Those rows are unverified. They keep today's trust on legacy content
-(extracted_by='client'); once verified bytes make the content server-derived,
-they stop granting read, and they never let anyone share or file. Uploading
-the bytes verifies the uploader's entry and the shares/placements they made.
+Those rows are unverified: they never grant read, never let anyone share
+or file, and never block a content op. Uploading the bytes verifies the
+uploader's entry and the shares/placements they made. (An earlier rule
+trusted them while the content still looked legacy, keyed on
+extracted_by='client' — a label that stays 'client' when the author's upload
+yields no text, so the squat kept working: final re-review B1.)
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ from server.auth import authz, deps
 from server.auth.users import resolve_or_provision_user, set_status
 from server.routers import docs as docs_router
 from server.routers import projects as projects_router
+from server.services import doc_content
 from server.tests import seed
 from server.tests.docs_harness import build_docs_app, fake_embed
 
@@ -90,7 +93,7 @@ async def test_pre_a1_hash_squat_gives_no_access_once_the_author_uploads(db_conn
                         state="registered", extracted_by="client", verified=False,
                         project_ids=[pid])
     await seed.share_doc(db_conn, DOC, squatter.user_id, friend.user_id, verified=False)
-    assert await _can_read(db_conn, squatter.user_id)  # legacy content: today's trust
+    assert not await _can_read(db_conn, squatter.user_id)  # a claim, not a holding
 
     async with as_user(author) as c:
         r = await c.post("/v1/docs", files={"file": ("mine.txt", TEXT)})
@@ -139,7 +142,7 @@ async def test_legacy_owner_reupload_restores_access_and_their_shares_and_placem
     assert await _verified(db_conn, "project_documents", project_id=pid, doc_id=DOC)
 
 
-async def test_legacy_client_content_stays_readable_by_unverified_holders(db_conn):
+async def test_unverified_holdings_grant_no_read_even_on_legacy_content(db_conn):
     owner = await resolve_or_provision_user(db_conn, iss="i", sub="v-lo", email="lo@x.io")
     recipient = await resolve_or_provision_user(db_conn, iss="i", sub="v-lr", email="lr@x.io")
     member = await resolve_or_provision_user(db_conn, iss="i", sub="v-lm", email="lm@x.io")
@@ -148,20 +151,59 @@ async def test_legacy_client_content_stays_readable_by_unverified_holders(db_con
                         verified=False, project_ids=[pid])
     await seed.share_doc(db_conn, DOC, owner["id"], recipient["id"], verified=False)
     for uid in (owner["id"], recipient["id"], member["id"]):
-        assert await _can_read(db_conn, uid)
-    await db_conn.execute("UPDATE documents SET extracted_by = 'server' WHERE doc_id = %s", (DOC,))
-    for uid in (owner["id"], recipient["id"], member["id"]):
         assert not await _can_read(db_conn, uid)
 
 
-async def test_unverified_holder_cannot_share_or_file_even_legacy_content(db_conn, as_user):
+async def test_squat_stays_dead_when_the_authors_upload_yields_no_text(db_conn, as_user):
+    """B1: the author's verified upload fails extraction, so the content keeps
+    extracted_by='client'. That must not hand the squatter read access."""
+    blank = b"   \n\n  \n"
+    blank_id = hashlib.sha256(blank).hexdigest()
+    squatter = await _member(db_conn, "v-bs")
+    author = await _member(db_conn, "v-ba")
+    await seed.seed_doc(db_conn, blank_id, squatter.user_id, file_name="x.txt",
+                        file_type="text", state="registered", extracted_by="client",
+                        verified=False)
+    async with as_user(author) as c:
+        assert (await c.post("/v1/docs", files={"file": ("b.txt", blank)})).status_code == 202
+        assert (await c.get(f"/v1/docs/{blank_id}")).status_code == 200
+    cur = await db_conn.execute(
+        "SELECT state, extracted_by FROM documents WHERE doc_id = %s", (blank_id,))
+    assert await cur.fetchone() == ("failed", "client")
+    assert not await _can_read(db_conn, squatter.user_id, blank_id)
+    async with as_user(squatter) as c:
+        assert (await _reads_over_http(c, blank_id))[0] == 404
+
+
+async def test_leftover_claims_dont_block_the_uploaders_content_ops(db_conn, as_user):
+    """An unverified entry or placement grants nobody read, so it isn't a
+    holder the author must defer to (else "others use this" on the author's
+    own convert)."""
+    squatter = await _member(db_conn, "v-cs")
+    author = await _member(db_conn, "v-ca")
+    pid = await _project(db_conn, squatter.user_id)
+    await seed.seed_doc(db_conn, DOC, squatter.user_id, file_name="x.txt", file_type="text",
+                        state="registered", extracted_by="client", verified=False,
+                        project_ids=[pid])
+    async with as_user(author) as c:
+        assert (await c.post("/v1/docs", files={"file": ("a.txt", TEXT)})).status_code == 202
+    assert await doc_content.content_ops_refusal(
+        db_conn, DOC, author.user_id, is_admin=False) is None
+    async with as_user(author) as c:  # re-index from the author's verified bytes
+        r = await c.post(f"/v1/docs/{DOC}/index")
+    assert r.status_code == 202 and r.json()["state"] == "extracting"
+    assert await doc_content.content_ops_refusal(
+        db_conn, DOC, squatter.user_id, is_admin=False) == "other_holders"
+
+
+async def test_unverified_holder_cannot_read_share_or_file_legacy_content(db_conn, as_user):
     owner = await _member(db_conn, "v-uo")
     friend = await _member(db_conn, "v-uf")
     pid = await _project(db_conn, owner.user_id)
     await seed.seed_doc(db_conn, DOC, owner.user_id, state="indexed", extracted_by="client",
                         verified=False)
     async with as_user(owner) as c:
-        assert (await c.get(f"/v1/docs/{DOC}")).status_code == 200  # still reads legacy
+        assert (await c.get(f"/v1/docs/{DOC}")).status_code == 404
         assert (await c.put(f"/v1/docs/{DOC}/shares/{friend.user_id}")).status_code == 404
         assert (await c.put(f"/v1/projects/{pid}/docs/{DOC}")).status_code == 404
 
@@ -208,8 +250,8 @@ async def test_ineffective_placement_is_not_listed_nor_filterable(db_conn, as_us
     squatter = await _member(db_conn, "v-ps")
     reader = await _member(db_conn, "v-pr")  # verified holder AND member of the project
     pid = await _project(db_conn, squatter.user_id, reader.user_id)
-    await seed.seed_doc(db_conn, DOC, squatter.user_id, state="indexed", extracted_by="server",
-                        verified=False, project_ids=[pid])
+    await seed.seed_doc(db_conn, DOC, squatter.user_id, state="indexed", extracted_by="client",
+                        verified=False, project_ids=[pid])  # legacy content: still no trust
     await seed.share_doc(db_conn, DOC, squatter.user_id, reader.user_id)  # verified share
     async with as_user(reader) as c:
         assert (await c.get(f"/v1/docs/{DOC}")).json()["projects"] == []
