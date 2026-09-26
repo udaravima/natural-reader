@@ -103,10 +103,14 @@ class OllamaProvider:
                 else:
                     raise
                 dropped.append(feature)
-        for feature in dropped:   # the retry succeeded: now it's safe to remember
-            self._features.remember(model, feature)
-            logger.debug("Ollama model %s rejected %s; retried without it", model, feature)
+        # Yield FeatureDropped for every feature we tried, but remember only the last one
+        # whose removal made the request succeed (ruling R12, Review Focus 1).
+        for feature in dropped:
             yield FeatureDropped(feature)
+        if dropped:
+            last_feature = dropped[-1]
+            self._features.remember(model, last_feature)
+            logger.debug("Ollama model %s rejected %s; retried without it", model, last_feature)
         async for chunk in self._read(resp):
             yield chunk
 

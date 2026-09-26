@@ -120,6 +120,26 @@ async def test_rejection_is_not_remembered_when_the_retry_also_fails():
     assert ["tools" in b for b in up.bodies("/api/chat")] == [True, False, True]
 
 
+async def test_compound_rejection_remembers_only_the_feature_that_fixed_it():
+    up = _up(lambda: httpx.Response(400, json={"error": "invalid think value"}),
+             lambda: httpx.Response(400, json={"error": "model does not support tools"}),
+             lambda: ndjson(DONE))
+    provider = OllamaProvider(CFG, up.client())
+    chunks = await _collect(provider.stream_chat("qwen2", HI, [TOOL], CallSettings(think="high")))
+    # Both features are yielded as dropped
+    assert FeatureDropped("think_level") in chunks
+    assert FeatureDropped("tools") in chunks
+    # Second call with same settings: think="high" is sent again (not True), tools omitted
+    chunks2 = await _collect(provider.stream_chat("qwen2", HI, [TOOL], CallSettings(think="high")))
+    bodies = up.bodies("/api/chat")
+    # Four requests total: first call drops both (think, then tools), second call only remembers tools
+    # Request 1 (first call): think="high", tools=True → 400
+    # Request 2 (first call): think=True, tools=True → 400
+    # Request 3 (first call): think=True, tools=False → 200 (success)
+    # Request 4 (second call): think="high", tools=False → 200 (tools remembered, not sent)
+    assert [(b.get("think"), "tools" in b) for b in bodies] == [("high", True), (True, True), (True, False), ("high", False)]
+
+
 async def test_model_not_found_is_not_a_feature_rejection():
     up = _up(lambda: httpx.Response(404, json={"error": "model 'x' not found"}))
     with pytest.raises(ProviderError) as ei:
