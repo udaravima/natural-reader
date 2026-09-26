@@ -25,6 +25,7 @@ import { getBook } from './db';
 import { saveWorkspaceState, clearWorkspaceState, getWorkspaceState } from './db';
 import { registerDocument, linkDocToProject, parseTagsInput } from './lib/docMeta';
 import { describeRefusal } from './lib/apiErrors';
+import { pollIndexUntilSettled, pollConvertUntilSettled } from './lib/docStatusPoller';
 import { WorkspaceProvider } from './lib/WorkspaceContext';
 import { createFsaWorkspace, createSnapshotWorkspace, pickEntryFile, isMarkdownPath } from './lib/workspace';
 
@@ -48,9 +49,6 @@ import ToastNotification from './components/overlays/ToastNotification';
 import ContextMenu from './components/overlays/ContextMenu';
 import KeyboardShortcutsModal from './components/overlays/KeyboardShortcutsModal';
 import ReadSelectionButton from './components/overlays/ReadSelectionButton';
-
-// Doc states the server moves through on its own (A1 spec §4 States).
-const PROCESSING_STATES = new Set(['stored', 'extracting', 'extracted', 'indexing']);
 
 export default function App() {
   // One-time migration: 'localhost' was the pre-auth default apiHost, but every
@@ -721,29 +719,6 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfFileName, ensureDocHash]);
 
-  const pollIndexUntilSettled = useCallback(async (docId) => {
-    const POLL_MS = 2000;
-    const MAX_POLLS = 300; // ~10 minutes
-    for (let i = 0; i < MAX_POLLS; i++) {
-      await new Promise((r) => setTimeout(r, POLL_MS));
-      try {
-        const sRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}`);
-        if (!sRes.ok) continue;
-        const sData = await sRes.json();
-        setDocIndexByDocId((prev) => ({
-          ...prev,
-          [docId]: { state: sData.state, chunkCount: sData.chunk_count, embeddedCount: sData.embedded_count },
-        }));
-        if (sData.state === 'indexed') { showToast(`Indexed ${sData.embedded_count} chunks.`, 3000); return; }
-        if (sData.state === 'failed') { showToast(`Indexing failed: ${sData.error_message || 'unknown error'}`, 6000); return; }
-        if (!PROCESSING_STATES.has(sData.state)) return;
-      } catch {
-        // transient backend hiccup — keep polling
-      }
-    }
-    showToast('Indexing is taking unusually long — check the server logs.', 6000);
-  }, [apiHost, apiPort, showToast]);
-
   const handleIndexDocument = useCallback(async () => {
     if (!pdfFileName) return;
     const docId = await ensureDocHash();
@@ -757,7 +732,7 @@ export default function App() {
       const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/index`, { method: 'POST' });
       if (!res.ok) { showToast(await describeRefusal(res), 6000); return; }
       setIndex(docId, { state: 'extracting' });
-      await pollIndexUntilSettled(docId);
+      await pollIndexUntilSettled({ apiDocId: docId, stateKey: docId, apiHost, apiPort, setDocIndexByDocId, showToast });
       return;
     }
 
@@ -775,16 +750,21 @@ export default function App() {
       showToast(`Indexing failed: ${e.message}`, 6000);
       return;
     }
-    // The server's hash is authoritative (spec §8); it equals ours for the same bytes.
+    // The server's hash is authoritative for every API call (spec §8), but
+    // IndexButton reads its state from docIndexByDocId[currentDocId], and
+    // currentDocId is never repointed to the server's id — it stays the
+    // local hash this flow started with. So progress is written under
+    // `docId`, not `serverId`: writing under the server's id would leave the
+    // button reading a key nothing updates if the two ever disagree.
     const serverId = result.docId;
     if (serverId !== docId) console.warn('Server doc id differs from local hash', { docId, serverId });
-    setIndex(serverId, { state: result.state });
+    setIndex(docId, { state: result.state });
     if (result.dedup && result.state === 'indexed') {
       showToast('Already indexed — added to your library.', 4000);
       return;
     }
-    await pollIndexUntilSettled(serverId);
-  }, [pdfFileName, ensureDocHash, docIndexByDocId, showToast, apiHost, apiPort, docProjectId, docTagsText, pollIndexUntilSettled]);
+    await pollIndexUntilSettled({ apiDocId: serverId, stateKey: docId, apiHost, apiPort, setDocIndexByDocId, showToast });
+  }, [pdfFileName, ensureDocHash, docIndexByDocId, showToast, apiHost, apiPort, docProjectId, docTagsText]);
 
   // ---------- DOCLING CONVERSION ----------
   // Mirror of handleIndexDocument: uploads (registers) the PDF bytes →
@@ -824,14 +804,17 @@ export default function App() {
       showToast(`Convert failed: ${e.message}`, 5000);
       return;
     }
-    // The server's hash is authoritative (spec §8); it equals ours for the same bytes.
+    // Same split as handleIndexDocument: convertDocId (the server's hash) is
+    // authoritative for every API call below, but the convert button reads
+    // docConvertByDocId[currentDocId] — the local hash — so all UI state
+    // stays keyed by `docId`.
     const convertDocId = result.docId;
     if (convertDocId !== docId) console.warn('Server doc id differs from local hash', { docId, convertDocId });
 
     // 2. Kick off the conversion job.
     setDocConvertByDocId((prev) => ({
       ...prev,
-      [convertDocId]: { ...(prev[convertDocId] || {}), state: 'converting', options, error: null },
+      [docId]: { ...(prev[docId] || {}), state: 'converting', options, error: null },
     }));
     try {
       const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(convertDocId)}/convert`, {
@@ -844,7 +827,7 @@ export default function App() {
       console.error('Convert kick-off failed:', e);
       setDocConvertByDocId((prev) => ({
         ...prev,
-        [convertDocId]: { ...(prev[convertDocId] || {}), state: 'failed', error: e.message },
+        [docId]: { ...(prev[docId] || {}), state: 'failed', error: e.message },
       }));
       showToast(`Could not start conversion: ${e.message}`, 6000);
       return;
@@ -855,54 +838,12 @@ export default function App() {
 
     showToast('Converting with Docling — this can take a few minutes.', 4000);
 
-    // 3. Poll. Conversion finishes when conversion_state='converted' AND the
-    // chained indexing leaves state='indexed' (or 'failed' on either side).
-    const POLL_MS = 2000;
-    const MAX_POLLS = 600; // 20 minutes — docling on big PDFs is slow.
-    for (let i = 0; i < MAX_POLLS; i++) {
-      await new Promise((r) => setTimeout(r, POLL_MS));
-      try {
-        const sRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(convertDocId)}`);
-        if (!sRes.ok) continue;
-        const sData = await sRes.json();
-        setDocConvertByDocId((prev) => ({
-          ...prev,
-          [convertDocId]: {
-            ...(prev[convertDocId] || {}),
-            state: sData.conversion_state || 'idle',
-            pageCount: sData.converted_page_count || 0,
-            error: sData.conversion_error || null,
-            options: sData.conversion_options || prev[convertDocId]?.options || null,
-            hasPdf: !!sData.has_pdf,
-          },
-        }));
-        setDocIndexByDocId((prev) => ({
-          ...prev,
-          [convertDocId]: {
-            state: sData.state || 'idle',
-            chunkCount: sData.chunk_count,
-            embeddedCount: sData.embedded_count,
-          },
-        }));
-        if (sData.conversion_state === 'conversion_failed') {
-          showToast(`Conversion failed: ${sData.conversion_error || 'unknown error'}`, 6000);
-          return;
-        }
-        if (sData.conversion_state === 'converted' && sData.state === 'indexed') {
-          showToast(`Converted ${sData.converted_page_count} pages.`, 3000);
-          setDocViewByDocId((prev) => ({ ...prev, [convertDocId]: 'md' }));
-          return;
-        }
-        if (sData.conversion_state === 'converted' && sData.state === 'failed') {
-          // Conversion worked but downstream embedding failed.
-          showToast(`Conversion done, but indexing failed: ${sData.error_message || 'unknown'}`, 6000);
-          return;
-        }
-      } catch {
-        // Transient hiccup — keep polling.
-      }
-    }
-    showToast('Conversion is taking unusually long — check the server logs.', 6000);
+    // 3. Poll (server id for the network call, local hash for the UI keys —
+    // see the comment above convertDocId).
+    await pollConvertUntilSettled({
+      apiDocId: convertDocId, stateKey: docId, apiHost, apiPort,
+      setDocConvertByDocId, setDocIndexByDocId, setDocViewByDocId, showToast,
+    });
   }, [pdfFileName, fileType, ensureDocHash, showToast, apiHost, apiPort, docProjectId, docTagsText]);
 
   const openConvertDialog = useCallback(() => setConvertDialogOpen(true), []);
