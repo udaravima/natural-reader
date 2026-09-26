@@ -118,6 +118,25 @@ async def test_pipeline_corrupt_pdf_fails_readably_and_keeps_entry(db_conn, harn
     assert await _entry_count(db_conn, doc_id) == 1
 
 
+async def test_pipeline_text_less_pdf_fails_with_ocr_hint(db_conn, harness, store):
+    """A scanned PDF with no text layer yields zero chunks. It must not end
+    'indexed' with nothing to search — it fails and points at Convert (OCR)."""
+    owner = await _member(db_conn, "p-notext")
+    data = make_pdf([""])
+    doc_id = _sha256(data)
+    path = _write(store, doc_id, "pdf", data)
+    await seed.seed_doc(db_conn, doc_id, owner.user_id, file_type="pdf", state="stored",
+                        bytes_path=path)
+
+    await doc_pipeline.run_pipeline(doc_id)
+
+    doc = await _doc(db_conn, doc_id)
+    assert doc["state"] == "failed"
+    assert doc["error_message"] == "No text found — try Convert (OCR)."
+    assert await _chunks(db_conn, doc_id) == []
+    assert await _entry_count(db_conn, doc_id) == 1
+
+
 async def test_pipeline_bytes_mismatch_fails_without_marking_server(db_conn, harness, store):
     """Fix round 1, finding 1: a legacy doc's bytes_path predates the
     hash-equals-doc_id guarantee. Stored bytes that don't hash to doc_id must

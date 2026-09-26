@@ -96,8 +96,10 @@ async def delete_project(project_id: str,
                          principal: deps.Principal = Depends(deps.get_current_user),
                          conn=Depends(deps.get_conn)):
     await _assert_owner(conn, project_id, principal.user_id)
+    # Sorted, like admin delete_user's GC: row locks in one order can't deadlock.
     cur = await conn.execute(
-        "SELECT doc_id FROM project_documents WHERE project_id = %s", (project_id,))
+        "SELECT doc_id FROM project_documents WHERE project_id = %s ORDER BY doc_id",
+        (project_id,))
     doc_ids = [r[0] for r in await cur.fetchall()]
     await conn.execute("DELETE FROM projects WHERE id = %s", (project_id,))
     for doc_id in doc_ids:
@@ -155,8 +157,11 @@ async def link_doc(project_id: uuid.UUID, doc_id: DocId,
     admins skip the visibility check, as the old PATCH project_id path did. The
     project is checked first, so an invisible project 404s before doc ids can
     be used to probe it. A doc someone merely shared with me, or that I only
-    read through another project, can't be filed (A1 §5). Idempotent: an
-    existing placement keeps its original `added_by`."""
+    read through another project, can't be filed (A1 §5); nor can a pre-A1
+    upload entry nobody verified (migration 012). Idempotent: an existing
+    placement keeps its original `added_by` — unless it is an UNVERIFIED
+    legacy placement, which this verified filing replaces (it would
+    otherwise grant the project nothing)."""
     if principal.role == "admin":
         cur = await conn.execute("SELECT 1 FROM projects WHERE id = %s", (project_id,))
     else:
@@ -167,8 +172,10 @@ async def link_doc(project_id: uuid.UUID, doc_id: DocId,
         raise HTTPException(status_code=404, detail="Project not found")
     await assert_holds_upload(conn, doc_id, principal.user_id)
     cur = await conn.execute(
-        "INSERT INTO project_documents (project_id, doc_id, added_by) VALUES (%s,%s,%s) "
-        "ON CONFLICT DO NOTHING", (project_id, doc_id, principal.user_id))
+        "INSERT INTO project_documents (project_id, doc_id, added_by, verified) "
+        "VALUES (%s,%s,%s,true) ON CONFLICT (project_id, doc_id) DO UPDATE "
+        "SET added_by = EXCLUDED.added_by, verified = true "
+        "WHERE NOT project_documents.verified", (project_id, doc_id, principal.user_id))
     if cur.rowcount:
         audit("placement.added", project=project_id, doc=doc_id, by=principal.user_id)
     return Response(status_code=204)

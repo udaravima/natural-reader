@@ -1,5 +1,5 @@
 import { apiFetch } from '../utils/apiFetch';
-import { describeRefusal } from './apiErrors';
+import { describeRefusal, noticeFor } from './apiErrors';
 
 /**
  * Parse a free-text tags field (comma-separated) into a clean array: trimmed,
@@ -69,4 +69,41 @@ export async function linkDocToProject({ apiHost, apiPort, projectId, docId }) {
     } catch (e) {
         console.error('Doc project link failed:', e);
     }
+}
+
+/**
+ * Ask the server to re-index an indexed doc from its stored bytes
+ * (`POST /v1/docs/{id}/index`). Returns one of:
+ * - `{ started: true }` — the job is running; poll the doc.
+ * - `{ needsUpload: true }` — 409 `bytes_missing`: the server has no stored
+ *   bytes to rebuild from. Most docs indexed before A1 are like that (the
+ *   browser sent chunks, never the file), so the caller uploads the local
+ *   file instead; the server restores the bytes and, for legacy content,
+ *   re-extracts from them.
+ * - `{ notice }` — any other refusal, as a toast-ready notice.
+ */
+export async function requestReindex({ apiHost, apiPort, docId }) {
+    const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/index`, { method: 'POST' });
+    if (res.ok) return { started: true };
+    let detail = null;
+    try {
+        detail = (await res.json())?.detail ?? null;
+    } catch {
+        // non-JSON body — fall back to the status
+    }
+    if (res.status === 409 && detail?.error === 'bytes_missing') return { needsUpload: true };
+    return { notice: noticeFor(res.status, detail) };
+}
+
+/**
+ * Delete a doc's converted Markdown (`DELETE /v1/docs/{id}/markdown`). The
+ * server then falls back to its own extraction from the stored bytes, so the
+ * doc goes back through extracting → indexed. Returns `{ state }` (the state
+ * the server moved to); throws `Error(<notice>)` on a refusal.
+ */
+export async function deleteConvertedMarkdown({ apiHost, apiPort, docId }) {
+    const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/markdown`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(await describeRefusal(res));
+    const body = await res.json();
+    return { state: body.state };
 }

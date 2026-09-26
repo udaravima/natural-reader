@@ -113,7 +113,7 @@ async def test_share_with_malformed_user_404(db_conn, docs_app):
 async def test_share_never_downgrades_recipients_upload_entry(db_conn, docs_app):
     a, b = await _member(db_conn, "a"), await _member(db_conn, "b")
     await _insert_doc(db_conn, HEX, a.user_id)
-    await doc_content.add_entry(db_conn, b.user_id, HEX, via="upload")  # b uploaded it too
+    await doc_content.add_entry(db_conn, b.user_id, HEX, via="upload", verified=True)  # b uploaded it too
     r = await _as(docs_app, a, "PUT", f"/v1/docs/{HEX}/shares/{b.user_id}")
     assert r.status_code == 204
     assert await _entry(db_conn, b.user_id) == ("upload", None)
@@ -135,7 +135,7 @@ async def test_revoking_someone_elses_share_is_404(db_conn, docs_app):
     a, b, c = [await _member(db_conn, s) for s in ("a", "b", "c")]
     await _insert_doc(db_conn, HEX, a.user_id)
     await seed.share_doc(db_conn, HEX, a.user_id, b.user_id)
-    await doc_content.add_entry(db_conn, c.user_id, HEX, via="upload")  # c uploaded it too
+    await doc_content.add_entry(db_conn, c.user_id, HEX, via="upload", verified=True)  # c uploaded it too
     r = await _as(docs_app, c, "DELETE", f"/v1/docs/{HEX}/shares/{b.user_id}")
     assert r.status_code == 404
     assert r.json()["detail"] == {"error": "not_found", "message": "Share not found"}
@@ -145,7 +145,7 @@ async def test_revoking_someone_elses_share_is_404(db_conn, docs_app):
 async def test_revoking_an_upload_entry_is_404(db_conn, docs_app):
     a, b = await _member(db_conn, "a"), await _member(db_conn, "b")
     await _insert_doc(db_conn, HEX, a.user_id)
-    await doc_content.add_entry(db_conn, b.user_id, HEX, via="upload")  # b uploaded it too
+    await doc_content.add_entry(db_conn, b.user_id, HEX, via="upload", verified=True)  # b uploaded it too
     r = await _as(docs_app, a, "DELETE", f"/v1/docs/{HEX}/shares/{b.user_id}")
     assert r.status_code == 404
     assert await _entry(db_conn, b.user_id) == ("upload", None)
@@ -163,3 +163,21 @@ async def test_revoking_the_last_reference_gcs_the_content(db_conn, docs_app):
     assert r.status_code == 204
     cur = await db_conn.execute("SELECT 1 FROM documents WHERE doc_id=%s", (HEX,))
     assert await cur.fetchone() is None
+
+
+async def test_share_gives_the_recipient_the_sharers_name_not_the_canonical_one(
+        db_conn, docs_app):
+    """The canonical name is the first uploader anywhere's file name; a
+    recipient sees the name the sharer sees instead."""
+    first, sharer, recipient = [await _member(db_conn, s) for s in ("n-first", "n-s", "n-r")]
+    await seed.seed_doc(db_conn, HEX, first.user_id, file_name="first-uploader-secret.pdf",
+                        file_type="text")
+    await seed.share_doc(db_conn, HEX, first.user_id, sharer.user_id)
+    await db_conn.execute(
+        "UPDATE library_entries SET added_via = 'upload', shared_by = NULL, "
+        "file_name = 'my-copy.txt' WHERE user_id = %s AND doc_id = %s",
+        (sharer.user_id, HEX))  # the sharer uploaded the same bytes under their own name
+    r = await _as(docs_app, sharer, "PUT", f"/v1/docs/{HEX}/shares/{recipient.user_id}")
+    assert r.status_code == 204
+    r = await _as(docs_app, recipient, "GET", f"/v1/docs/{HEX}")
+    assert r.json()["file_name"] == "my-copy.txt"

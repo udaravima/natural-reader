@@ -25,7 +25,7 @@ Project management works entirely from the UI, with no curl. Each journey must m
 - The owner is simply the highest role, and a project can have several.
 - Membership (`project_members`) is the **only** source of truth for who can do what. This removes the two-sources bug class that C0 had to patch, where an owner had no member row.
 
-## 3. Data model — migration `012` (keeps all existing data; A1 is `011`)
+## 3. Data model — migration `013` (keeps all existing data; A1 is `011`–`012`)
 
 - `users`: add `username`, `first_name`, `last_name`, filled from the ID token (`preferred_username`, `given_name`, `family_name`) at every login. `email` stays (unique, refreshed at login). No search index; a few thousand rows scan in under a millisecond.
 - `project_members`: add `role` (CHECK over the four roles), `added_by` (→ users, SET NULL), `added_at`, `added_via` (`member` | `admin`).

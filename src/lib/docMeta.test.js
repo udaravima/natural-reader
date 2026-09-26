@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../utils/apiFetch', () => ({ apiFetch: vi.fn() }));
 import { apiFetch } from '../utils/apiFetch';
-import { registerDocument, parseTagsInput } from './docMeta';
+import { registerDocument, parseTagsInput, requestReindex, deleteConvertedMarkdown } from './docMeta';
 
 const json = (status, body) => ({ ok: status < 400, status, json: async () => body });
 
@@ -109,5 +109,53 @@ describe('parseTagsInput', () => {
     expect(parseTagsInput('')).toEqual([]);
     expect(parseTagsInput('   ')).toEqual([]);
     expect(parseTagsInput(undefined)).toEqual([]);
+  });
+});
+
+describe('requestReindex', () => {
+  beforeEach(() => vi.clearAllMocks());
+  const args = { apiHost: '', apiPort: '', docId: 'd1' };
+
+  it('POSTs /index and reports a started re-index', async () => {
+    apiFetch.mockResolvedValue(json(202, { ok: true, state: 'extracting' }));
+    expect(await requestReindex(args)).toEqual({ started: true });
+    expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/docs/d1/index', { method: 'POST' });
+  });
+
+  it('asks for an upload when the server has no stored bytes (legacy docs)', async () => {
+    // Most docs indexed before A1 were indexed from browser chunks, so the
+    // server never got their bytes: re-index must upload, not dead-end.
+    apiFetch.mockResolvedValue(json(409, {
+      detail: { error: 'bytes_missing', message: 'Upload the file again first.' },
+    }));
+    expect(await requestReindex(args)).toEqual({ needsUpload: true });
+  });
+
+  it('turns any other refusal into a notice', async () => {
+    apiFetch.mockResolvedValue(json(409, {
+      detail: { error: 'content_shared', reason: 'in_project', message: 'x' },
+    }));
+    const out = await requestReindex(args);
+    expect(out.started).toBeUndefined();
+    expect(out.needsUpload).toBeUndefined();
+    expect(out.notice).toMatch(/in a project/);
+  });
+});
+
+describe('deleteConvertedMarkdown', () => {
+  beforeEach(() => vi.clearAllMocks());
+  const args = { apiHost: '', apiPort: '', docId: 'd1' };
+
+  it('DELETEs the markdown and returns the state the server moved to', async () => {
+    apiFetch.mockResolvedValue(json(200, { ok: true, doc_id: 'd1', state: 'extracting' }));
+    expect(await deleteConvertedMarkdown(args)).toEqual({ state: 'extracting' });
+    expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/docs/d1/markdown', { method: 'DELETE' });
+  });
+
+  it('throws the mapped notice on a refusal, not a bare HTTP status', async () => {
+    apiFetch.mockResolvedValue(json(409, {
+      detail: { error: 'content_shared', reason: 'other_holders', message: 'x' },
+    }));
+    await expect(deleteConvertedMarkdown(args)).rejects.toThrow(/Other people also use this document/);
   });
 });

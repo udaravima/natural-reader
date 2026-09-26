@@ -333,6 +333,43 @@ async def test_legacy_converted_with_verified_bytes_flips_without_rework(
     assert embed.calls == 0
 
 
+async def test_legacy_conversion_of_tampered_bytes_is_discarded_by_a_verified_upload(
+        db_conn, as_user, store):
+    """Legacy, converted, NOT indexed, stored bytes don't match the id: the
+    conversion came from unverified bytes. The verified upload that replaces
+    those bytes must throw it away, or re-seeding chunks from it would keep
+    the tampered text — and a second upload would then relabel it 'server'."""
+    alice = await _member(db_conn, "lt-alice")
+    data = make_pdf(["The genuine page text."])
+    doc_id = _sha(data)
+    path = store / f"{doc_id}.pdf"
+    path.write_bytes(make_pdf(["TAMPERED"]))  # doesn't hash to doc_id
+    await seed.seed_doc(db_conn, doc_id, alice.user_id, file_name="c.pdf", file_type="pdf",
+                        state="extracted", extracted_by="client", bytes_path=path)
+    await db_conn.execute(
+        "UPDATE documents SET conversion_state = 'converted', conversion_options = '{}', "
+        "converted_at = now() WHERE doc_id = %s", (doc_id,))
+    await db_conn.execute(
+        "INSERT INTO doc_pages (doc_id, page, markdown) VALUES (%s, 1, 'TAMPERED')", (doc_id,))
+    await _add_old_chunk(db_conn, doc_id, text="TAMPERED", chunk_type="page-md")
+
+    async with as_user(alice) as c:
+        first = await _upload(c, "c.pdf", data)
+        doc = await _doc(db_conn, doc_id)
+        texts = [t for *_x, t in await _chunks(db_conn, doc_id)]
+        second = await _upload(c, "c.pdf", data)
+    assert first.status_code == 202
+    assert doc["extracted_by"] == "server" and doc["conversion_state"] is None
+    assert texts == ["The genuine page text."]
+    assert second.status_code == 200
+    assert await _chunks(db_conn, doc_id) == [(0, 1, "page", "The genuine page text.")]
+    cur = await db_conn.execute(
+        "SELECT d.extracted_by, d.conversion_options, d.converted_at, "
+        "(SELECT count(*) FROM doc_pages p WHERE p.doc_id = d.doc_id) "
+        "FROM documents d WHERE d.doc_id = %s", (doc_id,))
+    assert await cur.fetchone() == ("server", None, None, 0)
+
+
 # ---------- races and self-heal ----------
 
 async def test_missing_bytes_are_restored_by_the_next_upload(db_conn, as_user, store, caplog):

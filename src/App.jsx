@@ -23,7 +23,9 @@ import { apiFetch } from './utils/apiFetch';
 import { getOrComputeDocHash } from './utils/docHash';
 import { getBook } from './db';
 import { saveWorkspaceState, clearWorkspaceState, getWorkspaceState } from './db';
-import { registerDocument, linkDocToProject, parseTagsInput } from './lib/docMeta';
+import {
+  registerDocument, linkDocToProject, parseTagsInput, requestReindex, deleteConvertedMarkdown,
+} from './lib/docMeta';
 import { describeRefusal } from './lib/apiErrors';
 import { pollIndexUntilSettled, pollConvertUntilSettled } from './lib/docStatusPoller';
 import { WorkspaceProvider } from './lib/WorkspaceContext';
@@ -728,12 +730,20 @@ export default function App() {
 
     // Re-index an indexed doc: the server re-extracts from its stored bytes.
     // Only the sole holder or an admin may — others get a notice saying why.
+    // A server without the bytes (most docs indexed before A1: the browser
+    // sent chunks, never the file) says bytes_missing; then upload the local
+    // copy below instead — that restores the bytes and, for legacy content,
+    // re-extracts from them.
+    let reuploadForReindex = false;
     if (docIndexByDocId[docId]?.state === 'indexed') {
-      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/index`, { method: 'POST' });
-      if (!res.ok) { showToast(await describeRefusal(res), 6000); return; }
-      setIndex(docId, { state: 'extracting' });
-      await pollIndexUntilSettled({ apiDocId: docId, stateKey: docId, apiHost, apiPort, setDocIndexByDocId, showToast });
-      return;
+      const out = await requestReindex({ apiHost, apiPort, docId });
+      if (out.notice) { showToast(out.notice, 6000); return; }
+      if (out.started) {
+        setIndex(docId, { state: 'extracting' });
+        await pollIndexUntilSettled({ apiDocId: docId, stateKey: docId, apiHost, apiPort, setDocIndexByDocId, showToast });
+        return;
+      }
+      reuploadForReindex = true;
     }
 
     setIndex(docId, { state: 'uploading' });
@@ -759,7 +769,7 @@ export default function App() {
     const serverId = result.docId;
     if (serverId !== docId) console.warn('Server doc id differs from local hash', { docId, serverId });
     setIndex(docId, { state: result.state });
-    if (result.dedup && result.state === 'indexed') {
+    if (result.dedup && result.state === 'indexed' && !reuploadForReindex) {
       showToast('Already indexed — added to your library.', 4000);
       return;
     }
@@ -901,10 +911,7 @@ export default function App() {
     if (!ok) return;
 
     try {
-      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(currentDocId)}/markdown`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await deleteConvertedMarkdown({ apiHost, apiPort, docId: currentDocId });
     } catch (e) {
       console.error('Markdown delete failed:', e);
       showToast(`Could not delete Markdown: ${e.message}`, 5000);
@@ -915,13 +922,18 @@ export default function App() {
       ...prev,
       [currentDocId]: { ...(prev[currentDocId] || {}), state: 'idle', pageCount: 0, error: null, options: null },
     }));
+    // The server falls back to its own extraction from the stored bytes and
+    // re-indexes: follow that instead of showing the doc as never indexed.
     setDocIndexByDocId((prev) => ({
       ...prev,
-      [currentDocId]: { state: 'idle', chunkCount: 0, embeddedCount: 0 },
+      [currentDocId]: { state: 'extracting', chunkCount: 0, embeddedCount: 0 },
     }));
     // If the user was reading the MD view, drop back to the PDF rendering.
     setDocViewByDocId((prev) => ({ ...prev, [currentDocId]: 'pdf' }));
-    showToast('Converted Markdown deleted.', 3000);
+    showToast('Converted Markdown deleted — re-indexing from the file.', 3000);
+    await pollIndexUntilSettled({
+      apiDocId: currentDocId, stateKey: currentDocId, apiHost, apiPort, setDocIndexByDocId, showToast,
+    });
   }, [currentDocId, apiHost, apiPort, showToast]);
 
   const currentConvertEntry = currentDocId ? docConvertByDocId[currentDocId] : null;

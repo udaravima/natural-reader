@@ -2,13 +2,17 @@
 
 The library turns the single-owner document store into a **shared,
 organizable library**: documents can be grouped into projects, shared with
-other users, and tagged, while every read stays access-controlled. This is
-Phase 0 of the RAG roadmap — it builds the sharing/organization substrate
+other users, and tagged, while every read stays access-controlled. Today,
+creating projects, adding members and sharing a document with one person
+are **API-only** until the project-management UI (subsystem A0) ships; in
+the app you can tag your documents and file them into projects you can
+already see (a project's owner can also remove them there). This is Phase 0
+of the RAG roadmap — it builds the sharing/organization substrate
 that later phases (cross-document search, descriptions + routing,
 multi-round retrieval) sit on top of. It adds no search intelligence itself.
 
-Lives on `development`. Migrations **009**, **010** and **011**. Not yet on
-`master`.
+Lives on `development`. Migrations **009**, **010**, **011** and **012**. Not
+yet on `master`.
 
 ## The model: content, library entries, placements
 
@@ -29,7 +33,10 @@ re-embedded (see "Uploading," below).
 
 **Read access** reduces to one predicate: a user can read a document iff
 they hold a library entry for it, **or** the content is placed in a project
-they own or belong to. It's resolved entirely in SQL (`readable_docs_where` /
+they own or belong to — and that entry or placement is **verified**: it
+traces back to someone who uploaded the bytes to this server (a holding
+from before A1, which only ever claimed a hash, counts until verified bytes
+arrive; see "Upgrade notes (migration 012)"). It's resolved entirely in SQL (`readable_docs_where` /
 `readable_docs_params` in `server/auth/authz.py`) — never filtered in
 Python — so a document nobody gave you can never appear in a result, not
 even one that happens to match your search or tag filter.
@@ -86,11 +93,22 @@ last entry and the very last placement are both gone.
 ## Sharing
 
 Sharing a single document with one other person works today, but **only
-through the API** — there's no share button in the app yet. That arrives
-with the project-management UI (subsystem A0). Until then, sharing a folder
-of documents by adding someone to a project is the in-app path; sharing one
-document with one person needs curl (or a script) and a personal access
-token (see [USER_GUIDE.md](USER_GUIDE.md) for creating one):
+through the API** — there's no share button in the app yet. The same goes
+for creating a project and adding members to it: both are API-only
+(`POST /v1/projects`, `PUT /v1/projects/{id}/members/{user_id}`) until the
+project-management UI (subsystem A0) ships. The only project actions in the
+app today are filing a document you uploaded into a project you can already
+see, and — for that project's owner — removing it again.
+
+Sharing needs curl (or a script) and a personal access token (see
+[USER_GUIDE.md](USER_GUIDE.md) for creating one), plus two ids:
+
+- **`doc_id`** — `GET /v1/docs` lists your documents with their `doc_id`
+  (`curl https://reader.example.com/v1/docs -H "Authorization: Bearer nrp_…"`;
+  add `?q=<part of the name>` to narrow it down).
+- **the recipient's `user_id`** — there's no people directory yet, so ask
+  the recipient: they read their own id from `GET /v1/auth/me` (the `id`
+  field), with their own token or signed in to the app in the same browser.
 
 ```bash
 # Share a document you uploaded with another user (idempotent, 204 either way):
@@ -103,10 +121,12 @@ curl -X DELETE https://reader.example.com/v1/docs/<doc_id>/shares/<user_id> \
 ```
 
 Once shared, the recipient's Library shows the document with a "shared by"
-badge naming you. The rules:
+badge naming you, under the name *you* gave it (never the name some other
+uploader chose). The rules:
 
-- Only someone holding an **upload** entry for the document — i.e. someone
-  who has proved possession by uploading the bytes — can share it. A
+- Only someone holding a verified **upload** entry for the document — i.e.
+  someone who has proved possession by uploading the bytes to this server —
+  can share it. A
   recipient of a share, or someone who only sees the document through a
   project, **cannot re-share** it.
 - Revoking a share removes only the entries **you** created; it never
@@ -116,8 +136,9 @@ badge naming you. The rules:
 
 ## Projects govern their documents
 
-Filing a document into a project needs an **upload** entry for it — the
-same proof of possession sharing needs. Once it's filed, though, ownership
+Filing a document into a project needs a verified **upload** entry for it —
+the same proof of possession sharing needs. Members who see it only through
+the project see it under the name its filer gave it. Once it's filed, though, ownership
 of the document stops mattering: only **the project** can remove it from
 itself again. Today (before A0) that means the **project's owner**; once A0
 ships, any Maintainer will be able to. The person who filed it has no
@@ -206,6 +227,38 @@ content/entries/placements model described above:
   tampered local copy) is discarded, and the old index is kept rather than
   overwriting good data with bad.
 
+### Migration 012 (verified holdings)
+
+`library_entries` and `project_documents` each gain `verified BOOLEAN NOT
+NULL DEFAULT false`. `verified` means the holding traces back to someone
+who uploaded the bytes to this server: an upload entry whose user sent
+them, or a share or placement made by such a user. An entry or placement
+grants read only if it is verified **or** the content is still legacy
+(`extracted_by = 'client'`); sharing and filing need a verified upload
+entry. Uploading a document's bytes verifies your entry and every share and
+placement you made for it.
+
+### Upgrade notes (migration 012)
+
+Before A1 the browser sent only a document's hash, so an "owner" never
+proved they had the file — someone could register a hash they never had.
+Migration 011 still turned every pre-A1 owner into an upload entry, so 012
+marks every existing entry and placement as unverified. What that means
+after upgrading:
+
+- **A document registered before A1 stays readable by its old holders only
+  until someone uploads the real file.** Once verified bytes arrive, the
+  server re-extracts the text itself, and old, unverified holders stop
+  seeing it (404, like any document they were never given).
+- **Old holders get access back by uploading the file** — the Index button
+  in the reader does this from their local copy. That also re-activates the
+  shares they made and the project placements they added for it.
+- **The same goes for old shares and project placements**: a pre-A1 share
+  or placement keeps working on legacy content and stops once verified
+  bytes arrive, until the person who made it uploads the file.
+- Until an old holder re-uploads, they also can't share the document or
+  file it into a project (404), even while it's still readable.
+
 ## API surface
 
 ### Documents (`server/routers/docs.py`)
@@ -213,12 +266,12 @@ content/entries/placements model described above:
 | Route | Guard | Notes |
 |-------|-------|-------|
 | `POST /v1/docs` | any signed-in user (`reader`) | Multipart: `file` + optional `file_name`, `tags`, `client_doc_id` (hint only — the server's own SHA-256 always wins, with a logged WARNING on mismatch). Known bytes → `200 {doc_id, dedup: true, state}`. New bytes → `202 {doc_id, state: "extracting"}` plus a background job. `413`/`415`/`422` for oversized, unsupported, or empty files. |
-| `GET /v1/docs?q=&project_id=&tag=` | any signed-in user | Lists documents you hold an entry for, plus documents placed in projects you can see. Returns `{doc_id, file_name, state, tags, projects: [{id, name}], in_library, added_via, shared_by: {id, name} \| null}`. `file_name`/`tags` come from **your** entry when you have one, else the content's canonical name and no tags. |
+| `GET /v1/docs?q=&project_id=&tag=` | any signed-in user | Lists documents you hold an entry for, plus documents placed in projects you can see. Returns `{doc_id, file_name, state, tags, projects: [{id, name}], in_library, added_via, shared_by: {id, name} \| null}`. `file_name`/`tags` come from **your** entry when you have one; a row you see only through a project shows the name its filer gave it (else the canonical name) and no tags. |
 | `GET /v1/docs/{id}` · `POST /v1/docs/{id}/search` · `GET /v1/docs/{id}/markdown` | reader (`can_read`) | Unchanged read gate, resolved by the entries-or-placement predicate above. |
-| `PATCH /v1/docs/{id}` | your own entry | Sets **your** `file_name`/`tags` only — there's no more `owner_user_id` to reassign. |
+| `PATCH /v1/docs/{id}` | your own entry, on a doc you can read | Sets **your** `file_name`/`tags` only — there's no more `owner_user_id` to reassign. |
 | `DELETE /v1/docs/{id}` | your own entry | Removes your entry (204), then garbage-collects the content if nothing else holds it. Never touches other people's entries or any project. |
-| `PUT` / `DELETE /v1/docs/{id}/shares/{user_id}` | an upload-entry holder (PUT) · the sharer (DELETE) | Replaces the old `/grants/{user_id}`. See "Sharing," above. |
-| `POST /v1/docs/{id}/index` | any entry holder (resume) · sole holder or admin (re-index) | Resumes a document that isn't `indexed` yet from wherever it stopped; re-runs extraction and embedding on one that already is `indexed`. |
+| `PUT` / `DELETE /v1/docs/{id}/shares/{user_id}` | a verified upload-entry holder (PUT) · the sharer (DELETE) | Replaces the old `/grants/{user_id}`. See "Sharing," above. |
+| `POST /v1/docs/{id}/index` | any entry holder (resume) · sole holder or admin (re-index) | Resumes a document that isn't `indexed` yet from wherever it stopped; re-runs extraction and embedding on one that already is `indexed`. `409 bytes_missing` when there are no stored bytes to rebuild from — upload the file (the app's Index button does). |
 | `POST /v1/docs/{id}/convert` · `DELETE /v1/docs/{id}/markdown` | sole holder or admin | `409 content_shared` otherwise (see "Why can't I re-convert?"). |
 | ~~`POST /v1/docs/{id}/chunks`~~ · ~~`POST`/`DELETE /v1/docs/{id}/pdf`~~ | — | **Removed.** Bytes arrive at registration; chunks are always server-derived, never client-supplied. |
 
@@ -226,11 +279,11 @@ content/entries/placements model described above:
 
 | Route | Guard | Notes |
 |-------|-------|-------|
-| `POST /v1/projects` | any signed-in user | Creates a project you own. |
+| `POST /v1/projects` | any signed-in user | Creates a project you own. API-only until A0. |
 | `GET /v1/projects` | any signed-in user | Lists projects you **own or are a member of**; each row carries `is_owner`. |
 | `GET` · `PATCH` · `DELETE /v1/projects/{id}` | owner (404 otherwise) | Read/rename/delete your own project. Delete removes its doc links (garbage-collecting any content that was only reachable through it); the documents themselves survive if anyone else holds them. |
-| `PUT` · `DELETE /v1/projects/{id}/members/{user_id}` | owner | Idempotent (204). Add/remove a read-member. Unknown `user_id` → 404. |
-| `PUT /v1/projects/{id}/docs/{doc_id}` | an upload-entry holder who can see the project (admins: any project) | Link (204, idempotent). Invisible project → 404; a document you don't hold an upload entry for → 404. |
+| `PUT` · `DELETE /v1/projects/{id}/members/{user_id}` | owner | Idempotent (204). Add/remove a read-member. Unknown `user_id` → 404. API-only until A0. |
+| `PUT /v1/projects/{id}/docs/{doc_id}` | a verified upload-entry holder who can see the project (admins: any project) | Link (204, idempotent). Invisible project → 404; a document you don't hold an upload entry for → 404. |
 | `DELETE /v1/projects/{id}/docs/{doc_id}` | the project (A1: its owner; A0: Maintainer+) | Unlink (204). The uploader has no special standing here — see "Projects govern their documents," above. |
 
 Every refusal in the tables above carries `{"error": <code>, "message": …}`
@@ -257,6 +310,10 @@ separate client chunk-upload step any more, since the server derives chunks
 itself from the verified bytes. A 200 response (known bytes) shows "Already
 indexed — added to your library" immediately; a 202 response drives the
 same progress polling as before, just against the new state names (below).
+Re-indexing a document the server holds no bytes for (most documents
+indexed before A1) uploads your local copy instead of stopping at "Upload
+the file again first." Deleting converted Markdown follows the server's
+re-extraction from the file until the document is indexed again.
 
 ## States
 
@@ -268,6 +325,10 @@ same progress polling as before, just against the new state names (below).
 | `indexing` | embedding in progress |
 | `indexed` | searchable |
 | `failed` | extraction or embedding failed (error recorded) |
+
+A document whose file has no extractable text (a scanned PDF with no text
+layer) ends `failed` with "No text found — try Convert (OCR).", not
+`indexed` with nothing to search.
 
 `registered` is legacy only: a pre-A1 row with neither bytes nor chunks,
 left as-is until its first verified upload. On startup, any document caught

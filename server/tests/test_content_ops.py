@@ -11,6 +11,7 @@ import pytest
 
 from server.auth import deps
 from server.auth.users import resolve_or_provision_user, set_status
+from server.routers import docs as docs_router
 from server.services import doc_content, docling_convert
 from server.tests import seed
 from server.tests.docs_harness import build_docs_app
@@ -95,12 +96,53 @@ async def test_sole_holder_converts(db_conn, harness, store):
     assert (await _doc(db_conn, HEX))["conversion_state"] == "converted"
 
 
+async def test_converted_never_shows_next_to_the_old_indexed_state(
+        db_conn, harness, store, monkeypatch):
+    """A poller must not see conversion done while `state` still says the OLD
+    'indexed' — it would report success before the converted chunks embed."""
+    _, as_user = harness
+    owner = await _member(db_conn, "c-m2")
+    path = _write(store, HEX, "pdf", make_pdf(["hi"]))
+    await seed.seed_doc(db_conn, HEX, owner.user_id, file_type="pdf", bytes_path=path,
+                        state="indexed")
+    seen = []
+    real_seed = docs_router._chunks_from_pages
+
+    async def spy(doc_id):
+        seen.append(await _doc(db_conn, doc_id))
+        return await real_seed(doc_id)
+    monkeypatch.setattr(docs_router, "_chunks_from_pages", spy)
+
+    async with as_user(owner) as client:
+        assert (await client.post(f"/v1/docs/{HEX}/convert", json={})).status_code == 202
+    assert [(d["state"], d["conversion_state"]) for d in seen] == [("indexing", "converted")]
+    assert (await _doc(db_conn, HEX))["state"] == "indexed"
+
+
+async def test_convert_failing_after_converted_does_not_strand_indexing(
+        db_conn, harness, store, monkeypatch):
+    _, as_user = harness
+    owner = await _member(db_conn, "c-m2f")
+    path = _write(store, HEX, "pdf", make_pdf(["hi"]))
+    await seed.seed_doc(db_conn, HEX, owner.user_id, file_type="pdf", bytes_path=path,
+                        state="indexed")
+
+    async def boom(_doc_id):
+        raise RuntimeError("db hiccup")
+    monkeypatch.setattr(docs_router, "_chunks_from_pages", boom)
+
+    async with as_user(owner) as client:
+        assert (await client.post(f"/v1/docs/{HEX}/convert", json={})).status_code == 202
+    doc = await _doc(db_conn, HEX)
+    assert (doc["state"], doc["conversion_state"]) == ("failed", "conversion_failed")
+
+
 async def test_second_holder_refuses_both(db_conn, harness, store):
     a, b = await _member(db_conn, "a-conv"), await _member(db_conn, "b-conv")
     _, as_user = harness
     path = _write(store, HEX, "pdf", make_pdf(["hi"]))
     await seed.seed_doc(db_conn, HEX, a.user_id, file_type="pdf", bytes_path=path)
-    await doc_content.add_entry(db_conn, b.user_id, HEX, via="upload")
+    await doc_content.add_entry(db_conn, b.user_id, HEX, via="upload", verified=True)
 
     for who in (a, b):
         async with as_user(who) as client:
@@ -202,7 +244,7 @@ async def test_delete_markdown_with_other_holder_is_409(db_conn, harness, store)
     path = _write(store, doc_id, "pdf", pdf_bytes)
     await seed.seed_doc(db_conn, doc_id, a.user_id, file_type="pdf", state="indexed",
                         bytes_path=path)
-    await doc_content.add_entry(db_conn, b.user_id, doc_id, via="upload")
+    await doc_content.add_entry(db_conn, b.user_id, doc_id, via="upload", verified=True)
     await db_conn.execute(
         "UPDATE documents SET conversion_state = 'converted' WHERE doc_id = %s", (doc_id,))
     await db_conn.execute(

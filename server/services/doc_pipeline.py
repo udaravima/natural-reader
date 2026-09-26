@@ -239,6 +239,12 @@ async def run_pipeline(doc_id: str) -> None:
                             "UPDATE documents SET state = 'extracting', error_message = NULL, "
                             "updated_at = now() WHERE doc_id = %s", (doc_id,))
                     result = await asyncio.to_thread(extract.extract_file, Path(bytes_path), file_type)
+                    if not result.chunks:
+                        # e.g. a scanned PDF with no text layer: 'indexed' with
+                        # nothing to search would look like success. Docling's
+                        # OCR can still read it.
+                        await _fail(doc_id, "No text found — try Convert (OCR).")
+                        return
                     async with get_pool().connection() as conn:
                         await replace_chunks(conn, doc_id, result.chunks)
                     page_count = result.page_count

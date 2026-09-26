@@ -278,3 +278,35 @@ async def test_list_same_named_projects_are_both_listed_in_stable_order(db_conn,
     async with _client(docs_app) as client:
         row = (await client.get("/v1/docs")).json()[0]
         assert row["projects"] == [{"id": i, "name": "Infra"} for i in sorted([mine, theirs])]
+
+
+async def test_project_only_row_shows_the_filers_name_not_the_first_uploaders(db_conn, docs_app):
+    """The canonical name is whoever uploaded the bytes first, anywhere — a
+    stranger to the project. A project-only row shows the name the user who
+    filed it gave it; search matches that name, never the hidden one."""
+    first = await _member(db_conn, "i6-first")
+    filer = await _member(db_conn, "i6-filer")
+    member = await _member(db_conn, "i6-member")
+    pid = await _project(db_conn, filer.user_id, "P")
+    await db_conn.execute(
+        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)", (pid, member.user_id))
+    await _doc(db_conn, DOC_P, first.user_id, file_name="first-uploader-secret.pdf")
+    await seed.share_doc(db_conn, DOC_P, first.user_id, filer.user_id)
+    await db_conn.execute(
+        "UPDATE library_entries SET added_via = 'upload', shared_by = NULL, "
+        "file_name = 'team-notes.pdf' WHERE user_id = %s AND doc_id = %s",
+        (filer.user_id, DOC_P))  # the filer uploaded the same bytes under their own name
+    await seed.place_doc(db_conn, pid, DOC_P, filer.user_id)
+
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: member
+    async with _client(docs_app) as client:
+        row = next(r for r in (await client.get("/v1/docs")).json() if r["doc_id"] == DOC_P)
+        assert row["file_name"] == "team-notes.pdf" and row["in_library"] is False
+        assert (await client.get(f"/v1/docs/{DOC_P}")).json()["file_name"] == "team-notes.pdf"
+        assert (await client.get("/v1/docs", params={"q": "secret"})).json() == []
+        hits = (await client.get("/v1/docs", params={"q": "team"})).json()
+        assert [r["doc_id"] for r in hits] == [DOC_P]
+
+
+async def test_display_name_placeholders_match_params():
+    assert docs_router._DISPLAY_NAME.count("%s") == len(docs_router._display_name_params("u"))

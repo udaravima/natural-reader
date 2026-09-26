@@ -11,11 +11,14 @@ Who-holds-what writes and garbage collection live in `services/doc_content.py`
 `registered` is legacy only: rows from the client-chunk era with neither
 bytes nor chunks, until their first verified upload.
 
-Chunk inserts are idempotent on (doc_id, text_hash) so re-running the Index
-button is safe — the existing rows are upserted in place.
+Extraction writes a doc's chunks with `doc_pipeline.replace_chunks`: the whole
+set is deleted and re-inserted in one transaction, so a re-index or legacy
+re-extraction swaps the index atomically — search sees the old chunks until
+commit, never a half-written set.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import uuid
@@ -34,6 +37,7 @@ from ..audit import audit
 from ..auth.authz import (
     assert_can_read_doc,
     assert_holds_upload,
+    effective_holding_sql,
     readable_docs_params,
     readable_docs_where,
     visible_projects_params,
@@ -108,14 +112,17 @@ def _doc_projects_sql(alias: str) -> str:
     """JSON array `[{id, name}]` of the projects `<alias>` is placed in that the
     caller can see. Everyone — including whoever uploaded it — sees only
     projects they own or belong to: listing others would leak their names, and
-    under A1 an uploader can't unlink from a project anyway. Sorted by name,
+    under A1 an uploader can't unlink from a project anyway. A placement that
+    doesn't grant read (unverified, on server-derived content — migration
+    012) isn't listed either. Sorted by name,
     then id. Bind with `_doc_projects_params(user_id)`; SELECT-list params come
     BEFORE join and WHERE params."""
     return (
         "COALESCE((SELECT json_agg(json_build_object('id', _vp.id, 'name', _vp.name) "
         "ORDER BY _vp.name, _vp.id) "
         "FROM project_documents _vpd JOIN projects _vp ON _vp.id = _vpd.project_id "
-        f"WHERE _vpd.doc_id = {alias}.doc_id AND {visible_projects_where('_vp')}), '[]'::json)"
+        f"WHERE _vpd.doc_id = {alias}.doc_id AND {effective_holding_sql('_vpd', alias)} "
+        f"AND {visible_projects_where('_vp')}), '[]'::json)"
     )
 
 
@@ -129,8 +136,29 @@ _ENTRY_JOIN = (
     "LEFT JOIN library_entries _me ON _me.doc_id = d.doc_id AND _me.user_id = %s "
     "LEFT JOIN users _sb ON _sb.id = _me.shared_by"
 )
+# The name the caller sees. Their own entry's name; for a row they see only
+# through a project, the name the user who filed it there gave it (their
+# entry's); else the canonical name. The canonical name is the FIRST uploader
+# anywhere's file name, so falling back to it for a project row would show a
+# stranger's name. Needs `_ENTRY_JOIN`; bind with `_display_name_params`.
+_DISPLAY_NAME = (
+    "COALESCE(_me.file_name, CASE WHEN _me.user_id IS NULL THEN ("
+    "SELECT _ne.file_name FROM project_documents _npd "
+    "JOIN projects _np ON _np.id = _npd.project_id "
+    "JOIN library_entries _ne ON _ne.user_id = _npd.added_by AND _ne.doc_id = _npd.doc_id "
+    "WHERE _npd.doc_id = d.doc_id AND _ne.file_name IS NOT NULL "
+    f"AND {effective_holding_sql('_npd', 'd')} AND {visible_projects_where('_np')} "
+    "ORDER BY _npd.added_at, _npd.project_id LIMIT 1) END, d.file_name)"
+)
+
+
+def _display_name_params(user_id: str) -> list[str]:
+    return visible_projects_params(user_id)
+
+
+# Bind with `_display_name_params(user_id)`.
 _ENTRY_COLS = (
-    "COALESCE(_me.file_name, d.file_name) AS file_name, "
+    f"{_DISPLAY_NAME} AS file_name, "
     "COALESCE(_me.tags, '{}') AS tags, _me.added_via AS added_via, "
     "_me.shared_by AS shared_by_id, COALESCE(_sb.display_name, _sb.email) AS shared_by_name"
 )
@@ -170,7 +198,7 @@ async def _fetch_doc_status(conn, doc_id: str, user_id: str) -> dict[str, Any] |
             ) p ON p.doc_id = d.doc_id
             WHERE d.doc_id = %s
             """,
-            [*_doc_projects_params(user_id), user_id, doc_id],
+            [*_display_name_params(user_id), *_doc_projects_params(user_id), user_id, doc_id],
         )
         row = await cur.fetchone()
         if not row:
@@ -246,15 +274,16 @@ async def list_documents(
     `readable_docs_where` — never post-filtered in Python — so a doc nobody
     gave me can never appear, even if it happens to match `q`/`tag`. Name,
     tags, `added_via` and `shared_by` come from MY entry; a project-only row
-    has `in_library: false` and the content's canonical name.
+    has `in_library: false` and the name its filer gave it (`_DISPLAY_NAME`).
     """
     _ensure_ready()
     uid = principal.user_id
     where = [readable_docs_where("d")]
     where_params: list[Any] = readable_docs_params(uid)
     if q:
-        where.append("(COALESCE(_me.file_name, d.file_name) ILIKE %s OR %s = ANY(_me.tags))")
-        where_params += [f"%{q}%", q]
+        # Match the name the caller is shown, never a name they can't see.
+        where.append(f"({_DISPLAY_NAME} ILIKE %s OR %s = ANY(_me.tags))")
+        where_params += [*_display_name_params(uid), f"%{q}%", q]
     if project_id:
         # Only a project the caller can see: filtering a shared doc by a
         # guessed project id must not reveal whether someone placed it there.
@@ -262,7 +291,7 @@ async def list_documents(
             "EXISTS (SELECT 1 FROM project_documents _fpd "
             "JOIN projects _fp ON _fp.id = _fpd.project_id "
             f"WHERE _fpd.doc_id = d.doc_id AND _fpd.project_id = %s "
-            f"AND {visible_projects_where('_fp')})"
+            f"AND {effective_holding_sql('_fpd', 'd')} AND {visible_projects_where('_fp')})"
         )
         where_params += [project_id, *visible_projects_params(uid)]
     if tag:
@@ -274,7 +303,7 @@ async def list_documents(
         f"WHERE {' AND '.join(where)} ORDER BY d.updated_at DESC"
     )
     # psycopg binds by position: SELECT-list params, then the join, then WHERE.
-    params = [*_doc_projects_params(uid), uid, *where_params]
+    params = [*_display_name_params(uid), *_doc_projects_params(uid), uid, *where_params]
     pool = get_pool()
     async with pool.connection() as conn:
         cur = await conn.execute(sql, params)
@@ -355,8 +384,9 @@ async def _add_upload_entry(user_id: str, staged, name: str, tags: list[str]):
                                            staged.sha256)
                             continue
                         raise refusal(503, "busy", "Please try again.")
+                # The bytes are in hand: this is the one caller that verifies.
                 outcome = await doc_content.add_entry(
-                    conn, user_id, staged.sha256, via="upload", tags=tags,
+                    conn, user_id, staged.sha256, via="upload", verified=True, tags=tags,
                     file_name=None if created else name)
         if outcome != "exists":
             audit("entry.added", user=user_id, doc=staged.sha256, via="upload",
@@ -384,11 +414,18 @@ async def _after_upload(doc_id: str, staged, created: bool, existing):
             raise
         return doc_pipeline.run_pipeline
     state, extracted_by, bytes_path, conversion_state = existing
-    old_file_ok = bool(bytes_path) and doc_storage.sha256_file(Path(bytes_path)) == doc_id
+    old_file_ok = bool(bytes_path) and (
+        await asyncio.to_thread(doc_storage.sha256_file, Path(bytes_path))) == doc_id
     if not old_file_ok or extracted_by == "client":
         if bytes_path and not Path(bytes_path).exists():
             logger.warning("Content %s had missing bytes; restored from this upload", doc_id)
         await _set_bytes_path(doc_id, doc_storage.place(staged, doc_id))
+    if extracted_by == "client" and not old_file_ok and conversion_state is not None:
+        # A legacy conversion made from missing or mismatched (unverified)
+        # bytes: discard it now, as run_legacy_swap does, so nothing re-seeds
+        # chunks from it and a later upload can't relabel it server-derived.
+        await _discard_conversion(doc_id)
+        conversion_state = None
     if extracted_by == "client":
         if state == "indexed":
             if conversion_state == "converted" and old_file_ok:
@@ -408,6 +445,17 @@ async def _after_upload(doc_id: str, staged, created: bool, existing):
     if state == "extracted":
         return doc_pipeline.run_pipeline
     return None  # extracting / indexing / indexed: dedupe, nothing to redo
+
+
+async def _discard_conversion(doc_id: str) -> None:
+    async with get_pool().connection() as conn:
+        async with conn.transaction():
+            await conn.execute("DELETE FROM doc_pages WHERE doc_id = %s", (doc_id,))
+            await conn.execute(
+                "UPDATE documents SET conversion_state = NULL, conversion_options = NULL, "
+                "conversion_error = NULL, converted_at = NULL, updated_at = now() "
+                "WHERE doc_id = %s", (doc_id,))
+    logger.warning("Legacy conversion of %s discarded: made from unverified bytes", doc_id)
 
 
 async def _set_bytes_path(doc_id: str, path: Path) -> None:
@@ -446,7 +494,10 @@ async def patch_document(
     Rename or retag MY library entry. Other holders' names and tags, and the
     content itself, are untouched. `file_name` "" or null resets to the
     content's canonical name; `tags` null clears them. 404 unless I hold an
-    entry (seeing a doc only through a project doesn't count).
+    entry (seeing a doc only through a project doesn't count) that lets me
+    read the doc — the response is the doc's status, and an unverified pre-A1
+    entry on server-derived content (migration 012) doesn't grant that. Such
+    a holder can still DELETE their entry.
 
     Content has no owner, so the old owner-reassignment field (and the admin
     path behind it) is gone — sending it is a 422 (extra="forbid"), as is
@@ -459,6 +510,7 @@ async def patch_document(
     async with pool.connection() as conn:
         if not await doc_content.holds_entry(conn, principal.user_id, doc_id):
             raise refusal(404, "not_found", "Document not found")
+        await assert_can_read_doc(conn, doc_id, principal.user_id)
         sets, params = [], []
         if "tags" in data:
             # `{"tags": null}` is schema-valid and means "clear all tags".
@@ -496,9 +548,13 @@ async def delete_document(
 @router.put("/{doc_id}/shares/{user_id}", status_code=204)
 async def add_share(doc_id: DocId, user_id: str,
                     principal: Principal = Depends(_require_upload_holder)):
-    """Share with one user: creates their `shared` entry. Only an upload-entry
-    holder may share (they proved possession); recipients can't re-share. A
-    recipient who already holds the content keeps their entry unchanged."""
+    """Share with one user: creates their `shared` entry. Only a VERIFIED
+    upload-entry holder may share (they proved possession), so the share is
+    verified too; recipients can't re-share. A recipient who already holds
+    the content keeps their entry unchanged (an unverified legacy share is
+    replaced by this one — see doc_content.add_entry). The recipient's entry
+    carries the name the sharer sees, so they never see a stranger's file
+    name (the canonical name is the first uploader's)."""
     _ensure_ready()
     try:
         uuid.UUID(user_id)
@@ -507,11 +563,17 @@ async def add_share(doc_id: DocId, user_id: str,
     try:
         async with get_pool().connection() as conn:
             async with conn.transaction():  # savepoint: a caught FK error leaves conn usable
+                cur = await conn.execute(
+                    "SELECT COALESCE(e.file_name, d.file_name) FROM library_entries e "
+                    "JOIN documents d ON d.doc_id = e.doc_id "
+                    "WHERE e.user_id = %s AND e.doc_id = %s", (principal.user_id, doc_id))
+                row = await cur.fetchone()
                 outcome = await doc_content.add_entry(
-                    conn, user_id, doc_id, via="shared", shared_by=principal.user_id)
+                    conn, user_id, doc_id, via="shared", verified=True,
+                    shared_by=principal.user_id, file_name=row[0] if row else None)
     except pg_errors.ForeignKeyViolation:
         raise refusal(404, "not_found", "User not found")
-    if outcome == "created":
+    if outcome in ("created", "replaced"):
         audit("share.created", by=principal.user_id, to=user_id, doc=doc_id)
     return Response(status_code=204)
 
@@ -680,6 +742,9 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
                                 (doc_id, page_no, md),
                             )
 
+            # 'converted' and 'indexing' land together: a poller that sees
+            # the conversion done must not also see the OLD 'indexed' state
+            # and report success before the converted chunks are embedded.
             async with pool.connection() as conn:
                 await conn.execute(
                     """
@@ -687,6 +752,8 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
                     SET conversion_state = 'converted',
                         conversion_error = NULL,
                         converted_at = now(),
+                        state = 'indexing',
+                        error_message = NULL,
                         updated_at = now()
                     WHERE doc_id = %s
                     """,
@@ -696,12 +763,6 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
             # Auto-chain into indexing: seed chunks from MD, then embed.
             inserted = await _chunks_from_pages(doc_id)
             logger.info("Convert job: seeded %d chunks for %s", inserted, doc_id)
-            if inserted:
-                async with pool.connection() as conn:
-                    await conn.execute(
-                        "UPDATE documents SET state = 'indexing', error_message = NULL, updated_at = now() WHERE doc_id = %s",
-                        (doc_id,),
-                    )
         except Exception as e:
             logger.exception("Convert job failed for %s", doc_id)
             try:
@@ -711,10 +772,15 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
                         UPDATE documents
                         SET conversion_state = 'conversion_failed',
                             conversion_error = %s,
+                            -- set to 'indexing' with 'converted' above; don't
+                            -- leave it claiming an embed job that never runs
+                            state = CASE WHEN state = 'indexing' THEN 'failed' ELSE state END,
+                            error_message = CASE WHEN state = 'indexing' THEN %s
+                                                 ELSE error_message END,
                             updated_at = now()
                         WHERE doc_id = %s
                         """,
-                        (str(e)[:500], doc_id),
+                        (str(e)[:500], f"Conversion failed: {e}"[:500], doc_id),
                     )
             except Exception:
                 logger.exception("Could not record conversion failure for %s", doc_id)

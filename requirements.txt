@@ -24,10 +24,11 @@ python-multipart
 
 # Server-side text extraction (A1): PDF text per page, and a CommonMark+GFM
 # parser whose top-level blocks match the reader's mdast. All MIT-compatible;
-# never PyMuPDF (AGPL).
+# never PyMuPDF (AGPL). The markdown parsers are capped at the next major:
+# block boundaries decide chunk pages, pinned by the parity fixtures.
 pypdfium2>=4.0
-markdown-it-py>=3.0
-mdit-py-plugins>=0.4
+markdown-it-py>=3.0,<5
+mdit-py-plugins>=0.4,<1
 
 # HTML → clean text extraction for the web_search tool (strips nav/ads/boilerplate).
 trafilatura

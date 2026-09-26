@@ -19,26 +19,67 @@ from ..audit import audit
 logger = logging.getLogger(__name__)
 
 
-async def add_entry(conn, user_id, doc_id, *, via, shared_by=None, file_name=None, tags=None) -> str:
+async def add_entry(conn, user_id, doc_id, *, via, verified: bool, shared_by=None,
+                    file_name=None, tags=None) -> str:
     """Give `user_id` an entry for `doc_id`. 'created', 'upgraded' (a shared
-    entry became an upload entry — the user just proved possession) or
-    'exists'. An upload entry is never downgraded to shared (spec §5)."""
+    entry became an upload entry — the user just proved possession),
+    'replaced' (a verified share took over an unverified legacy one) or
+    'exists'. An upload entry is never downgraded to shared (spec §5).
+
+    `verified` (migration 012) must be passed explicitly: True only when this
+    call is backed by bytes — the multipart upload path, or a share made by a
+    holder of a verified upload entry. A verified upload also verifies the
+    user's existing entry and the shares and placements they made for this
+    doc (`_verify_holdings`). A verified share replaces a recipient's
+    UNVERIFIED legacy share (else it would silently grant nothing); it never
+    touches an upload entry or a verified share."""
     cur = await conn.execute(
-        "INSERT INTO library_entries (user_id, doc_id, file_name, tags, added_via, shared_by) "
-        "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (user_id, doc_id) DO NOTHING RETURNING 1",
-        (user_id, doc_id, file_name, sorted(set(tags or [])), via, shared_by))
+        "INSERT INTO library_entries (user_id, doc_id, file_name, tags, added_via, shared_by, "
+        "verified) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+        "ON CONFLICT (user_id, doc_id) DO NOTHING RETURNING 1",
+        (user_id, doc_id, file_name, sorted(set(tags or [])), via, shared_by, verified))
     if await cur.fetchone():
-        return "created"
-    if via != "upload":
-        return "exists"
-    cur = await conn.execute(
-        "UPDATE library_entries SET added_via = 'upload', shared_by = NULL "
-        "WHERE user_id = %s AND doc_id = %s AND added_via = 'shared'", (user_id, doc_id))
-    if tags:
-        await conn.execute(
-            "UPDATE library_entries SET tags = %s WHERE user_id = %s AND doc_id = %s",
-            (sorted(set(tags)), user_id, doc_id))
-    return "upgraded" if cur.rowcount == 1 else "exists"
+        outcome = "created"
+    elif via != "upload":
+        outcome = "exists"
+        if verified:
+            cur = await conn.execute(
+                "UPDATE library_entries SET shared_by = %s, verified = true, "
+                "file_name = COALESCE(file_name, %s) WHERE user_id = %s AND doc_id = %s "
+                "AND added_via = 'shared' AND NOT verified",
+                (shared_by, file_name, user_id, doc_id))
+            if cur.rowcount == 1:
+                outcome = "replaced"
+    else:
+        cur = await conn.execute(
+            "UPDATE library_entries SET added_via = 'upload', shared_by = NULL, verified = %s "
+            "WHERE user_id = %s AND doc_id = %s AND added_via = 'shared'",
+            (verified, user_id, doc_id))
+        outcome = "upgraded" if cur.rowcount == 1 else "exists"
+        if tags:
+            await conn.execute(
+                "UPDATE library_entries SET tags = %s WHERE user_id = %s AND doc_id = %s",
+                (sorted(set(tags)), user_id, doc_id))
+    if via == "upload" and verified:
+        await _verify_holdings(conn, user_id, doc_id)
+    return outcome
+
+
+async def _verify_holdings(conn, user_id, doc_id) -> None:
+    """`user_id` just uploaded `doc_id`'s bytes: their entry, the shares they
+    created and the placements they added are proved (migration 012)."""
+    entry = await conn.execute(
+        "UPDATE library_entries SET verified = true WHERE user_id = %s AND doc_id = %s "
+        "AND NOT verified", (user_id, doc_id))
+    shares = await conn.execute(
+        "UPDATE library_entries SET verified = true WHERE doc_id = %s AND added_via = 'shared' "
+        "AND shared_by = %s AND NOT verified", (doc_id, user_id))
+    placements = await conn.execute(
+        "UPDATE project_documents SET verified = true WHERE doc_id = %s AND added_by = %s "
+        "AND NOT verified", (doc_id, user_id))
+    if entry.rowcount or shares.rowcount or placements.rowcount:
+        audit("entry.verified", user=user_id, doc=doc_id,
+              shares=shares.rowcount, placements=placements.rowcount)
 
 
 async def remove_entry(conn, user_id, doc_id) -> bool:
@@ -62,9 +103,10 @@ async def holds_entry(conn, user_id, doc_id) -> bool:
 
 
 async def holds_upload(conn, user_id, doc_id) -> bool:
+    """A VERIFIED upload entry: the user sent this server the bytes."""
     cur = await conn.execute(
         "SELECT 1 FROM library_entries WHERE user_id = %s AND doc_id = %s "
-        "AND added_via = 'upload'", (user_id, doc_id))
+        "AND added_via = 'upload' AND verified", (user_id, doc_id))
     return await cur.fetchone() is not None
 
 
@@ -88,12 +130,13 @@ async def content_ops_refusal(conn, doc_id, user_id, *, is_admin) -> str | None:
 async def docs_referenced_by_user(conn, user_id) -> list[str]:
     """Docs whose last reference may vanish when this user is deleted: their
     entries, plus placements in projects they own (projects cascade on user
-    delete until A0 ends that)."""
+    delete until A0 ends that). Sorted: GC locks each content row, and every
+    multi-doc GC path taking them in the same order can't deadlock."""
     cur = await conn.execute(
         "SELECT doc_id FROM library_entries WHERE user_id = %s "
         "UNION SELECT pd.doc_id FROM project_documents pd "
-        "JOIN projects p ON p.id = pd.project_id WHERE p.owner_user_id = %s",
-        (user_id, user_id))
+        "JOIN projects p ON p.id = pd.project_id WHERE p.owner_user_id = %s "
+        "ORDER BY 1", (user_id, user_id))
     return [r[0] for r in await cur.fetchall()]
 
 

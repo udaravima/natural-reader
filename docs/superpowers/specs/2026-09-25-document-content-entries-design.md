@@ -133,7 +133,7 @@ Content indexed before A1 from browser chunks is marked `extracted_by='client'`.
 - The admin's "reassign document owner" path is removed. Content has no owner, and entries are personal.
 - `can_manage_project_docs(conn, user, project_id)` in `authz.py` is the one seam for "may remove from project". A1 implements it as "project owner"; A0 swaps its body to "role ≥ Maintainer".
 
-## 6. Schema — migration `011_content_entries.sql` (A0's becomes `012`)
+## 6. Schema — migration `011_content_entries.sql` (A0's becomes `013`; see §6b for `012`)
 
 1. `documents`:
    - add `extracted_by TEXT NOT NULL DEFAULT 'client' CHECK (extracted_by IN ('client','server'))`;
@@ -148,6 +148,16 @@ Content indexed before A1 from browser chunks is marked `extracted_by='client'`.
 5. Drop `doc_grants`, `documents.user_id`, `documents.tags` (after the backfill), and `documents_user_idx`. Dropping `documents.tags` also drops `documents_tags_gin`. No GIN index goes on `library_entries(tags)` for now, because personal libraries are small. Add one if tag filtering shows up in slow queries.
 
 Tested in a scratch database, the same way as migration 010's test: build to v10, seed owners, grants, placements and a `chunks_uploaded` doc, run the real file, and assert every entry, placement and state.
+
+## 6b. Migration `012_entry_verification.sql` (final-review fix C1)
+
+Added after the final review. Before A1 the browser sent only a hash, so 011's backfilled `upload` entries — and the shares and placements those owners made — record who *claimed* a document, not who had its bytes. Without a fix, someone who registered a hash they never had would read the real author's text as soon as the author uploaded the file, breaking §1's "knowing an ID is never access" across the upgrade.
+
+- `library_entries.verified` and `project_documents.verified`, `BOOLEAN NOT NULL DEFAULT false`. Every row that exists at upgrade came from 011's backfill, so all start false.
+- **Read** (`readable_docs_where`, still one predicate): an entry or placement grants read only if it is `verified` **or** the content is still legacy (`extracted_by = 'client'`, today's trust). Once verified bytes make the content server-derived, unverified holdings stop granting read. Project links shown on a row and the `project_id` filter use the same rule.
+- **Share and file** need a **verified** upload entry. A share or placement made by such a holder is verified (a verified share or filing replaces an unverified legacy one in the same slot; upload entries are never touched).
+- **Verification**: a user's multipart upload of the bytes verifies their entry (created, upgraded from shared, or an existing unverified upload entry) and every share they created (`shared_by = me`) and placement they added (`added_by = me`) for that doc. Nothing else verifies.
+- Old holders regain access by uploading the file (the Index button does it from their local copy); `docs/LIBRARY.md` upgrade notes say so.
 
 ## 7. API
 
