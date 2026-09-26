@@ -52,7 +52,7 @@ export function useChatEngine({
     apiHost,            // FastAPI host — used for chat-session persistence (same server as Kokoro)
     apiPort,
     currentDocId,             // sha256 of the open doc (null if none) — gates autonomous tools
-    currentDocIndexState,     // 'indexed' | 'chunks_uploaded' | ... | null — gates autonomous tools
+    currentDocIndexState,     // 'indexed' | 'extracted' | 'indexing' | ... | null — gates autonomous tools
     synthesizeText,     // from useTtsEngine — returns Promise<blobUrl|null>
     playChatUrl,        // from useTtsEngine — plays a pre-fetched blob URL
     playChatSpeech,     // from useTtsEngine — Web Speech API fallback

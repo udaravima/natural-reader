@@ -23,8 +23,8 @@ import { apiFetch } from './utils/apiFetch';
 import { getOrComputeDocHash } from './utils/docHash';
 import { getBook } from './db';
 import { saveWorkspaceState, clearWorkspaceState, getWorkspaceState } from './db';
-import { uploadPdfBytesToBackend } from './lib/uploadPdf';
-import { registerDocument, parseTagsInput } from './lib/docMeta';
+import { registerDocument, linkDocToProject, parseTagsInput } from './lib/docMeta';
+import { describeRefusal } from './lib/apiErrors';
 import { WorkspaceProvider } from './lib/WorkspaceContext';
 import { createFsaWorkspace, createSnapshotWorkspace, pickEntryFile, isMarkdownPath } from './lib/workspace';
 
@@ -48,6 +48,9 @@ import ToastNotification from './components/overlays/ToastNotification';
 import ContextMenu from './components/overlays/ContextMenu';
 import KeyboardShortcutsModal from './components/overlays/KeyboardShortcutsModal';
 import ReadSelectionButton from './components/overlays/ReadSelectionButton';
+
+// Doc states the server moves through on its own (A1 spec §4 States).
+const PROCESSING_STATES = new Set(['stored', 'extracting', 'extracted', 'indexing']);
 
 export default function App() {
   // One-time migration: 'localhost' was the pre-auth default apiHost, but every
@@ -151,7 +154,7 @@ export default function App() {
   const [sidebarTab, setSidebarTab] = useState('sentences');
 
   // Per-document index status keyed by sha256 doc_id. Shape:
-  //   { state: 'idle' | 'chunks_uploaded' | 'indexing' | 'indexed' | 'failed' | 'uploading',
+  //   { state: 'idle' | 'uploading' | 'stored' | 'extracting' | 'extracted' | 'indexing' | 'indexed' | 'failed',
   //     chunkCount, embeddedCount }
   const [docIndexByDocId, setDocIndexByDocId] = useState({});
   // Computed hash for the currently open document — null until lazily hashed.
@@ -718,96 +721,9 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfFileName, ensureDocHash]);
 
-  const handleIndexDocument = useCallback(async () => {
-    if (!pdfFileName) return;
-    const docId = await ensureDocHash();
-    if (!docId) {
-      showToast('Could not read document bytes — re-open the file and try again.', 4000);
-      return;
-    }
-    setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'uploading' } }));
-
-    // 1. Register the document (and, if a project/tag was chosen in the
-    // picker, attach it via a follow-up PATCH — see registerDocument).
-    try {
-      const fileSize = (await getBook(pdfFileName))?.size ?? 0;
-      await registerDocument({
-        apiHost, apiPort, docId,
-        fileName: pdfFileName, fileType, sizeBytes: fileSize, pageCount: numPages,
-        projectId: docProjectId, tags: parseTagsInput(docTagsText),
-      });
-    } catch (e) {
-      console.error('Doc register failed:', e);
-      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
-      showToast(`Indexing failed: backend unreachable (${e.message})`, 5000);
-      return;
-    }
-
-    // 2. Extract chunks from the loaded document.
-    let chunks;
-    try {
-      chunks = await extractAllChunks();
-    } catch (e) {
-      console.error('Chunk extraction failed:', e);
-      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
-      showToast(`Indexing failed: could not extract text (${e.message})`, 5000);
-      return;
-    }
-    if (chunks.length === 0) {
-      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { state: 'idle' } }));
-      showToast('Nothing to index — this document has no extractable text.', 4000);
-      return;
-    }
-
-    // 3. Upload in batches of 50 to keep request payloads bounded and give
-    // the UI a chance to show progress on large docs.
-    const BATCH = 50;
-    let lastStatus = null;
-    try {
-      for (let i = 0; i < chunks.length; i += BATCH) {
-        const slice = chunks.slice(i, i + BATCH);
-        const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/chunks`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chunks: slice }),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        lastStatus = data.status;
-      }
-    } catch (e) {
-      console.error('Chunk upload failed:', e);
-      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
-      showToast(`Indexing failed during upload: ${e.message}`, 5000);
-      return;
-    }
-
-    setDocIndexByDocId((prev) => ({
-      ...prev,
-      [docId]: {
-        state: 'indexing',
-        chunkCount: lastStatus?.chunk_count ?? chunks.length,
-        embeddedCount: lastStatus?.embedded_count ?? 0,
-      },
-    }));
-
-    // 4. Kick off the embedding job. Returns 202 immediately; we poll status.
-    try {
-      const indexRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/index`, { method: 'POST' });
-      if (!indexRes.ok) throw new Error(`HTTP ${indexRes.status}`);
-    } catch (e) {
-      console.error('Index kick-off failed:', e);
-      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
-      showToast(`Could not start embedding job: ${e.message}`, 5000);
-      return;
-    }
-
-    showToast(`Embedding ${chunks.length} chunks — this can take a minute.`, 3500);
-
-    // 5. Poll every 2s until state leaves 'indexing'. Cap the polling window
-    // to ~10 minutes so a stuck job doesn't loop forever.
+  const pollIndexUntilSettled = useCallback(async (docId) => {
     const POLL_MS = 2000;
-    const MAX_POLLS = 300;
+    const MAX_POLLS = 300; // ~10 minutes
     for (let i = 0; i < MAX_POLLS; i++) {
       await new Promise((r) => setTimeout(r, POLL_MS));
       try {
@@ -816,29 +732,62 @@ export default function App() {
         const sData = await sRes.json();
         setDocIndexByDocId((prev) => ({
           ...prev,
-          [docId]: {
-            state: sData.state,
-            chunkCount: sData.chunk_count,
-            embeddedCount: sData.embedded_count,
-          },
+          [docId]: { state: sData.state, chunkCount: sData.chunk_count, embeddedCount: sData.embedded_count },
         }));
-        if (sData.state === 'indexed') {
-          showToast(`Indexed ${sData.embedded_count} chunks.`, 3000);
-          return;
-        }
-        if (sData.state === 'failed') {
-          showToast(`Indexing failed: ${sData.error_message || 'unknown error'}`, 6000);
-          return;
-        }
+        if (sData.state === 'indexed') { showToast(`Indexed ${sData.embedded_count} chunks.`, 3000); return; }
+        if (sData.state === 'failed') { showToast(`Indexing failed: ${sData.error_message || 'unknown error'}`, 6000); return; }
+        if (!PROCESSING_STATES.has(sData.state)) return;
       } catch {
-        // Backend hiccup — keep polling; transient errors shouldn't bail.
+        // transient backend hiccup — keep polling
       }
     }
     showToast('Indexing is taking unusually long — check the server logs.', 6000);
-  }, [pdfFileName, ensureDocHash, extractAllChunks, fileType, numPages, showToast, apiHost, apiPort, docProjectId, docTagsText]);
+  }, [apiHost, apiPort, showToast]);
+
+  const handleIndexDocument = useCallback(async () => {
+    if (!pdfFileName) return;
+    const docId = await ensureDocHash();
+    if (!docId) { showToast('Could not read document bytes — re-open the file and try again.', 4000); return; }
+    const setIndex = (id, patch) =>
+      setDocIndexByDocId((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }));
+
+    // Re-index an indexed doc: the server re-extracts from its stored bytes.
+    // Only the sole holder or an admin may — others get a notice saying why.
+    if (docIndexByDocId[docId]?.state === 'indexed') {
+      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/index`, { method: 'POST' });
+      if (!res.ok) { showToast(await describeRefusal(res), 6000); return; }
+      setIndex(docId, { state: 'extracting' });
+      await pollIndexUntilSettled(docId);
+      return;
+    }
+
+    setIndex(docId, { state: 'uploading' });
+    let result;
+    try {
+      const record = await getBook(pdfFileName);
+      if (!record?.data) throw new Error('File is not in the local library — re-open it and try again.');
+      result = await registerDocument({
+        apiHost, apiPort, file: new Blob([record.data]), fileName: pdfFileName,
+        clientDocId: docId, projectId: docProjectId, tags: parseTagsInput(docTagsText),
+      });
+    } catch (e) {
+      setIndex(docId, { state: 'failed' });
+      showToast(`Indexing failed: ${e.message}`, 6000);
+      return;
+    }
+    // The server's hash is authoritative (spec §8); it equals ours for the same bytes.
+    const serverId = result.docId;
+    if (serverId !== docId) console.warn('Server doc id differs from local hash', { docId, serverId });
+    setIndex(serverId, { state: result.state });
+    if (result.dedup && result.state === 'indexed') {
+      showToast('Already indexed — added to your library.', 4000);
+      return;
+    }
+    await pollIndexUntilSettled(serverId);
+  }, [pdfFileName, ensureDocHash, docIndexByDocId, showToast, apiHost, apiPort, docProjectId, docTagsText, pollIndexUntilSettled]);
 
   // ---------- DOCLING CONVERSION ----------
-  // Mirror of handleIndexDocument: registers (if needed) → uploads PDF bytes →
+  // Mirror of handleIndexDocument: uploads (registers) the PDF bytes →
   // starts /convert → polls until conversion+indexing finish. Auto-switches
   // the reader to the MD view on success.
   const handleConvertDocument = useCallback(async (options) => {
@@ -853,14 +802,18 @@ export default function App() {
       [docId]: { ...(prev[docId] || {}), state: 'uploading', error: null },
     }));
 
-    // 1. Register the doc (idempotent; and, if a project/tag was chosen in
-    // the picker, attach it via a follow-up PATCH — see registerDocument).
+    // 1. Register (upload) the document — but don't link the project yet.
+    // Linking has to wait until after the convert kick-off below succeeds:
+    // linking first would make the uploader's own convert fail with
+    // in_project (a content-changing op on shared/in-project content is
+    // refused — spec §5).
+    let result;
     try {
-      const fileSize = (await getBook(pdfFileName))?.size ?? 0;
-      await registerDocument({
-        apiHost, apiPort, docId,
-        fileName: pdfFileName, fileType, sizeBytes: fileSize, pageCount: numPages,
-        projectId: docProjectId, tags: parseTagsInput(docTagsText),
+      const record = await getBook(pdfFileName);
+      if (!record?.data) throw new Error('File is not in the local library — re-open it and try again.');
+      result = await registerDocument({
+        apiHost, apiPort, file: new Blob([record.data], { type: 'application/pdf' }), fileName: pdfFileName,
+        clientDocId: docId, tags: parseTagsInput(docTagsText), linkProject: false,
       });
     } catch (e) {
       console.error('Doc register failed:', e);
@@ -868,80 +821,64 @@ export default function App() {
         ...prev,
         [docId]: { ...(prev[docId] || {}), state: 'failed', error: e.message },
       }));
-      showToast(`Convert failed: backend unreachable (${e.message})`, 5000);
+      showToast(`Convert failed: ${e.message}`, 5000);
       return;
     }
+    // The server's hash is authoritative (spec §8); it equals ours for the same bytes.
+    const convertDocId = result.docId;
+    if (convertDocId !== docId) console.warn('Server doc id differs from local hash', { docId, convertDocId });
 
-    // 2. Push the raw PDF bytes so the backend can run docling against them.
-    try {
-      await uploadPdfBytesToBackend({ docId, fileName: pdfFileName, apiHost, apiPort });
-    } catch (e) {
-      console.error('PDF upload failed:', e);
-      setDocConvertByDocId((prev) => ({
-        ...prev,
-        [docId]: { ...(prev[docId] || {}), state: 'failed', error: e.message },
-      }));
-      showToast(`Could not upload PDF: ${e.message}`, 6000);
-      return;
-    }
-
-    // 3. Kick off the conversion job.
+    // 2. Kick off the conversion job.
     setDocConvertByDocId((prev) => ({
       ...prev,
-      [docId]: { ...(prev[docId] || {}), state: 'converting', options, error: null },
+      [convertDocId]: { ...(prev[convertDocId] || {}), state: 'converting', options, error: null },
     }));
     try {
-      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/convert`, {
+      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(convertDocId)}/convert`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(options),
       });
-      if (!res.ok) {
-        let detail = `HTTP ${res.status}`;
-        try {
-          const data = await res.json();
-          if (data?.detail) detail = data.detail;
-        } catch {
-          /* keep status code */
-        }
-        throw new Error(detail);
-      }
+      if (!res.ok) throw new Error(await describeRefusal(res));
     } catch (e) {
       console.error('Convert kick-off failed:', e);
       setDocConvertByDocId((prev) => ({
         ...prev,
-        [docId]: { ...(prev[docId] || {}), state: 'failed', error: e.message },
+        [convertDocId]: { ...(prev[convertDocId] || {}), state: 'failed', error: e.message },
       }));
       showToast(`Could not start conversion: ${e.message}`, 6000);
       return;
     }
 
+    // Now that the kick-off succeeded, link the project (fail-soft — see linkDocToProject).
+    if (docProjectId) linkDocToProject({ apiHost, apiPort, projectId: docProjectId, docId: convertDocId });
+
     showToast('Converting with Docling — this can take a few minutes.', 4000);
 
-    // 4. Poll. Conversion finishes when conversion_state='converted' AND the
+    // 3. Poll. Conversion finishes when conversion_state='converted' AND the
     // chained indexing leaves state='indexed' (or 'failed' on either side).
     const POLL_MS = 2000;
     const MAX_POLLS = 600; // 20 minutes — docling on big PDFs is slow.
     for (let i = 0; i < MAX_POLLS; i++) {
       await new Promise((r) => setTimeout(r, POLL_MS));
       try {
-        const sRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}`);
+        const sRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(convertDocId)}`);
         if (!sRes.ok) continue;
         const sData = await sRes.json();
         setDocConvertByDocId((prev) => ({
           ...prev,
-          [docId]: {
-            ...(prev[docId] || {}),
+          [convertDocId]: {
+            ...(prev[convertDocId] || {}),
             state: sData.conversion_state || 'idle',
             pageCount: sData.converted_page_count || 0,
             error: sData.conversion_error || null,
-            options: sData.conversion_options || prev[docId]?.options || null,
+            options: sData.conversion_options || prev[convertDocId]?.options || null,
             hasPdf: !!sData.has_pdf,
           },
         }));
         setDocIndexByDocId((prev) => ({
           ...prev,
-          [docId]: {
+          [convertDocId]: {
             state: sData.state || 'idle',
             chunkCount: sData.chunk_count,
             embeddedCount: sData.embedded_count,
@@ -953,7 +890,7 @@ export default function App() {
         }
         if (sData.conversion_state === 'converted' && sData.state === 'indexed') {
           showToast(`Converted ${sData.converted_page_count} pages.`, 3000);
-          setDocViewByDocId((prev) => ({ ...prev, [docId]: 'md' }));
+          setDocViewByDocId((prev) => ({ ...prev, [convertDocId]: 'md' }));
           return;
         }
         if (sData.conversion_state === 'converted' && sData.state === 'failed') {
@@ -966,7 +903,7 @@ export default function App() {
       }
     }
     showToast('Conversion is taking unusually long — check the server logs.', 6000);
-  }, [pdfFileName, fileType, ensureDocHash, numPages, showToast, apiHost, apiPort, docProjectId, docTagsText]);
+  }, [pdfFileName, fileType, ensureDocHash, showToast, apiHost, apiPort, docProjectId, docTagsText]);
 
   const openConvertDialog = useCallback(() => setConvertDialogOpen(true), []);
   const closeConvertDialog = useCallback(() => setConvertDialogOpen(false), []);
