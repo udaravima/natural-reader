@@ -111,12 +111,17 @@ async def test_a_provider_whose_capabilities_fail_is_reported_not_fatal():
         "INFERENCE_PROVIDERS": "broken,working",
         "INFERENCE_BROKEN_KIND": "ollama", "INFERENCE_BROKEN_URL": "http://broken.test",
         "INFERENCE_WORKING_KIND": "ollama", "INFERENCE_WORKING_URL": "http://working.test"})
-    up = (FakeUpstream()
-          .on("GET", "/api/tags", lambda: httpx.Response(200, json={"models": [{"name": "m1"}]}))
-          .on("POST", "/api/show", lambda: httpx.Response(200, content=b"not json"))
-          .on("GET", "/api/tags", lambda: httpx.Response(200, json={"models": [{"name": "m2"}]}))
-          .on("POST", "/api/show", lambda: httpx.Response(200, json={"capabilities": ["tools"]})))
-    models, failed = await Router(configs, up.client()).list_models()
+    def handle(request: httpx.Request) -> httpx.Response:
+        # Answer by host: the two providers list concurrently, so arrival order is not fixed.
+        broken = request.url.host == "broken.test"
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "m1" if broken else "m2"}]})
+        if broken:
+            return httpx.Response(200, content=b"not json")
+        return httpx.Response(200, json={"capabilities": ["tools"]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    models, failed = await Router(configs, client).list_models()
     assert [m.id for m in models] == ["working:m2"] and failed == ["broken"]
 
 
