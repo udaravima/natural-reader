@@ -10,7 +10,7 @@ from typing import Any, AsyncIterator, Protocol
 
 import httpx
 
-from ..types import (Capabilities, CallSettings, Chunk, Message, ProviderError,
+from ..types import (Capabilities, CallSettings, Chunk, FeatureDropped, Message, ProviderError,
                      ProviderTimeout, ProviderUnavailable, ToolSpec)
 
 logger = logging.getLogger(__name__)
@@ -139,3 +139,17 @@ def is_feature_rejection(err: ProviderError) -> bool:
     """A 4xx that may mean "this model can't take that feature". Auth, missing
     model and rate limits are never feature rejections."""
     return 400 <= err.status < 500 and err.status not in (401, 403, 404, 408, 429)
+
+
+def settle_dropped(features: FeatureMemory, model: str, provider: str, dropped: list[str]) -> list[FeatureDropped]:
+    """After a successful retry: every dropped feature is reported, but only the last one
+    — the one whose removal made the request succeed — is remembered (ruling R12).
+
+    Returns the FeatureDropped chunks to yield; also records memory and logs."""
+    chunks = [FeatureDropped(feature) for feature in dropped]
+    if dropped:
+        last_feature = dropped[-1]
+        features.remember(model, last_feature)
+        logger.debug("Model %s on %s rejected %s; retried without it",
+                     model, provider, last_feature)
+    return chunks

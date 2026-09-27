@@ -13,7 +13,7 @@ from ..types import (Capabilities, CallSettings, Chunk, FeatureDropped, Finish, 
                      ProviderError, ProviderUnavailable, ReasoningDelta, TextDelta, ToolCall,
                      ToolCallReady, ToolSpec, Usage)
 from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_feature_rejection,
-                   iter_lines, open_stream, parse_arguments, safe_error_message)
+                   iter_lines, open_stream, parse_arguments, safe_error_message, settle_dropped)
 
 logger = logging.getLogger(__name__)
 
@@ -113,15 +113,8 @@ class OpenAICompatProvider:
                 else:
                     raise
                 dropped.append(feature)
-        # Yield FeatureDropped for every feature we tried, but remember only the last one
-        # whose removal made the request succeed (ruling R12, Review Focus 1).
-        for feature in dropped:
-            yield FeatureDropped(feature)
-        if dropped:
-            last_feature = dropped[-1]
-            self._features.remember(model, last_feature)
-            logger.debug("Model %s on %s rejected %s; retried without it",
-                         model, self.config.name, last_feature)
+        for chunk in settle_dropped(self._features, model, self.config.name, dropped):
+            yield chunk
         async for chunk in self._read(resp):
             yield chunk
 
