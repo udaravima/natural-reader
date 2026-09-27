@@ -14,6 +14,7 @@ from .auth.config import load_auth_config, startup_guard
 from .db import close_db, init_db
 from .logging_config import configure_logging
 from .endpoints import router as tts_router
+from .llm.router import start_router as start_llm_router, stop_router as stop_llm_router
 from .routers.admin import router as admin_router
 from .routers.auth import router as auth_router
 from .routers.chat_sessions import router as chat_sessions_router
@@ -95,6 +96,7 @@ def create_app() -> FastAPI:
         await start_embeddings()
         await start_web_search()
         await start_inference()
+        await start_llm_router()
         # Make sure the document storage directory exists before the first
         # upload hits — stage_upload's mkdir is a fallback, not the owner.
         storage = doc_storage.storage_dir()
@@ -105,6 +107,7 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:
+        await stop_llm_router()
         await stop_inference()
         await stop_embeddings()
         await stop_web_search()

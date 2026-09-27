@@ -20,6 +20,8 @@ from pydantic import BaseModel, ConfigDict
 
 from ..auth import deps
 from ..db import get_pool
+from ..http_errors import refusal
+from ..llm.router import get_router
 from ..services import inference_budget, model_router
 
 logger = logging.getLogger(__name__)
@@ -133,24 +135,19 @@ async def list_models(
     principal: deps.Principal = Depends(deps.require_capability("chat")),
     conn=Depends(deps.get_conn),
 ):
+    """Every configured provider's models, tagged `provider:name`, with
+    capabilities (spec §7.5). One failing provider is omitted; all failing is 502."""
+    llm = get_router()
+    if not llm.has_providers():
+        raise refusal(503, "no_providers", "No model provider is configured.")
+    models, failed = await llm.list_models()
+    if failed and not models and len(failed) == len(llm.providers):
+        raise refusal(502, "providers_unreachable", "Can't reach any model provider.")
+    out: dict = {"models": [m.to_json() for m in models]}
     cfg = model_router.get_config()
     try:
-        resp = await _get_client().get(f"{cfg.ollama_url}/api/tags")
-    except httpx.HTTPError:
-        raise HTTPException(status_code=502, detail="Ollama unreachable")
-    if resp.status_code != 200:
-        return JSONResponse(status_code=resp.status_code, content={"detail": "Ollama error"})
-    names = [
-        m["name"] for m in resp.json().get("models", [])
-        if isinstance(m, dict) and m.get("name")
-    ]
-    if cfg.allowed_models is not None:
-        names = [n for n in names if n in cfg.allowed_models]
-    out = {"models": names}
-    try:
         out["budget"] = await inference_budget.budget_state(
-            conn, principal.user_id, cfg.daily_token_budget
-        )
+            conn, principal.user_id, cfg.daily_token_budget)
     except Exception:
         # Fail open — the model list must survive a Postgres outage.
         logger.warning("Budget lookup failed (fail-open)", exc_info=True)

@@ -18,6 +18,17 @@ from server.routers import admin as admin_router
 from server.tests import seed
 
 
+@pytest.fixture(autouse=True)
+def _no_providers(monkeypatch):
+    class _EmptyRouter:
+        providers = {}
+
+        async def list_models(self):
+            return [], []
+
+    monkeypatch.setattr(admin_router, "get_router", lambda: _EmptyRouter())
+
+
 def _app(db_conn, principal):
     app = FastAPI()
 
@@ -221,6 +232,33 @@ async def test_config_member_forbidden(db_conn):
     async with _client(_app(db_conn, p)) as client:
         r = await client.get("/v1/admin/inference/config")
     assert r.status_code == 403
+
+
+async def test_config_lists_providers_without_keys(db_conn, monkeypatch):
+    from server.llm.providers.base import ProviderConfig
+    from server.llm.router import ModelInfo
+    from server.llm.types import Capabilities
+
+    class _P:
+        def __init__(self, name, kind, url):
+            self.config = ProviderConfig(name=name, kind=kind, url=url, api_key="sk-secret")
+
+    class _R:
+        providers = {"local": _P("local", "ollama", "http://gpu.example.com:11434"),
+                     "cloud": _P("cloud", "openai", "https://openrouter.example.com/api/v1")}
+
+        async def list_models(self):
+            return [ModelInfo("local:m", "local", "ollama", "m", Capabilities())], ["cloud"]
+
+    monkeypatch.setattr(admin_router, "get_router", lambda: _R())
+    admin, p = await _admin(db_conn)
+    async with _client(_app(db_conn, p)) as client:
+        body = (await client.get("/v1/admin/inference/config")).json()
+    assert body["providers"] == [
+        {"name": "local", "kind": "ollama", "url_host": "gpu.example.com", "models": 1},
+        {"name": "cloud", "kind": "openai", "url_host": "openrouter.example.com", "models": None},
+    ]
+    assert "sk-secret" not in str(body)
 
 
 # ---------- POST /v1/admin/users (enrollment) ----------

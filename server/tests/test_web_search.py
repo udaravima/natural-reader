@@ -122,24 +122,23 @@ async def test_fetch_and_extract_blocks_private_url_without_request():
     assert text is None
 
 
-@respx.mock
-async def test_summarize_one_calls_ollama_generate(monkeypatch):
-    # Ollama URL + summarize model both come from model_router (env-driven).
-    monkeypatch.setenv("OLLAMA_URL", "http://ollama.test")
-    monkeypatch.setenv("SUMMARIZE_MODEL", "my-summarizer")
-    route = respx.post("http://ollama.test/api/generate").mock(
-        return_value=httpx.Response(200, json={"response": "  A tidy summary.  "})
-    )
-    await ws.start_client()
-    try:
-        out = await ws.summarize_one("what is x", "long page text about x")
-    finally:
-        await ws.stop_client()
-    assert route.called
-    body = route.calls.last.request.content.decode()
-    assert '"stream": false' in body or '"stream":false' in body
-    assert '"model": "my-summarizer"' in body or '"model":"my-summarizer"' in body
-    assert out.strip() == "A tidy summary."
+async def test_summarize_one_goes_through_the_router(monkeypatch):
+    from server.llm.types import CallSettings
+
+    calls = {}
+
+    class _FakeRouter:
+        async def complete(self, model_id, messages, settings=CallSettings()):
+            calls["model"] = model_id
+            calls["prompt"] = messages[0].content
+            return "  A short summary.  "
+
+    monkeypatch.setenv("SUMMARIZE_MODEL", "llama3.2:3b")
+    monkeypatch.setattr(ws, "get_router", lambda: _FakeRouter())
+    out = await ws.summarize_one("what is x", "long page text about x")
+    assert out == "A short summary."
+    assert calls["model"] == "llama3.2:3b"            # bare name: the router sends it to the first ollama provider
+    assert "what is x" in calls["prompt"] and "long page text about x" in calls["prompt"]
 
 
 async def test_web_search_fans_out_with_snippet_fallback(monkeypatch):

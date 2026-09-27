@@ -61,17 +61,20 @@ def upstream():
 
 
 @pytest.fixture
-async def app(db_conn, upstream):
+async def app(db_conn, upstream, monkeypatch):
+    from server.llm import router as llm_router
     application = FastAPI()
     application.include_router(inf.router)
-    # The gateway's budget lookups need a conn — hand it the transactional
-    # test connection everywhere (individual tests may re-override).
+
     async def _conn():
         yield db_conn
 
     application.dependency_overrides[deps.get_conn] = _conn
+    monkeypatch.delenv("INFERENCE_PROVIDERS", raising=False)
     await inf.start_client(transport=upstream["transport"])
+    await llm_router.start_router(transport=upstream["transport"])
     yield application
+    await llm_router.stop_router()
     await inf.stop_client()
 
 
@@ -99,29 +102,45 @@ async def test_models_requires_auth(db_conn, app):
         assert (await c.get("/v1/inference/models")).status_code == 401
 
 
-async def test_models_lists_from_upstream(client, upstream):
-    upstream["handler"] = lambda r: httpx.Response(200, json={"models": [
-        {"name": "gemma3"}, {"name": "qwen2.5"}, {"other": 1},
-    ]})
+def _tags_and_show(names):
+    def handler(request):
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": n} for n in names] + [{"other": 1}]})
+        if request.url.path == "/api/show":
+            return httpx.Response(200, json={"capabilities": ["completion", "tools"],
+                                             "model_info": {"x.context_length": 4096}})
+        return httpx.Response(404)
+    return handler
+
+
+async def test_models_lists_ids_with_provider_and_capabilities(client, upstream):
+    upstream["handler"] = _tags_and_show(["gemma3", "qwen2.5"])
     r = await client.get("/v1/inference/models")
     assert r.status_code == 200
-    assert r.json() == {"models": ["gemma3", "qwen2.5"]}
+    models = r.json()["models"]
+    assert [m["id"] for m in models] == ["ollama:gemma3", "ollama:qwen2.5"]
+    assert models[0] == {"id": "ollama:gemma3", "provider": "ollama", "kind": "ollama", "name": "gemma3",
+                         "capabilities": {"tools": True, "thinking": False, "vision": False,
+                                          "audio": False, "contextWindow": 4096}}
 
 
 async def test_models_filtered_by_allowlist(client, upstream, monkeypatch):
+    from server.llm import router as llm_router
     monkeypatch.setenv("INFERENCE_MODELS", "gemma3")
-    upstream["handler"] = lambda r: httpx.Response(200, json={"models": [
-        {"name": "gemma3"}, {"name": "qwen2.5"},
-    ]})
+    await llm_router.stop_router()
+    await llm_router.start_router(transport=upstream["transport"])
+    upstream["handler"] = _tags_and_show(["gemma3", "qwen2.5"])
     r = await client.get("/v1/inference/models")
-    assert r.json() == {"models": ["gemma3"]}
+    assert [m["id"] for m in r.json()["models"]] == ["ollama:gemma3"]
 
 
-async def test_models_upstream_down_is_502(client, upstream):
+async def test_models_every_provider_down_is_502(client, upstream):
     def boom(request):
         raise httpx.ConnectError("nope")
     upstream["handler"] = boom
-    assert (await client.get("/v1/inference/models")).status_code == 502
+    r = await client.get("/v1/inference/models")
+    assert r.status_code == 502
+    assert r.json()["detail"]["error"] == "providers_unreachable"
 
 
 async def test_chat_requires_auth(db_conn, app):

@@ -5,6 +5,7 @@ import logging
 import os
 import secrets
 import uuid
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict
@@ -13,6 +14,7 @@ from ..auth import deps, users
 from ..auth.capabilities import KNOWN_CAPABILITIES
 from ..auth.config import load_auth_config
 from ..auth.kc_admin import KCAdminError
+from ..llm.router import get_router
 from ..services import doc_content, inference_budget, model_router
 
 logger = logging.getLogger(__name__)
@@ -263,11 +265,16 @@ async def delete_user(
 async def inference_config(
     _: deps.Principal = Depends(deps.require_admin),
 ):
-    """Read-only view of the effective model-router config — why a model
-    422s, without shell access. get_config() has no secrets in it."""
+    """Read-only view of the effective inference config — why a model 422s,
+    without shell access. Never includes API keys (spec §4.5)."""
     cfg = model_router.get_config()
+    llm = get_router()
+    models, failed = await llm.list_models()
+    counts: dict[str, int] = {}
+    for m in models:
+        counts[m.provider] = counts.get(m.provider, 0) + 1
     return {
-        "ollama_url": cfg.ollama_url,
+        "ollama_url": cfg.ollama_url,   # where embeddings run (spec §4.6)
         "timeout_s": cfg.timeout_s,
         "allowed_models": (
             list(cfg.allowed_models) if cfg.allowed_models is not None else None
@@ -275,6 +282,11 @@ async def inference_config(
         "summarize_model": cfg.summarize_model,
         "embed_model": cfg.embed_model,
         "daily_token_budget": cfg.daily_token_budget,
+        "providers": [
+            {"name": name, "kind": p.config.kind, "url_host": urlsplit(p.config.url).hostname,
+             "models": None if name in failed else counts.get(name, 0)}
+            for name, p in llm.providers.items()
+        ],
     }
 
 
