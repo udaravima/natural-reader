@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Protocol
@@ -46,8 +47,29 @@ def auth_headers(cfg: ProviderConfig) -> dict[str, str]:
     return {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
 
 
+_SECRET_PATTERNS = [
+    # OpenAI/Anthropic-style API keys (sk-..., sk-ant-..., sk-proj-...).
+    (re.compile(r"sk-[A-Za-z0-9_-]{8,}"), "sk-[REDACTED]"),
+    # An Authorization header value, if a provider ever echoes the request it received.
+    (re.compile(r"Bearer\s+\S+"), "Bearer [REDACTED]"),
+    # URL userinfo (scheme://user:pass@host) — a base URL that embeds credentials.
+    (re.compile(r"://[^@/\s]+:[^@/\s]+@"), "://***@"),
+]
+
+
+def _redact_secrets(text: str) -> str:
+    for pattern, repl in _SECRET_PATTERNS:
+        text = pattern.sub(repl, text)
+    return text
+
+
 def safe_error_message(raw: bytes | str) -> str:
-    """The provider's error text, trimmed to 300 chars."""
+    """The provider's error text with any embedded
+    secret-shaped substring redacted — a provider that echoes back the request
+    it received (or a misconfigured upstream that leaks its own key) must
+    never let that key reach an SSE event or the chat event log. Redacted
+    first, then trimmed to 300 chars, so a secret straddling the cut is still
+    caught."""
     text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
     try:
         body = json.loads(text)
@@ -57,7 +79,7 @@ def safe_error_message(raw: bytes | str) -> str:
         text = str(err)
     except ValueError:
         pass
-    return text.strip()[:300]
+    return _redact_secrets(text.strip())[:300]
 
 
 def parse_arguments(raw: Any) -> dict[str, Any]:

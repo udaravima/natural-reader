@@ -78,6 +78,15 @@ class _State:
     last_usage: Usage | None = None
     last_finish: str = "stop"
     finish_reason: str = "stop"
+    # The step currently in flight (fix round 1, item 2): a turn cut short by
+    # cancellation or a provider failure never reaches the normal end-of-step
+    # _record_usage call below, so its tokens would otherwise be free (spec
+    # §5.6). _finalize charges this instead, once, from whichever of these is
+    # freshest; step_recorded=True means there's nothing left to charge.
+    pending_messages: list | None = None
+    pending_output: str = ""
+    pending_usage: Usage | None = None
+    step_recorded: bool = True
 
     def add(self, usage: Usage, finish: str) -> None:
         self.prompt_tokens += usage.prompt_tokens
@@ -141,13 +150,20 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         rounds = 0
         while True:
             if await _over_budget(req.user_id, deployment_budget):
-                await store.add_event(claim.session_id, "budget", "daily token budget exhausted")
                 yield ev("error", code="budget_exhausted", message=ERROR_TEXT["budget_exhausted"])
+                await _log_event(claim.session_id, "budget", "daily token budget exhausted")
                 return
             state.steps += 1
             step = state.steps
             tools_now = offered if rounds < cfg.max_tool_rounds else []
-            capped = bool(offered) and not tools_now
+            # rounds > 0: "max-steps" means a tool round actually ran and got
+            # capped, not merely that CHAT_MAX_TOOL_ROUNDS=0 kept tools off
+            # from the first step (fix round 1, item 3).
+            capped = bool(offered) and rounds > 0 and not tools_now
+            state.pending_messages = messages
+            state.pending_output = ""
+            state.pending_usage = None
+            state.step_recorded = False
             yield ev("start-step", step=step)
             text = reasoning = ""
             calls: list = []
@@ -164,6 +180,11 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                             yield ev("reasoning-start", id=f"r{step}")
                         reasoning += chunk.text
                         state.thinking += chunk.text
+                        # Set before the yield, not after: a cancellation lands
+                        # AT a yield, and by then this chunk's text must already
+                        # be reflected — same reason state.content is set before
+                        # its yield too (fix round 1, item 2).
+                        state.pending_output = text + reasoning
                         yield ev("reasoning-delta", id=f"r{step}", delta=chunk.text)
                     elif isinstance(chunk, TextDelta):
                         if open_reasoning:
@@ -174,17 +195,19 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                             yield ev("text-start", id=f"t{step}")
                         text += chunk.text
                         state.content += chunk.text
+                        state.pending_output = text + reasoning
                         yield ev("text-delta", id=f"t{step}", delta=chunk.text)
                     elif isinstance(chunk, ToolCallReady):
                         if tools_now:   # a tools-off step cannot call tools
                             calls.append(chunk.call)
                     elif isinstance(chunk, Usage):
                         usage = chunk
+                        state.pending_usage = chunk
                     elif isinstance(chunk, Finish):
                         finish = chunk.reason
                     elif isinstance(chunk, FeatureDropped):
                         code, notice = _FEATURE_NOTICE[chunk.feature]
-                        await store.add_event(claim.session_id, _FEATURE_LOG[chunk.feature], notice)
+                        await _log_event(claim.session_id, _FEATURE_LOG[chunk.feature], notice)
                         yield ev("data-notice", code=code, message=notice)
                     if time.monotonic() - last_flush >= store.FLUSH_EVERY_S:
                         await _save(claim, state)   # a reload mid-reply shows the text so far
@@ -195,6 +218,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                 yield ev("text-end", id=f"t{step}")
             usage = await _record_usage(req.user_id, usage, messages, text + reasoning)
             state.add(usage, finish)
+            state.step_recorded = True
             yield ev("finish-step", step=step, usage=_usage_json(usage), finishReason=finish)
             await _save(claim, state)
             if not calls:
@@ -203,8 +227,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                 break
             rounds += 1
             messages.append(Message("assistant", text, tool_calls=tuple(calls)))
-            await store.add_event(claim.session_id, "tool-call",
-                                  f"{len(calls)} tool call{'s' if len(calls) > 1 else ''}")
+            await _log_event(claim.session_id, "tool-call",
+                             f"{len(calls)} tool call{'s' if len(calls) > 1 else ''}")
             for call in calls:
                 yield ev("tool-input-available", toolCallId=call.id, toolName=call.name, input=call.arguments)
                 run = await run_tool(call, tool_ctx, tools_now)
@@ -217,8 +241,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                                         tool_call_id=call.id, name=call.name))
             await _save(claim, state)
         if state.last_finish == "length":
-            await store.add_event(claim.session_id, "truncated", "reply hit the length limit")
-        await store.add_event(claim.session_id, "received", f"assistant reply ({len(state.content)} chars)")
+            await _log_event(claim.session_id, "truncated", "reply hit the length limit")
+        await _log_event(claim.session_id, "received", f"assistant reply ({len(state.content)} chars)")
         outcome = "complete"
         yield ev("finish", usage=state.usage_json(), finishReason=state.finish_reason,
                  stats=state.stats(req.model_id, started))
@@ -228,12 +252,14 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         raise
     except (ProviderUnavailable, ProviderTimeout, ProviderError, UnknownModel) as e:
         code, message = _provider_error(e)
-        await store.add_event(claim.session_id, "error", message)
+        # The SPA must get its `error` event even if the DB that add_event
+        # would write to is the very thing that's down (fix round 1, item 1).
         yield ev("error", code=code, message=message)
+        await _log_event(claim.session_id, "error", message)
     except Exception:
         logger.exception("chat turn failed user=%s session=%s", req.user_id, req.session_id)
-        await store.add_event(claim.session_id, "error", ERROR_TEXT["internal_error"])
         yield ev("error", code="internal_error", message=ERROR_TEXT["internal_error"])
+        await _log_event(claim.session_id, "error", ERROR_TEXT["internal_error"])
     finally:
         beat.cancel()
         await _finalize(claim, state, outcome, req, started)
@@ -256,25 +282,55 @@ async def _finalize(claim: TurnClaim, state: _State, outcome: str, req: TurnRequ
     finish_reason = state.finish_reason if outcome == "complete" else outcome
 
     async def write() -> None:
+        if outcome != "complete" and not state.step_recorded and state.pending_messages is not None:
+            # The step in flight when the turn was cut short never reached the
+            # normal end-of-step _record_usage call: charge it now, from the
+            # provider's own count if one arrived, else the same chars/4
+            # estimate _record_usage already uses (fix round 1, item 2).
+            await _record_usage(req.user_id, state.pending_usage, state.pending_messages, state.pending_output)
+            state.step_recorded = True
         if outcome == "aborted":
-            await store.add_event(claim.session_id, "aborted", "user stopped the stream")
+            await _log_event(claim.session_id, "aborted", "user stopped the stream")
         await store.finish_turn(claim, status=outcome, finish_reason=finish_reason, content=state.content,
                                 thinking=state.thinking, tool_calls=state.tool_calls or None,
                                 doc_context=state.doc_context, stats=state.stats(req.model_id, started))
 
+    def _on_done(t: asyncio.Task) -> None:
+        # Once this coroutine stops awaiting `task` below (a second
+        # cancellation), nothing else ever reads its outcome — read it here so
+        # a failure that lands after that point is still logged, not just
+        # silently dropped by asyncio's default "exception never retrieved"
+        # handler (fix round 1, item 4). No message content, just the turn id.
+        _BACKGROUND.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.warning("Background end-of-turn write for turn %s failed", claim.turn_id, exc_info=exc)
+
     task = asyncio.ensure_future(write())
     _BACKGROUND.add(task)
-    task.add_done_callback(_BACKGROUND.discard)
+    task.add_done_callback(_on_done)
     try:
-        await asyncio.shield(task)
-    except asyncio.CancelledError:
-        pass   # the save continues in the background
-    except Exception:
-        logger.warning("Saving the end of turn %s failed", claim.turn_id, exc_info=True)
-    logger.info("chat turn end user=%s session=%s model=%s status=%s reason=%s steps=%d tokens=%d+%d "
-                "duration_ms=%d", req.user_id, req.session_id, req.model_id, outcome, finish_reason,
-                state.steps, state.prompt_tokens, state.completion_tokens,
-                int((time.monotonic() - started) * 1000))
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # A cancellation landed here specifically (not the pending one
+            # from run_turn's own except-clause, if any): shield kept `task`
+            # itself running, so the claim will still be released in the
+            # background — but this await must not swallow the cancellation,
+            # or a caller that cancelled us would wrongly see a normal return
+            # (fix round 1, item 5).
+            logger.warning("Turn %s: cancelled again while saving; the write continues in the background",
+                           claim.turn_id)
+            raise
+        except Exception:
+            logger.warning("Saving the end of turn %s failed", claim.turn_id, exc_info=True)
+    finally:
+        logger.info("chat turn end user=%s session=%s model=%s status=%s reason=%s steps=%d tokens=%d+%d "
+                    "duration_ms=%d", req.user_id, req.session_id, req.model_id, outcome, finish_reason,
+                    state.steps, state.prompt_tokens, state.completion_tokens,
+                    int((time.monotonic() - started) * 1000))
 
 
 async def _heartbeat(claim: TurnClaim) -> None:
@@ -290,20 +346,31 @@ async def _heartbeat(claim: TurnClaim) -> None:
             logger.warning("Heartbeat for turn %s failed", claim.turn_id, exc_info=True)
 
 
+async def _log_event(session_id: str, kind: str, message: str) -> None:
+    """The sidebar's Log is advisory: a blip writing one line of it must never
+    surface as a second, unrelated failure — or, worse, escape uncaught and
+    cost the SPA both `finish` and `error` (fix round 1, item 1). Never logs
+    the message text itself, only which kind of line failed (spec §10)."""
+    try:
+        await store.add_event(session_id, kind, message)
+    except Exception:
+        logger.warning("Logging chat event kind=%s for session=%s failed", kind, session_id, exc_info=True)
+
+
 async def _save(claim: TurnClaim, state: _State) -> None:
     await store.save_progress(claim.assistant_message_id, content=state.content, thinking=state.thinking,
                               tool_calls=state.tool_calls or None, doc_context=state.doc_context)
 
 
 async def _log_sent(claim: TurnClaim, req: TurnRequest) -> None:
-    await store.add_event(claim.session_id, "sent",
-                          f"prompt: {title_from_prompt(req.text or '(attachment only)')}")
+    await _log_event(claim.session_id, "sent",
+                     f"prompt: {title_from_prompt(req.text or '(attachment only)')}")
     if req.attachments:
         images = sum(1 for a in req.attachments if a.kind == "image")
         audio = len(req.attachments) - images
         parts = ([f"{images} image{'s' if images > 1 else ''}"] if images else []) + \
                 ([f"{audio} audio"] if audio else [])
-        await store.add_event(claim.session_id, "attached", ", ".join(parts))
+        await _log_event(claim.session_id, "attached", ", ".join(parts))
 
 
 async def _capabilities(router: Any, model_id: str) -> Capabilities:

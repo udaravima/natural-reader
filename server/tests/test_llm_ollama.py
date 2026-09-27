@@ -3,7 +3,7 @@ import json
 import httpx
 import pytest
 
-from server.llm.providers.base import ProviderConfig
+from server.llm.providers.base import ProviderConfig, safe_error_message
 from server.llm.providers.ollama import OllamaProvider
 from server.llm.types import (Attachment, CallSettings, Capabilities, FeatureDropped, Finish,
                               Message, ProviderError, ProviderTimeout, ProviderUnavailable,
@@ -153,6 +153,17 @@ async def test_connect_failure_is_provider_unavailable():
           .on("POST", "/api/chat", httpx.ConnectError("refused")))
     with pytest.raises(ProviderUnavailable):
         await _collect(OllamaProvider(CFG, up.client()).stream_chat("qwen2", HI, [], CallSettings()))
+
+
+def test_safe_error_message_redacts_secrets():
+    """Fix round 1, item 6: a provider that echoes the request it received
+    (or a misconfigured upstream that leaks its own key) must never let an
+    API key, bearer token or URL password reach an SSE event or the log."""
+    assert safe_error_message("invalid key sk-abcdefgh12345678") == "invalid key sk-[REDACTED]"
+    assert safe_error_message("Authorization: Bearer abc.def-123") == "Authorization: Bearer [REDACTED]"
+    assert (safe_error_message("upstream https://user:pass@example.com/v1 failed")
+           == "upstream https://***@example.com/v1 failed")
+    assert safe_error_message("plain message, nothing secret here") == "plain message, nothing secret here"
 
 
 async def test_silence_mid_stream_is_provider_timeout():

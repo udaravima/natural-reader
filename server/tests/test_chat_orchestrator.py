@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -280,3 +281,161 @@ async def test_session_deleted_mid_turn_finishes_quietly(conn):
             await conn.execute("DELETE FROM chat_sessions WHERE id='s-1'")
     assert events[-1]["type"] == "finish"
     assert (await _one(conn, "SELECT count(*) FROM chat_messages WHERE session_id='s-1'"))[0] == 0
+
+
+# ---- Fix round 1 ----
+
+async def test_add_event_failure_never_stops_the_turn(conn, monkeypatch):
+    """Item 1: the sidebar's Log is advisory. A DB blip while writing it must
+    not cost the SPA its `finish` event — every store.add_event call in the
+    orchestrator now goes through _log_event, which swallows and logs."""
+    async def boom(*a, **k):
+        raise OSError("db blip")
+
+    monkeypatch.setattr(store, "add_event", boom)
+    router = FakeRouter()
+    events, claim = await _run(conn, router)
+    assert events[-1]["type"] == "finish"
+    assert (await _msg(conn, claim.turn_id))[:3] == ("complete", "stop", "Hello there.")
+
+
+async def test_save_progress_failure_becomes_an_internal_error(conn, monkeypatch):
+    """Item 1's other half: save_progress is NOT cosmetic — its own failure is
+    a genuine internal error, unlike an add_event blip, and must still surface
+    as one (not raise out of run_turn uncaught)."""
+    async def boom(*a, **k):
+        raise OSError("db blip")
+
+    monkeypatch.setattr(store, "save_progress", boom)
+    router = FakeRouter()
+    events, claim = await _run(conn, router)
+    assert events[-1]["type"] == "error" and events[-1]["code"] == "internal_error"
+    assert (await _msg(conn, claim.turn_id))[0] == "error"
+
+
+async def test_disconnect_mid_step_still_records_usage(conn):
+    """Item 2: a step cut short by disconnect must still be billed — today it
+    was free, because _record_usage only ran at the normal end of a step."""
+    router = FakeRouter(steps=[[TextDelta("Part"), TextDelta("ial"), Usage(1, 1), Finish("stop")]])
+    alice = await member(conn, "alice")
+    claim, req = await _start(alice)
+    agen = run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)
+    async for e in agen:
+        if e["type"] == "text-delta":
+            break
+    await agen.aclose()
+    row = await _one(conn, "SELECT prompt_tokens, eval_tokens FROM inference_usage WHERE user_id=%s",
+                     (alice.user_id,))
+    assert row is not None and row[0] > 0 and row[1] > 0
+
+
+async def test_provider_error_mid_text_still_records_usage(conn):
+    """Item 2, the other trigger: a provider that dies mid-text must still be
+    billed for the partial output, not just a cancellation."""
+    router = FakeRouter(steps=[([TextDelta("Partial")], ProviderError(500, "out of memory"))])
+    alice = await member(conn, "alice")
+    events, claim = await _run(conn, router, user=alice)
+    assert events[-1]["type"] == "error"
+    row = await _one(conn, "SELECT prompt_tokens, eval_tokens FROM inference_usage WHERE user_id=%s",
+                     (alice.user_id,))
+    assert row is not None and row[0] > 0 and row[1] > 0
+
+
+async def test_completed_step_before_cancellation_is_not_double_recorded(conn, monkeypatch):
+    """Item 2's guard: a step whose usage was already recorded normally (here,
+    the tool round) must not be charged again just because the turn is later
+    cancelled mid-tool-call."""
+    started = asyncio.Event()
+
+    async def slow_web_search(query, count):
+        started.set()
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(ws_tool, "web_search", slow_web_search)
+    router = FakeRouter(steps=[[TextDelta("Let me look. "), ToolCallReady(ToolCall("c1", "web_search", {"query": "x"})),
+                                Usage(7, 3), Finish("tool_calls")]])
+    alice = await member(conn, "alice")
+    claim, req = await _start(alice)
+
+    async def consume():
+        async for _ in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None):
+            pass
+
+    task = asyncio.create_task(consume())
+    await asyncio.wait_for(started.wait(), 5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    row = await _one(conn, "SELECT prompt_tokens, eval_tokens FROM inference_usage WHERE user_id=%s",
+                     (alice.user_id,))
+    assert row == (7, 3)   # exactly the one step's usage — no second charge from _finalize
+
+
+async def test_zero_tool_rounds_is_not_labelled_max_steps(conn):
+    """Item 3: CHAT_MAX_TOOL_ROUNDS=0 means tools are off from step 1 — an
+    empty reply there is an ordinary stop, not a capped tool loop."""
+    router = FakeRouter(steps=[[Usage(1, 0), Finish("stop")]])
+    events, _ = await _run(conn, router, cfg=ChatConfig(max_tool_rounds=0))
+    assert events[-1]["finishReason"] == "stop"
+
+
+async def test_finalize_reraises_a_lone_cancellation_and_logs_the_background_failure(conn, monkeypatch, caplog):
+    """Items 4 and 5, in the one scenario that links them: _finalize's own
+    await gets cancelled while nothing else is in flight (item 5 — must
+    re-raise, not swallow), and the write it no longer awaits later fails on
+    its own (item 4 — the done-callback must still log it)."""
+    write_started = asyncio.Event()
+
+    async def flaky_finish_turn(*a, **k):
+        write_started.set()
+        await asyncio.sleep(0.05)
+        raise OSError("db gone")
+
+    monkeypatch.setattr(store, "finish_turn", flaky_finish_turn)
+    alice = await member(conn, "alice")
+    claim, req = await _start(alice)
+    state = orchestrator._State(content="partial")
+
+    async def call_finalize():
+        await orchestrator._finalize(claim, state, "aborted", req, time.monotonic())
+
+    task = asyncio.create_task(call_finalize())
+    await asyncio.wait_for(write_started.wait(), 5)
+    task.cancel()
+    with caplog.at_level("WARNING", logger="server.chat.orchestrator"):
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.2)   # let the shielded write() finish (and fail) in the background
+    assert "cancelled again while saving" in caplog.text
+    assert claim.turn_id in caplog.text and "failed" in caplog.text
+
+
+async def test_heartbeat_loss_does_not_break_the_turn(conn, monkeypatch):
+    """Item 7: losing the claim's heartbeat (another worker took over, or the
+    chat was deleted) stops the heartbeat task quietly; it must never
+    interrupt or fail the turn itself."""
+    monkeypatch.setattr(store, "HEARTBEAT_S", 0.01)
+    calls = {"n": 0}
+
+    async def flaky_heartbeat(session_id, turn_id):
+        calls["n"] += 1
+        return calls["n"] == 1
+
+    monkeypatch.setattr(store, "heartbeat", flaky_heartbeat)
+
+    class SlowRouter(FakeRouter):
+        def stream_chat(self, model_id, messages, tools, settings):
+            self.calls.append({"model": model_id, "messages": list(messages),
+                               "tools": [t.name for t in tools], "settings": settings})
+            return self._slow()
+
+        async def _slow(self):
+            yield TextDelta("a")
+            await asyncio.sleep(0.05)
+            yield TextDelta("b")
+            yield Usage(1, 1)
+            yield Finish("stop")
+
+    events, claim = await _run(conn, SlowRouter())
+    assert events[-1]["type"] == "finish"
+    assert (await _msg(conn, claim.turn_id))[:3] == ("complete", "stop", "ab")
