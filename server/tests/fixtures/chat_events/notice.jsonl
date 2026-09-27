@@ -1,0 +1,8 @@
+{"messageId": "<message-id>", "runId": "<message-id>", "seq": 1, "sessionId": "<session-id>", "type": "start", "userMessageId": "<user-message-id>"}
+{"seq": 2, "step": 1, "type": "start-step"}
+{"code": "tools_unsupported", "message": "This model rejected tools — answered without them.", "seq": 3, "type": "data-notice"}
+{"id": "t1", "seq": 4, "type": "text-start"}
+{"delta": "Hello there.", "id": "t1", "seq": 5, "type": "text-delta"}
+{"id": "t1", "seq": 6, "type": "text-end"}
+{"finishReason": "stop", "seq": 7, "step": 1, "type": "finish-step", "usage": {"completionTokens": 3, "estimated": false, "promptTokens": 10}}
+{"finishReason": "stop", "seq": 8, "stats": {"doneReason": "stop", "evalCount": 3, "evalNs": null, "loadNs": null, "model": "ollama:m", "promptEvalCount": 10, "promptEvalNs": null, "steps": 1, "totalNs": 0, "usageEstimated": false}, "type": "finish", "usage": {"completionTokens": 3, "estimated": false, "promptTokens": 10}}

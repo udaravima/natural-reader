@@ -1,0 +1,11 @@
+{"messageId": "<message-id>", "runId": "<message-id>", "seq": 1, "sessionId": "<session-id>", "type": "start", "userMessageId": "<user-message-id>"}
+{"seq": 2, "step": 1, "type": "start-step"}
+{"finishReason": "tool_calls", "seq": 3, "step": 1, "type": "finish-step", "usage": {"completionTokens": 2, "estimated": false, "promptTokens": 5}}
+{"input": {"query": "news"}, "seq": 4, "toolCallId": "c1", "toolName": "web_search", "type": "tool-input-available"}
+{"output": {"chunk_count": null, "ok": true, "query": "news", "summary_text": "Web search for \"news\" returned 1 result(s)."}, "seq": 5, "toolCallId": "c1", "type": "tool-output-available"}
+{"seq": 6, "step": 2, "type": "start-step"}
+{"id": "t2", "seq": 7, "type": "text-start"}
+{"delta": "Here is the news.", "id": "t2", "seq": 8, "type": "text-delta"}
+{"id": "t2", "seq": 9, "type": "text-end"}
+{"finishReason": "stop", "seq": 10, "step": 2, "type": "finish-step", "usage": {"completionTokens": 4, "estimated": false, "promptTokens": 20}}
+{"finishReason": "stop", "seq": 11, "stats": {"doneReason": "stop", "evalCount": 4, "evalNs": null, "loadNs": null, "model": "ollama:m", "promptEvalCount": 20, "promptEvalNs": null, "steps": 2, "totalNs": 0, "usageEstimated": false}, "type": "finish", "usage": {"completionTokens": 6, "estimated": false, "promptTokens": 25}}
