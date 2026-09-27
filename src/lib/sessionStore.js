@@ -1,23 +1,21 @@
 /**
  * Session-storage abstraction wrapping legacy IndexedDB + new Postgres backend.
  *
- * Reads merge both stores; writes always target Postgres. IDB-stored sessions
- * (created before this feature shipped) appear in the sidebar with source='local'
- * and are read-only — if the user edits one, the first save forks to a new
- * Postgres session (the original IDB row stays untouched).
+ * Reads merge both stores. The server writes messages itself as each turn
+ * streams (C1). A legacy IDB session is read-only until continued; then
+ * `importLegacy` copies it to Postgres once, under a new id.
  *
  * When the backend is unreachable, read calls degrade to IDB-only and write
  * calls resolve falsy without throwing. Callers (useChatEngine) treat that as
  * "session not persisted" and surface a toast — the live chat itself is
- * independent (it streams against Ollama directly).
+ * independent (the server runs and saves each turn).
  */
 import * as idb from '../db';
 import { apiFetch } from '../utils/apiFetch';
+import { stripAttachmentData } from '../utils/attachment';
 
 const LOCAL_IDS = new Set();
 let lastBackendReachable = null; // null=unknown, true/false
-
-const newId = () => `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 export function makeSessionStore({ apiHost, apiPort, onBackendOffline }) {
     const fetchJson = async (path, init) => {
@@ -86,27 +84,32 @@ export function makeSessionStore({ apiHost, apiPort, onBackendOffline }) {
         },
 
         /**
-         * Upsert a session record to Postgres. If the id was originally from IDB,
-         * mint a new pg id so the legacy record stays put — the returned object
-         * has `.id` set to whatever was persisted; the caller updates its
-         * activeSessionId accordingly.
+         * Copy a legacy browser-only chat to the server so it can be continued
+         * (C1 ruling R6). Attachment bytes stay behind: only metadata goes up.
+         * Resolves the new server session id, or null on failure.
          */
-        saveSession: async (record) => {
-            if (!record?.id) return null;
-            let saveId = record.id;
-            const forkedFromLocal = LOCAL_IDS.has(record.id);
-            if (forkedFromLocal) {
-                saveId = newId();
-            }
-            const payload = { ...record, id: saveId };
+        importLegacy: async (id) => {
+            const record = await idb.getSession(id);
+            if (!record) return null;
+            const payload = {
+                title: record.title || 'New chat',
+                model: record.model || null,
+                createdAt: record.createdAt || null,
+                messages: (record.messages || []).map((m) => ({
+                    ...m,
+                    attachments: (m.attachments || []).map(stripAttachmentData),
+                })),
+                events: record.events || [],
+                pins: record.pins || [],
+            };
             try {
-                await fetchJson(`/v1/chat/sessions/${encodeURIComponent(saveId)}`, {
-                    method: 'PUT',
+                const out = await fetchJson('/v1/chat/sessions/import', {
+                    method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
                 });
                 notifyOnline();
-                return { id: saveId, forkedFrom: forkedFromLocal ? record.id : null };
+                return out?.id || null;
             } catch (e) {
                 notifyOffline(e);
                 return null;

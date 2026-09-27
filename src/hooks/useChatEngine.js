@@ -1,68 +1,53 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { markdownToSpeech } from '../utils/markdownToSpeech';
-import { stripAttachmentData, formatAttachmentSize } from '../utils/attachment';
+import { apiFetch } from '../utils/apiFetch';
 import { makeSessionStore } from '../lib/sessionStore';
-import { executeToolCall, getToolDefinitions } from '../lib/chatTools';
-import { CHAT_PATH, MODELS_PATH, budgetDetail, chatFetch, formatResetAt } from '../lib/chatTransport';
-import { buildChatHistory, buildPinPreamble } from './chatHistory';
+import { MODELS_PATH, budgetDetail, formatResetAt } from '../lib/chatTransport';
+import { postTurn, readEvents } from '../lib/chatStream';
+import { applyEvent } from '../lib/chatEvents';
+import { describeRefusal } from '../lib/apiErrors';
 import { addPin as addPinReducer, removePin as removePinReducer, MAX_PINS } from './pins';
-import { buildRequestFields, INFERENCE_DEFAULTS, truncationMessage } from './inference';
+import { INFERENCE_DEFAULTS, toWireSettings, truncationMessage } from './inference';
 
 const SENTENCE_TERMINATOR = /(?<=[.!?])\s+/;
 const MIN_TTS_LENGTH = 5;
-const MAX_TITLE_LENGTH = 60;
+const POLL_MS = 3000;   // how often a reloaded "still generating…" chat re-reads the server
+const CHAT_NOT_FOUND = "This chat doesn't exist or you don't have access.";
 
 const newSessionId = () => `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-const titleFromPrompt = (text) => {
-    const oneLine = (text || '').replace(/\s+/g, ' ').trim();
-    return oneLine.length > MAX_TITLE_LENGTH
-        ? oneLine.slice(0, MAX_TITLE_LENGTH - 1) + '…'
-        : (oneLine || 'New chat');
+const browserTimezone = () => {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; }
 };
 
 /**
- * Drives a streaming chat against a local Ollama server.
- *
- * Streaming mode reads NDJSON chunks from /api/chat, appends tokens to the
- * latest assistant message, and flushes complete sentences as they form.
- * After-complete mode skips per-token TTS and segments the full reply once
- * streaming finishes.
+ * Chat state for the SPA. The SERVER runs each turn (C1 spec §5): this hook
+ * posts the new message, reads the typed event stream (lib/chatStream) and
+ * renders it through the pure reducer (lib/chatEvents). What stays here: the
+ * session list and switching, pins, and the read-aloud queue.
  *
  * TTS queue design (mirrors useTtsEngine's reader pattern):
- *   - Each enqueued sentence kicks off Kokoro synthesis IMMEDIATELY (parallel),
- *     storing the in-flight promise on the queue item.
- *   - A single playback loop awaits items in order — by the time it reaches
- *     item N+1, its synthesis is (likely) already complete, eliminating the
- *     audible gap that the old FIFO `then`-chain produced.
+ *   - Each enqueued sentence's synthesis starts lazily, at most N..N+2 in flight.
+ *   - A single playback loop awaits items in order, so there's no audible gap.
  *   - Single chat audio element is reused; volume/speed read at play time.
  */
 export function useChatEngine({
-    ollamaHost,
-    ollamaPort,
-    inferenceSource = 'server',  // 'server' = authenticated /v1 gateway, 'local' = browser→Ollama
     selectedModel,
     chatTtsMode,        // 'streaming' | 'after-complete'
     chatAutoTts,        // bool — disables TTS entirely
-    inference = INFERENCE_DEFAULTS,  // per-model settings → think / keep_alive / options
-    onInferencePersist,  // optional (patch) => void — persists a settings patch when the engine self-heals
+    inference = INFERENCE_DEFAULTS,  // this model's settings → the turn's `settings`
     isLocalhost,        // bool — true means use Kokoro, false means Web Speech fallback
     selectedVoice,
     playbackSpeed,
     requestTimeout,
-    apiHost,            // FastAPI host — used for chat-session persistence (same server as Kokoro)
+    apiHost,            // FastAPI host — chat turns, sessions and models
     apiPort,
-    currentDocId,             // sha256 of the open doc (null if none) — gates autonomous tools
-    currentDocIndexState,     // 'indexed' | 'extracted' | 'indexing' | ... | null — gates autonomous tools
+    currentDocId,       // sha256 of the open doc (null if none) — the server decides what to do with it
     synthesizeText,     // from useTtsEngine — returns Promise<blobUrl|null>
     playChatUrl,        // from useTtsEngine — plays a pre-fetched blob URL
     playChatSpeech,     // from useTtsEngine — Web Speech API fallback
     stopChatPlayback,   // from useTtsEngine — silences chat audio + speech synthesis
     showToast,
 }) {
-    // Toasted once per tool/thinking fallback so retries don't spam the user.
-    const toolFallbackToastedRef = useRef(false);
-    // Toasted once per session so a model that rejects thinking levels doesn't spam.
-    const thinkLevelFallbackToastedRef = useRef(false);
     // Toast at most once per offline streak — avoid spamming on every save.
     const backendOfflineToastedRef = useRef(false);
     const sessionStore = useMemo(() => makeSessionStore({
@@ -109,36 +94,6 @@ export function useChatEngine({
     const activeSessionIdRef = useRef(null);
     const [events, setEvents] = useState([]); // events for the active session
     const eventsRef = useRef([]);              // mirror used inside async callbacks
-    const createdAtRef = useRef(null);         // start timestamp of the active session
-
-    // Inference transport: server mode rides the authenticated /v1 gateway
-    // (session cookie via apiFetch); local mode builds the same direct
-    // browser→Ollama URLs as before (blank host = same-origin /api/*).
-    // A 429 is intercepted HERE, before the caller's think-level/tools retry
-    // chains — retrying an exhausted budget would only re-spend tokens.
-    const chatHosts = { apiHost, apiPort, ollamaHost, ollamaPort };
-    const callChat = useCallback(async (body, signal) => {
-        const res = await chatFetch(inferenceSource, chatHosts, CHAT_PATH[inferenceSource], {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-            signal,
-        });
-        const detail = await budgetDetail(res);
-        if (detail) {
-            setInferenceBudget(detail);
-            showToast?.(`Daily inference budget exhausted — resets at ${formatResetAt(detail.reset_at)}`, 6000);
-            logEvent('budget', 'daily token budget exhausted');
-            // Tagged so sendMessage's catch recognizes it: budget exhaustion
-            // is NOT unreachability (no reachable→false flip) and already has
-            // its own toast (no duplicate "Chat failed").
-            const err = new Error('Daily inference budget exhausted');
-            err.budgetExhausted = true;
-            throw err;
-        }
-        return res;
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [inferenceSource, apiHost, apiPort, ollamaHost, ollamaPort, showToast]);
 
     // Read latest values via refs so the playback loop and queued items pick up
     // voice/speed/volume changes for not-yet-fetched items without re-creating callbacks.
@@ -266,42 +221,15 @@ export function useChatEngine({
         setSessions(list);
     }, [sessionStore]);
 
-    // Append an event to the in-memory log for the active session.
-    // Persisted alongside messages on next saveActiveSession() call.
-    const logEvent = useCallback((kind, message) => {
-        const entry = { ts: Date.now(), kind, message: message || '' };
-        eventsRef.current = [...eventsRef.current, entry];
-        setEvents(eventsRef.current);
-    }, []);
-
-    // Persist the active session — must be called with the latest messages array.
-    const saveActiveSession = useCallback(async (overrides = {}) => {
-        const id = activeSessionIdRef.current;
-        if (!id) return;
-        // Strip attachment binary payloads (dataUrl + base64) before persisting —
-        // sessions stay cheap; reopening shows placeholder chips with metadata only.
-        const persistableMessages = messagesRef.current.map(m => {
-            if (!Array.isArray(m.attachments) || m.attachments.length === 0) return m;
-            return { ...m, attachments: m.attachments.map(stripAttachmentData) };
-        });
-        const record = {
-            id,
-            title: overrides.title ?? sessions.find(s => s.id === id)?.title ?? 'New chat',
-            model: overrides.model ?? selectedModel ?? '',
-            createdAt: createdAtRef.current || Date.now(),
-            messages: persistableMessages,
-            events: eventsRef.current,
-            pins: pinsRef.current,
-        };
-        const result = await sessionStore.saveSession(record);
-        // If the save forked an old IDB session, switch the active id to the new
-        // pg row so subsequent edits flow into the same record.
-        if (result?.forkedFrom && result.id !== id) {
-            setActive(result.id);
+    // The server writes the chat's log (sent, tool calls, errors…). Re-read it
+    // after a turn so the sidebar's Log is current.
+    const refreshEvents = useCallback(async (id) => {
+        const record = await sessionStore.getSession(id);
+        if (record && activeSessionIdRef.current === id) {
+            eventsRef.current = record.events || [];
+            setEvents(eventsRef.current);
         }
-        if (result) backendOfflineToastedRef.current = false;
-        await refreshSessions();
-    }, [sessions, selectedModel, refreshSessions, sessionStore]);
+    }, [sessionStore]);
 
     // Load an existing session into the active view. Stops anything currently playing.
     const switchToSession = useCallback(async (id) => {
@@ -326,7 +254,6 @@ export function useChatEngine({
         setPins(record.pins || []);
         eventsRef.current = record.events || [];
         setEvents(eventsRef.current);
-        createdAtRef.current = record.createdAt || Date.now();
         setActive(id);
         setIsStreaming(false);
     }, [stopChatPlayback, sessionStore]);
@@ -344,7 +271,6 @@ export function useChatEngine({
         setPins([]);
         eventsRef.current = [];
         setEvents([]);
-        createdAtRef.current = null;
         setActive(null);
         setIsStreaming(false);
     }, [stopChatPlayback]);
@@ -382,34 +308,24 @@ export function useChatEngine({
         }
     }, [enqueueTts]);
 
-    // Model list — server mode via the authenticated gateway (plain name
-    // strings), local mode via a direct GET /api/tags ({name} objects).
-    // Debounced when host/port changes.
+    // Every configured provider's models: [{id, provider, kind, name, capabilities}].
     const refreshModels = useCallback(async () => {
         try {
             const controller = new AbortController();
-            const t = setTimeout(() => controller.abort(), 5000);
-            const res = await chatFetch(inferenceSource, chatHosts, MODELS_PATH[inferenceSource], { signal: controller.signal });
+            const t = setTimeout(() => controller.abort(), 8000);
+            const res = await apiFetch(apiHost, apiPort, MODELS_PATH, { signal: controller.signal });
             clearTimeout(t);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
-            // Server gateway returns plain strings; local /api/tags returns
-            // objects with .name. Normalize both to a list of model names.
-            const names = Array.isArray(data?.models)
-                ? data.models.map(m => (typeof m === 'string' ? m : m.name)).filter(Boolean)
-                : [];
-            setAvailableModels(names);
+            setAvailableModels(Array.isArray(data?.models) ? data.models.filter((m) => m && m.id) : []);
             setReachable(true);
-            // Budget rides along with the model list (server mode). Absent
-            // key = unlimited/unknown → null; local mode has no budget.
-            setInferenceBudget(inferenceSource === 'server' ? (data?.budget ?? null) : null);
+            setInferenceBudget(data?.budget ?? null);
         } catch (e) {
-            console.warn('Ollama unreachable:', e.message);
+            console.warn('Model list unavailable:', e.message);
             setAvailableModels([]);
             setReachable(false);
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [inferenceSource, apiHost, apiPort, ollamaHost, ollamaPort]);
+    }, [apiHost, apiPort]);
 
     // Auto-refresh on host/port change (debounced so typing isn't a request storm)
     useEffect(() => {
@@ -478,373 +394,177 @@ export function useChatEngine({
 
     const sendMessage = useCallback(async (userText, attachments = []) => {
         const trimmed = (userText || '').trim();
-        const cleanAttachments = (attachments || []).filter(a => a && a.kind);
-        const hasPins = pinsRef.current.length > 0;
-        if (!trimmed && cleanAttachments.length === 0 && !hasPins) return;
-        if (isStreaming) return;
-
+        const cleanAttachments = (attachments || []).filter((a) => a && a.kind);
+        if (!trimmed && cleanAttachments.length === 0 && pinsRef.current.length === 0) return { sent: false };
+        if (isStreaming) return { sent: false };
+        const giveBack = { sent: false, refused: true, text: userText, attachments };
         if (!selectedModel) {
             showToast?.('Pick a model first.', 4000);
-            return;
+            return giveBack;
         }
 
-        // `Date.now()` only has ms resolution and these two messages are
-        // created in the same tick — left to itself, both rows tie on
-        // timestamp at the backend, then sort by id, which puts `a-<ts>`
-        // before `u-<ts>` lexicographically and the pair renders flipped on
-        // reload. Bumping the assistant ts (and id suffix) by 1 ms keeps the
-        // ordering monotonic without a sequence counter.
-        const userTs = Date.now();
-        const assistantTs = userTs + 1;
-        const userMsg = {
-            role: 'user',
-            content: trimmed,
-            attachments: cleanAttachments,
-            id: `u-${userTs}`,
-            timestamp: userTs,
-        };
-        const assistantId = `a-${assistantTs}`;
-        const assistantMsg = { role: 'assistant', content: '', thinking: '', id: assistantId, timestamp: assistantTs };
-
-        // Lock TTS mode + inference settings for THIS message — changing them mid-stream applies to the next message.
+        // Lock TTS mode + inference settings for THIS message.
         const modeForThisMsg = chatTtsMode;
         const inferenceForThisMsg = inference;
 
-        // Auto-create a session if this is the first message.
-        let sessionTitleSet = false;
-        if (!activeSessionIdRef.current) {
-            const id = newSessionId();
-            createdAtRef.current = Date.now();
+        // Which server session gets this turn?
+        let sessionId = activeSessionIdRef.current;
+        let isNew = false;
+        if (sessionId && sessionStore.isLocalId(sessionId)) {
+            // A pre-Postgres chat kept only in this browser: copy it to the
+            // server once, then continue it there (today's fork-on-edit).
+            const forkedId = await sessionStore.importLegacy(sessionId);
+            if (!forkedId) {
+                showToast?.("Couldn't copy this older chat to the server.", 5000);
+                return giveBack;
+            }
+            sessionId = forkedId;
+            setActive(forkedId);
+        }
+        if (!sessionId) {
+            sessionId = newSessionId();
+            isNew = true;
+            setActive(sessionId);
             eventsRef.current = [];
             setEvents([]);
-            setActive(id);
-            sessionTitleSet = true; // we'll set the title from this prompt below
         }
 
-        setMessages(prev => [...prev, userMsg, assistantMsg]);
+        const now = Date.now();
+        let userId = `u-local-${now}`;
+        let assistantId = `a-local-${now}`;
+        setMessages((prev) => [...prev,
+            { role: 'user', content: trimmed, attachments: cleanAttachments, id: userId, timestamp: now },
+            { role: 'assistant', content: '', thinking: '', id: assistantId, timestamp: now + 1, status: 'streaming' }]);
         sentenceBufferRef.current = '';
         setIsStreaming(true);
-        logEvent('sent', `prompt: ${titleFromPrompt(trimmed || '(attachment only)')}`);
-        if (cleanAttachments.length > 0) {
-            const imgCount = cleanAttachments.filter(a => a.kind === 'image').length;
-            const audCount = cleanAttachments.filter(a => a.kind === 'audio').length;
-            const totalBytes = cleanAttachments.reduce((sum, a) => sum + (a.size || 0), 0);
-            const parts = [];
-            if (imgCount) parts.push(`${imgCount} image${imgCount > 1 ? 's' : ''}`);
-            if (audCount) parts.push(`${audCount} audio`);
-            logEvent('attached', `${parts.join(', ')} (${formatAttachmentSize(totalBytes)} total)`);
-        }
-        // Track this as the message currently being read aloud so the per-message
-        // Stop button can target it. If auto-TTS is off, leave it null until the
-        // user manually triggers speakMessage().
         if (chatAutoTts) setSpeaking(assistantId);
-
         const controller = new AbortController();
         abortRef.current = controller;
+        const updateAssistant = (fn) => setMessages((prev) => prev.map((m) => (m.id === assistantId ? fn(m) : m)));
 
+        const body = {
+            message: {
+                content: trimmed,
+                attachments: cleanAttachments.filter((a) => a.base64).map((a) => ({
+                    id: a.id, kind: a.kind, mime: a.mimeType, name: a.name || '', size: a.size || 0, base64: a.base64,
+                })),
+            },
+            model: selectedModel,
+            settings: toWireSettings(inferenceForThisMsg),
+            context: { doc_id: currentDocId || null, timezone: browserTimezone() },
+            ...(isNew ? { session: { pins: pinsRef.current } } : {}),
+        };
+
+        let refused = false;
+        let completed = false;
+        let replyText = '';
         try {
-            // Build the messages history for the Ollama POST.
-            //
-            // Ollama's native /api/chat requires `content` to be a plain string
-            // (structured content blocks return HTTP 400). The `Message` struct
-            // only has ONE binary-input field: `images: [base64]`. There is no
-            // `audios` field — earlier attempts using `audio` / `audios` were
-            // silently dropped by the JSON parser.
-            //
-            // For audio-capable models (qwen2-audio, gemma4-with-audio, ...),
-            // the convention is to put the audio bytes into the same `images`
-            // array — the runtime treats those bytes as audio when the model
-            // is audio-capable. So image AND audio attachments both feed
-            // `images`. (If a single message mixes both kinds, the model will
-            // see both byte blobs and decide based on its own modality. We
-            // accept that edge case rather than introducing a non-existent
-            // field.)
-            //
-            // Attachments stripped on session save (no base64) are skipped — the
-            // historical message just goes back as text, which is fine.
-            // (Message mapping + history assembly live in ./chatHistory so the
-            // ordering is unit-tested — see buildChatHistory below.)
-            //
-            // Persistent pins → system preamble, placed right before the user
-            // turn by buildChatHistory. Whole-document breadth comes from the
-            // autonomous search_document tool, not from here.
-            const contextPreamble = buildPinPreamble(pinsRef.current);
-            const history = buildChatHistory({
-                priorMessages: messagesRef.current,
-                contextPreamble,
-                userMsg,
-            });
-
-            // ---------- Autonomous tool calling ----------
-            // Build the tool context once. The registry filters by `when(ctx)`,
-            // so when there's no indexed doc loaded, `tools` is just [] and the
-            // request body looks identical to the pre-tools era.
-            const toolCtx = { currentDocId, currentDocIndexState, apiHost, apiPort };
-            const tools = getToolDefinitions(toolCtx);
-
-            // Consume a streaming /api/chat response. Token-by-token content
-            // and thinking are flushed into the assistant message live; the
-            // returned `captured` object reports the final stats + any
-            // tool_calls the model decided to emit.
-            const consumeStream = async (response) => {
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let lineBuf = '';
-                const captured = { toolCalls: [], stats: null };
-
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) break;
-                    lineBuf += decoder.decode(value, { stream: true });
-                    const lines = lineBuf.split('\n');
-                    lineBuf = lines.pop() || '';
-
-                    for (const line of lines) {
-                        const trimmedLine = line.trim();
-                        if (!trimmedLine) continue;
-                        let payload;
-                        try { payload = JSON.parse(trimmedLine); }
-                        catch { continue; }
-
-                        const token = payload?.message?.content || '';
-                        const thinkingTok = payload?.message?.thinking || '';
-                        const tcChunk = payload?.message?.tool_calls;
-
-                        if (thinkingTok) {
-                            // Reasoning trace — surfaces in the disclosure but never feeds TTS.
-                            setMessages(prev => prev.map(m =>
-                                m.id === assistantId ? { ...m, thinking: (m.thinking || '') + thinkingTok } : m
-                            ));
-                        }
-                        if (token) {
-                            setMessages(prev => prev.map(m =>
-                                m.id === assistantId ? { ...m, content: m.content + token } : m
-                            ));
-                            if (modeForThisMsg === 'streaming') {
-                                sentenceBufferRef.current += token;
-                                flushBufferedSentences();
-                            }
-                        }
-                        if (Array.isArray(tcChunk) && tcChunk.length > 0) {
-                            captured.toolCalls.push(...tcChunk);
-                        }
-                        if (payload?.done) {
-                            // Capture Ollama's per-request metrics from the final chunk.
-                            // All durations are nanoseconds; the UI converts to s for display.
-                            captured.stats = {
-                                model: payload.model,
-                                doneReason: payload.done_reason,
-                                totalNs: payload.total_duration,
-                                loadNs: payload.load_duration,
-                                promptEvalCount: payload.prompt_eval_count,
-                                promptEvalNs: payload.prompt_eval_duration,
-                                evalCount: payload.eval_count,
-                                evalNs: payload.eval_duration,
-                            };
-                            break;
-                        }
-                    }
+            const res = await postTurn({ apiHost, apiPort, sessionId, body, signal: controller.signal });
+            if (!res.ok) {
+                refused = true;
+                const budget = await budgetDetail(res.clone());
+                if (budget) {
+                    setInferenceBudget(budget);
+                    showToast?.(`Daily inference budget exhausted — resets at ${formatResetAt(budget.reset_at)}`, 6000);
+                } else {
+                    showToast?.(await describeRefusal(res, { notFound: CHAT_NOT_FOUND, tooLarge: 'Attachments' }), 5000);
                 }
-                return captured;
-            };
-
-            // First /api/chat request. If tools is non-empty, include it. Some
-            // models 400 when `think: true`/a think LEVEL and `tools: [...]`
-            // are sent together — fall back in that case. `overrides` lets a
-            // retry replace individual inference fields (e.g. think) without
-            // ever hand-rolling a request body that forgets `tools`.
-            const buildBody = (extra = {}, overrides = {}) => ({
-                model: selectedModel,
-                messages: history,
-                stream: true,
-                ...buildRequestFields({ ...inferenceForThisMsg, ...overrides }),
-                ...extra,
-            });
-            const firstBody = tools.length > 0 ? buildBody({ tools }) : buildBody();
-            let res = await callChat(firstBody, controller.signal);
-            // Some thinking-capable models accept the boolean but reject the
-            // graduated levels. Try the think downgrade FIRST, keeping `tools`
-            // intact — if we tried the tools-drop first, a model that only
-            // objects to the think level would get blamed for rejecting tools
-            // (wrong toast) and would still lose `search_document` on the
-            // retry that actually fixes it, since that retry never restores
-            // tools. Retrying the level first means the tools fallback below
-            // only fires when tools are truly the problem.
-            const usedLevel = !['off', 'on'].includes(inferenceForThisMsg.think);
-            if (!res.ok && usedLevel && res.status >= 400 && res.status < 500) {
-                console.warn(`Ollama returned ${res.status} for think:"${inferenceForThisMsg.think}" — retrying with think:true.`);
-                // Self-heal: persist the downgrade so the sidebar stops claiming
-                // the rejected level is active and the model stops paying a
-                // wasted round-trip on every message. Without this the fallback
-                // repeats forever, silently.
-                onInferencePersist?.({ think: 'on' });
-                if (!thinkLevelFallbackToastedRef.current) {
-                    thinkLevelFallbackToastedRef.current = true;
-                    showToast?.('This model rejected the thinking level — switched it to plain thinking for this model.', 4000);
-                }
-                logEvent('think-fallback', `model rejected think level "${inferenceForThisMsg.think}" (HTTP ${res.status}); persisted think:"on"`);
-                res = await callChat(
-                    tools.length > 0 ? buildBody({ tools }, { think: 'on' }) : buildBody({}, { think: 'on' }),
-                    controller.signal,
-                );
-            }
-            if (!res.ok && tools.length > 0 && res.status >= 400 && res.status < 500) {
-                console.warn(`Ollama returned ${res.status} with tools — retrying without tools.`);
-                if (!toolFallbackToastedRef.current) {
-                    toolFallbackToastedRef.current = true;
-                    showToast?.('This model rejected tools — proceeded without them.', 4000);
-                }
-                logEvent('tool-fallback', `model rejected tools (HTTP ${res.status}); retrying without`);
-                res = await callChat(
-                    buildBody({}, usedLevel ? { think: 'on' } : {}),
-                    controller.signal,
-                );
-            }
-            if (!res.ok || !res.body) throw new Error(`Ollama error: HTTP ${res.status}`);
-
-            // Attach the latest stats to the assistant bubble and surface
-            // truncation if this reply hit a cap. Shared by the initial
-            // stream and the tool follow-up stream below — both call sites
-            // did the same three things with different `stats`.
-            const applyStats = (stats) => {
-                if (!stats) return;
-                setMessages(prev => prev.map(m =>
-                    m.id === assistantId ? { ...m, stats } : m
-                ));
-                // done_reason "length" means the reply was capped — either
-                // the context window filled or num_predict was reached, not
-                // that the model finished. Without this the only evidence is
-                // a line inside a collapsed stats disclosure.
-                const truncated = truncationMessage(stats, inferenceForThisMsg);
-                if (truncated) {
-                    showToast?.(truncated, 7000);
-                    logEvent('truncated', truncated);
-                }
-            };
-
-            const first = await consumeStream(res);
-            applyStats(first.stats);
-
-            // If the model called any tools, execute them and re-POST without
-            // `tools` to force a text answer. Single round-trip cap — we don't
-            // loop, so a confused model can't spin forever.
-            if (first.toolCalls.length > 0) {
-                setMessages(prev => prev.map(m =>
-                    m.id === assistantId ? { ...m, toolStatus: 'executing tool…' } : m
-                ));
-                logEvent('tool-call', `${first.toolCalls.length} tool call${first.toolCalls.length > 1 ? 's' : ''}`);
-
-                const toolResults = await Promise.all(first.toolCalls.map(async (tc) => {
-                    const name = tc?.function?.name;
-                    const rawArgs = tc?.function?.arguments;
-                    // Ollama may send arguments as object OR JSON string —
-                    // normalize so the tool always receives a plain object.
-                    let args = {};
-                    if (rawArgs && typeof rawArgs === 'object') args = rawArgs;
-                    else if (typeof rawArgs === 'string') {
-                        try { args = JSON.parse(rawArgs); } catch { args = {}; }
-                    }
-                    const result = await executeToolCall(name, args, toolCtx);
-                    return { name, arguments: args, result };
-                }));
-
-                // Persist a compact summary on the assistant message — full
-                // chunk text isn't kept here (it's already in the model's
-                // final answer; the disclosure just shows what was searched).
-                const toolCallSummaries = toolResults.map(tr => ({
-                    name: tr.name,
-                    arguments: tr.arguments,
-                    result_summary: tr.result?.error
-                        ? { error: tr.result.error }
-                        : {
-                            ok: true,
-                            chunk_count: tr.result?.agent_response?.chunk_count ?? null,
-                            query: tr.result?.agent_response?.query ?? null,
-                            summary_text: tr.result?.summary_text ?? null,
-                        },
-                }));
-                setMessages(prev => prev.map(m =>
-                    m.id === assistantId
-                        ? { ...m, toolCalls: toolCallSummaries, toolStatus: undefined }
-                        : m
-                ));
-
-                // Build the follow-up history per Ollama's tool-calling
-                // convention: append the assistant turn (with its tool_calls
-                // and any partial content it streamed) and one tool message
-                // per result.
-                const assistantContent = (messagesRef.current.find(m => m.id === assistantId)?.content) || '';
-                const followupHistory = [
-                    ...history,
-                    { role: 'assistant', content: assistantContent, tool_calls: first.toolCalls },
-                    ...toolResults.map(tr => ({
-                        role: 'tool',
-                        content: JSON.stringify(tr.result.agent_response || tr.result, null, 2),
-                    })),
-                ];
-
-                const res2 = await callChat({
-                    model: selectedModel,
-                    messages: followupHistory,
-                    stream: true,
-                    ...buildRequestFields(inferenceForThisMsg),
-                }, controller.signal);
-                if (!res2.ok || !res2.body) throw new Error(`Ollama follow-up error: HTTP ${res2.status}`);
-
-                const second = await consumeStream(res2);
-                applyStats(second.stats);
-            }
-
-            // End-of-stream cleanup: flush any remaining buffered text.
-            if (modeForThisMsg === 'streaming') {
-                const tail = sentenceBufferRef.current.trim();
-                if (tail) enqueueTts(tail);
-                sentenceBufferRef.current = '';
             } else {
-                // After-complete: segment the full reply now and queue it.
-                const finalMsg = messagesRef.current.find(m => m.id === assistantId);
-                if (finalMsg && chatAutoTts) {
-                    const sentences = finalMsg.content
-                        .replace(/\s+/g, ' ')
-                        .split(SENTENCE_TERMINATOR)
-                        .filter(s => s.trim().length >= MIN_TTS_LENGTH);
-                    sentences.forEach(enqueueTts);
+                for await (const ev of readEvents(res.body)) {
+                    if (ev.type === 'start') {
+                        // Adopt the server's ids so reload, read-aloud and pins line up.
+                        const [oldUser, oldAssistant] = [userId, assistantId];
+                        setMessages((prev) => prev.map((m) => (
+                            m.id === oldUser ? { ...m, id: ev.userMessageId }
+                                : m.id === oldAssistant ? { ...m, id: ev.messageId } : m)));
+                        if (speakingMessageIdRef.current === oldAssistant) setSpeaking(ev.messageId);
+                        userId = ev.userMessageId;
+                        assistantId = ev.messageId;
+                        continue;
+                    }
+                    updateAssistant((m) => applyEvent(m, ev));
+                    if (ev.type === 'text-delta') {
+                        replyText += ev.delta || '';
+                        if (modeForThisMsg === 'streaming') {
+                            sentenceBufferRef.current += ev.delta || '';
+                            flushBufferedSentences();
+                        }
+                    } else if (ev.type === 'data-notice') {
+                        showToast?.(ev.message, 4000);
+                    } else if (ev.type === 'finish') {
+                        completed = true;
+                        const truncated = truncationMessage(ev.stats, inferenceForThisMsg);
+                        if (truncated) showToast?.(truncated, 7000);
+                    } else if (ev.type === 'error') {
+                        if (ev.code === 'budget_exhausted') {
+                            showToast?.('Daily inference budget exhausted.', 6000);
+                            refreshModels();   // re-reads the budget readout
+                        } else {
+                            showToast?.(`Chat failed: ${ev.message}`, 5000);
+                        }
+                    }
+                }
+                setReachable(true);
+            }
+            if (completed) {
+                if (modeForThisMsg === 'streaming') {
+                    const tail = sentenceBufferRef.current.trim();
+                    if (tail) enqueueTts(tail);
+                    sentenceBufferRef.current = '';
+                } else if (chatAutoTts) {
+                    replyText.replace(/\s+/g, ' ').split(SENTENCE_TERMINATOR)
+                        .filter((s) => s.trim().length >= MIN_TTS_LENGTH)
+                        .forEach(enqueueTts);
+                }
+                if (chatAutoTts) {
+                    const spokenId = assistantId;
+                    chatPlaybackPromiseRef.current.then(() => {
+                        if (speakingMessageIdRef.current === spokenId) setSpeaking(null);
+                    });
                 }
             }
-            // After all sentences are queued, fire-and-forget a tail handler that
-            // clears the speaking indicator once the queue drains — but only if
-            // we're still speaking this message (a manual override may have replaced us).
-            if (chatAutoTts) {
-                chatPlaybackPromiseRef.current.then(() => {
-                    if (speakingMessageIdRef.current === assistantId) setSpeaking(null);
-                });
-            }
-            setReachable(true);
-            logEvent('received', `assistant reply (${(messagesRef.current.find(m => m.id === assistantId)?.content || '').length} chars)`);
         } catch (e) {
             if (e.name === 'AbortError') {
-                logEvent('aborted', 'user stopped the stream');
-            } else if (e.budgetExhausted) {
-                // 429 path: toast + budget state were already set in callChat.
-                // The server IS reachable — leave that indicator alone.
-                logEvent('error', e.message);
+                updateAssistant((m) => ({ ...m, status: 'aborted', finishReason: 'aborted', toolStatus: undefined }));
             } else {
                 console.error('Chat error:', e);
                 setReachable(false);
                 showToast?.(`Chat failed: ${e.message}`, 5000);
-                logEvent('error', e.message);
+                updateAssistant((m) => ({ ...m, status: 'error', toolStatus: undefined }));
             }
         } finally {
             abortRef.current = null;
             setIsStreaming(false);
-            // Persist after each turn so the session list/log stay current.
-            saveActiveSession({
-                title: sessionTitleSet ? titleFromPrompt(trimmed) : undefined,
-                model: selectedModel,
-            }).catch(err => console.error('Session save failed:', err));
+            if (refused) {
+                const localIds = new Set([userId, assistantId]);
+                setMessages((prev) => prev.filter((m) => !localIds.has(m.id)));
+                if (isNew) setActive(null);
+                setSpeaking(null);
+            } else {
+                refreshSessions();
+                refreshEvents(sessionId);
+            }
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, inference, onInferencePersist, ollamaHost, ollamaPort, apiHost, apiPort, callChat, currentDocId, currentDocIndexState, flushBufferedSentences, enqueueTts, logEvent, saveActiveSession]);
+        return refused ? giveBack : { sent: true };
+    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, inference, apiHost, apiPort, currentDocId,
+        sessionStore, showToast, flushBufferedSentences, enqueueTts, refreshSessions, refreshEvents, refreshModels]);
+
+    // A reloaded chat whose reply the server is still writing: re-read it until
+    // it settles. Server-side stale recovery (spec §5.5) guarantees it does,
+    // even if the worker writing it died.
+    const hasRemoteStreaming = !isStreaming && messages.some((m) => m.status === 'streaming');
+    useEffect(() => {
+        if (!hasRemoteStreaming || !activeSessionId) return undefined;
+        const id = activeSessionId;
+        const handle = setInterval(async () => {
+            const record = await sessionStore.getSession(id);
+            if (!record || activeSessionIdRef.current !== id) return;
+            setMessages(record.messages || []);
+            eventsRef.current = record.events || [];
+            setEvents(eventsRef.current);
+        }, POLL_MS);
+        return () => clearInterval(handle);
+    }, [hasRemoteStreaming, activeSessionId, sessionStore]);
 
     const activeSession = sessions.find(s => s.id === activeSessionId) || null;
 

@@ -3,6 +3,7 @@ import {
     Trash2, RefreshCw, MessageSquare, Bot,
     Plus, Pencil, ChevronDown, ChevronRight, ScrollText, Check, X,
 } from 'lucide-react';
+import { groupByProvider, modelLabel } from '../lib/modelIds';
 
 export default function ChatSidebar({
     theme,
@@ -84,8 +85,12 @@ export default function ChatSidebar({
                             ) : (
                                 <>
                                     {!selectedModel && <option value="">Select a model…</option>}
-                                    {availableModels.map(name => (
-                                        <option key={name} value={name}>{name}</option>
+                                    {groupByProvider(availableModels).map(([provider, models]) => (
+                                        <optgroup key={provider} label={provider}>
+                                            {models.map((m) => (
+                                                <option key={m.id} value={m.id}>{modelLabel(m)}</option>
+                                            ))}
+                                        </optgroup>
                                     ))}
                                 </>
                             )}

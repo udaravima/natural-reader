@@ -10,27 +10,31 @@ const CONTENT_SHARED = {
     in_project: 'This document is in a project, so changing it would change it for the project too. Remove it from the project first, or ask an admin.',
 };
 
-export function noticeFor(status, detail) {
+export function noticeFor(status, detail, { notFound, tooLarge } = {}) {
     const d = detail && typeof detail === 'object' ? detail : null;
     if (status === 409 && d?.error === 'content_shared') {
         return CONTENT_SHARED[d.reason] || CONTENT_SHARED.other_holders;
     }
-    if (status === 413) return `File too large (limit ${d?.limit_mb ?? '?'} MB).`;
+    // Documents and chat both refuse with 413 too_large; the caller names what was too big.
+    if (status === 413) return `${tooLarge || 'File'} too large (limit ${d?.limit_mb ?? '?'} MB).`;
     if (status === 415) return 'Unsupported file type.';
     if (status === 422 && d?.error === 'empty_file') return 'The file is empty.';
-    if (status === 404) return "This document doesn't exist or you don't have access.";
+    if (status === 404) return notFound || "This document doesn't exist or you don't have access.";
+    // Chat refusals (C1 spec §7.2) carry a message written for people; a 503
+    // "no provider" is a setup problem, not a crash, so it isn't "server error".
+    if (d?.error === 'no_providers') return d.message || 'No model provider is configured.';
     if (status >= 500) return 'Something went wrong on the server. Try again.';
     if (d?.message) return d.message;
     if (typeof detail === 'string' && detail) return detail;
     return `Request failed (HTTP ${status}).`;
 }
 
-export async function describeRefusal(res) {
+export async function describeRefusal(res, options = {}) {
     let detail = null;
     try {
         detail = (await res.json())?.detail ?? null;
     } catch {
         // non-JSON error body (proxy page, empty) — fall back to the status
     }
-    return noticeFor(res.status, detail);
+    return noticeFor(res.status, detail, options);
 }

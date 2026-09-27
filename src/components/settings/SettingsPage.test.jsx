@@ -68,12 +68,15 @@ describe('SettingsPage — reader/global sections', () => {
     const setInferenceByModel = vi.fn();
     const b = bags();
     b.chatSettings = {
-      ...b.chatSettings, availableModels: ['m1', 'm2'], selectedModel: 'm1',
-      inferenceByModel: { m1: {}, m2: {} }, setInferenceByModel,
+      ...b.chatSettings,
+      availableModels: [{ id: 'ollama:m1', provider: 'ollama', kind: 'ollama', name: 'm1', capabilities: {} },
+        { id: 'ollama:m2', provider: 'ollama', kind: 'ollama', name: 'm2', capabilities: {} }],
+      selectedModel: 'ollama:m1',
+      inferenceByModel: { 'ollama:m1': {}, 'ollama:m2': {} }, setInferenceByModel,
     };
     render(<SettingsPage {...b} />);
     // The config picker defaults to the active model (m1).
-    expect(screen.getByLabelText(/configuring model/i)).toHaveValue('m1');
+    expect(screen.getByLabelText(/configuring model/i)).toHaveValue('ollama:m1');
     fireEvent.change(screen.getByLabelText(/context window/i), { target: { value: '8192' } });
     expect(setInferenceByModel).toHaveBeenCalled();
   });

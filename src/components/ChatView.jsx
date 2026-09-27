@@ -25,7 +25,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import AttachmentPreview from "./AttachmentPreview";
 import { estimateTokens } from "../hooks/inference";
-import { buildPinPreamble } from "../hooks/chatHistory";
+import { buildPinPreamble } from "../hooks/pins";
 // VoiceRecorder is intentionally not imported — audio attachments are paused
 // until a Whisper-style transcription step is added (see plan file). The file
 // itself is kept on disk so re-enabling is a single import + a JSX block.
@@ -219,9 +219,17 @@ export default function ChatView({
 
   const handleSend = () => {
     if (!canSend) return;
-    sendMessage(draft, pendingAttachments);
+    const text = draft;
+    const atts = pendingAttachments;
     setDraft("");
     setPendingAttachments([]);
+    // A refused turn (409, 413, …) never reached the chat: put the text and
+    // attachments back, unless the user already started typing something new.
+    Promise.resolve(sendMessage(text, atts)).then((r) => {
+      if (!r?.refused) return;
+      setDraft((d) => d || text);
+      setPendingAttachments((a) => (a.length ? a : atts));
+    });
   };
 
   const handleKeyDown = (e) => {

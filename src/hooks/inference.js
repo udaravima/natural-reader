@@ -1,7 +1,8 @@
 // Pure helpers for Ollama inference settings, stored per model.
 // Nothing here touches React or localStorage — App.jsx owns the state.
 //
-// Governing rule: an unset setting is OMITTED from the request body. Sending
+// Governing rule: an unset setting is OMITTED from the provider request (the
+// SPA sends it as null; the server drops it — see toWireSettings). Sending
 // `null` or `0` instead would replace a model's tuned Modelfile values (for
 // example qwen3.5 ships temperature 1 / top_k 20 / top_p 0.95) with no error.
 
@@ -11,13 +12,6 @@ export const INFERENCE_DEFAULTS = {
     think: 'off',      // 'off' | 'on' | 'low' | 'medium' | 'high'
     numPredict: null,  // null = -1 (infinite generation)
 };
-
-// 'on' sends the boolean, which is byte-identical to the legacy enableThinking
-// behaviour. The three levels send strings. Keeping both means migrating the
-// old boolean is lossless instead of a guess at which level equals "on".
-const THINK_WIRE = { off: false, on: true };
-
-const isSet = (v) => v !== null && v !== undefined;
 
 export const resolveForModel = (map, model) => ({
     ...INFERENCE_DEFAULTS,
@@ -29,19 +23,12 @@ export const patchForModel = (map, model, patch) => ({
     [model]: { ...resolveForModel(map, model), ...patch },
 });
 
-export const buildRequestFields = (settings) => {
+// The turn body's `settings` (C1 spec §7.1). An unset value is null and the
+// server leaves it out of the provider request, so a model's own tuned
+// defaults (its Modelfile values) stay in force.
+export const toWireSettings = (settings) => {
     const s = { ...INFERENCE_DEFAULTS, ...(settings || {}) };
-    const fields = {
-        think: s.think in THINK_WIRE ? THINK_WIRE[s.think] : s.think,
-    };
-    if (isSet(s.keepAlive)) fields.keep_alive = s.keepAlive;
-
-    const options = {};
-    if (isSet(s.numCtx)) options.num_ctx = s.numCtx;
-    if (isSet(s.numPredict)) options.num_predict = s.numPredict;
-    if (Object.keys(options).length > 0) fields.options = options;
-
-    return fields;
+    return { think: s.think, num_ctx: s.numCtx, keep_alive: s.keepAlive, num_predict: s.numPredict };
 };
 
 export const migrateLegacyThinking = (bool) => (bool ? 'on' : 'off');

@@ -5,6 +5,7 @@ import { InferenceSourceSelect } from '../chat/InferenceSourceSelect';
 import { InferenceRow } from '../chat/InferenceRow';
 import { AccountPanel } from '../account/AccountPanel';
 import { resolveForModel, patchForModel } from '../../hooks/inference';
+import { groupByProvider, migrateModelId, modelLabel } from '../../lib/modelIds';
 
 // A titled settings section. `id` anchors nothing yet but keeps headings stable.
 function Section({ theme, title, children }) {
@@ -44,7 +45,10 @@ export default function SettingsPage({ theme, voiceSettings, chatSettings, conne
     // Which model's per-model inference knobs are being edited (defaults to the
     // active chat model). Editing writes inferenceByModel[configModel] via the
     // same pure helpers the chat sidebar used.
-    const [configModel, setConfigModel] = useState(ch.selectedModel || ch.availableModels[0] || '');
+    const [pickedModel, setConfigModel] = useState(ch.selectedModel || ch.availableModels[0]?.id || '');
+    // Opened before the model list arrived, the pick can still be a pre-C1 bare
+    // name ("qwen2.5:7b"); edit its `provider:name` id instead, never the bare key.
+    const configModel = migrateModelId(pickedModel, ch.availableModels);
     const inf = resolveForModel(ch.inferenceByModel, configModel);
     const setInf = (patch) => ch.setInferenceByModel((prev) => patchForModel(prev, configModel, patch));
     const currentVoice = KOKORO_VOICES.find((x) => x.id === v.selectedVoice);
@@ -160,7 +164,11 @@ export default function SettingsPage({ theme, voiceSettings, chatSettings, conne
                         >
                             {ch.availableModels.length === 0
                                 ? <option value="">No models available</option>
-                                : ch.availableModels.map((m) => <option key={m} value={m}>{m}</option>)}
+                                : groupByProvider(ch.availableModels).map(([provider, models]) => (
+                                    <optgroup key={provider} label={provider}>
+                                        {models.map((m) => <option key={m.id} value={m.id}>{modelLabel(m)}</option>)}
+                                    </optgroup>
+                                ))}
                         </select>
                         <div className="flex flex-col gap-2 mt-1">
                             <InferenceRow theme={theme} label="Context window" disabled={!configModel}

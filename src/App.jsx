@@ -13,6 +13,7 @@ import { useAuth } from './hooks/useAuth';
 import { useViewModeGuard } from './hooks/useViewModeGuard';
 import { useDocMetaPicker } from './hooks/useDocMetaPicker';
 import { makePin } from './hooks/pins';
+import { migrateModelId } from './lib/modelIds';
 
 // Constants
 import { OLLAMA_DEFAULTS } from './constants';
@@ -125,17 +126,6 @@ export default function App() {
   const inference = useMemo(
     () => resolveForModel(inferenceByModel, selectedModel),
     [inferenceByModel, selectedModel]
-  );
-  const setInference = useCallback(
-    (patch) => {
-      // With no model selected there is no key to patch under — writing
-      // anyway would land the entry under "" (resolveForModel('', map) still
-      // finds it, so the UI looks like it stuck) and orphan it in
-      // localStorage the moment a real model is picked.
-      if (!selectedModel) return;
-      setInferenceByModel(prev => patchForModel(prev, selectedModel, patch));
-    },
-    [selectedModel, setInferenceByModel]
   );
 
   // --- TRANSIENT UI STATE ---
@@ -281,16 +271,12 @@ export default function App() {
     synthesizeText, playChatUrl, playChatSpeech, stopChatPlayback,
   } = ttsEngine;
 
-  // currentDocId / currentDocIndexState are exposed to the chat engine so the
-  // tool registry can decide whether to advertise `search_document` to the
-  // model. Both are null while no doc is open.
-  const currentDocIndexEntry = currentDocId ? docIndexByDocId[currentDocId] : null;
   const chatEngine = useChatEngine({
-    ollamaHost, ollamaPort, inferenceSource, selectedModel,
-    chatTtsMode, chatAutoTts, inference, onInferencePersist: setInference,
+    selectedModel,
+    chatTtsMode, chatAutoTts, inference,
     isLocalhost, selectedVoice, playbackSpeed, requestTimeout,
     apiHost, apiPort,
-    currentDocId, currentDocIndexState: currentDocIndexEntry?.state || null,
+    currentDocId,
     synthesizeText, playChatUrl, playChatSpeech, stopChatPlayback,
     showToast,
   });
@@ -319,6 +305,17 @@ export default function App() {
     addPin: chatAddPin,
     removePin: chatRemovePin,
   } = chatEngine;
+
+  // Model ids became `provider:name` in C1. Carry a saved pre-C1 selection
+  // ("qwen2.5:7b") and its per-model settings over to the matching id once.
+  useEffect(() => {
+    if (!availableModels.length) return;
+    const next = migrateModelId(selectedModel, availableModels);
+    if (next === selectedModel) return;
+    setInferenceByModel((prev) => (prev[selectedModel] && !prev[next]
+      ? { ...prev, [next]: prev[selectedModel] } : prev));
+    setSelectedModel(next);
+  }, [availableModels, selectedModel, setSelectedModel, setInferenceByModel]);
 
   useKeyboardShortcuts({
     handlePlayPause, stopPlayback, skipToNextSentence,

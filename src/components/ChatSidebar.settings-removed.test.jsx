@@ -9,8 +9,9 @@ const theme = {
 
 const baseProps = (over = {}) => ({
     theme, darkMode: false, effectiveIsMobile: false, sidebarOpen: true,
-    selectedModel: 'qwen3.5:latest', setSelectedModel: vi.fn(),
-    availableModels: ['qwen3.5:latest'], reachable: true, refreshModels: vi.fn(),
+    selectedModel: 'ollama:qwen3.5:latest', setSelectedModel: vi.fn(),
+    availableModels: [{ id: 'ollama:qwen3.5:latest', provider: 'ollama', kind: 'ollama', name: 'qwen3.5:latest', capabilities: {} }],
+    reachable: true, refreshModels: vi.fn(),
     inferenceBudget: null,
     messages: [], clearHistory: vi.fn(),
     sessions: [], activeSessionId: null, events: [],

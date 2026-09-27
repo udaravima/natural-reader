@@ -27,3 +27,16 @@ describe('describeRefusal', () => {
         expect(await describeRefusal(bad)).toBe('Something went wrong on the server. Try again.');
     });
 });
+
+describe('chat refusals', () => {
+    it('uses the chat wording for a 404 when asked', () => {
+        expect(noticeFor(404, { error: 'not_found' }, { notFound: 'No such chat.' })).toBe('No such chat.');
+    });
+    it('explains a too-large turn, a busy chat and a missing provider', () => {
+        expect(noticeFor(413, { error: 'too_large', limit_mb: 25 }, { tooLarge: 'Attachments' })).toBe('Attachments too large (limit 25 MB).');
+        expect(noticeFor(409, { error: 'turn_in_progress', message: 'A reply is still being written in this chat.' }))
+            .toBe('A reply is still being written in this chat.');
+        expect(noticeFor(503, { error: 'no_providers', message: 'No model provider is configured.' }))
+            .toBe('No model provider is configured.');
+    });
+});
