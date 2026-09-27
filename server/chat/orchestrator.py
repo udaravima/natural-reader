@@ -216,9 +216,12 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                 yield ev("reasoning-end", id=f"r{step}")
             if open_text:
                 yield ev("text-end", id=f"t{step}")
-            usage = await _record_usage(req.user_id, usage, messages, text + reasoning)
-            state.add(usage, finish)
+            # Mark first, then shield the write: a cancel landing mid-write (e.g.
+            # during the pool's commit) can't stop the row landing, and _finalize
+            # must never charge this step a second time.
             state.step_recorded = True
+            usage = await asyncio.shield(_record_usage(req.user_id, usage, messages, text + reasoning))
+            state.add(usage, finish)
             yield ev("finish-step", step=step, usage=_usage_json(usage), finishReason=finish)
             await _save(claim, state)
             if not calls:
