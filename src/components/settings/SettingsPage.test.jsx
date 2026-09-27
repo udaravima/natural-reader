@@ -21,14 +21,13 @@ const bags = (over = {}) => ({
     isPreviewingVoice: false, previewVoice: vi.fn(), stopVoicePreview: vi.fn(), clearCache: vi.fn(),
   },
   chatSettings: {
-    inferenceSource: 'server', setInferenceSource: vi.fn(), chatTtsMode: 'streaming', setChatTtsMode: vi.fn(),
+    chatTtsMode: 'streaming', setChatTtsMode: vi.fn(),
     chatAutoTts: true, setChatAutoTts: vi.fn(), inferenceByModel: {}, setInferenceByModel: vi.fn(),
     availableModels: [], selectedModel: '',
   },
   connectionSettings: {
     apiHost: '', setApiHost: vi.fn(), apiPort: '8000', setApiPort: vi.fn(),
-    ollamaHost: '', setOllamaHost: vi.fn(), ollamaPort: '11434', setOllamaPort: vi.fn(),
-    inferenceSource: 'server', backendAvailable: true,
+    backendAvailable: true,
   },
   appearanceSettings: {
     darkMode: false, setDarkMode: vi.fn(), layoutMode: 'auto', setLayoutMode: vi.fn(),
@@ -84,5 +83,28 @@ describe('SettingsPage — reader/global sections', () => {
   it('renders the Account panel (PAT management) in the Account section', async () => {
     render(<SettingsPage {...bags()} />);
     expect(await screen.findByPlaceholderText(/token name/i)).toBeInTheDocument();
+  });
+});
+
+describe('SettingsPage — provider-aware inference settings', () => {
+  const models = [
+    { id: 'local:m1', provider: 'local', kind: 'ollama', name: 'm1', capabilities: { thinking: false } },
+    { id: 'cloud:x', provider: 'cloud', kind: 'openai', name: 'x', capabilities: { thinking: true } },
+  ];
+  it('has no inference-source or Ollama host fields (Local mode is gone)', () => {
+    render(<SettingsPage {...bags()} />);
+    expect(screen.queryByText(/inference source/i)).toBeNull();
+    expect(screen.queryByLabelText(/ollama host/i)).toBeNull();
+  });
+  it('shows context size and keep-alive only for Ollama models, thinking only when supported', () => {
+    const b = bags();
+    b.chatSettings = { ...b.chatSettings, availableModels: models, selectedModel: 'cloud:x' };
+    render(<SettingsPage {...b} />);
+    expect(screen.queryByLabelText(/context window/i)).toBeNull();
+    expect(screen.queryByLabelText(/keep model warm/i)).toBeNull();
+    expect(screen.getByLabelText(/thinking/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/configuring model/i), { target: { value: 'local:m1' } });
+    expect(screen.getByLabelText(/context window/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/thinking/i)).toBeNull();
   });
 });

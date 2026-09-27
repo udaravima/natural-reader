@@ -16,7 +16,6 @@ import { makePin } from './hooks/pins';
 import { migrateModelId } from './lib/modelIds';
 
 // Constants
-import { OLLAMA_DEFAULTS } from './constants';
 import { resolveForModel, patchForModel, migrateLegacyThinking } from './hooks/inference';
 
 // Utils
@@ -80,13 +79,8 @@ export default function App() {
   const [mobileBreakpoint, setMobileBreakpoint] = usePersistedState('mobileBreakpoint', 768);
   const [layoutMode, setLayoutMode] = usePersistedState('layoutMode', 'auto');
   const [showHeaderControlsOnMobile, setShowHeaderControlsOnMobile] = usePersistedState('showHeaderControlsOnMobile', false);
-  // Reader / Chat top-level view + Ollama config
+  // Reader / Chat top-level view
   const [viewMode, setViewMode] = usePersistedState('viewMode', 'reader');
-  const [ollamaHost, setOllamaHost] = usePersistedState('ollamaHost', OLLAMA_DEFAULTS.host);
-  const [ollamaPort, setOllamaPort] = usePersistedState('ollamaPort', OLLAMA_DEFAULTS.port);
-  // Where inference runs: 'server' = authenticated /v1/inference gateway on
-  // the backend, 'local' = browser→Ollama directly (pre-gateway behavior).
-  const [inferenceSource, setInferenceSource] = usePersistedState('inferenceSource', 'server');
   const [selectedModel, setSelectedModel] = usePersistedState('selectedModel', '');
   const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', 'streaming');
   const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', true);
@@ -1069,7 +1063,6 @@ export default function App() {
             darkMode={darkMode}
             effectiveIsMobile={effectiveIsMobile}
             sidebarOpen={sidebarOpen}
-            inferenceSource={inferenceSource}
             selectedModel={selectedModel} setSelectedModel={setSelectedModel}
             availableModels={availableModels}
             inferenceBudget={chatInferenceBudget}
@@ -1160,8 +1153,8 @@ export default function App() {
           <SettingsPage
             theme={theme}
             voiceSettings={{ selectedVoice, setSelectedVoice, playbackSpeed, setPlaybackSpeed, volume, setVolume, isLocalhost, setIsLocalhost, requestTimeout, setRequestTimeout, unlimitedBatchTimeout, setUnlimitedBatchTimeout, isPreviewingVoice, previewVoice, stopVoicePreview, clearCache }}
-            chatSettings={{ inferenceSource, setInferenceSource, chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, inferenceByModel, setInferenceByModel, availableModels, selectedModel }}
-            connectionSettings={{ apiHost, setApiHost, apiPort, setApiPort, ollamaHost, setOllamaHost, ollamaPort, setOllamaPort, inferenceSource, backendAvailable }}
+            chatSettings={{ chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, inferenceByModel, setInferenceByModel, availableModels, selectedModel }}
+            connectionSettings={{ apiHost, setApiHost, apiPort, setApiPort, backendAvailable }}
             appearanceSettings={{ darkMode, setDarkMode, layoutMode, setLayoutMode, mobileBreakpoint, setMobileBreakpoint, showHeaderControlsOnMobile, setShowHeaderControlsOnMobile }}
             accountProps={{ apiHost, apiPort, user: auth.user }}
           />

@@ -10,7 +10,6 @@ export default function ChatSidebar({
     darkMode,
     effectiveIsMobile,
     sidebarOpen,
-    inferenceSource = 'server',
     selectedModel, setSelectedModel,
     availableModels,
     inferenceBudget,
@@ -100,7 +99,7 @@ export default function ChatSidebar({
                                 <Bot size={10} /> Active: {selectedModel}
                             </p>
                         )}
-                        {inferenceSource === 'server' && inferenceBudget?.remaining_tokens != null && (
+                        {inferenceBudget?.remaining_tokens != null && (
                             <p className={`text-[9px] px-1 ${inferenceBudget.remaining_tokens === 0 ? 'text-red-400 font-bold' : theme.textMuted}`}>
                                 {inferenceBudget.remaining_tokens.toLocaleString()} tokens left today
                             </p>

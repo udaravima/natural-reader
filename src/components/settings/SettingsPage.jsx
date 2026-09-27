@@ -1,11 +1,10 @@
 import { useState } from 'react';
 import { KOKORO_VOICES } from '../../constants';
 import { PlayCircle, Square, Clock, VolumeX, Volume1, Volume2, Moon, Sun, Zap } from 'lucide-react';
-import { InferenceSourceSelect } from '../chat/InferenceSourceSelect';
 import { InferenceRow } from '../chat/InferenceRow';
 import { AccountPanel } from '../account/AccountPanel';
 import { resolveForModel, patchForModel } from '../../hooks/inference';
-import { groupByProvider, migrateModelId, modelLabel } from '../../lib/modelIds';
+import { groupByProvider, migrateModelId, modelLabel, supportedKnobs } from '../../lib/modelIds';
 
 // A titled settings section. `id` anchors nothing yet but keeps headings stable.
 function Section({ theme, title, children }) {
@@ -51,6 +50,7 @@ export default function SettingsPage({ theme, voiceSettings, chatSettings, conne
     const configModel = migrateModelId(pickedModel, ch.availableModels);
     const inf = resolveForModel(ch.inferenceByModel, configModel);
     const setInf = (patch) => ch.setInferenceByModel((prev) => patchForModel(prev, configModel, patch));
+    const knobs = supportedKnobs(ch.availableModels.find((m) => m.id === configModel));
     const currentVoice = KOKORO_VOICES.find((x) => x.id === v.selectedVoice);
     const VolumeIcon = v.volume === 0 ? VolumeX : v.volume < 0.5 ? Volume1 : Volume2;
     const input = `text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgTertiary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`;
@@ -140,10 +140,6 @@ export default function SettingsPage({ theme, voiceSettings, chatSettings, conne
 
                 {/* ---------- Chat & Inference ---------- */}
                 <Section theme={theme} title="Chat & Inference">
-                    <Field theme={theme} label="Inference source">
-                        <InferenceSourceSelect source={ch.inferenceSource} onChange={ch.setInferenceSource} theme={theme} />
-                    </Field>
-
                     <Field theme={theme} label="Read-aloud mode">
                         <div className={`flex p-1 rounded-lg border ${theme.border} ${theme.bgTertiary}`}>
                             <button onClick={() => ch.setChatTtsMode('streaming')} className={`flex-1 text-[10px] font-bold py-1.5 rounded-md transition-colors ${ch.chatTtsMode === 'streaming' ? 'bg-blue-600 text-white shadow' : theme.textSecondary}`}>Streaming</button>
@@ -171,24 +167,24 @@ export default function SettingsPage({ theme, voiceSettings, chatSettings, conne
                                 ))}
                         </select>
                         <div className="flex flex-col gap-2 mt-1">
-                            <InferenceRow theme={theme} label="Context window" disabled={!configModel}
+                            {knobs.numCtx && <InferenceRow theme={theme} label="Context window" disabled={!configModel}
                                 value={inf.numCtx === null ? 'auto' : String(inf.numCtx)}
                                 onChange={(val) => setInf({ numCtx: val === 'auto' ? null : Number(val) })}
-                                options={[['auto', 'Auto'], ['4096', '4096'], ['8192', '8192'], ['16384', '16384'], ['32768', '32768'], ['65536', '65536']]} />
-                            <InferenceRow theme={theme} label="Keep model warm" disabled={!configModel}
+                                options={[['auto', 'Auto'], ['4096', '4096'], ['8192', '8192'], ['16384', '16384'], ['32768', '32768'], ['65536', '65536']]} />}
+                            {knobs.keepAlive && <InferenceRow theme={theme} label="Keep model warm" disabled={!configModel}
                                 value={inf.keepAlive === null ? 'auto' : String(inf.keepAlive)}
                                 onChange={(val) => setInf({ keepAlive: val === 'auto' ? null : (val === '-1' ? -1 : val) })}
-                                options={[['auto', 'Auto (5m)'], ['5m', '5 minutes'], ['30m', '30 minutes'], ['1h', '1 hour'], ['-1', 'Always']]} />
-                            <InferenceRow theme={theme} label="Thinking" disabled={!configModel}
+                                options={[['auto', 'Auto (5m)'], ['5m', '5 minutes'], ['30m', '30 minutes'], ['1h', '1 hour'], ['-1', 'Always']]} />}
+                            {knobs.think && <InferenceRow theme={theme} label="Thinking" disabled={!configModel}
                                 value={inf.think}
                                 onChange={(val) => setInf({ think: val })}
-                                options={[['off', 'Off'], ['on', 'On'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High']]} />
+                                options={[['off', 'Off'], ['on', 'On'], ['low', 'Low'], ['medium', 'Medium'], ['high', 'High']]} />}
                             <InferenceRow theme={theme} label="Max reply tokens" disabled={!configModel}
                                 value={inf.numPredict === null ? 'auto' : String(inf.numPredict)}
                                 onChange={(val) => setInf({ numPredict: val === 'auto' ? null : Number(val) })}
                                 options={[['auto', 'Unlimited'], ['512', '512'], ['1024', '1024'], ['2048', '2048'], ['4096', '4096']]} />
                         </div>
-                        <p className={`text-[9px] ${theme.textMuted} mt-1`}>Saved per model. Changing the context window reloads the model.</p>
+                        <p className={`text-[9px] ${theme.textMuted} mt-1`}>Saved per model. Only the settings this model's provider supports are shown; changing an Ollama model's context window reloads it.</p>
                     </Field>
                 </Section>
 
@@ -206,15 +202,6 @@ export default function SettingsPage({ theme, voiceSettings, chatSettings, conne
                             {c.backendAvailable === null || c.backendAvailable === undefined ? '⏳ Checking…' : c.backendAvailable ? '✓ Connected' : '✗ Unavailable'}
                         </span>
                     </Field>
-
-                    {c.inferenceSource === 'local' && (
-                        <Field theme={theme} label="Ollama host (local inference)">
-                            <div className="flex gap-2">
-                                <input type="text" aria-label="Ollama host" placeholder="blank = same origin" value={c.ollamaHost} onChange={(e) => c.setOllamaHost(e.target.value)} className={`flex-1 ${input}`} />
-                                <input type="text" aria-label="Ollama port" placeholder="11434" value={c.ollamaPort} onChange={(e) => c.setOllamaPort(e.target.value)} className={`w-24 ${input}`} />
-                            </div>
-                        </Field>
-                    )}
                 </Section>
 
                 {/* ---------- Appearance ---------- */}
