@@ -129,6 +129,7 @@ async def _capabilities(llm: Any, model_id: str) -> Capabilities:
     try:
         return await llm.capabilities(model_id)
     except Exception:  # noqa: BLE001 — unknown means nothing is refused
+        logger.warning("Capability lookup failed for %s (fail-open)", model_id, exc_info=True)
         return Capabilities()
 
 
