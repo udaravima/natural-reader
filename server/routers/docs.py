@@ -47,6 +47,7 @@ from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
 from ..http_errors import refusal
 from ..services import doc_content, doc_pipeline, doc_storage, docling_convert
+from ..services.doc_search import search_chunks
 from ..services.embeddings import embed_one
 
 
@@ -678,27 +679,8 @@ async def search_document(
         logger.exception("Embedding failed for search query")
         raise HTTPException(status_code=502, detail=f"Embedding service error: {e}") from e
 
-    async with pool.connection() as conn, conn.cursor() as cur:
-        await cur.execute(
-            """
-            SELECT id, page, chunk_type, text,
-                   1 - (embedding <=> %s::vector) AS score
-            FROM doc_chunks
-            WHERE doc_id = %s AND embedding IS NOT NULL
-            ORDER BY embedding <=> %s::vector
-            LIMIT %s
-            """,
-            (qvec, doc_id, qvec, req.k),
-        )
-        rows = await cur.fetchall()
-        cols = [d.name for d in cur.description]
-
-    results = [dict(zip(cols, r)) for r in rows]
-    for r in results:
-        # Cap text length in the response — full chunk text can be huge and
-        # the chat preamble already truncates. Keep payloads bounded.
-        if r.get("text") and len(r["text"]) > 4000:
-            r["text"] = r["text"][:4000] + " [truncated]"
+    async with pool.connection() as conn:
+        results = await search_chunks(conn, doc_id, qvec, req.k)
     return {"doc_id": doc_id, "results": results}
 
 
