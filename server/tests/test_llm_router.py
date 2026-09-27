@@ -6,7 +6,7 @@ import pytest
 from server.llm import router as llm_router
 from server.llm.router import Router, UnknownModel, load_provider_configs
 from server.llm.types import CallSettings, Message
-from server.tests.llm_fakes import FakeUpstream, ndjson, sse
+from server.tests.llm_fakes import FakeUpstream, ndjson
 
 DONE = {"message": {"content": ""}, "done": True, "done_reason": "stop", "eval_count": 1, "prompt_eval_count": 1}
 
@@ -104,6 +104,20 @@ async def test_one_failing_provider_is_omitted_and_reported():
           .on("GET", "/v1/models", httpx.ConnectError("down")))
     models, failed = await Router(configs, up.client()).list_models()
     assert [m.id for m in models] == ["local:m"] and failed == ["cloud"]
+
+
+async def test_a_provider_whose_capabilities_fail_is_reported_not_fatal():
+    configs = load_provider_configs({
+        "INFERENCE_PROVIDERS": "broken,working",
+        "INFERENCE_BROKEN_KIND": "ollama", "INFERENCE_BROKEN_URL": "http://broken.test",
+        "INFERENCE_WORKING_KIND": "ollama", "INFERENCE_WORKING_URL": "http://working.test"})
+    up = (FakeUpstream()
+          .on("GET", "/api/tags", lambda: httpx.Response(200, json={"models": [{"name": "m1"}]}))
+          .on("POST", "/api/show", lambda: httpx.Response(200, content=b"not json"))
+          .on("GET", "/api/tags", lambda: httpx.Response(200, json={"models": [{"name": "m2"}]}))
+          .on("POST", "/api/show", lambda: httpx.Response(200, json={"capabilities": ["tools"]})))
+    models, failed = await Router(configs, up.client()).list_models()
+    assert [m.id for m in models] == ["working:m2"] and failed == ["broken"]
 
 
 async def test_complete_concatenates_text():

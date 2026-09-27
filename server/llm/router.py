@@ -113,14 +113,14 @@ class Router:
         async def one(p: Provider) -> list[ModelInfo] | None:
             try:
                 names = await p.list_models()
+                if p.config.models is not None:
+                    names = [n for n in names if n in p.config.models]
+                caps = await asyncio.gather(*(p.capabilities(n) for n in names))
+                return [ModelInfo(f"{p.config.name}:{n}", p.config.name, p.config.kind, n, c)
+                        for n, c in zip(names, caps)]
             except Exception as e:  # noqa: BLE001 — one bad provider must not hide the others
                 logger.warning("Provider %s could not list models: %s", p.config.name, type(e).__name__)
                 return None
-            if p.config.models is not None:
-                names = [n for n in names if n in p.config.models]
-            caps = await asyncio.gather(*(p.capabilities(n) for n in names))
-            return [ModelInfo(f"{p.config.name}:{n}", p.config.name, p.config.kind, n, c)
-                    for n, c in zip(names, caps)]
 
         providers = list(self.providers.values())
         results = await asyncio.gather(*(one(p) for p in providers))
