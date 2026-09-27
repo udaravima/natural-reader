@@ -64,3 +64,41 @@ async def test_import_copies_a_legacy_chat_under_a_new_id(db_conn, app):
     assert [e["kind"] for e in got["events"]] == ["sent"]
     cur = await db_conn.execute("SELECT user_id FROM chat_sessions WHERE id = %s", (new_id,))
     assert str((await cur.fetchone())[0]) == alice.user_id
+
+
+async def test_import_over_the_cap_is_413(db_conn, app, monkeypatch):
+    monkeypatch.setenv("CHAT_MAX_REQUEST_MB", "1")
+    alice = await member(db_conn, "alice")
+    big = {"title": "Old chat",
+           "messages": [{"id": "u-1", "role": "user", "content": "x" * 2_000_000, "timestamp": 1}]}
+    async with _client(app, alice) as c:
+        r = await c.post("/v1/chat/sessions/import", json=big)
+    assert r.status_code == 413
+    assert r.json()["detail"] == {"error": "too_large", "message": "Import too large (limit 1 MB).", "limit_mb": 1}
+    cur = await db_conn.execute("SELECT count(*) FROM chat_sessions")
+    assert (await cur.fetchone())[0] == 0
+
+
+async def test_import_rejects_a_non_user_assistant_role(db_conn, app):
+    alice = await member(db_conn, "alice")
+    legacy = {"title": "Old chat",
+              "messages": [{"id": "s-1", "role": "system", "content": "sneaky", "timestamp": 1}]}
+    async with _client(app, alice) as c:
+        r = await c.post("/v1/chat/sessions/import", json=legacy)
+    assert r.status_code == 422
+    assert r.json()["detail"]["error"] == "invalid_message_role"
+    cur = await db_conn.execute("SELECT count(*) FROM chat_sessions")
+    assert (await cur.fetchone())[0] == 0
+    cur = await db_conn.execute("SELECT count(*) FROM chat_messages")
+    assert (await cur.fetchone())[0] == 0
+
+
+async def test_import_rejects_a_huge_createdAt(db_conn, app):
+    alice = await member(db_conn, "alice")
+    legacy = {"title": "Old chat", "createdAt": 10 ** 20, "messages": []}
+    async with _client(app, alice) as c:
+        r = await c.post("/v1/chat/sessions/import", json=legacy)
+    assert r.status_code == 422
+    assert r.json()["detail"]["error"] == "invalid_request"
+    cur = await db_conn.execute("SELECT count(*) FROM chat_sessions")
+    assert (await cur.fetchone())[0] == 0

@@ -25,6 +25,7 @@ from ..chat import store
 from ..chat.config import get_chat_config
 from ..chat.orchestrator import TurnRequest, run_turn
 from ..db import get_pool, is_ready
+from ..http_body import read_capped_body
 from ..http_errors import refusal
 from ..llm.router import get_router
 from ..llm.types import Attachment, CallSettings, Capabilities
@@ -81,21 +82,6 @@ class TurnIn(BaseModel):
     settings: SettingsIn = Field(default_factory=SettingsIn)
     context: ContextIn = Field(default_factory=ContextIn)
     session: NewSessionIn | None = None
-
-
-async def _read_capped(request: Request, limit_mb: int) -> bytes:
-    """The body, refused as soon as it passes the cap — never buffered whole first."""
-    limit = limit_mb * 1024 * 1024
-    too_large = refusal(413, "too_large", f"Attachments too large (limit {limit_mb} MB).", limit_mb=limit_mb)
-    declared = request.headers.get("content-length", "")
-    if declared.isdigit() and int(declared) > limit:
-        raise too_large
-    buf = bytearray()
-    async for chunk in request.stream():
-        buf += chunk
-        if len(buf) > limit:
-            raise too_large
-    return bytes(buf)
 
 
 def _decode(attachments: list[AttachmentIn]) -> list[store.NewAttachment]:
@@ -190,7 +176,7 @@ async def post_turn(session_id: SessionId, request: Request,
     if not llm.has_providers():
         raise refusal(503, "no_providers", "No model provider is configured.")
     cfg = get_chat_config()
-    raw = await _read_capped(request, cfg.max_request_mb)
+    raw = await read_capped_body(request, cfg.max_request_mb)
     try:
         body = TurnIn.model_validate_json(raw)
     except ValidationError as e:

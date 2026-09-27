@@ -17,14 +17,16 @@ import logging
 import secrets
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from ..auth.authz import assert_owns_session
 from ..auth.deps import Principal, require_capability
 from ..chat import store as chat_store
+from ..chat.config import get_chat_config
 from ..db import get_pool, is_ready
+from ..http_body import read_capped_body
 from ..http_errors import refusal
 
 logger = logging.getLogger(__name__)
@@ -66,7 +68,9 @@ class ImportIn(BaseModel):
     """A legacy browser-only (IndexedDB) chat being continued (ruling R6)."""
     title: str = Field(default="New chat", max_length=200)
     model: str | None = Field(default=None, max_length=300)
-    createdAt: int | None = None
+    # Epoch milliseconds, bounded so an out-of-range value 422s here instead of
+    # blowing up to_timestamp() in the INSERT (year ~2286 at the upper bound).
+    createdAt: int | None = Field(default=None, ge=0, le=10**13)
     messages: list[MessageIn] = Field(default_factory=list, max_length=2000)
     events: list[EventIn] = Field(default_factory=list, max_length=5000)
     pins: list[dict[str, Any]] = Field(default_factory=list, max_length=6)
@@ -147,7 +151,7 @@ _META_KEYS = ("id", "kind", "name", "mimeType", "size")
 
 @router.post("/import")
 async def import_session(
-    payload: ImportIn,
+    request: Request,
     principal: Principal = Depends(require_capability("chat")),
 ) -> dict[str, Any]:
     """Copy a legacy browser-only chat to the server under a NEW id, so it can
@@ -155,6 +159,18 @@ async def import_session(
     stored for imported messages; message ids are always new because they are
     global primary keys."""
     _ensure_ready()
+    cfg = get_chat_config()
+    # Hand-parsed (not a pydantic Body param): FastAPI's Body() buffers the
+    # whole request before any Field(max_length=...) applies, so a hostile
+    # caller could force an unbounded buffer before validation ever runs.
+    # Reading through the cap first means the bytes handed to the validator
+    # are already known to be within CHAT_MAX_REQUEST_MB.
+    raw = await read_capped_body(request, cfg.max_request_mb, label="Import")
+    try:
+        payload = ImportIn.model_validate_json(raw)
+    except ValidationError as e:
+        raise refusal(422, "invalid_request", "The request is malformed.",
+                      errors=e.errors(include_url=False, include_input=False, include_context=False))
     for m in payload.messages:
         if m.role not in ("user", "assistant"):
             raise refusal(422, "invalid_message_role",
@@ -174,7 +190,7 @@ async def import_session(
                 await conn.execute(
                     "INSERT INTO chat_messages (id, session_id, role, content, thinking, attachments, "
                     "doc_context, stats, tool_calls, timestamp) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                    (chat_store.new_message_id(m.role[:1] or "m"), session_id, m.role, m.content, m.thinking,
+                    (chat_store.new_message_id(m.role[:1]), session_id, m.role, m.content, m.thinking,
                      Jsonb(meta), Jsonb(m.docContext) if m.docContext is not None else None,
                      Jsonb(m.stats) if m.stats is not None else None,
                      Jsonb(m.toolCalls) if m.toolCalls is not None else None, m.timestamp))
