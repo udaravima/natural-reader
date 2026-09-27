@@ -139,6 +139,15 @@ def _fit_history(history: list[StoredMessage], fixed_chars: int, fixed_attachmen
     while items and tokens() > budget:
         items.pop(0)
         dropped_messages += 1
+    # The budget pass can stop mid-turn (an odd number of drops from
+    # alternating user/assistant history), leaving an assistant reply at the
+    # head with no question before it — broken input, and some providers
+    # reject history that doesn't start on 'user'. Keep dropping oldest-first
+    # until the head IS a user turn (or history is empty; pins and the new
+    # message are never in `items`, so that's still a valid prompt).
+    while items and items[0].stored.role != "user":
+        items.pop(0)
+        dropped_messages += 1
     return items, dropped_messages, dropped_attachments
 
 
@@ -177,8 +186,15 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     history_messages = []
     for i in items:
         content = i.stored.content
-        if i.dropped:
-            content = (content + "\n\n" + "\n".join(_marker(a) for a in i.dropped)).strip()
+        # An attachment can survive trimming and still have no row in `blobs`
+        # (e.g. its bytes were deleted independently of the message). Mark it
+        # the same way a deliberately trimmed attachment is marked, rather
+        # than silently dropping it — the model should know something was
+        # there, not just see fewer attachments than the text implies.
+        missing = [a for a in i.keep if (i.stored.id, a["ordinal"]) not in blobs]
+        markers = [_marker(a) for a in (*i.dropped, *missing)]
+        if markers:
+            content = (content + "\n\n" + "\n".join(markers)).strip()
         kept = tuple(blobs[(i.stored.id, a["ordinal"])] for a in i.keep
                      if (i.stored.id, a["ordinal"]) in blobs)
         history_messages.append(Message(i.stored.role, content, attachments=kept))

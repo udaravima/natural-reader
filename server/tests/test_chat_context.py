@@ -148,13 +148,53 @@ async def test_old_attachments_go_before_old_turns_and_only_kept_bytes_load(sear
     assert built.notes == [{"kind": "trimmed", "messages": 0, "attachments": 1}]
 
 
+async def test_missing_attachment_bytes_get_the_same_marker_as_a_trimmed_one(search, monkeypatch):
+    """An attachment can survive trimming (it's in `keep`) and still have no
+    row in Postgres — e.g. its bytes were deleted independently of the
+    message. That must not silently vanish from the model's view; it gets
+    the exact marker a deliberately-trimmed attachment gets, not a duplicate
+    string."""
+    async def fake_bytes(wanted):
+        return {}   # no row for anything asked
+
+    monkeypatch.setattr(ctx_mod.store, "load_attachment_bytes", fake_bytes)
+    img = {"id": "gone", "kind": "image", "name": "gone.png", "mimeType": "image/png", "size": 9, "ordinal": 0}
+    history = [StoredMessage("u1", "user", "look at this", [img])]
+    built = await build_context(_turn(history=history, window=None), ChatConfig())
+    first = built.messages[0]
+    assert first.attachments == ()
+    assert first.content == "look at this\n\n[image gone.png from earlier; no longer attached]"
+
+
 async def test_then_the_oldest_turns_are_dropped(search):
     history = [StoredMessage(f"m{i}", "user" if i % 2 == 0 else "assistant", "x" * 400, []) for i in range(10)]
-    # reserve 2048 + question ~6 + time line ~12 + 10 x 100 tokens; window 2600 keeps 5
+    # reserve 2048 + question ~18 fixed tokens + 10 x 100 tokens/message.
+    # Budget alone (window 2600 -> budget 552) drops 5 of the alternating
+    # m0..m9 (user/assistant/user/...), which would leave m5 ('assistant')
+    # at the head -- a reply with no question before it. Trimming then drops
+    # that one extra turn too so the kept history starts on 'user' again:
+    # 6 dropped in total, 4 remain (m6..m9).
     built = await build_context(_turn(history=history, window=2600), ChatConfig())
     kept = [m for m in built.messages if m.content == "x" * 400]
-    assert len(kept) == 5
-    assert built.notes == [{"kind": "trimmed", "messages": 5, "attachments": 0}]
+    assert len(kept) == 4
+    assert kept[0].role == "user"
+    assert built.notes == [{"kind": "trimmed", "messages": 6, "attachments": 0}]
+
+
+async def test_trimming_never_leaves_a_non_user_message_at_the_head(search):
+    # Irregular history (two user turns in a row, e.g. a reply that errored
+    # and was excluded by load_turn_context): budget alone drops m0 and m1
+    # ('user','user'), which would leave m2 ('assistant') at the head.
+    # Trimming must keep dropping until the head is 'user' again.
+    history = [StoredMessage("m0", "user", "x" * 400, []),
+               StoredMessage("m1", "user", "x" * 400, []),
+               StoredMessage("m2", "assistant", "x" * 400, []),
+               StoredMessage("m3", "user", "x" * 400, []),
+               StoredMessage("m4", "assistant", "x" * 400, [])]
+    built = await build_context(_turn(history=history, window=2398), ChatConfig())
+    kept = [m for m in built.messages if m.content == "x" * 400]
+    assert [m.role for m in kept] == ["user", "assistant"]
+    assert built.notes == [{"kind": "trimmed", "messages": 3, "attachments": 0}]
 
 
 async def test_the_current_message_keeps_its_attachments_even_when_over_budget(search):
