@@ -19,7 +19,9 @@ const store = vi.hoisted(() => ({
     importLegacy: vi.fn(async () => 's-imported'),
     isLocalId: vi.fn(() => false),
 }));
-vi.mock('../lib/sessionStore', () => ({ makeSessionStore: () => store }));
+// The options the hook passed to makeSessionStore (its onBackendOffline hook).
+const storeOpts = vi.hoisted(() => ({ current: null }));
+vi.mock('../lib/sessionStore', () => ({ makeSessionStore: (opts) => { storeOpts.current = opts; return store; } }));
 
 const MODELS = [{ id: 'ollama:m', provider: 'ollama', kind: 'ollama', name: 'm', capabilities: {} }];
 const ok = (events) => ({ ok: true, status: 200, body: bodyOf(sseText(events)), clone() { return this; } });
@@ -34,7 +36,9 @@ const baseProps = (over = {}) => ({
 });
 
 beforeEach(() => {
-    vi.clearAllMocks();
+    // Reset (not just clear): a test's mockImplementation / leftover *Once
+    // values must not leak into the next test. vi.fn(impl) resets to `impl`.
+    vi.resetAllMocks();
     apiFetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ models: MODELS, budget: null }) });
 });
 afterEach(() => vi.useRealTimers());
@@ -60,13 +64,21 @@ describe('useChatEngine — turns', () => {
         expect(store.getSession).toHaveBeenCalled();          // the server-written log is re-read
     });
 
-    it('sends no `session` block when the chat already exists', async () => {
-        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+    // Fix round 1 (controller ruling): the server reads `session.pins` only when
+    // the turn creates the chat, so sending them every time is harmless — and a
+    // first send that failed on the network no longer loses them on the retry.
+    it('sends the pins with every turn, so a retried first send still carries them', async () => {
+        const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const pin = { id: 'p1', doc_id: 'd', fileName: 'f.md', page: 1, kind: 'selection', text: 'cheese' };
+        postTurn.mockRejectedValueOnce(new TypeError('Failed to fetch'));
         const { result } = renderHook(() => useChatEngine(baseProps()));
+        act(() => { result.current.addPin(pin); });
         await act(async () => { await result.current.sendMessage('one'); });
         postTurn.mockResolvedValue(ok(loadFixture('plain')));
         await act(async () => { await result.current.sendMessage('two'); });
-        expect(postTurn.mock.calls[1][0].body.session).toBeUndefined();
+        expect(postTurn.mock.calls[1][0].sessionId).toBe(postTurn.mock.calls[0][0].sessionId);
+        expect(postTurn.mock.calls[1][0].body.session).toEqual({ pins: [pin] });
+        errSpy.mockRestore();
     });
 
     it('a refusal removes the optimistic messages and gives the text back', async () => {
@@ -77,6 +89,7 @@ describe('useChatEngine — turns', () => {
         await act(async () => { out = await result.current.sendMessage('Hi'); });
         expect(out).toMatchObject({ sent: false, refused: true, text: 'Hi' });
         expect(result.current.messages).toEqual([]);
+        expect(result.current.activeSessionId).toBeNull();   // the refused NEW chat never existed
         expect(props.showToast).toHaveBeenCalledWith('A reply is still being written in this chat.', 5000);
     });
 
@@ -89,17 +102,31 @@ describe('useChatEngine — turns', () => {
         expect(props.showToast.mock.calls[0][0]).toMatch(/budget exhausted/);
     });
 
-    it('Stop marks the reply aborted and keeps the partial text', async () => {
+    it('Stop aborts the request and marks the reply aborted, keeping the partial text', async () => {
         const events = loadFixture('plain').filter((e) => !['text-end', 'finish-step', 'finish'].includes(e.type));
-        const abortable = { ok: true, status: 200, clone() { return this; }, body: {
+        // A body that hands out the partial reply, then blocks like a live
+        // stream until the request's signal is aborted.
+        postTurn.mockImplementation(async ({ signal }) => ({ ok: true, status: 200, clone() { return this; }, body: {
             getReader: () => {
                 const inner = bodyOf(events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('')).getReader();
-                return { read: async () => { const r = await inner.read(); if (r.done) { const err = new Error('aborted'); err.name = 'AbortError'; throw err; } return r; }, releaseLock() {} };
-            } } };
-        postTurn.mockResolvedValue(abortable);
+                return {
+                    read: async () => {
+                        const r = await inner.read();
+                        if (!r.done) return r;
+                        await new Promise((resolve) => signal.addEventListener('abort', resolve));
+                        const err = new Error('aborted'); err.name = 'AbortError'; throw err;
+                    },
+                    releaseLock() {},
+                };
+            } } }));
         const { result } = renderHook(() => useChatEngine(baseProps()));
-        await act(async () => { await result.current.sendMessage('Hi'); });
+        let sending;
+        act(() => { sending = result.current.sendMessage('Hi'); });
+        await waitFor(() => expect(result.current.messages[1]?.content).toBe('Hello there.'));
+        await act(async () => { result.current.stopStream(); await sending; });
+        expect(postTurn.mock.calls[0][0].signal.aborted).toBe(true);
         expect(result.current.messages[1]).toMatchObject({ status: 'aborted', content: 'Hello there.' });
+        expect(result.current.isStreaming).toBe(false);
     });
 
     it('continuing a legacy browser-only chat imports it first', async () => {
@@ -111,7 +138,77 @@ describe('useChatEngine — turns', () => {
         await act(async () => { await result.current.sendMessage('continue'); });
         expect(store.importLegacy).toHaveBeenCalledWith('s-legacy');
         expect(postTurn.mock.calls[0][0].sessionId).toBe('s-imported');
-        store.isLocalId.mockImplementation(() => false);
+        expect(result.current.activeSessionId).toBe('s-imported');
+    });
+
+    it('a second Send while a legacy chat is being copied does not import it twice', async () => {
+        store.isLocalId.mockImplementation((id) => id === 's-legacy');
+        store.getSession.mockResolvedValueOnce({ id: 's-legacy', messages: [], events: [], pins: [] });
+        let finishImport;
+        store.importLegacy.mockImplementationOnce(() => new Promise((resolve) => { finishImport = resolve; }));
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await act(async () => { await result.current.switchToSession('s-legacy'); });
+        let first; let second;
+        act(() => { first = result.current.sendMessage('one'); second = result.current.sendMessage('two'); });
+        expect(await second).toEqual({ sent: false });
+        await act(async () => { finishImport('s-imported'); await first; });
+        expect(store.importLegacy).toHaveBeenCalledTimes(1);
+        expect(postTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it('switching chats while a legacy chat is being copied does not hijack the new view', async () => {
+        store.isLocalId.mockImplementation((id) => id === 's-legacy');
+        store.getSession
+            .mockResolvedValueOnce({ id: 's-legacy', messages: [], events: [], pins: [] })
+            .mockResolvedValueOnce({ id: 's-other', messages: [], events: [], pins: [] });
+        let finishImport;
+        store.importLegacy.mockImplementationOnce(() => new Promise((resolve) => { finishImport = resolve; }));
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await act(async () => { await result.current.switchToSession('s-legacy'); });
+        let sending;
+        act(() => { sending = result.current.sendMessage('one'); });
+        await act(async () => { await result.current.switchToSession('s-other'); });
+        let out;
+        await act(async () => { finishImport('s-imported'); out = await sending; });
+        expect(out).toMatchObject({ sent: false, refused: true, text: 'one' });
+        expect(result.current.activeSessionId).toBe('s-other');
+        expect(postTurn).not.toHaveBeenCalled();
+    });
+
+    it('an imported chat shows in the sidebar even when its first turn is refused', async () => {
+        store.isLocalId.mockImplementation((id) => id === 's-legacy');
+        store.getSession.mockResolvedValueOnce({ id: 's-legacy', messages: [], events: [], pins: [] });
+        postTurn.mockResolvedValue(refusal(409, { error: 'turn_in_progress', message: 'Busy.' }));
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await act(async () => { await result.current.switchToSession('s-legacy'); });
+        const listReads = store.getRecentSessions.mock.calls.length;
+        await act(async () => { await result.current.sendMessage('continue'); });
+        expect(store.getRecentSessions.mock.calls.length).toBeGreaterThan(listReads);
+        expect(result.current.activeSessionId).toBe('s-imported');
+    });
+
+    it('an error event keeps the partial text, toasts, and clears the read-aloud indicator', async () => {
+        postTurn.mockResolvedValue(ok(loadFixture('error')));
+        const props = baseProps({ chatAutoTts: true });
+        const { result } = renderHook(() => useChatEngine(props));
+        await act(async () => { await result.current.sendMessage('Hi'); });
+        expect(result.current.messages[1]).toMatchObject({ status: 'error', content: 'Partial' });
+        expect(props.showToast).toHaveBeenCalledWith('Chat failed: The model provider returned an error: out of memory', 5000);
+        await waitFor(() => expect(result.current.speakingMessageId).toBeNull());
+    });
+
+    it('a budget_exhausted error event toasts and re-reads the budget', async () => {
+        const events = loadFixture('error').map((e) => (e.type === 'error'
+            ? { ...e, code: 'budget_exhausted', message: 'Daily token budget exhausted.' } : e));
+        postTurn.mockResolvedValue(ok(events));
+        const props = baseProps();
+        const { result } = renderHook(() => useChatEngine(props));
+        await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));   // the debounced first model read
+        await act(async () => { await result.current.sendMessage('Hi'); });
+        expect(props.showToast).toHaveBeenCalledWith('Daily inference budget exhausted.', 6000);
+        expect(apiFetch).toHaveBeenCalledTimes(2);
+        expect(result.current.messages[1]).toMatchObject({ status: 'error', content: 'Partial' });
     });
 });
 
@@ -120,6 +217,39 @@ describe('useChatEngine — models and reload', () => {
         const { result } = renderHook(() => useChatEngine(baseProps()));
         await waitFor(() => expect(result.current.availableModels).toEqual(MODELS));
         expect(result.current.reachable).toBe(true);
+    });
+
+    it('warns once per offline streak, and again after the server is back', async () => {
+        const props = baseProps();
+        const { result } = renderHook(() => useChatEngine(props));
+        await waitFor(() => expect(result.current.reachable).toBe(true));
+        const offlineToasts = () => props.showToast.mock.calls.filter(([m]) => /offline/i.test(m)).length;
+        act(() => { storeOpts.current.onBackendOffline(); storeOpts.current.onBackendOffline(); });
+        expect(offlineToasts()).toBe(1);
+        expect(props.showToast).toHaveBeenCalledWith("Chat is offline — can't reach the server.", 4000);
+        await act(async () => { await result.current.refreshModels(); });   // the server answers again
+        act(() => { storeOpts.current.onBackendOffline(); });
+        expect(offlineToasts()).toBe(2);
+    });
+
+    it('a poll tick still in flight when a new send starts does not wipe the local turn', async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true });
+        const remote = { id: 's-1', messages: [{ id: 'a1', role: 'assistant', content: 'Par', status: 'streaming' }], events: [], pins: [] };
+        let finishTick;
+        store.getSession
+            .mockResolvedValueOnce(remote)
+            .mockImplementationOnce(() => new Promise((resolve) => { finishTick = resolve; }));
+        let finishTurn;
+        postTurn.mockImplementation(() => new Promise((resolve) => { finishTurn = resolve; }));
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await act(async () => { await result.current.switchToSession('s-1'); });
+        await act(async () => { await vi.advanceTimersByTimeAsync(3100); });   // the tick is now awaiting the server
+        expect(finishTick).toBeTypeOf('function');
+        let sending;
+        act(() => { sending = result.current.sendMessage('next'); });
+        await act(async () => { finishTick(remote); });
+        expect(result.current.messages.map((m) => m.content)).toContain('next');
+        await act(async () => { finishTurn(ok(loadFixture('plain'))); await sending; });
     });
 
     it('polls a reloaded chat whose reply is still streaming until it settles', async () => {

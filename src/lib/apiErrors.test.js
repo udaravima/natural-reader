@@ -39,4 +39,9 @@ describe('chat refusals', () => {
         expect(noticeFor(503, { error: 'no_providers', message: 'No model provider is configured.' }))
             .toBe('No model provider is configured.');
     });
+    it('explains a 503 with the database down instead of "server error"', () => {
+        expect(noticeFor(503, { error: 'db_unavailable', message: 'Chat is offline: the database is unavailable.' }))
+            .toBe('Chat is offline: the database is unavailable.');
+        expect(noticeFor(503, { error: 'db_unavailable' })).toBe('The database is unavailable. Try again in a moment.');
+    });
 });

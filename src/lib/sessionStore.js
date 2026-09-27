@@ -3,7 +3,8 @@
  *
  * Reads merge both stores. The server writes messages itself as each turn
  * streams (C1). A legacy IDB session is read-only until continued; then
- * `importLegacy` copies it to Postgres once, under a new id.
+ * `importLegacy` copies it to Postgres under a new id. The IDB entry stays as
+ * it was, so continuing it again from the sidebar makes another copy.
  *
  * When the backend is unreachable, read calls degrade to IDB-only and write
  * calls resolve falsy without throwing. Callers (useChatEngine) treat that as

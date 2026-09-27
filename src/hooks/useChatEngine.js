@@ -48,7 +48,7 @@ export function useChatEngine({
     stopChatPlayback,   // from useTtsEngine — silences chat audio + speech synthesis
     showToast,
 }) {
-    // Toast at most once per offline streak — avoid spamming on every save.
+    // Toast at most once per offline streak; reset when the server answers again.
     const backendOfflineToastedRef = useRef(false);
     const sessionStore = useMemo(() => makeSessionStore({
         apiHost,
@@ -56,7 +56,7 @@ export function useChatEngine({
         onBackendOffline: () => {
             if (backendOfflineToastedRef.current) return;
             backendOfflineToastedRef.current = true;
-            showToast?.('Backend offline — chat sessions won’t be saved.', 4000);
+            showToast?.("Chat is offline — can't reach the server.", 4000);
         },
     }), [apiHost, apiPort, showToast]);
     const [messages, setMessages] = useState([]);
@@ -72,6 +72,9 @@ export function useChatEngine({
     const [speakingMessageId, setSpeakingMessageId] = useState(null); // which assistant msg is being read aloud
 
     const abortRef = useRef(null);
+    // True from Send until the turn settles, including a legacy chat's import:
+    // `isStreaming` is state, so a double Send in one render would miss it.
+    const sendingRef = useRef(false);
     const sentenceBufferRef = useRef('');
     const messagesRef = useRef([]);
     messagesRef.current = messages;
@@ -188,7 +191,8 @@ export function useChatEngine({
     const setActive = (id) => { activeSessionIdRef.current = id; setActiveSessionId(id); };
 
     // Persist pins immediately when a session already exists. Before the first
-    // message there is no session yet; pins ride along in the first full save.
+    // message there is no server session yet; pins ride along on each turn's
+    // `session.pins`, which the server uses when that turn creates the chat.
     const persistPins = useCallback((next) => {
         const id = activeSessionIdRef.current;
         if (id) sessionStore.updateSessionPins(id, next);
@@ -319,6 +323,7 @@ export function useChatEngine({
             const data = await res.json();
             setAvailableModels(Array.isArray(data?.models) ? data.models.filter((m) => m && m.id) : []);
             setReachable(true);
+            backendOfflineToastedRef.current = false;
             setInferenceBudget(data?.budget ?? null);
         } catch (e) {
             console.warn('Model list unavailable:', e.message);
@@ -333,7 +338,7 @@ export function useChatEngine({
         return () => clearTimeout(handle);
     }, [refreshModels]);
 
-    // Stop only the read-aloud — does NOT abort an in-flight Ollama stream.
+    // Stop only the read-aloud — does NOT abort the reply the server is streaming.
     // Used by the per-message Stop button on assistant bubbles.
     const stopSpeaking = useCallback(() => {
         chatPlayingRef.current = false;     // signals runChatPlayback to exit on its next iteration
@@ -396,7 +401,7 @@ export function useChatEngine({
         const trimmed = (userText || '').trim();
         const cleanAttachments = (attachments || []).filter((a) => a && a.kind);
         if (!trimmed && cleanAttachments.length === 0 && pinsRef.current.length === 0) return { sent: false };
-        if (isStreaming) return { sent: false };
+        if (isStreaming || sendingRef.current) return { sent: false };
         const giveBack = { sent: false, refused: true, text: userText, attachments };
         if (!selectedModel) {
             showToast?.('Pick a model first.', 4000);
@@ -412,8 +417,23 @@ export function useChatEngine({
         let isNew = false;
         if (sessionId && sessionStore.isLocalId(sessionId)) {
             // A pre-Postgres chat kept only in this browser: copy it to the
-            // server once, then continue it there (today's fork-on-edit).
-            const forkedId = await sessionStore.importLegacy(sessionId);
+            // server (each continue of the browser copy makes a new server
+            // chat, like today's fork-on-edit), then continue it there.
+            const legacyId = sessionId;
+            sendingRef.current = true;
+            setIsStreaming(true);
+            let forkedId = null;
+            try {
+                forkedId = await sessionStore.importLegacy(legacyId);
+            } finally {
+                sendingRef.current = false;
+                setIsStreaming(false);
+            }
+            if (forkedId) refreshSessions();   // the copy shows in the sidebar whatever happens next
+            if (activeSessionIdRef.current !== legacyId) {
+                // The user switched chats during the copy: don't hijack that view.
+                return giveBack;
+            }
             if (!forkedId) {
                 showToast?.("Couldn't copy this older chat to the server.", 5000);
                 return giveBack;
@@ -436,6 +456,7 @@ export function useChatEngine({
             { role: 'user', content: trimmed, attachments: cleanAttachments, id: userId, timestamp: now },
             { role: 'assistant', content: '', thinking: '', id: assistantId, timestamp: now + 1, status: 'streaming' }]);
         sentenceBufferRef.current = '';
+        sendingRef.current = true;
         setIsStreaming(true);
         if (chatAutoTts) setSpeaking(assistantId);
         const controller = new AbortController();
@@ -452,7 +473,9 @@ export function useChatEngine({
             model: selectedModel,
             settings: toWireSettings(inferenceForThisMsg),
             context: { doc_id: currentDocId || null, timezone: browserTimezone() },
-            ...(isNew ? { session: { pins: pinsRef.current } } : {}),
+            // Always sent: the server uses it only when this turn creates the chat
+            // (a retry after a first send that failed on the network included).
+            session: { pins: pinsRef.current },
         };
 
         let refused = false;
@@ -505,6 +528,7 @@ export function useChatEngine({
                     }
                 }
                 setReachable(true);
+                backendOfflineToastedRef.current = false;
             }
             if (completed) {
                 if (modeForThisMsg === 'streaming') {
@@ -515,12 +539,6 @@ export function useChatEngine({
                     replyText.replace(/\s+/g, ' ').split(SENTENCE_TERMINATOR)
                         .filter((s) => s.trim().length >= MIN_TTS_LENGTH)
                         .forEach(enqueueTts);
-                }
-                if (chatAutoTts) {
-                    const spokenId = assistantId;
-                    chatPlaybackPromiseRef.current.then(() => {
-                        if (speakingMessageIdRef.current === spokenId) setSpeaking(null);
-                    });
                 }
             }
         } catch (e) {
@@ -534,6 +552,7 @@ export function useChatEngine({
             }
         } finally {
             abortRef.current = null;
+            sendingRef.current = false;
             setIsStreaming(false);
             if (refused) {
                 const localIds = new Set([userId, assistantId]);
@@ -541,6 +560,14 @@ export function useChatEngine({
                 if (isNew) setActive(null);
                 setSpeaking(null);
             } else {
+                // However the reply ended (finished, error event, dropped stream),
+                // clear the read-aloud indicator once anything queued has played.
+                if (chatAutoTts) {
+                    const spokenId = assistantId;
+                    chatPlaybackPromiseRef.current.then(() => {
+                        if (speakingMessageIdRef.current === spokenId) setSpeaking(null);
+                    });
+                }
                 refreshSessions();
                 refreshEvents(sessionId);
             }
@@ -559,6 +586,7 @@ export function useChatEngine({
         const handle = setInterval(async () => {
             const record = await sessionStore.getSession(id);
             if (!record || activeSessionIdRef.current !== id) return;
+            if (abortRef.current) return;   // a local send started meanwhile: its stream owns the view
             setMessages(record.messages || []);
             eventsRef.current = record.events || [];
             setEvents(eventsRef.current);

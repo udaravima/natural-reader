@@ -21,8 +21,10 @@ export function noticeFor(status, detail, { notFound, tooLarge } = {}) {
     if (status === 422 && d?.error === 'empty_file') return 'The file is empty.';
     if (status === 404) return notFound || "This document doesn't exist or you don't have access.";
     // Chat refusals (C1 spec §7.2) carry a message written for people; a 503
-    // "no provider" is a setup problem, not a crash, so it isn't "server error".
+    // "no provider" or "database down" is a setup/outage problem, not a crash,
+    // so it isn't "server error".
     if (d?.error === 'no_providers') return d.message || 'No model provider is configured.';
+    if (d?.error === 'db_unavailable') return d.message || 'The database is unavailable. Try again in a moment.';
     if (status >= 500) return 'Something went wrong on the server. Try again.';
     if (d?.message) return d.message;
     if (typeof detail === 'string' && detail) return detail;
