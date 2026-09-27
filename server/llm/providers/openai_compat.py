@@ -9,7 +9,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from ..types import (Capabilities, CallSettings, Chunk, FeatureDropped, Finish, Message,
+from ..types import (Capabilities, CallSettings, Chunk, Finish, Message,
                      ProviderError, ProviderUnavailable, ReasoningDelta, TextDelta, ToolCall,
                      ToolCallReady, ToolSpec, Usage)
 from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_feature_rejection,

@@ -8,7 +8,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
-from ..types import (Capabilities, CallSettings, Chunk, FeatureDropped, Finish, Message,
+from ..types import (Capabilities, CallSettings, Chunk, Finish, Message,
                      ProviderError, ProviderUnavailable, ReasoningDelta, TextDelta, ToolCall,
                      ToolCallReady, ToolSpec, Usage)
 from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_feature_rejection,
@@ -103,7 +103,7 @@ class OllamaProvider:
                 else:
                     raise
                 dropped.append(feature)
-        for chunk in settle_dropped(self._features, model, "Ollama", dropped):
+        for chunk in settle_dropped(self._features, model, self.config.name, dropped):
             yield chunk
         async for chunk in self._read(resp):
             yield chunk
