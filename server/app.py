@@ -1,6 +1,7 @@
 """
 FastAPI application factory with CORS and router setup.
 """
+import asyncio
 import logging
 import os
 import secrets
@@ -13,11 +14,14 @@ from .appconfig import cors_allow_credentials, parse_cors_origins
 from .auth.config import load_auth_config, startup_guard
 from .db import close_db, init_db
 from .logging_config import configure_logging
+from .chat import orchestrator as chat_orchestrator
+from .chat import store as chat_store
 from .endpoints import router as tts_router
 from .llm.router import start_router as start_llm_router, stop_router as stop_llm_router
 from .routers.admin import router as admin_router
 from .routers.auth import router as auth_router
 from .routers.chat_sessions import router as chat_sessions_router
+from .routers.chat_turns import router as chat_turns_router
 from .routers.docs import router as docs_router
 from .routers.inference import router as inference_router
 from .routers.inference import start_client as start_inference, stop_client as stop_inference
@@ -72,6 +76,7 @@ def create_app() -> FastAPI:
 
     app.include_router(tts_router)
     app.include_router(chat_sessions_router)
+    app.include_router(chat_turns_router)
     app.include_router(docs_router)
     app.include_router(tools_router)
     app.include_router(auth_router)
@@ -93,6 +98,13 @@ def create_app() -> FastAPI:
         ok = await init_db()
         if not ok:
             logger.warning("Postgres is offline; chat persistence is disabled")
+        else:
+            # A crashed worker leaves its turn 'streaming'. Only claims whose
+            # heartbeat stopped are touched, so other live workers are safe.
+            try:
+                await chat_store.recover_stale()
+            except Exception:
+                logger.warning("Stale chat-turn recovery failed", exc_info=True)
         await start_embeddings()
         await start_web_search()
         await start_inference()
@@ -111,6 +123,17 @@ def create_app() -> FastAPI:
         await stop_inference()
         await stop_embeddings()
         await stop_web_search()
+        # Controller ruling: a turn's final 'aborted'/'complete' write runs as
+        # a shielded background task (server/chat/orchestrator.py _BACKGROUND)
+        # so a cancelled request still saves it. Give those a bounded window to
+        # finish before the pool goes away, or a turn mid-shutdown loses its
+        # last write and comes back 'streaming' with no worker left to recover
+        # it until the next startup's recover_stale() sweep.
+        pending = list(chat_orchestrator._BACKGROUND)
+        if pending:
+            _done, still_pending = await asyncio.wait(pending, timeout=5)
+            if still_pending:
+                logger.warning("%d chat turn write(s) still pending at shutdown", len(still_pending))
         await close_db()
 
     return app
