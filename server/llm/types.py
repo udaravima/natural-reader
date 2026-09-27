@@ -18,7 +18,7 @@ FinishReason = Literal["stop", "length", "tool_calls", "error"]
 class Attachment:
     kind: Literal["image", "audio"]
     mime: str
-    base64: str
+    base64: str = field(repr=False)   # never let a stray repr/f-string dump image bytes into logs
     name: str = ""
 
 

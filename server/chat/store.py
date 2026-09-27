@@ -10,7 +10,7 @@ import base64
 import logging
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from psycopg.types.json import Jsonb
@@ -38,7 +38,7 @@ class NewAttachment:
     kind: str
     mime: str
     name: str
-    data: bytes
+    data: bytes = field(repr=False)   # never let a stray repr/f-string dump image bytes into logs
     client_id: str | None = None
 
     @property
@@ -207,15 +207,24 @@ async def finish_turn(claim: TurnClaim, *, status: str, finish_reason: str | Non
                       stats: dict | None) -> None:
     async with get_pool().connection() as conn:
         async with conn.transaction():
+            # Session before message, always — begin_turn's claim (SELECT ...
+            # FOR UPDATE on the session, then _recover's message update),
+            # recover_stale's CTE, and a chat DELETE's cascade all take that
+            # same order. Taking message-then-session here would invert it and
+            # deadlock against any of those under concurrency.
+            await conn.execute(
+                "UPDATE chat_sessions SET active_turn_id = NULL, active_turn_heartbeat_at = NULL, "
+                "updated_at = now() WHERE id = %s AND active_turn_id = %s",
+                (claim.session_id, claim.turn_id))
+            # If the claim was already taken over, the UPDATE above matches
+            # nothing — but this write is still this turn's own message, and
+            # its content is still truthful, so writing it late is fine; it
+            # just won't touch a claim that has since moved on.
             await conn.execute(
                 "UPDATE chat_messages SET status = %s, finish_reason = %s, content = %s, thinking = %s, "
                 "tool_calls = %s, doc_context = %s, stats = %s WHERE id = %s",
                 (status, finish_reason, content, thinking or None, _json_or_null(tool_calls),
                  _json_or_null(doc_context), _json_or_null(stats), claim.assistant_message_id))
-            await conn.execute(
-                "UPDATE chat_sessions SET active_turn_id = NULL, active_turn_heartbeat_at = NULL, "
-                "updated_at = now() WHERE id = %s AND active_turn_id = %s",
-                (claim.session_id, claim.turn_id))
 
 
 async def add_event(session_id: str, kind: str, message: str) -> None:
