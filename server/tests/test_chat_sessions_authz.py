@@ -7,6 +7,7 @@ from httpx import ASGITransport
 
 from server.auth import deps
 from server.auth.users import resolve_or_provision_user, set_status
+from server.chat import store as chat_store
 from server.routers import chat_sessions as chat_router
 
 
@@ -19,6 +20,7 @@ def chat_app(db_conn, monkeypatch):
 
     monkeypatch.setattr(chat_router, "get_pool", lambda: _PoolShim())
     monkeypatch.setattr(chat_router, "is_ready", lambda: True)
+    monkeypatch.setattr(chat_store, "get_pool", lambda: _PoolShim())
 
     app = FastAPI()
     app.include_router(chat_router.router)

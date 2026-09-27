@@ -14,6 +14,7 @@ append endpoints can come later if we want to avoid resending history each turn.
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,7 +23,9 @@ from pydantic import BaseModel, Field
 
 from ..auth.authz import assert_owns_session
 from ..auth.deps import Principal, require_capability
+from ..chat import store as chat_store
 from ..db import get_pool, is_ready
+from ..http_errors import refusal
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/chat/sessions", tags=["chat-sessions"])
@@ -57,6 +60,16 @@ class SessionIn(BaseModel):
     messages: list[MessageIn] = Field(default_factory=list)
     events: list[EventIn] = Field(default_factory=list)
     pins: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ImportIn(BaseModel):
+    """A legacy browser-only (IndexedDB) chat being continued (ruling R6)."""
+    title: str = Field(default="New chat", max_length=200)
+    model: str | None = Field(default=None, max_length=300)
+    createdAt: int | None = None
+    messages: list[MessageIn] = Field(default_factory=list, max_length=2000)
+    events: list[EventIn] = Field(default_factory=list, max_length=5000)
+    pins: list[dict[str, Any]] = Field(default_factory=list, max_length=6)
 
 
 # ---------- helpers ----------
@@ -129,11 +142,59 @@ async def list_sessions(
     return [_row_to_session_meta(dict(zip(cols, r))) for r in rows]
 
 
+_META_KEYS = ("id", "kind", "name", "mimeType", "size")
+
+
+@router.post("/import")
+async def import_session(
+    payload: ImportIn,
+    principal: Principal = Depends(require_capability("chat")),
+) -> dict[str, Any]:
+    """Copy a legacy browser-only chat to the server under a NEW id, so it can
+    be continued (the old PUT's fork-on-edit). Attachment bytes are never
+    stored for imported messages; message ids are always new because they are
+    global primary keys."""
+    _ensure_ready()
+    for m in payload.messages:
+        if m.role not in ("user", "assistant"):
+            raise refusal(422, "invalid_message_role",
+                          "Imported messages must be user or assistant turns.")
+    session_id = f"s-{chat_store.now_ms()}-{secrets.token_hex(3)}"
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "INSERT INTO chat_sessions (id, title, model, created_at, updated_at, pins, user_id) "
+                "VALUES (%s, %s, %s, COALESCE(to_timestamp(%s::double precision / 1000.0), now()), now(), %s, %s)",
+                (session_id, payload.title, payload.model, payload.createdAt, Jsonb(payload.pins),
+                 principal.user_id))
+            for m in payload.messages:
+                meta = [{k: a[k] for k in _META_KEYS if k in a}
+                        for a in m.attachments if isinstance(a, dict)]
+                await conn.execute(
+                    "INSERT INTO chat_messages (id, session_id, role, content, thinking, attachments, "
+                    "doc_context, stats, tool_calls, timestamp) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (chat_store.new_message_id(m.role[:1] or "m"), session_id, m.role, m.content, m.thinking,
+                     Jsonb(meta), Jsonb(m.docContext) if m.docContext is not None else None,
+                     Jsonb(m.stats) if m.stats is not None else None,
+                     Jsonb(m.toolCalls) if m.toolCalls is not None else None, m.timestamp))
+            for ev in payload.events:
+                await conn.execute(
+                    "INSERT INTO chat_events (session_id, kind, message, ts) VALUES (%s, %s, %s, %s)",
+                    (session_id, ev.kind, ev.message, ev.ts))
+    return {"ok": True, "id": session_id}
+
+
 @router.get("/{session_id}")
 async def get_session(
     session_id: str, _owner: Principal = Depends(_require_session_owner)
 ) -> dict[str, Any]:
     _ensure_ready()
+    try:
+        # A dead worker's turn reads as 'aborted', not forever 'streaming'.
+        await chat_store.recover_stale(session_id)
+    except Exception:   # an optimization: the read must still work
+        logger.warning("Stale-turn check failed for %s", session_id, exc_info=True)
     pool = get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -146,7 +207,8 @@ async def get_session(
 
         await cur.execute(
             """
-            SELECT id, role, content, thinking, attachments, doc_context, stats, tool_calls, timestamp
+            SELECT id, role, content, thinking, attachments, doc_context, stats, tool_calls, timestamp,
+                   status, finish_reason, model
             FROM chat_messages
             WHERE session_id = %s
             ORDER BY
@@ -177,13 +239,15 @@ async def get_session(
         event_rows = await cur.fetchall()
 
     messages = []
-    for mid, role, content, thinking, attachments, doc_context, stats, tool_calls, ts in message_rows:
+    for (mid, role, content, thinking, attachments, doc_context, stats, tool_calls, ts,
+         status, finish_reason, model) in message_rows:
         msg = {
             "id": mid,
             "role": role,
             "content": content,
             "attachments": attachments or [],
             "timestamp": int(ts) if ts else 0,
+            "status": status,
         }
         if thinking:
             msg["thinking"] = thinking
@@ -193,6 +257,10 @@ async def get_session(
             msg["stats"] = stats
         if tool_calls:
             msg["toolCalls"] = tool_calls
+        if finish_reason:
+            msg["finishReason"] = finish_reason
+        if model:
+            msg["model"] = model
         messages.append(msg)
 
     events = [{"ts": int(ts), "kind": kind, "message": msg} for ts, kind, msg in event_rows]
