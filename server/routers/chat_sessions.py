@@ -1,16 +1,7 @@
-"""
-Chat session CRUD against Postgres.
-
-Mirrors the IDB session contract the frontend already speaks so we can swap the
-storage layer underneath useChatEngine without changing semantics:
-
-  record = { id, title, model, createdAt, updatedAt, messages: [...], events: [...] }
-
-The PUT endpoint is an upsert: replace the session row + delete/reinsert the
-session's messages and events in one transaction. This keeps the
-"save the whole record" pattern that the frontend uses today; finer-grained
-append endpoints can come later if we want to avoid resending history each turn.
-"""
+"""Chat session reads and small edits. The server writes messages itself as
+each turn streams (routers/chat_turns.py, C1); this router lists, reads (with
+message status), renames, pins, deletes, and imports a legacy browser-only
+chat."""
 from __future__ import annotations
 
 import logging
@@ -51,17 +42,6 @@ class EventIn(BaseModel):
     ts: int
     kind: str
     message: str = ""
-
-
-class SessionIn(BaseModel):
-    id: str
-    title: str = "New chat"
-    model: str | None = None
-    createdAt: int | None = None
-    updatedAt: int | None = None
-    messages: list[MessageIn] = Field(default_factory=list)
-    events: list[EventIn] = Field(default_factory=list)
-    pins: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ImportIn(BaseModel):
@@ -294,92 +274,6 @@ async def get_session(
     }
 
 
-@router.put("/{session_id}")
-async def upsert_session(
-    session_id: str,
-    payload: SessionIn,
-    principal: Principal = Depends(require_capability("chat")),
-) -> dict[str, Any]:
-    """
-    Upsert the entire session record: replace the session row, then
-    delete-and-reinsert its messages and events in one transaction.
-    """
-    _ensure_ready()
-    if payload.id != session_id:
-        raise HTTPException(status_code=400, detail="Path id and body id must match")
-
-    pool = get_pool()
-    async with pool.connection() as conn:
-        # A session id already owned by another user must not be hijackable.
-        cur = await conn.execute(
-            "SELECT user_id FROM chat_sessions WHERE id = %s", (payload.id,)
-        )
-        existing = await cur.fetchone()
-        if existing is not None and str(existing[0]) != principal.user_id:
-            raise HTTPException(status_code=404, detail="Session not found")
-        async with conn.transaction():
-            await conn.execute(
-                """
-                INSERT INTO chat_sessions (id, title, model, created_at, updated_at, pins, user_id)
-                VALUES (
-                    %s, %s, %s,
-                    COALESCE(to_timestamp(%s::double precision / 1000.0), now()),
-                    now(),
-                    %s, %s
-                )
-                ON CONFLICT (id) DO UPDATE SET
-                    title = EXCLUDED.title,
-                    model = EXCLUDED.model,
-                    pins = EXCLUDED.pins,
-                    updated_at = now()
-                """,
-                (
-                    payload.id,
-                    payload.title,
-                    payload.model,
-                    payload.createdAt,
-                    Jsonb(payload.pins),
-                    principal.user_id,
-                ),
-            )
-
-            await conn.execute("DELETE FROM chat_messages WHERE session_id = %s", (payload.id,))
-            await conn.execute("DELETE FROM chat_events WHERE session_id = %s", (payload.id,))
-
-            if payload.messages:
-                async with conn.cursor() as cur:
-                    for m in payload.messages:
-                        await cur.execute(
-                            """
-                            INSERT INTO chat_messages
-                                (id, session_id, role, content, thinking, attachments, doc_context, stats, tool_calls, timestamp)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            """,
-                            (
-                                m.id,
-                                payload.id,
-                                m.role,
-                                m.content,
-                                m.thinking,
-                                Jsonb(m.attachments),
-                                Jsonb(m.docContext) if m.docContext is not None else None,
-                                Jsonb(m.stats) if m.stats is not None else None,
-                                Jsonb(m.toolCalls) if m.toolCalls is not None else None,
-                                m.timestamp,
-                            ),
-                        )
-
-            if payload.events:
-                async with conn.cursor() as cur:
-                    for ev in payload.events:
-                        await cur.execute(
-                            "INSERT INTO chat_events (session_id, kind, message, ts) VALUES (%s, %s, %s, %s)",
-                            (payload.id, ev.kind, ev.message, ev.ts),
-                        )
-
-    return {"ok": True, "id": payload.id}
-
-
 @router.patch("/{session_id}")
 async def patch_session(
     session_id: str,
@@ -388,7 +282,7 @@ async def patch_session(
 ) -> dict[str, Any]:
     """
     Partial update of session metadata. Only `title` and `model` are honored;
-    timestamps and message data must go through PUT.
+    messages are written by turns.
     """
     _ensure_ready()
     title = body.get("title")

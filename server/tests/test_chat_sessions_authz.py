@@ -64,18 +64,6 @@ async def test_get_others_session_is_404(db_conn, chat_app):
         assert (await client.get("/v1/chat/sessions/s-own")).status_code == 404
 
 
-async def test_upsert_stamps_owner(db_conn, chat_app):
-    owner = await _member(db_conn, "owner")
-    chat_app.dependency_overrides[deps.get_current_user] = lambda: owner
-    async with _client(chat_app) as client:
-        r = await client.put("/v1/chat/sessions/s-new", json={"id": "s-new"})
-        assert r.status_code == 200
-    cur = await db_conn.execute(
-        "SELECT user_id FROM chat_sessions WHERE id='s-new'"
-    )
-    assert str((await cur.fetchone())[0]) == owner.user_id
-
-
 async def test_unauthenticated_list_is_401(db_conn, chat_app):
     async def _conn_override():
         yield db_conn
@@ -83,3 +71,11 @@ async def test_unauthenticated_list_is_401(db_conn, chat_app):
     chat_app.dependency_overrides[deps.get_conn] = _conn_override
     async with _client(chat_app) as client:
         assert (await client.get("/v1/chat/sessions")).status_code == 401
+
+
+async def test_whole_record_put_is_gone(db_conn, chat_app):
+    owner = await _member(db_conn, "owner")
+    chat_app.dependency_overrides[deps.get_current_user] = lambda: owner
+    async with _client(chat_app) as client:
+        r = await client.put("/v1/chat/sessions/s-new", json={"id": "s-new"})
+    assert r.status_code == 405

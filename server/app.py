@@ -24,7 +24,6 @@ from .routers.chat_sessions import router as chat_sessions_router
 from .routers.chat_turns import router as chat_turns_router
 from .routers.docs import router as docs_router
 from .routers.inference import router as inference_router
-from .routers.inference import start_client as start_inference, stop_client as stop_inference
 from .routers.projects import router as projects_router
 from .routers.tools import router as tools_router
 from .services import doc_storage
@@ -107,7 +106,6 @@ def create_app() -> FastAPI:
                 logger.warning("Stale chat-turn recovery failed", exc_info=True)
         await start_embeddings()
         await start_web_search()
-        await start_inference()
         await start_llm_router()
         # Make sure the document storage directory exists before the first
         # upload hits — stage_upload's mkdir is a fallback, not the owner.
@@ -120,7 +118,6 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def _shutdown() -> None:
         await stop_llm_router()
-        await stop_inference()
         await stop_embeddings()
         await stop_web_search()
         # Controller ruling: a turn's final 'aborted'/'complete' write runs as
