@@ -10,6 +10,23 @@ All notable changes to this project will be documented in this file.
   (migration `010`, backfilled from `documents.project_id`, which is dropped).
   Link/unlink with `PUT`/`DELETE /v1/projects/{id}/docs/{doc_id}`; the Library shows
   one chip per project with add/remove.
+- **Server-side chat.** Each turn runs on the server and streams typed events.
+  The reply is saved on the server as it streams: if you stop it, close the
+  tab, or lose the connection, the partial reply is kept and marked "Stopped";
+  a chat whose reply is still being written elsewhere (another tab or device)
+  shows "Still generating…" and refreshes until it settles. Any image you
+  attach stays visible to the model for follow-up questions, including after a
+  reload.
+- **Model providers.** Native Ollama plus any OpenAI-compatible server (vLLM,
+  OpenRouter, LiteLLM), configured in `.env` (`INFERENCE_PROVIDERS`). The
+  model picker groups models by provider and shows what each model can do.
+- **Stage 0.** The open document is searched before the model runs, and the
+  reply shows "Used N passages from …"; the time is in the prompt.
+- **Admin console: model providers at a glance.** The Deployment config
+  section now lists every configured model provider (name, kind, host, and
+  either a model count or "unreachable"); API keys are never shown. The old
+  "Ollama URL" row is now "Embeddings (Ollama) URL", since that's the only
+  thing it still configures.
 
 ### Fixed
 
@@ -23,6 +40,23 @@ All notable changes to this project will be documented in this file.
   also fails any tag change sent in the same request. `GET /v1/docs` and document
   status responses return `projects: [{id, name}]` (projects you can see; a doc's
   owner sees all of its links) instead of `project_id`/`project_name`.
+- **Breaking: `POST /v1/inference/chat` is removed.** Chat turns are
+  `POST /v1/chat/sessions/{id}/turns` (server-sent events).
+- **Breaking: `PUT /v1/chat/sessions/{id}` is removed.** The server writes
+  messages itself; `POST /v1/chat/sessions/import` copies a legacy browser-only
+  chat.
+- **`GET /v1/inference/models`** returns objects `{id, provider, kind, name,
+  capabilities}` instead of name strings.
+- **Local mode (browser → Ollama directly) is removed.** Chat always goes
+  through the server, which by default uses the same `OLLAMA_URL` as before.
+- **Pins now sit near the top of the prompt** instead of just before your
+  message, so providers can reuse cached work across turns.
+- **The `current_time_date` tool is gone.** The current time is in every
+  prompt.
+- **The daily token budget now charges stopped and failed replies too.** A
+  reply you stop, or one that fails partway through, still counts against
+  your daily token budget — the provider's own token count when it reported
+  one, otherwise an estimate from the text length.
 
 ### Upgrade notes
 
@@ -39,6 +73,14 @@ All notable changes to this project will be documented in this file.
   `PUT /v1/projects/{id}/docs/{doc_id}` route, so project links are silently
   dropped (logged to the browser console only).
 - There is **no code rollback past 010** without restoring the backup.
+- Migration `013` is additive: it runs on the next backend start. Back up
+  first as usual.
+- Deploy the SPA and backend together.
+- A saved selection like `qwen2.5:7b` becomes `ollama:qwen2.5:7b`
+  automatically.
+- Proxies that buffer `text/event-stream` make replies appear all at once
+  (see DEPLOYMENT.md).
+- Audio attachments are still disabled in the UI (unchanged).
 
 ## [2.0.0] - 2026-09-23
 
