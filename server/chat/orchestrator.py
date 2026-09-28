@@ -289,8 +289,14 @@ async def _finalize(claim: TurnClaim, state: _State, outcome: str, req: TurnRequ
             # The step in flight when the turn was cut short never reached the
             # normal end-of-step _record_usage call: charge it now, from the
             # provider's own count if one arrived, else the same chars/4
-            # estimate _record_usage already uses (fix round 1, item 2).
-            await _record_usage(req.user_id, state.pending_usage, state.pending_messages, state.pending_output)
+            # estimate _record_usage already uses (fix round 1, item 2). But
+            # only if the provider actually did something billable: it sent a
+            # Usage chunk, or produced output, or the user pulled the plug
+            # (aborted) after the prompt was already processed. A provider
+            # that refuses before generating anything (e.g. HTTP 400 on an
+            # invalid model) leaves nothing to charge (walk fix 2).
+            if outcome == "aborted" or state.pending_usage is not None or state.pending_output:
+                await _record_usage(req.user_id, state.pending_usage, state.pending_messages, state.pending_output)
             state.step_recorded = True
         if outcome == "aborted":
             await _log_event(claim.session_id, "aborted", "user stopped the stream")

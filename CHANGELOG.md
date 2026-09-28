@@ -33,6 +33,13 @@ All notable changes to this project will be documented in this file.
 - **Project owners can read documents members file into their project.** The read
   check only looked at `project_members`, and owners never get a membership row.
   "Can read" is now one SQL definition shared by every read path.
+- **A saved model id whose provider was renamed is now migrated instead of silently
+  mismatched.** The model picker used to show its first option while still sending
+  the stale id underneath, which a provider rejects. The server also now refuses a
+  model that isn't in its provider's own model list (`422 model_not_allowed`, "This
+  model isn't available.") instead of forwarding it and surfacing a provider error.
+- **The embedding model no longer appears in the chat model picker.** Picking it
+  always failed; `GET /v1/inference/models` now omits `EMBEDDING_MODEL`.
 
 ### Changed
 
@@ -53,6 +60,9 @@ All notable changes to this project will be documented in this file.
   message, so providers can reuse cached work across turns.
 - **The `current_time_date` tool is gone.** The current time is in every
   prompt.
+- **`CHAT_PREFETCH_MIN_SCORE` default lowered from `0.75` to `0.6`**, measured
+  against `nomic-embed-text`: at `0.75` the model missed the document answer
+  and fell back to `web_search` every time in testing.
 - **The daily token budget now charges stopped and failed replies too.** A
   reply you stop, or one that fails partway through, still counts against
   your daily token budget — the provider's own token count when it reported

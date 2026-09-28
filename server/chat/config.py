@@ -13,7 +13,10 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ChatConfig:
     max_tool_rounds: int = 1               # tool rounds before the final tools-off step
-    prefetch_min_score: float = 0.75       # cosine similarity; >= 1 disables prefetch (unmeasured default)
+    prefetch_min_score: float = 0.6        # cosine similarity; >= 1 disables prefetch. A cautious guess,
+                                            # tune from DEBUG logs — measured on nomic-embed-text: matching
+                                            # questions scored 0.563-0.823 (5/6 >= 0.6, only 2/6 >= 0.75),
+                                            # unrelated ones 0.428-0.513 (none >= 0.6).
     prefetch_k: int = 4                    # passages at most
     reply_reserve_tokens: int = 2048       # kept free for the reply when trimming history
     attachment_token_estimate: int = 1500  # tokens counted per image/audio when trimming (a guess)

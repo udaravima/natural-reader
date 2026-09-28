@@ -84,6 +84,9 @@ export default function ChatSidebar({
                             ) : (
                                 <>
                                     {!selectedModel && <option value="">Select a model…</option>}
+                                    {selectedModel && !availableModels.some((m) => m.id === selectedModel) && (
+                                        <option value={selectedModel} disabled>{selectedModel} (unavailable)</option>
+                                    )}
                                     {groupByProvider(availableModels).map(([provider, models]) => (
                                         <optgroup key={provider} label={provider}>
                                             {models.map((m) => (

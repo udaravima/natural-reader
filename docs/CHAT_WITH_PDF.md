@@ -202,7 +202,7 @@ The fastest path. Cap is `~8000 chars` per page (truncated tail marker added if 
 1. While reading a page, click **Ask page** in the toolbar.
 2. The app jumps to chat mode and **pins** the page: a purple **pin chip** appears above the input reading `Page N · filename.pdf` + a preview. The pin stays attached to the conversation.
 3. Type your question (or just hit Send to let the model decide what to say about the page).
-4. The model gets a system preamble with the page text — re-sent on **every** turn (placed near the top of the prompt, right after the system prompt, so follow-ups keep the context without re-attaching).
+4. The model gets a system preamble with the page text — re-sent on **every** turn (placed at the very top of the prompt — there's no base system prompt ahead of it — so follow-ups keep the context without re-attaching).
 
 **No indexing required.** Works the moment a doc loads. Remove a pin anytime via the ✕ on its chip.
 
@@ -219,9 +219,9 @@ Same idea, scoped to whatever you highlighted — and you can stack several.
 
 A pin is **not** a one-shot. Once created (Ask page or Ask AI) it stays attached to
 the conversation and is **re-sent to the model on every turn**, injected as a system
-note **near the top of the prompt** — right after the system prompt and before the
-conversation history — so it never gets buried as the chat grows, and follow-ups
-"just work" without re-attaching.
+note **at the very top of the prompt** — there's no base system prompt ahead of it,
+and it comes before the conversation history — so it never gets buried as the chat
+grows, and follow-ups "just work" without re-attaching.
 
 This is close to how a normal ChatGPT/Gemini session keeps context in view, with one
 deliberate difference: pasting text into a single message freezes it at that spot in
@@ -229,9 +229,10 @@ the transcript, where it recedes turn after turn; a pin instead is **re-injected
 the same place every turn**, staying maximally relevant. (The conversation's
 user/assistant turns are still re-sent in full each turn — every provider's chat API
 is stateless this way.) **Changed in C1:** pins used to sit immediately before your
-latest question; they moved higher, right after the system prompt, so the prefix up
-to your new message stays identical turn-to-turn and a provider that caches repeated
-prompt prefixes (most do) can reuse that work instead of reprocessing it every time.
+latest question; they moved to the very top of the prompt (there's no base system
+prompt ahead of them), so the prefix up to your new message stays identical
+turn-to-turn and a provider that caches repeated prompt prefixes (most do) can reuse
+that work instead of reprocessing it every time.
 
 - **Multiple pins** accumulate as separate chips; remove any via its ✕.
 - **Dedupe** by `(doc_id, kind, text)` — re-pinning the same passage is a no-op.

@@ -329,6 +329,21 @@ async def test_disconnect_mid_step_still_records_usage(conn):
     assert row is not None and row[0] > 0 and row[1] > 0
 
 
+async def test_provider_error_before_any_output_is_not_charged(conn):
+    """The other side of item 2's guard: a provider that refuses the request
+    BEFORE generating anything (e.g. an invalid model name, HTTP 400) never
+    sent a Usage chunk and produced no text/reasoning — there is nothing to
+    charge for, unlike test_provider_error_mid_text_still_records_usage where
+    partial output did arrive."""
+    router = FakeRouter(steps=[([], ProviderError(400, "invalid model name"))])
+    alice = await member(conn, "alice")
+    events, claim = await _run(conn, router, user=alice)
+    assert events[-1]["type"] == "error"
+    row = await _one(conn, "SELECT prompt_tokens, eval_tokens FROM inference_usage WHERE user_id=%s",
+                     (alice.user_id,))
+    assert row is None
+
+
 async def test_provider_error_mid_text_still_records_usage(conn):
     """Item 2, the other trigger: a provider that dies mid-text must still be
     billed for the partial output, not just a cancellation."""

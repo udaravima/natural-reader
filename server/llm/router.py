@@ -109,6 +109,25 @@ class Router:
         provider, name = self.resolve(model_id)
         return await provider.capabilities(name)
 
+    async def is_listed(self, model_id: str) -> bool:
+        """Whether the provider's own model list actually has this model —
+        catches a saved id whose NAME is stale even though its prefix still
+        resolves (spec walk: an id migrated to the wrong model). Uses
+        list_models's own cache, so this costs no extra request per turn.
+        Fails open (True) if the provider can't be reached: is_allowed is the
+        refusal of record for a genuinely unconfigured model."""
+        try:
+            provider, name = self.resolve(model_id)
+        except UnknownModel:
+            return True
+        try:
+            names = await provider.list_models()
+        except Exception:
+            logger.warning("Could not verify %s is listed by %s (fail-open)",
+                           name, provider.config.name, exc_info=True)
+            return True
+        return name in names
+
     async def list_models(self) -> tuple[list[ModelInfo], list[str]]:
         async def one(p: Provider) -> list[ModelInfo] | None:
             try:

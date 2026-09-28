@@ -160,11 +160,16 @@ export default function SettingsPage({ theme, voiceSettings, chatSettings, conne
                         >
                             {ch.availableModels.length === 0
                                 ? <option value="">No models available</option>
-                                : groupByProvider(ch.availableModels).map(([provider, models]) => (
-                                    <optgroup key={provider} label={provider}>
-                                        {models.map((m) => <option key={m.id} value={m.id}>{modelLabel(m)}</option>)}
-                                    </optgroup>
-                                ))}
+                                : <>
+                                    {configModel && !ch.availableModels.some((m) => m.id === configModel) && (
+                                        <option value={configModel} disabled>{configModel} (unavailable)</option>
+                                    )}
+                                    {groupByProvider(ch.availableModels).map(([provider, models]) => (
+                                        <optgroup key={provider} label={provider}>
+                                            {models.map((m) => <option key={m.id} value={m.id}>{modelLabel(m)}</option>)}
+                                        </optgroup>
+                                    ))}
+                                </>}
                         </select>
                         <div className="flex flex-col gap-2 mt-1">
                             {knobs.numCtx && <InferenceRow theme={theme} label="Context window" disabled={!configModel}

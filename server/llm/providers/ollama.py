@@ -16,6 +16,8 @@ from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_fea
 
 logger = logging.getLogger(__name__)
 
+MODEL_LIST_TTL_S = 30.0   # seconds a /api/tags listing is reused
+
 # 'off'/'on' send the boolean (byte-identical to the browser's old requests);
 # the levels send their string.
 _THINK_WIRE: dict[str, Any] = {"off": False, "on": True}
@@ -42,8 +44,14 @@ class OllamaProvider:
         self._client = client
         self._features = FeatureMemory()
         self._caps = TTLCache()
+        # Short: `ollama pull` then Refresh is a normal local flow, and /api/tags
+        # is cheap. Long enough that a turn's is_listed check reuses it.
+        self._models = TTLCache(ttl_s=MODEL_LIST_TTL_S)
 
     async def list_models(self) -> list[str]:
+        cached = self._models.get("models")
+        if cached is not None:
+            return cached
         try:
             resp = await self._client.get(f"{self.config.url}/api/tags",
                                           headers=auth_headers(self.config))
@@ -51,8 +59,10 @@ class OllamaProvider:
             raise ProviderUnavailable(type(e).__name__) from e
         if resp.status_code != 200:
             raise ProviderError(resp.status_code, safe_error_message(resp.content))
-        return [m["name"] for m in resp.json().get("models", [])
-                if isinstance(m, dict) and m.get("name")]
+        names = [m["name"] for m in resp.json().get("models", [])
+                 if isinstance(m, dict) and m.get("name")]
+        self._models.put("models", names)
+        return names
 
     async def capabilities(self, model: str) -> Capabilities:
         cached = self._caps.get(model)

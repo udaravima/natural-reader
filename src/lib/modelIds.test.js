@@ -13,6 +13,14 @@ describe('modelIds', () => {
         expect(migrateModelId('gone', MODELS)).toBe('gone');
         expect(migrateModelId('qwen2.5:7b', [])).toBe('qwen2.5:7b');
     });
+    it('maps a saved id whose provider prefix no longer exists, by model name', () => {
+        const models = [m('local', 'ollama', 'qwen3.5:latest'), m('ollamav1', 'openai', 'qwen3.5:latest')];
+        expect(migrateModelId('ollama:qwen3.5:latest', models)).toBe('local:qwen3.5:latest');
+    });
+    it('leaves an id whose provider still exists untouched, even if that model is gone', () => {
+        const models = [m('local', 'ollama', 'other')];
+        expect(migrateModelId('local:missing', models)).toBe('local:missing');
+    });
     it('groups by provider in server order', () => {
         expect(groupByProvider(MODELS).map(([p, ms]) => [p, ms.length])).toEqual([['local', 2], ['cloud', 1]]);
     });

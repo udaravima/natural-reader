@@ -89,6 +89,17 @@ async def test_models_lists_ids_with_provider_and_capabilities(client, upstream)
                                           "audio": False, "contextWindow": 4096}}
 
 
+async def test_models_omits_the_configured_embedding_model(client, upstream, monkeypatch):
+    """GET /v1/inference/models is the chat model picker's source; the
+    embedding model isn't a chat model and picking it fails (walk fix 4).
+    Ollama's /api/tags reports it with a ':latest' suffix even though
+    EMBEDDING_MODEL is set without one, so the comparison must ignore it."""
+    monkeypatch.setenv("EMBEDDING_MODEL", "nomic-embed-text")
+    upstream["handler"] = _tags_and_show(["gemma3", "nomic-embed-text:latest"])
+    r = await client.get("/v1/inference/models")
+    assert [m["id"] for m in r.json()["models"]] == ["ollama:gemma3"]
+
+
 async def test_models_filtered_by_allowlist(client, upstream, monkeypatch):
     from server.llm import router as llm_router
     monkeypatch.setenv("INFERENCE_MODELS", "gemma3")

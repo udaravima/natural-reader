@@ -213,6 +213,15 @@ async def test_list_models_reads_tags():
     assert await OllamaProvider(CFG, up.client()).list_models() == ["gemma3", "qwen2.5:7b"]
 
 
+async def test_list_models_is_cached_not_fetched_per_call():
+    up = FakeUpstream().on("GET", "/api/tags", lambda: httpx.Response(
+        200, json={"models": [{"name": "gemma3"}]}))
+    provider = OllamaProvider(CFG, up.client())
+    await provider.list_models()
+    await provider.list_models()
+    assert len([r for r in up.requests if r.url.path == "/api/tags"]) == 1
+
+
 def test_config_repr_never_shows_the_key():
     cfg = ProviderConfig(name="x", kind="openai", url="https://x.example.com/v1", api_key="sk-secret")
     assert "sk-secret" not in repr(cfg)

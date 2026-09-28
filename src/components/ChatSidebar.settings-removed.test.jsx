@@ -33,4 +33,15 @@ describe('ChatSidebar — settings moved to the Settings page', () => {
         expect(screen.getByText('MODEL')).toBeInTheDocument();
         expect(screen.getByText('Sessions')).toBeInTheDocument();
     });
+
+    it('shows a disabled "(unavailable)" option when the saved model has no matching option, so the select never silently shows a different model than what will be sent', () => {
+        const b = baseProps({
+            selectedModel: 'local:qwen3.5:latest',
+            availableModels: [{ id: 'local:llama3.2:3b', provider: 'local', kind: 'ollama', name: 'llama3.2:3b', capabilities: {} }],
+        });
+        render(<ChatSidebar {...b} />);
+        const select = screen.getByRole('combobox');
+        expect(select).toHaveValue('local:qwen3.5:latest');
+        expect(screen.getByText('local:qwen3.5:latest (unavailable)')).toBeInTheDocument();
+    });
 });

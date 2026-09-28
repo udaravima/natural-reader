@@ -196,6 +196,8 @@ async def post_turn(session_id: SessionId, request: Request,
     if not llm.is_allowed(body.model):
         raise refusal(422, "model_not_allowed", "That model isn't available on this server.")
     model_id = llm.canonical_id(body.model)
+    if not await llm.is_listed(model_id):
+        raise refusal(422, "model_not_allowed", "This model isn't available.")
     caps = await _capabilities(llm, model_id)
     for kind, flag, word in (("image", caps.vision, "images"), ("audio", caps.audio, "audio")):
         if flag is False and any(a.kind == kind for a in attachments):

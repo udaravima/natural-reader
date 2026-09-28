@@ -104,6 +104,19 @@ async def test_model_not_allowed_is_422(db_conn, app):
     assert r.status_code == 422 and r.json()["detail"]["error"] == "model_not_allowed"
 
 
+async def test_model_not_in_the_providers_list_is_422_before_claiming(db_conn, app):
+    """A saved id can resolve to a real provider (is_allowed passes: no
+    allow-list configured) yet name a model that provider doesn't actually
+    have — the walk's bug (a stale 'ollama:qwen3.5:latest' id sent verbatim to
+    the first ollama provider). Refused before the turn is claimed, so the
+    session is never touched."""
+    app[1].listed = False
+    r = await _post(app, await member(db_conn, "alice"))
+    assert r.status_code == 422
+    assert r.json()["detail"] == {"error": "model_not_allowed", "message": "This model isn't available."}
+    assert await _one(db_conn, "SELECT 1 FROM chat_sessions WHERE id='s-1'") is None
+
+
 async def test_attachment_the_model_cant_read_is_422_and_nothing_is_written(db_conn, app):
     app[1].caps = Capabilities(tools=True, vision=False)
     body = {**BODY, "message": {"content": "look", "attachments": [
@@ -203,6 +216,9 @@ class _StuckRouter:
         return True
 
     def is_allowed(self, model_id: str) -> bool:
+        return True
+
+    async def is_listed(self, model_id: str) -> bool:
         return True
 
     def canonical_id(self, model_id: str) -> str:

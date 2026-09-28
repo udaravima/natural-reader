@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/inference", tags=["inference"])
 
 
+def _strip_latest(name: str) -> str:
+    return name[:-len(":latest")] if name.endswith(":latest") else name
+
+
 @router.get("/models")
 async def list_models(
     principal: deps.Principal = Depends(deps.require_capability("chat")),
@@ -29,8 +33,10 @@ async def list_models(
     models, failed = await llm.list_models()
     if failed and not models and len(failed) == len(llm.providers):
         raise refusal(502, "providers_unreachable", "Can't reach any model provider.")
-    out: dict = {"models": [m.to_json() for m in models]}
     cfg = model_router.get_config()
+    embed_model = _strip_latest(cfg.embed_model)
+    models = [m for m in models if not (m.kind == "ollama" and _strip_latest(m.name) == embed_model)]
+    out: dict = {"models": [m.to_json() for m in models]}
     try:
         out["budget"] = await inference_budget.budget_state(
             conn, principal.user_id, cfg.daily_token_budget)

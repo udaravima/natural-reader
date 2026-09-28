@@ -84,6 +84,23 @@ def test_allow_lists():
     assert not r.is_allowed("cloud:vendor/b")
 
 
+async def test_is_listed_true_false_and_cached():
+    r, up = _router()
+    assert await r.is_listed("local:qwen2.5:7b") is True
+    assert await r.is_listed("local:missing") is False
+    before = len([req for req in up.requests if req.url.path == "/api/tags"])
+    await r.is_listed("local:qwen2.5:7b")
+    after = len([req for req in up.requests if req.url.path == "/api/tags"])
+    assert after == before   # cached: no extra call to the provider per lookup
+
+
+async def test_is_listed_fails_open_when_the_provider_is_unreachable():
+    configs = load_provider_configs({"OLLAMA_URL": "http://ollama.test"})
+    up = FakeUpstream().on("GET", "/api/tags", httpx.ConnectError("down"))
+    r = Router(configs, up.client())
+    assert await r.is_listed("ollama:anything") is True
+
+
 async def test_list_models_filters_and_tags_ids_and_capabilities():
     r, _ = _router()
     models, failed = await r.list_models()

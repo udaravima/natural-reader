@@ -60,6 +60,7 @@ class FakeRouter:
     caps: Capabilities = field(default_factory=lambda: Capabilities(
         tools=True, thinking=True, vision=True, audio=None, context_window=None))
     allowed: bool = True
+    listed: bool = True
     providers: bool = True
     calls: list = field(default_factory=list)
 
@@ -68,6 +69,9 @@ class FakeRouter:
 
     def is_allowed(self, model_id: str) -> bool:
         return self.allowed
+
+    async def is_listed(self, model_id: str) -> bool:
+        return self.listed
 
     def canonical_id(self, model_id: str) -> str:
         return model_id if model_id.startswith("ollama:") else f"ollama:{model_id}"

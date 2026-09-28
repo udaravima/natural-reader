@@ -17,7 +17,6 @@ export default defineConfig({
     },
     proxy: {
       '/v1': 'http://localhost:8000',       // FastAPI backend
-      '/api': 'http://localhost:11434',     // Ollama (matches the browser default)
     },
   },
   build: {

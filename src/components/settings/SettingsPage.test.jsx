@@ -96,6 +96,15 @@ describe('SettingsPage — provider-aware inference settings', () => {
     expect(screen.queryByText(/inference source/i)).toBeNull();
     expect(screen.queryByLabelText(/ollama host/i)).toBeNull();
   });
+  it('shows a disabled "(unavailable)" option for the config picker when the saved model has no matching option', () => {
+    const b = bags();
+    b.chatSettings = { ...b.chatSettings, availableModels: models, selectedModel: 'local:missing' };
+    render(<SettingsPage {...b} />);
+    const select = screen.getByLabelText(/configuring model/i);
+    expect(select).toHaveValue('local:missing');
+    expect(screen.getByText('local:missing (unavailable)')).toBeInTheDocument();
+  });
+
   it('shows context size and keep-alive only for Ollama models, thinking only when supported', () => {
     const b = bags();
     b.chatSettings = { ...b.chatSettings, availableModels: models, selectedModel: 'cloud:x' };
