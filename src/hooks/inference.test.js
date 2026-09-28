@@ -47,6 +47,14 @@ describe('toWireSettings', () => {
         expect(toWireSettings({ think: 'high', numCtx: 16384, keepAlive: -1, numPredict: 512 }))
             .toEqual({ think: 'high', num_ctx: 16384, keep_alive: -1, num_predict: 512 });
     });
+    // Final review M4: a num_ctx left over from an Ollama model would set the
+    // server's trimming window for an OpenAI-kind model; send only what the
+    // provider honours (supportedKnobs).
+    it('leaves out the knobs the provider does not support', () => {
+        const knobs = { numCtx: false, keepAlive: false, think: true, numPredict: true };
+        expect(toWireSettings({ think: 'high', numCtx: 16384, keepAlive: -1, numPredict: 512 }, knobs))
+            .toEqual({ think: 'high', num_ctx: null, keep_alive: null, num_predict: 512 });
+    });
 });
 
 describe('migrateLegacyThinking', () => {

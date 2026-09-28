@@ -1,3 +1,5 @@
+import asyncio
+import dataclasses
 import json
 
 import httpx
@@ -225,3 +227,80 @@ async def test_list_models_is_cached_not_fetched_per_call():
 def test_config_repr_never_shows_the_key():
     cfg = ProviderConfig(name="x", kind="openai", url="https://x.example.com/v1", api_key="sk-secret")
     assert "sk-secret" not in repr(cfg)
+
+
+# ---- Final review M3: a 200 that isn't JSON (e.g. a proxy's HTML page) ----
+
+async def test_show_that_is_not_json_means_unknown_capabilities_and_the_chat_still_streams():
+    up = (FakeUpstream()
+          .on("POST", "/api/show", lambda: httpx.Response(200, content=b"<html>proxy login</html>"))
+          .on("POST", "/api/chat", lambda: ndjson({"message": {"content": "Hi"}}, DONE)))
+    provider = OllamaProvider(CFG, up.client())
+    assert await provider.capabilities("m") == Capabilities()
+    chunks = await _collect(provider.stream_chat("m", HI, [], CallSettings()))
+    assert TextDelta("Hi") in chunks and chunks[-1] == Finish("stop")
+
+
+async def test_tags_that_are_not_json_is_a_provider_error():
+    up = FakeUpstream().on("GET", "/api/tags", lambda: httpx.Response(200, content=b"<html>oops</html>"))
+    with pytest.raises(ProviderError) as ei:
+        await OllamaProvider(CFG, up.client()).list_models()
+    assert "<html>" not in ei.value.safe_message
+
+
+# ---- Final review M2 (spec §11): INFERENCE_TIMEOUT_S is an IDLE timeout ----
+#
+# httpx.MockTransport never enforces timeouts, so this runs a real (tiny) HTTP
+# server on an ephemeral 127.0.0.1 port and goes through start_router, i.e.
+# the production httpx.Timeout wiring.
+
+async def _slow_ollama(gap_s: float, lines: int):
+    async def handle(reader, writer):
+        head = await reader.readuntil(b"\r\n\r\n")
+        length = next((int(h.split(b":", 1)[1]) for h in head.split(b"\r\n")
+                       if h.lower().startswith(b"content-length:")), 0)
+        if length:
+            await reader.readexactly(length)
+        path = head.split(b" ", 2)[1]
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nConnection: close\r\n\r\n")
+        if path == b"/api/show":
+            writer.write(json.dumps(SHOW_ALL).encode())
+        else:
+            for i in range(lines):
+                await asyncio.sleep(gap_s)
+                writer.write(json.dumps({"message": {"content": f"{i} "}}).encode() + b"\n")
+                await writer.drain()
+            writer.write(json.dumps(DONE).encode() + b"\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    return server, f"http://127.0.0.1:{server.sockets[0].getsockname()[1]}"
+
+
+@pytest.mark.parametrize("gap_s,lines,cut_off", [(0.15, 8, False), (0.8, 1, True)])
+async def test_a_slow_but_streaming_reply_is_never_cut_off_but_silence_is(monkeypatch, gap_s, lines, cut_off):
+    """Timeout 0.4 s. 8 chunks 0.15 s apart take 1.2 s in total (3x the
+    timeout) and must arrive whole; a single 0.8 s silence must not."""
+    from server.llm import router as llm_router
+    from server.services import model_router
+
+    server, url = await _slow_ollama(gap_s, lines)
+    real = model_router.get_config()
+    monkeypatch.setattr(model_router, "get_config", lambda: dataclasses.replace(real, timeout_s=0.4))
+    monkeypatch.delenv("INFERENCE_PROVIDERS", raising=False)
+    monkeypatch.delenv("INFERENCE_MODELS", raising=False)
+    monkeypatch.setenv("OLLAMA_URL", url)
+    await llm_router.start_router()
+    try:
+        agen = llm_router.get_router().stream_chat("ollama:m", HI, [], CallSettings())
+        if cut_off:
+            with pytest.raises(ProviderTimeout):
+                await _collect(agen)
+        else:
+            text = "".join(c.text for c in await _collect(agen) if isinstance(c, TextDelta))
+            assert text == "".join(f"{i} " for i in range(lines))
+    finally:
+        await llm_router.stop_router()
+        server.close()
+        await server.wait_closed()

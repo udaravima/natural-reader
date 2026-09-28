@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import json
 import time
 
@@ -84,7 +85,10 @@ async def test_plain_reply_streams_saves_and_releases(conn):
                       (alice.user_id,)) == (10, 3)
     sent = router.calls[0]
     assert sent["tools"] == ["web_search"]                  # no open document: no search_document
-    assert sent["messages"][-1].content == "Hi" and sent["messages"][-2].role == "system"
+    # Final review I3: no system message at all here (no pins); the volatile
+    # block (just the time line) leads the one user message.
+    [only] = sent["messages"]
+    assert only.role == "user" and only.content.startswith("Current time: ") and only.content.endswith("\n\nHi")
     assert await _log(conn) == ["sent", "received"]
     assert_fixture("plain", events)
 
@@ -100,22 +104,25 @@ async def test_reasoning_closes_before_text(conn):
 async def test_one_tool_round_then_answer(conn, monkeypatch):
     monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
     router = FakeRouter(steps=[
-        [ToolCallReady(ToolCall("c1", "web_search", {"query": "news"})), Usage(5, 2), Finish("tool_calls")],
+        [TextDelta("Let me search."), ToolCallReady(ToolCall("c1", "web_search", {"query": "news"})),
+         Usage(5, 2), Finish("tool_calls")],
         [TextDelta("Here is the news."), Usage(20, 4), Finish("stop")]])
     events, claim = await _run(conn, router)
-    assert types(events) == ["start", "start-step", "finish-step", "tool-input-available",
-                             "tool-output-available", "start-step", "text-start", "text-delta", "text-end",
-                             "finish-step", "finish"]
+    assert types(events) == ["start", "start-step", "text-start", "text-delta", "text-end", "finish-step",
+                             "tool-input-available", "tool-output-available", "start-step", "text-start",
+                             "text-delta", "text-end", "finish-step", "finish"]
     out = next(e for e in events if e["type"] == "tool-output-available")
     assert out["output"] == {"ok": True, "chunk_count": None, "query": "news",
                              "summary_text": 'Web search for "news" returned 1 result(s).'}
     second = router.calls[1]["messages"]
     assert second[-2].role == "assistant" and second[-2].tool_calls[0].id == "c1"
+    assert second[-2].content == "Let me search."
     assert second[-1].role == "tool" and second[-1].tool_call_id == "c1"
     assert json.loads(second[-1].content)["query"] == "news"
     assert router.calls[1]["tools"] == []                   # CHAT_MAX_TOOL_ROUNDS=1: final step has tools off
     status, reason, content, _, tool_calls, _, _ = await _msg(conn, claim.turn_id)
-    assert (status, reason, content) == ("complete", "stop", "Here is the news.")
+    # Final review M5: two steps' text is two paragraphs, not "search.Here".
+    assert (status, reason, content) == ("complete", "stop", "Let me search.\n\nHere is the news.")
     assert tool_calls == [{"name": "web_search", "arguments": {"query": "news"}, "result_summary": out["output"]}]
     assert events[-1]["usage"] == {"promptTokens": 25, "completionTokens": 6, "estimated": False}
     assert "tool-call" in await _log(conn)
@@ -266,8 +273,10 @@ async def test_second_turn_sends_the_first_as_history(conn):
     [_ async for _ in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)]
     claim, req = await _start(alice, text="second")
     [_ async for _ in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)]
-    sent = [(m.role, m.content) for m in router.calls[1]["messages"] if m.role != "system"]
+    sent = [(m.role, m.content.rsplit("\n\n", 1)[-1]) for m in router.calls[1]["messages"]]
     assert sent == [("user", "first"), ("assistant", "Hello there."), ("user", "second")]
+    # The stored user message is what was typed, not the built prompt (I3).
+    assert router.calls[1]["messages"][0].content == "first"
 
 
 async def test_session_deleted_mid_turn_finishes_quietly(conn):
@@ -454,3 +463,58 @@ async def test_heartbeat_loss_does_not_break_the_turn(conn, monkeypatch):
     events, claim = await _run(conn, SlowRouter())
     assert events[-1]["type"] == "finish"
     assert (await _msg(conn, claim.turn_id))[:3] == ("complete", "stop", "ab")
+
+
+
+# ---- Final review ----
+
+async def test_a_silent_step_adds_no_separator(conn, monkeypatch):
+    """M5: the blank line goes only BETWEEN two non-empty step texts."""
+    monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
+    router = FakeRouter(steps=[
+        [ToolCallReady(ToolCall("c1", "web_search", {"query": "a"})), Usage(1, 1), Finish("tool_calls")],
+        reply("Answer.")])
+    _, claim = await _run(conn, router)
+    assert (await _msg(conn, claim.turn_id))[2] == "Answer."
+
+
+@pytest.mark.parametrize("hit,calls,want", [
+    (True, [], "prefetch_hit=True search_document_called=False"),
+    (False, [ToolCall("c1", "search_document", {"query": "q"})], "prefetch_hit=False search_document_called=True"),
+])
+async def test_the_prefetch_metric_is_logged_at_debug_per_turn(conn, monkeypatch, caplog, hit, calls, want):
+    """M1 (spec §5.2.1): whether search_document still ran after a prefetch,
+    so a deployer can tune CHAT_PREFETCH_MIN_SCORE. No user text in it."""
+    async def fake_prefetch(doc, question, cfg):
+        return Prefetch([{"page": 1, "score": 0.9, "text": "p"}], 0.9,
+                        {"kind": "prefetch", "docId": "d", "docName": "D", "count": 1, "topScore": 0.9, "pages": [1]}
+                        ) if hit else Prefetch()
+
+    monkeypatch.setattr(ctx_mod, "prefetch", fake_prefetch)
+    steps = [[*(ToolCallReady(c) for c in calls), Usage(1, 1), Finish("tool_calls")]] if calls else []
+    with caplog.at_level("DEBUG", logger="server.chat.orchestrator"):
+        await _run(conn, FakeRouter(steps=steps), text="my secret question")
+    [line] = [r for r in caplog.records if "prefetch_hit=" in r.getMessage()]
+    assert line.levelname == "DEBUG" and want in line.getMessage()
+    assert "my secret question" not in line.getMessage()
+
+
+@pytest.mark.parametrize("kind,want", [("ollama", 1024), ("openai", 32768)])
+async def test_num_ctx_sets_the_trimming_window_only_for_ollama_providers(conn, monkeypatch, kind, want):
+    """M4: num_ctx is an Ollama option. A value left over from an Ollama model
+    must not trim an OpenAI-kind chat to the wrong window; there the model's
+    own context length is the window (ruling R14 applies to Ollama only)."""
+    seen = {}
+    real = orchestrator.build_context
+
+    async def spy(turn, cfg):
+        seen["window"] = turn.window
+        return await real(turn, cfg)
+
+    monkeypatch.setattr(orchestrator, "build_context", spy)
+    router = FakeRouter(kind=kind, caps=Capabilities(context_window=32768))
+    alice = await member(conn, "alice")
+    claim, req = await _start(alice)
+    req = dataclasses.replace(req, settings=CallSettings(num_ctx=1024))
+    [_ async for _ in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)]
+    assert seen["window"] == want

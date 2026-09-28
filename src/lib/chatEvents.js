@@ -21,6 +21,10 @@ export function applyEvent(msg, ev) {
             return { ...msg, toolStatus: undefined };
         case 'reasoning-delta':
             return { ...msg, thinking: (msg.thinking || '') + (ev.delta || '') };
+        case 'text-start':
+            // A later step's text is a new paragraph; the server saves the
+            // same blank line between non-empty step texts (orchestrator.py).
+            return msg.content ? { ...msg, content: `${msg.content}\n\n` } : msg;
         case 'text-delta':
             return { ...msg, content: (msg.content || '') + (ev.delta || '') };
         case 'tool-input-available':

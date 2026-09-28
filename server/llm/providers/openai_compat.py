@@ -13,7 +13,8 @@ from ..types import (Capabilities, CallSettings, Chunk, Finish, Message,
                      ProviderError, ProviderUnavailable, ReasoningDelta, TextDelta, ToolCall,
                      ToolCallReady, ToolSpec, Usage)
 from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_feature_rejection,
-                   iter_lines, open_stream, parse_arguments, safe_error_message, settle_dropped)
+                   iter_lines, json_object, open_stream, parse_arguments, safe_error_message,
+                   settle_dropped)
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,8 @@ class OpenAICompatProvider:
             raise ProviderUnavailable(type(e).__name__) from e
         if resp.status_code != 200:
             raise ProviderError(resp.status_code, safe_error_message(resp.content))
-        entries = {e["id"]: e for e in resp.json().get("data", [])
+        data = json_object(resp).get("data")
+        entries = {e["id"]: e for e in (data if isinstance(data, list) else [])
                    if isinstance(e, dict) and e.get("id")}
         self._models.put("models", entries)
         return entries

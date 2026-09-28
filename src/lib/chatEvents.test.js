@@ -23,7 +23,14 @@ describe('applyEvent over the backend contract fixtures', () => {
             result_summary: { ok: true, chunk_count: null, query: 'news', summary_text: 'Web search for "news" returned 1 result(s).' },
         }]);
         expect(m.toolStatus).toBeUndefined();
-        expect(m.content).toBe('Here is the news.');
+        // Final review M5: each step's text is its own paragraph, exactly as
+        // the server saves it (orchestrator.py joins steps the same way).
+        expect(m.content).toBe('Let me search.\n\nHere is the news.');
+    });
+
+    it('adds no separator before the first text, or when earlier steps said nothing', () => {
+        const events = loadFixture('tool_round').filter((e) => e.id !== 't1');
+        expect(reduce(events).content).toBe('Here is the news.');
     });
 
     it('shows "executing tool…" between the tool input and the next step', () => {

@@ -12,7 +12,8 @@ from ..types import (Capabilities, CallSettings, Chunk, Finish, Message,
                      ProviderError, ProviderUnavailable, ReasoningDelta, TextDelta, ToolCall,
                      ToolCallReady, ToolSpec, Usage)
 from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_feature_rejection,
-                   iter_lines, open_stream, parse_arguments, safe_error_message, settle_dropped)
+                   iter_lines, json_object, open_stream, parse_arguments, safe_error_message,
+                   settle_dropped)
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ class OllamaProvider:
             raise ProviderUnavailable(type(e).__name__) from e
         if resp.status_code != 200:
             raise ProviderError(resp.status_code, safe_error_message(resp.content))
-        names = [m["name"] for m in resp.json().get("models", [])
+        names = [m["name"] for m in json_object(resp).get("models") or []
                  if isinstance(m, dict) and m.get("name")]
         self._models.put("models", names)
         return names
@@ -71,11 +72,17 @@ class OllamaProvider:
         try:
             resp = await self._client.post(f"{self.config.url}/api/show", json={"model": model},
                                            headers=auth_headers(self.config))
-        except httpx.HTTPError:
+        except httpx.HTTPError as e:
+            logger.debug("Ollama /api/show for %s failed: %s", model, type(e).__name__)
             return Capabilities()   # unknown, and not cached: the next call probes again
         if resp.status_code != 200:
+            logger.debug("Ollama /api/show for %s returned HTTP %d", model, resp.status_code)
             return Capabilities()
-        body = resp.json()
+        try:
+            body = json_object(resp)
+        except ProviderError:
+            logger.debug("Ollama /api/show for %s returned a body that isn't JSON", model)
+            return Capabilities()
         window = next((v for k, v in (body.get("model_info") or {}).items()
                        if k.endswith(".context_length") and isinstance(v, int)), None)
         listed = body.get("capabilities")

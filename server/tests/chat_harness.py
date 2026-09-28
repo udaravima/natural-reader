@@ -62,6 +62,7 @@ class FakeRouter:
     allowed: bool = True
     listed: bool = True
     providers: bool = True
+    kind: str = "ollama"   # the provider kind every model id resolves to
     calls: list = field(default_factory=list)
 
     def has_providers(self) -> bool:
@@ -78,6 +79,9 @@ class FakeRouter:
 
     async def capabilities(self, model_id: str) -> Capabilities:
         return self.caps
+
+    def provider_kind(self, model_id: str) -> str | None:
+        return self.kind
 
     def stream_chat(self, model_id, messages, tools, settings):
         self.calls.append({"model": model_id, "messages": list(messages),

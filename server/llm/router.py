@@ -31,6 +31,11 @@ logger = logging.getLogger(__name__)
 
 KINDS = {"ollama": OllamaProvider, "openai": OpenAICompatProvider}
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+# Seconds one provider gets to list its models (and their capabilities) before
+# it is reported failed. Under the SPA's 8 s abort, so a provider that connects
+# and then goes silent can't empty the picker for every provider (final review
+# I2); httpx's own read timeout is INFERENCE_TIMEOUT_S, far too long for this.
+LIST_TIMEOUT_S = 5.0
 
 
 def load_provider_configs(env: Mapping[str, str]) -> list[ProviderConfig]:
@@ -105,6 +110,13 @@ class Router:
             return False
         return provider.config.models is None or name in provider.config.models
 
+    def provider_kind(self, model_id: str) -> str | None:
+        """`ollama` | `openai` for the provider serving this id; None if none does."""
+        try:
+            return self.resolve(model_id)[0].config.kind
+        except UnknownModel:
+            return None
+
     async def capabilities(self, model_id: str) -> Capabilities:
         provider, name = self.resolve(model_id)
         return await provider.capabilities(name)
@@ -129,14 +141,20 @@ class Router:
         return name in names
 
     async def list_models(self) -> tuple[list[ModelInfo], list[str]]:
+        async def listing(p: Provider) -> list[ModelInfo]:
+            names = await p.list_models()
+            if p.config.models is not None:
+                names = [n for n in names if n in p.config.models]
+            caps = await asyncio.gather(*(p.capabilities(n) for n in names))
+            return [ModelInfo(f"{p.config.name}:{n}", p.config.name, p.config.kind, n, c)
+                    for n, c in zip(names, caps)]
+
         async def one(p: Provider) -> list[ModelInfo] | None:
             try:
-                names = await p.list_models()
-                if p.config.models is not None:
-                    names = [n for n in names if n in p.config.models]
-                caps = await asyncio.gather(*(p.capabilities(n) for n in names))
-                return [ModelInfo(f"{p.config.name}:{n}", p.config.name, p.config.kind, n, c)
-                        for n, c in zip(names, caps)]
+                return await asyncio.wait_for(listing(p), timeout=LIST_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                logger.warning("Provider %s did not list its models in time", p.config.name)
+                return None
             except Exception as e:  # noqa: BLE001 — one bad provider must not hide the others
                 logger.warning("Provider %s could not list models: %s", p.config.name, type(e).__name__)
                 return None

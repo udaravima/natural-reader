@@ -60,7 +60,10 @@ async def run_tool(call: ToolCall, ctx: ToolContext, offered: list[Tool]) -> Too
         try:
             result = await tool.execute(call.arguments, ctx)
         except Exception as e:  # noqa: BLE001 — a tool failure is the model's to handle
-            logger.warning("Tool %s failed: %r", call.name, e)
+            # The exception's message can quote the user's query: only its
+            # type at WARNING, the full exception at DEBUG (spec §10).
+            logger.warning("Tool %s failed: %s", call.name, type(e).__name__)
+            logger.debug("Tool %s failure detail", call.name, exc_info=True)
             result = {"error": f"{call.name} failed: {type(e).__name__}"}
     summary = ({"error": result["error"]} if "error" in result or tool is None
                else tool.summarize(call.arguments, result))

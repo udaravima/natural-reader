@@ -140,7 +140,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         built = await build_context(TurnInput(
             user_id=req.user_id, text=req.text, attachments=req.attachments, doc=doc,
             timezone=req.timezone, pins=pins, history=history,
-            window=req.settings.num_ctx or caps.context_window, now=datetime.now(timezone.utc)), cfg)
+            window=_window(router, req, caps), now=datetime.now(timezone.utc)), cfg)
         if built.notes:
             state.doc_context = {"notes": built.notes}
             yield ev("data-context", items=built.notes)
@@ -192,6 +192,11 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                             yield ev("reasoning-end", id=f"r{step}")
                         if not open_text:
                             open_text = True
+                            # A later step's text is a new paragraph, not a run-on
+                            # ("search.The answer"); chatEvents.js adds the same
+                            # separator on text-start (final review M5).
+                            if state.content:
+                                state.content += "\n\n"
                             yield ev("text-start", id=f"t{step}")
                         text += chunk.text
                         state.content += chunk.text
@@ -243,6 +248,10 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                 messages.append(Message("tool", json.dumps(run.result, indent=2, ensure_ascii=False),
                                         tool_call_id=call.id, name=call.name))
             await _save(claim, state)
+        # Spec §5.2.1: did the model still search after a prefetch hit? Lets a
+        # deployer tune CHAT_PREFETCH_MIN_SCORE. DEBUG, and no user text.
+        logger.debug("chat turn %s prefetch_hit=%s search_document_called=%s", claim.turn_id,
+                     built.prefetch_hit, any(c["name"] == "search_document" for c in state.tool_calls))
         if state.last_finish == "length":
             await _log_event(claim.session_id, "truncated", "reply hit the length limit")
         await _log_event(claim.session_id, "received", f"assistant reply ({len(state.content)} chars)")
@@ -266,6 +275,16 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
     finally:
         beat.cancel()
         await _finalize(claim, state, outcome, req, started)
+
+
+async def abandon_turn(req: TurnRequest, claim: TurnClaim) -> None:
+    """End a turn whose run_turn never started (final review I1): the client
+    left before the response began, so run_turn's own finally never runs. The
+    same end as a Stop before the first token: the empty reply is saved
+    `aborted`, the `aborted` log line is written and the claim is released,
+    all shielded as in _finalize. Only for a run_turn generator that never
+    started; once it has, its own finally owns this."""
+    await _finalize(claim, _State(), "aborted", req, time.monotonic())
 
 
 def _provider_error(e: Exception) -> tuple[str, str]:
@@ -388,6 +407,15 @@ async def _capabilities(router: Any, model_id: str) -> Capabilities:
     except Exception:  # noqa: BLE001 — unknown capabilities are safe: nothing is refused
         logger.warning("Capability lookup failed for %s", model_id, exc_info=True)
         return Capabilities()
+
+
+def _window(router: Any, req: TurnRequest, caps: Capabilities) -> int | None:
+    """The trimming window (ruling R14): num_ctx is an Ollama option, so it
+    counts only when the model's provider is Ollama. A value left over from an
+    Ollama model must not trim an OpenAI-kind chat (final review M4)."""
+    if req.settings.num_ctx and router.provider_kind(req.model_id) == "ollama":
+        return req.settings.num_ctx
+    return caps.context_window
 
 
 async def _open_doc(req: TurnRequest) -> ReadableDoc | None:

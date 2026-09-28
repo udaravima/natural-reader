@@ -212,6 +212,25 @@ describe('useChatEngine — turns', () => {
     });
 });
 
+describe('useChatEngine — per-provider settings', () => {
+    // Final review M4: num_ctx / keep_alive are Ollama options; for an
+    // OpenAI-kind model they are not sent, whatever the stored settings say.
+    it.each([
+        ['ollama:m', { num_ctx: 8192, keep_alive: -1, num_predict: 256 }],
+        ['cloud:x', { num_ctx: null, keep_alive: null, num_predict: 256 }],
+    ])('sends only the knobs %s honours', async (model, want) => {
+        const models = [...MODELS, { id: 'cloud:x', provider: 'cloud', kind: 'openai', name: 'x', capabilities: {} }];
+        apiFetch.mockResolvedValue({ ok: true, status: 200, json: async () => ({ models, budget: null }) });
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        const props = baseProps({ selectedModel: model,
+            inference: { ...INFERENCE_DEFAULTS, numCtx: 8192, keepAlive: -1, numPredict: 256 } });
+        const { result } = renderHook(() => useChatEngine(props));
+        await waitFor(() => expect(result.current.availableModels).toEqual(models));
+        await act(async () => { await result.current.sendMessage('Hi'); });
+        expect(postTurn.mock.calls[0][0].body.settings).toMatchObject(want);
+    });
+});
+
 describe('useChatEngine — models and reload', () => {
     it('keeps the model objects and the budget from /v1/inference/models', async () => {
         const { result } = renderHook(() => useChatEngine(baseProps()));

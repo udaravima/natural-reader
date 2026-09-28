@@ -6,6 +6,15 @@ context (passages, time) -> the new message. Counterintuitive: the time line
 belongs at the END; at the top it would change the prefix every turn and
 defeat the provider's reuse for the whole conversation. There is no base
 system prompt (ruling R9); a future one goes at the head.
+
+The shape is also what strict chat templates accept (final review I3: vLLM's
+Gemma/Mistral templates raise on any system message but the first, and on two
+same-role messages in a row): ALL pins are one leading system message; the
+volatile block is not a message of its own but the head of the new user
+message's content; and consecutive same-role history messages are merged, so
+roles strictly alternate. Ollama accepts the same shape, so there is one shape
+everywhere. Only the model input changes: the stored user message is what the
+user typed.
 """
 from __future__ import annotations
 
@@ -38,18 +47,23 @@ OPEN_DOC_LINE = (
 _MARKER = "[{kind} {name} from earlier; no longer attached]"
 
 
-def pin_messages(pins: list[dict[str, Any]]) -> list[Message]:
-    """One system message per pin, worded exactly as the SPA's old buildPinPreamble."""
-    out = []
-    for p in pins:
-        page = f", page {p['page']}" if p.get("page") is not None else ""
-        out.append(Message("system",
-            f'The user is reading "{p.get("fileName") or "a document"}".\n'
+def _pin_block(p: dict[str, Any]) -> str:
+    """One pin, worded exactly as the SPA's old buildPinPreamble."""
+    page = f", page {p['page']}" if p.get("page") is not None else ""
+    return (f'The user is reading "{p.get("fileName") or "a document"}".\n'
             f'Relevant excerpt ({p.get("kind") or "page"}{page}):\n\n'
             f'"""\n{p.get("text") or ""}\n"""\n\n'
             "Use this excerpt as primary context for the user's question. If it does "
-            "not contain the answer, say so or use the document search tool if available."))
-    return out
+            "not contain the answer, say so or use the document search tool if available.")
+
+
+def pin_messages(pins: list[dict[str, Any]]) -> list[Message]:
+    """All pins as ONE system message (blocks separated by a blank line), or
+    none. One, not one per pin: strict templates accept a single leading
+    system message only (final review I3)."""
+    if not pins:
+        return []
+    return [Message("system", "\n\n".join(_pin_block(p) for p in pins))]
 
 
 def time_line(now: datetime, tz_name: str | None) -> str:
@@ -106,6 +120,21 @@ def _passages_block(name: str, passages: list[dict[str, Any]]) -> str:
         page = f" (page {p['page']})" if p["page"] is not None else ""
         lines += [f"[{i}]{page}", p["text"], ""]
     return "\n".join(lines).strip()
+
+
+def _merge_same_role(messages: list[Message]) -> list[Message]:
+    """Join consecutive same-role messages (content with a blank line between,
+    attachments in order), so user/assistant strictly alternate. History can
+    hold two user turns in a row: an empty or failed reply isn't sent back."""
+    out: list[Message] = []
+    for m in messages:
+        if out and out[-1].role == m.role:
+            prev = out[-1]
+            out[-1] = Message(prev.role, "\n\n".join(c for c in (prev.content, m.content) if c),
+                              attachments=prev.attachments + m.attachments)
+        else:
+            out.append(m)
+    return out
 
 
 def _marker(meta: dict[str, Any]) -> str:
@@ -185,10 +214,9 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     else:
         parts = []
     parts.append(time_line(turn.now, turn.timezone))
-    volatile = Message("system", "\n\n".join(parts))
+    volatile = "\n\n".join(parts)
     pins = pin_messages(turn.pins)
-    current = Message("user", turn.text, attachments=turn.attachments)
-    fixed_chars = sum(len(m.content) for m in (*pins, volatile, current))
+    fixed_chars = sum(len(m.content) for m in pins) + len(volatile) + 2 + len(turn.text)
     items, n_messages, n_attachments = _fit_history(turn.history, fixed_chars, len(turn.attachments),
                                                     turn.window, cfg)
     wanted = [(i.stored.id, a["ordinal"]) for i in items for a in i.keep]
@@ -208,9 +236,19 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
         kept = tuple(blobs[(i.stored.id, a["ordinal"])] for a in i.keep
                      if (i.stored.id, a["ordinal"]) in blobs)
         history_messages.append(Message(i.stored.role, content, attachments=kept))
+    history_messages = _merge_same_role(history_messages)
+    # The new message: the volatile block first, then what the user typed. An
+    # unanswered user turn at the end of history (its reply failed) joins it
+    # between the two, so the prompt still ends on exactly one user message
+    # that leads with the volatile block.
+    current = Message("user", turn.text, attachments=turn.attachments)
+    if history_messages and history_messages[-1].role == "user":
+        current = _merge_same_role([history_messages.pop(), current])[0]
+    current = Message("user", "\n\n".join(c for c in (volatile, current.content) if c),
+                      attachments=current.attachments)
     notes = [pre.note] if pre.note else []
     if n_messages or n_attachments:
         notes.append({"kind": "trimmed", "messages": n_messages, "attachments": n_attachments})
         logger.debug("history trimmed: %d messages, %d attachments (window %s)",
                      n_messages, n_attachments, turn.window)
-    return BuiltContext([*pins, *history_messages, volatile, current], notes, bool(pre.passages))
+    return BuiltContext([*pins, *history_messages, current], notes, bool(pre.passages))

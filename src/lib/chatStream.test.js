@@ -29,4 +29,13 @@ describe('chatStream', () => {
         const text = 'data: {nope\r\n\r\ndata: {"type":"text-delta","delta":"a"}\r\n\r\ndata: [DONE]\r\n\r\n';
         expect(await collect(bodyOf(text, 5))).toEqual([{ type: 'text-delta', delta: 'a' }]);
     });
+
+    // Final review I4: the server sends `: keep-alive` comment frames during
+    // silent phases so proxies don't cut the stream; they carry no event.
+    it('ignores keep-alive comment frames, even split across reads', async () => {
+        const text = 'data: {"type":"text-delta","delta":"a"}\n\n: keep-alive\n\n: keep-alive\n\n'
+            + 'data: {"type":"text-delta","delta":"b"}\n\ndata: [DONE]\n\n';
+        expect(await collect(bodyOf(text, 7))).toEqual([
+            { type: 'text-delta', delta: 'a' }, { type: 'text-delta', delta: 'b' }]);
+    });
 });

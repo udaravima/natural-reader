@@ -8,6 +8,7 @@ import { applyEvent } from '../lib/chatEvents';
 import { describeRefusal } from '../lib/apiErrors';
 import { addPin as addPinReducer, removePin as removePinReducer, MAX_PINS } from './pins';
 import { INFERENCE_DEFAULTS, toWireSettings, truncationMessage } from './inference';
+import { supportedKnobs } from '../lib/modelIds';
 
 const SENTENCE_TERMINATOR = /(?<=[.!?])\s+/;
 const MIN_TTS_LENGTH = 5;
@@ -65,6 +66,8 @@ export function useChatEngine({
     pinsRef.current = pins;
     const [isStreaming, setIsStreaming] = useState(false);
     const [availableModels, setAvailableModels] = useState([]);
+    const availableModelsRef = useRef([]);   // read inside sendMessage without re-creating it
+    availableModelsRef.current = availableModels;
     // Daily inference budget from the gateway (server mode only): null =
     // unknown or unlimited; {remaining_tokens, reset_at} otherwise.
     const [inferenceBudget, setInferenceBudget] = useState(null);
@@ -471,7 +474,8 @@ export function useChatEngine({
                 })),
             },
             model: selectedModel,
-            settings: toWireSettings(inferenceForThisMsg),
+            settings: toWireSettings(inferenceForThisMsg,
+                supportedKnobs(availableModelsRef.current.find((m) => m.id === selectedModel))),
             context: { doc_id: currentDocId || null, timezone: browserTimezone() },
             // Always sent: the server uses it only when this turn creates the chat
             // (a retry after a first send that failed on the network included).
@@ -506,7 +510,15 @@ export function useChatEngine({
                         continue;
                     }
                     updateAssistant((m) => applyEvent(m, ev));
-                    if (ev.type === 'text-delta') {
+                    if (ev.type === 'text-start' && replyText) {
+                        // A later step's text is a new paragraph (as applyEvent
+                        // does); read aloud, it also ends the sentence before it.
+                        replyText += '\n\n';
+                        if (modeForThisMsg === 'streaming') {
+                            sentenceBufferRef.current += '\n\n';
+                            flushBufferedSentences();
+                        }
+                    } else if (ev.type === 'text-delta') {
                         replyText += ev.delta || '';
                         if (modeForThisMsg === 'streaming') {
                             sentenceBufferRef.current += ev.delta || '';

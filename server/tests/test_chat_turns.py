@@ -178,8 +178,8 @@ async def test_unknown_fields_are_422(db_conn, app):
 async def test_bad_timezone_still_streams(db_conn, app):
     r = await _post(app, await member(db_conn, "alice"), body={**BODY, "context": {"timezone": "Mars/Olympus"}})
     assert r.status_code == 200
-    volatile = app[1].calls[0]["messages"][-2].content
-    assert volatile.endswith("(UTC)")
+    volatile, question = app[1].calls[0]["messages"][-1].content.rsplit("\n\n", 1)
+    assert volatile.endswith("(UTC)") and question == "Hi"
 
 
 async def test_bare_model_names_are_canonicalized(db_conn, app):
@@ -226,6 +226,9 @@ class _StuckRouter:
 
     async def capabilities(self, model_id: str) -> Capabilities:
         return Capabilities(tools=True, thinking=True, vision=True, audio=None, context_window=None)
+
+    def provider_kind(self, model_id: str) -> str | None:
+        return "ollama"
 
     def stream_chat(self, model_id, messages, tools, settings):
         return self._gen()
@@ -335,3 +338,132 @@ async def test_orchestrator_exception_ends_in_internal_error_then_done(db_conn, 
                           "message": chat_turns.INTERNAL_ERROR_MESSAGE}
     assert frames[-1] == "[DONE]"
     assert "secret" not in r.text and "12345" not in r.text
+
+
+# ---- Final review I1: a disconnect before the stream starts ----
+
+async def test_disconnect_before_the_stream_starts_releases_the_claim(db_conn, app):
+    """Send then Stop at once: the client is gone before the response starts.
+    begin_turn has already committed the claim in the handler. Starlette
+    cancels the response while it is still sending `http.response.start`, so
+    `_sse` (and so run_turn) never runs, and run_turn's own finally never
+    saves anything. The claim must still be released and the empty reply
+    saved 'aborted', or the resend is 409'd for ~60 s.
+
+    Where the cancellation lands: anyio never cancels a task that hasn't
+    started, so the response task always runs up to its first real
+    suspension. uvicorn's h11 `send` returns without suspending once the
+    client is gone, so there the stream starts and run_turn's own cancel
+    path saves `aborted`; the leak needs a `send(http.response.start)` that
+    suspends (uvicorn under write flow control, or another ASGI server). This
+    test's `send` yields on the start message to put the cancellation there."""
+    application, _, current = app
+    alice = await member(db_conn, "alice")
+    current["p"] = alice
+    body = json.dumps(BODY).encode()
+    receive_q: asyncio.Queue = asyncio.Queue()
+    await receive_q.put({"type": "http.request", "body": body, "more_body": False})
+    await receive_q.put({"type": "http.disconnect"})   # queued before the handler even returns
+    sent: list = []
+
+    async def receive():
+        return await receive_q.get()
+
+    async def send(message):
+        sent.append(message)
+        if message["type"] == "http.response.start":
+            await asyncio.sleep(0.01)   # a transport write that yields to the loop
+
+    await asyncio.wait_for(application(_turn_scope(body), receive, send), 5)
+    assert not any(m.get("body", b"").startswith(b"data: ") for m in sent), "the stream must not have started"
+
+    assert (await _one(db_conn, "SELECT active_turn_id FROM chat_sessions WHERE id='s-1'"))[0] is None
+    status, reason, content = await _one(
+        db_conn, "SELECT status, finish_reason, content FROM chat_messages WHERE role='assistant'")
+    assert (status, reason, content) == ("aborted", "aborted", "")
+    kinds = [r[0] for r in await (await db_conn.execute(
+        "SELECT kind FROM chat_events WHERE session_id='s-1' ORDER BY id")).fetchall()]
+    assert kinds == ["aborted"]
+
+    again = await _post(app, alice)
+    assert again.status_code == 200 and _frames(again.text)[-2]["type"] == "finish"
+
+
+# ---- Final review I4: SSE keep-alive during silent phases ----
+
+class _PausingRouter(_StuckRouter):
+    """Yields, goes quiet for `pause` seconds (a tool run, a long prompt
+    evaluation), then finishes normally."""
+
+    def __init__(self, pause: float) -> None:
+        self._pause = pause
+
+    async def _gen(self):
+        yield TextDelta("Hi")
+        await asyncio.sleep(self._pause)
+        yield TextDelta(" there.")
+        yield Usage(5, 2)
+        yield Finish("stop")
+
+
+async def test_a_silent_phase_sends_keep_alive_comments_and_the_turn_still_completes(db_conn, app, monkeypatch):
+    monkeypatch.setattr(chat_turns, "SSE_KEEPALIVE_S", 0.05)
+    monkeypatch.setattr(chat_turns, "get_router", lambda: _PausingRouter(0.3))
+    r = await _post(app, await member(db_conn, "alice"))
+    assert r.status_code == 200
+    raw = r.text.split("\n\n")
+    assert raw.count(": keep-alive") >= 3   # ~0.3 s of silence / 0.05 s
+    # Keep-alives sit BETWEEN events: the one delta before the pause, then the rest.
+    first_ka = raw.index(": keep-alive")
+    assert '"delta":"Hi"' in raw[first_ka - 1] and '"delta":" there."' in raw[first_ka + raw[first_ka:].index(
+        next(f for f in raw[first_ka:] if f != ": keep-alive"))]
+    frames = _frames(r.text)
+    assert [f["type"] for f in frames[:-1] if isinstance(f, dict)][-1] == "finish" and frames[-1] == "[DONE]"
+    assert [f["seq"] for f in frames[:-1]] == list(range(1, len(frames)))
+    row = await _one(db_conn, "SELECT status, content FROM chat_messages WHERE role='assistant'")
+    assert row == ("complete", "Hi there.")
+    assert (await _one(db_conn, "SELECT active_turn_id FROM chat_sessions WHERE id='s-1'"))[0] is None
+
+
+async def test_no_keep_alive_when_events_keep_coming(db_conn, app, monkeypatch):
+    monkeypatch.setattr(chat_turns, "SSE_KEEPALIVE_S", 5.0)
+    r = await _post(app, await member(db_conn, "alice"))
+    assert ": keep-alive" not in r.text
+
+
+async def test_disconnect_during_a_silent_phase_saves_aborted_and_releases_the_claim(db_conn, app, monkeypatch):
+    """I4 runs each wait for the next event as its own task. A hang-up while
+    the turn is silent (here: after a keep-alive, the model stuck after "Hi")
+    lands in that wait, not in run_turn, and must still end the turn:
+    'aborted' with the partial text, claim released."""
+    monkeypatch.setattr(chat_turns, "SSE_KEEPALIVE_S", 0.05)
+    application, _, current = app
+    current["p"] = await member(db_conn, "alice")
+    monkeypatch.setattr(chat_turns, "get_router", lambda: _StuckRouter(asyncio.Event()))
+    body = json.dumps(BODY).encode()
+    receive_q: asyncio.Queue = asyncio.Queue()
+    await receive_q.put({"type": "http.request", "body": body, "more_body": False})
+    kept_alive = asyncio.Event()
+
+    async def receive():
+        return await receive_q.get()
+
+    async def send(message):
+        if message.get("body") == chat_turns.KEEPALIVE_FRAME:
+            kept_alive.set()
+
+    task = asyncio.create_task(application(_turn_scope(body), receive, send))
+    await asyncio.wait_for(kept_alive.wait(), 5)
+    await receive_q.put({"type": "http.disconnect"})
+    await asyncio.wait_for(task, 5)
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 5
+    row = claim = None
+    while loop.time() < deadline:
+        row = await _one(db_conn, "SELECT status, content FROM chat_messages WHERE role='assistant'")
+        claim = (await _one(db_conn, "SELECT active_turn_id FROM chat_sessions WHERE id='s-1'"))[0]
+        if row[0] == "aborted" and claim is None:
+            break
+        await asyncio.sleep(0.05)
+    assert row == ("aborted", "Hi") and claim is None

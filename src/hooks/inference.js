@@ -25,10 +25,18 @@ export const patchForModel = (map, model, patch) => ({
 
 // The turn body's `settings` (C1 spec §7.1). An unset value is null and the
 // server leaves it out of the provider request, so a model's own tuned
-// defaults (its Modelfile values) stay in force.
-export const toWireSettings = (settings) => {
+// defaults (its Modelfile values) stay in force. `knobs` is supportedKnobs()
+// for the chosen model: a knob its provider doesn't honour goes as null, so a
+// num_ctx left over from an Ollama model can't set the server's trimming
+// window for an OpenAI-kind one. Omitted = send everything.
+export const toWireSettings = (settings, knobs = {}) => {
     const s = { ...INFERENCE_DEFAULTS, ...(settings || {}) };
-    return { think: s.think, num_ctx: s.numCtx, keep_alive: s.keepAlive, num_predict: s.numPredict };
+    return {
+        think: s.think,
+        num_ctx: knobs.numCtx === false ? null : s.numCtx,
+        keep_alive: knobs.keepAlive === false ? null : s.keepAlive,
+        num_predict: s.numPredict,
+    };
 };
 
 export const migrateLegacyThinking = (bool) => (bool ? 'on' : 'off');

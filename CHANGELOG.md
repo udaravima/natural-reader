@@ -40,6 +40,25 @@ All notable changes to this project will be documented in this file.
   model isn't available.") instead of forwarding it and surfacing a provider error.
 - **The embedding model no longer appears in the chat model picker.** Picking it
   always failed; `GET /v1/inference/models` now omits `EMBEDDING_MODEL`.
+- **Stopping a reply the moment you send it no longer locks the chat.** A Stop
+  (or closed tab) before the reply started streaming used to leave the chat
+  refusing new messages ("A reply is still being written in this chat.") for
+  about a minute. The empty reply is now marked "Stopped" at once.
+- **One stalled model provider no longer empties the model picker.** A provider
+  that connects but never answers is now given 5 seconds to list its models,
+  then reported unreachable; the other providers' models still show, and Send
+  keeps working.
+- **Prompts now fit strict chat templates (Gemma, Mistral and similar on
+  vLLM).** The prompt has at most one system message, first, and user and
+  assistant turns strictly alternate, as those templates require. Before, such
+  a model rejected every chat from its second message with a provider error.
+- **Long silent phases no longer get cut by a proxy.** While a tool runs or the
+  model reads a long prompt, the server now sends a keep-alive every 15
+  seconds, so a proxy's idle timeout (nginx 60 s, Cloudflare 100 s) doesn't end
+  the reply early.
+- **Replies that searched before answering are readable.** Text the model wrote
+  before and after a tool call used to run together ("Let me search.The
+  answer…"); each part is now its own paragraph.
 
 ### Changed
 

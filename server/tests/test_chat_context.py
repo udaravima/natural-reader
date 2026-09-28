@@ -103,19 +103,21 @@ async def test_prefetch_miss_disabled_unreadable_and_failure_cost_nothing_visibl
     assert (await prefetch(DOC, "q", ChatConfig())).passages == []
 
 
-async def test_message_order_pins_history_volatile_then_the_question(search, monkeypatch):
+async def test_message_order_pins_history_then_volatile_and_question_in_one_user_message(search, monkeypatch):
     search["rows"] = [{"page": 3, "score": 0.9, "text": "passage text"}]
     history = [StoredMessage("u1", "user", "earlier q", []), StoredMessage("a1", "assistant", "earlier a", [])]
     built = await build_context(_turn(doc=DOC, pins=[{"text": "pinned"}], history=history), ChatConfig())
-    roles = [(m.role, m.content[:12]) for m in built.messages]
-    assert roles[0][0] == "system" and "pinned" in built.messages[0].content
+    assert built.messages[0].role == "system" and "pinned" in built.messages[0].content
     assert [m.content for m in built.messages[1:3]] == ["earlier q", "earlier a"]
-    volatile = built.messages[3]
-    assert volatile.role == "system"
-    assert volatile.content.startswith(PREFETCH_PREAMBLE.format(name="Thesis.pdf"))
-    assert "[1] (page 3)\npassage text" in volatile.content
-    assert volatile.content.endswith("Current time: 2026-09-27 00:54 (Asia/Colombo)")
-    assert built.messages[4] == Message("user", "What does chapter 2 say?")
+    # Final review I3: the volatile block is no longer a mid-list system
+    # message (strict templates raise on it); it leads the new user message.
+    last = built.messages[3]
+    assert len(built.messages) == 4 and last.role == "user"
+    volatile, question = last.content.rsplit("\n\n", 1)
+    assert volatile.startswith(PREFETCH_PREAMBLE.format(name="Thesis.pdf"))
+    assert "[1] (page 3)\npassage text" in volatile
+    assert volatile.endswith("Current time: 2026-09-27 00:54 (Asia/Colombo)")
+    assert question == "What does chapter 2 say?"
     assert built.prefetch_hit and built.notes[0]["kind"] == "prefetch"
 
 
@@ -124,21 +126,64 @@ async def test_a_prefetch_miss_still_tells_the_model_which_document_is_open(sear
     # small model sent "Zephyr station" questions to web_search every time.
     search["rows"] = [{"page": 1, "score": 0.2, "text": "weak"}]
     built = await build_context(_turn(doc=DOC), ChatConfig())
-    volatile = built.messages[-2]
-    assert volatile.content.startswith(OPEN_DOC_LINE.format(name="Thesis.pdf"))
-    assert "search_document" in volatile.content
+    last = built.messages[-1]
+    assert last.content.startswith(OPEN_DOC_LINE.format(name="Thesis.pdf"))
+    assert "search_document" in last.content
     assert not built.prefetch_hit
 
     no_doc = await build_context(_turn(doc=None), ChatConfig())
-    assert no_doc.messages[-2].content == "Current time: 2026-09-27 00:54 (Asia/Colombo)"
+    assert no_doc.messages == [Message("user", "Current time: 2026-09-27 00:54 (Asia/Colombo)\n\n"
+                                               "What does chapter 2 say?")]
     unindexed = await build_context(_turn(doc=ReadableDoc(DOC.doc_id, "Thesis.pdf", "extracting")), ChatConfig())
-    assert "search_document" not in unindexed.messages[-2].content
+    assert "search_document" not in unindexed.messages[-1].content
+
+
+def _assert_strict_template_shape(messages, time_text="Current time: 2026-09-27 00:54 (Asia/Colombo)"):
+    """What Gemma/Mistral-style chat templates accept: at most one system
+    message, only first; then user/assistant strictly alternating, starting
+    and ending on user; the last user message carries the volatile block."""
+    systems = [i for i, m in enumerate(messages) if m.role == "system"]
+    assert systems in ([], [0]), f"system messages at {systems}"
+    rest = messages[1:] if systems else messages
+    roles = [m.role for m in rest]
+    assert roles == ["user", "assistant"] * (len(roles) // 2) + ["user"], roles
+    assert time_text in rest[-1].content
+
+
+async def test_the_prompt_fits_strict_chat_templates(search, monkeypatch):
+    """Final review I3: vLLM's Gemma/Mistral templates raise on any system
+    message after the first and on two same-role messages in a row."""
+    search["rows"] = [{"page": 3, "score": 0.9, "text": "passage text"}]
+    img = Attachment("image", "image/png", "QQ==", "a.png")
+
+    async def fake_bytes(wanted):
+        return {w: img for w in wanted}
+
+    monkeypatch.setattr(ctx_mod.store, "load_attachment_bytes", fake_bytes)
+    meta = {"id": "i", "kind": "image", "name": "a.png", "mimeType": "image/png", "size": 4, "ordinal": 0}
+    # Two pins, and a history with two user turns in a row (a reply that
+    # failed and was skipped) and a trailing unanswered user turn.
+    history = [StoredMessage("u1", "user", "q1", [meta]), StoredMessage("u2", "user", "q2", []),
+               StoredMessage("a2", "assistant", "a2", []), StoredMessage("u3", "user", "q3 unanswered", [])]
+    now_att = Attachment("image", "image/png", "Qg==", "now.png")
+    pins = [{"text": "pin one"}, {"text": "pin two"}]
+    built = await build_context(_turn(doc=DOC, pins=pins, history=history, attachments=(now_att,)), ChatConfig())
+    m = built.messages
+    _assert_strict_template_shape(m)
+    # Both pins, each worded as before, in ONE leading system message.
+    assert m[0].content == "\n\n".join(pin_messages([p])[0].content for p in pins)
+    assert m[1] == Message("user", "q1\n\nq2", attachments=(img,))
+    assert m[2].content == "a2"
+    # The unanswered turn joins the new message, after the volatile block.
+    assert m[3].content.startswith(PREFETCH_PREAMBLE.format(name="Thesis.pdf"))
+    assert m[3].content.endswith("q3 unanswered\n\nWhat does chapter 2 say?")
+    assert m[3].attachments == (now_att,)
 
 
 async def test_no_window_means_no_trimming(search):
-    history = [StoredMessage(f"m{i}", "user", "x" * 1000, []) for i in range(50)]
+    history = [StoredMessage(f"m{i}", "user" if i % 2 == 0 else "assistant", "x" * 1000, []) for i in range(50)]
     built = await build_context(_turn(history=history, window=None), ChatConfig())
-    assert len(built.messages) == 52 and built.notes == []
+    assert len(built.messages) == 51 and built.notes == []
 
 
 async def test_old_attachments_go_before_old_turns_and_only_kept_bytes_load(search, monkeypatch):
@@ -175,7 +220,7 @@ async def test_missing_attachment_bytes_get_the_same_marker_as_a_trimmed_one(sea
 
     monkeypatch.setattr(ctx_mod.store, "load_attachment_bytes", fake_bytes)
     img = {"id": "gone", "kind": "image", "name": "gone.png", "mimeType": "image/png", "size": 9, "ordinal": 0}
-    history = [StoredMessage("u1", "user", "look at this", [img])]
+    history = [StoredMessage("u1", "user", "look at this", [img]), StoredMessage("a1", "assistant", "ok", [])]
     built = await build_context(_turn(history=history, window=None), ChatConfig())
     first = built.messages[0]
     assert first.attachments == ()

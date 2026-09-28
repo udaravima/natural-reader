@@ -174,3 +174,18 @@ async def test_compound_rejection_remembers_only_the_feature_that_fixed_it():
     # Request 4 (second call): reasoning_effort=medium, tools=False → 200 (tools remembered, not sent)
     assert [("reasoning_effort" in b, "tools" in b) for b in bodies] == [
         (True, True), (False, True), (False, False), (True, False)]
+
+
+async def test_models_that_are_not_json_is_a_provider_error_and_the_chat_still_streams():
+    """Final review M3: a proxy's HTML 200 on /models must be a ProviderError
+    (listing reports the provider failed), never a ValueError escaping into
+    stream_chat, which the orchestrator would call an internal_error."""
+    up = (FakeUpstream()
+          .on("GET", "/api/v1/models", lambda: httpx.Response(200, content=b"<html>login</html>"))
+          .on("POST", "/api/v1/chat/completions", lambda: sse(_delta(content="Hi"), _finish("stop"))))
+    provider = OpenAICompatProvider(CFG, up.client())
+    with pytest.raises(ProviderError) as ei:
+        await provider.list_models()
+    assert "<html>" not in ei.value.safe_message
+    chunks = await _collect(provider.stream_chat("vendor/model", HI, [], CallSettings()))
+    assert TextDelta("Hi") in chunks and chunks[-1] == Finish("stop")

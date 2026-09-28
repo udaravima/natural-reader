@@ -102,3 +102,19 @@ async def test_import_rejects_a_huge_createdAt(db_conn, app):
     assert r.json()["detail"]["error"] == "invalid_request"
     cur = await db_conn.execute("SELECT count(*) FROM chat_sessions")
     assert (await cur.fetchone())[0] == 0
+
+
+@pytest.mark.parametrize("legacy", [
+    {"messages": [{"id": "m-1", "role": "user", "content": "hi", "timestamp": 10 ** 20}]},
+    {"messages": [], "events": [{"ts": 10 ** 20, "kind": "sent", "message": "x"}]},
+    {"messages": [{"id": "m-1", "role": "user", "content": "hi", "timestamp": -1}]},
+])
+async def test_import_rejects_out_of_range_message_and_event_times(db_conn, app, legacy):
+    """Final review M6: past BIGINT these were a 500; bounded like createdAt."""
+    alice = await member(db_conn, "alice")
+    async with _client(app, alice) as c:
+        r = await c.post("/v1/chat/sessions/import", json={"title": "Old chat", **legacy})
+    assert r.status_code == 422
+    assert r.json()["detail"]["error"] == "invalid_request"
+    cur = await db_conn.execute("SELECT count(*) FROM chat_sessions")
+    assert (await cur.fetchone())[0] == 0

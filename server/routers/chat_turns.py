@@ -8,12 +8,13 @@ byte, failures arrive as an `error` event.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
+import inspect
 import json
 import logging
-from contextlib import aclosing
-from typing import Annotated, Any, AsyncIterator, Literal
+from typing import Annotated, Any, AsyncGenerator, AsyncIterator, Awaitable, Callable, Literal
 
 from fastapi import APIRouter, Depends, Path as PathParam, Request
 from fastapi.responses import StreamingResponse
@@ -23,7 +24,7 @@ from starlette.types import Receive, Scope, Send
 from ..auth.deps import Principal, require_capability
 from ..chat import store
 from ..chat.config import get_chat_config
-from ..chat.orchestrator import TurnRequest, run_turn
+from ..chat.orchestrator import TurnRequest, abandon_turn, run_turn
 from ..db import get_pool, is_ready
 from ..http_body import read_capped_body
 from ..http_errors import refusal
@@ -37,6 +38,13 @@ router = APIRouter(prefix="/v1/chat/sessions", tags=["chat-turns"])
 SessionId = Annotated[str, PathParam(pattern=r"^[A-Za-z0-9._-]{1,128}$")]
 NOT_FOUND = "This chat doesn't exist or you don't have access."
 INTERNAL_ERROR_MESSAGE = "Something went wrong on the server."
+# Seconds of silence (a tool running, a long prompt evaluation before the
+# first token) after which an SSE comment frame is sent, so a proxy's idle
+# timeout (nginx proxy_read_timeout 60 s, Cloudflare 100 s) doesn't cut a
+# legitimate reply (final review I4). readEvents drops frames with no `data:`.
+SSE_KEEPALIVE_S = 15.0
+KEEPALIVE_FRAME = b": keep-alive\n\n"
+_STOPPING: set[asyncio.Future] = set()   # run_turn steps finishing their cleanup after a hang-up
 
 
 class AttachmentIn(BaseModel):
@@ -119,23 +127,73 @@ async def _capabilities(llm: Any, model_id: str) -> Capabilities:
         return Capabilities()
 
 
-async def _sse(events: AsyncIterator[dict]) -> AsyncIterator[bytes]:
+def _frame(ev: dict) -> bytes:
+    return f"data: {json.dumps(ev, ensure_ascii=False, separators=(',', ':'))}\n\n".encode()
+
+
+async def _stop(pending: asyncio.Future | None, events: AsyncGenerator[dict, None]) -> None:
+    """Close run_turn as a disconnect does: a hang-up saves `aborted`.
+
+    `pending` is the __anext__ still in flight, if any. Cancelling it raises
+    CancelledError inside run_turn where it waits, and run_turn's own finally
+    saves `aborted` and releases the claim; then it is closed. Otherwise
+    run_turn is suspended at a yield (or already finished) and aclose() does
+    the same from there. Trap: a cancelled request scope (anyio) re-cancels
+    every await. If that interrupts the wait below, run_turn is still running
+    its own cleanup in `pending`; calling aclose() on it then would raise
+    "already running", so the cancellation propagates instead and `pending`
+    finishes the cleanup on its own."""
+    if pending is not None:
+        if not pending.done():
+            pending.cancel()
+            _STOPPING.add(pending)   # a strong reference, in case the wait below is interrupted
+            pending.add_done_callback(_STOPPING.discard)
+            await asyncio.wait({pending})
+        if not pending.cancelled():
+            pending.exception()   # retrieved: an unread failure would log "never retrieved"
+    await events.aclose()
+
+
+async def _sse(events: AsyncGenerator[dict, None]) -> AsyncIterator[bytes]:
     """Frame each orchestrator event as one SSE `data:` line, always ending
     with `[DONE]` (ruling R5). `error` is terminal in `events` itself, but if
     the orchestrator raises OUT of its own handling (a bug, not a refusal) we
     still owe the client a terminal frame instead of a bare disconnect — never
-    the exception's text, only a generic internal_error (spec §10)."""
-    # aclosing: a client that hangs up closes run_turn too, which saves `aborted`.
+    the exception's text, only a generic internal_error (spec §10).
+
+    Keep-alive (final review I4): after SSE_KEEPALIVE_S seconds with no event,
+    a comment frame. Trap: the wait for the next event must never be
+    cancelled by that timer, because cancelling an async generator's pending
+    __anext__ closes the generator, i.e. ends the turn. So each __anext__ runs
+    as its own task, and a timeout just waits on the SAME task again. The
+    first event is awaited directly: run_turn reaches its first yield without
+    suspending, so once _sse has started, run_turn has too, and its own finally
+    owns the end of the turn (see _EagerCloseStreamingResponse)."""
     seq = 0
+    pending: asyncio.Future | None = None
     try:
-        async with aclosing(events) as stream:
-            async for ev in stream:
+        try:
+            ev = await events.__anext__()
+            while True:
                 seq = ev.get("seq", seq + 1)
-                yield f"data: {json.dumps(ev, ensure_ascii=False, separators=(',', ':'))}\n\n".encode()
+                yield _frame(ev)
+                pending = asyncio.ensure_future(events.__anext__())
+                while not (await asyncio.wait({pending}, timeout=SSE_KEEPALIVE_S))[0]:
+                    yield KEEPALIVE_FRAME
+                step, pending = pending, None
+                try:
+                    ev = step.result()
+                except StopAsyncIteration:
+                    break
+        finally:
+            # A client that hangs up closes run_turn too, which saves `aborted`.
+            await _stop(pending, events)
+    except StopAsyncIteration:
+        pass   # run_turn ended before its first event (it never does today)
     except Exception:
         logger.exception("Chat turn stream failed unexpectedly")
-        err = {"type": "error", "seq": seq + 1, "code": "internal_error", "message": INTERNAL_ERROR_MESSAGE}
-        yield f"data: {json.dumps(err, ensure_ascii=False, separators=(',', ':'))}\n\n".encode()
+        yield _frame({"type": "error", "seq": seq + 1, "code": "internal_error",
+                      "message": INTERNAL_ERROR_MESSAGE})
     yield b"data: [DONE]\n\n"
 
 
@@ -155,16 +213,31 @@ class _EagerCloseStreamingResponse(StreamingResponse):
     meanwhile (the heartbeat task keeps the claim looking alive). Force it
     deterministically instead: whatever `__call__` returns through (normal
     completion, the disconnect race described above, or another exception),
-    close the body iterator ourselves. A second close (the `aclosing` inside
-    `_sse` already ran) is a no-op on an exhausted or already-closed async
-    generator.
+    close the body iterator ourselves. A second close (`_sse` already closed
+    run_turn) is a no-op on an exhausted or already-closed async generator.
+
+    Final review I1: the disconnect can also land before `_sse` ever starts
+    (while `http.response.start` is being sent). Closing a generator that
+    never started runs none of its body, so run_turn never starts either and
+    nothing would release the claim begin_turn already committed. If run_turn
+    is still unstarted after the close, `abandon` ends the turn instead.
+    Never both: once run_turn has started, its own finally owns that.
     """
+
+    def __init__(self, content: AsyncIterator[bytes], *, turn: AsyncGenerator[dict, None],
+                 abandon: Callable[[], Awaitable[None]], **kwargs: Any) -> None:
+        super().__init__(content, **kwargs)
+        self._turn = turn
+        self._abandon = abandon
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
             await super().__call__(scope, receive, send)
         finally:
             await self.body_iterator.aclose()
+            if inspect.getasyncgenstate(self._turn) == inspect.AGEN_CREATED:
+                await self._turn.aclose()   # so nothing can start it later
+                await self._abandon()
 
 
 @router.post("/{session_id}/turns")
@@ -224,5 +297,6 @@ async def post_turn(session_id: SessionId, request: Request,
                               keep_alive=body.settings.keep_alive, num_predict=body.settings.num_predict),
         doc_id=body.context.doc_id, timezone=body.context.timezone)
     events = run_turn(req, claim, router=llm, cfg=cfg, deployment_budget=budget)
-    return _EagerCloseStreamingResponse(_sse(events), media_type="text/event-stream",
+    return _EagerCloseStreamingResponse(_sse(events), turn=events, abandon=lambda: abandon_turn(req, claim),
+                                        media_type="text/event-stream",
                                         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from server.chat import tools as chat_tools
@@ -95,6 +97,23 @@ async def test_a_crashing_tool_becomes_an_error_result(monkeypatch):
     ctx = ToolContext("u", None)
     run = await run_tool(ToolCall("c1", "web_search", {"query": "x"}), ctx, available_tools(ctx))
     assert run.result == {"error": "web_search failed: RuntimeError"}
+
+
+async def test_a_tool_failure_logs_only_the_exception_type_at_warning(monkeypatch, caplog):
+    """Final review M8: an exception's message can quote the user's query;
+    no user text at WARNING+ (spec §10). The full exception is DEBUG only."""
+    async def boom(query, count):
+        raise RuntimeError(f"no results for {query!r}")
+    monkeypatch.setattr(ws_tool, "web_search", boom)
+    ctx = ToolContext("u", None)
+    with caplog.at_level(logging.DEBUG, logger="server.chat.tools"):
+        await run_tool(ToolCall("c1", "web_search", {"query": "my private question"}), ctx, available_tools(ctx))
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warnings and all("my private question" not in r.getMessage() and r.exc_info is None
+                            for r in warnings)
+    assert "RuntimeError" in warnings[0].getMessage()
+    assert any("my private question" in (r.getMessage() + str(r.exc_info)) for r in caplog.records
+               if r.levelno == logging.DEBUG)
 
 
 async def test_web_search_validates_count_and_summarizes(monkeypatch):

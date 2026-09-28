@@ -306,6 +306,11 @@ Full `.env.example` block: [`../.env.example`](../.env.example), just after
 > them) may still buffer event streams. The symptom is a reply that appears
 > all at once after a long pause. Turn off buffering for `/v1/chat/` in that
 > proxy.
+>
+> While a reply is silent (a tool running, a long prompt being read before
+> the first word), the server sends a `: keep-alive` comment every 15 seconds,
+> so the proxy's idle/read timeout must be longer than 15 s. nginx's default
+> `proxy_read_timeout` (60 s) is fine.
 
 ### Operational notes
 

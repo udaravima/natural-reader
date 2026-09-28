@@ -1,11 +1,13 @@
+import asyncio
 import logging
+import time
 
 import httpx
 import pytest
 
 from server.llm import router as llm_router
 from server.llm.router import Router, UnknownModel, load_provider_configs
-from server.llm.types import CallSettings, Message
+from server.llm.types import Capabilities, CallSettings, Message
 from server.tests.llm_fakes import FakeUpstream, ndjson
 
 DONE = {"message": {"content": ""}, "done": True, "done_reason": "stop", "eval_count": 1, "prompt_eval_count": 1}
@@ -123,7 +125,7 @@ async def test_one_failing_provider_is_omitted_and_reported():
     assert [m.id for m in models] == ["local:m"] and failed == ["cloud"]
 
 
-async def test_a_provider_whose_capabilities_fail_is_reported_not_fatal():
+async def test_a_provider_whose_capabilities_are_not_json_still_lists_with_unknown_capabilities():
     configs = load_provider_configs({
         "INFERENCE_PROVIDERS": "broken,working",
         "INFERENCE_BROKEN_KIND": "ollama", "INFERENCE_BROKEN_URL": "http://broken.test",
@@ -139,7 +141,38 @@ async def test_a_provider_whose_capabilities_fail_is_reported_not_fatal():
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
     models, failed = await Router(configs, client).list_models()
-    assert [m.id for m in models] == ["working:m2"] and failed == ["broken"]
+    # Final review M3: an HTML/garbage 200 from /api/show is "unknown", not a
+    # failed provider (and never a ValueError escaping the adapter).
+    assert sorted(m.id for m in models) == ["broken:m1", "working:m2"] and failed == []
+    broken = next(m for m in models if m.id == "broken:m1")
+    assert broken.capabilities == Capabilities()
+
+
+async def test_a_stalled_provider_times_out_and_the_others_still_list(monkeypatch, caplog):
+    """Final review I2: a provider that accepts the connection and then goes
+    quiet must not hold the whole listing (the SPA gives up at 8 s and
+    disables Send for every provider). It is reported failed after
+    LIST_TIMEOUT_S; the working provider still lists."""
+    monkeypatch.setattr(llm_router, "LIST_TIMEOUT_S", 0.2)
+    configs = load_provider_configs({
+        "INFERENCE_PROVIDERS": "stalled,working",
+        "INFERENCE_STALLED_KIND": "openai", "INFERENCE_STALLED_URL": "http://stalled.test/v1",
+        "INFERENCE_WORKING_KIND": "ollama", "INFERENCE_WORKING_URL": "http://working.test"})
+
+    async def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "stalled.test":
+            await asyncio.sleep(30)   # connected, then silent (well under httpx's 300 s read timeout)
+        if request.url.path == "/api/tags":
+            return httpx.Response(200, json={"models": [{"name": "m"}]})
+        return httpx.Response(200, json={"capabilities": ["tools"]})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    started = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="server.llm.router"):
+        models, failed = await Router(configs, client).list_models()
+    assert time.monotonic() - started < 5
+    assert [m.id for m in models] == ["working:m"] and failed == ["stalled"]
+    assert "stalled" in caplog.text
 
 
 async def test_complete_concatenates_text():

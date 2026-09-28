@@ -35,11 +35,13 @@ class MessageIn(BaseModel):
     docContext: dict[str, Any] | None = None
     stats: dict[str, Any] | None = None
     toolCalls: list[Any] | None = None
-    timestamp: int = 0
+    # Epoch milliseconds, bounded like ImportIn.createdAt: past BIGINT this
+    # was a 500 instead of a 422 (final review M6).
+    timestamp: int = Field(default=0, ge=0, le=10**13)
 
 
 class EventIn(BaseModel):
-    ts: int
+    ts: int = Field(ge=0, le=10**13)   # epoch milliseconds, bounded as above
     kind: str
     message: str = ""
 

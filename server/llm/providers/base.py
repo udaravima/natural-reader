@@ -82,6 +82,23 @@ def safe_error_message(raw: bytes | str) -> str:
     return _redact_secrets(text.strip())[:300]
 
 
+NOT_JSON_MESSAGE = "The provider sent a response that isn't JSON."
+
+
+def json_object(resp: httpx.Response) -> dict[str, Any]:
+    """A 200 body as a JSON object. Anything else (a proxy's HTML login or
+    error page, say) is a ProviderError with a fixed message, never a
+    ValueError: escaping the adapter, that would become an internal_error
+    instead of a provider error (final review M3). The body is never quoted."""
+    try:
+        body = resp.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        raise ProviderError(resp.status_code, NOT_JSON_MESSAGE)
+    return body
+
+
 def parse_arguments(raw: Any) -> dict[str, Any]:
     """Tool-call arguments as a dict. Invalid JSON becomes {}: the tool then
     reports what's missing to the model, which can recover (Review Focus 1)."""

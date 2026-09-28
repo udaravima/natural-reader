@@ -43,7 +43,7 @@ Resumable streams, per-user API keys, an admin screen for providers, tool approv
 7. Ask something that needs the web; ask the date.
 8. Run out of the daily budget: the existing notice, no retry storm.
 9. Pick a model from any configured provider; change per-model settings where that provider supports them.
-10. Rename, reload, delete and export a chat. Reload while a reply is still generating: the partial reply shows "still generating…" and completes.
+10. Rename, reload, delete and export a chat. Reload while a reply is still generating: as §5.4 specifies, a reload or close in the same tab is a client disconnect, so it aborts the reply and keeps the partial text, marked "Stopped". A chat open elsewhere (another tab or device) shows "still generating…" until the reply settles. *(Amended after the final review: this journey used to promise that the reply "completes" after a reload, which contradicted §5.4. A reply that outlives its connection is a C2 question, §12.)*
 
 ## 3. Architecture
 
@@ -169,6 +169,7 @@ A pipeline of **context stages**, each `async run(turn) -> ContextResult` (items
    - Cost when it doesn't help: one embedding call per turn with an open document.
 2. **Time in the prompt.** One line, e.g. `Current time: 2026-09-27 00:54 (Asia/Colombo)`, from the browser's timezone. The `current_time_date` tool is removed: a date question no longer costs a tool round.
 3. **Prompt order for reuse.** Ollama, vLLM and hosted providers reuse computation for a prompt's unchanged **prefix**. So the order is: system prompt → tool specs → pins → history → **volatile context** (prefetched passages, time) → the new message.
+   - **Shape (amended after the final review, I3):** strict chat templates (vLLM with Gemma or Mistral) accept one system message, only first, and strictly alternating user/assistant turns after it. So all pins are **one** leading system message; the volatile context is not a message of its own but the head of the new user message (`<volatile>` + blank line + the question); consecutive same-role history messages are merged. The order, and so the reusable prefix, is unchanged. The stored user message keeps only what the user typed.
    - **Counterintuitive:** the obvious place for the time is the top of the system prompt; that changes the prefix every turn and defeats reuse for the whole conversation.
    - **Deliberate change:** today pins sit right before the latest message (`useChatEngine.js:568`). Moving them after the system prompt keeps them in the reusable prefix. The risk is weaker attention to pins in long chats; parity journey 4 checks it, and pins move back if it regresses.
 4. **History budget.** Estimate tokens (characters ÷ 4, a deliberately rough heuristic, plus `CHAT_ATTACHMENT_TOKEN_ESTIMATE` per image or audio attachment) and fit the prompt to `context_window − CHAT_REPLY_RESERVE_TOKENS` in two passes:
@@ -351,6 +352,7 @@ No message text, prompts, attachment bytes or API keys at INFO or above.
 - **Showing old attachments after reload:** the bytes are stored (§7.3) and the model sees them, but the chat still shows metadata chips for them after a reload; serving them back to the browser needs its own endpoint and access check.
 - **A per-reply length cap:** the budget is checked between steps, so one runaway step (a model stuck repeating) can overshoot the day's budget by that step's output. The Stop button and the idle timeout are the bounds in C1.
 - **Library-wide retrieval, document descriptions, multi-round budgets**: C2.
+- **Explicit Stop vs. disconnect** (a turn that outlives its connection): today a same-tab reload or close is a disconnect, and a disconnect aborts the reply like Stop does (§5.4, journey 10). Separating them, e.g. `POST …/turns/{id}/stop` with the turn allowed to finish without a listener, borders on resumable streams above. A C2 design question.
 
 ## 13. Risks
 

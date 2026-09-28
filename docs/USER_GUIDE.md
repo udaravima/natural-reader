@@ -155,8 +155,9 @@ chat at a time — sending again while one is still streaming is blocked until
 it finishes or you stop it.
 
 **Picking a model:** the model picker in the chat sidebar is grouped by
-**provider** (for example "Ollama" and any other server your deployment has
-configured) and shows what each model can do — whether it supports thinking,
+**provider**, each group labelled with the provider's name as your deployment
+configured it (for example `ollama` or `local`, plus any other server your
+deployment has) and shows what each model can do — whether it supports thinking,
 tools, images, and so on. On the **Settings** page (Chat & inference section),
 the per-model controls (context window, keep-alive, thinking level, max reply
 tokens) only show the knobs the selected model's provider actually supports.
