@@ -30,6 +30,11 @@ PASSAGE_TEXT_CAP = 1500   # characters per prefetched passage
 PREFETCH_PREAMBLE = (
     'Passages retrieved from "{name}" for this question. Answer from them when they are enough; '
     "call search_document only if they don't contain what you need.")
+# Said on a prefetch miss: without it nothing in the prompt names the open
+# document, and a small model sends questions about it to web_search.
+OPEN_DOC_LINE = (
+    'The user has "{name}" open. Questions about names, terms or facts you don\'t recognise '
+    "are probably about it: use search_document before web_search.")
 _MARKER = "[{kind} {name} from earlier; no longer attached]"
 
 
@@ -173,7 +178,12 @@ class BuiltContext:
 
 async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     pre = await prefetch(turn.doc, turn.text, cfg)
-    parts = [_passages_block(pre.note["docName"], pre.passages)] if pre.passages else []
+    if pre.passages:
+        parts = [_passages_block(pre.note["docName"], pre.passages)]
+    elif turn.doc is not None and turn.doc.state == "indexed":
+        parts = [OPEN_DOC_LINE.format(name=turn.doc.name)]
+    else:
+        parts = []
     parts.append(time_line(turn.now, turn.timezone))
     volatile = Message("system", "\n\n".join(parts))
     pins = pin_messages(turn.pins)

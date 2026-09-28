@@ -5,7 +5,7 @@ import pytest
 
 from server.chat import context as ctx_mod
 from server.chat.config import ChatConfig, load_chat_config
-from server.chat.context import (PREFETCH_PREAMBLE, TurnInput, build_context, pin_messages,
+from server.chat.context import (OPEN_DOC_LINE, PREFETCH_PREAMBLE, TurnInput, build_context, pin_messages,
                                  prefetch, time_line)
 from server.chat.store import StoredMessage
 from server.llm.types import Attachment, Message
@@ -117,6 +117,22 @@ async def test_message_order_pins_history_volatile_then_the_question(search, mon
     assert volatile.content.endswith("Current time: 2026-09-27 00:54 (Asia/Colombo)")
     assert built.messages[4] == Message("user", "What does chapter 2 say?")
     assert built.prefetch_hit and built.notes[0]["kind"] == "prefetch"
+
+
+async def test_a_prefetch_miss_still_tells_the_model_which_document_is_open(search):
+    # Walk: with nothing retrieved, the prompt never named the document, so a
+    # small model sent "Zephyr station" questions to web_search every time.
+    search["rows"] = [{"page": 1, "score": 0.2, "text": "weak"}]
+    built = await build_context(_turn(doc=DOC), ChatConfig())
+    volatile = built.messages[-2]
+    assert volatile.content.startswith(OPEN_DOC_LINE.format(name="Thesis.pdf"))
+    assert "search_document" in volatile.content
+    assert not built.prefetch_hit
+
+    no_doc = await build_context(_turn(doc=None), ChatConfig())
+    assert no_doc.messages[-2].content == "Current time: 2026-09-27 00:54 (Asia/Colombo)"
+    unindexed = await build_context(_turn(doc=ReadableDoc(DOC.doc_id, "Thesis.pdf", "extracting")), ChatConfig())
+    assert "search_document" not in unindexed.messages[-2].content
 
 
 async def test_no_window_means_no_trimming(search):
