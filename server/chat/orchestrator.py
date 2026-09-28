@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import math
+import re
 import time
 from contextlib import aclosing
 from dataclasses import dataclass, field
@@ -25,7 +26,7 @@ from ..db import get_pool
 from ..llm.router import UnknownModel
 from ..llm.types import (Attachment, CallSettings, Capabilities, FeatureDropped, Finish, Message,
                          ProviderError, ProviderTimeout, ProviderUnavailable, ReasoningDelta,
-                         TextDelta, ToolCallReady, Usage)
+                         TextDelta, ToolCall, ToolCallReady, Usage)
 from ..services import inference_budget
 from ..services.doc_search import ReadableDoc, readable_doc
 from . import store
@@ -51,6 +52,12 @@ _FEATURE_NOTICE = {
 }
 _FEATURE_LOG = {"tools": "tool-fallback", "thinking": "think-fallback", "think_level": "think-fallback"}
 _BACKGROUND: set[asyncio.Task] = set()   # end-of-turn saves that outlive a cancelled request
+# A small model (llama3.2:3b) sometimes writes its tool call as reply text,
+# `{"name": ..., "parameters": {...}}`, often in a ```json fence. A step's
+# opening text is held while it could still be one, up to this many characters.
+TEXT_TOOLCALL_PROBE_CHARS = 2000
+_FENCE_OPEN = re.compile(r"```[\w+-]*")
+_FENCED = re.compile(r"```[\w+-]*\s*(.*?)\s*(?:```)?", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -115,6 +122,63 @@ def _usage_json(u: Usage) -> dict[str, Any]:
     return {"promptTokens": u.prompt_tokens, "completionTokens": u.completion_tokens, "estimated": u.estimated}
 
 
+class _TextProbe:
+    """Holds a step's opening text while it could still be a tool call
+    written as JSON: only whitespace so far, or `{`, or a code fence heading
+    for `{`. Anything else (and anything past TEXT_TOOLCALL_PROBE_CHARS) is
+    let through at once, so ordinary prose is never delayed."""
+
+    def __init__(self, active: bool) -> None:
+        self.active = active
+        self.held = ""
+
+    def feed(self, delta: str) -> str:
+        """The text to show now: "" while holding, else everything held so far."""
+        if not self.active:
+            return delta
+        self.held += delta
+        if len(self.held) <= TEXT_TOOLCALL_PROBE_CHARS and _may_be_json_object(self.held):
+            return ""
+        return self.release()
+
+    def release(self) -> str:
+        self.active = False
+        out, self.held = self.held, ""
+        return out
+
+
+def _may_be_json_object(text: str) -> bool:
+    s = text.lstrip()
+    if not s or s[0] == "{":
+        return True
+    if not s.startswith("```"):
+        return "```".startswith(s)   # "`" or "``": maybe a fence yet
+    rest = s[_FENCE_OPEN.match(s).end():].lstrip()   # past the fence and its language tag
+    return not rest or rest[0] == "{"
+
+
+def _text_tool_call(held: str, offered: list, step: int) -> ToolCall | None:
+    """`held` as a call to one of this step's tools, if it is exactly one JSON
+    object {"name": <tool>, "parameters" | "arguments": {...}} (an optional
+    "type": "function" too), fenced or not; else None."""
+    s = held.strip()
+    if s.startswith("```"):
+        s = _FENCED.fullmatch(s).group(1)
+    try:
+        obj = json.loads(s)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict) or obj.get("type", "function") != "function":
+        return None
+    arg_keys = [k for k in ("parameters", "arguments") if k in obj]
+    if set(obj) - {"name", "parameters", "arguments", "type"} or len(arg_keys) != 1:
+        return None
+    name, args = obj.get("name"), obj[arg_keys[0]]
+    if not isinstance(args, dict) or not isinstance(name, str) or name not in {t.name for t in offered}:
+        return None
+    return ToolCall(id=f"text_call_{step}", name=name, arguments=args)
+
+
 async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: ChatConfig,
                    deployment_budget: int | None) -> AsyncIterator[dict[str, Any]]:
     seq = 0
@@ -148,6 +212,29 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         offered = [] if caps.tools is False else available_tools(tool_ctx)
         messages = list(built.messages)
         rounds = 0
+
+        def say(delta: str) -> list[dict[str, Any]]:
+            """Show `delta` as this step's text: text-start before its first
+            piece. State is updated before the caller yields the events: a
+            cancellation lands AT a yield (fix round 1, item 2)."""
+            nonlocal text, open_text
+            if not delta:
+                return []
+            out = []
+            if not open_text:
+                open_text = True
+                # A later step's text is a new paragraph, not a run-on
+                # ("search.The answer"); chatEvents.js adds the same
+                # separator on text-start (final review M5).
+                if state.content:
+                    state.content += "\n\n"
+                out.append(ev("text-start", id=f"t{step}"))
+            text += delta
+            state.content += delta
+            state.pending_output = text + probe.held + reasoning
+            out.append(ev("text-delta", id=f"t{step}", delta=delta))
+            return out
+
         while True:
             if await _over_budget(req.user_id, deployment_budget):
                 yield ev("error", code="budget_exhausted", message=ERROR_TEXT["budget_exhausted"])
@@ -169,7 +256,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             calls: list = []
             usage: Usage | None = None
             finish = "stop"
-            open_text = open_reasoning = False
+            open_text = open_reasoning = tools_dropped = False
+            probe = _TextProbe(active=bool(tools_now))   # nothing to recover on a tools-off step
             last_flush = time.monotonic()
             async with aclosing(router.stream_chat(req.model_id, messages, [t.spec for t in tools_now],
                                                    req.settings)) as stream:
@@ -184,24 +272,16 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                         # AT a yield, and by then this chunk's text must already
                         # be reflected — same reason state.content is set before
                         # its yield too (fix round 1, item 2).
-                        state.pending_output = text + reasoning
+                        state.pending_output = text + probe.held + reasoning
                         yield ev("reasoning-delta", id=f"r{step}", delta=chunk.text)
                     elif isinstance(chunk, TextDelta):
                         if open_reasoning:
                             open_reasoning = False
                             yield ev("reasoning-end", id=f"r{step}")
-                        if not open_text:
-                            open_text = True
-                            # A later step's text is a new paragraph, not a run-on
-                            # ("search.The answer"); chatEvents.js adds the same
-                            # separator on text-start (final review M5).
-                            if state.content:
-                                state.content += "\n\n"
-                            yield ev("text-start", id=f"t{step}")
-                        text += chunk.text
-                        state.content += chunk.text
-                        state.pending_output = text + reasoning
-                        yield ev("text-delta", id=f"t{step}", delta=chunk.text)
+                        shown = probe.feed(chunk.text)
+                        state.pending_output = text + probe.held + reasoning
+                        for e in say(shown):
+                            yield e
                     elif isinstance(chunk, ToolCallReady):
                         if tools_now:   # a tools-off step cannot call tools
                             calls.append(chunk.call)
@@ -211,6 +291,10 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                     elif isinstance(chunk, Finish):
                         finish = chunk.reason
                     elif isinstance(chunk, FeatureDropped):
+                        if chunk.feature == "tools":   # this step's reply can't be a tool call
+                            tools_dropped = True
+                            for e in say(probe.release()):
+                                yield e
                         code, notice = _FEATURE_NOTICE[chunk.feature]
                         await _log_event(claim.session_id, _FEATURE_LOG[chunk.feature], notice)
                         yield ev("data-notice", code=code, message=notice)
@@ -219,13 +303,25 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                         last_flush = time.monotonic()
             if open_reasoning:
                 yield ev("reasoning-end", id=f"r{step}")
+            recovered = (None if calls or tools_dropped or not probe.held
+                         else _text_tool_call(probe.held, tools_now, step))
+            if recovered:
+                # Run it as the native call it was meant to be; its JSON is
+                # never shown or saved (probe.held is still billed below).
+                logger.debug("recovered text tool call name=%s", recovered.name)
+                calls.append(recovered)
+                finish = "tool_calls"
+            else:
+                for e in say(probe.release()):
+                    yield e
             if open_text:
                 yield ev("text-end", id=f"t{step}")
             # Mark first, then shield the write: a cancel landing mid-write (e.g.
             # during the pool's commit) can't stop the row landing, and _finalize
             # must never charge this step a second time.
             state.step_recorded = True
-            usage = await asyncio.shield(_record_usage(req.user_id, usage, messages, text + reasoning))
+            usage = await asyncio.shield(_record_usage(req.user_id, usage, messages,
+                                                       text + probe.held + reasoning))
             state.add(usage, finish)
             yield ev("finish-step", step=step, usage=_usage_json(usage), finishReason=finish)
             await _save(claim, state)

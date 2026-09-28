@@ -12,6 +12,7 @@ from server.chat.context import Prefetch
 from server.chat.orchestrator import TurnRequest, run_turn
 from server.chat.tools import search_document as sd_tool
 from server.chat.tools import web_search as ws_tool
+from server.services.doc_search import ReadableDoc
 from server.llm.types import (CallSettings, Capabilities, FeatureDropped, Finish, ProviderError,
                               ProviderTimeout, ProviderUnavailable, ReasoningDelta, TextDelta,
                               ToolCall, ToolCallReady, Usage)
@@ -518,3 +519,157 @@ async def test_num_ctx_sets_the_trimming_window_only_for_ollama_providers(conn, 
     req = dataclasses.replace(req, settings=CallSettings(num_ctx=1024))
     [_ async for _ in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)]
     assert seen["window"] == want
+
+
+# ---- v2.1 follow-ups, Task 2: tool calls a model writes as text ----
+
+OPEN_DOC = ReadableDoc("d" * 64, "Thesis.pdf", "indexed")
+
+
+@pytest.fixture
+def open_doc(monkeypatch):
+    """An open, indexed document, so search_document is offered; its search
+    finds nothing and no embedding model is called."""
+    async def fake_open_doc(req):
+        return OPEN_DOC
+
+    async def fake_prefetch(doc, question, cfg):
+        return Prefetch()
+
+    async def fake_embed_one(text):
+        return [0.0]
+
+    async def fake_search_chunks(conn, doc_id, qvec, k):
+        return []
+
+    monkeypatch.setattr(orchestrator, "_open_doc", fake_open_doc)
+    monkeypatch.setattr(ctx_mod, "prefetch", fake_prefetch)
+    monkeypatch.setattr(sd_tool, "embed_one", fake_embed_one)
+    monkeypatch.setattr(sd_tool, "search_chunks", fake_search_chunks)
+
+
+TEXT_CALL = '{"name": "search_document", "parameters": {"query": "the main finding"}}'
+
+
+def _in_pieces(text: str, size: int = 7) -> list:
+    return [TextDelta(text[i:i + size]) for i in range(0, len(text), size)]
+
+
+async def test_a_tool_call_written_as_text_is_run_not_saved(conn, open_doc, caplog):
+    """llama3.2:3b writes its search_document call as reply text. It must run
+    as a tool call and leave no JSON in the answer."""
+    router = FakeRouter(steps=[[*_in_pieces(TEXT_CALL), Usage(5, 20), Finish("stop")],
+                               reply("The main finding is X.")])
+    with caplog.at_level("DEBUG", logger="server.chat.orchestrator"):
+        events, claim = await _run(conn, router, text="what's the main finding?")
+    assert types(events) == ["start", "start-step", "finish-step", "tool-input-available",
+                             "tool-output-available", "start-step", "text-start", "text-delta", "text-end",
+                             "finish-step", "finish"]
+    call = next(e for e in events if e["type"] == "tool-input-available")
+    assert (call["toolName"], call["input"]) == ("search_document", {"query": "the main finding"})
+    assert events[2]["finishReason"] == "tool_calls"
+    second = router.calls[1]["messages"]
+    assert second[-2].role == "assistant" and second[-2].content == ""
+    assert [(c.name, c.arguments) for c in second[-2].tool_calls] == [("search_document", {"query": "the main finding"})]
+    assert second[-1].role == "tool" and second[-1].tool_call_id == second[-2].tool_calls[0].id
+    status, reason, content, _, tool_calls, _, _ = await _msg(conn, claim.turn_id)
+    assert (status, reason, content) == ("complete", "stop", "The main finding is X.")
+    assert [t["name"] for t in tool_calls] == ["search_document"]
+    logs = [r.getMessage() for r in caplog.records]
+    assert "recovered text tool call name=search_document" in logs
+    assert any("search_document_called=True" in m for m in logs)   # the prefetch metric counts it
+
+
+@pytest.mark.parametrize("written", [
+    "```json\n" + TEXT_CALL + "\n```",
+    "  ```\n" + TEXT_CALL + "```\n",
+    '\n{"name": "search_document", "arguments": {"query": "the main finding"}}',
+    '{"type": "function", "name": "search_document", "parameters": {"query": "the main finding"}}',
+])
+async def test_fenced_and_variant_text_tool_calls_are_recovered(conn, open_doc, written):
+    router = FakeRouter(steps=[[*_in_pieces(written, 3), Usage(5, 20), Finish("stop")],
+                               reply("Answer.")])
+    events, claim = await _run(conn, router)
+    call = next(e for e in events if e["type"] == "tool-input-available")
+    assert (call["toolName"], call["input"]) == ("search_document", {"query": "the main finding"})
+    assert (await _msg(conn, claim.turn_id))[2] == "Answer."
+
+
+async def test_a_text_tool_call_naming_a_tool_not_offered_is_text(conn):
+    """No open document: search_document isn't offered, so this is the answer."""
+    router = FakeRouter(steps=[[*_in_pieces(TEXT_CALL), Usage(5, 20), Finish("stop")]])
+    events, claim = await _run(conn, router)
+    assert types(events) == ["start", "start-step", "text-start", "text-delta", "text-end", "finish-step", "finish"]
+    assert events[3]["delta"] == TEXT_CALL
+    assert (await _msg(conn, claim.turn_id))[2] == TEXT_CALL
+    assert len(router.calls) == 1
+
+
+@pytest.mark.parametrize("answer", [
+    '{"verdict": "sound", "parameters": {"n": 3}}\nThat is the summary you asked for.',
+    '{"name": ["search_document"], "parameters": {"query": "q"}}',
+    '{"name": "search_document", "parameters": "the main finding"}',
+    '{"name": "search_document", "parameters": {"query": "q"}, "note": "extra"}',
+    '```json\n' + TEXT_CALL + '\n```\nThat was my search.',
+])
+async def test_json_that_is_not_a_tool_call_is_streamed_unchanged(conn, open_doc, answer):
+    router = FakeRouter(steps=[[*_in_pieces(answer), Usage(5, 20), Finish("stop")]])
+    events, claim = await _run(conn, router)
+    assert "tool-input-available" not in types(events)
+    assert "".join(e["delta"] for e in events if e["type"] == "text-delta") == answer
+    assert (await _msg(conn, claim.turn_id))[2] == answer
+
+
+async def test_a_native_tool_call_means_text_is_never_recovered(conn, open_doc, monkeypatch):
+    monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
+    router = FakeRouter(steps=[
+        [*_in_pieces(TEXT_CALL), ToolCallReady(ToolCall("c1", "web_search", {"query": "news"})),
+         Usage(5, 20), Finish("tool_calls")],
+        reply("Answer.")])
+    events, claim = await _run(conn, router)
+    assert [e["toolName"] for e in events if e["type"] == "tool-input-available"] == ["web_search"]
+    assert (await _msg(conn, claim.turn_id))[2] == TEXT_CALL + "\n\nAnswer."
+
+
+async def test_a_step_whose_tools_were_dropped_never_recovers(conn, open_doc):
+    router = FakeRouter(steps=[[FeatureDropped("tools"), *_in_pieces(TEXT_CALL), Usage(5, 20), Finish("stop")]])
+    events, claim = await _run(conn, router)
+    assert "tool-input-available" not in types(events)
+    assert (await _msg(conn, claim.turn_id))[2] == TEXT_CALL
+
+
+class _WatchedRouter(FakeRouter):
+    """Records how many chunks the provider has handed over, so a test can see
+    WHEN the orchestrator emitted something, not only what it emitted."""
+    def stream_chat(self, model_id, messages, tools, settings):
+        self.calls.append({"model": model_id, "messages": list(messages),
+                           "tools": [t.name for t in tools], "settings": settings})
+        self.sent = 0
+        return self._watched(self.steps.pop(0) if self.steps else reply())
+
+    async def _watched(self, chunks):
+        for c in chunks:
+            self.sent += 1
+            yield c
+
+
+@pytest.mark.parametrize("pieces,first_after,caps", [
+    (["Hello", " there", "."], 1, None),                                  # prose: no hold at all
+    (["  \n", "Sure", ", here."], 2, None),                              # leading whitespace, then prose
+    (["```python\n", "print(1)", "\n```"], 2, None),                    # a fence that isn't JSON
+    (["``", "`js", "\nlet x", " = 1"], 3, None),                         # ...decided once it can't be
+    (["{" + "a" * 2000, "tail", "}"], 1, None),                          # the probe cap is passed
+    ([TEXT_CALL[:20], TEXT_CALL[20:]], 1, Capabilities(tools=False)),    # no tools offered: no hold
+])
+async def test_text_that_cannot_be_a_tool_call_is_not_held(conn, pieces, first_after, caps):
+    router = _WatchedRouter(steps=[[*(TextDelta(p) for p in pieces), Usage(1, 1), Finish("stop")]],
+                            **({"caps": caps} if caps else {}))
+    alice = await member(conn, "alice")
+    claim, req = await _start(alice)
+    seen_at = None
+    async for e in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None):
+        if e["type"] == "text-delta" and seen_at is None:
+            seen_at = router.sent
+            assert e["delta"] == "".join(pieces[:first_after])
+    assert seen_at == first_after
+    assert (await _msg(conn, claim.turn_id))[2] == "".join(pieces)

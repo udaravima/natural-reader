@@ -280,6 +280,7 @@ The browser never talks to a model provider or executes a tool directly any more
 
 - **Models without tool support** just never get the `tools` field. No breakage.
 - **A model that rejects tools or a thinking level** gets one retry without that feature; you see a one-time toast (`data-notice` event) instead of a failed turn.
+- **A model that writes its tool call as text** (`llama3.2:3b` does this: `{"name": "search_document", "parameters": {...}}` as the reply, sometimes in a ` ```json ` fence) still gets its search. While a step's reply could still be such a call, the server holds it back (at most 2,000 characters); if it is exactly one object naming a tool offered on that step, and the provider sent no real tool call, the server runs it like a real one and the JSON is never shown or saved. Anything else is released as ordinary text. Prose is never held: the first character that can't start that JSON lets the reply stream at once.
 - **No doc loaded** or **doc not indexed** → `search_document` isn't offered at all; `web_search` still is, if SearXNG is configured.
 
 ---

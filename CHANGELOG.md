@@ -6,6 +6,16 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **A tool call a model writes as text now runs instead of becoming the
+  answer.** Small models such as `llama3.2:3b` often reply with
+  `{"name": "search_document", "parameters": {...}}` as plain text, sometimes
+  in a ```` ```json ```` fence, and that JSON was saved as the reply. The server
+  now holds a step's opening text while it could still be such a call (at most
+  2,000 characters); if it is one object naming a tool offered on that step
+  and the provider sent no real tool call, it runs as a tool call and the JSON
+  is neither shown nor saved. Anything else streams as before, and prose is
+  never held.
+
 - **`web_search` page fetches are capped by size, time and type.** A fetched
   page is now streamed and cut off at `WEB_SEARCH_MAX_RESPONSE_BYTES` instead
   of being buffered in full first — a large file (e.g. a 111 MB PDF) no
