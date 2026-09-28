@@ -4,8 +4,39 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-28
+
+Chat runs **on the server**: the server builds the prompt, calls tools and the
+model through configurable **model providers** (native Ollama plus
+OpenAI-compatible servers), streams the reply and saves it as it goes.
+Documents are **uploaded and indexed on the server** from their real bytes, and
+can sit in several projects. Breaking API changes and three data migrations —
+read **Upgrade notes** first. Release notes:
+[docs/Release_notes/RELEASE_NOTES_v2.1.0.md](docs/Release_notes/RELEASE_NOTES_v2.1.0.md).
+
 ### Added
 
+- **Server-side upload and indexing (A1).** The browser uploads the file
+  (`POST /v1/docs`, multipart) and the server hashes it: a file the server
+  already has is added to your library at once with no re-processing; a new
+  one is extracted and indexed on the server with the reader's own page rules
+  (committed parity fixtures), so citation page numbers match the reader.
+  Upload caps `PDF_UPLOAD_MAX_MB` (50) and `TEXT_UPLOAD_MAX_MB` (10); refusals
+  say why.
+- **Library entries (A1).** Each person holds their own entry for shared
+  content: **Remove from my library** removes only yours, and content is
+  deleted when nobody holds it (plus a startup sweep). The Library shows
+  "shared by …" and "via project" badges. Sharing a single document is
+  API-only (`PUT`/`DELETE /v1/docs/{id}/shares/{user_id}`) until the
+  project-management screen ships.
+- **Content that other people use can't be changed under them.** Re-index and
+  convert are refused with a plain reason when someone else holds the
+  document ("Other people also use this document…") or a project does ("This
+  document is in a project…"); an admin can still do it.
+- **Audit log** (`LOG_AUDIT_FILE`, default `logs/audit.log`): who-holds-what
+  changes (entries, shares, placements, garbage collection), IDs only.
+- **New project from the Library.** Library → **New project** creates a
+  project you own.
 - **Documents can belong to several projects.** New `project_documents` join table
   (migration `010`, backfilled from `documents.project_id`, which is dropped).
   Link/unlink with `PUT`/`DELETE /v1/projects/{id}/docs/{doc_id}`; the Library shows
@@ -66,6 +97,9 @@ All notable changes to this project will be documented in this file.
   also fails any tag change sent in the same request. `GET /v1/docs` and document
   status responses return `projects: [{id, name}]` (projects you can see; a doc's
   owner sees all of its links) instead of `project_id`/`project_name`.
+- **Breaking: document upload is one multipart `POST /v1/docs`**, hashed by
+  the server. The old register-then-send-client-chunks routes are gone; an
+  old SPA gets a clear 404/405.
 - **Breaking: `POST /v1/inference/chat` is removed.** Chat turns are
   `POST /v1/chat/sessions/{id}/turns` (server-sent events).
 - **Breaking: `PUT /v1/chat/sessions/{id}` is removed.** The server writes
@@ -102,6 +136,15 @@ All notable changes to this project will be documented in this file.
   `PUT /v1/projects/{id}/docs/{doc_id}` route, so project links are silently
   dropped (logged to the browser console only).
 - There is **no code rollback past 010** without restoring the backup.
+- Migration `011` (content vs library entries) **drops `doc_grants` and some
+  `documents` columns**: owners become upload entries, grants become shared
+  entries. Back up first.
+- Migration `012` marks every existing holding **unverified**. Right after the
+  upgrade, **every document registered before 2.1 disappears from its holders'
+  libraries, search and chat** (404); nothing is deleted. A holder gets it
+  back by opening the file in the reader and pressing **Index** (that uploads
+  it); the upload also restores the shares and project placements they made.
+  Details: [docs/LIBRARY.md](docs/LIBRARY.md#upgrade-notes-migration-012).
 - Migration `013` is additive: it runs on the next backend start. Back up
   first as usual.
 - Deploy the SPA and backend together.

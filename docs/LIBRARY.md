@@ -72,13 +72,14 @@ else already has — pick it, and the server takes it from there.
   hint is accepted but only ever advisory).
 - **Known bytes** (someone, anyone, already uploaded this exact file): you
   get an entry **instantly**. Nothing is re-extracted, re-embedded, or
-  re-indexed — you just start reading, searching and chatting with a
-  document that's already ready.
+  re-indexed — you have the file open, and searching and chatting with it
+  work at once because it's already indexed.
 - **New bytes**: the server stores them, then extracts and indexes the text
   in the background (the same "Extracting…" → "Indexing n/m" → "Indexed"
   progression as before). Extraction happens **on the server**, from the
   verified bytes, replicating the reader's own page/section rules exactly —
-  so a chat citation always opens to the right page.
+  so the page numbers in chat citations match the reader's pages. (Citations
+  are plain text today; clicking one to jump to its page isn't built yet.)
 - Caps: PDFs up to `PDF_UPLOAD_MAX_MB` (50 MB by default), text/Markdown up
   to `TEXT_UPLOAD_MAX_MB` (10 MB by default). Over the cap, an unsupported
   type, or an empty file is refused with a clear reason rather than a
@@ -125,7 +126,17 @@ curl -X DELETE https://reader.example.com/v1/docs/<doc_id>/shares/<user_id> \
 
 Once shared, the recipient's Library shows the document with a "shared by"
 badge naming you, under the name *you* gave it (never the name some other
-uploader chose). The rules:
+uploader chose).
+
+**What a recipient can do with it today:** see it listed and filtered in
+their Library, and find it through the API (`/v1/docs/{id}/search`,
+`/markdown`). They **can't open it in the reader or ask about it in chat
+unless they have the file themselves** — the reader opens local copies, a
+Library row doesn't open anything, and no route serves the stored bytes yet.
+The same holds for a document you only see through a project. Opening a
+Library document in the reader is the next fix.
+
+The rules:
 
 - Only someone holding a verified **upload** entry for the document — i.e.
   someone who has proved possession by uploading the bytes to this server —
