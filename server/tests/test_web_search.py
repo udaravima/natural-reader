@@ -1,4 +1,6 @@
+import asyncio
 import socket
+import time
 
 import httpx
 import pytest
@@ -120,6 +122,123 @@ async def test_fetch_and_extract_blocks_private_url_without_request():
     finally:
         await ws.stop_client()
     assert text is None
+
+
+def _mock_transport_client(handler) -> httpx.AsyncClient:
+    """An AsyncClient wired straight to a MockTransport handler, for tests that
+    need to control the response body's timing/shape (endless/slow streams)
+    beyond what respx's canned responses can do."""
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+async def test_fetch_and_extract_streams_and_stops_at_the_cap(monkeypatch, resolve_pub_test):
+    """An endless body must not be buffered in full — the fix streams the
+    final hop and stops once MAX_RESPONSE_BYTES is reached. Pre-fix, this
+    calls resp.content on a fully-buffered response, which never returns for
+    a body that never ends: bounded by wait_for so the test fails fast
+    instead of hanging."""
+    monkeypatch.setattr(ws, "MAX_RESPONSE_BYTES", 2000)
+    chunks_yielded = 0
+
+    async def endless_body():
+        nonlocal chunks_yielded
+        chunk = b"<p>" + b"filler content " * 20 + b"</p>"
+        while True:
+            chunks_yielded += 1
+            await asyncio.sleep(0)  # real checkpoint: lets wait_for's cancel land
+            yield chunk
+
+    async def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/html"}, content=endless_body())
+
+    client = _mock_transport_client(handler)
+    monkeypatch.setattr(ws, "_client", client)
+    try:
+        text = await asyncio.wait_for(ws.fetch_and_extract("http://pub.test/endless"), timeout=2)
+    finally:
+        await client.aclose()
+    assert text is not None
+    assert "filler content" in text
+    # ~2000 bytes / ~324-byte chunk: capped reading takes single-digit chunks,
+    # not the thousands an uncapped read of an endless body would rack up.
+    assert chunks_yielded < 20
+
+
+async def test_fetch_and_extract_body_trickling_past_deadline_returns_none(monkeypatch, resolve_pub_test):
+    """A body that trickles in slowly — each chunk arriving well inside the
+    per-request timeout — must still be cut off by the total fetch deadline
+    (WEB_SEARCH_FETCH_TOTAL_S), not allowed to run indefinitely."""
+    monkeypatch.setattr(ws, "FETCH_TOTAL_S", 0.3)
+
+    async def trickle_body():
+        for _ in range(50):  # 50 * 0.05s = 2.5s total if never cut off
+            await asyncio.sleep(0.05)
+            yield b"data chunk "
+
+    async def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/plain"}, content=trickle_body())
+
+    client = _mock_transport_client(handler)
+    monkeypatch.setattr(ws, "_client", client)
+    try:
+        start = time.monotonic()
+        text = await asyncio.wait_for(ws.fetch_and_extract("http://pub.test/trickle"), timeout=2)
+        elapsed = time.monotonic() - start
+    finally:
+        await client.aclose()
+    assert text is None
+    assert elapsed < 1.0  # deadline (0.3s) plus a generous margin
+
+
+async def test_fetch_and_extract_skips_non_text_content_type_without_reading_body(monkeypatch, resolve_pub_test):
+    """A non-text Content-Type (e.g. application/pdf) must short-circuit
+    before the body is read at all — not just before it's decoded."""
+    body_was_read = False
+
+    async def pdf_body():
+        nonlocal body_was_read
+        body_was_read = True
+        yield b"%PDF-1.4 ...binary..."
+
+    async def handler(request):
+        return httpx.Response(200, headers={"content-type": "application/pdf"}, content=pdf_body())
+
+    client = _mock_transport_client(handler)
+    monkeypatch.setattr(ws, "_client", client)
+    try:
+        text = await ws.fetch_and_extract("http://pub.test/doc.pdf")
+    finally:
+        await client.aclose()
+    assert text is None
+    assert body_was_read is False
+
+
+async def test_fetch_and_extract_still_extracts_normal_html_via_mock_transport(monkeypatch, resolve_pub_test):
+    """Sanity check that the streamed final hop still produces normal output
+    for an ordinary, fully-buffered HTML page."""
+    html = (
+        "<html><head><title>T</title></head><body><nav>home about</nav>"
+        "<article><h1>Findings</h1>"
+        "<p>The core measured value in this study is 42 across all trials. "
+        "The experiment was repeated ten times with consistent results. "
+        "Researchers concluded the effect is stable and reproducible.</p>"
+        "</article></body></html>"
+    )
+
+    async def handler(request):
+        return httpx.Response(
+            200, headers={"content-type": "text/html; charset=utf-8"}, content=html.encode(),
+        )
+
+    client = _mock_transport_client(handler)
+    monkeypatch.setattr(ws, "_client", client)
+    try:
+        text = await ws.fetch_and_extract("http://pub.test/normal")
+    finally:
+        await client.aclose()
+    assert text is not None
+    assert "42" in text
+    assert "home about" not in text
 
 
 async def test_summarize_one_goes_through_the_router(monkeypatch):

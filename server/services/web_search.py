@@ -35,6 +35,7 @@ FETCH_TIMEOUT_S = float(os.environ.get("WEB_SEARCH_FETCH_TIMEOUT_S", "8"))
 SUMMARY_TIMEOUT_S = float(os.environ.get("WEB_SEARCH_SUMMARY_TIMEOUT_S", "30"))
 MAX_PAGE_CHARS = int(os.environ.get("WEB_SEARCH_MAX_PAGE_CHARS", "6000"))
 MAX_RESPONSE_BYTES = int(os.environ.get("WEB_SEARCH_MAX_RESPONSE_BYTES", "2000000"))
+FETCH_TOTAL_S = float(os.environ.get("WEB_SEARCH_FETCH_TOTAL_S", "15"))
 
 _UA = "Mozilla/5.0 (compatible; NaturalReaderBot/1.0)"
 
@@ -118,9 +119,20 @@ async def searxng_search(query: str, count: int) -> list[dict]:
     return out
 
 
-async def _safe_get(url: str) -> httpx.Response | None:
-    """GET with manual redirect handling — every hop is re-checked against the
-    SSRF guard so a public URL can't 30x us onto a private address."""
+def _looks_like_text(content_type: str) -> bool:
+    """True for text/* and application/xhtml+xml, or when Content-Type is
+    absent (some servers omit it — we can't pre-filter, so let it through)."""
+    if not content_type:
+        return True
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    return media_type.startswith("text/") or media_type == "application/xhtml+xml"
+
+
+async def _fetch_capped(url: str) -> tuple[bytes, str] | None:
+    """Walk redirects (SSRF-checked at every hop, same as before) and stream
+    the final hop, stopping as soon as MAX_RESPONSE_BYTES is reached instead
+    of buffering the whole body first. A non-text Content-Type on the final
+    hop returns None before any of the body is read."""
     client = _get_client()
     current = url
     for _ in range(4):  # cap redirect hops
@@ -128,34 +140,51 @@ async def _safe_get(url: str) -> httpx.Response | None:
             logger.warning("Blocked non-public URL: %s", current)
             return None
         try:
-            resp = await client.get(
-                current, timeout=FETCH_TIMEOUT_S, follow_redirects=False,
-            )
+            async with client.stream(
+                "GET", current, timeout=FETCH_TIMEOUT_S, follow_redirects=False,
+            ) as resp:
+                if resp.is_redirect:
+                    loc = resp.headers.get("location")
+                    if not loc:
+                        return None
+                    current = str(httpx.URL(current).join(loc))
+                    continue
+                if not resp.is_success:
+                    logger.warning("Non-2xx for %s: %s", current, resp.status_code)
+                    return None
+                if not _looks_like_text(resp.headers.get("content-type", "")):
+                    return None
+                content = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    content.extend(chunk)
+                    if len(content) >= MAX_RESPONSE_BYTES:
+                        break
+                return bytes(content[:MAX_RESPONSE_BYTES]), resp.encoding
         except httpx.HTTPError as e:
             logger.warning("Fetch failed for %s: %s", current, e)
             return None
-        if resp.is_redirect:
-            loc = resp.headers.get("location")
-            if not loc:
-                return None
-            current = str(httpx.URL(current).join(loc))
-            continue
-        return resp
     return None
+
+
+async def _safe_get(url: str) -> tuple[bytes, str] | None:
+    """`_fetch_capped`, wrapped in one deadline for the whole walk (redirects
+    plus the final streamed body) — WEB_SEARCH_FETCH_TOTAL_S — so a body that
+    trickles in slowly enough to dodge the per-request timeout still can't
+    hold a fetch open indefinitely."""
+    try:
+        return await asyncio.wait_for(_fetch_capped(url), timeout=FETCH_TOTAL_S)
+    except TimeoutError:
+        logger.warning("Fetch exceeded %.0fs deadline for %s", FETCH_TOTAL_S, url)
+        return None
 
 
 async def fetch_and_extract(url: str) -> str | None:
     """Fetch a page and return clean, truncated text — or None on block/failure."""
-    resp = await _safe_get(url)
-    if resp is None:
+    fetched = await _safe_get(url)
+    if fetched is None:
         return None
-    try:
-        resp.raise_for_status()
-    except httpx.HTTPError as e:
-        logger.warning("Non-2xx for %s: %s", url, e)
-        return None
-    raw = resp.content[:MAX_RESPONSE_BYTES]
-    html = raw.decode(resp.encoding or "utf-8", errors="ignore")
+    raw, encoding = fetched
+    html = raw.decode(encoding or "utf-8", errors="ignore")
     import trafilatura
     # favor_recall keeps short pages from being dropped by trafilatura's
     # precision heuristic — we'd rather summarize a thin page than lose it.

@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`web_search` page fetches are capped by size, time and type.** A fetched
+  page is now streamed and cut off at `WEB_SEARCH_MAX_RESPONSE_BYTES` instead
+  of being buffered in full first — a large file (e.g. a 111 MB PDF) no
+  longer holds a chat turn open for minutes. Each fetch (redirects included)
+  has a total deadline, `WEB_SEARCH_FETCH_TOTAL_S` (default 15s), and a
+  non-text `Content-Type` (anything but `text/*`/`application/xhtml+xml`) is
+  skipped before any of the body is read. The SSRF guard is unchanged.
+
 ## [2.1.0] - 2026-09-28
 
 Chat runs **on the server**: the server builds the prompt, calls tools and the

@@ -232,7 +232,7 @@ no `_UsageTap` any more; usage accounting lives in the orchestrator.
 | File | Case | Asserts |
 |---|---|---|
 | `test_embeddings_routing.py` | *(suite)* | embeddings read URL+model from `model_router` (no direct env reads) |
-| `test_web_search.py` | summarize_one_calls_ollama_generate (+SSRF suite) | summarizer uses `model_router`'s summarize model; SSRF guard suite (private-IP block, redirect re-check, scheme allowlist) |
+| `test_web_search.py` | summarize_one_calls_ollama_generate (+SSRF suite, +fetch-cap suite) | summarizer uses `model_router`'s summarize model; SSRF guard suite (private-IP block, redirect re-check, scheme allowlist); fetch-cap suite via `httpx.MockTransport` (endless body stopped at `MAX_RESPONSE_BYTES`, a trickling body cut off at `WEB_SEARCH_FETCH_TOTAL_S`, non-text `Content-Type` skipped without reading the body, normal HTML still extracts) |
 
 ### Security hardening (SEC fixes)
 
