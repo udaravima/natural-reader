@@ -1,5 +1,6 @@
+import { useState } from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import ChatView from './ChatView';
 
 const theme = {
@@ -41,5 +42,26 @@ describe('ChatView composer draft (lifted to App)', () => {
         unmount();
         render(<ChatView {...baseProps({ draft })} />);
         expect(screen.getByRole('textbox')).toHaveValue(draft);
+    });
+
+    it('gives the text and attachments back when the turn is refused', async () => {
+        const att = { id: 'a1', kind: 'image', name: 'x.png', mimeType: 'image/png', size: 3, base64: 'AAA', dataUrl: 'data:image/png;base64,AAA' };
+        const sendMessage = vi.fn(async (text, atts) => ({ sent: false, refused: true, text, attachments: atts }));
+        // A controlling parent, like App: the composer state lives outside ChatView.
+        function Harness() {
+            const [draft, setDraft] = useState('hello');
+            const [pending, setPending] = useState([att]);
+            return (
+                <>
+                    <ChatView {...baseProps({ sendMessage, draft, setDraft, pendingAttachments: pending, setPendingAttachments: setPending })} />
+                    <output data-testid="pending-ids">{pending.map((a) => a.id).join(',')}</output>
+                </>
+            );
+        }
+        render(<Harness />);
+        fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+        expect(sendMessage).toHaveBeenCalledWith('hello', [att]);
+        await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('hello'));
+        expect(screen.getByTestId('pending-ids')).toHaveTextContent('a1');
     });
 });

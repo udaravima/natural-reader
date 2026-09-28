@@ -10,7 +10,7 @@ the [README](../README.md).)
 - [Where things live: Settings, profile menu, Admin](#where-things-live-settings-profile-menu-admin)
 - [Account: your profile and personal access tokens](#account-your-profile-and-personal-access-tokens)
 - [Admin console (admins only)](#admin-console-admins-only)
-- [Chat: Server vs Local Ollama](#chat-server-vs-local-ollama)
+- [Chat: models and streaming](#chat-models-and-streaming)
 - [The daily token budget](#the-daily-token-budget)
 - [FAQ](#faq)
 
@@ -129,27 +129,55 @@ Notes:
 - Per-user inference budget and the usage dashboard are server-side already;
   the UI for them is a planned follow-up (admins can currently manage budgets
   only via the API).
+- The Admin console's **Deployment config** section lists every configured
+  model provider (name, kind, host, and either how many models it has or
+  "unreachable") so you can see at a glance what's wired up without reading
+  `.env` on the server — API keys are never shown here or anywhere else. The
+  row that used to say "Ollama URL" is now **"Embeddings (Ollama) URL"**,
+  since that's the only thing that setting still controls (chat models come
+  from the provider list above it). There's still no button here to add or
+  change a provider — that's a `.env` + restart task for whoever runs the
+  server.
 
-## Chat: Server vs Local Ollama
+## Chat: models and streaming
 
-On the **Settings** page (Chat & inference section), **Inference source** picks
-where chat requests go:
+Every chat message runs on the server — your browser never talks to a model
+provider directly, and there's no per-device setup to do.
 
-- **Server** (default) — requests go through the server's gateway. The model
-  list shows only models the deployment allows, and your usage counts against
-  the daily budget (below). Works from any device, no local setup.
-- **Local Ollama** — requests go straight from your browser to your own
-  Ollama. You pick host/port and any local model. No allowlist, no budget, but
-  the server's chat tools (web search, document search) don't apply, and the
-  browser must be able to reach your Ollama.
+**What happens when you send a message:** the server checks your document (if
+one's open) for relevant passages before the model even runs, then streams the
+reply back token by token, saving it as it goes. If you click **Stop**, close
+the tab, or lose your connection partway through, the partial reply is kept
+and marked **Stopped** rather than lost. If you open a chat whose reply is
+still being written somewhere else (another tab or device), you'll see
+**Still generating…** until it settles. Only one reply can be in flight per
+chat at a time — sending again while one is still streaming is blocked until
+it finishes or you stop it.
 
-The choice is remembered per browser.
+**Picking a model:** the model picker in the chat sidebar is grouped by
+**provider**, each group labelled with the provider's name as your deployment
+configured it (for example `ollama` or `local`, plus any other server your
+deployment has) and shows what each model can do — whether it supports thinking,
+tools, images, and so on. On the **Settings** page (Chat & inference section),
+the per-model controls (context window, keep-alive, thinking level, max reply
+tokens) only show the knobs the selected model's provider actually supports.
+
+**Adding or changing model providers is not something you can do from the
+app.** There's no provider-management screen yet — an administrator adds,
+removes, or reconfigures providers in the server's `.env` file and restarts
+it. If you want a model that isn't in the picker, ask whoever runs your
+deployment to add it.
 
 ## The daily token budget
 
-On **Server** mode, the deployment may cap how many tokens each user may spend
-per day (UTC day — resets at UTC midnight). The chat sidebar shows
-**"N tokens left today"** while you chat.
+Your deployment may cap how many tokens each user may spend per day (UTC day —
+resets at UTC midnight). The chat sidebar shows **"N tokens left today"**
+while you chat.
+
+A reply you stop partway through, or one that fails, still counts against
+this budget — using the token count the provider reported, or an estimate
+based on how much text was generated if it didn't report one. Stopping early
+doesn't refund the tokens already spent.
 
 When you run out:
 
@@ -157,8 +185,7 @@ When you run out:
 - A request that slips through returns an error and you'll see a toast:
   **"Daily inference budget exhausted — resets at …"** with the reset time.
 - Nothing is lost: your message stays, the document is fine, and everything
-  comes back at the reset time. Switching the source to **Local Ollama** is the
-  escape hatch if you have one.
+  comes back at the reset time.
 
 Admins can raise individual users' budgets (API today; UI pending). If you
 legitimately need more, ask yours.
@@ -203,4 +230,4 @@ in the toast and the sidebar.
 
 ---
 
-*UI references: `src/components/settings/SettingsPage.jsx`, `src/components/ProfileMenu.jsx`, `src/components/account/AccountPanel.jsx`, `src/components/admin/AdminConsole.jsx`, `src/components/Header.jsx`, `src/components/ViewSwitcher.jsx`, `src/components/chat/InferenceSourceSelect.jsx`, `src/components/ChatSidebar.jsx`.*
+*UI references: `src/components/settings/SettingsPage.jsx`, `src/components/ProfileMenu.jsx`, `src/components/account/AccountPanel.jsx`, `src/components/admin/AdminConsole.jsx`, `src/components/Header.jsx`, `src/components/ViewSwitcher.jsx`, `src/components/chat/InferenceRow.jsx`, `src/components/ChatSidebar.jsx`.*

@@ -1,5 +1,8 @@
 """Model-router config — the single place that knows which model serves which
-task and what this deployment is allowed to run (gateway spec §4.2).
+task and what this deployment is allowed to run (gateway spec §4.2). Since C1
+it owns only what isn't chat: embeddings, the budget, the timeout and the
+summary model; provider lists and allow-lists live in server/llm/router.py
+(spec §4.6).
 
 Everything is pure env parsing so tests can pass a dict. get_config() re-reads
 os.environ on every call: parsing is trivial, and it keeps monkeypatch.setenv
@@ -51,7 +54,3 @@ def load_inference_config(env: Mapping[str, str]) -> InferenceConfig:
 
 def get_config() -> InferenceConfig:
     return load_inference_config(os.environ)
-
-
-def is_model_allowed(cfg: InferenceConfig, model: str) -> bool:
-    return cfg.allowed_models is None or model in cfg.allowed_models

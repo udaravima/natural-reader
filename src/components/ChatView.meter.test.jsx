@@ -45,7 +45,7 @@ describe('ChatView context meter', () => {
         // The meter counts buildPinPreamble's wrapped output, not raw p.text — the
         // preamble wraps the 4000-char excerpt in ~217 chars of framing (header,
         // kind/page line, """ fences, trailing instruction), giving 4217 chars ->
-        // ceil(4217/4) = 1055 tokens -> "1.1k" (recomputed from chatHistory.js's
+        // ceil(4217/4) = 1055 tokens -> "1.1k" (recomputed from pins.js's
         // buildPinPreamble, not guessed).
         const pins = [{ id: 'p1', doc_id: 'd', kind: 'page', text: 'a'.repeat(4000), fileName: 'f', page: 1 }];
         render(<ChatView {...baseProps({ pins, numCtx: 16384 })} />);

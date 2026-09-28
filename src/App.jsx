@@ -13,9 +13,9 @@ import { useAuth } from './hooks/useAuth';
 import { useViewModeGuard } from './hooks/useViewModeGuard';
 import { useDocMetaPicker } from './hooks/useDocMetaPicker';
 import { makePin } from './hooks/pins';
+import { migrateModelId } from './lib/modelIds';
 
 // Constants
-import { OLLAMA_DEFAULTS } from './constants';
 import { resolveForModel, patchForModel, migrateLegacyThinking } from './hooks/inference';
 
 // Utils
@@ -23,8 +23,11 @@ import { apiFetch } from './utils/apiFetch';
 import { getOrComputeDocHash } from './utils/docHash';
 import { getBook } from './db';
 import { saveWorkspaceState, clearWorkspaceState, getWorkspaceState } from './db';
-import { uploadPdfBytesToBackend } from './lib/uploadPdf';
-import { registerDocument, parseTagsInput } from './lib/docMeta';
+import {
+  registerDocument, linkDocToProject, parseTagsInput, requestReindex, deleteConvertedMarkdown,
+} from './lib/docMeta';
+import { describeRefusal } from './lib/apiErrors';
+import { pollIndexUntilSettled, pollConvertUntilSettled } from './lib/docStatusPoller';
 import { WorkspaceProvider } from './lib/WorkspaceContext';
 import { createFsaWorkspace, createSnapshotWorkspace, pickEntryFile, isMarkdownPath } from './lib/workspace';
 
@@ -76,13 +79,8 @@ export default function App() {
   const [mobileBreakpoint, setMobileBreakpoint] = usePersistedState('mobileBreakpoint', 768);
   const [layoutMode, setLayoutMode] = usePersistedState('layoutMode', 'auto');
   const [showHeaderControlsOnMobile, setShowHeaderControlsOnMobile] = usePersistedState('showHeaderControlsOnMobile', false);
-  // Reader / Chat top-level view + Ollama config
+  // Reader / Chat top-level view
   const [viewMode, setViewMode] = usePersistedState('viewMode', 'reader');
-  const [ollamaHost, setOllamaHost] = usePersistedState('ollamaHost', OLLAMA_DEFAULTS.host);
-  const [ollamaPort, setOllamaPort] = usePersistedState('ollamaPort', OLLAMA_DEFAULTS.port);
-  // Where inference runs: 'server' = authenticated /v1/inference gateway on
-  // the backend, 'local' = browser→Ollama directly (pre-gateway behavior).
-  const [inferenceSource, setInferenceSource] = usePersistedState('inferenceSource', 'server');
   const [selectedModel, setSelectedModel] = usePersistedState('selectedModel', '');
   const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', 'streaming');
   const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', true);
@@ -123,17 +121,6 @@ export default function App() {
     () => resolveForModel(inferenceByModel, selectedModel),
     [inferenceByModel, selectedModel]
   );
-  const setInference = useCallback(
-    (patch) => {
-      // With no model selected there is no key to patch under — writing
-      // anyway would land the entry under "" (resolveForModel('', map) still
-      // finds it, so the UI looks like it stuck) and orphan it in
-      // localStorage the moment a real model is picked.
-      if (!selectedModel) return;
-      setInferenceByModel(prev => patchForModel(prev, selectedModel, patch));
-    },
-    [selectedModel, setInferenceByModel]
-  );
 
   // --- TRANSIENT UI STATE ---
   const [status, setStatus] = useState('Initializing PDF Engine...');
@@ -151,7 +138,7 @@ export default function App() {
   const [sidebarTab, setSidebarTab] = useState('sentences');
 
   // Per-document index status keyed by sha256 doc_id. Shape:
-  //   { state: 'idle' | 'chunks_uploaded' | 'indexing' | 'indexed' | 'failed' | 'uploading',
+  //   { state: 'idle' | 'uploading' | 'stored' | 'extracting' | 'extracted' | 'indexing' | 'indexed' | 'failed',
   //     chunkCount, embeddedCount }
   const [docIndexByDocId, setDocIndexByDocId] = useState({});
   // Computed hash for the currently open document — null until lazily hashed.
@@ -172,6 +159,8 @@ export default function App() {
   // loading, [] once loaded with no projects. The per-document picker *state*
   // lives in useDocMetaPicker, wired after pdfFileName is available.
   const [projects, setProjects] = useState(null);
+  // Bumped when the Library creates a project, so the reader's picker refetches.
+  const [projectsVersion, setProjectsVersion] = useState(0);
 
   const pdfContainerRef = useRef(null);
   const [workspace, setWorkspace] = useState(null);
@@ -254,7 +243,7 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [auth.state, apiHost, apiPort]);
+  }, [auth.state, apiHost, apiPort, projectsVersion]);
 
   const ttsEngine = useTtsEngine({
     textItems, currentSentenceIndex, setCurrentSentenceIndex,
@@ -276,16 +265,12 @@ export default function App() {
     synthesizeText, playChatUrl, playChatSpeech, stopChatPlayback,
   } = ttsEngine;
 
-  // currentDocId / currentDocIndexState are exposed to the chat engine so the
-  // tool registry can decide whether to advertise `search_document` to the
-  // model. Both are null while no doc is open.
-  const currentDocIndexEntry = currentDocId ? docIndexByDocId[currentDocId] : null;
   const chatEngine = useChatEngine({
-    ollamaHost, ollamaPort, inferenceSource, selectedModel,
-    chatTtsMode, chatAutoTts, inference, onInferencePersist: setInference,
+    selectedModel,
+    chatTtsMode, chatAutoTts, inference,
     isLocalhost, selectedVoice, playbackSpeed, requestTimeout,
     apiHost, apiPort,
-    currentDocId, currentDocIndexState: currentDocIndexEntry?.state || null,
+    currentDocId,
     synthesizeText, playChatUrl, playChatSpeech, stopChatPlayback,
     showToast,
   });
@@ -314,6 +299,17 @@ export default function App() {
     addPin: chatAddPin,
     removePin: chatRemovePin,
   } = chatEngine;
+
+  // Model ids became `provider:name` in C1. Carry a saved pre-C1 selection
+  // ("qwen2.5:7b") and its per-model settings over to the matching id once.
+  useEffect(() => {
+    if (!availableModels.length) return;
+    const next = migrateModelId(selectedModel, availableModels);
+    if (next === selectedModel) return;
+    setInferenceByModel((prev) => (prev[selectedModel] && !prev[next]
+      ? { ...prev, [next]: prev[selectedModel] } : prev));
+    setSelectedModel(next);
+  }, [availableModels, selectedModel, setSelectedModel, setInferenceByModel]);
 
   useKeyboardShortcuts({
     handlePlayPause, stopPlayback, skipToNextSentence,
@@ -721,124 +717,60 @@ export default function App() {
   const handleIndexDocument = useCallback(async () => {
     if (!pdfFileName) return;
     const docId = await ensureDocHash();
-    if (!docId) {
-      showToast('Could not read document bytes — re-open the file and try again.', 4000);
-      return;
-    }
-    setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'uploading' } }));
+    if (!docId) { showToast('Could not read document bytes — re-open the file and try again.', 4000); return; }
+    const setIndex = (id, patch) =>
+      setDocIndexByDocId((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }));
 
-    // 1. Register the document (and, if a project/tag was chosen in the
-    // picker, attach it via a follow-up PATCH — see registerDocument).
+    // Re-index an indexed doc: the server re-extracts from its stored bytes.
+    // Only the sole holder or an admin may — others get a notice saying why.
+    // A server without the bytes (most docs indexed before A1: the browser
+    // sent chunks, never the file) says bytes_missing; then upload the local
+    // copy below instead — that restores the bytes and, for legacy content,
+    // re-extracts from them.
+    let reuploadForReindex = false;
+    if (docIndexByDocId[docId]?.state === 'indexed') {
+      const out = await requestReindex({ apiHost, apiPort, docId });
+      if (out.notice) { showToast(out.notice, 6000); return; }
+      if (out.started) {
+        setIndex(docId, { state: 'extracting' });
+        await pollIndexUntilSettled({ apiDocId: docId, stateKey: docId, apiHost, apiPort, setDocIndexByDocId, showToast });
+        return;
+      }
+      reuploadForReindex = true;
+    }
+
+    setIndex(docId, { state: 'uploading' });
+    let result;
     try {
-      const fileSize = (await getBook(pdfFileName))?.size ?? 0;
-      await registerDocument({
-        apiHost, apiPort, docId,
-        fileName: pdfFileName, fileType, sizeBytes: fileSize, pageCount: numPages,
-        projectId: docProjectId, tags: parseTagsInput(docTagsText),
+      const record = await getBook(pdfFileName);
+      if (!record?.data) throw new Error('File is not in the local library — re-open it and try again.');
+      result = await registerDocument({
+        apiHost, apiPort, file: new Blob([record.data]), fileName: pdfFileName,
+        clientDocId: docId, projectId: docProjectId, tags: parseTagsInput(docTagsText),
       });
     } catch (e) {
-      console.error('Doc register failed:', e);
-      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
-      showToast(`Indexing failed: backend unreachable (${e.message})`, 5000);
+      setIndex(docId, { state: 'failed' });
+      showToast(`Indexing failed: ${e.message}`, 6000);
       return;
     }
-
-    // 2. Extract chunks from the loaded document.
-    let chunks;
-    try {
-      chunks = await extractAllChunks();
-    } catch (e) {
-      console.error('Chunk extraction failed:', e);
-      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
-      showToast(`Indexing failed: could not extract text (${e.message})`, 5000);
+    // The server's hash is authoritative for every API call (spec §8), but
+    // IndexButton reads its state from docIndexByDocId[currentDocId], and
+    // currentDocId is never repointed to the server's id — it stays the
+    // local hash this flow started with. So progress is written under
+    // `docId`, not `serverId`: writing under the server's id would leave the
+    // button reading a key nothing updates if the two ever disagree.
+    const serverId = result.docId;
+    if (serverId !== docId) console.warn('Server doc id differs from local hash', { docId, serverId });
+    setIndex(docId, { state: result.state });
+    if (result.dedup && result.state === 'indexed' && !reuploadForReindex) {
+      showToast('Already indexed — added to your library.', 4000);
       return;
     }
-    if (chunks.length === 0) {
-      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { state: 'idle' } }));
-      showToast('Nothing to index — this document has no extractable text.', 4000);
-      return;
-    }
-
-    // 3. Upload in batches of 50 to keep request payloads bounded and give
-    // the UI a chance to show progress on large docs.
-    const BATCH = 50;
-    let lastStatus = null;
-    try {
-      for (let i = 0; i < chunks.length; i += BATCH) {
-        const slice = chunks.slice(i, i + BATCH);
-        const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/chunks`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chunks: slice }),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        lastStatus = data.status;
-      }
-    } catch (e) {
-      console.error('Chunk upload failed:', e);
-      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
-      showToast(`Indexing failed during upload: ${e.message}`, 5000);
-      return;
-    }
-
-    setDocIndexByDocId((prev) => ({
-      ...prev,
-      [docId]: {
-        state: 'indexing',
-        chunkCount: lastStatus?.chunk_count ?? chunks.length,
-        embeddedCount: lastStatus?.embedded_count ?? 0,
-      },
-    }));
-
-    // 4. Kick off the embedding job. Returns 202 immediately; we poll status.
-    try {
-      const indexRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/index`, { method: 'POST' });
-      if (!indexRes.ok) throw new Error(`HTTP ${indexRes.status}`);
-    } catch (e) {
-      console.error('Index kick-off failed:', e);
-      setDocIndexByDocId((prev) => ({ ...prev, [docId]: { ...(prev[docId] || {}), state: 'failed' } }));
-      showToast(`Could not start embedding job: ${e.message}`, 5000);
-      return;
-    }
-
-    showToast(`Embedding ${chunks.length} chunks — this can take a minute.`, 3500);
-
-    // 5. Poll every 2s until state leaves 'indexing'. Cap the polling window
-    // to ~10 minutes so a stuck job doesn't loop forever.
-    const POLL_MS = 2000;
-    const MAX_POLLS = 300;
-    for (let i = 0; i < MAX_POLLS; i++) {
-      await new Promise((r) => setTimeout(r, POLL_MS));
-      try {
-        const sRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}`);
-        if (!sRes.ok) continue;
-        const sData = await sRes.json();
-        setDocIndexByDocId((prev) => ({
-          ...prev,
-          [docId]: {
-            state: sData.state,
-            chunkCount: sData.chunk_count,
-            embeddedCount: sData.embedded_count,
-          },
-        }));
-        if (sData.state === 'indexed') {
-          showToast(`Indexed ${sData.embedded_count} chunks.`, 3000);
-          return;
-        }
-        if (sData.state === 'failed') {
-          showToast(`Indexing failed: ${sData.error_message || 'unknown error'}`, 6000);
-          return;
-        }
-      } catch {
-        // Backend hiccup — keep polling; transient errors shouldn't bail.
-      }
-    }
-    showToast('Indexing is taking unusually long — check the server logs.', 6000);
-  }, [pdfFileName, ensureDocHash, extractAllChunks, fileType, numPages, showToast, apiHost, apiPort, docProjectId, docTagsText]);
+    await pollIndexUntilSettled({ apiDocId: serverId, stateKey: docId, apiHost, apiPort, setDocIndexByDocId, showToast });
+  }, [pdfFileName, ensureDocHash, docIndexByDocId, showToast, apiHost, apiPort, docProjectId, docTagsText]);
 
   // ---------- DOCLING CONVERSION ----------
-  // Mirror of handleIndexDocument: registers (if needed) → uploads PDF bytes →
+  // Mirror of handleIndexDocument: uploads (registers) the PDF bytes →
   // starts /convert → polls until conversion+indexing finish. Auto-switches
   // the reader to the MD view on success.
   const handleConvertDocument = useCallback(async (options) => {
@@ -853,14 +785,18 @@ export default function App() {
       [docId]: { ...(prev[docId] || {}), state: 'uploading', error: null },
     }));
 
-    // 1. Register the doc (idempotent; and, if a project/tag was chosen in
-    // the picker, attach it via a follow-up PATCH — see registerDocument).
+    // 1. Register (upload) the document — but don't link the project yet.
+    // Linking has to wait until after the convert kick-off below succeeds:
+    // linking first would make the uploader's own convert fail with
+    // in_project (a content-changing op on shared/in-project content is
+    // refused — spec §5).
+    let result;
     try {
-      const fileSize = (await getBook(pdfFileName))?.size ?? 0;
-      await registerDocument({
-        apiHost, apiPort, docId,
-        fileName: pdfFileName, fileType, sizeBytes: fileSize, pageCount: numPages,
-        projectId: docProjectId, tags: parseTagsInput(docTagsText),
+      const record = await getBook(pdfFileName);
+      if (!record?.data) throw new Error('File is not in the local library — re-open it and try again.');
+      result = await registerDocument({
+        apiHost, apiPort, file: new Blob([record.data], { type: 'application/pdf' }), fileName: pdfFileName,
+        clientDocId: docId, tags: parseTagsInput(docTagsText), linkProject: false,
       });
     } catch (e) {
       console.error('Doc register failed:', e);
@@ -868,44 +804,28 @@ export default function App() {
         ...prev,
         [docId]: { ...(prev[docId] || {}), state: 'failed', error: e.message },
       }));
-      showToast(`Convert failed: backend unreachable (${e.message})`, 5000);
+      showToast(`Convert failed: ${e.message}`, 5000);
       return;
     }
+    // Same split as handleIndexDocument: convertDocId (the server's hash) is
+    // authoritative for every API call below, but the convert button reads
+    // docConvertByDocId[currentDocId] — the local hash — so all UI state
+    // stays keyed by `docId`.
+    const convertDocId = result.docId;
+    if (convertDocId !== docId) console.warn('Server doc id differs from local hash', { docId, convertDocId });
 
-    // 2. Push the raw PDF bytes so the backend can run docling against them.
-    try {
-      await uploadPdfBytesToBackend({ docId, fileName: pdfFileName, apiHost, apiPort });
-    } catch (e) {
-      console.error('PDF upload failed:', e);
-      setDocConvertByDocId((prev) => ({
-        ...prev,
-        [docId]: { ...(prev[docId] || {}), state: 'failed', error: e.message },
-      }));
-      showToast(`Could not upload PDF: ${e.message}`, 6000);
-      return;
-    }
-
-    // 3. Kick off the conversion job.
+    // 2. Kick off the conversion job.
     setDocConvertByDocId((prev) => ({
       ...prev,
       [docId]: { ...(prev[docId] || {}), state: 'converting', options, error: null },
     }));
     try {
-      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/convert`, {
+      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(convertDocId)}/convert`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(options),
       });
-      if (!res.ok) {
-        let detail = `HTTP ${res.status}`;
-        try {
-          const data = await res.json();
-          if (data?.detail) detail = data.detail;
-        } catch {
-          /* keep status code */
-        }
-        throw new Error(detail);
-      }
+      if (!res.ok) throw new Error(await describeRefusal(res));
     } catch (e) {
       console.error('Convert kick-off failed:', e);
       setDocConvertByDocId((prev) => ({
@@ -916,57 +836,18 @@ export default function App() {
       return;
     }
 
+    // Now that the kick-off succeeded, link the project (fail-soft — see linkDocToProject).
+    if (docProjectId) linkDocToProject({ apiHost, apiPort, projectId: docProjectId, docId: convertDocId });
+
     showToast('Converting with Docling — this can take a few minutes.', 4000);
 
-    // 4. Poll. Conversion finishes when conversion_state='converted' AND the
-    // chained indexing leaves state='indexed' (or 'failed' on either side).
-    const POLL_MS = 2000;
-    const MAX_POLLS = 600; // 20 minutes — docling on big PDFs is slow.
-    for (let i = 0; i < MAX_POLLS; i++) {
-      await new Promise((r) => setTimeout(r, POLL_MS));
-      try {
-        const sRes = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}`);
-        if (!sRes.ok) continue;
-        const sData = await sRes.json();
-        setDocConvertByDocId((prev) => ({
-          ...prev,
-          [docId]: {
-            ...(prev[docId] || {}),
-            state: sData.conversion_state || 'idle',
-            pageCount: sData.converted_page_count || 0,
-            error: sData.conversion_error || null,
-            options: sData.conversion_options || prev[docId]?.options || null,
-            hasPdf: !!sData.has_pdf,
-          },
-        }));
-        setDocIndexByDocId((prev) => ({
-          ...prev,
-          [docId]: {
-            state: sData.state || 'idle',
-            chunkCount: sData.chunk_count,
-            embeddedCount: sData.embedded_count,
-          },
-        }));
-        if (sData.conversion_state === 'conversion_failed') {
-          showToast(`Conversion failed: ${sData.conversion_error || 'unknown error'}`, 6000);
-          return;
-        }
-        if (sData.conversion_state === 'converted' && sData.state === 'indexed') {
-          showToast(`Converted ${sData.converted_page_count} pages.`, 3000);
-          setDocViewByDocId((prev) => ({ ...prev, [docId]: 'md' }));
-          return;
-        }
-        if (sData.conversion_state === 'converted' && sData.state === 'failed') {
-          // Conversion worked but downstream embedding failed.
-          showToast(`Conversion done, but indexing failed: ${sData.error_message || 'unknown'}`, 6000);
-          return;
-        }
-      } catch {
-        // Transient hiccup — keep polling.
-      }
-    }
-    showToast('Conversion is taking unusually long — check the server logs.', 6000);
-  }, [pdfFileName, fileType, ensureDocHash, numPages, showToast, apiHost, apiPort, docProjectId, docTagsText]);
+    // 3. Poll (server id for the network call, local hash for the UI keys —
+    // see the comment above convertDocId).
+    await pollConvertUntilSettled({
+      apiDocId: convertDocId, stateKey: docId, apiHost, apiPort,
+      setDocConvertByDocId, setDocIndexByDocId, setDocViewByDocId, showToast,
+    });
+  }, [pdfFileName, fileType, ensureDocHash, showToast, apiHost, apiPort, docProjectId, docTagsText]);
 
   const openConvertDialog = useCallback(() => setConvertDialogOpen(true), []);
   const closeConvertDialog = useCallback(() => setConvertDialogOpen(false), []);
@@ -1023,10 +904,7 @@ export default function App() {
     if (!ok) return;
 
     try {
-      const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(currentDocId)}/markdown`, {
-        method: 'DELETE',
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await deleteConvertedMarkdown({ apiHost, apiPort, docId: currentDocId });
     } catch (e) {
       console.error('Markdown delete failed:', e);
       showToast(`Could not delete Markdown: ${e.message}`, 5000);
@@ -1037,13 +915,18 @@ export default function App() {
       ...prev,
       [currentDocId]: { ...(prev[currentDocId] || {}), state: 'idle', pageCount: 0, error: null, options: null },
     }));
+    // The server falls back to its own extraction from the stored bytes and
+    // re-indexes: follow that instead of showing the doc as never indexed.
     setDocIndexByDocId((prev) => ({
       ...prev,
-      [currentDocId]: { state: 'idle', chunkCount: 0, embeddedCount: 0 },
+      [currentDocId]: { state: 'extracting', chunkCount: 0, embeddedCount: 0 },
     }));
     // If the user was reading the MD view, drop back to the PDF rendering.
     setDocViewByDocId((prev) => ({ ...prev, [currentDocId]: 'pdf' }));
-    showToast('Converted Markdown deleted.', 3000);
+    showToast('Converted Markdown deleted — re-indexing from the file.', 3000);
+    await pollIndexUntilSettled({
+      apiDocId: currentDocId, stateKey: currentDocId, apiHost, apiPort, setDocIndexByDocId, showToast,
+    });
   }, [currentDocId, apiHost, apiPort, showToast]);
 
   const currentConvertEntry = currentDocId ? docConvertByDocId[currentDocId] : null;
@@ -1180,7 +1063,6 @@ export default function App() {
             darkMode={darkMode}
             effectiveIsMobile={effectiveIsMobile}
             sidebarOpen={sidebarOpen}
-            inferenceSource={inferenceSource}
             selectedModel={selectedModel} setSelectedModel={setSelectedModel}
             availableModels={availableModels}
             inferenceBudget={chatInferenceBudget}
@@ -1265,13 +1147,14 @@ export default function App() {
             apiHost={apiHost}
             apiPort={apiPort}
             showToast={showToast}
+            onProjectsChanged={() => setProjectsVersion((v) => v + 1)}
           />
         ) : inSettings ? (
           <SettingsPage
             theme={theme}
             voiceSettings={{ selectedVoice, setSelectedVoice, playbackSpeed, setPlaybackSpeed, volume, setVolume, isLocalhost, setIsLocalhost, requestTimeout, setRequestTimeout, unlimitedBatchTimeout, setUnlimitedBatchTimeout, isPreviewingVoice, previewVoice, stopVoicePreview, clearCache }}
-            chatSettings={{ inferenceSource, setInferenceSource, chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, inferenceByModel, setInferenceByModel, availableModels, selectedModel }}
-            connectionSettings={{ apiHost, setApiHost, apiPort, setApiPort, ollamaHost, setOllamaHost, ollamaPort, setOllamaPort, inferenceSource, backendAvailable }}
+            chatSettings={{ chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, inferenceByModel, setInferenceByModel, availableModels, selectedModel }}
+            connectionSettings={{ apiHost, setApiHost, apiPort, setApiPort, backendAvailable }}
             appearanceSettings={{ darkMode, setDarkMode, layoutMode, setLayoutMode, mobileBreakpoint, setMobileBreakpoint, showHeaderControlsOnMobile, setShowHeaderControlsOnMobile }}
             accountProps={{ apiHost, apiPort, user: auth.user }}
           />

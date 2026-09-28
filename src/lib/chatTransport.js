@@ -1,22 +1,8 @@
-import { apiFetch } from '../utils/apiFetch';
-import { buildApiUrl } from '../utils/url';
+// Server-side chat helpers (C1: the browser no longer talks to Ollama, and
+// Local mode is gone). The turn itself is src/lib/chatStream.js.
+export const MODELS_PATH = '/v1/inference/models';
 
-// The two inference sources share one transport. Server mode rides the
-// authenticated same-origin /v1 gateway (session cookie via apiFetch; PAT
-// Bearer for the extension); local mode is byte-identical to the historical
-// browser→Ollama calls — no credentials, /api/* paths, host/port honored.
-export const MODELS_PATH = { server: '/v1/inference/models', local: '/api/tags' };
-export const CHAT_PATH = { server: '/v1/inference/chat', local: '/api/chat' };
-
-export function chatFetch(source, hosts, path, opts = {}) {
-  if (source === 'server') {
-    return apiFetch(hosts.apiHost, hosts.apiPort, path, opts);
-  }
-  return fetch(buildApiUrl(hosts.ollamaHost, hosts.ollamaPort, path), opts);
-}
-
-// 429 from the gateway means the daily token budget is gone. Callers must
-// handle it BEFORE any 4xx retry chain — retries re-spend tokens.
+// 429 from the server means the daily token budget is gone.
 export async function budgetDetail(res) {
   if (res.status !== 429) return null;
   try {

@@ -1,4 +1,4 @@
-"""Admin lifecycle endpoints — enroll, hard delete (with rails + PDF sweep),
+"""Admin lifecycle endpoints — enroll, hard delete (with rails + content GC),
 and the read-only inference config view (admin-console spec §7 items 1-10)."""
 import uuid
 from pathlib import Path
@@ -15,6 +15,18 @@ from server.auth.users import (
     resolve_or_provision_user,
 )
 from server.routers import admin as admin_router
+from server.tests import seed
+
+
+@pytest.fixture(autouse=True)
+def _no_providers(monkeypatch):
+    class _EmptyRouter:
+        providers = {}
+
+        async def list_models(self):
+            return [], []
+
+    monkeypatch.setattr(admin_router, "get_router", lambda: _EmptyRouter())
 
 
 def _app(db_conn, principal):
@@ -88,11 +100,7 @@ async def test_delete_user_happy_path_cascades(db_conn):
     await db_conn.execute(
         "INSERT INTO chat_sessions (id, user_id) VALUES (%s, %s)", ("cs1", victim)
     )
-    await db_conn.execute(
-        "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, user_id) "
-        "VALUES (%s, 'd.pdf', 'pdf', 1, %s)",
-        ("d1", victim),
-    )
+    await seed.seed_doc(db_conn, "d1", victim, file_name="d.pdf", file_type="pdf")
 
     async with _client(_app(db_conn, p)) as client:
         r = await client.delete(f"/v1/admin/users/{victim}")
@@ -101,7 +109,7 @@ async def test_delete_user_happy_path_cascades(db_conn):
     assert await get_user(db_conn, victim) is None
     for table in (
         "sessions", "personal_access_tokens", "inference_usage",
-        "chat_sessions", "documents",
+        "chat_sessions", "library_entries", "documents",
     ):
         assert await _count(db_conn, f"SELECT count(*) FROM {table}") == 0, table
 
@@ -155,33 +163,36 @@ async def test_delete_missing_user_404(db_conn):
     assert r.status_code == 404
 
 
-async def test_delete_sweeps_users_pdf_files(db_conn, tmp_path):
+async def test_delete_user_gcs_sole_held_content(db_conn, tmp_path):
+    # A1 §3: deleting a user drops their entries and (until A0) placements in
+    # projects they own; content goes only if nobody else still holds it.
     admin, p = await _admin(db_conn)
     victim = await _make_user(db_conn, "b@x.io", status="active")
+    cur = await db_conn.execute(
+        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'Theirs') RETURNING id",
+        (victim,))
+    victims_project = str((await cur.fetchone())[0])
 
-    victim_pdf1 = tmp_path / "v1.pdf"
-    victim_pdf1.write_bytes(b"pdf1")
-    victim_pdf2 = tmp_path / "v2.pdf"
-    victim_pdf2.write_bytes(b"pdf2")
-    admin_pdf = tmp_path / "admin.pdf"
-    admin_pdf.write_bytes(b"admin")
-    for doc_id, user_id, pdf in (
-        ("d1", victim, victim_pdf1),
-        ("d2", victim, victim_pdf2),
-        ("d3", admin["id"], admin_pdf),
-    ):
-        await db_conn.execute(
-            "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, "
-            "user_id, pdf_path) VALUES (%s, 'x.pdf', 'pdf', 1, %s, %s)",
-            (doc_id, user_id, str(pdf)),
-        )
+    files = {}
+    for name in ("sole", "co_held", "admins"):
+        files[name] = tmp_path / f"{name}.pdf"
+        files[name].write_bytes(name.encode())
+    await seed.seed_doc(db_conn, "d1", victim, bytes_path=files["sole"])
+    await seed.seed_doc(db_conn, "d2", victim, bytes_path=files["co_held"])
+    await seed.share_doc(db_conn, "d2", victim, admin["id"])  # someone else holds it too
+    await seed.seed_doc(db_conn, "d3", None, project_ids=[victims_project])  # placement only
+    await seed.seed_doc(db_conn, "d4", admin["id"], bytes_path=files["admins"])
 
     async with _client(_app(db_conn, p)) as client:
         r = await client.delete(f"/v1/admin/users/{victim}")
     assert r.status_code == 204
-    assert not victim_pdf1.exists()
-    assert not victim_pdf2.exists()
-    assert admin_pdf.exists()  # other users' files are untouched
+
+    cur = await db_conn.execute(
+        "SELECT doc_id FROM documents WHERE doc_id IN ('d1','d2','d3','d4')")
+    assert {r[0] for r in await cur.fetchall()} == {"d2", "d4"}
+    assert not files["sole"].exists()
+    assert files["co_held"].exists()  # the other holder's copy keeps its bytes
+    assert files["admins"].exists()   # other users' content is untouched
 
 
 # ---------- GET /v1/admin/inference/config ----------
@@ -221,6 +232,33 @@ async def test_config_member_forbidden(db_conn):
     async with _client(_app(db_conn, p)) as client:
         r = await client.get("/v1/admin/inference/config")
     assert r.status_code == 403
+
+
+async def test_config_lists_providers_without_keys(db_conn, monkeypatch):
+    from server.llm.providers.base import ProviderConfig
+    from server.llm.router import ModelInfo
+    from server.llm.types import Capabilities
+
+    class _P:
+        def __init__(self, name, kind, url):
+            self.config = ProviderConfig(name=name, kind=kind, url=url, api_key="sk-secret")
+
+    class _R:
+        providers = {"local": _P("local", "ollama", "http://gpu.example.com:11434"),
+                     "cloud": _P("cloud", "openai", "https://openrouter.example.com/api/v1")}
+
+        async def list_models(self):
+            return [ModelInfo("local:m", "local", "ollama", "m", Capabilities())], ["cloud"]
+
+    monkeypatch.setattr(admin_router, "get_router", lambda: _R())
+    admin, p = await _admin(db_conn)
+    async with _client(_app(db_conn, p)) as client:
+        body = (await client.get("/v1/admin/inference/config")).json()
+    assert body["providers"] == [
+        {"name": "local", "kind": "ollama", "url_host": "gpu.example.com", "models": 1},
+        {"name": "cloud", "kind": "openai", "url_host": "openrouter.example.com", "models": None},
+    ]
+    assert "sk-secret" not in str(body)
 
 
 # ---------- POST /v1/admin/users (enrollment) ----------

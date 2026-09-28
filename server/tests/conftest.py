@@ -17,23 +17,12 @@ function-scoped test can't reuse.
 from __future__ import annotations
 
 import asyncio
-import os
-from pathlib import Path
 
 import pytest
 import pytest_asyncio
 from psycopg import AsyncConnection
 
-TEST_DB = "natural_reader_test"
-_ADMIN_URL = os.environ.get(
-    "TEST_ADMIN_DATABASE_URL",
-    "postgresql://natural_reader:natural_reader@localhost:5433/postgres",
-)
-TEST_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    f"postgresql://natural_reader:natural_reader@localhost:5433/{TEST_DB}",
-)
-_SQL_DIR = Path(__file__).resolve().parents[1] / "sql"
+from server.tests.dbutil import ADMIN_URL as _ADMIN_URL, TEST_DB, TEST_URL, apply_migrations
 
 
 async def _ensure_test_db() -> None:
@@ -49,32 +38,11 @@ async def _ensure_test_db() -> None:
         await conn.close()
 
 
-async def _apply_migrations() -> None:
-    conn = await AsyncConnection.connect(TEST_URL)
-    try:
-        await conn.execute(
-            "CREATE TABLE IF NOT EXISTS schema_migrations "
-            "(version INT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
-        )
-        cur = await conn.execute("SELECT version FROM schema_migrations")
-        applied = {r[0] for r in await cur.fetchall()}
-        await conn.commit()
-        for path in sorted(_SQL_DIR.glob("*.sql")):
-            head = path.name.split("_", 1)[0]
-            version = int(head) if head.isdigit() else None
-            if version is None or version in applied:
-                continue
-            async with conn.transaction():
-                await conn.execute(path.read_text())
-    finally:
-        await conn.close()
-
-
 @pytest.fixture(scope="session", autouse=True)
 def _migrated():
     """Ensure the test DB exists and all migrations are applied, once."""
     asyncio.run(_ensure_test_db())
-    asyncio.run(_apply_migrations())
+    asyncio.run(apply_migrations(TEST_URL))
 
 
 @pytest_asyncio.fixture

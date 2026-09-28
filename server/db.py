@@ -16,11 +16,24 @@ from pathlib import Path
 from pgvector.psycopg import register_vector_async
 from psycopg_pool import AsyncConnectionPool
 
+from .services import doc_content
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_DATABASE_URL = (
     "postgresql://natural_reader:natural_reader@localhost:5433/natural_reader"
 )
+
+# Measured: the planner overestimates `GET /v1/docs` rows ~12x (an OR of
+# hashed subplans), so Postgres JIT — on by default in pgvector/pgvector:pg16
+# once a query's estimated cost passes jit_above_cost=100000 — starts firing
+# once the whole instance holds ~2.2k documents (+~10ms/request), and full
+# inline/optimize kicks in around ~11k documents (+175-340ms/request). With
+# JIT off the same query runs in ~10ms at 20k docs. This is an OLTP workload
+# that never benefits from JIT compilation. Passed as connection `options` so
+# it's scoped to this app's own pool — Keycloak's separate DB connections are
+# unaffected.
+POOL_CONN_KWARGS = {"options": "-c jit=off"}
 
 _pool: AsyncConnectionPool | None = None
 _pool_ready = asyncio.Event()
@@ -59,7 +72,8 @@ async def init_db() -> bool:
                     logger.debug("pgvector codec registration deferred: %s", e)
 
             pool = AsyncConnectionPool(
-                url, min_size=1, max_size=10, open=False, configure=_configure
+                url, min_size=1, max_size=10, open=False, configure=_configure,
+                kwargs=POOL_CONN_KWARGS,
             )
             await pool.open(wait=True, timeout=10)
             async with pool.connection() as conn:
@@ -69,14 +83,14 @@ async def init_db() -> bool:
             logger.info("Postgres pool opened (attempt %d)", attempt + 1)
             await _run_migrations()
             await bootstrap_admin()
-            # Reset any stale 'indexing' rows left over from a crash mid-job
-            # so they show up as resumable instead of stuck. Same for
-            # 'converting' rows — they were created by a doc-conversion job
-            # that didn't get a chance to flip to 'converted'/'conversion_failed'.
+            # A crash mid-job leaves docs mid-state: make them resumable, then
+            # GC any content nothing references (A1 spec §3, §4). Same for
+            # 'converting' rows below — they were created by a doc-conversion
+            # job that didn't get a chance to flip to
+            # 'converted'/'conversion_failed'.
             async with pool.connection() as conn:
-                await conn.execute(
-                    "UPDATE documents SET state = 'chunks_uploaded' WHERE state = 'indexing'"
-                )
+                await doc_content.recover_states(conn)
+                await doc_content.sweep_orphans(conn)
                 # `conversion_state` column only exists after migration 3 is
                 # applied — guard with a column lookup so a fresh DB at
                 # migration 1 doesn't blow up startup.

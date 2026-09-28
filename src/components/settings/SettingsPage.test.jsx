@@ -21,14 +21,13 @@ const bags = (over = {}) => ({
     isPreviewingVoice: false, previewVoice: vi.fn(), stopVoicePreview: vi.fn(), clearCache: vi.fn(),
   },
   chatSettings: {
-    inferenceSource: 'server', setInferenceSource: vi.fn(), chatTtsMode: 'streaming', setChatTtsMode: vi.fn(),
+    chatTtsMode: 'streaming', setChatTtsMode: vi.fn(),
     chatAutoTts: true, setChatAutoTts: vi.fn(), inferenceByModel: {}, setInferenceByModel: vi.fn(),
     availableModels: [], selectedModel: '',
   },
   connectionSettings: {
     apiHost: '', setApiHost: vi.fn(), apiPort: '8000', setApiPort: vi.fn(),
-    ollamaHost: '', setOllamaHost: vi.fn(), ollamaPort: '11434', setOllamaPort: vi.fn(),
-    inferenceSource: 'server', backendAvailable: true,
+    backendAvailable: true,
   },
   appearanceSettings: {
     darkMode: false, setDarkMode: vi.fn(), layoutMode: 'auto', setLayoutMode: vi.fn(),
@@ -68,12 +67,15 @@ describe('SettingsPage — reader/global sections', () => {
     const setInferenceByModel = vi.fn();
     const b = bags();
     b.chatSettings = {
-      ...b.chatSettings, availableModels: ['m1', 'm2'], selectedModel: 'm1',
-      inferenceByModel: { m1: {}, m2: {} }, setInferenceByModel,
+      ...b.chatSettings,
+      availableModels: [{ id: 'ollama:m1', provider: 'ollama', kind: 'ollama', name: 'm1', capabilities: {} },
+        { id: 'ollama:m2', provider: 'ollama', kind: 'ollama', name: 'm2', capabilities: {} }],
+      selectedModel: 'ollama:m1',
+      inferenceByModel: { 'ollama:m1': {}, 'ollama:m2': {} }, setInferenceByModel,
     };
     render(<SettingsPage {...b} />);
     // The config picker defaults to the active model (m1).
-    expect(screen.getByLabelText(/configuring model/i)).toHaveValue('m1');
+    expect(screen.getByLabelText(/configuring model/i)).toHaveValue('ollama:m1');
     fireEvent.change(screen.getByLabelText(/context window/i), { target: { value: '8192' } });
     expect(setInferenceByModel).toHaveBeenCalled();
   });
@@ -81,5 +83,37 @@ describe('SettingsPage — reader/global sections', () => {
   it('renders the Account panel (PAT management) in the Account section', async () => {
     render(<SettingsPage {...bags()} />);
     expect(await screen.findByPlaceholderText(/token name/i)).toBeInTheDocument();
+  });
+});
+
+describe('SettingsPage — provider-aware inference settings', () => {
+  const models = [
+    { id: 'local:m1', provider: 'local', kind: 'ollama', name: 'm1', capabilities: { thinking: false } },
+    { id: 'cloud:x', provider: 'cloud', kind: 'openai', name: 'x', capabilities: { thinking: true } },
+  ];
+  it('has no inference-source or Ollama host fields (Local mode is gone)', () => {
+    render(<SettingsPage {...bags()} />);
+    expect(screen.queryByText(/inference source/i)).toBeNull();
+    expect(screen.queryByLabelText(/ollama host/i)).toBeNull();
+  });
+  it('shows a disabled "(unavailable)" option for the config picker when the saved model has no matching option', () => {
+    const b = bags();
+    b.chatSettings = { ...b.chatSettings, availableModels: models, selectedModel: 'local:missing' };
+    render(<SettingsPage {...b} />);
+    const select = screen.getByLabelText(/configuring model/i);
+    expect(select).toHaveValue('local:missing');
+    expect(screen.getByText('local:missing (unavailable)')).toBeInTheDocument();
+  });
+
+  it('shows context size and keep-alive only for Ollama models, thinking only when supported', () => {
+    const b = bags();
+    b.chatSettings = { ...b.chatSettings, availableModels: models, selectedModel: 'cloud:x' };
+    render(<SettingsPage {...b} />);
+    expect(screen.queryByLabelText(/context window/i)).toBeNull();
+    expect(screen.queryByLabelText(/keep model warm/i)).toBeNull();
+    expect(screen.getByLabelText(/thinking/i)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/configuring model/i), { target: { value: 'local:m1' } });
+    expect(screen.getByLabelText(/context window/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/thinking/i)).toBeNull();
   });
 });

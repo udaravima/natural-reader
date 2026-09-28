@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-    INFERENCE_DEFAULTS, resolveForModel, patchForModel, buildRequestFields,
+    INFERENCE_DEFAULTS, resolveForModel, patchForModel, toWireSettings,
     migrateLegacyThinking, estimateTokens, truncationMessage,
 } from './inference';
 
@@ -38,41 +38,22 @@ describe('patchForModel', () => {
     });
 });
 
-describe('buildRequestFields', () => {
-    it('emits only think:false when everything is unset', () => {
-        expect(buildRequestFields(INFERENCE_DEFAULTS)).toEqual({ think: false });
+describe('toWireSettings', () => {
+    it('sends every field, unset ones as null', () => {
+        expect(toWireSettings(INFERENCE_DEFAULTS)).toEqual({ think: 'off', num_ctx: null, keep_alive: null, num_predict: null });
+        expect(toWireSettings(undefined)).toEqual({ think: 'off', num_ctx: null, keep_alive: null, num_predict: null });
     });
-    it('treats a missing settings object as all-unset', () => {
-        expect(buildRequestFields(undefined)).toEqual({ think: false });
+    it('maps the per-model settings to wire names', () => {
+        expect(toWireSettings({ think: 'high', numCtx: 16384, keepAlive: -1, numPredict: 512 }))
+            .toEqual({ think: 'high', num_ctx: 16384, keep_alive: -1, num_predict: 512 });
     });
-    it('maps think "on" to the boolean true', () => {
-        expect(buildRequestFields({ ...INFERENCE_DEFAULTS, think: 'on' })).toEqual({ think: true });
-    });
-    it('passes think levels through as strings', () => {
-        expect(buildRequestFields({ ...INFERENCE_DEFAULTS, think: 'low' })).toEqual({ think: 'low' });
-    });
-    it('adds options.num_ctx alone without num_predict', () => {
-        expect(buildRequestFields({ ...INFERENCE_DEFAULTS, numCtx: 16384 })).toEqual({
-            think: false, options: { num_ctx: 16384 },
-        });
-    });
-    it('adds options.num_predict alone without num_ctx', () => {
-        expect(buildRequestFields({ ...INFERENCE_DEFAULTS, numPredict: 512 })).toEqual({
-            think: false, options: { num_predict: 512 },
-        });
-    });
-    it('adds keep_alive as a string', () => {
-        expect(buildRequestFields({ ...INFERENCE_DEFAULTS, keepAlive: '30m' })).toEqual({
-            think: false, keep_alive: '30m',
-        });
-    });
-    it('adds keep_alive as -1 for Always', () => {
-        expect(buildRequestFields({ ...INFERENCE_DEFAULTS, keepAlive: -1 })).toEqual({
-            think: false, keep_alive: -1,
-        });
-    });
-    it('never emits an options key when both options are unset', () => {
-        expect(buildRequestFields({ ...INFERENCE_DEFAULTS, keepAlive: '5m' })).not.toHaveProperty('options');
+    // Final review M4: a num_ctx left over from an Ollama model would set the
+    // server's trimming window for an OpenAI-kind model; send only what the
+    // provider honours (supportedKnobs).
+    it('leaves out the knobs the provider does not support', () => {
+        const knobs = { numCtx: false, keepAlive: false, think: true, numPredict: true };
+        expect(toWireSettings({ think: 'high', numCtx: 16384, keepAlive: -1, numPredict: 512 }, knobs))
+            .toEqual({ think: 'high', num_ctx: null, keep_alive: null, num_predict: 512 });
     });
 });
 

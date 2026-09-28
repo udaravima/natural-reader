@@ -1,28 +1,24 @@
-"""
-Chat session CRUD against Postgres.
-
-Mirrors the IDB session contract the frontend already speaks so we can swap the
-storage layer underneath useChatEngine without changing semantics:
-
-  record = { id, title, model, createdAt, updatedAt, messages: [...], events: [...] }
-
-The PUT endpoint is an upsert: replace the session row + delete/reinsert the
-session's messages and events in one transaction. This keeps the
-"save the whole record" pattern that the frontend uses today; finer-grained
-append endpoints can come later if we want to avoid resending history each turn.
-"""
+"""Chat session reads and small edits. The server writes messages itself as
+each turn streams (routers/chat_turns.py, C1); this router lists, reads (with
+message status), renames, pins, deletes, and imports a legacy browser-only
+chat."""
 from __future__ import annotations
 
 import logging
+import secrets
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from ..auth.authz import assert_owns_session
 from ..auth.deps import Principal, require_capability
+from ..chat import store as chat_store
+from ..chat.config import get_chat_config
 from ..db import get_pool, is_ready
+from ..http_body import read_capped_body
+from ..http_errors import refusal
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/chat/sessions", tags=["chat-sessions"])
@@ -39,24 +35,27 @@ class MessageIn(BaseModel):
     docContext: dict[str, Any] | None = None
     stats: dict[str, Any] | None = None
     toolCalls: list[Any] | None = None
-    timestamp: int = 0
+    # Epoch milliseconds, bounded like ImportIn.createdAt: past BIGINT this
+    # was a 500 instead of a 422 (final review M6).
+    timestamp: int = Field(default=0, ge=0, le=10**13)
 
 
 class EventIn(BaseModel):
-    ts: int
+    ts: int = Field(ge=0, le=10**13)   # epoch milliseconds, bounded as above
     kind: str
     message: str = ""
 
 
-class SessionIn(BaseModel):
-    id: str
-    title: str = "New chat"
-    model: str | None = None
-    createdAt: int | None = None
-    updatedAt: int | None = None
-    messages: list[MessageIn] = Field(default_factory=list)
-    events: list[EventIn] = Field(default_factory=list)
-    pins: list[dict[str, Any]] = Field(default_factory=list)
+class ImportIn(BaseModel):
+    """A legacy browser-only (IndexedDB) chat being continued (ruling R6)."""
+    title: str = Field(default="New chat", max_length=200)
+    model: str | None = Field(default=None, max_length=300)
+    # Epoch milliseconds, bounded so an out-of-range value 422s here instead of
+    # blowing up to_timestamp() in the INSERT (year ~2286 at the upper bound).
+    createdAt: int | None = Field(default=None, ge=0, le=10**13)
+    messages: list[MessageIn] = Field(default_factory=list, max_length=2000)
+    events: list[EventIn] = Field(default_factory=list, max_length=5000)
+    pins: list[dict[str, Any]] = Field(default_factory=list, max_length=6)
 
 
 # ---------- helpers ----------
@@ -129,11 +128,71 @@ async def list_sessions(
     return [_row_to_session_meta(dict(zip(cols, r))) for r in rows]
 
 
+_META_KEYS = ("id", "kind", "name", "mimeType", "size")
+
+
+@router.post("/import")
+async def import_session(
+    request: Request,
+    principal: Principal = Depends(require_capability("chat")),
+) -> dict[str, Any]:
+    """Copy a legacy browser-only chat to the server under a NEW id, so it can
+    be continued (the old PUT's fork-on-edit). Attachment bytes are never
+    stored for imported messages; message ids are always new because they are
+    global primary keys."""
+    _ensure_ready()
+    cfg = get_chat_config()
+    # Hand-parsed (not a pydantic Body param): FastAPI's Body() buffers the
+    # whole request before any Field(max_length=...) applies, so a hostile
+    # caller could force an unbounded buffer before validation ever runs.
+    # Reading through the cap first means the bytes handed to the validator
+    # are already known to be within CHAT_MAX_REQUEST_MB.
+    raw = await read_capped_body(request, cfg.max_request_mb, label="Import")
+    try:
+        payload = ImportIn.model_validate_json(raw)
+    except ValidationError as e:
+        raise refusal(422, "invalid_request", "The request is malformed.",
+                      errors=e.errors(include_url=False, include_input=False, include_context=False))
+    for m in payload.messages:
+        if m.role not in ("user", "assistant"):
+            raise refusal(422, "invalid_message_role",
+                          "Imported messages must be user or assistant turns.")
+    session_id = f"s-{chat_store.now_ms()}-{secrets.token_hex(3)}"
+    pool = get_pool()
+    async with pool.connection() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "INSERT INTO chat_sessions (id, title, model, created_at, updated_at, pins, user_id) "
+                "VALUES (%s, %s, %s, COALESCE(to_timestamp(%s::double precision / 1000.0), now()), now(), %s, %s)",
+                (session_id, payload.title, payload.model, payload.createdAt, Jsonb(payload.pins),
+                 principal.user_id))
+            for m in payload.messages:
+                meta = [{k: a[k] for k in _META_KEYS if k in a}
+                        for a in m.attachments if isinstance(a, dict)]
+                await conn.execute(
+                    "INSERT INTO chat_messages (id, session_id, role, content, thinking, attachments, "
+                    "doc_context, stats, tool_calls, timestamp) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                    (chat_store.new_message_id(m.role[:1]), session_id, m.role, m.content, m.thinking,
+                     Jsonb(meta), Jsonb(m.docContext) if m.docContext is not None else None,
+                     Jsonb(m.stats) if m.stats is not None else None,
+                     Jsonb(m.toolCalls) if m.toolCalls is not None else None, m.timestamp))
+            for ev in payload.events:
+                await conn.execute(
+                    "INSERT INTO chat_events (session_id, kind, message, ts) VALUES (%s, %s, %s, %s)",
+                    (session_id, ev.kind, ev.message, ev.ts))
+    return {"ok": True, "id": session_id}
+
+
 @router.get("/{session_id}")
 async def get_session(
     session_id: str, _owner: Principal = Depends(_require_session_owner)
 ) -> dict[str, Any]:
     _ensure_ready()
+    try:
+        # A dead worker's turn reads as 'aborted', not forever 'streaming'.
+        await chat_store.recover_stale(session_id)
+    except Exception:   # an optimization: the read must still work
+        logger.warning("Stale-turn check failed for %s", session_id, exc_info=True)
     pool = get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -146,7 +205,8 @@ async def get_session(
 
         await cur.execute(
             """
-            SELECT id, role, content, thinking, attachments, doc_context, stats, tool_calls, timestamp
+            SELECT id, role, content, thinking, attachments, doc_context, stats, tool_calls, timestamp,
+                   status, finish_reason, model
             FROM chat_messages
             WHERE session_id = %s
             ORDER BY
@@ -177,13 +237,15 @@ async def get_session(
         event_rows = await cur.fetchall()
 
     messages = []
-    for mid, role, content, thinking, attachments, doc_context, stats, tool_calls, ts in message_rows:
+    for (mid, role, content, thinking, attachments, doc_context, stats, tool_calls, ts,
+         status, finish_reason, model) in message_rows:
         msg = {
             "id": mid,
             "role": role,
             "content": content,
             "attachments": attachments or [],
             "timestamp": int(ts) if ts else 0,
+            "status": status,
         }
         if thinking:
             msg["thinking"] = thinking
@@ -193,6 +255,10 @@ async def get_session(
             msg["stats"] = stats
         if tool_calls:
             msg["toolCalls"] = tool_calls
+        if finish_reason:
+            msg["finishReason"] = finish_reason
+        if model:
+            msg["model"] = model
         messages.append(msg)
 
     events = [{"ts": int(ts), "kind": kind, "message": msg} for ts, kind, msg in event_rows]
@@ -210,92 +276,6 @@ async def get_session(
     }
 
 
-@router.put("/{session_id}")
-async def upsert_session(
-    session_id: str,
-    payload: SessionIn,
-    principal: Principal = Depends(require_capability("chat")),
-) -> dict[str, Any]:
-    """
-    Upsert the entire session record: replace the session row, then
-    delete-and-reinsert its messages and events in one transaction.
-    """
-    _ensure_ready()
-    if payload.id != session_id:
-        raise HTTPException(status_code=400, detail="Path id and body id must match")
-
-    pool = get_pool()
-    async with pool.connection() as conn:
-        # A session id already owned by another user must not be hijackable.
-        cur = await conn.execute(
-            "SELECT user_id FROM chat_sessions WHERE id = %s", (payload.id,)
-        )
-        existing = await cur.fetchone()
-        if existing is not None and str(existing[0]) != principal.user_id:
-            raise HTTPException(status_code=404, detail="Session not found")
-        async with conn.transaction():
-            await conn.execute(
-                """
-                INSERT INTO chat_sessions (id, title, model, created_at, updated_at, pins, user_id)
-                VALUES (
-                    %s, %s, %s,
-                    COALESCE(to_timestamp(%s::double precision / 1000.0), now()),
-                    now(),
-                    %s, %s
-                )
-                ON CONFLICT (id) DO UPDATE SET
-                    title = EXCLUDED.title,
-                    model = EXCLUDED.model,
-                    pins = EXCLUDED.pins,
-                    updated_at = now()
-                """,
-                (
-                    payload.id,
-                    payload.title,
-                    payload.model,
-                    payload.createdAt,
-                    Jsonb(payload.pins),
-                    principal.user_id,
-                ),
-            )
-
-            await conn.execute("DELETE FROM chat_messages WHERE session_id = %s", (payload.id,))
-            await conn.execute("DELETE FROM chat_events WHERE session_id = %s", (payload.id,))
-
-            if payload.messages:
-                async with conn.cursor() as cur:
-                    for m in payload.messages:
-                        await cur.execute(
-                            """
-                            INSERT INTO chat_messages
-                                (id, session_id, role, content, thinking, attachments, doc_context, stats, tool_calls, timestamp)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                            """,
-                            (
-                                m.id,
-                                payload.id,
-                                m.role,
-                                m.content,
-                                m.thinking,
-                                Jsonb(m.attachments),
-                                Jsonb(m.docContext) if m.docContext is not None else None,
-                                Jsonb(m.stats) if m.stats is not None else None,
-                                Jsonb(m.toolCalls) if m.toolCalls is not None else None,
-                                m.timestamp,
-                            ),
-                        )
-
-            if payload.events:
-                async with conn.cursor() as cur:
-                    for ev in payload.events:
-                        await cur.execute(
-                            "INSERT INTO chat_events (session_id, kind, message, ts) VALUES (%s, %s, %s, %s)",
-                            (payload.id, ev.kind, ev.message, ev.ts),
-                        )
-
-    return {"ok": True, "id": payload.id}
-
-
 @router.patch("/{session_id}")
 async def patch_session(
     session_id: str,
@@ -304,7 +284,7 @@ async def patch_session(
 ) -> dict[str, Any]:
     """
     Partial update of session metadata. Only `title` and `model` are honored;
-    timestamps and message data must go through PUT.
+    messages are written by turns.
     """
     _ensure_ready()
     title = body.get("title")

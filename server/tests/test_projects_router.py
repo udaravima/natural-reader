@@ -1,11 +1,14 @@
 import uuid
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport
 from server.auth import deps
 from server.auth.users import resolve_or_provision_user
 from server.routers import projects as projects_router
+from server.services import doc_content
+from server.tests import seed
 
 
 def _app(db_conn, principal):
@@ -148,3 +151,234 @@ async def test_add_member_malformed_user_404(db_conn):
                                  base_url="http://t") as c:
         r = await c.put(f"/v1/projects/{pid}/members/not-a-uuid", json={})
         assert r.status_code == 404
+
+
+DOC_A = "a" * 64
+
+
+def _reader(u, role="member"):
+    return deps.Principal(user_id=u["id"], email=u["email"], role=role,
+                          capabilities=frozenset({"reader"}))
+
+
+async def _mk_project(db_conn, owner_id, name="P"):
+    cur = await db_conn.execute(
+        "INSERT INTO projects (owner_user_id, name) VALUES (%s,%s) RETURNING id",
+        (owner_id, name))
+    return str((await cur.fetchone())[0])
+
+
+async def _mk_doc(db_conn, doc_id, owner_id):
+    await seed.seed_doc(db_conn, doc_id, owner_id, file_name="f.pdf")
+
+
+async def _linked(db_conn, pid, doc_id):
+    cur = await db_conn.execute(
+        "SELECT 1 FROM project_documents WHERE project_id=%s AND doc_id=%s", (pid, doc_id))
+    return await cur.fetchone() is not None
+
+
+async def _content_exists(db_conn, doc_id):
+    cur = await db_conn.execute("SELECT 1 FROM documents WHERE doc_id=%s", (doc_id,))
+    return await cur.fetchone() is not None
+
+
+def _client_for(db_conn, principal):
+    return httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, principal)),
+                             base_url="http://t")
+
+
+async def test_link_own_doc_into_own_project(db_conn):
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="l1", email="l1@x.io")
+    pid = await _mk_project(db_conn, u["id"])
+    await _mk_doc(db_conn, DOC_A, u["id"])
+    async with _client_for(db_conn, _reader(u)) as c:
+        assert (await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 204
+        assert (await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 204  # idempotent
+    assert await _linked(db_conn, pid, DOC_A)
+    cur = await db_conn.execute(
+        "SELECT added_by FROM project_documents WHERE project_id=%s AND doc_id=%s", (pid, DOC_A))
+    assert str((await cur.fetchone())[0]) == u["id"]  # placements record who filed them
+
+
+async def test_link_own_doc_into_project_where_member(db_conn):
+    owner = await resolve_or_provision_user(db_conn, iss="i", sub="l2o", email="l2o@x.io")
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="l2", email="l2@x.io")
+    pid = await _mk_project(db_conn, owner["id"])
+    await db_conn.execute(
+        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)", (pid, u["id"]))
+    await _mk_doc(db_conn, DOC_A, u["id"])
+    async with _client_for(db_conn, _reader(u)) as c:
+        assert (await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 204
+
+
+async def test_link_into_invisible_project_is_404(db_conn):
+    owner = await resolve_or_provision_user(db_conn, iss="i", sub="l3o", email="l3o@x.io")
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="l3", email="l3@x.io")
+    pid = await _mk_project(db_conn, owner["id"])
+    await _mk_doc(db_conn, DOC_A, u["id"])
+    async with _client_for(db_conn, _reader(u)) as c:
+        r = await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")
+        assert r.status_code == 404 and r.json()["detail"] == "Project not found"
+    assert not await _linked(db_conn, pid, DOC_A)
+
+
+async def test_link_foreign_doc_is_404(db_conn):
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="l4", email="l4@x.io")
+    other = await resolve_or_provision_user(db_conn, iss="i", sub="l4x", email="l4x@x.io")
+    pid = await _mk_project(db_conn, u["id"])
+    await _mk_doc(db_conn, DOC_A, other["id"])
+    async with _client_for(db_conn, _reader(u)) as c:
+        r = await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")
+        assert r.status_code == 404
+        assert r.json()["detail"] == {"error": "not_found", "message": "Document not found"}
+
+
+async def test_project_owner_cannot_link_a_shared_doc(db_conn):
+    # A1 §5: only an upload-entry holder (proved possession) files content in;
+    # a share recipient can't, even into their own project.
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="l5", email="l5@x.io")
+    other = await resolve_or_provision_user(db_conn, iss="i", sub="l5x", email="l5x@x.io")
+    pid = await _mk_project(db_conn, u["id"])
+    await _mk_doc(db_conn, DOC_A, other["id"])
+    await seed.share_doc(db_conn, DOC_A, other["id"], u["id"])
+    async with _client_for(db_conn, _reader(u)) as c:
+        assert (await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 404
+    assert not await _linked(db_conn, pid, DOC_A)
+
+
+async def test_admin_links_own_doc_into_any_project(db_conn):
+    owner = await resolve_or_provision_user(db_conn, iss="i", sub="l6o", email="l6o@x.io")
+    admin = await resolve_or_provision_user(db_conn, iss="i", sub="l6", email="l6@x.io")
+    pid = await _mk_project(db_conn, owner["id"])
+    await _mk_doc(db_conn, DOC_A, admin["id"])
+    async with _client_for(db_conn, _reader(admin, role="admin")) as c:
+        assert (await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 204
+
+
+@pytest.mark.parametrize("path", [
+    f"/v1/projects/not-a-uuid/docs/{DOC_A}",
+    "/v1/projects/00000000-0000-0000-0000-000000000001/docs/NOT-HEX",
+])
+async def test_link_malformed_ids_are_422(db_conn, path):
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="l7", email="l7@x.io")
+    async with _client_for(db_conn, _reader(u)) as c:
+        assert (await c.put(path)).status_code == 422
+        assert (await c.delete(path)).status_code == 422
+
+
+# Unlink resolution table (A1 §5 — projects govern their documents; C0's
+# doc-owner branch is gone):
+#   link exists  -> uploader 404, project owner 204, other 404
+#   link missing -> uploader 404, project owner 404, other 404
+@pytest.mark.parametrize("linked,caller,expected", [
+    (True, "doc_owner", 404), (True, "project_owner", 204), (True, "other", 404),
+    (False, "doc_owner", 404), (False, "project_owner", 404), (False, "other", 404),
+])
+async def test_unlink_resolution_table(db_conn, linked, caller, expected):
+    doc_owner = await resolve_or_provision_user(db_conn, iss="i", sub="u1", email="u1@x.io")
+    proj_owner = await resolve_or_provision_user(db_conn, iss="i", sub="u2", email="u2@x.io")
+    other = await resolve_or_provision_user(db_conn, iss="i", sub="u3", email="u3@x.io")
+    pid = await _mk_project(db_conn, proj_owner["id"])
+    # `other` is a plain member: members must not unlink someone else's doc.
+    await db_conn.execute(
+        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s),(%s,%s)",
+        (pid, doc_owner["id"], pid, other["id"]))
+    await _mk_doc(db_conn, DOC_A, doc_owner["id"])
+    if linked:
+        await seed.place_doc(db_conn, pid, DOC_A, doc_owner["id"])
+    who = {"doc_owner": doc_owner, "project_owner": proj_owner, "other": other}[caller]
+    async with _client_for(db_conn, _reader(who)) as c:
+        r = await c.delete(f"/v1/projects/{pid}/docs/{DOC_A}")
+        assert r.status_code == expected
+        if expected == 404:
+            assert r.json()["detail"] == {"error": "not_found", "message": "Not found"}
+    assert await _linked(db_conn, pid, DOC_A) is (linked and expected == 404)
+    assert await _content_exists(db_conn, DOC_A)  # the uploader's entry still holds it
+
+
+async def test_uploader_who_left_the_project_cannot_unlink(db_conn):
+    # Inverts C0: the uploader has no special power over a placement — once
+    # filed, the content belongs to the project's governance.
+    doc_owner = await resolve_or_provision_user(db_conn, iss="i", sub="rf2", email="rf2@x.io")
+    proj_owner = await resolve_or_provision_user(db_conn, iss="i", sub="rf2p", email="rf2p@x.io")
+    pid = await _mk_project(db_conn, proj_owner["id"])
+    await _mk_doc(db_conn, DOC_A, doc_owner["id"])
+    await seed.place_doc(db_conn, pid, DOC_A, doc_owner["id"])
+    async with _client_for(db_conn, _reader(doc_owner)) as c:
+        assert (await c.delete(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 404
+    assert await _linked(db_conn, pid, DOC_A)
+
+
+async def test_deleting_project_keeps_doc_and_drops_link(db_conn):
+    # Review Focus 3.
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="rf3", email="rf3@x.io")
+    pid = await _mk_project(db_conn, u["id"])
+    await _mk_doc(db_conn, DOC_A, u["id"])
+    async with _client_for(db_conn, _reader(u)) as c:
+        assert (await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 204
+        assert (await c.delete(f"/v1/projects/{pid}")).status_code == 204
+    assert not await _linked(db_conn, pid, DOC_A)
+    cur = await db_conn.execute("SELECT 1 FROM documents WHERE doc_id=%s", (DOC_A,))
+    assert await cur.fetchone() is not None
+
+
+async def test_link_routes_require_reader_capability(db_conn):
+    # A principal with no capabilities at all must 403 on both link routes —
+    # before any ownership/visibility check — even for a project and doc the
+    # caller genuinely owns, so only the missing capability can explain it.
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="capless", email="capless@x.io")
+    pid = await _mk_project(db_conn, u["id"])
+    await _mk_doc(db_conn, DOC_A, u["id"])
+    no_caps = deps.Principal(user_id=u["id"], email=u["email"], role="member",
+                             capabilities=frozenset())
+    async with _client_for(db_conn, no_caps) as c:
+        r = await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")
+        assert r.status_code == 403
+        r = await c.delete(f"/v1/projects/{pid}/docs/{DOC_A}")
+        assert r.status_code == 403
+    assert not await _linked(db_conn, pid, DOC_A)
+
+
+async def test_placement_outlives_uploaders_entry_and_last_unlink_gcs(db_conn, tmp_path):
+    # The uploader removing the doc from their library leaves the project's
+    # placement holding the content; the project owner unlinking that last
+    # reference garbage-collects it, bytes included (A1 §3).
+    uploader = await resolve_or_provision_user(db_conn, iss="i", sub="rf4a", email="rf4a@x.io")
+    proj_owner = await resolve_or_provision_user(db_conn, iss="i", sub="rf4b", email="rf4b@x.io")
+    pid = await _mk_project(db_conn, proj_owner["id"])
+    f = tmp_path / f"{DOC_A}.pdf"
+    f.write_bytes(b"%PDF-1.4")
+    await seed.seed_doc(db_conn, DOC_A, uploader["id"], project_ids=[pid], bytes_path=f)
+    assert await doc_content.remove_entry(db_conn, uploader["id"], DOC_A)
+    assert await doc_content.gc_content_if_orphaned(db_conn, DOC_A, trigger="test") is False
+    async with _client_for(db_conn, _reader(proj_owner)) as c:
+        assert (await c.delete(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 204
+    assert not await _content_exists(db_conn, DOC_A)
+    assert not f.exists()
+
+
+async def test_deleting_project_gcs_docs_with_no_other_holder(db_conn, tmp_path):
+    # Task 7: deleting a project drops its placements, and content nobody
+    # else holds is GC'd along with it — bytes included.
+    owner = await resolve_or_provision_user(db_conn, iss="i", sub="pd1", email="pd1@x.io")
+    pid = await _mk_project(db_conn, owner["id"])
+    f = tmp_path / f"{DOC_A}.pdf"
+    f.write_bytes(b"%PDF-1.4")
+    await seed.seed_doc(db_conn, DOC_A, None, project_ids=[pid], bytes_path=f)
+    async with _client_for(db_conn, _reader(owner)) as c:
+        assert (await c.delete(f"/v1/projects/{pid}")).status_code == 204
+    assert not await _content_exists(db_conn, DOC_A)
+    assert not f.exists()
+
+
+async def test_deleting_project_keeps_doc_held_in_someones_library(db_conn):
+    # A doc placed in the deleted project but also held via a library entry
+    # (upload or shared) survives — the project was never its only holder.
+    owner = await resolve_or_provision_user(db_conn, iss="i", sub="pd2o", email="pd2o@x.io")
+    holder = await resolve_or_provision_user(db_conn, iss="i", sub="pd2h", email="pd2h@x.io")
+    pid = await _mk_project(db_conn, owner["id"])
+    await seed.seed_doc(db_conn, DOC_A, holder["id"], project_ids=[pid])
+    async with _client_for(db_conn, _reader(owner)) as c:
+        assert (await c.delete(f"/v1/projects/{pid}")).status_code == 204
+    assert await _content_exists(db_conn, DOC_A)

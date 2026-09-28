@@ -15,6 +15,8 @@ wires up a single dictConfig that:
 
 All knobs are env-driven so operators can tune verbosity and rotation without a
 code change. Call :func:`configure_logging` once early in process startup.
+
+Audit trail is written to ``LOG_AUDIT_FILE`` (default ``<LOG_DIR>/audit.log``).
 """
 from __future__ import annotations
 
@@ -23,7 +25,7 @@ import os
 from pathlib import Path
 
 
-def _dict_config(logfile: Path, level: str, max_bytes: int, backups: int) -> dict:
+def _dict_config(logfile: Path, level: str, max_bytes: int, backups: int, audit_file: Path) -> dict:
     return {
         "version": 1,
         # Leave third-party loggers (httpx, etc.) in place instead of nuking them.
@@ -48,10 +50,19 @@ def _dict_config(logfile: Path, level: str, max_bytes: int, backups: int) -> dic
                 "backupCount": backups,
                 "encoding": "utf-8",
             },
+            "audit_file": {
+                "class": "logging.handlers.RotatingFileHandler",
+                "formatter": "standard",
+                "filename": str(audit_file),
+                "maxBytes": max_bytes,
+                "backupCount": backups,
+                "encoding": "utf-8",
+            },
         },
         # Root catches everything that propagates (our server.* loggers, httpx…).
         "root": {"level": level, "handlers": ["console", "file"]},
         "loggers": {
+            "server.audit": {"level": "INFO", "handlers": ["console", "file", "audit_file"], "propagate": False},
             "server": {"level": level, "handlers": ["console", "file"], "propagate": False},
             # uvicorn configures these itself; point them at our handlers and stop
             # propagation so lines aren't emitted twice.
@@ -76,5 +87,8 @@ def configure_logging() -> Path:
     log_dir.mkdir(parents=True, exist_ok=True)
     logfile = log_dir / "server.log"
 
-    logging.config.dictConfig(_dict_config(logfile, level, max_bytes, backups))
+    audit_file = Path(os.environ.get("LOG_AUDIT_FILE") or (log_dir / "audit.log")).resolve()
+    audit_file.parent.mkdir(parents=True, exist_ok=True)
+
+    logging.config.dictConfig(_dict_config(logfile, level, max_bytes, backups, audit_file))
     return logfile

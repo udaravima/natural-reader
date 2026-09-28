@@ -4,8 +4,10 @@ Security-hardening regression tests (sub-project A).
 Each test pins a specific finding from the May 2026 audit so a regression
 re-opens as a red test rather than a silent vuln:
 
-  SEC-1  doc_id path traversal   — hex validation on body + path params,
-                                    plus storage-path containment.
+  SEC-1  doc_id path traversal   — hex validation on path params, plus
+                                    storage-path containment. (Upload doc ids
+                                    are the server's own hash, never a body
+                                    field.)
   SEC-3  CORS wildcard           — origins are env-driven, never a bare "*".
   SEC-4  TTS request size caps   — bound text / sentence payloads (DoS).
 
@@ -39,28 +41,6 @@ def _docs_app() -> FastAPI:
     return app
 
 
-def test_docregister_rejects_traversal_doc_id():
-    from server.routers.docs import DocRegisterIn
-
-    with pytest.raises(ValidationError):
-        DocRegisterIn(
-            # 64 chars, but not hex — contains a traversal sequence.
-            doc_id="../../../../../etc/cron.d/pwn" + "x" * 35,
-            file_name="x.pdf",
-            file_type="pdf",
-            size_bytes=1,
-        )
-
-
-def test_docregister_accepts_valid_sha256():
-    from server.routers.docs import DocRegisterIn
-
-    m = DocRegisterIn(
-        doc_id="a" * 64, file_name="x.pdf", file_type="pdf", size_bytes=1
-    )
-    assert m.doc_id == "a" * 64
-
-
 def test_path_route_rejects_non_hex_doc_id():
     # A non-hex doc_id on a path parameter must be rejected by validation (422)
     # before the handler ever runs. Without validation this route reaches the
@@ -70,13 +50,19 @@ def test_path_route_rejects_non_hex_doc_id():
     assert resp.status_code == 422
 
 
-def test_pdf_storage_path_rejects_escape():
-    from server.routers.docs import _pdf_storage_path
+def test_storage_place_rejects_escape(monkeypatch, tmp_path):
+    from server.services import doc_storage
 
-    # Even if a bad doc_id slipped past validation, the storage helper must
-    # never resolve to a path outside PDF_STORAGE_DIR.
-    with pytest.raises(Exception):
-        _pdf_storage_path("../../../../tmp/escape")
+    # Even if a bad doc_id ever reached the storage helper, it must never
+    # resolve to a path outside DOC_STORAGE_DIR — and must refuse before
+    # moving anything.
+    monkeypatch.setenv("DOC_STORAGE_DIR", str(tmp_path / "store"))
+    staged_file = tmp_path / "staged.part"
+    staged_file.write_bytes(b"%PDF-1.4")
+    staged = doc_storage.Staged(staged_file, "a" * 64, 8, "pdf")
+    with pytest.raises(ValueError):
+        doc_storage.place(staged, "../../../../tmp/escape")
+    assert staged_file.exists()
 
 
 # --------------------------------------------------------------------------

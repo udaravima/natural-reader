@@ -19,6 +19,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from ..llm.router import get_router
+from ..llm.types import CallSettings, Message
 from . import model_router
 
 logger = logging.getLogger(__name__)
@@ -172,20 +174,14 @@ _SUMMARY_PROMPT = (
 
 
 async def summarize_one(query: str, text: str) -> str:
-    """Summarize one page's text with the small model via Ollama /api/generate."""
-    client = _get_client()
+    """Summarize one page's text with the summary model, through the provider
+    router (spec §4.5) — any configured provider can serve it."""
     cfg = model_router.get_config()
-    resp = await client.post(
-        f"{cfg.ollama_url}/api/generate",
-        json={
-            "model": cfg.summarize_model,
-            "prompt": _SUMMARY_PROMPT.format(query=query, text=text),
-            "stream": False,
-        },
-        timeout=SUMMARY_TIMEOUT_S,
-    )
-    resp.raise_for_status()
-    return (resp.json().get("response") or "").strip()
+    prompt = _SUMMARY_PROMPT.format(query=query, text=text)
+    out = await asyncio.wait_for(
+        get_router().complete(cfg.summarize_model, [Message("user", prompt)], CallSettings()),
+        timeout=SUMMARY_TIMEOUT_S)
+    return out.strip()
 
 
 async def web_search(query: str, count: int) -> dict:

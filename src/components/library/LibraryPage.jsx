@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Search, FolderOpen, Share2, X, Check, Trash2, Loader2 } from 'lucide-react';
+import { Search, FolderOpen, FolderPlus, Share2, X, Check, Trash2, Loader2 } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
+import { describeRefusal } from '../../lib/apiErrors';
 
 // Typing pauses this long before a search-as-you-type request fires. Keeps
 // GET /v1/docs?q=... from firing on every keystroke while staying fast
@@ -15,7 +16,8 @@ function buildDocsPath({ q, projectId }) {
   return qs ? `/v1/docs?${qs}` : '/v1/docs';
 }
 
-// Inline tag editor for a row the caller owns. Adding or removing a chip
+// Inline tag editor for a row the caller has in their library (uploaded or
+// shared with them — both are their own entry). Adding or removing a chip
 // PATCHes the whole replacement array in one shot — the backend
 // dedupes/sorts it server-side, so the client doesn't need to.
 function TagEditor({ doc, theme, onSave }) {
@@ -62,15 +64,135 @@ function TagEditor({ doc, theme, onSave }) {
   );
 }
 
+// One chip per linked project. Projects govern their own documents: only a
+// user holding an upload entry can file a document into a project they can
+// see, and only that project's owner can remove a document from it — never
+// the uploader, and never anyone else who merely holds a library entry.
+function ProjectChips({ doc, projects, theme, onLink, onUnlink, busy }) {
+  const linked = doc.projects || [];
+  const linkedIds = new Set(linked.map((p) => p.id));
+  const ownedProjectIds = new Set((projects || []).filter((p) => p.is_owner).map((p) => p.id));
+  const addable = (projects || []).filter((p) => !linkedIds.has(p.id));
+
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      <FolderOpen size={10} className={theme.textSecondary} />
+      {linked.length === 0 && <span className={theme.textSecondary}>No project</span>}
+      {linked.map((p) => (
+        <span
+          key={p.id}
+          className={`flex items-center gap-1 px-1.5 py-0.5 rounded ${theme.bgTertiary} ${theme.textSecondary}`}
+        >
+          {p.name}
+          {ownedProjectIds.has(p.id) && (
+            <button
+              onClick={() => onUnlink(doc, p)}
+              aria-label={`Remove ${doc.file_name} from ${p.name}`}
+              disabled={busy}
+              className="hover:text-red-500 disabled:opacity-50 disabled:cursor-default"
+            >
+              <X size={10} />
+            </button>
+          )}
+        </span>
+      ))}
+      {doc.added_via === 'upload' && addable.length > 0 && (
+        <select
+          value=""
+          onChange={(e) => { if (e.target.value) onLink(doc, e.target.value); }}
+          aria-label={`Add ${doc.file_name} to project`}
+          disabled={busy}
+          className={`px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg}`}
+        >
+          <option value="">+ project</option>
+          {addable.map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
+      )}
+    </div>
+  );
+}
+
+// Inline "New project" card. Name is required (the server caps it at 200
+// characters); an empty description is sent as null. The card stays open with
+// what was typed when the server refuses, so nothing has to be re-entered.
+function NewProjectForm({ theme, busy, onCreate, onCancel }) {
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const canCreate = name.trim().length > 0 && !busy;
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (canCreate) onCreate({ name: name.trim(), description: description.trim() || null });
+  };
+
+  return (
+    <form
+      onSubmit={submit}
+      onKeyDown={(e) => { if (e.key === 'Escape' && !busy) onCancel(); }}
+      aria-label="New project"
+      className={`flex flex-col gap-2 p-3 rounded-lg border ${theme.border} ${theme.bgSecondary}`}
+    >
+      <div className="flex flex-wrap gap-2">
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Project name"
+          aria-label="Project name"
+          maxLength={200}
+          autoFocus
+          disabled={busy}
+          className={`flex-1 min-w-[160px] px-2 py-1.5 text-xs rounded-lg border ${theme.border} ${theme.bg} ${theme.text}`}
+        />
+        <input
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Description (optional)"
+          aria-label="Project description"
+          disabled={busy}
+          className={`flex-[2] min-w-[200px] px-2 py-1.5 text-xs rounded-lg border ${theme.border} ${theme.bg} ${theme.text}`}
+        />
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <p className={`text-[10px] ${theme.textMuted}`}>
+          You'll own it. File your documents into it from their rows below.
+        </p>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className={`px-2 py-1 text-xs rounded ${theme.textSecondary} hover:text-red-500 disabled:opacity-50`}
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={!canCreate}
+            className="flex items-center gap-1 px-2.5 py-1 text-xs rounded bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-default"
+          >
+            {busy ? <><Loader2 size={12} className="animate-spin" /> Creating…</> : 'Create'}
+          </button>
+        </div>
+      </div>
+    </form>
+  );
+}
+
 /**
  * Library: a flat list/search/filter view over every document the caller
- * can read (own docs, project-member docs, explicitly-granted docs — the
- * split is resolved server-side via readable_docs_where and just arrives
- * here as `is_owner`). No chat wiring — that's Phase 1. Owner rows get
- * inline tag + project-reassign affordances; shared rows are read-only and
- * carry a "shared" badge instead.
+ * can read — rows in my library (uploaded by me, or shared with me) plus
+ * documents reached only through a project I can see. No chat wiring —
+ * that's Phase 1. A row I have in my library gets inline tag editing, a
+ * remove-from-my-library control, and (if I uploaded it) a project chip
+ * selector; removing only ever affects my own copy, never anyone else's
+ * entry or a project's placement. A row I only see via a project has
+ * neither: it isn't mine to remove or retag. "New project" creates a project
+ * I own; `onProjectsChanged` tells the reader to refresh its project picker.
+ * Adding members has no screen until A0.
  */
-export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
+export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProjectsChanged }) {
   const [docs, setDocs] = useState(null);
   const [projects, setProjects] = useState(null);
   const [search, setSearch] = useState('');
@@ -79,6 +201,13 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
   // doc_id whose DELETE is currently in flight — drives the busy state on the
   // confirm button so a click clearly registers (and can't be double-fired).
   const [deletingId, setDeletingId] = useState(null);
+  // doc_id whose project link/unlink is currently in flight — disables that
+  // row's add-select and × buttons so a double-click can't fire a second
+  // request (a project owner double-clicking × would otherwise see a false
+  // "Update failed: HTTP 404" toast from the second, already-unlinked DELETE).
+  const [linkingId, setLinkingId] = useState(null);
+  const [creatingProject, setCreatingProject] = useState(false);
+  const [projectBusy, setProjectBusy] = useState(false);
   // Monotonic id so out-of-order responses can't clobber the list: fast typing
   // across debounce windows can leave two GET /v1/docs in flight, and if the
   // earlier one resolves last its stale results would overwrite the newer query.
@@ -126,10 +255,45 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(await describeRefusal(res));
       await loadDocs(search, projectFilter);
     } catch (e) {
       showToast(`Update failed: ${e.message}`, 5000);
+    }
+  };
+
+  const changeLink = async (doc, projectId, method) => {
+    setLinkingId(doc.doc_id);
+    try {
+      const res = await apiFetch(apiHost, apiPort, `/v1/projects/${projectId}/docs/${doc.doc_id}`, { method });
+      if (!res.ok) throw new Error(await describeRefusal(res));
+      await loadDocs(search, projectFilter);
+    } catch (e) {
+      showToast(`Update failed: ${e.message}`, 5000);
+    } finally {
+      setLinkingId(null);
+    }
+  };
+  const linkDoc = (doc, projectId) => changeLink(doc, projectId, 'PUT');
+  const unlinkDoc = (doc, project) => changeLink(doc, project.id, 'DELETE');
+
+  const createProject = async (body) => {
+    setProjectBusy(true);
+    try {
+      const res = await apiFetch(apiHost, apiPort, '/v1/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(await describeRefusal(res));
+      setCreatingProject(false);
+      showToast(`Project "${body.name}" created.`, 3000);
+      await loadProjects();
+      onProjectsChanged?.();
+    } catch (e) {
+      showToast(`Could not create project: ${e.message}`, 5000);
+    } finally {
+      setProjectBusy(false);
     }
   };
 
@@ -137,7 +301,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
     setDeletingId(doc.doc_id);
     try {
       const res = await apiFetch(apiHost, apiPort, `/v1/docs/${doc.doc_id}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error(await describeRefusal(res));
       setDeleteTarget(null);
       await loadDocs(search, projectFilter);
     } catch (e) {
@@ -155,7 +319,24 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
             <FolderOpen size={18} className="text-blue-500" />
             Library
           </h1>
+          {!creatingProject && (
+            <button
+              onClick={() => setCreatingProject(true)}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border ${theme.border} ${theme.bgTertiary} hover:text-blue-500`}
+            >
+              <FolderPlus size={14} /> New project
+            </button>
+          )}
         </div>
+
+        {creatingProject && (
+          <NewProjectForm
+            theme={theme}
+            busy={projectBusy}
+            onCreate={createProject}
+            onCancel={() => setCreatingProject(false)}
+          />
+        )}
 
         {/* Search + project filter */}
         <div className="flex flex-wrap items-center gap-2">
@@ -203,13 +384,18 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
                       <span className={`text-[10px] px-1.5 py-0.5 rounded ${theme.bgTertiary} ${theme.textSecondary}`}>
                         {doc.state}
                       </span>
-                      {!doc.is_owner && (
+                      {doc.added_via === 'shared' && (
                         <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-500">
-                          <Share2 size={10} /> shared
+                          <Share2 size={10} /> shared by {doc.shared_by?.name || 'someone'}
+                        </span>
+                      )}
+                      {!doc.in_library && (
+                        <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-500">
+                          <FolderOpen size={10} /> via project
                         </span>
                       )}
                     </div>
-                    {doc.is_owner && (
+                    {doc.in_library && (
                       deleting ? (
                         <span className="flex items-center gap-1 shrink-0">
                           {deletingId === doc.doc_id ? (
@@ -217,12 +403,15 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
                               disabled
                               className="flex items-center gap-1 text-[10px] text-red-500 cursor-default"
                             >
-                              <Loader2 size={10} className="animate-spin" /> Deleting…
+                              <Loader2 size={10} className="animate-spin" /> Removing…
                             </button>
                           ) : (
                             <>
+                              <span className={`text-[10px] ${theme.textSecondary}`}>
+                                Remove from your library? People and projects that have it keep their copies.
+                              </span>
                               <button onClick={() => deleteDoc(doc)} className="text-[10px] underline text-red-500">
-                                Confirm delete
+                                Confirm remove
                               </button>
                               <button onClick={() => setDeleteTarget(null)} className="text-[10px] underline">
                                 Cancel
@@ -233,7 +422,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
                       ) : (
                         <button
                           onClick={() => setDeleteTarget(doc.doc_id)}
-                          aria-label={`Delete ${doc.file_name}`}
+                          aria-label={`Remove ${doc.file_name} from my library`}
                           className={`shrink-0 hover:text-red-500 ${theme.textSecondary}`}
                         >
                           <Trash2 size={12} />
@@ -242,27 +431,18 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast }) {
                     )}
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-3 text-[10px]">
-                    <span className={`flex items-center gap-1 ${theme.textSecondary}`}>
-                      <FolderOpen size={10} />
-                      {doc.project_name || 'No project'}
-                    </span>
-                    {doc.is_owner && (
-                      <select
-                        value={doc.project_id || ''}
-                        onChange={(e) => patchDoc(doc, { project_id: e.target.value || null })}
-                        aria-label={`Reassign project for ${doc.file_name}`}
-                        className={`px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg}`}
-                      >
-                        <option value="">No project</option>
-                        {(projects || []).map((p) => (
-                          <option key={p.id} value={p.id}>{p.name}</option>
-                        ))}
-                      </select>
-                    )}
+                  <div className="text-[10px]">
+                    <ProjectChips
+                      doc={doc}
+                      projects={projects}
+                      theme={theme}
+                      onLink={linkDoc}
+                      onUnlink={unlinkDoc}
+                      busy={linkingId === doc.doc_id}
+                    />
                   </div>
 
-                  {doc.is_owner ? (
+                  {doc.in_library ? (
                     <TagEditor doc={doc} theme={theme} onSave={(tags) => patchDoc(doc, { tags })} />
                   ) : (
                     (doc.tags || []).length > 0 && (

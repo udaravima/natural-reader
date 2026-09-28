@@ -30,35 +30,33 @@ Everything is still local: Ollama for the LLM and embeddings, FastAPI + Postgres
 │       Browser        │
 │  (React + Vite)      │
 │                      │
-│  ┌────────────────┐  │     fetch  ┌──────────────────────────┐
-│  │  Reader        │──┼──/v1/*────▶│  FastAPI (port 8000)     │
-│  │  Chat          │  │            │  ├── Kokoro TTS          │
-│  │  IndexButton   │  │            │  ├── chat_sessions CRUD  │
-│  │  Tool registry │  │            │  └── docs + search       │
-│  └────────────────┘  │            └────────┬─────────────────┘
-│                      │                     │ psycopg
-│  IndexedDB           │                     ▼
-│  • PDFs              │            ┌──────────────────────────┐
-│  • Legacy chats      │            │  Postgres + pgvector     │
-│                      │            │  • documents             │
-│                      │            │  • doc_chunks (vector)   │
-│                      │            │  • chat_sessions         │
-│                      │            │  • chat_messages         │
-│                      │            └──────────────────────────┘
-│                      │     fetch  ┌──────────────────────────┐
-│                      │──/api/*───▶│  Ollama (port 11434)     │
-│                      │            │  • /api/chat (LLM)       │
-│                      │            │  • /api/embeddings (RAG) │
-│                      │            └──────────────────────────┘
+│  ┌────────────────┐  │     fetch  ┌──────────────────────────────┐
+│  │  Reader        │──┼──/v1/*────▶│  FastAPI (port 8000)          │
+│  │  Chat          │  │            │  ├── Kokoro TTS               │
+│  │  IndexButton   │  │            │  ├── chat_sessions + turns    │
+│  └────────────────┘  │            │  ├── docs + search            │
+│                      │            │  └── chat orchestrator (C1):  │
+│  IndexedDB           │            │      server/chat/, server/llm/│
+│  • PDFs              │            └────────┬───────────────────┬─┘
+│  • Legacy chats      │                     │ psycopg           │ httpx
+│                      │                     ▼                   ▼
+│                      │            ┌──────────────────┐  ┌─────────────────┐
+│                      │            │ Postgres+pgvector│  │ Model provider  │
+│                      │            │ • documents      │  │ (Ollama by      │
+│                      │            │ • doc_chunks     │  │  default, or any│
+│                      │            │ • chat_sessions  │  │  OpenAI-compat  │
+│                      │            │ • chat_messages  │  │  server — .env) │
+│                      │            └──────────────────┘  └─────────────────┘
 └──────────────────────┘
 ```
+
+The browser never calls a model provider directly (**C1**: no `/api/*` fetch to Ollama, no "Local mode", no tool registry in the browser). Every arrow into a model provider now originates from the backend.
 
 A few load-bearing decisions worth knowing:
 
 - **Document identity = `sha256` of the file bytes**, computed lazily in the browser the first time you do anything chat-related with a doc. Filenames are metadata only — renaming a file hits the same document; editing it gets a fresh one.
-- **PDFs never leave IndexedDB.** Only extracted text chunks (and their embeddings) live in Postgres. No file uploads.
-- **Chunks ship from the frontend.** PDF pages, Markdown blocks, and TXT pseudo-pages are extracted client-side and sent as JSON. The backend doesn't need a PDF parser.
-- **Backend down ≠ chat broken.** Ollama is independent. If Postgres is unreachable, the chat still streams; only session save fails (with a toast).
+- **Chat now needs Postgres (C1).** Every turn claims the session and writes its reply to Postgres as it streams; if Postgres is unreachable, sending a message returns `503 db_unavailable` instead of a reply — this is a change from pre-C1, where the chat streamed against Ollama regardless and only session *persistence* depended on Postgres.
+- **Tool calling is server-side (C1).** `search_document` and `web_search` run in `server/chat/tools/`; there is no browser-side tool registry any more.
 
 ---
 
@@ -178,6 +176,25 @@ There are a few ways to give the model document context. The first two create
 **pins** — persistent excerpts that stay attached to the conversation (Section 6.3);
 the last is fully autonomous retrieval.
 
+**What happens when you send a message (C1):**
+
+1. The browser POSTs your message (plus any attachments and settings) to
+   `POST /v1/chat/sessions/{id}/turns` and starts reading the response as
+   server-sent events — nothing more happens client-side until an event arrives.
+2. The server checks your daily token budget and claims the chat (a second
+   message sent while this one is still streaming gets `409`).
+3. **Stage 0** runs before the model does: if a document is open and indexed,
+   the server searches it for passages relevant to your question and, if any
+   score well enough, puts them straight in the prompt; it also writes the
+   current time into the prompt. Both are cheaper than a tool round.
+4. The model streams its reply. If it calls a tool (`search_document`,
+   `web_search`), the server runs it, streams the result, and calls the model
+   again — up to one tool round by default, then a final answer with tools off.
+5. The reply is written to Postgres as it streams. Closing the tab, losing the
+   connection, or clicking Stop ends the turn early but keeps the partial reply,
+   marked "Stopped"; a chat whose reply is still being written when you open it
+   (e.g. from another tab) shows "Still generating…" until it settles.
+
 ### 6.1. Ask page (current page → a pin)
 
 The fastest path. Cap is `~8000 chars` per page (truncated tail marker added if over).
@@ -185,7 +202,7 @@ The fastest path. Cap is `~8000 chars` per page (truncated tail marker added if 
 1. While reading a page, click **Ask page** in the toolbar.
 2. The app jumps to chat mode and **pins** the page: a purple **pin chip** appears above the input reading `Page N · filename.pdf` + a preview. The pin stays attached to the conversation.
 3. Type your question (or just hit Send to let the model decide what to say about the page).
-4. The model gets a system preamble with the page text — re-sent on **every** turn (positioned right before your latest question), so follow-ups keep the context without re-attaching.
+4. The model gets a system preamble with the page text — re-sent on **every** turn (placed at the very top of the prompt — there's no base system prompt ahead of it — so follow-ups keep the context without re-attaching).
 
 **No indexing required.** Works the moment a doc loads. Remove a pin anytime via the ✕ on its chip.
 
@@ -202,15 +219,20 @@ Same idea, scoped to whatever you highlighted — and you can stack several.
 
 A pin is **not** a one-shot. Once created (Ask page or Ask AI) it stays attached to
 the conversation and is **re-sent to the model on every turn**, injected as a system
-note **immediately before your latest question** — so it never gets buried as the
-chat grows, and follow-ups "just work" without re-attaching.
+note **at the very top of the prompt** — there's no base system prompt ahead of it,
+and it comes before the conversation history — so it never gets buried as the chat
+grows, and follow-ups "just work" without re-attaching.
 
 This is close to how a normal ChatGPT/Gemini session keeps context in view, with one
-deliberate improvement: pasting text into a single message freezes it at that spot in
-the transcript, where it recedes turn after turn; a pin instead **floats to just
-before the current question every turn**, staying maximally relevant. (The
-conversation's user/assistant turns are still re-sent in full each turn, exactly like
-a normal chat — Ollama's `/api/chat` is stateless.)
+deliberate difference: pasting text into a single message freezes it at that spot in
+the transcript, where it recedes turn after turn; a pin instead is **re-injected in
+the same place every turn**, staying maximally relevant. (The conversation's
+user/assistant turns are still re-sent in full each turn — every provider's chat API
+is stateless this way.) **Changed in C1:** pins used to sit immediately before your
+latest question; they moved to the very top of the prompt (there's no base system
+prompt ahead of them), so the prefix up to your new message stays identical
+turn-to-turn and a provider that caches repeated prompt prefixes (most do) can reuse
+that work instead of reprocessing it every time.
 
 - **Multiple pins** accumulate as separate chips; remove any via its ✕.
 - **Dedupe** by `(doc_id, kind, text)` — re-pinning the same passage is a no-op.
@@ -228,34 +250,37 @@ a normal chat — Ollama's `/api/chat` is stateless.)
 
 ### 6.4. Autonomous tool calling
 
-The new flagship feature in `v1.6.0`. **No chip, no toggle, no manual setup.** Once a doc is indexed and you have a tools-capable chat model selected, the model gets a `search_document` tool in every chat request and decides on its own whether to invoke it.
+**No chip, no toggle, no manual setup.** Once a doc is indexed and the selected model reports tool support, the model gets a `search_document` tool and decides on its own whether to invoke it. Before that, **Stage 0** (C1) already tried a cheap shortcut: the server embeds your question and searches the open document *before* the model runs, and if it finds good enough passages it puts them straight in the prompt — often answering in one model call with no tool round at all. The tool stays available either way, so the model can still search for something the prefetch missed.
 
 What it looks like:
 
 1. Open an indexed doc.
 2. In chat (with no chip attached), ask: *"What does this document say about X?"*
-3. A small cyan pill appears under the assistant's avatar: **🔄 Searching document…**.
+3. Either the reply just answers (Stage 0's prefetch already had enough), or a small cyan pill appears under the assistant's avatar: **🔄 Searching document…**.
 4. The pill disappears and the actual answer streams in, citing the retrieved passages.
 5. A small `🔎 search_document` disclosure appears on the assistant bubble — click to see the exact query the model used and how many chunks came back.
 
-**How the loop works** (no backend changes from PR 4):
+**How the loop works (C1: entirely server-side, `server/chat/orchestrator.py`):**
 
 ```
-1. Browser → POST /api/chat with tools=[search_document]
-2. Ollama → streams `{message: {tool_calls: [...]}}`  (no content)
-3. Browser → POST /v1/docs/{doc_id}/search (executes the tool)
-4. Browser → POST /api/chat again, this time WITHOUT tools
-              (history now includes the tool_call + tool result)
-5. Ollama → streams the final answer
+1. Server → Stage 0: embed the question, search the open document; good passages
+            go straight into the prompt (a data-context event notes this)
+2. Server → calls the model provider with tools=[search_document, web_search…]
+3. Provider → streams a tool call (no content for that step)
+4. Server → runs the tool itself (server/chat/tools/), streams the result as
+            tool-output-available, appends it to history
+5. Server → calls the model again — WITHOUT tools once CHAT_MAX_TOOL_ROUNDS
+            (default 1) is reached, so the turn always ends in an answer
+6. Provider → streams the final answer; the server relays it as SSE the whole way
 ```
 
-Capped at a single round-trip — no recursive tool calls in v1.
+The browser never talks to a model provider or executes a tool directly any more — it only reads the SSE stream and renders what arrives.
 
 **Compatibility notes:**
 
-- **Models without tool support** silently ignore the `tools` field and respond normally. No breakage.
-- **Thinking + tools** (`think: true`) sometimes 400s on some models. We fall back to a tools-less retry (keeping thinking on) and surface a one-time toast.
-- **No doc loaded** or **doc not indexed** → tools aren't sent at all. Identical behavior to pre-`v1.6.0`.
+- **Models without tool support** just never get the `tools` field. No breakage.
+- **A model that rejects tools or a thinking level** gets one retry without that feature; you see a one-time toast (`data-notice` event) instead of a failed turn.
+- **No doc loaded** or **doc not indexed** → `search_document` isn't offered at all; `web_search` still is, if SearXNG is configured.
 
 ---
 
@@ -266,7 +291,7 @@ Capped at a single round-trip — no recursive tool calls in v1.
 | New chats (post `v1.6.0`) | Postgres `chat_sessions` + `chat_messages` | none | yes |
 | Pre-`v1.6.0` chats | IndexedDB `chat_sessions` store | amber **LOCAL** pill | read-only |
 
-Old IDB sessions stay readable forever; if you edit one and send a message, the chat engine forks it to a fresh Postgres session — the IDB original is left untouched.
+Old IDB sessions stay readable forever; if you send a message on one, the app copies it onto Postgres first (`POST /v1/chat/sessions/import`, create-only) — the IDB original is left untouched.
 
 The sidebar merges both lists, newest-first, deduped by id.
 
@@ -277,13 +302,17 @@ The sidebar merges both lists, newest-first, deduped by id.
 | `content` / `thinking` | The model's reply text + reasoning trace. |
 | `attachments` | Image metadata (binary `dataUrl`/`base64` stripped on save). |
 | `docContext` | Legacy per-message context (pre-pins). No longer written for new messages; retained so old sessions still re-render their chip. |
-| `stats` | Ollama's per-turn token + latency numbers (the `⚡` disclosure). |
+| `stats` | Per-turn token + latency numbers from the provider (the `⚡` disclosure); `usageEstimated: true` if the provider didn't report token counts and they were estimated from text length instead. |
 | `toolCalls` | Compact summary of any autonomous tool calls — `{name, arguments, result_summary}`. Used to re-render the 🔎 disclosure on reload. |
 
 **Pins are persisted at the *session* level** (not per message): a `pins` JSONB
-column on `chat_sessions` (migration `004_chat_pins.sql`). They're written **instantly**
-on add/remove via `PATCH /v1/chat/sessions/{id}` and again in the full `PUT` upsert, and
-restored into the pin-chip row when you reopen the session.
+column on `chat_sessions` (migration `004_chat_pins.sql`). Pins added to an
+existing chat are written **instantly** via `PATCH /v1/chat/sessions/{id}`; pins
+added before the very first message ride along on that first turn's request
+body instead (there's no session row yet to `PATCH`). Either way they're
+restored into the pin-chip row when you reopen the session. (The old full-record
+`PUT /v1/chat/sessions/{id}` upsert this used to also go through is gone —
+the server writes messages itself now, C1.)
 
 ---
 
@@ -293,11 +322,12 @@ restored into the pin-chip row when you reopen the session.
 |---|---|---|
 | **IndexButton flashes "Failed"** after upload phase | Ollama can't reach `nomic-embed-text`. | `ollama pull nomic-embed-text`, then click Retry. |
 | **`/v1/docs/...` returns 503** | Postgres not reachable from FastAPI. | Check `docker-compose ps` and `DATABASE_URL` env var. |
-| **"Backend offline — chat sessions won't be saved" toast** | FastAPI is down (or `DATABASE_URL` is wrong). | Restart `python run.py`. Chat itself still works against Ollama. |
+| **Sending a chat message returns `503 db_unavailable`** | Postgres not reachable. **C1: chat itself now needs Postgres** — every turn is claimed and written to it, so unlike pre-C1 the chat can't fall back to running against the model provider alone. | Fix Postgres/`DATABASE_URL`, then retry. |
 | **Embedding dim mismatch** error in the FastAPI log | You set `EMBEDDING_MODEL` to a model whose dimension ≠ 768. | Either set `EMBEDDING_DIM` to match the new model AND drop+recreate the column, or revert to `nomic-embed-text`. |
-| **Toast: "This model rejected tools"** | The selected chat model 400s on `tools+think` together. | Either disable thinking, or switch to a model with stronger tool support (qwen2.5, llama3.1+). |
-| **Autonomous search never fires** | The doc isn't indexed yet (state ≠ `indexed`), OR the model doesn't support tools. | Click Index; or switch to a tools-capable model. |
-| **Old IDB session won't accept new messages** | Read-only by design. | Just type — the next save forks the session to Postgres. The IDB original is preserved. |
+| **Toast: "This model rejected tools" / "…rejected thinking"** | The selected model 4xx'd on that feature; the server retried once without it. | Switch to a model with better feature support, or accept the plain answer — the retry already succeeded. |
+| **Autonomous search never fires and there's no "Used N passages" note either** | The doc isn't indexed yet (state ≠ `indexed`), OR the model doesn't report tool support. | Click Index; or switch to a tools-capable model. |
+| **Old IDB session won't accept new messages** | Read-only by design. | Just type — the next send copies (imports) the session onto Postgres. The IDB original is preserved. |
+| **A second "Send" in the same chat does nothing / errors** | Only one turn can stream per chat at a time; a second send while one is in flight gets `409 turn_in_progress`. | Wait for the first reply to finish or click Stop, then send again. |
 
 ---
 
@@ -311,8 +341,9 @@ All under `http://localhost:8000` by default. Same FastAPI app as the existing K
 |---|---|---|
 | `GET` | `/v1/chat/sessions` | List session metadata (newest first). |
 | `GET` | `/v1/chat/sessions/{id}` | Full record: messages + events. |
-| `PUT` | `/v1/chat/sessions/{id}` | Transactional upsert of the whole session — messages, events, and `pins`. |
-| `PATCH` | `/v1/chat/sessions/{id}` | Partial update — any of `title`, `model`, `pins` (the last powers instant pin save). |
+| `POST` | `/v1/chat/sessions/{id}/turns` | **Run one turn** (C1). Server-sent events; the server writes the reply itself as it streams. This replaces the old whole-record `PUT` upsert, which is gone. |
+| `POST` | `/v1/chat/sessions/import` | Create-only: copies a legacy IndexedDB-only session onto Postgres (C1, replaces the fork-on-`PUT` behavior). |
+| `PATCH` | `/v1/chat/sessions/{id}` | Partial update — any of `title`, `model`, `pins` (the last powers instant pin save on an existing session). |
 | `DELETE` | `/v1/chat/sessions/{id}` | Cascade-deletes messages + events. |
 
 ### Documents + retrieval
@@ -351,13 +382,12 @@ A standard `docker-compose.yml` for the FastAPI backend doesn't ship yet — unt
 
 ## 11. What's next
 
-The PR 5 tool registry (`src/lib/chatTools/`) is built to host more tools. Concretely:
+The server-side tool registry (`server/chat/tools/` — moved from the browser's `src/lib/chatTools/` in C1) is built to host more tools. `search_document` and `web_search` (SearXNG-backed) already ship; still open:
 
-- **`web_search`** — Brave/Tavily/SearXNG behind a small backend proxy. One frontend file under `src/lib/chatTools/`, one backend endpoint under `server/routers/tools/`.
 - **`read_url`** — fetch + readability so the model can ingest a URL the user mentions.
 - **`code_interpreter`** — sandboxed Python execution. The biggest jump in scope (process isolation).
 
-The `src/lib/chatTools/_example.js` stub documents the shape; adding a new tool is a four-step recipe (commented at the top of that file).
+Adding a tool is one file in `server/chat/tools/` (`name`, `spec`, `available(ctx)`, `execute`, `summarize`) plus one registry line — there's no separate frontend half to write any more.
 
 Also tabled for future work:
 

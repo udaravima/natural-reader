@@ -3,13 +3,13 @@ import {
     Trash2, RefreshCw, MessageSquare, Bot,
     Plus, Pencil, ChevronDown, ChevronRight, ScrollText, Check, X,
 } from 'lucide-react';
+import { groupByProvider, modelLabel } from '../lib/modelIds';
 
 export default function ChatSidebar({
     theme,
     darkMode,
     effectiveIsMobile,
     sidebarOpen,
-    inferenceSource = 'server',
     selectedModel, setSelectedModel,
     availableModels,
     inferenceBudget,
@@ -84,8 +84,15 @@ export default function ChatSidebar({
                             ) : (
                                 <>
                                     {!selectedModel && <option value="">Select a model…</option>}
-                                    {availableModels.map(name => (
-                                        <option key={name} value={name}>{name}</option>
+                                    {selectedModel && !availableModels.some((m) => m.id === selectedModel) && (
+                                        <option value={selectedModel} disabled>{selectedModel} (unavailable)</option>
+                                    )}
+                                    {groupByProvider(availableModels).map(([provider, models]) => (
+                                        <optgroup key={provider} label={provider}>
+                                            {models.map((m) => (
+                                                <option key={m.id} value={m.id}>{modelLabel(m)}</option>
+                                            ))}
+                                        </optgroup>
                                     ))}
                                 </>
                             )}
@@ -95,7 +102,7 @@ export default function ChatSidebar({
                                 <Bot size={10} /> Active: {selectedModel}
                             </p>
                         )}
-                        {inferenceSource === 'server' && inferenceBudget?.remaining_tokens != null && (
+                        {inferenceBudget?.remaining_tokens != null && (
                             <p className={`text-[9px] px-1 ${inferenceBudget.remaining_tokens === 0 ? 'text-red-400 font-bold' : theme.textMuted}`}>
                                 {inferenceBudget.remaining_tokens.toLocaleString()} tokens left today
                             </p>

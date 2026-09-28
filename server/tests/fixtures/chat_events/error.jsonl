@@ -1,0 +1,5 @@
+{"messageId": "<message-id>", "runId": "<message-id>", "seq": 1, "sessionId": "<session-id>", "type": "start", "userMessageId": "<user-message-id>"}
+{"seq": 2, "step": 1, "type": "start-step"}
+{"id": "t1", "seq": 3, "type": "text-start"}
+{"delta": "Partial", "id": "t1", "seq": 4, "type": "text-delta"}
+{"code": "provider_error", "message": "The model provider returned an error: out of memory", "seq": 5, "type": "error"}

@@ -248,6 +248,91 @@ it works there, it's the cache. Kill it client-side (`chrome://flags/#enable-qui
 browsers to forget the stale h3 mapping. Do **not** touch `proxy_http_version
 1.1`; that governs nginx↔upstream, a different leg entirely.
 
+## Model providers and chat streaming
+
+Chat turns run on the backend (`server/chat/`, `server/llm/`) and stream to
+the browser as `text/event-stream`. This section covers the two things that
+change when you go from a single local Ollama to real provider config, plus
+the proxy setting that keeps streaming visible instead of arriving all at
+once.
+
+### Configuring providers
+
+Leave `INFERENCE_PROVIDERS` unset and nothing changes: there is one provider
+named `ollama`, backed by `OLLAMA_URL`, limited by `INFERENCE_MODELS` — the
+same behaviour as before C1. To add providers, name them in
+`INFERENCE_PROVIDERS` and describe each one with `INFERENCE_<NAME>_*` vars.
+Worked example — local Ollama plus one OpenAI-compatible provider (to try
+the `openai` adapter without signing up for a paid key, point it at
+Ollama's own `/v1` endpoint instead of a real OpenAI-compatible host — it
+speaks that protocol too):
+
+```bash
+INFERENCE_PROVIDERS=local,openrouter
+INFERENCE_LOCAL_KIND=ollama
+INFERENCE_LOCAL_URL=http://localhost:11434
+INFERENCE_OPENROUTER_KIND=openai
+INFERENCE_OPENROUTER_URL=https://openrouter.example.com/api/v1
+INFERENCE_OPENROUTER_API_KEY=sk-your-key
+INFERENCE_OPENROUTER_MODELS=vendor/model-a,vendor/model-b
+```
+
+Model ids in the chat UI carry the provider name (`local:qwen2.5:7b`,
+`openrouter:vendor/model-a`); a saved selection from before C1
+(`qwen2.5:7b`) is read as `ollama:qwen2.5:7b` automatically. `KIND` is
+`ollama` for Ollama's native API, or `openai` for anything that speaks the
+OpenAI chat-completions shape (vLLM, OpenRouter, LiteLLM, or Ollama's own
+`/v1`); for `kind=openai`, `URL` is the API base **including** the version
+path — the adapter appends `/chat/completions` and `/models` itself. API
+keys stay on the server: never sent to the browser, never logged, never
+shown in the admin console's Deployment config panel.
+
+**Trap:** `OLLAMA_URL` keeps its old job of running document **embeddings**
+even after you set `INFERENCE_PROVIDERS` — it doesn't stop meaning
+"the Ollama chat provider" and start meaning nothing. Remove `OLLAMA_URL`
+after adding providers and indexing breaks, calling `localhost:11434` with
+nothing listening there. There is no admin screen for any of this yet:
+adding, removing, or renaming a provider is an operator `.env` change and a
+restart, same as any other config in this file.
+
+Full `.env.example` block: [`../.env.example`](../.env.example), just after
+`INFERENCE_TIMEOUT_S`.
+
+### Streaming through a proxy
+
+> Replies stream as `text/event-stream`. nginx honours the
+> `X-Accel-Buffering: no` header the server sends, and the sample config's
+> `proxy_buffering off` covers it. Some CDNs and tunnels (Cloudflare among
+> them) may still buffer event streams. The symptom is a reply that appears
+> all at once after a long pause. Turn off buffering for `/v1/chat/` in that
+> proxy.
+>
+> While a reply is silent (a tool running, a long prompt being read before
+> the first word), the server sends a `: keep-alive` comment every 15 seconds,
+> so the proxy's idle/read timeout must be longer than 15 s. nginx's default
+> `proxy_read_timeout` (60 s) is fine.
+
+### Operational notes
+
+- **One reply in flight per chat.** Sending a second message while the first
+  is still streaming gets `409 turn_in_progress`; the in-progress turn is
+  untouched.
+- **A crashed worker's turn recovers on its own.** A turn heartbeats every
+  15 seconds while it runs; if that heartbeat goes quiet for about 60 seconds
+  (the worker died mid-reply), the next thing that touches that chat — opening
+  it, or the startup sweep — marks the reply `aborted` and frees the chat for
+  a new message. This is safe with several `WORKERS`: a heartbeat that's
+  still fresh is left alone, so one worker's restart never kills a turn a
+  different worker is actively streaming.
+- **Shutdown waits briefly for in-flight writes.** On a graceful shutdown the
+  server waits up to 5 seconds for turns' final "complete"/"aborted" write to
+  land before closing the database pool, so a restart during a reply doesn't
+  usually leave it stuck `streaming` until the next startup sweep.
+- **Web-search page summaries** now go through the same provider router as
+  chat, using `SUMMARIZE_MODEL`. A bare model name (no `provider:` prefix,
+  e.g. the pre-C1 default) resolves to the first configured provider of kind
+  `ollama`.
+
 ## Bring-up checklist
 
 1. **DNS:** `chat.oraian.net` and `auth.oraian.net` both resolve to the host.

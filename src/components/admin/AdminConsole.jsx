@@ -432,7 +432,19 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
             <p className={`text-xs ${theme.textMuted}`}>Loading…</p>
           ) : (
             <div className={`flex flex-col gap-1 p-3 rounded-lg border ${theme.border} ${theme.bgSecondary} text-xs`}>
-              <div className="flex justify-between gap-4"><span className={`${theme.textMuted}`}>Ollama URL</span><span className="truncate">{config.ollama_url}</span></div>
+              {Array.isArray(config.providers) && (
+                <div className="flex justify-between gap-4">
+                  <span className={`${theme.textMuted}`}>Model providers</span>
+                  <ul className="text-right">
+                    {config.providers.length === 0 ? <li>none configured</li> : config.providers.map(p => (
+                      <li key={p.name}>
+                        {p.name} · {p.kind} · {p.url_host ?? 'unknown host'} · {p.models === null ? 'unreachable' : `${p.models} model${p.models === 1 ? '' : 's'}`}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div className="flex justify-between gap-4"><span className={`${theme.textMuted}`}>Embeddings (Ollama) URL</span><span className="truncate">{config.ollama_url}</span></div>
               <div className="flex justify-between gap-4"><span className={`${theme.textMuted}`}>Chat timeout</span><span>{config.timeout_s}s</span></div>
               <div className="flex justify-between gap-4"><span className={`${theme.textMuted}`}>Allowed models</span><span className="text-right">{config.allowed_models ? config.allowed_models.join(', ') : 'all models allowed'}</span></div>
               <div className="flex justify-between gap-4"><span className={`${theme.textMuted}`}>Summarize model</span><span>{config.summarize_model ?? '—'}</span></div>

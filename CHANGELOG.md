@@ -4,6 +4,156 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-28
+
+Chat runs **on the server**: the server builds the prompt, calls tools and the
+model through configurable **model providers** (native Ollama plus
+OpenAI-compatible servers), streams the reply and saves it as it goes.
+Documents are **uploaded and indexed on the server** from their real bytes, and
+can sit in several projects. Breaking API changes and three data migrations —
+read **Upgrade notes** first. Release notes:
+[docs/Release_notes/RELEASE_NOTES_v2.1.0.md](docs/Release_notes/RELEASE_NOTES_v2.1.0.md).
+
+### Added
+
+- **Server-side upload and indexing (A1).** The browser uploads the file
+  (`POST /v1/docs`, multipart) and the server hashes it: a file the server
+  already has is added to your library at once with no re-processing; a new
+  one is extracted and indexed on the server with the reader's own page rules
+  (committed parity fixtures), so citation page numbers match the reader.
+  Upload caps `PDF_UPLOAD_MAX_MB` (50) and `TEXT_UPLOAD_MAX_MB` (10); refusals
+  say why.
+- **Library entries (A1).** Each person holds their own entry for shared
+  content: **Remove from my library** removes only yours, and content is
+  deleted when nobody holds it (plus a startup sweep). The Library shows
+  "shared by …" and "via project" badges. Sharing a single document is
+  API-only (`PUT`/`DELETE /v1/docs/{id}/shares/{user_id}`) until the
+  project-management screen ships.
+- **Content that other people use can't be changed under them.** Re-index and
+  convert are refused with a plain reason when someone else holds the
+  document ("Other people also use this document…") or a project does ("This
+  document is in a project…"); an admin can still do it.
+- **Audit log** (`LOG_AUDIT_FILE`, default `logs/audit.log`): who-holds-what
+  changes (entries, shares, placements, garbage collection), IDs only.
+- **New project from the Library.** Library → **New project** creates a
+  project you own.
+- **Documents can belong to several projects.** New `project_documents` join table
+  (migration `010`, backfilled from `documents.project_id`, which is dropped).
+  Link/unlink with `PUT`/`DELETE /v1/projects/{id}/docs/{doc_id}`; the Library shows
+  one chip per project with add/remove.
+- **Server-side chat.** Each turn runs on the server and streams typed events.
+  The reply is saved on the server as it streams: if you stop it, close the
+  tab, or lose the connection, the partial reply is kept and marked "Stopped";
+  a chat whose reply is still being written elsewhere (another tab or device)
+  shows "Still generating…" and refreshes until it settles. Any image you
+  attach stays visible to the model for follow-up questions, including after a
+  reload.
+- **Model providers.** Native Ollama plus any OpenAI-compatible server (vLLM,
+  OpenRouter, LiteLLM), configured in `.env` (`INFERENCE_PROVIDERS`). The
+  model picker groups models by provider and shows what each model can do.
+- **Stage 0.** The open document is searched before the model runs, and the
+  reply shows "Used N passages from …"; the time is in the prompt.
+- **Admin console: model providers at a glance.** The Deployment config
+  section now lists every configured model provider (name, kind, host, and
+  either a model count or "unreachable"); API keys are never shown. The old
+  "Ollama URL" row is now "Embeddings (Ollama) URL", since that's the only
+  thing it still configures.
+
+### Fixed
+
+- **Project owners can read documents members file into their project.** The read
+  check only looked at `project_members`, and owners never get a membership row.
+  "Can read" is now one SQL definition shared by every read path.
+- **A saved model id whose provider was renamed is now migrated instead of silently
+  mismatched.** The model picker used to show its first option while still sending
+  the stale id underneath, which a provider rejects. The server also now refuses a
+  model that isn't in its provider's own model list (`422 model_not_allowed`, "This
+  model isn't available.") instead of forwarding it and surfacing a provider error.
+- **The embedding model no longer appears in the chat model picker.** Picking it
+  always failed; `GET /v1/inference/models` now omits `EMBEDDING_MODEL`.
+- **Stopping a reply the moment you send it no longer locks the chat.** A Stop
+  (or closed tab) before the reply started streaming used to leave the chat
+  refusing new messages ("A reply is still being written in this chat.") for
+  about a minute. The empty reply is now marked "Stopped" at once.
+- **One stalled model provider no longer empties the model picker.** A provider
+  that connects but never answers is now given 5 seconds to list its models,
+  then reported unreachable; the other providers' models still show, and Send
+  keeps working.
+- **Prompts now fit strict chat templates (Gemma, Mistral and similar on
+  vLLM).** The prompt has at most one system message, first, and user and
+  assistant turns strictly alternate, as those templates require. Before, such
+  a model rejected every chat from its second message with a provider error.
+- **Long silent phases no longer get cut by a proxy.** While a tool runs or the
+  model reads a long prompt, the server now sends a keep-alive every 15
+  seconds, so a proxy's idle timeout (nginx 60 s, Cloudflare 100 s) doesn't end
+  the reply early.
+- **Replies that searched before answering are readable.** Text the model wrote
+  before and after a tool call used to run together ("Let me search.The
+  answer…"); each part is now its own paragraph.
+
+### Changed
+
+- **Breaking:** `PATCH /v1/docs/{id}` no longer accepts `project_id` (422), which
+  also fails any tag change sent in the same request. `GET /v1/docs` and document
+  status responses return `projects: [{id, name}]` (projects you can see; a doc's
+  owner sees all of its links) instead of `project_id`/`project_name`.
+- **Breaking: document upload is one multipart `POST /v1/docs`**, hashed by
+  the server. The old register-then-send-client-chunks routes are gone; an
+  old SPA gets a clear 404/405.
+- **Breaking: `POST /v1/inference/chat` is removed.** Chat turns are
+  `POST /v1/chat/sessions/{id}/turns` (server-sent events).
+- **Breaking: `PUT /v1/chat/sessions/{id}` is removed.** The server writes
+  messages itself; `POST /v1/chat/sessions/import` copies a legacy browser-only
+  chat.
+- **`GET /v1/inference/models`** returns objects `{id, provider, kind, name,
+  capabilities}` instead of name strings.
+- **Local mode (browser → Ollama directly) is removed.** Chat always goes
+  through the server, which by default uses the same `OLLAMA_URL` as before.
+- **Pins now sit near the top of the prompt** instead of just before your
+  message, so providers can reuse cached work across turns.
+- **The `current_time_date` tool is gone.** The current time is in every
+  prompt.
+- **`CHAT_PREFETCH_MIN_SCORE` default lowered from `0.75` to `0.6`**, measured
+  against `nomic-embed-text`: at `0.75` the model missed the document answer
+  and fell back to `web_search` every time in testing.
+- **The daily token budget now charges stopped and failed replies too.** A
+  reply you stop, or one that fails partway through, still counts against
+  your daily token budget — the provider's own token count when it reported
+  one, otherwise an estimate from the text length.
+
+### Upgrade notes
+
+- Migration `010` is the first migration that **drops data**
+  (`documents.project_id`, after copying it into `project_documents`). The
+  backend applies it automatically on its next start — not on merge. **Back up
+  first**, e.g.
+  `podman exec natural-reader-postgres pg_dump -U natural_reader natural_reader > natural_reader-pre-010.sql`
+  (docker: same command with `docker exec`).
+- **Deploy the SPA and the backend together** (rebuild + `deploy.sh` in the
+  same window as the backend restart). Mixed versions lose data silently: an
+  old SPA against the new backend gets a 422 on `PATCH /v1/docs` (the tags in
+  that request are lost too); a new SPA against the old backend has no
+  `PUT /v1/projects/{id}/docs/{doc_id}` route, so project links are silently
+  dropped (logged to the browser console only).
+- There is **no code rollback past 010** without restoring the backup.
+- Migration `011` (content vs library entries) **drops `doc_grants` and some
+  `documents` columns**: owners become upload entries, grants become shared
+  entries. Back up first.
+- Migration `012` marks every existing holding **unverified**. Right after the
+  upgrade, **every document registered before 2.1 disappears from its holders'
+  libraries, search and chat** (404); nothing is deleted. A holder gets it
+  back by opening the file in the reader and pressing **Index** (that uploads
+  it); the upload also restores the shares and project placements they made.
+  Details: [docs/LIBRARY.md](docs/LIBRARY.md#upgrade-notes-migration-012).
+- Migration `013` is additive: it runs on the next backend start. Back up
+  first as usual.
+- Deploy the SPA and backend together.
+- A saved selection like `qwen2.5:7b` becomes `ollama:qwen2.5:7b`
+  automatically.
+- Proxies that buffer `text/event-stream` make replies appear all at once
+  (see DEPLOYMENT.md).
+- Audio attachments are still disabled in the UI (unchanged).
+
 ## [2.0.0] - 2026-09-23
 
 Major release: Natural Reader becomes a **multi-user, authenticated, hosted

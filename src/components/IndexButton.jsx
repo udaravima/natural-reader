@@ -5,20 +5,31 @@ import { Database, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
  *
  * State comes from the parent (App.jsx) which owns the network calls — this
  * component just renders the right label/icon for the current state and fires
- * `onIndex` on click. PR 3 lands states up to `chunks_uploaded`; PR 4 will add
- * `indexing` (with progress) and `indexed`.
+ * `onIndex` on click.
  */
 export default function IndexButton({ theme, state, embeddedCount, chunkCount, onIndex }) {
-    // states: 'idle' | 'registered' | 'chunks_uploaded' | 'indexing' | 'indexed' | 'failed' | 'uploading'
+    // states: 'idle' | 'uploading' | 'stored' | 'extracting' | 'extracted' | 'indexing' | 'indexed' | 'failed'
     if (state === 'uploading') {
         return (
             <button
                 disabled
                 className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${theme.bgTertiary} ${theme.textSecondary} opacity-80 cursor-wait flex items-center`}
-                title="Uploading chunks to the server…"
+                title="Uploading the file…"
             >
                 <Loader2 size={14} className="inline mr-1 animate-spin" />
                 Uploading
+            </button>
+        );
+    }
+    if (state === 'extracting') {
+        return (
+            <button
+                disabled
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${theme.bgTertiary} ${theme.textSecondary} opacity-80 cursor-wait flex items-center`}
+                title="The server is reading the document's text"
+            >
+                <Loader2 size={14} className="inline mr-1 animate-spin" />
+                Extracting
             </button>
         );
     }
@@ -42,22 +53,25 @@ export default function IndexButton({ theme, state, embeddedCount, chunkCount, o
             <button
                 onClick={onIndex}
                 className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${theme.hover} text-emerald-500 hover:text-emerald-600 flex items-center`}
-                title={`Indexed (${chunkCount ?? '?'} chunks). Click to re-index.`}
+                title={`Indexed (${chunkCount ?? '?'} chunks). Click to re-index — only if nobody else uses it.`}
             >
                 <CheckCircle2 size={14} className="inline mr-1" />
                 Indexed
             </button>
         );
     }
-    if (state === 'chunks_uploaded') {
+    // 'stored' (interrupted before extraction started) and 'extracted'
+    // (chunks exist, embeddings don't) both need a click to move forward —
+    // nothing runs on its own, so both get the clickable "Resume" button.
+    if (state === 'stored' || state === 'extracted') {
         return (
             <button
                 onClick={onIndex}
                 className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${theme.hover} text-amber-500 hover:text-amber-600 flex items-center`}
-                title={`${chunkCount ?? '?'} chunks uploaded. Embeddings pending (PR 4).`}
+                title="Indexing was interrupted — click to resume"
             >
                 <Database size={14} className="inline mr-1" />
-                Re-upload
+                Resume
             </button>
         );
     }

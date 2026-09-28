@@ -17,13 +17,14 @@ spot a feature that shipped without coverage.
   - [Principal resolution (deps) & admin gate](#principal-resolution-deps--admin-gate)
   - [Ownership guards (authz)](#ownership-guards-authz)
   - [Admin router](#admin-router)
-  - [Inference gateway (models + chat)](#inference-gateway-models--chat)
+  - [Model listing (GET /v1/inference/models)](#model-listing-get-v1inferencemodels)
+  - [Chat turns and the orchestrator (C1)](#chat-turns-and-the-orchestrator-c1)
   - [Model-router config](#model-router-config)
   - [Budgets: service + enforcement](#budgets-service--enforcement)
   - [Server-side routing through model_router](#server-side-routing-through-model_router)
   - [Security hardening (SEC fixes)](#security-hardening-sec-fixes)
   - [Frontend: auth UI](#frontend-auth-ui)
-  - [Frontend: chat transport & source switch](#frontend-chat-transport--source-switch)
+  - [Frontend: chat streaming](#frontend-chat-streaming)
   - [Frontend: budget UX](#frontend-budget-ux)
 - [Integration seams covered by tests](#integration-seams-covered-by-tests)
 - [Manual / live verification ledger](#manual--live-verification-ledger)
@@ -166,23 +167,33 @@ scripted dance (see ledger below) and the rig in `deploy/README.md`.
 | | patch_budget_round_trip | set → read-back |
 | | patch_rejects_negative_budget | validation → 422 |
 
-### Inference gateway (models + chat)
+### Model listing (`GET /v1/inference/models`)
 
-`test_inference_router.py`:
+**C1:** the old `POST /v1/inference/chat` passthrough is gone — chat is
+`POST /v1/chat/sessions/{id}/turns` (see below). `test_inference_router.py`
+now covers model listing only:
 
 | Case | Asserts |
 |---|---|
-| models_requires_auth / chat_requires_auth | 401 without principal — the unauthenticated browser→Ollama path is closed |
-| models_lists_from_upstream | proxy of Ollama `/api/tags` |
-| models_filtered_by_allowlist | `INFERENCE_MODELS` filters the list |
-| models_upstream_down_is_502 | Ollama down → 502, not hang |
-| chat_streams_ndjson_byte_faithful | chunk-for-chunk passthrough (uses `stream_response()` helper) |
-| chat_forwards_body_upstream | validated body forwarded intact |
-| chat_rejects_unknown_top_level_field / _message_field / _option_field | `extra="forbid"` envelope — unknown fields 422 |
-| chat_accepts_images_and_tool_calls_round | per-message `images` + `tool_calls` pass through |
-| chat_allowlist_rejects_other_models / accepts_listed_model | allowlist 422 / pass |
-| chat_forwards_upstream_error_status_and_body | SPA's think/tools fallback chain still branches on upstream status |
-| chat_upstream_down_is_502 | upstream outage → 502 |
+| models_requires_auth | 401 without a principal |
+| models_lists_ids_with_provider_and_capabilities | `{id, provider, kind, name, capabilities}` per model, `id` = `<provider>:<model>` |
+| models_filtered_by_allowlist | `INFERENCE_MODELS` still filters the no-config default `ollama` provider |
+| models_every_provider_down_is_502 | every configured provider unreachable → 502, not a hang |
+| models_includes_budget / models_budget_absent_when_unlimited | budget state rides this endpoint |
+| raw_chat_passthrough_is_gone | `POST /v1/inference/chat` no longer exists (404/405) |
+
+### Chat turns and the orchestrator (C1)
+
+The chat loop moved server-side (`server/chat/`, `server/llm/`). Coverage
+spans several files:
+
+| File | Covers |
+|---|---|
+| `test_chat_turns.py` | the `POST /v1/chat/sessions/{id}/turns` endpoint: request validation (413 over `CHAT_MAX_REQUEST_MB`, 422 malformed/empty/model-not-allowed/attachment-unsupported, 429 budget, 409 `turn_in_progress`, 503 `no_providers`/`db_unavailable`, 404 not-yours), SSE framing (`data: {...}` lines, always ending `data: [DONE]`, a terminal `error` frame on an unhandled exception), `: keep-alive` comments during a silent phase, and raw-ASGI disconnects (mid-stream, during a silent phase, and before the stream starts) all ending the turn `aborted` with the claim released |
+| `test_chat_orchestrator.py` | `run_turn` against a fake provider: plain text, one tool round then a tools-off final step, a failing/unknown tool, budget exhausted between steps, client disconnect mid-step (saves `aborted`, releases the claim), a model without tools, invalid tool-call JSON becomes `{}` |
+| `test_chat_context.py` | Stage 0: document prefetch hit/miss/unreadable doc, the `Current time: …` line (`test_time_line_falls_back_to_utc_on_bad_timezone` for a garbage timezone), history trimming (old attachments replaced by a marker before a whole turn is dropped), and the strict-template shape (`test_the_prompt_fits_strict_chat_templates`: one leading system message, alternating roles, the volatile block leading the last user message) |
+| `test_llm_router.py` | provider-config parsing (`INFERENCE_PROVIDERS` + `INFERENCE_<NAME>_*`), `<provider>:model` id resolution, the no-config single-`ollama` fallback, a bare pre-C1 model name routing to the first `ollama`-kind provider, a stalled provider timing out of the model list (`LIST_TIMEOUT_S`) without hiding the others |
+| `test_chat_sessions_api.py` | session CRUD, `POST /v1/chat/sessions/import` (legacy-chat copy, create-only) |
 
 ### Model-router config
 
@@ -199,18 +210,22 @@ scripted dance (see ledger below) and the rig in `deploy/README.md`.
 
 ### Budgets: service + enforcement
 
+**C1 changed what "aborted streams never count" means.** Pre-C1, a
+client-aborted stream never accounted (no final chunk, no usage). Now a
+turn that's stopped, disconnects, or errors mid-way **still charges** —
+`_finalize` records whatever was generated using the provider's own count
+if it reported one, else a chars/4 estimate (`estimated: true`). There is
+no `_UsageTap` any more; usage accounting lives in the orchestrator.
+
 | File | Case | Asserts |
 |---|---|---|
 | `test_inference_budget.py` | *(suite)* | record/spent/state/over/effective/admin_usage: UTC-day computation (Python, not SQL), per-user override vs deployment default, aggregation |
-| `test_inference_router.py` (budget half) | chat_429_when_over_budget | 429 pre-check with `{remaining_tokens, reset_at}` detail |
-| | chat_allowed_when_under_budget | under-budget passes |
-| | models_includes_budget | budget rides `/v1/inference/models` |
-| | models_budget_absent_when_unlimited | unlimited → no budget key |
-| | stream_accounts_usage_from_final_chunk | accounting uses Ollama's real final-chunk counts |
-| | aborted_stream_does_not_account | client-aborted streams never count |
-| | budget_pre_check_failure_fails_open | DB down → chat still serves (fail-open doctrine) |
-| | usage_tap_handles_split_lines_and_stops_at_done | `_UsageTap` parser: split NDJSON lines, `done:true` terminator |
-| | usage_tap_ignores_unparsable_lines | junk lines can't corrupt counts |
+| `test_chat_turns.py` | budget_already_spent_is_429_with_reset_time | 429 pre-check with `{remaining_tokens, reset_at}` detail, before a turn is even claimed |
+| `test_inference_router.py` | models_includes_budget / models_budget_absent_when_unlimited | budget state rides `GET /v1/inference/models` |
+| `test_chat_orchestrator.py` | budget_runs_out_between_steps | checked before **every** step, not just once up front |
+| | missing_usage_is_estimated_and_recorded | a provider with no usage in its response is charged the chars/4 estimate |
+| | disconnect_mid_step_still_records_usage | **C1 behavior change**: a client disconnect still charges for the partial reply |
+| | provider_error_mid_text_still_records_usage | a mid-turn provider error still charges for what was generated before it failed |
 
 ### Server-side routing through model_router
 
@@ -235,14 +250,20 @@ credentials off/on), TTS/batch request size caps.
 | `AccountPanel.test.jsx` | 3 | PAT create/copy-once/revoke UI flow |
 | `AdminPanel.test.jsx` | 3 | list render, activate/disable via PATCH, role toggle |
 
-### Frontend: chat transport & source switch
+### Frontend: chat streaming
 
-| File | Case count | Asserts |
-|---|---|---|
-| `chatTransport.test.js` | 10 | `chatFetch` targets `/v1/inference/chat` in server mode vs `/api/chat` local; `MODELS_PATH`/`CHAT_PATH`; `budgetDetail`/`formatResetAt` parsing (incl. missing keys, `Z` timestamps) |
-| `InferenceSourceSelect.test.jsx` | 3 | Server/Local toggle renders; persisted change; host/port only in local mode |
-| `ChatSidebar.inference.test.jsx` | 10 | INFERENCE SOURCE block wiring, model dropdown from gateway list, budget meter visibility |
-| `useChatEngine` (via `ChatView.meter` + transport tests) | 9+4 | context meter; `callChat` 429 interception happens **before** the think/tools retry chain; request-body shape per source |
+**C1:** there's no "source switch" any more — `InferenceSourceSelect.jsx`,
+its test file, `ChatSidebar.inference.test.jsx`, and the old NDJSON
+`chatTransport.test.js` (server-vs-local `chatFetch`) are all gone. Chat's
+frontend half is now a thin SSE reader plus a pure event reducer:
+
+| File | Covers |
+|---|---|
+| `chatStream.test.js` | `postTurn` + reading the turn's SSE response: partial lines, `[DONE]`, abort |
+| `chatEvents.test.js` | the pure `applyEvent` reducer: text/reasoning deltas, tool panel entries, `data-context`/`data-notice`, `finish`/`error`/`aborted` outcomes — fed from the same fixture files the backend's orchestrator tests write (`chatFixtures.testutil.js` / `server/tests/fixtures/chat_events/*.jsonl`), so a format change on either side fails a test |
+| `chatTransport.test.js` | now just `GET /v1/inference/models` (`MODELS_PATH`) and `budgetDetail`/`formatResetAt` parsing |
+| `ChatView.status.test.jsx` | "Still generating…" for a reload mid-reply, "Stopped" for an aborted one |
+| `InferenceRow.test.jsx` | per-model settings row, replacing the removed source-toggle UI |
 
 ### Frontend: budget UX
 
@@ -250,18 +271,20 @@ credentials off/on), TTS/batch request size caps.
 |---|---|---|
 | `ChatView.meter.test.jsx` | 9 | context meter accounting; send disabled when `inferenceBudget.remaining_tokens === 0` |
 | `chatTransport.test.js` (budget half) | — | `budgetDetail` + `formatResetAt` |
-| `ChatSidebar.inference.test.jsx` (meter) | — | "N tokens left today" rendering |
+| `ChatSidebar.jsx` tests (meter) | — | "N tokens left today" rendering — C1 removed the dedicated `ChatSidebar.inference.test.jsx`/source-toggle file along with the toggle itself |
 
 ## Integration seams covered by tests
 
 - **Auth × every router**: ownership/status tests exist per surface (docs,
   chat, admin, inference, tools/TTS via `test_protected_routes`).
-- **Gateway × budgets**: pre-check + post-stream accounting + `/models`
-  surface, in one file, against a real Postgres user row.
-- **Frontend × backend contract shapes**: `chatTransport.test.js` pins the
-  request/response shapes the gateway's Pydantic envelope must keep matching
-  (unknown-field 422s are pinned from the backend side in
-  `test_inference_router.py`).
+- **Budgets × turns**: pre-check (`test_chat_turns.py`) + per-step accounting,
+  including stopped/failed replies (`test_chat_orchestrator.py`) + `/models`
+  surface, against a real Postgres user row.
+- **Frontend × backend event contract (C1)**: both sides read the same
+  `server/tests/fixtures/chat_events/*.jsonl` files — the backend writes them
+  from real orchestrator runs, the frontend's `chatEvents.test.js` replays
+  them through `applyEvent`. A wire-format change that only one side notices
+  fails a test.
 
 ## Manual / live verification ledger
 
@@ -275,9 +298,11 @@ Actually executed (not just designed), with results:
    create-in-KC invisible until first login; delete-in-KC leaves the app row
    active **with a still-working session**; same-email re-login → 409; full
    OIDC dance scripted (PKCE + form POST + callback) against the live rig.
-3. **Still open (needs a human in a browser):** Server/Local dropdown toggle,
-   budget meter rendering, 429 toast + disabled send at zero, local-mode
-   parity, image-attach through the gateway.
+3. **Still open (needs a human in a browser):** budget meter rendering, 429
+   toast + disabled send at zero, image-attach through a real turn, "Still
+   generating…"/"Stopped" against an actual reload, streaming through a
+   buffering proxy (see DEPLOYMENT.md). The C1 plan's own running-app walk
+   (spec §11) is the authoritative checklist for this.
 
 ## Known gaps
 

@@ -1,0 +1,55 @@
+"""Chat orchestrator knobs (spec §9). Every value is an env var with a safe
+default; a bad value logs a WARNING and falls back to the default."""
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass
+from typing import Callable, Mapping
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ChatConfig:
+    max_tool_rounds: int = 1               # tool rounds before the final tools-off step
+    prefetch_min_score: float = 0.6        # cosine similarity; >= 1 disables prefetch. A cautious guess,
+                                            # tune from DEBUG logs — measured on nomic-embed-text: matching
+                                            # questions scored 0.563-0.823 (5/6 >= 0.6, only 2/6 >= 0.75),
+                                            # unrelated ones 0.428-0.513 (none >= 0.6).
+    prefetch_k: int = 4                    # passages at most
+    reply_reserve_tokens: int = 2048       # kept free for the reply when trimming history
+    attachment_token_estimate: int = 1500  # tokens counted per image/audio when trimming (a guess)
+    max_request_mb: int = 25               # turn request body cap, in MB
+
+
+def load_chat_config(env: Mapping[str, str]) -> ChatConfig:
+    d = ChatConfig()
+
+    def num(key: str, default, cast: Callable, lo, hi):
+        raw = (env.get(key) or "").strip()
+        if not raw:
+            return default
+        try:
+            value = cast(raw)
+        except ValueError:
+            logger.warning("%s=%r is not a number; using %s", key, raw, default)
+            return default
+        if not lo <= value <= hi:
+            logger.warning("%s=%r is outside %s..%s; using %s", key, raw, lo, hi, default)
+            return default
+        return value
+
+    return ChatConfig(
+        max_tool_rounds=num("CHAT_MAX_TOOL_ROUNDS", d.max_tool_rounds, int, 0, 20),
+        prefetch_min_score=num("CHAT_PREFETCH_MIN_SCORE", d.prefetch_min_score, float, 0.0, 1.0),
+        prefetch_k=num("CHAT_PREFETCH_K", d.prefetch_k, int, 1, 20),
+        reply_reserve_tokens=num("CHAT_REPLY_RESERVE_TOKENS", d.reply_reserve_tokens, int, 0, 1_000_000),
+        attachment_token_estimate=num("CHAT_ATTACHMENT_TOKEN_ESTIMATE", d.attachment_token_estimate,
+                                      int, 0, 100_000),
+        max_request_mb=num("CHAT_MAX_REQUEST_MB", d.max_request_mb, int, 1, 1024),
+    )
+
+
+def get_chat_config() -> ChatConfig:
+    return load_chat_config(os.environ)

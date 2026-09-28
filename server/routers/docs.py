@@ -1,78 +1,68 @@
 """
-Document registration + chunk ingest endpoints.
+Document content, library entries and the jobs that derive text/embeddings.
 
-PR 3 scope: take chunks the frontend already extracted from the loaded doc and
-persist them in Postgres. No embedding yet — `embedding` stays NULL until PR 4
-wires up the Ollama embedding pipeline. The state machine is:
+`documents` is content owned by nobody; a user holds it through a library
+entry (`library_entries`), a project through a placement (`project_documents`).
+Who-holds-what writes and garbage collection live in `services/doc_content.py`
+(A1 spec §3, §5). The content state machine (spec §4):
 
-    registered  → POST /v1/docs created the row
-    chunks_uploaded → at least one chunk batch has landed
-    indexing    → (PR 4) background embed job running
-    indexed     → all chunks have embeddings
-    failed      → (PR 4) embedding job errored
+    stored → extracting → extracted → indexing → indexed | failed
 
-Chunk inserts are idempotent on (doc_id, text_hash) so re-running the Index
-button is safe — the existing rows are upserted in place.
+`registered` is legacy only: rows from the client-chunk era with neither
+bytes nor chunks, until their first verified upload.
+
+Extraction writes a doc's chunks with `doc_pipeline.replace_chunks`: the whole
+set is deleted and re-inserted in one transaction, so a re-index or legacy
+re-extraction swaps the index atomically — search sees the old chunks until
+commit, never a half-written set.
 """
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
-import os
+import re
 import uuid
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Path as PathParam, Response, UploadFile
+from fastapi import (
+    APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Path as PathParam, Response,
+    UploadFile,
+)
 from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..auth.authz import assert_can_read_doc, assert_owns_doc, readable_docs_where
+from ..audit import audit
+from ..auth.authz import (
+    assert_can_read_doc,
+    assert_holds_upload,
+    effective_holding_sql,
+    readable_docs_params,
+    readable_docs_where,
+    visible_projects_params,
+    visible_projects_where,
+)
 from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
-from ..services import docling_convert, model_router
-from ..services.embeddings import EMBEDDING_DIM, embed_batch, embed_one
+from ..http_errors import refusal
+from ..services import doc_content, doc_pipeline, doc_storage, docling_convert
+from ..services.doc_search import search_chunks
+from ..services.embeddings import embed_one
 
-
-# Filesystem location for retained PDF bytes. Overridable via env so the
-# docker-compose mount can park them on a named volume in production.
-PDF_STORAGE_DIR = Path(os.environ.get("PDF_STORAGE_DIR", "./data/pdfs")).resolve()
-PDF_UPLOAD_MAX_MB = int(os.environ.get("PDF_UPLOAD_MAX_MB", "50"))
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/docs", tags=["docs"])
 
-# doc_id is a client-supplied sha256 hex digest. Constrain it to exactly that
-# shape everywhere it appears (SEC-1): the value is interpolated into a
-# filesystem path (`_pdf_storage_path`), so an unconstrained value like
-# "../../etc/x" would escape PDF_STORAGE_DIR. `DocId` applies the same rule to
-# path parameters, which FastAPI otherwise accepts as arbitrary strings.
+# doc_id is the server-computed sha256 hex digest of the content's bytes.
+# Path parameters are constrained to exactly that shape (SEC-1): FastAPI
+# otherwise accepts arbitrary strings, and a doc id ends up in SQL, logs and
+# (via doc_storage.place) a filesystem path.
 DOC_ID_PATTERN = r"^[0-9a-f]{64}$"
 DocId = Annotated[str, PathParam(pattern=DOC_ID_PATTERN)]
 
 
 # ---------- request / response models ----------
-
-class DocRegisterIn(BaseModel):
-    doc_id: str = Field(pattern=DOC_ID_PATTERN)
-    file_name: str
-    file_type: str = Field(pattern="^(pdf|text|markdown)$")
-    size_bytes: int = Field(ge=0)
-    page_count: int | None = Field(default=None, ge=0)
-
-
-class ChunkIn(BaseModel):
-    ord: int = Field(ge=0)
-    page: int | None = Field(default=None, ge=0)
-    chunk_type: str | None = None
-    text: str
-
-
-class ChunksUploadIn(BaseModel):
-    chunks: list[ChunkIn]
-
 
 class SearchIn(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
@@ -81,9 +71,8 @@ class SearchIn(BaseModel):
 
 class DocPatchIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    file_name: str | None = Field(default=None, max_length=255)
     tags: list[str] | None = None
-    project_id: uuid.UUID | None = None
-    owner_user_id: str | None = None
 
 
 class ConvertOptionsIn(BaseModel):
@@ -95,24 +84,14 @@ class ConvertOptionsIn(BaseModel):
     page_range: list[int] | None = None
 
 
-# Per-doc lock prevents concurrent /index *or* /convert calls for the same doc
-# from stomping each other. Shared between embedding and conversion jobs since
-# they touch the same doc_chunks rows.
-_doc_job_locks: dict[str, asyncio.Lock] = {}
-# Back-compat alias for the original name used in PR 4. Kept so any external
-# call sites (none in-repo, but easy to grep for) still resolve.
+# Background jobs live in services/doc_pipeline.py. The old private names are
+# kept as aliases so the convert job below and existing call sites resolve.
+_doc_job_locks = doc_pipeline._doc_job_locks
+_get_doc_lock = doc_pipeline.doc_lock
+_run_index_job = doc_pipeline.run_embed
+_chunks_from_pages = doc_pipeline.chunks_from_pages
+# Back-compat aliases for the original PR 4 names.
 _index_locks = _doc_job_locks
-
-
-def _get_doc_lock(doc_id: str) -> asyncio.Lock:
-    lock = _doc_job_locks.get(doc_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _doc_job_locks[doc_id] = lock
-    return lock
-
-
-# Retained for backwards reference to the PR 4 helper name.
 _get_index_lock = _get_doc_lock
 
 
@@ -130,23 +109,83 @@ def _epoch_ms(ts) -> int:
     return int(ts.timestamp() * 1000)
 
 
-def _text_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+def _doc_projects_sql(alias: str) -> str:
+    """JSON array `[{id, name}]` of the projects `<alias>` is placed in that the
+    caller can see. Everyone — including whoever uploaded it — sees only
+    projects they own or belong to: listing others would leak their names, and
+    under A1 an uploader can't unlink from a project anyway. A placement that
+    doesn't grant read (unverified — migration 012) isn't listed either.
+    Sorted by name, then id. Bind with `_doc_projects_params(user_id)`; SELECT-list params come
+    BEFORE join and WHERE params."""
+    return (
+        "COALESCE((SELECT json_agg(json_build_object('id', _vp.id, 'name', _vp.name) "
+        "ORDER BY _vp.name, _vp.id) "
+        "FROM project_documents _vpd JOIN projects _vp ON _vp.id = _vpd.project_id "
+        f"WHERE _vpd.doc_id = {alias}.doc_id AND {effective_holding_sql('_vpd')} "
+        f"AND {visible_projects_where('_vp')}), '[]'::json)"
+    )
 
 
-async def _fetch_doc_status(conn, doc_id: str) -> dict[str, Any] | None:
+def _doc_projects_params(user_id: str) -> list[str]:
+    return visible_projects_params(user_id)
+
+
+# The caller's own entry (if any) and who shared it. Bind `_ENTRY_JOIN` with
+# [user_id], after SELECT-list params and before WHERE params.
+_ENTRY_JOIN = (
+    "LEFT JOIN library_entries _me ON _me.doc_id = d.doc_id AND _me.user_id = %s "
+    "LEFT JOIN users _sb ON _sb.id = _me.shared_by"
+)
+# The name the caller sees. Their own entry's name; for a row they see only
+# through a project, the name the user who filed it there gave it (their
+# entry's); else the canonical name. The canonical name is the FIRST uploader
+# anywhere's file name, so falling back to it for a project row would show a
+# stranger's name. Needs `_ENTRY_JOIN`; bind with `_display_name_params`.
+_DISPLAY_NAME = (
+    "COALESCE(_me.file_name, CASE WHEN _me.user_id IS NULL THEN ("
+    "SELECT _ne.file_name FROM project_documents _npd "
+    "JOIN projects _np ON _np.id = _npd.project_id "
+    "JOIN library_entries _ne ON _ne.user_id = _npd.added_by AND _ne.doc_id = _npd.doc_id "
+    "WHERE _npd.doc_id = d.doc_id AND _ne.file_name IS NOT NULL "
+    f"AND {effective_holding_sql('_npd')} AND {visible_projects_where('_np')} "
+    "ORDER BY _npd.added_at, _npd.project_id LIMIT 1) END, d.file_name)"
+)
+
+
+def _display_name_params(user_id: str) -> list[str]:
+    return visible_projects_params(user_id)
+
+
+# Bind with `_display_name_params(user_id)`.
+_ENTRY_COLS = (
+    f"{_DISPLAY_NAME} AS file_name, "
+    "COALESCE(_me.tags, '{}') AS tags, _me.added_via AS added_via, "
+    "_me.shared_by AS shared_by_id, COALESCE(_sb.display_name, _sb.email) AS shared_by_name"
+)
+
+
+def _entry_fields(rec: dict[str, Any]) -> dict[str, Any]:
+    sid, sname = rec.pop("shared_by_id", None), rec.pop("shared_by_name", None)
+    rec["shared_by"] = {"id": str(sid), "name": sname} if sid else None
+    rec["in_library"] = rec.get("added_via") is not None
+    return rec
+
+
+async def _fetch_doc_status(conn, doc_id: str, user_id: str) -> dict[str, Any] | None:
     async with conn.cursor() as cur:
         await cur.execute(
-            """
-            SELECT d.doc_id, d.file_name, d.file_type, d.size_bytes, d.page_count,
+            f"""
+            SELECT d.doc_id, d.file_type, d.size_bytes, d.page_count,
                    d.state, d.embedding_model, d.embedding_dim, d.error_message,
                    d.created_at, d.updated_at,
                    d.conversion_state, d.conversion_options, d.conversion_error,
-                   d.converted_at, d.pdf_path, d.tags, d.project_id,
+                   d.converted_at, d.bytes_path, {_ENTRY_COLS},
+                   {_doc_projects_sql('d')} AS projects,
                    COALESCE(c.cnt, 0) AS chunk_count,
                    COALESCE(c.embedded, 0) AS embedded_count,
                    COALESCE(p.page_cnt, 0) AS converted_page_count
             FROM documents d
+            {_ENTRY_JOIN}
             LEFT JOIN (
                 SELECT doc_id,
                        COUNT(*) AS cnt,
@@ -159,7 +198,7 @@ async def _fetch_doc_status(conn, doc_id: str) -> dict[str, Any] | None:
             ) p ON p.doc_id = d.doc_id
             WHERE d.doc_id = %s
             """,
-            (doc_id,),
+            [*_display_name_params(user_id), *_doc_projects_params(user_id), user_id, doc_id],
         )
         row = await cur.fetchone()
         if not row:
@@ -171,24 +210,23 @@ async def _fetch_doc_status(conn, doc_id: str) -> dict[str, Any] | None:
     if rec.get("converted_at") is not None:
         rec["converted_at"] = _epoch_ms(rec["converted_at"])
     # Don't leak the absolute filesystem path to the client.
-    rec["has_pdf"] = bool(rec.pop("pdf_path", None))
-    rec["project_id"] = str(rec["project_id"]) if rec.get("project_id") else None
-    return rec
+    rec["has_pdf"] = bool(rec.pop("bytes_path", None)) and rec["file_type"] == "pdf"
+    return _entry_fields(rec)
 
 
 # ---------- authz ----------
 
-async def _require_doc_owner(
+async def _require_upload_holder(
     doc_id: DocId,
     principal: Principal = Depends(require_capability("reader")),
 ) -> Principal:
     """Route dependency: 401 if unauthenticated, 403 if the caller lacks the
-    `reader` capability, 404 unless the caller owns the doc (missing and
-    not-owned are indistinguishable to the caller)."""
+    `reader` capability, 404 unless the caller holds an UPLOAD entry for the
+    doc (missing and not-held are indistinguishable to the caller)."""
     _ensure_ready()
     pool = get_pool()
     async with pool.connection() as conn:
-        await assert_owns_doc(conn, doc_id, principal.user_id)
+        await assert_holds_upload(conn, doc_id, principal.user_id)
     return principal
 
 
@@ -196,13 +234,28 @@ async def _require_doc_reader(
     doc_id: DocId,
     principal: Principal = Depends(require_capability("reader")),
 ) -> Principal:
-    """Read gate: 403 if the caller lacks the `reader` capability, then owner
-    OR project member OR grantee for this doc (404 otherwise — missing and
-    not-readable are indistinguishable to the caller)."""
+    """Read gate: 403 if the caller lacks the `reader` capability, then a
+    library entry for the doc, or owner/member of any project it is placed in
+    (404 otherwise — missing and not-readable are indistinguishable to the
+    caller). See `server/auth/authz.py`'s `readable_docs_where`."""
     _ensure_ready()
     pool = get_pool()
     async with pool.connection() as conn:
         await assert_can_read_doc(conn, doc_id, principal.user_id)
+    return principal
+
+
+async def _require_content_op(doc_id: DocId,
+                              principal: Principal = Depends(_require_doc_reader)) -> Principal:
+    """Content-changing ops (convert, delete converted markdown) change the
+    document for everyone who uses it: only the sole holder or an admin
+    (spec §5). Readers who may not get 409 content_shared with a reason;
+    non-readers already got 404 from _require_doc_reader."""
+    async with get_pool().connection() as conn:
+        reason = await doc_content.content_ops_refusal(
+            conn, doc_id, principal.user_id, is_admin=principal.role == "admin")
+    if reason:
+        raise _content_shared(reason, doc_id, principal.user_id)
     return principal
 
 
@@ -216,92 +269,217 @@ async def list_documents(
     principal: Principal = Depends(require_capability("reader")),
 ) -> list[dict[str, Any]]:
     """
-    List documents the caller can read: own docs, docs in a project they're a
-    member of, and docs explicitly granted to them. Access is resolved in SQL
-    via `readable_docs_where` — never post-filtered in Python — so a doc a
-    stranger owns can never appear, even if it happens to match `q`/`tag`.
+    List docs in my library (uploaded or shared with me) plus docs placed in
+    projects I own or belong to. Access is resolved in SQL via
+    `readable_docs_where` — never post-filtered in Python — so a doc nobody
+    gave me can never appear, even if it happens to match `q`/`tag`. Name,
+    tags, `added_via` and `shared_by` come from MY entry; a project-only row
+    has `in_library: false` and the name its filer gave it (`_DISPLAY_NAME`).
     """
     _ensure_ready()
     uid = principal.user_id
     where = [readable_docs_where("d")]
-    params: list[Any] = [uid, uid, uid]
+    where_params: list[Any] = readable_docs_params(uid)
     if q:
-        where.append("(d.file_name ILIKE %s OR %s = ANY(d.tags))")
-        params += [f"%{q}%", q]
+        # Match the name the caller is shown, never a name they can't see.
+        where.append(f"({_DISPLAY_NAME} ILIKE %s OR %s = ANY(_me.tags))")
+        where_params += [*_display_name_params(uid), f"%{q}%", q]
     if project_id:
-        where.append("d.project_id = %s")
-        params.append(project_id)
+        # Only a project the caller can see: filtering a shared doc by a
+        # guessed project id must not reveal whether someone placed it there.
+        where.append(
+            "EXISTS (SELECT 1 FROM project_documents _fpd "
+            "JOIN projects _fp ON _fp.id = _fpd.project_id "
+            f"WHERE _fpd.doc_id = d.doc_id AND _fpd.project_id = %s "
+            f"AND {effective_holding_sql('_fpd')} AND {visible_projects_where('_fp')})"
+        )
+        where_params += [project_id, *visible_projects_params(uid)]
     if tag:
-        where.append("%s = ANY(d.tags)")
-        params.append(tag)
+        where.append("%s = ANY(_me.tags)")
+        where_params.append(tag)
     sql = (
-        "SELECT d.doc_id, d.file_name, d.state, d.tags, d.project_id, "
-        "p.name AS project_name, d.user_id "
-        "FROM documents d LEFT JOIN projects p ON p.id = d.project_id "
+        f"SELECT d.doc_id, d.state, {_ENTRY_COLS}, {_doc_projects_sql('d')} AS projects "
+        f"FROM documents d {_ENTRY_JOIN} "
         f"WHERE {' AND '.join(where)} ORDER BY d.updated_at DESC"
     )
+    # psycopg binds by position: SELECT-list params, then the join, then WHERE.
+    params = [*_display_name_params(uid), *_doc_projects_params(uid), uid, *where_params]
     pool = get_pool()
     async with pool.connection() as conn:
         cur = await conn.execute(sql, params)
-        rows = await cur.fetchall()
-    return [
-        {"doc_id": r[0], "file_name": r[1], "state": r[2], "tags": r[3],
-         "project_id": str(r[4]) if r[4] else None, "project_name": r[5],
-         "owner_user_id": str(r[6]), "is_owner": str(r[6]) == uid}
-        for r in rows
-    ]
+        cols = [c.name for c in cur.description]
+        rows = [dict(zip(cols, r)) for r in await cur.fetchall()]
+    return [_entry_fields(r) for r in rows]
+
+
+async def _lock_existing(conn, doc_id: str):
+    """Lock existing content FOR SHARE before adding an entry, so a concurrent
+    GC (FOR UPDATE) either finishes first — we then see no row — or waits for
+    us. Returns (state, extracted_by, bytes_path, conversion_state) or None."""
+    cur = await conn.execute(
+        "SELECT state, extracted_by, bytes_path, conversion_state FROM documents "
+        "WHERE doc_id = %s FOR SHARE", (doc_id,))
+    return await cur.fetchone()
 
 
 @router.post("")
 async def register_document(
-    payload: DocRegisterIn,
+    background: BackgroundTasks,
+    response: Response,
+    file: UploadFile = File(...),
+    file_name: str | None = Form(None),
+    tags: list[str] = Form(default=[]),
+    client_doc_id: str | None = Form(None),
     principal: Principal = Depends(require_capability("reader")),
 ) -> dict[str, Any]:
-    """
-    Upsert a document row owned by the caller. Idempotent on `doc_id`;
-    a doc_id already owned by another user is reported as 404 (not hijackable).
-    """
+    """Add a file to my library (A1 spec §4). The server hashes the uploaded
+    bytes — that hash IS the doc id; `client_doc_id` is only a hint. Existing
+    content → 200 dedupe, no rework. New content → 202 and a background
+    extract + embed job. Proof of possession: nobody gets an entry without
+    sending the bytes."""
     _ensure_ready()
-    pool = get_pool()
-    async with pool.connection() as conn:
-        cur = await conn.execute(
-            "SELECT user_id FROM documents WHERE doc_id = %s", (payload.doc_id,)
-        )
-        row = await cur.fetchone()
-        if row is not None and str(row[0]) != principal.user_id:
-            raise HTTPException(status_code=404, detail="Document not found")
+    name = (file_name or file.filename or "").strip()[:255] or "document"
+    staged = await doc_storage.stage_upload(file, name)
+    try:
+        doc_id = staged.sha256
+        if client_doc_id and client_doc_id != doc_id:
+            # The hint is free text from the client: log it only when it has
+            # the shape of an id, so a WARNING line never carries anything else.
+            hint = client_doc_id if re.fullmatch(DOC_ID_PATTERN, client_doc_id) else "(malformed)"
+            logger.warning("Client hash hint mismatch for user %s: hint %s, server %s",
+                           principal.user_id, hint, doc_id)
+        created, existing = await _add_upload_entry(principal.user_id, staged, name, tags)
+        job = await _after_upload(doc_id, staged, created, existing)
+    finally:
+        doc_storage.discard(staged)  # no-op once placed
+    if job is not None:
+        background.add_task(job, doc_id)
+    async with get_pool().connection() as conn:
+        cur = await conn.execute("SELECT state FROM documents WHERE doc_id = %s", (doc_id,))
+        state = (await cur.fetchone())[0]
+    scheduled_new_work = job is doc_pipeline.run_pipeline
+    response.status_code = 202 if scheduled_new_work else 200
+    return {"doc_id": doc_id, "dedup": not created, "state": state}
+
+
+async def _add_upload_entry(user_id: str, staged, name: str, tags: list[str]):
+    """Create-or-find the content and give the user an upload entry, in one
+    transaction. Retries ONCE if a GC removed the row between our conflicting
+    INSERT and our lock (spec §3, races) — the caller never sees a 5xx."""
+    for attempt in (1, 2):
+        async with get_pool().connection() as conn:
+            async with conn.transaction():
+                cur = await conn.execute(
+                    "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, state, "
+                    "extracted_by) VALUES (%s,%s,%s,%s,'extracting','server') "
+                    "ON CONFLICT (doc_id) DO NOTHING RETURNING doc_id",
+                    (staged.sha256, name, staged.file_type, staged.size))
+                created = await cur.fetchone() is not None
+                existing = None
+                if not created:
+                    existing = await _lock_existing(conn, staged.sha256)
+                    if existing is None:
+                        if attempt == 1:
+                            logger.warning("Upload of %s lost a race with GC; retrying once",
+                                           staged.sha256)
+                            continue
+                        raise refusal(503, "busy", "Please try again.")
+                # The bytes are in hand: this is the one caller that verifies.
+                outcome = await doc_content.add_entry(
+                    conn, user_id, staged.sha256, via="upload", verified=True, tags=tags,
+                    file_name=None if created else name)
+        if outcome != "exists":
+            audit("entry.added", user=user_id, doc=staged.sha256, via="upload",
+                  dedup=str(not created).lower())
+        return created, existing
+    raise AssertionError("unreachable")
+
+
+async def _after_upload(doc_id: str, staged, created: bool, existing):
+    """Put verified bytes in place (after the INSERT committed) and decide
+    what, if anything, runs next. Returns the job to schedule, or None."""
+    if created:
+        try:
+            await _set_bytes_path(doc_id, doc_storage.place(staged, doc_id))
+        except Exception:
+            logger.exception("Could not store uploaded bytes for %s", doc_id)
+            try:
+                async with get_pool().connection() as conn:
+                    await conn.execute(
+                        "UPDATE documents SET state = 'failed', error_message = %s, "
+                        "updated_at = now() WHERE doc_id = %s",
+                        ("Could not store the uploaded file — upload it again.", doc_id))
+            except Exception:
+                logger.exception("Could not record failure state for %s", doc_id)
+            raise
+        return doc_pipeline.run_pipeline
+    state, extracted_by, bytes_path, conversion_state = existing
+    old_file_ok = bool(bytes_path) and (
+        await asyncio.to_thread(doc_storage.sha256_file, Path(bytes_path))) == doc_id
+    if not old_file_ok or extracted_by == "client":
+        if bytes_path and not Path(bytes_path).exists():
+            logger.warning("Content %s had missing bytes; restored from this upload", doc_id)
+        await _set_bytes_path(doc_id, doc_storage.place(staged, doc_id))
+    if extracted_by == "client" and not old_file_ok and conversion_state is not None:
+        # A legacy conversion made from missing or mismatched (unverified)
+        # bytes: discard it now, as run_legacy_swap does, so nothing re-seeds
+        # chunks from it and a later upload can't relabel it server-derived.
+        await _discard_conversion(doc_id)
+        conversion_state = None
+    if extracted_by == "client":
+        if state == "indexed":
+            if conversion_state == "converted" and old_file_ok:
+                # Its converted pages came from bytes that hash to the id: already
+                # server-derived. Trust it without rework.
+                async with get_pool().connection() as conn:
+                    await conn.execute(
+                        "UPDATE documents SET extracted_by = 'server', updated_at = now() "
+                        "WHERE doc_id = %s", (doc_id,))
+                return None
+            return doc_pipeline.run_legacy_swap
+        await _set_state(doc_id, "stored")
+        return doc_pipeline.run_pipeline
+    if state in ("stored", "failed", "registered"):
+        await _set_state(doc_id, "stored")
+        return doc_pipeline.run_pipeline
+    if state == "extracted":
+        return doc_pipeline.run_pipeline
+    return None  # extracting / indexing / indexed: dedupe, nothing to redo
+
+
+async def _discard_conversion(doc_id: str) -> None:
+    async with get_pool().connection() as conn:
+        async with conn.transaction():
+            await conn.execute("DELETE FROM doc_pages WHERE doc_id = %s", (doc_id,))
+            await conn.execute(
+                "UPDATE documents SET conversion_state = NULL, conversion_options = NULL, "
+                "conversion_error = NULL, converted_at = NULL, updated_at = now() "
+                "WHERE doc_id = %s", (doc_id,))
+    logger.warning("Legacy conversion of %s discarded: made from unverified bytes", doc_id)
+
+
+async def _set_bytes_path(doc_id: str, path: Path) -> None:
+    async with get_pool().connection() as conn:
         await conn.execute(
-            """
-            INSERT INTO documents (doc_id, file_name, file_type, size_bytes, page_count, user_id)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (doc_id) DO UPDATE SET
-                file_name  = EXCLUDED.file_name,
-                file_type  = EXCLUDED.file_type,
-                size_bytes = EXCLUDED.size_bytes,
-                page_count = EXCLUDED.page_count,
-                updated_at = now()
-            """,
-            (
-                payload.doc_id,
-                payload.file_name,
-                payload.file_type,
-                payload.size_bytes,
-                payload.page_count,
-                principal.user_id,
-            ),
-        )
-        status = await _fetch_doc_status(conn, payload.doc_id)
-    return status
+            "UPDATE documents SET bytes_path = %s, updated_at = now() WHERE doc_id = %s",
+            (str(path), doc_id))
+
+
+async def _set_state(doc_id: str, state: str) -> None:
+    async with get_pool().connection() as conn:
+        await conn.execute(
+            "UPDATE documents SET state = %s, error_message = NULL, updated_at = now() "
+            "WHERE doc_id = %s", (state, doc_id))
 
 
 @router.get("/{doc_id}")
 async def get_document(
-    doc_id: DocId, _reader: Principal = Depends(_require_doc_reader)
+    doc_id: DocId, reader: Principal = Depends(_require_doc_reader)
 ) -> dict[str, Any]:
     _ensure_ready()
     pool = get_pool()
     async with pool.connection() as conn:
-        status = await _fetch_doc_status(conn, doc_id)
+        status = await _fetch_doc_status(conn, doc_id, reader.user_id)
     if not status:
         raise HTTPException(status_code=404, detail="Document not found")
     return status
@@ -313,328 +491,163 @@ async def patch_document(
     principal: Principal = Depends(require_capability("reader")),
 ) -> dict[str, Any]:
     """
-    Update tags/project (owner-only) or reassign ownership (admin-only). The
-    two authz paths are mutually exclusive per request: if `owner_user_id` is
-    present the caller must be an admin (the seed-admin-backfill escape
-    hatch); otherwise the caller must own the doc. Either way, a caller who
-    fails the check sees the same 404 a nonexistent doc would give (except
-    the admin-reassignment path, which is 403 — that's a capability gate, not
-    an ownership check, so it doesn't need to hide doc existence).
+    Rename or retag MY library entry. Other holders' names and tags, and the
+    content itself, are untouched. `file_name` "" or null resets to the
+    content's canonical name; `tags` null clears them. 404 unless I hold an
+    entry (seeing a doc only through a project doesn't count) that lets me
+    read the doc — the response is the doc's status, and an unverified pre-A1
+    entry (migration 012) doesn't grant that. Such a holder can still DELETE
+    their entry, or upload the file to verify it.
 
-    Setting `project_id` is further gated for non-admins: the caller must own
-    or be a member of the target project. Without this, a doc owner could
-    file their doc into a project they have no relationship to, and it would
-    then surface in that project's members' `GET /v1/docs` listings — a
-    cross-tenant content injection. Clearing `project_id` (null) is always
-    allowed. Admins keep the cross-assign escape hatch.
+    Content has no owner, so the old owner-reassignment field (and the admin
+    path behind it) is gone — sending it is a 422 (extra="forbid"), as is
+    `project_id`: placements are managed by PUT/DELETE
+    /v1/projects/{id}/docs/{doc_id}.
     """
     _ensure_ready()
     data = body.model_dump(exclude_unset=True)
     pool = get_pool()
     async with pool.connection() as conn:
-        # reassignment is admin-only; everything else is owner-only
-        if "owner_user_id" in data:
-            if principal.role != "admin":
-                raise HTTPException(status_code=403, detail="Admin only for reassignment")
-        else:
-            await assert_owns_doc(conn, doc_id, principal.user_id)
-
-        # A non-admin may only file a doc into a project they own or belong to —
-        # otherwise a doc owner could inject their doc into a stranger's project
-        # (it would then surface in that project's members' library lists).
-        if data.get("project_id") is not None and principal.role != "admin":
-            cur = await conn.execute(
-                "SELECT 1 FROM projects p WHERE p.id = %s AND ("
-                "p.owner_user_id = %s OR EXISTS ("
-                "SELECT 1 FROM project_members pm WHERE pm.project_id = p.id AND pm.user_id = %s))",
-                (data["project_id"], principal.user_id, principal.user_id),
-            )
-            if await cur.fetchone() is None:
-                raise HTTPException(status_code=404, detail="Project not found")
-
+        if not await doc_content.holds_entry(conn, principal.user_id, doc_id):
+            raise refusal(404, "not_found", "Document not found")
+        await assert_can_read_doc(conn, doc_id, principal.user_id)
         sets, params = [], []
         if "tags" in data:
-            # `{"tags": null}` is schema-valid (tags is nullable) and means
-            # "clear all tags" — coerce None to [] so it doesn't blow up in set().
+            # `{"tags": null}` is schema-valid and means "clear all tags".
             sets.append("tags = %s"); params.append(sorted(set(data["tags"] or [])))
-        if "project_id" in data:
-            sets.append("project_id = %s"); params.append(data["project_id"])
-        if "owner_user_id" in data:
-            sets.append("user_id = %s"); params.append(data["owner_user_id"])
+        if "file_name" in data:
+            # "" or null resets to the content's canonical name
+            sets.append("file_name = %s"); params.append((data["file_name"] or "").strip() or None)
         if sets:
-            sets.append("updated_at = now()")
-            params.append(doc_id)
-            r = await conn.execute(
-                f"UPDATE documents SET {', '.join(sets)} WHERE doc_id = %s", params)
-            if r.rowcount == 0:
-                raise HTTPException(status_code=404, detail="Document not found")
-        status = await _fetch_doc_status(conn, doc_id)
+            await conn.execute(
+                f"UPDATE library_entries SET {', '.join(sets)} WHERE user_id = %s AND doc_id = %s",
+                [*params, principal.user_id, doc_id])
+        status = await _fetch_doc_status(conn, doc_id, principal.user_id)
     if not status:
         raise HTTPException(status_code=404, detail="Document not found")
     return status
 
 
-@router.post("/{doc_id}/chunks")
-async def upload_chunks(
-    doc_id: DocId,
-    payload: ChunksUploadIn,
-    _owner: Principal = Depends(_require_doc_owner),
-) -> dict[str, Any]:
-    """
-    Bulk insert/upsert chunks. The frontend should call this in batches (~50)
-    rather than one giant payload — keeps individual requests bounded and lets
-    the UI show incremental progress.
-
-    Chunks are upserted on (doc_id, text_hash): re-indexing the same doc reuses
-    existing rows (preserving any embeddings from PR 4) rather than duplicating.
-    The doc's state advances to `chunks_uploaded` on the first successful batch
-    (stays at `indexed` / `indexing` if it had already progressed past that).
-    """
-    _ensure_ready()
-    if not payload.chunks:
-        return {"ok": True, "inserted": 0, "doc_id": doc_id}
-
-    pool = get_pool()
-    async with pool.connection() as conn:
-        # Verify the document exists — chunks for an unregistered doc_id would
-        # FK-violate, but a clean 404 is friendlier than a 500.
-        async with conn.cursor() as cur:
-            await cur.execute("SELECT state FROM documents WHERE doc_id = %s", (doc_id,))
-            row = await cur.fetchone()
-            if not row:
-                raise HTTPException(status_code=404, detail="Register the document first")
-            current_state = row[0]
-
-        async with conn.transaction():
-            async with conn.cursor() as cur:
-                for chunk in payload.chunks:
-                    text = chunk.text.strip()
-                    if not text:
-                        continue
-                    th = _text_hash(text)
-                    await cur.execute(
-                        """
-                        INSERT INTO doc_chunks
-                            (doc_id, ord, page, chunk_type, text, text_hash)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (doc_id, text_hash) DO UPDATE SET
-                            ord        = EXCLUDED.ord,
-                            page       = EXCLUDED.page,
-                            chunk_type = EXCLUDED.chunk_type
-                        """,
-                        (doc_id, chunk.ord, chunk.page, chunk.chunk_type, text, th),
-                    )
-
-            # Only nudge state forward from the pre-embedding stages — don't
-            # rewind a doc that's already `indexed` back to `chunks_uploaded`.
-            if current_state in (None, "registered"):
-                await conn.execute(
-                    "UPDATE documents SET state = 'chunks_uploaded', updated_at = now() WHERE doc_id = %s",
-                    (doc_id,),
-                )
-
-        status = await _fetch_doc_status(conn, doc_id)
-
-    return {"ok": True, "inserted": len(payload.chunks), "doc_id": doc_id, "status": status}
-
-
-@router.delete("/{doc_id}")
+@router.delete("/{doc_id}", status_code=204)
 async def delete_document(
-    doc_id: DocId, _owner: Principal = Depends(_require_doc_owner)
-) -> dict[str, Any]:
+    doc_id: DocId, principal: Principal = Depends(require_capability("reader"))
+):
+    """Remove the document from MY library. Other people's entries and project
+    placements are untouched; the content itself goes only when nobody holds
+    it any more (spec §3 GC)."""
     _ensure_ready()
-    pool = get_pool()
-    async with pool.connection() as conn, conn.cursor() as cur:
-        await cur.execute(
-            "DELETE FROM documents WHERE doc_id = %s RETURNING pdf_path",
-            (doc_id,),
-        )
-        row = await cur.fetchone()
-    if not row:
-        raise HTTPException(status_code=404, detail="Document not found")
-    _doc_job_locks.pop(doc_id, None)
-    # Best-effort cleanup of the retained PDF.
-    pdf_path = row[0]
-    if pdf_path:
-        try:
-            Path(pdf_path).unlink(missing_ok=True)
-        except OSError as e:
-            logger.warning("Could not remove PDF for %s at %s: %s", doc_id, pdf_path, e)
-    return {"ok": True, "doc_id": doc_id}
-
-
-@router.put("/{doc_id}/grants/{user_id}", status_code=204)
-async def add_grant(doc_id: DocId, user_id: str,
-                    principal: Principal = Depends(_require_doc_owner)):
-    # _require_doc_owner already 404'd a non-owner before we get here, so
-    # user_id validation below can't be used to probe doc existence.
-    _ensure_ready()
-    try:
-        uuid.UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="User not found")
-    pool = get_pool()
-    try:
-        async with pool.connection() as conn:
-            # Nested transaction (savepoint when already inside one, e.g. the
-            # test harness's outer tx) so a caught FK violation rolls back
-            # just this INSERT and leaves the connection usable afterward.
-            async with conn.transaction():
-                await conn.execute(
-                    "INSERT INTO doc_grants (doc_id, grantee_user_id) VALUES (%s,%s) "
-                    "ON CONFLICT DO NOTHING", (doc_id, user_id))
-    except pg_errors.ForeignKeyViolation:
-        raise HTTPException(status_code=404, detail="User not found")
+    async with get_pool().connection() as conn:
+        if not await doc_content.remove_entry(conn, principal.user_id, doc_id):
+            raise refusal(404, "not_found", "Document not found")
+        audit("entry.removed", user=principal.user_id, doc=doc_id)
+        if await doc_content.gc_content_if_orphaned(conn, doc_id, trigger="entry_removed"):
+            _doc_job_locks.pop(doc_id, None)
     return Response(status_code=204)
 
 
-@router.delete("/{doc_id}/grants/{user_id}", status_code=204)
-async def remove_grant(doc_id: DocId, user_id: str,
-                       principal: Principal = Depends(_require_doc_owner)):
+@router.put("/{doc_id}/shares/{user_id}", status_code=204)
+async def add_share(doc_id: DocId, user_id: str,
+                    principal: Principal = Depends(_require_upload_holder)):
+    """Share with one user: creates their `shared` entry. Only a VERIFIED
+    upload-entry holder may share (they proved possession), so the share is
+    verified too; recipients can't re-share. A recipient who already holds
+    the content keeps their entry unchanged (an unverified legacy share is
+    replaced by this one — see doc_content.add_entry). The recipient's entry
+    carries the name the sharer sees, so they never see a stranger's file
+    name (the canonical name is the first uploader's)."""
     _ensure_ready()
     try:
         uuid.UUID(user_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail="User not found")
-    pool = get_pool()
-    async with pool.connection() as conn:
-        await conn.execute(
-            "DELETE FROM doc_grants WHERE doc_id=%s AND grantee_user_id=%s",
-            (doc_id, user_id))
+        raise refusal(404, "not_found", "User not found")
+    try:
+        async with get_pool().connection() as conn:
+            async with conn.transaction():  # savepoint: a caught FK error leaves conn usable
+                cur = await conn.execute(
+                    "SELECT COALESCE(e.file_name, d.file_name) FROM library_entries e "
+                    "JOIN documents d ON d.doc_id = e.doc_id "
+                    "WHERE e.user_id = %s AND e.doc_id = %s", (principal.user_id, doc_id))
+                row = await cur.fetchone()
+                outcome = await doc_content.add_entry(
+                    conn, user_id, doc_id, via="shared", verified=True,
+                    shared_by=principal.user_id, file_name=row[0] if row else None)
+    except pg_errors.ForeignKeyViolation:
+        raise refusal(404, "not_found", "User not found")
+    if outcome in ("created", "replaced"):
+        audit("share.created", by=principal.user_id, to=user_id, doc=doc_id)
+    return Response(status_code=204)
+
+
+@router.delete("/{doc_id}/shares/{user_id}", status_code=204)
+async def remove_share(doc_id: DocId, user_id: str,
+                       principal: Principal = Depends(require_capability("reader"))):
+    """Revoke a share I created. Never removes someone's own upload or another
+    sharer's share (404). Recipients remove their own copy via DELETE /{id}."""
+    _ensure_ready()
+    try:
+        uuid.UUID(user_id)
+    except ValueError:
+        raise refusal(404, "not_found", "User not found")
+    async with get_pool().connection() as conn:
+        if not await doc_content.revoke_share(conn, principal.user_id, user_id, doc_id):
+            raise refusal(404, "not_found", "Share not found")
+        audit("share.revoked", by=principal.user_id, to=user_id, doc=doc_id)
+        await doc_content.gc_content_if_orphaned(conn, doc_id, trigger="share_revoked")
     return Response(status_code=204)
 
 
 # ---------- embeddings + retrieval ----------
 
-async def _run_index_job(doc_id: str) -> None:
-    """
-    Background task: pulls all chunks for `doc_id` with NULL embeddings,
-    embeds them in batches, and writes the vectors back. Updates the
-    document state to `indexed` on success or `failed` on error.
+_CONTENT_SHARED_MESSAGES = {
+    "other_holders": "Other people also use this document, so it can't be changed here. Ask an admin.",
+    "in_project": ("This document is in a project, so changing it would change it for the project "
+                   "too. Remove it from the project first, or ask an admin."),
+}
 
-    Held under a per-doc lock so concurrent /index calls coalesce instead of
-    duplicating work.
-    """
-    # Read once per job so the recorded metadata matches what embed_one
-    # actually used (both source from model_router).
-    embed_model = model_router.get_config().embed_model
-    lock = _get_doc_lock(doc_id)
-    async with lock:
-        if not is_ready():
-            logger.warning("Skipping index job for %s — DB not ready", doc_id)
-            return
-        pool = get_pool()
-        try:
-            async with pool.connection() as conn:
-                # Pull only the chunks we still need to embed. The model name
-                # is captured per row so a swap (which requires re-creating
-                # the column) doesn't silently mix dims.
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        "SELECT id, text FROM doc_chunks WHERE doc_id = %s AND embedding IS NULL ORDER BY ord",
-                        (doc_id,),
-                    )
-                    rows = await cur.fetchall()
 
-            if not rows:
-                # Nothing left to embed — mark indexed and bail.
-                async with pool.connection() as conn:
-                    await conn.execute(
-                        """
-                        UPDATE documents
-                        SET state = 'indexed', embedding_model = %s, embedding_dim = %s,
-                            error_message = NULL, updated_at = now()
-                        WHERE doc_id = %s
-                        """,
-                        (embed_model, EMBEDDING_DIM, doc_id),
-                    )
-                return
-
-            # Embed in moderate batches; the semaphore in embed_batch caps
-            # parallelism per call. Persist after each batch so a partial
-            # failure halfway through still saves progress.
-            BATCH = 16
-            embedded_count = 0
-            skipped_count = 0
-            for i in range(0, len(rows), BATCH):
-                slice_ = rows[i : i + BATCH]
-                texts = [r[1] for r in slice_]
-                vectors = await embed_batch(texts)
-                async with pool.connection() as conn:
-                    async with conn.cursor() as cur:
-                        for (chunk_id, _text), vec in zip(slice_, vectors):
-                            if vec is None:
-                                skipped_count += 1
-                                continue
-                            await cur.execute(
-                                """
-                                UPDATE doc_chunks
-                                SET embedding = %s, embedding_model = %s
-                                WHERE id = %s
-                                """,
-                                (vec, embed_model, chunk_id),
-                            )
-                            embedded_count += 1
-
-            async with pool.connection() as conn:
-                await conn.execute(
-                    """
-                    UPDATE documents
-                    SET state = 'indexed', embedding_model = %s, embedding_dim = %s,
-                        error_message = NULL, updated_at = now()
-                    WHERE doc_id = %s
-                    """,
-                    (embed_model, EMBEDDING_DIM, doc_id),
-                )
-            logger.info(
-                "Indexed %d chunks for doc %s (%d embedded, %d skipped)",
-                len(rows), doc_id, embedded_count, skipped_count,
-            )
-        except Exception as e:
-            logger.exception("Index job failed for %s", doc_id)
-            try:
-                pool = get_pool()
-                async with pool.connection() as conn:
-                    await conn.execute(
-                        "UPDATE documents SET state = 'failed', error_message = %s, updated_at = now() WHERE doc_id = %s",
-                        (str(e)[:500], doc_id),
-                    )
-            except Exception:
-                logger.exception("Could not record failure state for %s", doc_id)
+def _content_shared(reason: str, doc_id: str, user_id: str) -> HTTPException:
+    logger.warning("content_shared refusal: user %s doc %s reason %s", user_id, doc_id, reason)
+    return refusal(409, "content_shared", _CONTENT_SHARED_MESSAGES[reason], reason=reason)
 
 
 @router.post("/{doc_id}/index", status_code=202)
-async def start_index_job(
-    doc_id: DocId,
-    background: BackgroundTasks,
-    _owner: Principal = Depends(_require_doc_owner),
-) -> dict[str, Any]:
-    """
-    Kick off a background embedding job for `doc_id`. Returns 202 immediately;
-    poll `GET /v1/docs/{doc_id}` for progress (`embedded_count` / `chunk_count`).
-
-    Safe to call repeatedly — the per-doc lock serializes runs and the
-    embedding query only picks up chunks with NULL embeddings, so a re-run
-    after a partial failure only does the leftover work.
-    """
+async def start_index_job(doc_id: DocId, background: BackgroundTasks,
+                          principal: Principal = Depends(_require_doc_reader)) -> dict[str, Any]:
+    """Resume or re-index (spec §4). On content that isn't `indexed`, any entry
+    holder who can read it — or an admin, even without one — may RESUME it (a crash, a
+    failure). On `indexed` content this is a RE-INDEX from the stored bytes —
+    a content-changing op, so only the sole holder or an admin (else 409
+    content_shared), and only when there's something to rebuild from: no
+    stored bytes and no conversion means re-indexing would destroy a working
+    index, so that's refused too (409 bytes_missing), state untouched."""
     _ensure_ready()
-    pool = get_pool()
-    async with pool.connection() as conn, conn.cursor() as cur:
-        await cur.execute(
-            "SELECT state FROM documents WHERE doc_id = %s",
-            (doc_id,),
-        )
+    is_admin = principal.role == "admin"
+    async with get_pool().connection() as conn:
+        cur = await conn.execute(
+            "SELECT state, bytes_path, conversion_state FROM documents WHERE doc_id = %s",
+            (doc_id,))
         row = await cur.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Document not found")
-        # Mark as indexing — the bg task will flip to indexed/failed when done.
-        await conn.execute(
-            "UPDATE documents SET state = 'indexing', error_message = NULL, updated_at = now() WHERE doc_id = %s",
-            (doc_id,),
-        )
-
-    background.add_task(_run_index_job, doc_id)
-    return {"ok": True, "doc_id": doc_id, "state": "indexing"}
+        if row is None:
+            raise refusal(404, "not_found", "Document not found")
+        state, bytes_path, conversion_state = row
+        if state == "indexed":
+            reason = await doc_content.content_ops_refusal(
+                conn, doc_id, principal.user_id, is_admin=is_admin)
+            if reason:
+                raise _content_shared(reason, doc_id, principal.user_id)
+            has_bytes = bool(bytes_path) and Path(bytes_path).is_file()
+            if not has_bytes and conversion_state != "converted":
+                raise refusal(409, "bytes_missing", "Upload the file again first.")
+        elif not is_admin and not await doc_content.holds_entry(conn, principal.user_id, doc_id):
+            raise refusal(404, "not_found", "Document not found")
+        if state in ("extracting", "indexing"):
+            return {"ok": True, "doc_id": doc_id, "state": state}  # already running
+        if state in ("indexed", "failed", "registered"):
+            await conn.execute(
+                "UPDATE documents SET state = 'stored', error_message = NULL, updated_at = now() "
+                "WHERE doc_id = %s", (doc_id,))
+    background.add_task(doc_pipeline.run_pipeline, doc_id)
+    return {"ok": True, "doc_id": doc_id, "state": "extracting"}
 
 
 @router.post("/{doc_id}/search")
@@ -666,152 +679,12 @@ async def search_document(
         logger.exception("Embedding failed for search query")
         raise HTTPException(status_code=502, detail=f"Embedding service error: {e}") from e
 
-    async with pool.connection() as conn, conn.cursor() as cur:
-        await cur.execute(
-            """
-            SELECT id, page, chunk_type, text,
-                   1 - (embedding <=> %s::vector) AS score
-            FROM doc_chunks
-            WHERE doc_id = %s AND embedding IS NOT NULL
-            ORDER BY embedding <=> %s::vector
-            LIMIT %s
-            """,
-            (qvec, doc_id, qvec, req.k),
-        )
-        rows = await cur.fetchall()
-        cols = [d.name for d in cur.description]
-
-    results = [dict(zip(cols, r)) for r in rows]
-    for r in results:
-        # Cap text length in the response — full chunk text can be huge and
-        # the chat preamble already truncates. Keep payloads bounded.
-        if r.get("text") and len(r["text"]) > 4000:
-            r["text"] = r["text"][:4000] + " [truncated]"
+    async with pool.connection() as conn:
+        results = await search_chunks(conn, doc_id, qvec, req.k)
     return {"doc_id": doc_id, "results": results}
 
 
 # ---------- Docling conversion (PDF → Markdown) ----------
-
-def _pdf_storage_path(doc_id: str) -> Path:
-    PDF_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
-    # Defense in depth behind DocId validation: resolve and confirm the path
-    # stays inside PDF_STORAGE_DIR, so a doc_id that ever slips past the hex
-    # pattern still can't escape via `../` (SEC-1).
-    path = (PDF_STORAGE_DIR / f"{doc_id}.pdf").resolve()
-    if not path.is_relative_to(PDF_STORAGE_DIR):
-        raise HTTPException(status_code=400, detail="Invalid doc_id")
-    return path
-
-
-@router.post("/{doc_id}/pdf")
-async def upload_pdf_bytes(
-    doc_id: DocId,
-    file: UploadFile = File(...),
-    _owner: Principal = Depends(_require_doc_owner),
-) -> dict[str, Any]:
-    """
-    Persist the raw PDF bytes for `doc_id` to the backend filesystem so the
-    convert job (and any future reconversion) can read them without another
-    upload from the browser. Re-upload overwrites in place.
-    """
-    _ensure_ready()
-    pool = get_pool()
-    # Confirm the row exists first — otherwise we'd happily park bytes for a
-    # doc that was never registered.
-    async with pool.connection() as conn, conn.cursor() as cur:
-        await cur.execute("SELECT 1 FROM documents WHERE doc_id = %s", (doc_id,))
-        if not await cur.fetchone():
-            raise HTTPException(status_code=404, detail="Register the document first")
-
-    max_bytes = PDF_UPLOAD_MAX_MB * 1024 * 1024
-    path = _pdf_storage_path(doc_id)
-    written = 0
-    try:
-        with open(path, "wb") as out:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                written += len(chunk)
-                if written > max_bytes:
-                    out.close()
-                    path.unlink(missing_ok=True)
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"PDF exceeds {PDF_UPLOAD_MAX_MB} MB limit",
-                    )
-                out.write(chunk)
-    finally:
-        await file.close()
-
-    async with pool.connection() as conn:
-        await conn.execute(
-            "UPDATE documents SET pdf_path = %s, updated_at = now() WHERE doc_id = %s",
-            (str(path), doc_id),
-        )
-    return {"ok": True, "doc_id": doc_id, "size_bytes": written}
-
-
-@router.delete("/{doc_id}/pdf")
-async def delete_pdf_bytes(
-    doc_id: DocId, _owner: Principal = Depends(_require_doc_owner)
-) -> dict[str, Any]:
-    """Remove retained PDF bytes for `doc_id`. Keeps converted markdown / chunks."""
-    _ensure_ready()
-    pool = get_pool()
-    async with pool.connection() as conn, conn.cursor() as cur:
-        await cur.execute("SELECT pdf_path FROM documents WHERE doc_id = %s", (doc_id,))
-        row = await cur.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Document not found")
-        pdf_path = row[0]
-        await cur.execute(
-            "UPDATE documents SET pdf_path = NULL, updated_at = now() WHERE doc_id = %s",
-            (doc_id,),
-        )
-    if pdf_path:
-        try:
-            Path(pdf_path).unlink(missing_ok=True)
-        except OSError as e:
-            logger.warning("Could not remove PDF for %s: %s", doc_id, e)
-    return {"ok": True, "doc_id": doc_id}
-
-
-async def _chunks_from_pages(doc_id: str) -> int:
-    """
-    After conversion: wipe existing chunks for `doc_id` and seed new ones from
-    `doc_pages` (one chunk per page). Embeddings will be (re)generated by the
-    indexing job. Returns the number of inserted chunk rows.
-    """
-    pool = get_pool()
-    async with pool.connection() as conn:
-        async with conn.transaction():
-            async with conn.cursor() as cur:
-                await cur.execute("DELETE FROM doc_chunks WHERE doc_id = %s", (doc_id,))
-                await cur.execute(
-                    "SELECT page, markdown FROM doc_pages WHERE doc_id = %s ORDER BY page",
-                    (doc_id,),
-                )
-                pages = await cur.fetchall()
-                inserted = 0
-                for ord_, (page, markdown) in enumerate(pages):
-                    text = (markdown or "").strip()
-                    if not text:
-                        continue
-                    await cur.execute(
-                        """
-                        INSERT INTO doc_chunks
-                            (doc_id, ord, page, chunk_type, text, text_hash)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (doc_id, text_hash) DO UPDATE SET
-                            ord = EXCLUDED.ord, page = EXCLUDED.page,
-                            chunk_type = EXCLUDED.chunk_type
-                        """,
-                        (doc_id, ord_, page, "page-md", text, _text_hash(text)),
-                    )
-                    inserted += 1
-    return inserted
-
 
 async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
     """
@@ -828,15 +701,14 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
         try:
             async with pool.connection() as conn, conn.cursor() as cur:
                 await cur.execute(
-                    "SELECT pdf_path FROM documents WHERE doc_id = %s",
+                    "SELECT bytes_path FROM documents WHERE doc_id = %s",
                     (doc_id,),
                 )
                 row = await cur.fetchone()
             if not row or not row[0]:
                 raise RuntimeError("No retained PDF for this document")
-            pdf_path = Path(row[0])
 
-            pages = await docling_convert.convert_pdf_to_markdown_pages(pdf_path, options)
+            pages = await docling_convert.convert_pdf_to_markdown_pages(Path(row[0]), options)
             if not pages:
                 raise RuntimeError("Conversion produced no pages")
 
@@ -851,6 +723,9 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
                                 (doc_id, page_no, md),
                             )
 
+            # 'converted' and 'indexing' land together: a poller that sees
+            # the conversion done must not also see the OLD 'indexed' state
+            # and report success before the converted chunks are embedded.
             async with pool.connection() as conn:
                 await conn.execute(
                     """
@@ -858,6 +733,8 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
                     SET conversion_state = 'converted',
                         conversion_error = NULL,
                         converted_at = now(),
+                        state = 'indexing',
+                        error_message = NULL,
                         updated_at = now()
                     WHERE doc_id = %s
                     """,
@@ -867,12 +744,6 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
             # Auto-chain into indexing: seed chunks from MD, then embed.
             inserted = await _chunks_from_pages(doc_id)
             logger.info("Convert job: seeded %d chunks for %s", inserted, doc_id)
-            if inserted:
-                async with pool.connection() as conn:
-                    await conn.execute(
-                        "UPDATE documents SET state = 'indexing', error_message = NULL, updated_at = now() WHERE doc_id = %s",
-                        (doc_id,),
-                    )
         except Exception as e:
             logger.exception("Convert job failed for %s", doc_id)
             try:
@@ -882,10 +753,15 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
                         UPDATE documents
                         SET conversion_state = 'conversion_failed',
                             conversion_error = %s,
+                            -- set to 'indexing' with 'converted' above; don't
+                            -- leave it claiming an embed job that never runs
+                            state = CASE WHEN state = 'indexing' THEN 'failed' ELSE state END,
+                            error_message = CASE WHEN state = 'indexing' THEN %s
+                                                 ELSE error_message END,
                             updated_at = now()
                         WHERE doc_id = %s
                         """,
-                        (str(e)[:500], doc_id),
+                        (str(e)[:500], f"Conversion failed: {e}"[:500], doc_id),
                     )
             except Exception:
                 logger.exception("Could not record conversion failure for %s", doc_id)
@@ -901,12 +777,14 @@ async def start_convert_job(
     doc_id: DocId,
     options: ConvertOptionsIn,
     background: BackgroundTasks,
-    _owner: Principal = Depends(_require_doc_owner),
+    _principal: Principal = Depends(_require_content_op),
 ) -> dict[str, Any]:
     """
-    Kick off a docling conversion in the background. Requires that
-    POST /v1/docs/{doc_id}/pdf has stored the bytes first. Returns 202; poll
-    GET /v1/docs/{doc_id} to watch `conversion_state` and then `state`.
+    Kick off a docling conversion in the background. Requires that the
+    document's bytes are already stored (registration stores them). A
+    content-changing op: only the sole holder or an admin (else 409
+    content_shared, spec §5). Returns 202; poll GET /v1/docs/{doc_id} to
+    watch `conversion_state` and then `state`.
     """
     _ensure_ready()
     if not docling_convert.is_enabled():
@@ -918,17 +796,14 @@ async def start_convert_job(
     pool = get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT pdf_path FROM documents WHERE doc_id = %s",
+            "SELECT bytes_path FROM documents WHERE doc_id = %s",
             (doc_id,),
         )
         row = await cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Document not found")
         if not row[0]:
-            raise HTTPException(
-                status_code=409,
-                detail="Upload the PDF bytes first via POST /v1/docs/{doc_id}/pdf",
-            )
+            raise refusal(409, "bytes_missing", "Upload the file again first.")
         await conn.execute(
             """
             UPDATE documents
@@ -985,17 +860,21 @@ async def get_document_markdown(
 
 @router.delete("/{doc_id}/markdown")
 async def delete_document_markdown(
-    doc_id: DocId, _owner: Principal = Depends(_require_doc_owner)
+    doc_id: DocId, background: BackgroundTasks,
+    _principal: Principal = Depends(_require_content_op),
 ) -> dict[str, Any]:
     """
     Wipe a document's converted markdown and the chunks/embeddings derived
     from it. The document row itself stays (so re-conversion is a single
-    click), as does the retained PDF (delete via DELETE /pdf if needed).
+    click), as does the retained bytes — content ops never touch bytes_path.
+    A content-changing op: only the sole holder or an admin (else 409
+    content_shared, spec §5).
 
     Sets `conversion_state=NULL` so the toolbar shows the inviting "Convert"
-    label again. The doc-level `state` flips back to `registered` because the
-    chunks are gone — the user can either re-run convert or fall back to the
-    native client-side `Index` flow.
+    label again, and falls back to the server's native extraction from the
+    stored bytes: `state` flips to `stored` and a background job re-extracts
+    and re-embeds, landing the doc at `indexed` (or `failed` if the stored
+    bytes are missing or don't verify against this doc_id).
     """
     _ensure_ready()
     pool = get_pool()
@@ -1014,7 +893,7 @@ async def delete_document_markdown(
                 SET conversion_state = NULL,
                     conversion_error = NULL,
                     converted_at = NULL,
-                    state = 'registered',
+                    state = 'stored',
                     embedding_model = NULL,
                     embedding_dim = NULL,
                     error_message = NULL,
@@ -1023,4 +902,5 @@ async def delete_document_markdown(
                 """,
                 (doc_id,),
             )
-    return {"ok": True, "doc_id": doc_id}
+    background.add_task(doc_pipeline.run_pipeline, doc_id)
+    return {"ok": True, "doc_id": doc_id, "state": "extracting"}

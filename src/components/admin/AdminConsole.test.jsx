@@ -243,4 +243,29 @@ describe('AdminConsole — config', () => {
     expect(await screen.findByText('llama3.2:3b, qwen3.5')).toBeInTheDocument();
     expect(screen.getByText('1000 tokens/day')).toBeInTheDocument();
   });
+
+  it('lists each model provider with its host and model count, never a key', async () => {
+    mount({
+      users: [user()],
+      config: {
+        ollama_url: 'http://x:11434', timeout_s: 60, allowed_models: null, summarize_model: null,
+        embed_model: null, daily_token_budget: null,
+        providers: [
+          { name: 'local', kind: 'ollama', url_host: 'gpu.example.com', models: 1 },
+          { name: 'cloud', kind: 'openai', url_host: 'openrouter.example.com', models: null },
+        ],
+      },
+    });
+    expect(await screen.findByText('local · ollama · gpu.example.com · 1 model')).toBeInTheDocument();
+    expect(screen.getByText('cloud · openai · openrouter.example.com · unreachable')).toBeInTheDocument();
+  });
+
+  it('says so when no provider is configured', async () => {
+    mount({
+      users: [user()],
+      config: { ollama_url: 'http://x:11434', timeout_s: 60, allowed_models: null, summarize_model: null,
+                embed_model: null, daily_token_budget: null, providers: [] },
+    });
+    expect(await screen.findByText('none configured')).toBeInTheDocument();
+  });
 });

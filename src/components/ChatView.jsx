@@ -25,7 +25,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import AttachmentPreview from "./AttachmentPreview";
 import { estimateTokens } from "../hooks/inference";
-import { buildPinPreamble } from "../hooks/chatHistory";
+import { buildPinPreamble } from "../hooks/pins";
 // VoiceRecorder is intentionally not imported — audio attachments are paused
 // until a Whisper-style transcription step is added (see plan file). The file
 // itself is kept on disk so re-enabling is a single import + a JSX block.
@@ -219,9 +219,17 @@ export default function ChatView({
 
   const handleSend = () => {
     if (!canSend) return;
-    sendMessage(draft, pendingAttachments);
+    const text = draft;
+    const atts = pendingAttachments;
     setDraft("");
     setPendingAttachments([]);
+    // A refused turn (409, 413, …) never reached the chat: put the text and
+    // attachments back, unless the user already started typing something new.
+    Promise.resolve(sendMessage(text, atts)).then((r) => {
+      if (!r?.refused) return;
+      setDraft((d) => d || text);
+      setPendingAttachments((a) => (a.length ? a : atts));
+    });
   };
 
   const handleKeyDown = (e) => {
@@ -377,7 +385,7 @@ export default function ChatView({
               onPaste={handlePaste}
               placeholder={
                 reachable === false
-                  ? "Ollama unreachable — check host/port in sidebar."
+                  ? "Can't reach the model server."
                   : !selectedModel
                     ? "Pick a model in the sidebar to start."
                     : "Ask the model, drop / paste / attach an image…  (Enter to send)"
@@ -483,6 +491,7 @@ function MessageBubble({
             compact
           />
         )}
+        {!isUser && <ContextNotes notes={message.docContext?.notes} theme={theme} />}
         {toolStatus && (
           <div
             className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-bold ${darkMode ? "bg-cyan-500/15 text-cyan-300" : "bg-cyan-50 text-cyan-700"}`}
@@ -568,6 +577,7 @@ function MessageBubble({
             </button>
           </div>
         )}
+        {!isUser && <ReplyStatus message={message} isStreamingNow={isStreamingNow} theme={theme} />}
         {toolCalls && toolCalls.length > 0 && (
           <ToolCallsDisclosure
             toolCalls={toolCalls}
@@ -865,6 +875,49 @@ function ToolCallsDisclosure({ toolCalls, theme, darkMode }) {
   );
 }
 
+// Stage-0 notes the server attached to a reply (spec §5.2, §8).
+function ContextNotes({ notes, theme }) {
+  if (!Array.isArray(notes) || notes.length === 0) return null;
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const lines = notes
+    .map((n) => {
+      if (n.kind === "prefetch") return `Used ${plural(n.count, "passage")} from ${n.docName}`;
+      if (n.kind === "trimmed") {
+        const parts = [];
+        if (n.messages) parts.push(`${plural(n.messages, "older message")}`);
+        if (n.attachments) parts.push(`${plural(n.attachments, "older attachment")}`);
+        return parts.length ? `Trimmed ${parts.join(" and ")} to fit` : null;
+      }
+      return null;
+    })
+    .filter(Boolean);
+  if (lines.length === 0) return null;
+  return <p className={`text-[10px] italic ${theme.textMuted}`}>{lines.join(" · ")}</p>;
+}
+
+// Where a reply stands when it isn't simply complete (spec §7.3, §8).
+function ReplyStatus({ message, isStreamingNow, theme }) {
+  if (message.status === "streaming" && !isStreamingNow) {
+    return (
+      <p className={`flex items-center gap-1.5 text-[10px] font-bold ${theme.textMuted}`}>
+        <Loader2 size={10} className="animate-spin" /> Still generating…
+      </p>
+    );
+  }
+  if (message.status === "aborted") return <p className={`text-[10px] italic ${theme.textMuted}`}>Stopped</p>;
+  if (message.status === "error") {
+    return <p className="text-[10px] font-bold text-red-400">{message.error?.message || "The reply failed."}</p>;
+  }
+  if (message.finishReason === "max-steps") {
+    return (
+      <p className={`text-[10px] italic ${theme.textMuted}`}>
+        The model used its tool rounds without writing an answer. Try asking again more specifically.
+      </p>
+    );
+  }
+  return null;
+}
+
 export function DocContextChip({
   ctx,
   theme,
@@ -921,17 +974,17 @@ function EmptyState({ theme, darkMode, reachable, selectedModel }) {
       </div>
       <div>
         <p className={`${theme.textSecondary} font-semibold mb-2 text-lg`}>
-          Chat with a local model
+          Chat with a model
         </p>
         <p className={`text-sm ${theme.textMuted} max-w-md`}>
-          Talk to Ollama and have the responses read aloud through Kokoro.
+          Talk to a model and have its replies read aloud through Kokoro.
         </p>
       </div>
       <div
         className={`text-xs px-3 py-2 rounded-lg ${darkMode ? "bg-slate-800/50" : "bg-slate-100"} ${theme.textSecondary}`}
       >
         {reachable === false ? (
-          <>Ollama not reachable. Set host & port in the sidebar.</>
+          <>Can't reach the model server. Check that the backend is running, or ask your admin.</>
         ) : !selectedModel ? (
           <>Pick a model in the sidebar to begin.</>
         ) : (

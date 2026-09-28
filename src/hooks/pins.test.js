@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { makePin, addPin, removePin, totalPinnedChars, MAX_PINS, PINNED_CONTEXT_CHAR_BUDGET } from './pins';
+import { makePin, addPin, removePin, totalPinnedChars, buildPinPreamble, MAX_PINS, PINNED_CONTEXT_CHAR_BUDGET } from './pins';
 
 const pin = (over = {}) => ({ id: 'x', doc_id: 'd1', fileName: 'f.md', page: 1, kind: 'selection', text: 'hello', ...over });
 
@@ -49,5 +49,25 @@ describe('removePin', () => {
 describe('totalPinnedChars', () => {
     it('sums text lengths', () => {
         expect(totalPinnedChars([pin({ text: 'ab' }), pin({ text: 'cde' })])).toBe(5);
+    });
+});
+
+describe('buildPinPreamble', () => {
+    const pin = (over = {}) => ({ id: 'x', doc_id: 'd', fileName: 'moon.md', page: 3, kind: 'selection', text: 'cheese', ...over });
+
+    it('returns [] for no pins', () => {
+        expect(buildPinPreamble([])).toEqual([]);
+        expect(buildPinPreamble()).toEqual([]);
+    });
+
+    it('emits one system block per pin, preserving order', () => {
+        const out = buildPinPreamble([pin({ text: 'one' }), pin({ text: 'two', page: null, kind: 'page' })]);
+        expect(out).toHaveLength(2);
+        expect(out.every((m) => m.role === 'system')).toBe(true);
+        expect(out[0].content).toContain('moon.md');
+        expect(out[0].content).toContain('one');
+        expect(out[0].content).toContain('page 3');
+        expect(out[1].content).toContain('two');
+        expect(out[1].content).not.toContain('page '); // page is null → no page label
     });
 });

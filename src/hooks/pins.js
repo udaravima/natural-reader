@@ -23,3 +23,18 @@ export const addPin = (pins, pin) => {
 };
 
 export const removePin = (pins, id) => pins.filter((p) => p.id !== id);
+
+// Pin wording as the model sees it. The SERVER builds the real prompt
+// (server/chat/context.py pin_messages, same text); this copy exists only so
+// the composer's context meter can count what pins cost.
+export const buildPinPreamble = (pins = []) =>
+    pins.map((p) => ({
+        role: 'system',
+        content:
+            `The user is reading "${p.fileName || 'a document'}".\n` +
+            `Relevant excerpt (${p.kind || 'page'}` +
+            `${p.page != null ? `, page ${p.page}` : ''}):\n\n` +
+            `"""\n${p.text}\n"""\n\n` +
+            `Use this excerpt as primary context for the user's question. If it does ` +
+            `not contain the answer, say so or use the document search tool if available.`,
+    }));

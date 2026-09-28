@@ -1,4 +1,4 @@
-from server.services.model_router import load_inference_config, is_model_allowed
+from server.services.model_router import load_inference_config
 
 
 def test_defaults():
@@ -14,14 +14,11 @@ def test_defaults():
 def test_allowlist_parses_comma_separated_with_whitespace():
     cfg = load_inference_config({"INFERENCE_MODELS": "gemma3, qwen2.5 ,, deepseek-r1:1.5b"})
     assert cfg.allowed_models == ("gemma3", "qwen2.5", "deepseek-r1:1.5b")
-    assert is_model_allowed(cfg, "gemma3")
-    assert not is_model_allowed(cfg, "llama3.2:3b")
 
 
 def test_empty_allowlist_means_all():
     cfg = load_inference_config({"INFERENCE_MODELS": "  "})
     assert cfg.allowed_models is None
-    assert is_model_allowed(cfg, "anything")
 
 
 def test_summarize_model_precedence():
