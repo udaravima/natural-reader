@@ -52,7 +52,7 @@ describe('PDF page rendering', () => {
     beforeEach(() => { vi.clearAllMocks(); localStorage.clear(); }); // no saved reading position
 
     it('a second render cancels the first on the same canvas, and the cancel is not an error', async () => {
-        const { doc, page, tasks } = makeDoc();
+        const { doc, tasks } = makeDoc();
         getDocument.mockReturnValue({ promise: Promise.resolve(doc) });
         const setStatus = vi.fn();
         const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
