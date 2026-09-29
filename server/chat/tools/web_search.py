@@ -17,8 +17,8 @@ COPIED_RUN_WORDS = 8     # a run this long shared with document text is a copy, 
 COPIED_RUN_CHARS = 12
 _NO_SPACES = ("\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff\u3040-\u30ff"
               "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff")
-COPIED = ("That query copies text from the document. Search the web with the topic in a few "
-          "words, not text from the document.")
+COPIED = ("That query copies text from the document or an earlier answer. Search the web with "
+          "the topic in a few words, not text from the document.")
 TOO_LONG = (f"That query is over {QUERY_MAX_CHARS} characters. Search the web with the topic in a "
             "few words, not text from the document.")
 _WORD = re.compile(rf"[^\W{_NO_SPACES}]+")
