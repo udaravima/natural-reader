@@ -22,6 +22,16 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Small server fixes and stale docs.** A model id that names a provider
+  but no model (`local:`) is refused as not allowed instead of being sent to
+  Ollama as a model called "local:". The startup sweep for chat turns whose
+  worker died now logs how many claims it cleared, including ones whose
+  reply had already finished. At shutdown, the server also waits for reply
+  saves that start while it is waiting (up to the same 5 seconds).
+  `docs/CHAT_WITH_PDF.md` and the README's endpoint table now describe the
+  server-side upload and extraction pipeline instead of the old
+  client-side chunk upload.
+
 - **Reader console errors on opening a PDF.** Stepping pages or zooming
   quickly no longer logs pdf.js's "Cannot use the same canvas during
   multiple render() operations": the previous page render is cancelled

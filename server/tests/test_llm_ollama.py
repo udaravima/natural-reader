@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import json
+import logging
 
 import httpx
 import pytest
@@ -321,3 +322,17 @@ async def test_a_slow_but_streaming_reply_is_never_cut_off_but_silence_is(monkey
         await llm_router.stop_router()
         server.close()
         await server.wait_closed()
+
+
+async def test_an_api_show_failure_is_logged_at_debug_only(caplog):
+    """Deferred C1 minor: a model the provider can't describe is routine
+    (older Ollama, a proxy) — DEBUG, never WARNING, and not cached."""
+    caplog.set_level(logging.DEBUG, logger="server.llm.providers.ollama")
+    for failure in (httpx.ConnectError("refused"), lambda: httpx.Response(500),
+                    lambda: httpx.Response(200, content=b"<html>proxy</html>")):
+        caplog.clear()
+        up = FakeUpstream().on("POST", "/api/show", failure)
+        caps = await OllamaProvider(CFG, up.client()).capabilities("qwen2")
+        assert caps == Capabilities()
+        records = [r for r in caplog.records if "/api/show" in r.getMessage()]
+        assert records and all(r.levelno == logging.DEBUG for r in records)

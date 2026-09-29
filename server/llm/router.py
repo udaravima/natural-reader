@@ -92,7 +92,9 @@ class Router:
 
     def resolve(self, model_id: str) -> tuple[Provider, str]:
         prefix, sep, rest = model_id.partition(":")
-        if sep and rest and prefix in self.providers:
+        if sep and prefix in self.providers:
+            if not rest:   # "local:" names a provider but no model
+                raise UnknownModel(model_id)
             return self.providers[prefix], rest
         for provider in self.providers.values():
             if provider.config.kind == "ollama":

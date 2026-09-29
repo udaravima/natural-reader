@@ -192,3 +192,16 @@ async def test_lifecycle_uses_env_and_transport(monkeypatch):
         await llm_router.stop_router()
     with pytest.raises(RuntimeError):
         llm_router.get_router()
+
+
+def test_a_provider_prefix_with_no_model_is_refused_not_a_bare_name():
+    """Deferred C1 minor: "local:" used to fall back to the Ollama provider
+    with the model name "local:"; an empty model after a provider's prefix
+    is no model at all."""
+    r, _ = _router()
+    for model_id in ("local:", "cloud:"):
+        with pytest.raises(UnknownModel):
+            r.resolve(model_id)
+        assert not r.is_allowed(model_id)
+    # A bare name that merely contains a colon is still a pre-C1 name.
+    assert r.resolve("qwen2.5:7b")[1] == "qwen2.5:7b"

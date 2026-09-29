@@ -74,7 +74,7 @@ A full end-to-end walkthrough lives in [docs/CHAT_WITH_PDF.md](docs/CHAT_WITH_PD
 - **Ask page** — One toolbar click *pins* the current page text (~8000 char cap) to the chat. No indexing required.
 - **Ask AI on a selection** — Highlight any text on the rendered page and *pin* just that snippet. Paired with the existing "Read Selection" TTS button.
 - **Pinned context** — Ask page / Ask AI create **pins**: excerpts that stay attached to the conversation and are re-sent to the model on **every** turn — positioned at the very top of the prompt so they never get buried — until you remove them. Multiple pins accumulate as removable chips, dedupe by content, are bounded (**6 pins / ~12 000 chars**), and are **saved with the chat session** (restored on reload). Whole-document breadth comes from autonomous retrieval (below), not a giant pin.
-- **Index this document** — Backed by **Postgres + pgvector**. Frontend extracts per-page (PDF), per-block (Markdown), or per-pseudo-page (TXT) chunks; backend embeds them via Ollama's `nomic-embed-text` (768-dim) and stores them in an HNSW-indexed `vector` column. Re-indexing is idempotent (`UNIQUE (doc_id, text_hash)`).
+- **Index this document** — Backed by **Postgres + pgvector**. The file is uploaded, and the **server** extracts per-page (PDF), per-block (Markdown) or per-pseudo-page (TXT) chunks on the reader's own pagination, embeds them via Ollama's `nomic-embed-text` (768-dim) and stores them in an HNSW-indexed `vector` column. A file someone already uploaded is indexed at once.
 - **Autonomous tool calling** — When a doc is indexed and the chat model reports tool support, the model gets a `search_document` tool it can invoke on its own; `web_search` is offered too when SearXNG is configured. The turn runs server-side (`server/chat/`): the server executes the call, hands the result back, and the model streams the final answer. One tool round by default (`CHAT_MAX_TOOL_ROUNDS`), then one last step with tools switched off, so the turn always ends in an answer; a model without tool support just never sees the tool. Tool calls are persisted in a `tool_calls` JSONB column and re-rendered as a 🔎 disclosure on the assistant bubble.
 - **Postgres-backed chat sessions** — Sessions previously stored in IndexedDB now write to Postgres via a new `src/lib/sessionStore.js` abstraction. Legacy IDB sessions stay readable with a small **LOCAL** badge; the first message you send on one copies it onto the server (`POST /v1/chat/sessions/import`), leaving the original intact.
 - **Server-side tool registry** — `server/chat/tools/` houses one tool per file (`search_document`, `web_search`). Adding a tool later is one new file + one registry line; there is no browser-side tool code anymore.
@@ -365,11 +365,13 @@ All endpoints return `503` when Postgres is unreachable.
 | `/v1/chat/sessions/{id}` | `GET / PATCH / DELETE` | Per-session read / rename / delete. The server writes messages itself as a turn streams; there's no client-side upsert of the whole record anymore. |
 | `/v1/chat/sessions/import` | `POST` | Create-only: copies a legacy browser-only (IndexedDB) chat onto the server the first time you send a message on it. |
 | `/v1/chat/sessions/{id}/turns` | `POST` | **Run one chat turn.** Server-sent events (`text/event-stream`): text/reasoning deltas, tool calls and their results, a final `finish`, or a terminal `error`; always ends with `data: [DONE]`. One turn per session at a time — a second send gets `409 turn_in_progress`. |
-| `/v1/docs` | `POST` | Register a document by sha256 `doc_id` (idempotent). |
-| `/v1/docs/{doc_id}` | `GET / DELETE` | Status (`state`, `chunk_count`, `embedded_count`, model, dim) or cascade delete. |
-| `/v1/docs/{doc_id}/chunks` | `POST` | Bulk insert/upsert chunks (batches of ~50). Idempotent on `(doc_id, text_hash)`. |
-| `/v1/docs/{doc_id}/index` | `POST` | Kick off the background embedding job; returns 202. Poll the doc status endpoint for progress. |
+| `/v1/docs` | `POST / GET` | `POST`: upload a file (multipart). The server hashes the bytes itself (that SHA-256 is the `doc_id`) and extracts + indexes new content in the background; known bytes just add it to your library. `GET`: the documents you can read (`?q=`, `?project_id=`, `?tag=`). |
+| `/v1/docs/{doc_id}` | `GET / PATCH / DELETE` | Status (`state`, `chunk_count`, `embedded_count`, model, dim); rename/retag **your** entry; remove it from **your** library (the content goes when nobody holds it). |
+| `/v1/docs/{doc_id}/file` | `GET` | The stored file, for anyone who can read the document (404 otherwise). The Library's **Open** button. |
+| `/v1/docs/{doc_id}/index` | `POST` | Resume, or re-index from the stored file; returns 202. Poll the doc status endpoint for progress. |
 | `/v1/docs/{doc_id}/search` | `POST` | `{query, k}` → top-k chunks by cosine similarity (HNSW). Used by the autonomous `search_document` tool. |
+
+Sharing, projects, conversion and who may call what: [docs/LIBRARY.md § API surface](docs/LIBRARY.md#api-surface). There is no chunk-upload route: chunks are always derived on the server.
 
 #### Model providers (same FastAPI server)
 
@@ -476,7 +478,7 @@ server {
         # generous timeout. The backend also sends X-Accel-Buffering: no.
         proxy_buffering off;
         proxy_read_timeout 86400;
-        # PDF uploads (POST /v1/docs/{id}/pdf) exceed nginx's 1 MB default → 413.
+        # Document uploads (POST /v1/docs) exceed nginx's 1 MB default → 413.
         client_max_body_size 100m;
     }
 
@@ -716,7 +718,9 @@ natural-reader/
 │   │   └── useTheme.js
 │   ├── lib/
 │   │   ├── sessionStore.js       # Postgres-or-IndexedDB session dispatcher (legacy IDB sessions → read-only LOCAL badge, imported to Postgres on first send)
-│   │   ├── uploadPdf.js          # Multipart upload of PDF bytes (IndexedDB → /v1/docs/{id}/pdf) for docling conversion
+│   │   ├── serverDocFile.js      # GET /v1/docs/{id}/file → a File the reader opens (Library → Open)
+│   │   ├── openDoc.js            # Open a server document (Library row or chat citation), then go to a page
+│   │   ├── citations.js          # "(page N)" citations in replies → buttons (remark plugin)
 │   │   ├── chatStream.js         # POST a turn + read its SSE response (partial lines, [DONE], abort)
 │   │   ├── chatEvents.js         # Pure reducer: turn events → message state (text, thinking, tool panel, status)
 │   │   └── chatTransport.js      # GET /v1/inference/models, budget parsing (no tool code here anymore — tools run server-side)
@@ -761,7 +765,7 @@ natural-reader/
 │   ├── routers/
 │   │   ├── chat_sessions.py   # /v1/chat/sessions/* — list / get / patch / delete / import (legacy-chat copy)
 │   │   ├── chat_turns.py      # POST /v1/chat/sessions/{id}/turns — runs one turn, frames orchestrator events as SSE
-│   │   ├── docs.py            # /v1/docs/* — register / chunks / index / search / pdf / convert / markdown
+│   │   ├── docs.py            # /v1/docs/* — upload / list / status / file / shares / index / search / convert / markdown
 │   │   ├── inference.py       # GET /v1/inference/models — every provider's models + the caller's budget
 │   │   ├── admin.py           # /v1/admin/* — user management + inference usage + deployment config view
 │   │   └── auth.py            # /v1/auth/* — OIDC login/callback, sessions, PATs

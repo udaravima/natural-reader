@@ -144,18 +144,23 @@ You should see:
 1. Drop a PDF (or `.txt` / `.md`) onto the reader.
 2. The toolbar now shows an **Index** button between the zoom controls and the existing "Ask page" button.
 3. Click **Index**.
-4. The button cycles through three states:
-   - **Uploading** — chunks are POSTed to the backend in batches of 50.
+4. The button cycles through these states:
+   - **Uploading** — the file's bytes go to the server (`POST /v1/docs`, multipart). The server hashes them itself; that SHA-256 is the document's id.
+   - **Extracting…** — the server extracts the text from the stored file.
    - **Indexing N/M** — the embedding job runs in the background; the count polls every 2 s.
    - **Indexed** — green checkmark; the doc is now searchable.
 
-Behind the scenes:
+   If someone already uploaded the exact same file, it's **Indexed** at once ("Already indexed — added to your library"): nothing is extracted or embedded twice.
+
+Behind the scenes, extraction runs **on the server** (`server/services/extract.py`) and replicates the reader's own pagination exactly, so a chunk's page number is the page the reader shows:
 
 | File type | Chunking strategy |
 |---|---|
-| **PDF** | One chunk per page (PDF.js `getTextContent()` joined). |
-| **Markdown** | One chunk per top-level block (paragraph / heading / list / table / blockquote). Code blocks are skipped. |
-| **Text** | One chunk per pseudo-page (~40 sentences, matching the reader's pagination). |
+| **PDF** | One chunk per page with text. |
+| **Markdown** | One chunk per top-level block (paragraph / heading / list / table / blockquote), tagged with the reader page it falls on. Code blocks are skipped. |
+| **Text** | One chunk per pseudo-page (40 sentences, matching the reader's pagination). |
+
+The browser never sends chunks; there is no client-side chunking any more. For who can read an uploaded document (sharing, projects) and the full set of states, see [LIBRARY.md](LIBRARY.md).
 
 You can poke around the stored state with psql:
 
@@ -166,7 +171,7 @@ psql postgresql://natural_reader:natural_reader@localhost:5433/natural_reader \
   -c "SELECT count(*) AS total, count(embedding) AS embedded FROM doc_chunks;"
 ```
 
-> **Re-indexing is idempotent.** Chunks are upserted on `(doc_id, text_hash)` so clicking Index again on the same doc doesn't duplicate rows — and existing embeddings are kept.
+> **Re-indexing rebuilds from the stored file.** Clicking Index on an indexed document re-extracts and re-embeds it; the new chunk set replaces the old one in a single transaction, so search never sees half of each. It changes the document for everyone who has it, so only its sole holder or an admin may (see [LIBRARY.md](LIBRARY.md), "Why can't I re-convert?").
 
 ---
 
@@ -351,12 +356,15 @@ All under `http://localhost:8000` by default. Same FastAPI app as the existing K
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/v1/docs` | Register a document (idempotent on `doc_id` sha256). |
+| `POST` | `/v1/docs` | Upload a file (multipart). The server hashes it; known bytes → `200` and an entry at once, new bytes → `202` and background extraction + indexing. |
+| `GET` | `/v1/docs` | Documents you can read (`?q=`, `?project_id=`, `?tag=`). |
 | `GET` | `/v1/docs/{doc_id}` | Status: `state`, `chunk_count`, `embedded_count`, model + dim. |
-| `POST` | `/v1/docs/{doc_id}/chunks` | Bulk insert/upsert chunks. |
-| `POST` | `/v1/docs/{doc_id}/index` | Kick off the embedding job (202 + state set to `indexing`). |
+| `GET` | `/v1/docs/{doc_id}/file` | The stored file, for anyone who can read it (Library → **Open**). |
+| `POST` | `/v1/docs/{doc_id}/index` | Resume, or re-index from the stored file (202). |
 | `POST` | `/v1/docs/{doc_id}/search` | `{query, k}` → top-k chunks by cosine similarity. |
-| `DELETE` | `/v1/docs/{doc_id}` | Cascade-deletes chunks. |
+| `DELETE` | `/v1/docs/{doc_id}` | Removes the document from **your** library; the content goes when nobody holds it. |
+
+The full list (rename/tags, shares, convert, converted Markdown) and who may call each is in [LIBRARY.md § API surface](LIBRARY.md#api-surface). `POST /v1/docs/{doc_id}/chunks` is gone: chunks are always derived on the server.
 
 ---
 
@@ -392,7 +400,5 @@ Adding a tool is one file in `server/chat/tools/` (`name`, `spec`, `available(ct
 
 Also tabled for future work:
 
-- **Docling** for layout-aware PDF chunking (reading order, table reconstruction, heading hierarchy). Would require shipping PDFs to the backend on Index click — a meaningful UX shift, so deliberately held off.
-- **Multi-iteration tool calls.** PR 5 caps at one round-trip; multi-step agents need budget/loop controls before they're safe.
+- **Multi-iteration tool calls.** `CHAT_MAX_TOOL_ROUNDS` defaults to one round; multi-step agents need budget/loop controls before it's raised.
 - **No-chip retrieval toggle** for users who want manual whole-doc context without going through Ask page / Ask AI first.
-- **Cleanup job** for orphaned `doc_chunks` rows when a file's bytes change (new `doc_id` leaves old chunks behind).

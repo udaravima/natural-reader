@@ -52,6 +52,19 @@ _FEATURE_NOTICE = {
 }
 _FEATURE_LOG = {"tools": "tool-fallback", "thinking": "think-fallback", "think_level": "think-fallback"}
 _BACKGROUND: set[asyncio.Task] = set()   # end-of-turn saves that outlive a cancelled request
+
+
+async def drain_background(timeout: float) -> int:
+    """Wait for the end-of-turn saves in `_BACKGROUND`, including ones added
+    while waiting, until none are left or `timeout` seconds pass. Returns how
+    many are still pending (used at shutdown, before the pool closes)."""
+    deadline = time.monotonic() + timeout
+    while _BACKGROUND:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        await asyncio.wait(list(_BACKGROUND), timeout=left)
+    return len(_BACKGROUND)
 # A small model (llama3.2:3b) sometimes writes its tool call as reply text,
 # `{"name": ..., "parameters": {...}}`, often in a ```json fence. A step's
 # opening text is held while it could still be one, up to this many characters.

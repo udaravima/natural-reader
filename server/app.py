@@ -1,7 +1,6 @@
 """
 FastAPI application factory with CORS and router setup.
 """
-import asyncio
 import logging
 import os
 import secrets
@@ -126,11 +125,10 @@ def create_app() -> FastAPI:
         # finish before the pool goes away, or a turn mid-shutdown loses its
         # last write and comes back 'streaming' with no worker left to recover
         # it until the next startup's recover_stale() sweep.
-        pending = list(chat_orchestrator._BACKGROUND)
-        if pending:
-            _done, still_pending = await asyncio.wait(pending, timeout=5)
-            if still_pending:
-                logger.warning("%d chat turn write(s) still pending at shutdown", len(still_pending))
+        # Writes that start during the wait are waited for too.
+        still_pending = await chat_orchestrator.drain_background(timeout=5)
+        if still_pending:
+            logger.warning("%d chat turn write(s) still pending at shutdown", still_pending)
         await close_db()
 
     return app
