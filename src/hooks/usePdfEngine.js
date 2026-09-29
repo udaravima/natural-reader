@@ -249,6 +249,26 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         applySavedProgress(fileName, pages.length);
     };
 
+    // Write the file to IndexedDB and wait for it to land *before* the caller
+    // flips `pdfFileName`. App.jsx's "document changed" effect is keyed on
+    // `pdfFileName` and reads the bytes straight back out of IndexedDB
+    // (`ensureDocHash()` → `getBook`) the instant it changes; if that effect
+    // runs before this write lands, it finds nothing, `currentDocId` stays
+    // null for the whole session, and the Index button never leaves "Index"
+    // until the file is reopened. `saveBook` currently swallows its own
+    // errors and resolves to `false` rather than throwing (see db.js), so
+    // both are treated as failure here.
+    const persistBook = async (file, progress) => {
+        try {
+            const ok = await saveBook(file, progress);
+            if (ok === false) throw new Error('saveBook returned false');
+        } catch (e) {
+            console.error('Failed to save book locally:', e);
+            setToastMessage("Couldn't save this file locally — Index and chat about it may not work until you reopen it.");
+            setTimeout(() => setToastMessage(null), 5000);
+        }
+    };
+
     const processFile = (file) => {
         if (!file || !isLibLoaded) return;
         const detected = detectFileType(file);
@@ -260,6 +280,11 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
                 try {
                     const loadingTask = pdfjsLibRef.current.getDocument({ data: ev.target.result });
                     const doc = await loadingTask.promise;
+
+                    // Save to IndexedDB for library persistence *before*
+                    // opening the document — see persistBook above.
+                    await persistBook(file, { page: 1, sentenceIndex: -1 });
+
                     setFileType('pdf');
                     setTextPages([]);
                     setMarkdownPages([]);
@@ -269,10 +294,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
                     applySavedProgress(fileName, doc.numPages);
 
-                    // Save to IndexedDB for library persistence
-                    saveBook(file, { page: 1, sentenceIndex: -1 }).then(() => {
-                        getRecentBooks().then(setRecentBooks);
-                    });
+                    getRecentBooks().then(setRecentBooks);
 
                     // Fetch PDF outline (Table of Contents)
                     try {
@@ -292,17 +314,20 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
         if (detected === 'text' || detected === 'markdown') {
             const reader = new FileReader();
-            reader.onload = (ev) => {
+            reader.onload = async (ev) => {
                 try {
                     const rawText = ev.target.result;
+
+                    // Save first — loadTextDocument/loadMarkdownDocument set
+                    // pdfFileName internally; see persistBook above.
+                    await persistBook(file, { page: 1, sentenceIndex: -1 });
+
                     if (detected === 'markdown') {
                         loadMarkdownDocument(rawText, fileName);
                     } else {
                         loadTextDocument(rawText, fileName);
                     }
-                    saveBook(file, { page: 1, sentenceIndex: -1 }).then(() => {
-                        getRecentBooks().then(setRecentBooks);
-                    });
+                    getRecentBooks().then(setRecentBooks);
                 } catch (e) {
                     console.error('Failed to load file:', e);
                     setStatus(detected === 'markdown' ? "Error loading markdown file" : "Error loading text file");

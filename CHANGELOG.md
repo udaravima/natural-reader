@@ -24,6 +24,17 @@ All notable changes to this project will be documented in this file.
   non-text `Content-Type` (anything but `text/*`/`application/xhtml+xml`) is
   skipped before any of the body is read. The SSRF guard is unchanged.
 
+- **The Index button no longer gets stuck on "Index" after opening a brand
+  new file.** Opening a PDF, text, or Markdown file for the first time set
+  the reader's file name before the file finished writing to IndexedDB; the
+  effect that hashes the open document to check its backend status read the
+  bytes back immediately, found nothing, and never retried, so the button
+  stayed on "Index" for the rest of the session even after the server had
+  indexed it — reopening the file was the only fix. The file now saves to
+  IndexedDB first, and the reader opens only once that's done. If the save
+  itself fails, the document still opens, with a toast: "Couldn't save this
+  file locally — Index and chat about it may not work until you reopen it."
+
 ## [2.1.0] - 2026-09-28
 
 Chat runs **on the server**: the server builds the prompt, calls tools and the
