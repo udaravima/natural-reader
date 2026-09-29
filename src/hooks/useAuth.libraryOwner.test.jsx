@@ -77,4 +77,31 @@ describe('useAuth → setLibraryOwner', () => {
     expect(states[0]).toBe('loading');
     expect(states.filter((s, i) => i > 0 && s === 'loading' && states[i - 1] !== 'loading')).toEqual([]);
   });
+
+  it('a probe superseded by a host change applies neither its state nor its library owner', async () => {
+    let finishOld;
+    globalThis.fetch.mockImplementation((url) => (url.includes('old.example.com')
+      ? new Promise((r) => { finishOld = r; })
+      : Promise.resolve(jsonResponse(200, { id: 'new-user', email: 'n@x.io', role: 'member' }))));
+    const { result, rerender } = renderHook(({ host }) => useAuth(host, '443'), { initialProps: { host: 'old.example.com' } });
+    rerender({ host: 'new.example.com' });
+    await waitFor(() => expect(result.current.user?.id).toBe('new-user'));
+
+    await act(async () => { finishOld(jsonResponse(200, { id: 'old-user', email: 'o@x.io', role: 'member' })); });
+    expect(result.current.user.id).toBe('new-user');
+    expect(setLibraryOwner).not.toHaveBeenCalledWith('old-user', expect.anything());
+  });
+
+  it('a refresh started while the first probe is in flight wins over it', async () => {
+    let finishFirst;
+    globalThis.fetch.mockReturnValueOnce(new Promise((r) => { finishFirst = r; }));
+    globalThis.fetch.mockResolvedValueOnce(new Response('', { status: 401 }));
+    const { result } = renderHook(() => useAuth('', ''));
+    await act(async () => { await result.current.refresh(); });
+    expect(result.current.state).toBe('anonymous');
+
+    await act(async () => { finishFirst(jsonResponse(200, { id: 'late', email: 'l@x.io', role: 'member' })); });
+    expect(result.current.state).toBe('anonymous');
+    expect(setLibraryOwner).not.toHaveBeenCalledWith('late', expect.anything());
+  });
 });

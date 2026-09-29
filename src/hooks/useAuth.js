@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch, setUnauthorizedHandler, setForbiddenHandler } from '../utils/apiFetch';
 import { buildApiUrl } from '../utils/url';
 import { setLibraryOwner } from '../db';
@@ -8,32 +8,35 @@ import { setLibraryOwner } from '../db';
  * local library whose it is (see setLibraryOwner): only a real signed-in id
  * claims pre-release records, and the 'local' fallback when /me can't be
  * reached claims nothing. Sets no React state — callers apply the result.
+ * `isCurrent()` says whether this probe is still the latest: a superseded
+ * one (the host changed, or a refresh started) leaves the owner alone.
  */
-async function readMe(apiHost, apiPort) {
+async function readMe(apiHost, apiPort, isCurrent = () => true) {
+  const setOwner = (...args) => (isCurrent() ? setLibraryOwner(...args) : undefined);
   try {
     const res = await apiFetch(apiHost, apiPort, '/v1/auth/me');
     if (res.ok) {
       const body = await res.json();
       // Await so the claim has finished before 'active' makes anything
       // refresh the library list for the now-known user.
-      await setLibraryOwner(body.id, { claimLegacy: true });
+      await setOwner(body.id, { claimLegacy: true });
       return { state: 'active', user: { ...body, capabilities: body.capabilities ?? [] } };
     }
     if (res.status === 401) {
-      setLibraryOwner(null);
+      setOwner(null);
       return { state: 'anonymous', user: null };
     }
     if (res.status === 403) {
       const body = await res.json().catch(() => ({}));
-      setLibraryOwner(null);
+      setOwner(null);
       return { state: body?.detail?.status === 'disabled' ? 'disabled' : 'pending', user: null };
     }
     // /v1/auth/me is erroring — no signed-in user is known, so the local
     // library falls back to the single shared "local" owner.
-    setLibraryOwner('local');
+    setOwner('local');
     return { state: 'error', user: null };
   } catch {
-    setLibraryOwner('local');
+    setOwner('local');
     return { state: 'error', user: null };
   }
 }
@@ -48,17 +51,25 @@ export function useAuth(apiHost, apiPort) {
   const [state, setState] = useState('loading');
   const [user, setUser] = useState(null);
 
-  const apply = useCallback((result) => {
-    setUser(result.user);
-    setState(result.state);
-  }, []);
+  // Only the latest probe counts: each one takes a number, and a result (and
+  // its library-owner change) is dropped once a newer probe has started.
+  const probeSeq = useRef(0);
+  const probe = useCallback(() => {
+    const seq = ++probeSeq.current;
+    const isCurrent = () => seq === probeSeq.current;
+    return readMe(apiHost, apiPort, isCurrent).then((result) => {
+      if (!isCurrent()) return;
+      setUser(result.user);
+      setState(result.state);
+    });
+  }, [apiHost, apiPort]);
 
   // Re-probe from an event (Retry, a stale-capability 403): show the loading
   // gate again while it runs.
   const refresh = useCallback(() => {
     setState('loading');
-    return readMe(apiHost, apiPort).then(apply);
-  }, [apiHost, apiPort, apply]);
+    return probe();
+  }, [probe]);
 
   // Any 401 from any call site drops us back to the login gate.
   useEffect(() => {
@@ -74,13 +85,12 @@ export function useAuth(apiHost, apiPort) {
     return () => setForbiddenHandler(null);
   }, [refresh]);
 
-  // The first probe: state already starts as 'loading'. The result is applied
-  // in the promise's callback, and dropped if apiHost/apiPort changed meanwhile.
+  // The first probe, and a new one when apiHost/apiPort change. State starts
+  // as 'loading'; on a host change the previous state stays until the new
+  // result lands (no loading flash under Settings).
   useEffect(() => {
-    let current = true;
-    readMe(apiHost, apiPort).then((result) => { if (current) apply(result); });
-    return () => { current = false; };
-  }, [apiHost, apiPort, apply]);
+    probe();
+  }, [probe]);
 
   const login = useCallback(() => {
     const next = encodeURIComponent(window.location.pathname + window.location.search);

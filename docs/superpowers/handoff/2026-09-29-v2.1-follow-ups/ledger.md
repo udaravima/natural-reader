@@ -92,3 +92,6 @@ Task 7: complete (commits 4018753..8cacf09 + minors commit, review Approved)
 Task 7: minor (deferred): the recent-book row is role="button" containing a <button> (axe nested-interactive), as the brief asked; holding Enter repeats open.
 Task 7: minor (deferred, pre-existing): a TTS fetch in flight when clearCache runs lands in the new page's cache at the same index, so the new page could play the old page's clip there.
 Task 7: walk — confirm the blob: error is gone with real Kokoro TTS (reopen a PDF during and after read-aloud).
+Task 8: implemented 4b1654d (eslint clean — readMe() + apply in .then; refresh keeps the loading gate); review — Approved, 3 Minor: host-change keeps previous state (disclosed), stale guard now covers setLibraryOwner and refresh via one probeSeq (fixed in the next commit, 2 tests), weak test kept.
+Task 8: complete (commits a5a81ac..4b1654d + follow-up, review Approved)
+Task 9: implemented a94d30c (backend 597: /api/show DEBUG test (already implemented by df6f253), "local:" refused, recover_stale counts claims, drain_background loop; CHAT_WITH_PDF/README/ARCHITECTURE docs); review dispatched.

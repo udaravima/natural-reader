@@ -22,3 +22,15 @@ BASE a5a81ac. The error was at `src/hooks/useAuth.js:64`: `react-hooks/set-state
   - No user-facing doc mentions the lint error. Only historical plan and handoff docs do, and they stay as history.
   - The handoff's `global-constraints.md` now says lint must be clean.
   - No CHANGELOG line, since nothing is user-visible.
+
+---
+
+## Review follow-up (review: Approved, 3 Minor) — base a94d30c
+
+- **Minor 1: host change.** This is now disclosed: when apiHost/apiPort change, the previous state stays until the new host's probe lands. Before, the gate flashed "Loading…" and unmounted Settings mid-edit. The comment in `useAuth.js` says so.
+- **Minor 2: the partial stale guard.** Fixed. There is one `probeSeq` for all probes (mount, host change, `refresh`). `readMe` takes `isCurrent()`, and a superseded probe calls neither `setLibraryOwner` (so no claim for the old host's user) nor setState. The last probe *started* wins, not the last to finish. Two tests, both red before the fix:
+  - a host change mid-flight drops the old host's user and owner;
+  - a refresh started while the first probe is in flight wins over it.
+- **Minor 3: the weak "no second loading" test.** Kept as a regression pin. The new tests above cover what actually changed.
+
+Suites: frontend 390 passed; eslint clean.
