@@ -16,6 +16,7 @@ class ReadableDoc:
     doc_id: str
     name: str      # the reader's own name for it (their library entry), else the file name
     state: str
+    page_count: int | None = None   # the reader's pages (set by extraction); None if unknown
 
 
 async def readable_doc(conn, doc_id: str, user_id: str) -> ReadableDoc | None:
@@ -23,11 +24,11 @@ async def readable_doc(conn, doc_id: str, user_id: str) -> ReadableDoc | None:
     authz.readable_docs_where), else None. Never trusts the id alone."""
     cur = await conn.execute(
         "SELECT d.doc_id, COALESCE((SELECT e.file_name FROM library_entries e "
-        "WHERE e.doc_id = d.doc_id AND e.user_id = %s), d.file_name), d.state "
+        "WHERE e.doc_id = d.doc_id AND e.user_id = %s), d.file_name), d.state, d.page_count "
         f"FROM documents d WHERE d.doc_id = %s AND {readable_docs_where('d')}",
         [user_id, doc_id, *readable_docs_params(user_id)])
     row = await cur.fetchone()
-    return ReadableDoc(row[0], row[1] or "document", row[2]) if row else None
+    return ReadableDoc(row[0], row[1] or "document", row[2], row[3]) if row else None
 
 
 async def search_chunks(conn, doc_id: str, qvec: list[float], k: int) -> list[dict[str, Any]]:

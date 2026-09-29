@@ -43,6 +43,15 @@ class _SearchDocument:
     def available(self, ctx) -> bool:
         return ctx.doc is not None and ctx.doc.state == "indexed"
 
+    def guidance(self, ctx) -> str:
+        # C1 spec §5 "steering is load-bearing": without "answer from them when
+        # they are enough", a model handed passages searches anyway.
+        return ("find passages in the open document by meaning. The user's question was already "
+                "searched before you answered: passages found for it are in their message inside "
+                "<document_passages>. Answer from those when they are enough. Search only for what "
+                "they don't cover, and with different words: names, terms or topics from the "
+                "question or from the passages.")
+
     async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
         if ctx.doc is None:
             return {"error": "No document is currently loaded."}

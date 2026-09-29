@@ -35,6 +35,11 @@ class _WebSearch:
     def available(self, ctx) -> bool:
         return bool(web_search_service.SEARXNG_URL)
 
+    def guidance(self, ctx) -> str:
+        return ("search the internet for current or outside information (news, prices, facts the "
+                "document doesn't contain). Search by topic, and never copy text from the "
+                "document into a query.")
+
     async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
         query = str(args.get("query") or "").strip()
         if not query:

@@ -51,6 +51,12 @@ _FEATURE_NOTICE = {
     "think_level": ("think_level_unsupported", "This model rejected the thinking level — used plain thinking."),
 }
 _FEATURE_LOG = {"tools": "tool-fallback", "thinking": "think-fallback", "think_level": "think-fallback"}
+# Added to the results of the last tool round (v2.3 Task A). Worded to match
+# the rule in server/chat/prompt.py ("When a tool result says the tool rounds
+# are over, answer from what you already have").
+LAST_ROUND_NOTE = ("The tool rounds are over for this answer: answer now from what you found, "
+                   "and say what you could not find.")
+
 _BACKGROUND: set[asyncio.Task] = set()   # end-of-turn saves that outlive a cancelled request
 
 
@@ -216,15 +222,18 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         doc = await _open_doc(req)
         pins, history = await store.load_turn_context(
             claim.session_id, exclude=(claim.user_message_id, claim.assistant_message_id))
+        # Tools first: the system rules describe exactly the tools this turn
+        # offers (server/chat/prompt.py), so none is ever named in vain.
+        tool_ctx = ToolContext(req.user_id, doc)
+        offered = [] if caps.tools is False else available_tools(tool_ctx)
         built = await build_context(TurnInput(
             user_id=req.user_id, text=req.text, attachments=req.attachments, doc=doc,
             timezone=req.timezone, pins=pins, history=history,
-            window=_window(router, req, caps), now=datetime.now(timezone.utc)), cfg)
+            window=_window(router, req, caps), now=datetime.now(timezone.utc),
+            tools=tuple(offered if cfg.max_tool_rounds > 0 else ()), tool_ctx=tool_ctx), cfg)
         if built.notes:
             state.doc_context = {"notes": built.notes}
             yield ev("data-context", items=built.notes)
-        tool_ctx = ToolContext(req.user_id, doc)
-        offered = [] if caps.tools is False else available_tools(tool_ctx)
         messages = list(built.messages)
         rounds = 0
 
@@ -348,6 +357,9 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             messages.append(Message("assistant", text, tool_calls=tuple(calls)))
             await _log_event(claim.session_id, "tool-call",
                              f"{len(calls)} tool call{'s' if len(calls) > 1 else ''}")
+            # The last round says so in its results: the next step offers no
+            # tools, and the rules (stable for the turn) can't say that.
+            last_round = rounds >= cfg.max_tool_rounds
             for call in calls:
                 yield ev("tool-input-available", toolCallId=call.id, toolName=call.name, input=call.arguments)
                 run = await run_tool(call, tool_ctx, tools_now)
@@ -356,7 +368,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                     yield ev("tool-output-available", toolCallId=call.id, output=run.summary["result_summary"])
                 else:
                     yield ev("tool-output-error", toolCallId=call.id, errorText=run.result["error"])
-                messages.append(Message("tool", json.dumps(run.result, indent=2, ensure_ascii=False),
+                result = {**run.result, "note": LAST_ROUND_NOTE} if last_round else run.result
+                messages.append(Message("tool", json.dumps(result, indent=2, ensure_ascii=False),
                                         tool_call_id=call.id, name=call.name))
             await _save(claim, state)
         # Spec §5.2.1: did the model still search after a prefetch hit? Lets a

@@ -5,8 +5,8 @@ import pytest
 
 from server.chat import context as ctx_mod
 from server.chat.config import ChatConfig, load_chat_config
-from server.chat.context import (OPEN_DOC_LINE, PREFETCH_PREAMBLE, TurnInput, build_context, pin_messages,
-                                 prefetch, time_line)
+from server.chat.context import TurnInput, build_context, pin_text, prefetch, time_line
+from server.chat.tools import search_document
 from server.chat.store import StoredMessage
 from server.llm.types import Attachment, Message
 from server.services.doc_search import ReadableDoc
@@ -73,13 +73,12 @@ def test_time_line_falls_back_to_utc_on_bad_timezone(bad):
     assert time_line(NOW, bad) == "Current time: 2026-09-26 19:24 (UTC)"
 
 
-def test_pin_messages_keep_today_s_wording():
-    [m] = pin_messages([{"fileName": "T.pdf", "kind": "page", "page": 4, "text": "the excerpt"}])
-    assert m.role == "system"
-    assert m.content == ('The user is reading "T.pdf".\nRelevant excerpt (page, page 4):\n\n'
-                         '"""\nthe excerpt\n"""\n\nUse this excerpt as primary context for the user\'s '
-                         "question. If it does not contain the answer, say so or use the document "
-                         "search tool if available.")
+def test_a_pin_is_a_fenced_excerpt():
+    # v2.3 Task A: fenced as document text; no tool named; no "(page, page 4)".
+    assert pin_text([{"fileName": "T.pdf", "kind": "page", "page": 4, "text": "the excerpt"}]) == (
+        "The user pinned this excerpt as primary context for their question:\n"
+        '<pinned_excerpt source="T.pdf" where="page 4">\nthe excerpt\n</pinned_excerpt>')
+    assert pin_text([]) == ""
 
 
 async def test_prefetch_keeps_only_passages_above_the_threshold(search):
@@ -108,14 +107,14 @@ async def test_message_order_pins_history_then_volatile_and_question_in_one_user
     history = [StoredMessage("u1", "user", "earlier q", []), StoredMessage("a1", "assistant", "earlier a", [])]
     built = await build_context(_turn(doc=DOC, pins=[{"text": "pinned"}], history=history), ChatConfig())
     assert built.messages[0].role == "system" and "pinned" in built.messages[0].content
+    assert built.messages[0].content.startswith("You are the assistant in Natural Reader")
     assert [m.content for m in built.messages[1:3]] == ["earlier q", "earlier a"]
     # Final review I3: the volatile block is no longer a mid-list system
     # message (strict templates raise on it); it leads the new user message.
     last = built.messages[3]
     assert len(built.messages) == 4 and last.role == "user"
     volatile, question = last.content.rsplit("\n\n", 1)
-    assert volatile.startswith(PREFETCH_PREAMBLE.format(name="Thesis.pdf"))
-    assert "[1] (page 3)\npassage text" in volatile
+    assert volatile.startswith('<document_passages source="Thesis.pdf">\n[1] (page 3)\npassage text\n</document_passages>')
     assert volatile.endswith("Current time: 2026-09-27 00:54 (Asia/Colombo)")
     assert question == "What does chapter 2 say?"
     assert built.prefetch_hit and built.notes[0]["kind"] == "prefetch"
@@ -124,18 +123,21 @@ async def test_message_order_pins_history_then_volatile_and_question_in_one_user
 async def test_a_prefetch_miss_still_tells_the_model_which_document_is_open(search):
     # Walk: with nothing retrieved, the prompt never named the document, so a
     # small model sent "Zephyr station" questions to web_search every time.
+    # v2.3: the rules name it (and its search tool, only when offered).
     search["rows"] = [{"page": 1, "score": 0.2, "text": "weak"}]
-    built = await build_context(_turn(doc=DOC), ChatConfig())
-    last = built.messages[-1]
-    assert last.content.startswith(OPEN_DOC_LINE.format(name="Thesis.pdf"))
-    assert "search_document" in last.content
+    built = await build_context(_turn(doc=DOC, tools=(search_document.TOOL,)), ChatConfig())
+    system = built.messages[0].content
+    assert 'The user has the document "Thesis.pdf" open in the reader.' in system
+    assert "search_document" in system
     assert not built.prefetch_hit
+    assert built.messages[-1].content == ("Current time: 2026-09-27 00:54 (Asia/Colombo)\n\n"
+                                          "What does chapter 2 say?")
 
     no_doc = await build_context(_turn(doc=None), ChatConfig())
-    assert no_doc.messages == [Message("user", "Current time: 2026-09-27 00:54 (Asia/Colombo)\n\n"
-                                               "What does chapter 2 say?")]
+    assert [m.role for m in no_doc.messages] == ["system", "user"]
+    assert "Thesis.pdf" not in no_doc.messages[0].content
     unindexed = await build_context(_turn(doc=ReadableDoc(DOC.doc_id, "Thesis.pdf", "extracting")), ChatConfig())
-    assert "search_document" not in unindexed.messages[-1].content
+    assert "search_document" not in "".join(m.content for m in unindexed.messages)
 
 
 def _assert_strict_template_shape(messages, time_text="Current time: 2026-09-27 00:54 (Asia/Colombo)"):
@@ -170,12 +172,12 @@ async def test_the_prompt_fits_strict_chat_templates(search, monkeypatch):
     built = await build_context(_turn(doc=DOC, pins=pins, history=history, attachments=(now_att,)), ChatConfig())
     m = built.messages
     _assert_strict_template_shape(m)
-    # Both pins, each worded as before, in ONE leading system message.
-    assert m[0].content == "\n\n".join(pin_messages([p])[0].content for p in pins)
+    # The rules, then both pins, in ONE leading system message.
+    assert m[0].content.endswith(pin_text(pins))
     assert m[1] == Message("user", "q1\n\nq2", attachments=(img,))
     assert m[2].content == "a2"
     # The unanswered turn joins the new message, after the volatile block.
-    assert m[3].content.startswith(PREFETCH_PREAMBLE.format(name="Thesis.pdf"))
+    assert m[3].content.startswith('<document_passages source="Thesis.pdf">')
     assert m[3].content.endswith("q3 unanswered\n\nWhat does chapter 2 say?")
     assert m[3].attachments == (now_att,)
 
@@ -183,7 +185,7 @@ async def test_the_prompt_fits_strict_chat_templates(search, monkeypatch):
 async def test_no_window_means_no_trimming(search):
     history = [StoredMessage(f"m{i}", "user" if i % 2 == 0 else "assistant", "x" * 1000, []) for i in range(50)]
     built = await build_context(_turn(history=history, window=None), ChatConfig())
-    assert len(built.messages) == 51 and built.notes == []
+    assert len(built.messages) == 52 and built.notes == []   # rules + 50 history + the new message
 
 
 async def test_old_attachments_go_before_old_turns_and_only_kept_bytes_load(search, monkeypatch):
@@ -203,9 +205,9 @@ async def test_old_attachments_go_before_old_turns_and_only_kept_bytes_load(sear
     # 2048 reserve + ~40 + one attachment (1500) fits in 3700; two don't.
     built = await build_context(_turn(history=history, window=3700), ChatConfig())
     assert asked["wanted"] == [("u2", 0)]
-    first = built.messages[0]
+    first = built.messages[1]   # [0] is the system rules
     assert first.attachments == () and first.content == "look at this\n\n[image old.png from earlier; no longer attached]"
-    assert len(built.messages[2].attachments) == 1
+    assert len(built.messages[3].attachments) == 1
     assert built.notes == [{"kind": "trimmed", "messages": 0, "attachments": 1}]
 
 
@@ -222,7 +224,7 @@ async def test_missing_attachment_bytes_get_the_same_marker_as_a_trimmed_one(sea
     img = {"id": "gone", "kind": "image", "name": "gone.png", "mimeType": "image/png", "size": 9, "ordinal": 0}
     history = [StoredMessage("u1", "user", "look at this", [img]), StoredMessage("a1", "assistant", "ok", [])]
     built = await build_context(_turn(history=history, window=None), ChatConfig())
-    first = built.messages[0]
+    first = built.messages[1]   # [0] is the system rules
     assert first.attachments == ()
     assert first.content == "look at this\n\n[image gone.png from earlier; no longer attached]"
 

@@ -22,6 +22,15 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **The model gets clear rules about the document, not hints mixed into
+  your message.** The rules the model follows (answer from the document's
+  passages, cite pages as "(page N)", say when the document doesn't cover
+  something) now come in one system message that names only the tools it
+  actually has. Text from the document is marked as quoted material, so
+  instructions hidden in a PDF aren't obeyed. A small model is no longer told
+  to call a tool it can't use on the last step of an answer (it used to reply
+  with the tool call written out as text).
+
 - **A file opened from a workspace folder no longer borrows another
   document's index.** If "Your Library" held a different file with the same
   name, Index and chat used that file's server copy. Folder files have no

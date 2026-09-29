@@ -1,11 +1,12 @@
 """Stage 0 (spec §5.2): build the model input with the cheap, bounded work
 first, so a document question can be answered in ONE model call.
 
-Prompt order is fixed for prefix-cache reuse: pins -> history -> volatile
-context (passages, time) -> the new message. Counterintuitive: the time line
-belongs at the END; at the top it would change the prefix every turn and
-defeat the provider's reuse for the whole conversation. There is no base
-system prompt (ruling R9); a future one goes at the head.
+Prompt order is fixed for prefix-cache reuse: system rules + pins -> history
+-> volatile context (passages, time) -> the new message. Counterintuitive: the
+time line belongs at the END; at the top it would change the prefix every turn
+and defeat the provider's reuse for the whole conversation. The system rules
+(server/chat/prompt.py; ruling R9 revised in v2.3) are stable within a turn.
+Document text only ever appears inside a delimited block (prompt.fence).
 
 The shape is also what strict chat templates accept (final review I3: vLLM's
 Gemma/Mistral templates raise on any system message but the first, and on two
@@ -31,39 +32,36 @@ from ..services.doc_search import ReadableDoc, search_chunks
 from ..services.embeddings import embed_one
 from . import store
 from .config import ChatConfig
+from .prompt import PASSAGES_TAG, PIN_TAG, fence, system_rules
 from .store import StoredMessage
 
 logger = logging.getLogger(__name__)
 
 PASSAGE_TEXT_CAP = 1500   # characters per prefetched passage
-PREFETCH_PREAMBLE = (
-    'Passages retrieved from "{name}" for this question. Answer from them when they are enough; '
-    "call search_document only if they don't contain what you need.")
-# Said on a prefetch miss: without it nothing in the prompt names the open
-# document, and a small model sends questions about it to web_search.
-OPEN_DOC_LINE = (
-    'The user has "{name}" open. Questions about names, terms or facts you don\'t recognise '
-    "are probably about it: use search_document before web_search.")
 _MARKER = "[{kind} {name} from earlier; no longer attached]"
 
 
 def _pin_block(p: dict[str, Any]) -> str:
-    """One pin, worded exactly as the SPA's old buildPinPreamble."""
-    page = f", page {p['page']}" if p.get("page") is not None else ""
-    return (f'The user is reading "{p.get("fileName") or "a document"}".\n'
-            f'Relevant excerpt ({p.get("kind") or "page"}{page}):\n\n'
-            f'"""\n{p.get("text") or ""}\n"""\n\n'
-            "Use this excerpt as primary context for the user's question. If it does "
-            "not contain the answer, say so or use the document search tool if available.")
+    """One pin: an excerpt the user chose, fenced as document text (the rules
+    say what the tag means). `where` reads "page 4" or "selection, page 9"."""
+    kind = p.get("kind") or "page"
+    page = p.get("page")
+    if page is None:
+        where = kind
+    elif kind == "page":
+        where = f"page {page}"
+    else:
+        where = f"{kind}, page {page}"
+    source = fence(str(p.get("fileName") or "a document")).replace('"', "'")
+    return ("The user pinned this excerpt as primary context for their question:\n"
+            f'<{PIN_TAG} source="{source}" where="{where}">\n{fence(p.get("text") or "")}\n</{PIN_TAG}>')
 
 
-def pin_messages(pins: list[dict[str, Any]]) -> list[Message]:
-    """All pins as ONE system message (blocks separated by a blank line), or
-    none. One, not one per pin: strict templates accept a single leading
-    system message only (final review I3)."""
-    if not pins:
-        return []
-    return [Message("system", "\n\n".join(_pin_block(p) for p in pins))]
+def pin_text(pins: list[dict[str, Any]]) -> str:
+    """All pins' blocks, separated by a blank line ('' for none). They follow
+    the rules in the ONE leading system message: strict chat templates (vLLM's
+    Gemma/Mistral) accept a single leading system message only (final review I3)."""
+    return "\n\n".join(_pin_block(p) for p in pins)
 
 
 def time_line(now: datetime, tz_name: str | None) -> str:
@@ -115,11 +113,14 @@ async def prefetch(doc: ReadableDoc | None, question: str, cfg: ChatConfig) -> P
 
 
 def _passages_block(name: str, passages: list[dict[str, Any]]) -> str:
-    lines = [PREFETCH_PREAMBLE.format(name=name), ""]
+    """The prefetched passages as data: fenced, labelled with their pages, and
+    no instructions (the rules explain the tag)."""
+    source = fence(name).replace('"', "'")
+    lines = [f'<{PASSAGES_TAG} source="{source}">']
     for i, p in enumerate(passages, start=1):
         page = f" (page {p['page']})" if p["page"] is not None else ""
-        lines += [f"[{i}]{page}", p["text"], ""]
-    return "\n".join(lines).strip()
+        lines += [f"[{i}]{page}", fence(p["text"]), ""]
+    return "\n".join(lines).rstrip() + f"\n</{PASSAGES_TAG}>"
 
 
 def _merge_same_role(messages: list[Message]) -> list[Message]:
@@ -196,6 +197,8 @@ class TurnInput:
     history: list[StoredMessage]
     window: int | None   # settings.num_ctx, else the model's context length (ruling R14); None = don't trim
     now: datetime
+    tools: tuple[Any, ...] = ()   # offered on the turn's first step: the rules describe exactly these
+    tool_ctx: Any = None
 
 
 @dataclass
@@ -207,16 +210,12 @@ class BuiltContext:
 
 async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     pre = await prefetch(turn.doc, turn.text, cfg)
-    if pre.passages:
-        parts = [_passages_block(pre.note["docName"], pre.passages)]
-    elif turn.doc is not None and turn.doc.state == "indexed":
-        parts = [OPEN_DOC_LINE.format(name=turn.doc.name)]
-    else:
-        parts = []
+    parts = [_passages_block(pre.note["docName"], pre.passages)] if pre.passages else []
     parts.append(time_line(turn.now, turn.timezone))
     volatile = "\n\n".join(parts)
-    pins = pin_messages(turn.pins)
-    fixed_chars = sum(len(m.content) for m in pins) + len(volatile) + 2 + len(turn.text)
+    rules = system_rules(turn.doc, turn.tools, turn.tool_ctx, has_pins=bool(turn.pins))
+    system = Message("system", "\n\n".join(c for c in (rules, pin_text(turn.pins)) if c))
+    fixed_chars = len(system.content) + len(volatile) + 2 + len(turn.text)
     items, n_messages, n_attachments = _fit_history(turn.history, fixed_chars, len(turn.attachments),
                                                     turn.window, cfg)
     wanted = [(i.stored.id, a["ordinal"]) for i in items for a in i.keep]
@@ -251,4 +250,4 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
         notes.append({"kind": "trimmed", "messages": n_messages, "attachments": n_attachments})
         logger.debug("history trimmed: %d messages, %d attachments (window %s)",
                      n_messages, n_attachments, turn.window)
-    return BuiltContext([*pins, *history_messages, current], notes, bool(pre.passages))
+    return BuiltContext([system, *history_messages, current], notes, bool(pre.passages))

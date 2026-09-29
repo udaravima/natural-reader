@@ -86,9 +86,10 @@ async def test_plain_reply_streams_saves_and_releases(conn):
                       (alice.user_id,)) == (10, 3)
     sent = router.calls[0]
     assert sent["tools"] == ["web_search"]                  # no open document: no search_document
-    # Final review I3: no system message at all here (no pins); the volatile
-    # block (just the time line) leads the one user message.
-    [only] = sent["messages"]
+    # v2.3: the rules are the one leading system message, and name only the
+    # tool offered; the volatile block (just the time line) leads the user message.
+    system, only = sent["messages"]
+    assert system.role == "system" and "web_search" in system.content and "search_document" not in system.content
     assert only.role == "user" and only.content.startswith("Current time: ") and only.content.endswith("\n\nHi")
     assert await _log(conn) == ["sent", "received"]
     assert_fixture("plain", events)
@@ -284,10 +285,10 @@ async def test_second_turn_sends_the_first_as_history(conn):
     [_ async for _ in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)]
     claim, req = await _start(alice, text="second")
     [_ async for _ in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)]
-    sent = [(m.role, m.content.rsplit("\n\n", 1)[-1]) for m in router.calls[1]["messages"]]
+    sent = [(m.role, m.content.rsplit("\n\n", 1)[-1]) for m in router.calls[1]["messages"][1:]]
     assert sent == [("user", "first"), ("assistant", "Hello there."), ("user", "second")]
     # The stored user message is what was typed, not the built prompt (I3).
-    assert router.calls[1]["messages"][0].content == "first"
+    assert router.calls[1]["messages"][1].content == "first"
 
 
 async def test_session_deleted_mid_turn_finishes_quietly(conn):
@@ -563,6 +564,33 @@ TEXT_CALL = '{"name": "search_document", "parameters": {"query": "the main findi
 
 def _in_pieces(text: str, size: int = 7) -> list:
     return [TextDelta(text[i:i + size]) for i in range(0, len(text), size)]
+
+
+async def test_the_last_round_says_so_in_its_results_and_the_rules_never_change(conn, open_doc):
+    """v2.3 Task A: the final step offers no tools, and the rules (stable for
+    the turn, for the prefix cache) can't say that, so the last round's tool
+    results do. Nothing ever tells the model to call a tool it doesn't have."""
+    router = FakeRouter(steps=[
+        [ToolCallReady(ToolCall("c1", "search_document", {"query": "results"})), Usage(5, 5), Finish("tool_calls")],
+        reply("The result is X (page 3).")])
+    events, claim = await _run(conn, router, text="what is the result?")
+    first, final = router.calls
+    assert first["tools"] == ["search_document", "web_search"] and final["tools"] == []
+    assert first["messages"][0].role == "system"
+    assert final["messages"][0].content == first["messages"][0].content    # same rules on every step
+    tool_msg = final["messages"][-1]
+    assert tool_msg.role == "tool"
+    assert json.loads(tool_msg.content)["note"] == orchestrator.LAST_ROUND_NOTE
+    assert "answer now" in orchestrator.LAST_ROUND_NOTE
+
+
+async def test_no_note_while_rounds_remain(conn, open_doc):
+    router = FakeRouter(steps=[
+        [ToolCallReady(ToolCall("c1", "search_document", {"query": "a"})), Usage(5, 5), Finish("tool_calls")],
+        reply("Done (page 1).")])
+    await _run(conn, router, cfg=ChatConfig(max_tool_rounds=2), text="q")
+    assert "note" not in json.loads(router.calls[1]["messages"][-1].content)
+    assert router.calls[1]["tools"] == ["search_document", "web_search"]
 
 
 async def test_a_tool_call_written_as_text_is_run_not_saved(conn, open_doc, caplog):
