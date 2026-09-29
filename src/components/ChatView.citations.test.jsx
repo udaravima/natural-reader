@@ -92,3 +92,19 @@ describe('ChatView — page citations', () => {
         expect(onOpen).toHaveBeenCalledWith(DOC, 4, 'Thesis.pdf'); // the latest handler
     });
 });
+
+describe('ChatView — tool call disclosure', () => {
+    const call = (summary) => reply('Answer.', { toolCalls: [{ name: 'search_documents', arguments: { query: 'x' }, result_summary: summary }] });
+
+    it('counts the new passages a search_documents call returned', () => {
+        renderReply(call({ ok: true, chunk_count: 2, docId: DOC, passages: [{ page: 1, score: 0.8 }, { page: 2, score: 0.6 }] }));
+        fireEvent.click(screen.getByTitle('Show tool calls'));
+        expect(screen.getByText(/2 new passages/)).toBeTruthy();
+    });
+
+    it('says "nothing new" when every passage found was already shown', () => {
+        renderReply(call({ ok: true, chunk_count: 0, docId: DOC, passages: [] }));
+        fireEvent.click(screen.getByTitle('Show tool calls'));
+        expect(screen.getByText(/nothing new/)).toBeTruthy();
+    });
+});

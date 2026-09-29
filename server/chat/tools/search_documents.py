@@ -19,8 +19,11 @@ logger = logging.getLogger(__name__)
 PER_CHUNK_TEXT_CAP = 1500   # characters per passage the model reads
 # Relevance buckets over cosine similarity. Measured on nomic-embed-text:
 # matching questions scored 0.563-0.823, unrelated ones 0.428-0.513
-# (server/chat/config.py). The model sees the bucket, never the number.
+# (server/chat/config.py), so the default floor (0.45) still lets the upper
+# part of that noise through, labelled "weak". The model sees the bucket,
+# never the number.
 STRONG, MODERATE = 0.7, 0.55
+MAX_ROWS = 40
 NONE_FOUND = "No passages about this in the document."
 NOTHING_NEW = ("Nothing new: every passage found was already shown above. "
                "Search with different words, or answer from what you have.")
@@ -89,9 +92,9 @@ class _SearchDocuments:
         k = args.get("k")
         k = max(1, min(10, int(k))) if isinstance(k, (int, float)) and not isinstance(k, bool) else 5
         qvec = await embed_one(query)
-        # Ask for more than k when some are already shown, so a repeated
-        # search still has k new passages to offer.
-        want = k + min(len(ctx.shown), 10)
+        # Look past everything already shown, so a later round still finds k
+        # new passages; 40 is HNSW's default ef_search, all it returns anyway.
+        want = min(k + len(ctx.shown), MAX_ROWS)
         found: list[tuple[int, dict[str, Any]]] = []
         async with get_pool().connection() as conn:
             for ref, doc in enumerate(scope, start=1):

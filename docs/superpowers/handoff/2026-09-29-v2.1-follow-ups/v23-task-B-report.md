@@ -47,3 +47,27 @@
 - backend: 664 passed;
 - vitest: 413 passed, exit 0;
 - eslint: clean.
+
+## Fix round 1 — FIX_BASE 95f5a1d
+
+- **I1: the over-fetch was capped at 10 shown ids.**
+  - Now `want = min(k + len(ctx.shown), MAX_ROWS)`, with `MAX_ROWS = 40` (HNSW's default `ef_search`).
+  - Test: `test_a_search_asks_for_enough_rows_to_skip_everything_already_shown`, with shown set to 0, 15 or 60, expecting a request of 5, 20 or 40 rows. The 15 and 60 cases failed before the fix.
+- **Minor: calibration wording.**
+  - The `.env.example`, `ChatConfig` and tool comments now say that noise measured up to 0.513 still passes the 0.45 floor, labelled "weak".
+  - The default is unchanged, as the plan mandates. Task E's prefixes shift the scores, so Task G's harness should re-measure.
+- **Minor: "0 chunks" for a nothing-new search.**
+  - The disclosure now reads "N new passages", or "nothing new", for summaries that have `passages`. Saved chats from before v2.3 keep "N chunks".
+  - Two ChatView tests, which failed before the change.
+- **Minor: raw scores reach the browser.** Documented in CHAT_WITH_PDF: the saved summary, which the browser also receives.
+- **Minor: the mutable set on a frozen dataclass.** It is now `field(default_factory=set, hash=False, compare=False)`.
+- **Minor: the `_` convention in ARCHITECTURE.** The tool-contract bullet now names `guidance(ctx)`, the rule that a description never names another tool, `_`-prefixed result keys, and `ToolContext.shown`.
+- **Minor: the TDD evidence.** Both tests in this round were run red first.
+- **Cannot verify from the diff (carried into the next briefs):**
+  - Task C must add "read the page" steering, in its own `guidance()` or its description.
+  - Task F must change "by meaning (vector search over its indexed text)" to include exact words.
+
+Suites:
+- backend: 667 passed;
+- vitest: exit 0;
+- eslint: clean.

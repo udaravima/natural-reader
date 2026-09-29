@@ -18,7 +18,8 @@ class ChatConfig:
                                             # questions scored 0.563-0.823 (5/6 >= 0.6, only 2/6 >= 0.75),
                                             # unrelated ones 0.428-0.513 (none >= 0.6).
     prefetch_k: int = 4                    # passages at most
-    search_min_score: float = 0.45         # search_documents drops passages below this (noise)
+    search_min_score: float = 0.45         # search_documents drops passages below this; noise
+                                            # measured up to 0.513 still passes, labelled "weak"
     reply_reserve_tokens: int = 2048       # kept free for the reply when trimming history
     attachment_token_estimate: int = 1500  # tokens counted per image/audio when trimming (a guess)
     max_request_mb: int = 25               # turn request body cap, in MB

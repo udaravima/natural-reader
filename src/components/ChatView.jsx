@@ -887,6 +887,10 @@ function ToolCallsDisclosure({ toolCalls, theme, darkMode }) {
             const result = tc.result_summary || {};
             const resultLabel = result.error
               ? `error: ${result.error}`
+              : Array.isArray(result.passages) // search_documents (v2.3): new passages only
+                ? result.passages.length
+                  ? `${result.passages.length} new passage${result.passages.length === 1 ? "" : "s"}`
+                  : "nothing new"
               : result.chunk_count != null
                 ? `${result.chunk_count} chunk${result.chunk_count === 1 ? "" : "s"}`
                 : "ok";

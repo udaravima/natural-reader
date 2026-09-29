@@ -266,7 +266,7 @@ What it looks like:
 5. A small `🔎 search_documents` disclosure appears on the assistant bubble. Click it to see the exact query the model used and how many new passages came back.
 
 **What the model gets back from `search_documents` (v2.3):**
-- Passages, each with its reader page and a relevance of `strong` (0.7 or more), `moderate` (0.55 or more) or `weak`. The raw scores are kept in the saved summary and the DEBUG logs; the model never sees them.
+- Passages, each with its reader page and a relevance of `strong` (0.7 or more), `moderate` (0.55 or more) or `weak`. The raw scores are kept in the saved summary, which the browser also receives, and in the DEBUG logs; the model never sees them.
 - Passages scoring below `CHAT_SEARCH_MIN_SCORE` (default 0.45) are left out. With nothing left, the result says so in words.
 - A passage the model already has this turn comes back as `{"page": N, "already_shown": true}`, without its text. That covers passages from the Stage 0 block and from earlier searches, so searching again surfaces new material.
 - Each passage names its document by a short `ref`, listed in `documents`. Only the open document is searched today, as ref 1.

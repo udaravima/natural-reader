@@ -21,7 +21,7 @@ class ToolContext:
     search_min_score: float = 0.45   # CHAT_SEARCH_MIN_SCORE: weaker passages are noise
     # Chunk ids whose text the model already has this turn (the prefetch
     # block, earlier searches): shown again only as a page reference.
-    shown: set[int] = field(default_factory=set)
+    shown: set[int] = field(default_factory=set, hash=False, compare=False)
 
 
 class Tool(Protocol):

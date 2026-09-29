@@ -204,3 +204,36 @@ async def test_web_search_validates_count_and_summarizes(monkeypatch):
 
 def test_registry_order_is_stable():
     assert [t.name for t in chat_tools.REGISTRY] == ["search_documents", "web_search"]
+
+
+@pytest.mark.parametrize("shown,want", [(0, 5), (15, 20), (60, 40)])
+async def test_a_search_asks_for_enough_rows_to_skip_everything_already_shown(monkeypatch, shown, want):
+    """Review I1: over three rounds a turn can have shown 20+ passages. The
+    search must look past all of them (up to HNSW's default ef_search, 40),
+    or it reports "nothing new" while new evidence ranks lower."""
+    asked = {}
+
+    async def fake_search_chunks(conn, doc_id, qvec, k):
+        asked["k"] = k
+        return []
+
+    async def fake_embed(text):
+        return [0.0]
+
+    class _Conn:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _Pool:
+        def connection(self):
+            return _Conn()
+
+    monkeypatch.setattr(sd_tool, "search_chunks", fake_search_chunks)
+    monkeypatch.setattr(sd_tool, "embed_one", fake_embed)
+    monkeypatch.setattr(sd_tool, "get_pool", lambda: _Pool())
+    ctx = ToolContext("u", doc_search.ReadableDoc(DOC, "T.pdf", "indexed"), shown=set(range(shown)))
+    await sd_tool.TOOL.execute({"query": "q", "k": 5}, ctx)
+    assert asked["k"] == want
