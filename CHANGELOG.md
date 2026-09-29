@@ -22,6 +22,14 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Everything the browser remembers belongs to the signed-in user.** After
+  "Your Library", three more things were still shared by everyone who used
+  the browser: old browser-only chats, the last workspace folder (which
+  reopened for the next person) and reading positions. Each now belongs to
+  the user who signed in; the next user sees none of it. As with the
+  library, a browser's existing chats, folder and positions go to the first
+  user who signs in after the update.
+
 - **A provider refusal says what happened.** A free OpenRouter model that
   was rate-limited used to show "The model provider returned an error:
   Provider returned error". Now a `429` says the model is busy or

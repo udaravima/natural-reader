@@ -645,8 +645,11 @@ export default function App() {
 
   // Restore a saved workspace on load. If the FSA handle still has permission,
   // silently re-open it; otherwise surface a one-click reconnect affordance.
+  // The saved workspace belongs to the signed-in user (src/db.js), so this
+  // waits until /v1/auth/me has named them, and runs again for a new user.
+  const signedInUserId = auth.state === 'active' ? auth.user?.id : null;
   useEffect(() => {
-    if (!isLibLoaded) return;
+    if (!isLibLoaded || !signedInUserId) return;
     (async () => {
       try {
         const saved = await getWorkspaceState();
@@ -669,7 +672,7 @@ export default function App() {
         console.warn('Workspace restore failed:', e);
       }
     })();
-  }, [isLibLoaded]); // stable state setters don't need to be listed
+  }, [isLibLoaded, signedInUserId]); // stable state setters don't need to be listed
 
   const reconnectFolder = useCallback(async () => {
     try {

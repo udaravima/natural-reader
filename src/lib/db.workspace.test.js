@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import 'fake-indexeddb/auto';
-import { saveWorkspaceState, getWorkspaceState, clearWorkspaceState } from '../db';
+import { saveWorkspaceState, getWorkspaceState, clearWorkspaceState, setLibraryOwner } from '../db';
 
 describe('workspace persistence', () => {
-    beforeEach(async () => { await clearWorkspaceState(); });
+    // The workspace belongs to the signed-in user (db.browser-state-owner.test.js).
+    beforeEach(async () => { await setLibraryOwner('reader'); await clearWorkspaceState(); });
 
     it('saves and reads back the last workspace state', async () => {
         await saveWorkspaceState({ rootName: 'vault', handle: null, lastPath: 'sub/b.md' });

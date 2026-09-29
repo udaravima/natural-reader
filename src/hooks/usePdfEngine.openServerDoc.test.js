@@ -21,7 +21,7 @@ vi.mock('pdfjs-dist', () => ({
 vi.mock('../utils/apiFetch', () => ({ apiFetch: vi.fn() }));
 vi.mock('../utils/docHash', () => ({ forgetDocHash: vi.fn() }));
 
-import { saveBook } from '../db';
+import { saveBook, setLibraryOwner } from '../db';
 import { getDocument } from 'pdfjs-dist';
 import { forgetDocHash } from '../utils/docHash';
 import { apiFetch } from '../utils/apiFetch';
@@ -33,7 +33,8 @@ import { saveReadingProgress } from './usePersistedState';
 // to the local library under the Library's name and the reader shows it with
 // the right type, and processFile's promise says when it's open.
 describe('opening a server document', () => {
-    beforeEach(() => vi.clearAllMocks());
+    // Reading positions belong to the signed-in user (see src/db.js).
+    beforeEach(async () => { vi.clearAllMocks(); await setLibraryOwner('reader'); });
 
     it.each([
         ['text/markdown; charset=utf-8', 'Shared notes', 'markdown'],

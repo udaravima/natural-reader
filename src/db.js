@@ -35,6 +35,19 @@ const UNCLAIMED_OWNER = '__unclaimed__';
 // a browser would give us, so it's a safe separator.
 const bookKey = (ownerId, fileName) => `${ownerId}\u0000${fileName}`;
 
+// The other per-browser stores follow the same owner (v2.2 Task A).
+// `workspaces` holds one record per owner; the pre-release one was 'last'.
+const LEGACY_WORKSPACE_ID = 'last';
+const workspaceKey = (ownerId) => `last:${ownerId}`;
+
+// Reading positions live in localStorage (usePersistedState). Pre-release
+// keys were `neural-pdf-progress-<fileName>`, shared by everyone.
+const LEGACY_PROGRESS_PREFIX = 'neural-pdf-progress-';
+export const readingProgressKey = (ownerId, fileName) => `neural-pdf-progress@${ownerId}/${fileName}`;
+
+/** The signed-in user the per-browser stores are scoped to, or null. */
+export const getLibraryOwner = () => currentOwnerId;
+
 /**
  * Set the signed-in user whose books/library reads and writes should be
  * scoped to. Called by the auth layer once `/v1/auth/me` resolves — with the
@@ -98,6 +111,64 @@ export const setLibraryOwner = async (id, { claimLegacy = false } = {}) => {
         db.close();
     } catch (e) {
         console.error('Failed to claim legacy library records:', e);
+    }
+    await claimLegacyBrowserState(newOwner);
+};
+
+// The rest of a pre-release browser's state goes to the same first user:
+// browser-only chats (no ownerId), the single workspace record, and the
+// reading positions in localStorage. One read-write transaction for the two
+// IndexedDB stores, like the books claim, so two tabs can't both take them.
+const claimLegacyBrowserState = async (owner) => {
+    let db = null;
+    try {
+        db = await openDB();
+        if (!db.objectStoreNames.contains(SESSIONS_STORE) || !db.objectStoreNames.contains(WORKSPACE_STORE)) return;
+        const tx = db.transaction([SESSIONS_STORE, WORKSPACE_STORE], 'readwrite');
+        const sessions = tx.objectStore(SESSIONS_STORE);
+        const workspaces = tx.objectStore(WORKSPACE_STORE);
+        const all = await new Promise((resolve, reject) => {
+            const req = sessions.getAll();
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+        for (const rec of all) {
+            if (!rec.ownerId) sessions.put({ ...rec, ownerId: owner });
+        }
+        const legacy = await new Promise((resolve, reject) => {
+            const req = workspaces.get(LEGACY_WORKSPACE_ID);
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+        if (legacy) {
+            const mine = await new Promise((resolve, reject) => {
+                const req = workspaces.get(workspaceKey(owner));
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+            if (!mine) workspaces.put({ ...legacy, id: workspaceKey(owner) });
+            workspaces.delete(LEGACY_WORKSPACE_ID);
+        }
+        await new Promise((resolve, reject) => {
+            tx.oncomplete = resolve;
+            tx.onerror = () => reject(tx.error);
+            tx.onabort = () => reject(tx.error);
+        });
+    } catch (e) {
+        console.error('Failed to claim legacy chats and workspace:', e);
+    } finally {
+        db?.close(); // an open connection would block the next version change
+    }
+    try {
+        for (const key of Object.keys(localStorage)) {
+            if (!key.startsWith(LEGACY_PROGRESS_PREFIX)) continue;
+            const fileName = key.slice(LEGACY_PROGRESS_PREFIX.length);
+            const target = readingProgressKey(owner, fileName);
+            if (localStorage.getItem(target) === null) localStorage.setItem(target, localStorage.getItem(key));
+            localStorage.removeItem(key);
+        }
+    } catch (e) {
+        console.error('Failed to claim legacy reading positions:', e);
     }
 };
 
@@ -397,10 +468,12 @@ const cleanupOldBooks = async (store, ownerId) => {
 // =====================================================================
 
 export const saveSession = async (session) => {
-    if (!session?.id) return false;
+    if (!session?.id || !currentOwnerId) return false;
     try {
         const db = await openDB();
-        const record = { ...session, updatedAt: Date.now() };
+        const existing = await getOwnSession(db, session.id);
+        if (existing === undefined) { db.close(); return false; } // someone else's id
+        const record = { ...session, ownerId: currentOwnerId, updatedAt: Date.now() };
         const tx = db.transaction(SESSIONS_STORE, 'readwrite');
         const store = tx.objectStore(SESSIONS_STORE);
         await new Promise((resolve, reject) => {
@@ -417,17 +490,24 @@ export const saveSession = async (session) => {
     }
 };
 
+// The session with this id if the current owner may see it; null if there
+// is none; undefined if it belongs to someone else.
+const getOwnSession = async (db, id) => {
+    const tx = db.transaction(SESSIONS_STORE, 'readonly');
+    const rec = await new Promise((resolve, reject) => {
+        const req = tx.objectStore(SESSIONS_STORE).get(id);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+    if (!rec) return null;
+    return rec.ownerId === currentOwnerId ? rec : undefined;
+};
+
 export const getSession = async (id) => {
-    if (!id) return null;
+    if (!id || !currentOwnerId) return null;
     try {
         const db = await openDB();
-        const tx = db.transaction(SESSIONS_STORE, 'readonly');
-        const store = tx.objectStore(SESSIONS_STORE);
-        const result = await new Promise((resolve, reject) => {
-            const req = store.get(id);
-            req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error);
-        });
+        const result = await getOwnSession(db, id);
         db.close();
         return result || null;
     } catch (e) {
@@ -438,6 +518,7 @@ export const getSession = async (id) => {
 
 // List all sessions (metadata only — no messages or events) sorted newest-first.
 export const getRecentSessions = async () => {
+    if (!currentOwnerId) return [];
     try {
         const db = await openDB();
         const tx = db.transaction(SESSIONS_STORE, 'readonly');
@@ -449,6 +530,7 @@ export const getRecentSessions = async () => {
         });
         db.close();
         return records
+            .filter((s) => s.ownerId === currentOwnerId)
             .map((s) => ({
                 id: s.id,
                 title: s.title,
@@ -465,9 +547,10 @@ export const getRecentSessions = async () => {
 };
 
 export const deleteSession = async (id) => {
-    if (!id) return false;
+    if (!id || !currentOwnerId) return false;
     try {
         const db = await openDB();
+        if (!(await getOwnSession(db, id))) { db.close(); return false; }
         const tx = db.transaction(SESSIONS_STORE, 'readwrite');
         const store = tx.objectStore(SESSIONS_STORE);
         await new Promise((resolve, reject) => {
@@ -511,12 +594,13 @@ const cleanupOldSessions = async (store) => {
 // =====================================================================
 
 export const saveWorkspaceState = async ({ rootName, handle = null, lastPath = null }) => {
+    if (!currentOwnerId) return false;
     try {
         const db = await openDB();
         const tx = db.transaction(WORKSPACE_STORE, 'readwrite');
         const store = tx.objectStore(WORKSPACE_STORE);
         await new Promise((resolve, reject) => {
-            const req = store.put({ id: 'last', rootName, handle, lastPath });
+            const req = store.put({ id: workspaceKey(currentOwnerId), rootName, handle, lastPath });
             req.onsuccess = resolve;
             req.onerror = () => reject(req.error);
         });
@@ -529,12 +613,13 @@ export const saveWorkspaceState = async ({ rootName, handle = null, lastPath = n
 };
 
 export const getWorkspaceState = async () => {
+    if (!currentOwnerId) return null;
     try {
         const db = await openDB();
         const tx = db.transaction(WORKSPACE_STORE, 'readonly');
         const store = tx.objectStore(WORKSPACE_STORE);
         const result = await new Promise((resolve, reject) => {
-            const req = store.get('last');
+            const req = store.get(workspaceKey(currentOwnerId));
             req.onsuccess = () => resolve(req.result);
             req.onerror = () => reject(req.error);
         });
@@ -547,12 +632,13 @@ export const getWorkspaceState = async () => {
 };
 
 export const clearWorkspaceState = async () => {
+    if (!currentOwnerId) return false;
     try {
         const db = await openDB();
         const tx = db.transaction(WORKSPACE_STORE, 'readwrite');
         const store = tx.objectStore(WORKSPACE_STORE);
         await new Promise((resolve, reject) => {
-            const req = store.delete('last');
+            const req = store.delete(workspaceKey(currentOwnerId));
             req.onsuccess = resolve;
             req.onerror = () => reject(req.error);
         });
