@@ -273,6 +273,8 @@ What it looks like:
 
 Chats saved before v2.3 recorded the tool as `search_document`, and their page citations still open the document.
 
+**`read_document_pages` (v2.3)** reads the exact text of whole pages: up to 3 per call, from `first_page` to `last_page`. It is capped at `CHAT_READ_PAGES_MAX_CHARS` (default 12,000) and marked where the text is cut. It is offered alongside `search_documents`, for the same indexed document. The model uses it when you ask what a page says, or when a passage it found points to a table, figure or section on that page. Pages it has read count as shown, so a later search lists them by page only. Its disclosure line reads "Read pages 3-5.", and its page citations link like a search's.
+
 **How the loop works (C1: entirely server-side, `server/chat/orchestrator.py`):**
 
 ```

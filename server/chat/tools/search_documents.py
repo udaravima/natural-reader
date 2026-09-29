@@ -10,9 +10,9 @@ from typing import Any
 
 from ...db import get_pool
 from ...llm.types import ToolSpec
-from ...services.doc_search import ReadableDoc, search_chunks
+from ...services.doc_search import search_chunks
 from ...services.embeddings import embed_one
-from ..prompt import display_name
+from .scope import document_scope, documents_listing
 
 logger = logging.getLogger(__name__)
 
@@ -58,18 +58,13 @@ def _cap(text: str) -> str:
     return text if len(text) <= PER_CHUNK_TEXT_CAP else text[:PER_CHUNK_TEXT_CAP] + " [truncated]"
 
 
-def _scope(ctx) -> list[ReadableDoc]:
-    """The documents this call searches, in `ref` order (ref = position + 1)."""
-    return [ctx.doc] if ctx.doc is not None and ctx.doc.state == "indexed" else []
-
-
 class _SearchDocuments:
     name = "search_documents"
     spec = _SPEC
     reads_documents = True   # brings the grounding and citation rules (server/chat/prompt.py)
 
     def available(self, ctx) -> bool:
-        return bool(_scope(ctx))
+        return bool(document_scope(ctx))
 
     def guidance(self, ctx) -> str:
         # C1 spec §5 "steering is load-bearing": without "answer from them when
@@ -83,7 +78,7 @@ class _SearchDocuments:
                 "the question.")
 
     async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
-        scope = _scope(ctx)
+        scope = document_scope(ctx)
         if not scope:
             return {"error": "No indexed document is open."}
         query = str(args.get("query") or "").strip()
@@ -101,7 +96,7 @@ class _SearchDocuments:
             for ref, doc in enumerate(scope, start=1):
                 found += [(ref, r) for r in await search_chunks(conn, doc.doc_id, qvec, want)]
         found.sort(key=lambda fr: fr[1]["score"], reverse=True)
-        kept = [(ref, r) for ref, r in found if r["score"] >= ctx.search_min_score]
+        kept = [(ref, r) for ref, r in found if r["score"] >= ctx.cfg.search_min_score]
 
         passages: list[dict[str, Any]] = []
         new: list[tuple[int, dict[str, Any]]] = []
@@ -118,11 +113,11 @@ class _SearchDocuments:
                                  "text": _cap(r["text"] or "")})
         ctx.shown.update(r["id"] for _, r in new)
         logger.debug("search_documents docs=%d found=%d kept=%d new=%d floor=%s top=%s",
-                     len(scope), len(found), len(kept), len(new), ctx.search_min_score,
+                     len(scope), len(found), len(kept), len(new), ctx.cfg.search_min_score,
                      round(found[0][1]["score"], 4) if found else None)
         result: dict[str, Any] = {
             "query": query,
-            "documents": [{"ref": ref, "name": display_name(d.name)} for ref, d in enumerate(scope, start=1)],
+            "documents": documents_listing(scope),
             "passages": passages,
         }
         if seen_pages:

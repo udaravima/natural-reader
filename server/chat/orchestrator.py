@@ -227,7 +227,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             claim.session_id, exclude=(claim.user_message_id, claim.assistant_message_id))
         # Tools first: the system rules describe exactly the tools this turn
         # offers (server/chat/prompt.py), so none is ever named in vain.
-        tool_ctx = ToolContext(req.user_id, doc, search_min_score=cfg.search_min_score)
+        tool_ctx = ToolContext(req.user_id, doc, cfg=cfg)
         offered = [] if caps.tools is False else available_tools(tool_ctx)
         built = await build_context(TurnInput(
             user_id=req.user_id, text=req.text, attachments=req.attachments, doc=doc,

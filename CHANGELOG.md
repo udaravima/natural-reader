@@ -20,6 +20,12 @@ All notable changes to this project will be documented in this file.
   isn't the one open. If you can no longer read it, a notice says so and
   you stay in chat. Replies that used no document are unchanged.
 
+- **The model can read whole pages.** Asked "what's on page 12?" or about
+  a table a search pointed to, the model reads up to 3 whole pages of the
+  open document at once. It gets the exact text instead of a
+  1,500-character excerpt. The limit per read is `CHAT_READ_PAGES_MAX_CHARS`
+  (default 12,000).
+
 ### Changed
 
 - **Document search returns evidence, not noise.** The document search

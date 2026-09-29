@@ -12,7 +12,7 @@ import pytest
 from server.chat import context as ctx_mod
 from server.chat.config import ChatConfig
 from server.chat.context import TurnInput, build_context
-from server.chat.tools import ToolContext, search_documents, web_search
+from server.chat.tools import ToolContext, read_document_pages, search_documents, web_search
 from server.services.doc_search import ReadableDoc
 
 pytestmark = pytest.mark.asyncio
@@ -20,8 +20,8 @@ pytestmark = pytest.mark.asyncio
 NOW = datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc)
 INDEXED = ReadableDoc("d" * 64, "Thesis.pdf", "indexed", 42)
 NOT_INDEXED = ReadableDoc("d" * 64, "Thesis.pdf", "extracting", None)
-SEARCH, WEB = search_documents.TOOL, web_search.TOOL
-TOOL_NAMES = ("search_documents", "web_search")
+SEARCH, READ, WEB = search_documents.TOOL, read_document_pages.TOOL, web_search.TOOL
+TOOL_NAMES = ("search_documents", "read_document_pages", "web_search")
 PASSAGE = "The method uses gradient descent."
 
 
@@ -48,8 +48,8 @@ async def _build(doc, tools, pins=()):
 
 
 def _search_tools_for(doc):
-    """What available_tools would offer: search only for an indexed document."""
-    return [SEARCH] if doc is INDEXED else []
+    """What available_tools would offer: the document tools only for an indexed document."""
+    return [SEARCH, READ] if doc is INDEXED else []
 
 
 CASES = list(itertools.product(
@@ -77,7 +77,7 @@ async def test_the_prompt_is_truthful_for_every_combination(prefetch_result, doc
         assert (name in everything) == (name in offered), (name, offered)
 
     # 2. The user turn carries data, not rules: no tool names, no "call"/"cite".
-    for word in ("search_documents", "web_search", "cite", "Cite"):
+    for word in (*TOOL_NAMES, "cite", "Cite"):
         assert word not in user
 
     # 3. Retrieved text only inside the delimited block, and the rules say so.

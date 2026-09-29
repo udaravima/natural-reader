@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ...llm.types import ToolCall, ToolSpec
+from ..config import ChatConfig
 from ...services.doc_search import ReadableDoc
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ class ToolContext:
     """One per turn: what the tools may read, and what this turn has seen."""
     user_id: str
     doc: ReadableDoc | None   # the open document, already checked readable
-    search_min_score: float = 0.45   # CHAT_SEARCH_MIN_SCORE: weaker passages are noise
+    cfg: ChatConfig = field(default_factory=ChatConfig, hash=False, compare=False)
     # Chunk ids whose text the model already has this turn (the prefetch
     # block, earlier searches): shown again only as a page reference.
     shown: set[int] = field(default_factory=set, hash=False, compare=False)
@@ -54,9 +55,9 @@ class ToolRun:
         return "error" not in self.result
 
 
-from . import search_documents, web_search  # noqa: E402 — after the shared types, by convention
+from . import read_document_pages, search_documents, web_search  # noqa: E402 — after the shared types, by convention
 
-REGISTRY: list[Tool] = [search_documents.TOOL, web_search.TOOL]
+REGISTRY: list[Tool] = [search_documents.TOOL, read_document_pages.TOOL, web_search.TOOL]
 
 
 def available_tools(ctx: ToolContext) -> list[Tool]:

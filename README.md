@@ -77,7 +77,7 @@ A full end-to-end walkthrough lives in [docs/CHAT_WITH_PDF.md](docs/CHAT_WITH_PD
 - **Index this document** — Backed by **Postgres + pgvector**. The file is uploaded, and the **server** extracts per-page (PDF), per-block (Markdown) or per-pseudo-page (TXT) chunks on the reader's own pagination, embeds them via Ollama's `nomic-embed-text` (768-dim) and stores them in an HNSW-indexed `vector` column. A file that's already indexed on the server is indexed for you at once.
 - **Autonomous tool calling** — When a doc is indexed and the chat model reports tool support, the model gets a `search_documents` tool it can invoke on its own; `web_search` is offered too when SearXNG is configured. The turn runs server-side (`server/chat/`): the server executes the call, hands the result back, and the model streams the final answer. One tool round by default (`CHAT_MAX_TOOL_ROUNDS`), then one last step with tools switched off, so the turn always ends in an answer; a model without tool support just never sees the tool. Tool calls are persisted in a `tool_calls` JSONB column and re-rendered as a 🔎 disclosure on the assistant bubble.
 - **Postgres-backed chat sessions** — Sessions previously stored in IndexedDB now write to Postgres via a new `src/lib/sessionStore.js` abstraction. Legacy IDB sessions stay readable with a small **LOCAL** badge; the first message you send on one copies it onto the server (`POST /v1/chat/sessions/import`), leaving the original intact.
-- **Server-side tool registry** — `server/chat/tools/` houses one tool per file (`search_documents`, `web_search`). Adding a tool later is one new file + one registry line; there is no browser-side tool code anymore.
+- **Server-side tool registry** — `server/chat/tools/` houses one tool per file (`search_documents`, `read_document_pages`, `web_search`). Adding a tool later is one new file + one registry line; there is no browser-side tool code anymore.
 
 ### 👥 Accounts, Document Library & App Shell *(new in `v2.0.0`)*
 
@@ -774,7 +774,7 @@ natural-reader/
 │   │   ├── context.py         # Stage 0: document prefetch, time-in-prompt, history trimming
 │   │   ├── store.py           # Turn claims/heartbeat/recovery, message + event persistence
 │   │   ├── config.py          # CHAT_* env knobs (tool rounds, prefetch, trimming, request size cap)
-│   │   └── tools/              # search_documents, web_search — one file per tool, server-side only
+│   │   └── tools/              # search_documents, read_document_pages, web_search — one file per tool, server-side only
 │   ├── llm/                   # Model provider layer (C1)
 │   │   ├── router.py          # Loads INFERENCE_PROVIDERS config, resolves "<provider>:<model>" ids
 │   │   ├── types.py           # Internal message/event types every adapter maps to/from

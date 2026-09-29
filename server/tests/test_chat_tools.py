@@ -4,6 +4,7 @@ import logging
 import pytest
 
 from server.chat import tools as chat_tools
+from server.chat.config import ChatConfig
 from server.chat.tools import ToolContext, available_tools, run_tool
 from server.chat.tools import search_documents as sd_tool
 from server.chat.tools import web_search as ws_tool
@@ -54,7 +55,7 @@ async def test_readable_doc_uses_the_readers_name_and_hides_others_docs(indexed)
 async def test_search_documents_is_offered_only_for_an_indexed_readable_doc(indexed):
     conn, alice = indexed
     doc = await doc_search.readable_doc(conn, DOC, alice.user_id)
-    assert [t.name for t in available_tools(ToolContext(alice.user_id, doc))] == ["search_documents", "web_search"]
+    assert [t.name for t in available_tools(ToolContext(alice.user_id, doc))] == ["search_documents", "read_document_pages", "web_search"]
     assert [t.name for t in available_tools(ToolContext(alice.user_id, None))] == ["web_search"]
     extracting = doc_search.ReadableDoc(DOC, "x", "extracting")
     assert "search_documents" not in [t.name for t in available_tools(ToolContext(alice.user_id, extracting))]
@@ -99,7 +100,7 @@ async def test_passages_below_the_floor_are_dropped_and_none_left_says_so(indexe
     ctx = await _ctx(indexed)
     run = await _search(ctx, {"query": "m", "k": 10})
     assert [p["page"] for p in run.result["passages"]] == [3, 7]           # page 9 scored 0.0
-    strict = await _ctx(indexed, search_min_score=1.01)
+    strict = await _ctx(indexed, cfg=ChatConfig(search_min_score=1.01))
     none = await _search(strict, {"query": "m"})
     assert none.ok and none.result["passages"] == []
     assert none.result["message"] == "No passages about this in the document."
@@ -203,7 +204,7 @@ async def test_web_search_validates_count_and_summarizes(monkeypatch):
 
 
 def test_registry_order_is_stable():
-    assert [t.name for t in chat_tools.REGISTRY] == ["search_documents", "web_search"]
+    assert [t.name for t in chat_tools.REGISTRY] == ["search_documents", "read_document_pages", "web_search"]
 
 
 @pytest.mark.parametrize("shown,want", [(0, 5), (15, 20), (60, 40)])
