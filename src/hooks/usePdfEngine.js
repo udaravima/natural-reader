@@ -228,6 +228,10 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         if (savedProgress && savedProgress.page <= totalPages) {
             setCurrentPage(savedProgress.page);
             setTimeout(() => {
+                // Only if the reader is still on the saved page: a page set
+                // right after opening (a chat citation) wins, and a sentence
+                // index from another page would start playback mid-page.
+                if (prevPageRef.current !== savedProgress.page) return;
                 if (savedProgress.sentenceIndex >= 0) {
                     setCurrentSentenceIndex(savedProgress.sentenceIndex);
                     playbackIndexRef.current = savedProgress.sentenceIndex;

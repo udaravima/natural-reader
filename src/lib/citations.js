@@ -26,8 +26,9 @@ function splitText(node) {
     const out = [];
     let last = 0;
     for (const m of node.value.matchAll(CITATION)) {
-        if (m.index > last) out.push({ type: 'text', value: node.value.slice(last, m.index) });
         const page = Number(m[1] || m[2]);
+        if (page < 1) continue; // "page 0" is no page: left as text
+        if (m.index > last) out.push({ type: 'text', value: node.value.slice(last, m.index) });
         out.push({
             type: 'link',
             url: `#page-${page}`,

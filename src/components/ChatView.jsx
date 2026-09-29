@@ -456,11 +456,10 @@ function MessageBubble({
   // Only a reply the server saved as having used a document gets clickable
   // "(page N)" citations — see src/lib/citations.js.
   const { docContext: savedContext, toolCalls: savedCalls } = message;
+  const canCite = !isUser && !!onOpenCitation;
   const citeDoc = useMemo(
-    () => (!isUser && onOpenCitation
-      ? citationDoc({ docContext: savedContext, toolCalls: savedCalls })
-      : null),
-    [isUser, onOpenCitation, savedContext, savedCalls],
+    () => (canCite ? citationDoc({ docContext: savedContext, toolCalls: savedCalls }) : null),
+    [canCite, savedContext, savedCalls],
   );
   return (
     <div className={`flex gap-3 ${isUser ? "flex-row-reverse" : ""}`}>
@@ -703,17 +702,28 @@ function MessageStatsDisclosure({ stats, theme, darkMode }) {
 
 // Memoize the markdown component overrides — prevents react-markdown
 // from rebuilding the renderer tree on every streaming token.
+const PLAIN_PLUGINS = [remarkGfm];
+const CITING_PLUGINS = [remarkGfm, remarkCitations];
+
 function AssistantMarkdown({ content, darkMode, citeDoc = null, onOpenCitation }) {
+  // The renderer set below must stay the same object across renders — a new
+  // one remounts the whole reply, on every streaming token. So it depends on
+  // the cited document's id and name only; the click handler, which the
+  // parent may recreate each render, is read through a ref.
+  const citeDocId = citeDoc?.docId;
+  const citeDocName = citeDoc?.docName;
+  const openCitationRef = useRef(onOpenCitation);
+  useEffect(() => { openCitationRef.current = onOpenCitation; }, [onOpenCitation]);
   const components = useMemo(
     () => ({
       p: ({ children }) => (
         <p className="my-1 text-sm leading-relaxed break-words">{children}</p>
       ),
-      a: ({ children, href, "data-cite-page": citePage }) => citePage && citeDoc ? (
+      a: ({ children, href, "data-cite-page": citePage }) => citePage != null && citeDocId ? (
         <button
           type="button"
-          onClick={() => onOpenCitation(citeDoc.docId, Number(citePage), citeDoc.docName)}
-          aria-label={`Open ${citeDoc.docName || "the document"} at page ${citePage}`}
+          onClick={() => openCitationRef.current?.(citeDocId, Number(citePage), citeDocName)}
+          aria-label={`Open ${citeDocName || "the document"} at page ${citePage}`}
           title={`Open page ${citePage}`}
           className="text-blue-500 underline decoration-dotted hover:decoration-solid"
         >
@@ -787,13 +797,13 @@ function AssistantMarkdown({ content, darkMode, citeDoc = null, onOpenCitation }
         <td className="border border-slate-500/40 px-2 py-1">{children}</td>
       ),
     }),
-    [darkMode, citeDoc, onOpenCitation],
+    [darkMode, citeDocId, citeDocName],
   );
 
   return (
     <div className="text-sm leading-relaxed">
       <ReactMarkdown
-        remarkPlugins={citeDoc ? [remarkGfm, remarkCitations] : [remarkGfm]}
+        remarkPlugins={citeDocId ? CITING_PLUGINS : PLAIN_PLUGINS}
         components={components}
       >
         {content}

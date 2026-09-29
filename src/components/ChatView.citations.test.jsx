@@ -73,4 +73,22 @@ describe('ChatView — page citations', () => {
         render(<ChatView {...baseProps({ messages: [q, reply('See (page 4).', prefetch)] })} />);
         expect(screen.queryByRole('button', { name: /at page/ })).toBeNull();
     });
+
+    it('never links page 0, or a hand-written #page link', () => {
+        renderReply(reply('Not page 0, nor [page 4](#page-4).', prefetch));
+        expect(screen.queryByRole('button', { name: /at page/ })).toBeNull();
+        expect(screen.queryByRole('link', { name: 'page 0' })).toBeNull(); // plain text
+    });
+
+    it('keeps the rendered reply (no remount) when the handler is a new function each render', () => {
+        const message = reply('The method is on (page 4).', prefetch);
+        const { rerender } = render(<ChatView {...baseProps({ messages: [q, message], onOpenCitation: vi.fn() })} />);
+        const before = screen.getByRole('button', { name: 'Open Thesis.pdf at page 4' });
+        const onOpen = vi.fn();
+        rerender(<ChatView {...baseProps({ messages: [q, message], onOpenCitation: onOpen })} />);
+        const after = screen.getByRole('button', { name: 'Open Thesis.pdf at page 4' });
+        expect(after).toBe(before);
+        fireEvent.click(after);
+        expect(onOpen).toHaveBeenCalledWith(DOC, 4, 'Thesis.pdf'); // the latest handler
+    });
 });

@@ -26,6 +26,7 @@ import { getDocument } from 'pdfjs-dist';
 import { forgetDocHash } from '../utils/docHash';
 import { apiFetch } from '../utils/apiFetch';
 import { fetchDocFile } from '../lib/serverDocFile';
+import { saveReadingProgress } from './usePersistedState';
 
 // Library → Open (App.jsx openServerDoc): fetch the stored bytes as a File,
 // then open it through processFile exactly as a picked file — so it is saved
@@ -87,5 +88,29 @@ describe('opening a server document', () => {
         expect(forgetDocHash).not.toHaveBeenCalled();
         await act(async () => { finishSave(true); await opening; });
         expect(forgetDocHash).toHaveBeenCalledWith('same.txt');
+    });
+
+    it('a page set right after opening (a citation) keeps the saved sentence from taking over', async () => {
+        // Saved position: page 2, sentence 1. The citation then goes to page 3.
+        saveReadingProgress('cited.txt', 2, 1);
+        const text = Array.from({ length: 60 }, (_, i) => `Sentence number ${i + 1}.`).join(' ');
+        const { result } = renderHook(() => usePdfEngine({ scale: 1, setStatus: vi.fn(), setToastMessage: vi.fn() }));
+        await act(async () => { await result.current.processFile(new File([text], 'cited.txt', { type: 'text/plain' })); });
+        expect(result.current.currentPage).toBe(2);
+        act(() => { result.current.setCurrentPage(3); result.current.setCurrentSentenceIndex(-1); });
+
+        await act(async () => { await new Promise((r) => setTimeout(r, 700)); });
+        expect(result.current.currentPage).toBe(3);
+        expect(result.current.currentSentenceIndex).toBe(-1);
+    });
+
+    it('with no page change after opening, the saved sentence is still restored', async () => {
+        saveReadingProgress('resume.txt', 2, 1);
+        const text = Array.from({ length: 60 }, (_, i) => `Sentence number ${i + 1}.`).join(' ');
+        const { result } = renderHook(() => usePdfEngine({ scale: 1, setStatus: vi.fn(), setToastMessage: vi.fn() }));
+        await act(async () => { await result.current.processFile(new File([text], 'resume.txt', { type: 'text/plain' })); });
+        await act(async () => { await new Promise((r) => setTimeout(r, 700)); });
+        expect(result.current.currentPage).toBe(2);
+        expect(result.current.currentSentenceIndex).toBe(1);
     });
 });

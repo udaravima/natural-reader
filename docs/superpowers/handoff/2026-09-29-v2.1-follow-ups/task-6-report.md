@@ -52,3 +52,26 @@ BASE b56d571.
 - The "already open" check trusts `currentDocId`. The ledger notes that it can be stale when different bytes are opened under the same name (pre-existing, from Task 5's re-review).
 - `applySavedProgress` restores the saved sentence index 500 ms after opening. On a document with saved progress, that index may belong to another page than the cited one. It only moves the highlight/playback position; it doesn't change the page.
 - A citation of a page beyond the document is clamped to its last page.
+
+---
+
+## Fix round 1 — FIX_BASE 8cacf09 (Task 6 head was 4018753; Task 7 commits sit between, untouched by this fix)
+
+- **Important: every streaming token remounted every reply's markdown.** `AssistantMarkdown`'s `components` now depends only on `[darkMode, citeDocId, citeDocName]`. The click handler is read through `openCitationRef`, which a `useEffect` updates.
+  - `MessageBubble`'s `citeDoc` memo depends on `canCite` (a boolean), not the handler's identity.
+  - The plugin arrays are module constants.
+  - So an App handler that is new on every render no longer rebuilds the renderer.
+  - Test: rerender ChatView with a new `onOpenCitation`. The same button DOM node survives, and a click calls the latest handler. It was red before the fix.
+- **Minor: "page 0" rendered as a new-tab link.** `splitText` skips pages below 1 and leaves them as text, and the `a` renderer checks `citePage != null`. Test: no button for "page 0" and no link named "page 0"; a hand-written `[page 4](#page-4)` gives no button.
+- **Minor: the saved reading position took over the sentence.** `applySavedProgress`'s 500 ms timer now restores the saved sentence only if the reader is still on the saved page (`prevPageRef.current === savedProgress.page`). Two tests in `usePdfEngine.openServerDoc.test.js`:
+  - a page set right after opening keeps sentence -1 (red before the fix);
+  - without a page change, the saved sentence is still restored.
+- **Minor: a citation click stops a streaming reply.** This is documented in USER_GUIDE. I checked that leaving chat calls `chatStopStream()` (App.jsx:333-336).
+- **Minor: USER_GUIDE sentence placement.** The "Only one reply…" sentence is back after "Still generating…".
+- **Minor: test gaps.** Added a 409 test at the `openCitation` level, plus the hand-written `#page` link case above.
+- **Not changed:** "page N" in a reply that used both web search and the document always opens the document. This matches the brief and is noted for the walk.
+
+Covering runs:
+- `vitest run src/components/ChatView.citations.test.jsx src/lib/openDoc.test.js src/hooks/` all pass.
+- Full frontend: 385 passed.
+- eslint: 1 error (baseline).

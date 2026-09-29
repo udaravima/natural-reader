@@ -74,6 +74,13 @@ describe('openCitation', () => {
         expect(d.goToPage).not.toHaveBeenCalled();
     });
 
+    it('a 409 (no stored bytes): the server message as a notice, no navigation', async () => {
+        const d = deps({ fetchDocFile: vi.fn(async () => { throw new Error('Upload the file again first.'); }) });
+        await openCitation(d, { docId: DOC, page: 4, docName: 'T.pdf', openDocId: null, numPages: 0 });
+        expect(d.showToast).toHaveBeenCalledWith('Could not open "T.pdf": Upload the file again first.', 5000);
+        expect(d.goToPage).not.toHaveBeenCalled();
+    });
+
     it('a citation with no saved name still opens, under a placeholder name', async () => {
         const d = deps();
         await openCitation(d, { docId: DOC, page: 2, docName: undefined, openDocId: null, numPages: 0 });
