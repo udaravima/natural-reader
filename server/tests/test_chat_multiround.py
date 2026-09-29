@@ -46,16 +46,17 @@ def corpus(open_doc, monkeypatch):
 
     monkeypatch.setattr(sd_tool, "embed_one", fake_embed_one)
     monkeypatch.setattr(sd_tool, "search_chunks", fake_search_chunks)
-    monkeypatch.setattr(ws_tool, "web_search", _fake_web)
+    monkeypatch.setattr(ws_tool, "web_search", _fake_web())
     return runs
 
 
-WEB_QUERIES = []
-
-
-async def _fake_web(query, count):
-    WEB_QUERIES.append(query)
-    return {"query": query, "results": [{"title": "t", "url": "https://example.com", "summary": "s"}]}
+def _fake_web(sent=None):
+    """A stand-in SearXNG that records every query it is sent."""
+    async def fake(query, count):
+        if sent is not None:
+            sent.append(query)
+        return {"query": query, "results": [{"title": "t", "url": "https://example.com", "summary": "s"}]}
+    return fake
 
 
 def _tool_results(router_call):
@@ -175,7 +176,7 @@ PASSAGE = "The committee approved the budget for the new hospital wing in March 
     ("x" * 301, True),
 ])
 async def test_web_search_refuses_document_text_and_allows_the_topic(query, refused, monkeypatch):
-    monkeypatch.setattr(ws_tool, "web_search", _fake_web)
+    monkeypatch.setattr(ws_tool, "web_search", _fake_web())
     ctx = ToolContext("u", DOC)
     ctx.seen_text.append(PASSAGE)
     result = await ws_tool.TOOL.execute({"query": query}, ctx)
@@ -198,10 +199,10 @@ async def test_every_kind_of_document_text_is_guarded(conn, open_doc, monkeypatc
     async def fake_pins(session_id, exclude):
         return [{"fileName": "Thesis.pdf", "kind": "page", "page": 3, "text": pinned}], []
 
-    WEB_QUERIES.clear()
+    sent = []
     monkeypatch.setattr(ctx_mod, "prefetch", fake_prefetch)
     monkeypatch.setattr(orchestrator.store, "load_turn_context", fake_pins)
-    monkeypatch.setattr(ws_tool, "web_search", _fake_web)
+    monkeypatch.setattr(ws_tool, "web_search", _fake_web(sent))
     router = FakeRouter(steps=[
         _call("c1", "committee approved the budget for the new hospital wing in March", "web_search"),
         _call("c2", "quarterly revenue of the northern division fell by twelve percent", "web_search"),
@@ -210,7 +211,7 @@ async def test_every_kind_of_document_text_is_guarded(conn, open_doc, monkeypatc
     await _run(conn, router, text="q")
     results = _tool_results(router.calls[3])
     assert "error" in results[0] and "error" in results[1] and "error" not in results[2]
-    assert WEB_QUERIES == ["hospital wing budget"]
+    assert sent == ["hospital wing budget"]
 
 
 async def test_passages_from_an_earlier_round_are_guarded(conn, corpus):
@@ -221,3 +222,73 @@ async def test_passages_from_an_earlier_round_are_guarded(conn, corpus):
     run = await tools.run(ToolCall("c2", "web_search", {
         "query": "MIMIC-IV was collected at Beth Israel Deaconess Medical Center"}), offered)
     assert "not text from the document" in run.result["error"]
+
+
+# ---- Task D review fix round 1 ----
+
+CJK_PASSAGE = "委员会在三月经过长时间辩论后批准了新医院大楼的预算。"
+
+
+@pytest.mark.parametrize("query,refused", [
+    ("委员会在三月经过长时间辩论后批准了新医院大楼的预算", True),       # copied: no spaces to count words by
+    ("长时间辩论后批准了新医院大楼", True),                              # 14 characters of it
+    ("新医院大楼 预算", False),                                           # the topic
+    ("ความเห็นของคณะกรรมการเกี่ยวกับงบประมาณโรงพยาบาลแห่งใหม่", True),  # Thai, copied
+])
+async def test_the_guard_works_for_scripts_written_without_spaces(query, refused, monkeypatch):
+    """Review I1: \\w+ reads a whole line of Chinese or Thai as one word."""
+    monkeypatch.setattr(ws_tool, "web_search", _fake_web())
+    ctx = ToolContext("u", DOC)
+    ctx.seen_text.extend([CJK_PASSAGE, "ความเห็นของคณะกรรมการเกี่ยวกับงบประมาณโรงพยาบาลแห่งใหม่ถูกอนุมัติแล้ว"])
+    result = await ws_tool.TOOL.execute({"query": query}, ctx)
+    assert ("error" in result) == refused
+
+
+async def test_quotes_in_the_models_earlier_answers_are_guarded(conn, open_doc, monkeypatch):
+    """Review I2: the model's own earlier answers in this chat often quote the
+    document; their text is document text too. The user's own words are not."""
+    from server.chat.store import StoredMessage
+    answer = "The report says: the quarterly revenue of the northern division fell by twelve percent."
+    asked = "Please search the web for the latest quarterly revenue report news from the northern division"
+
+    async def fake_context(session_id, exclude):
+        return [], [StoredMessage("m1", "user", asked, ()), StoredMessage("m2", "assistant", answer, ())]
+
+    sent = []
+    monkeypatch.setattr(orchestrator.store, "load_turn_context", fake_context)
+    monkeypatch.setattr(ws_tool, "web_search", _fake_web(sent))
+    router = FakeRouter(steps=[
+        _call("c1", "quarterly revenue of the northern division fell by twelve percent", "web_search"),
+        _call("c2", "latest quarterly revenue report news from the northern division", "web_search"),
+        reply("Done.")])
+    await _run(conn, router, text="q")
+    first, second = _tool_results(router.calls[2])
+    assert "error" in first and "error" not in second
+    assert sent == ["latest quarterly revenue report news from the northern division"]
+
+
+async def test_a_result_too_big_for_the_budget_is_not_run_again(conn, corpus, monkeypatch):
+    """Review M2: it would not fit the second time either."""
+    monkeypatch.setitem(CORPUS, "long", [{"id": 31, "page": 5, "chunk_type": "page", "score": 0.9,
+                                          "text": "x" * 900}])
+    router = FakeRouter(steps=[_call("c1", "long"), _call("c2", "long"), reply("Done.")])
+    await _run(conn, router, cfg=ChatConfig(tool_result_budget_chars=600), text="q")
+    assert corpus == ["long"]
+    assert _tool_results(router.calls[2]) == [{"message": TurnTools.BUDGET_USED}] * 2
+
+
+async def test_a_call_that_failed_can_be_retried(conn, corpus, monkeypatch):
+    """Review M3: "Already searched: see the results above" is wrong when the
+    result above is an error."""
+    calls = []
+
+    async def flaky(query, count):
+        calls.append(query)
+        if len(calls) == 1:
+            raise RuntimeError("searxng down")
+        return {"query": query, "results": []}
+
+    monkeypatch.setattr(ws_tool, "web_search", flaky)
+    router = FakeRouter(steps=[_call("c1", "news", "web_search"), _call("c2", "news", "web_search"), reply("Done.")])
+    await _run(conn, router, text="q")
+    assert calls == ["news", "news"]

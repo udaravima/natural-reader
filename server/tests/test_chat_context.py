@@ -59,8 +59,8 @@ def test_config_defaults_and_bad_values(caplog):
     assert load_chat_config({}) == ChatConfig()
     with caplog.at_level(logging.WARNING):
         cfg = load_chat_config({"CHAT_PREFETCH_MIN_SCORE": "2", "CHAT_PREFETCH_K": "x",
-                                "CHAT_MAX_TOOL_ROUNDS": "3"})
-    assert (cfg.prefetch_min_score, cfg.prefetch_k, cfg.max_tool_rounds) == (0.6, 4, 3)
+                                "CHAT_MAX_TOOL_ROUNDS": "5"})
+    assert (cfg.prefetch_min_score, cfg.prefetch_k, cfg.max_tool_rounds) == (0.6, 4, 5)
     assert "CHAT_PREFETCH_MIN_SCORE" in caplog.text and "CHAT_PREFETCH_K" in caplog.text
 
 

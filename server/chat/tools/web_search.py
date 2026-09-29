@@ -12,16 +12,28 @@ from ...services.web_search import RESULT_COUNT, web_search
 # Review focus 4: document text never leaves the server through a web query.
 QUERY_MAX_CHARS = 300
 COPIED_RUN_WORDS = 8     # a run this long shared with document text is a copy, not a topic
+# Scripts written without spaces (Chinese, Japanese kana, Thai, Lao, Myanmar,
+# Khmer) have no words to count: there, a shared run of this many characters.
+COPIED_RUN_CHARS = 12
+_NO_SPACES = ("\u0e00-\u0eff\u1000-\u109f\u1780-\u17ff\u3040-\u30ff"
+              "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff")
 COPIED = ("That query copies text from the document. Search the web with the topic in a few "
           "words, not text from the document.")
 TOO_LONG = (f"That query is over {QUERY_MAX_CHARS} characters. Search the web with the topic in a "
             "few words, not text from the document.")
-_WORD = re.compile(r"\w+")
+_WORD = re.compile(rf"[^\W{_NO_SPACES}]+")
+_UNSPACED = re.compile(rf"[{_NO_SPACES}]+")
 
 
-def _runs(text: str) -> set[tuple[str, ...]]:
-    words = _WORD.findall(text.lower())
-    return {tuple(words[i:i + COPIED_RUN_WORDS]) for i in range(len(words) - COPIED_RUN_WORDS + 1)}
+def _runs(text: str) -> set:
+    """Every run of COPIED_RUN_WORDS words, and of COPIED_RUN_CHARS characters
+    of unspaced script, case and punctuation ignored."""
+    text = text.lower()
+    words = _WORD.findall(text)
+    runs: set = {tuple(words[i:i + COPIED_RUN_WORDS]) for i in range(len(words) - COPIED_RUN_WORDS + 1)}
+    chars = "".join(_UNSPACED.findall(text))
+    runs |= {chars[i:i + COPIED_RUN_CHARS] for i in range(len(chars) - COPIED_RUN_CHARS + 1)}
+    return runs
 
 
 def copies_document(query: str, texts: list[str]) -> bool:

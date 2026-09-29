@@ -54,3 +54,28 @@ Existing tests that meant "a cap of one round" now pin `ChatConfig(max_tool_roun
 - backend: 707 passed;
 - vitest: exit 0;
 - eslint: clean.
+
+## Fix round 1 — FIX_BASE a03cfaa
+
+- **I1: the guard did nothing for scripts without spaces.**
+  - `_runs` now builds word runs from `[^\W<unspaced>]+` words, and 12-character runs from the text of scripts written without spaces: Thai, Lao, Myanmar, Khmer, kana, and CJK ideographs. Hangul uses spaces and stays with words.
+  - Tests:
+    - Chinese copied whole, and 14 characters of it: refused;
+    - a Chinese topic: allowed;
+    - Thai copied: refused.
+
+    They failed before the fix.
+- **I2: quotes in earlier answers.** The orchestrator adds the content of every assistant message in `history` to `seen_text`. User messages are left out, since those are the user's own words to search with. End-to-end test: a quote from the earlier answer is refused, and a query overlapping the user's own earlier message is allowed.
+- **I3: README.** It now says up to 3 rounds, the budget and the guard.
+- **M1.** The `TurnTools` docstring says the notes (its own, and the last round's) aren't counted.
+- **M2.** A result that didn't fit goes into `_too_big` and isn't run again. Test: one search run for two identical calls, both refused.
+- **M3.** Only successful calls count as done, so a failed call can be retried. Test: a `web_search` failure, then the same call runs again.
+- **M4 (equivalent arguments):** left as is.
+- **M5.** CHAT_WITH_PDF names the guard's limits: the 12-character rule, the earlier answers, and that it catches copied runs, not meaning, so short fragments pass.
+- **M6.** The config test parses `CHAT_MAX_TOOL_ROUNDS=5`.
+- **M7.** The shared list of web queries is gone; each test owns its recorder.
+- **Note on the last-round wording:** the brief's text predates the Task A ruling; the note in code is the current one.
+
+Suites:
+- backend: 724 passed. The only failures are Task E's red tests, which are not in this commit.
+- vitest: exit 0.

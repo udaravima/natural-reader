@@ -238,6 +238,9 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         # Document text the model already has: the web search guard's reference.
         tool_ctx.seen_text.extend(built.shown_texts)
         tool_ctx.seen_text.extend(str(p.get("text") or "") for p in pins if isinstance(p, dict))
+        # The model's earlier answers in this chat often quote the document.
+        # (The user's own messages are theirs to search with.)
+        tool_ctx.seen_text.extend(m.content for m in history if m.role == "assistant")
         turn_tools = TurnTools(tool_ctx)
         if built.notes:
             state.doc_context = {"notes": built.notes}

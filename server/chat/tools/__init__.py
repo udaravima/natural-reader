@@ -96,15 +96,18 @@ def result_text(result: dict[str, Any]) -> str:
 
 class TurnTools:
     """Runs one turn's tool calls with its guard-rails (v2.3 Task D): a call
-    identical to an earlier one isn't run again, and the results the turn adds
-    to the prompt stay within CHAT_TOOL_RESULT_BUDGET_CHARS."""
+    identical to an earlier successful one isn't run again, and the tool
+    payloads the turn adds to the prompt stay within
+    CHAT_TOOL_RESULT_BUDGET_CHARS (the short notes, this class's and the last
+    round's, are not counted)."""
     REPEATED = "Already searched: see the results above."
     BUDGET_USED = "Search budget for this answer used up: answer from what you have."
 
     def __init__(self, ctx: ToolContext) -> None:
         self.ctx = ctx
         self.used = 0
-        self._done: set[tuple[str, str]] = set()
+        self._done: set[tuple[str, str]] = set()       # ran and succeeded
+        self._too_big: set[tuple[str, str]] = set()    # ran, didn't fit: won't fit later either
 
     @staticmethod
     def _note(call: ToolCall, note: str) -> ToolRun:
@@ -118,7 +121,7 @@ class TurnTools:
         if key in self._done:
             return self._note(call, self.REPEATED)
         budget = self.ctx.cfg.tool_result_budget_chars
-        if self.used >= budget:
+        if self.used >= budget or key in self._too_big:
             return self._note(call, self.BUDGET_USED)
         shown, seen = set(self.ctx.shown), len(self.ctx.seen_text)
         run = await run_tool(call, self.ctx, offered)
@@ -127,7 +130,9 @@ class TurnTools:
             # Discarded unseen: nothing it returned counts as shown.
             self.ctx.shown.intersection_update(shown)
             del self.ctx.seen_text[seen:]
+            self._too_big.add(key)
             return self._note(call, self.BUDGET_USED)
         self.used += size
-        self._done.add(key)
+        if run.ok:   # a failed call may be retried: "already searched" would be wrong
+            self._done.add(key)
         return run
