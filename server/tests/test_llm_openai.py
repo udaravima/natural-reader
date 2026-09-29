@@ -205,3 +205,78 @@ async def test_models_that_are_not_json_is_a_provider_error_and_the_chat_still_s
     assert "<html>" not in ei.value.safe_message
     chunks = await _collect(provider.stream_chat("vendor/model", HI, [], CallSettings()))
     assert TextDelta("Hi") in chunks and chunks[-1] == Finish("stop")
+
+
+# Task 10: a provider's HTTP status says what happened, in words a person can
+# act on. OpenRouter's :free models answer 429 with
+# {"error": {"message": "Provider returned error", "metadata": {"raw": "..."}}}.
+RATE_LIMITED = {"error": {"message": "Provider returned error", "code": 429, "metadata": {
+    "raw": "google/gemma-4-26b-a4b-it:free is temporarily rate-limited upstream. Please retry shortly.",
+    "provider_name": "Example"}}}
+
+
+async def _stream_error(response):
+    up = _up(lambda: response)
+    with pytest.raises(ProviderError) as ei:
+        await _collect(OpenAICompatProvider(CFG, up.client()).stream_chat(
+            "vendor/model", HI, [], CallSettings()))
+    return ei.value
+
+
+async def test_429_says_busy_or_rate_limited_and_quotes_the_provider_detail():
+    err = await _stream_error(httpx.Response(429, json=RATE_LIMITED))
+    assert err.status == 429
+    assert err.safe_message.startswith(
+        "This model is busy or rate-limited at the provider. Try again in a moment, or pick another model.")
+    assert "temporarily rate-limited upstream" in err.safe_message
+    assert "Provider returned error" not in err.safe_message
+    assert err.explained
+
+
+async def test_429_without_metadata_is_just_the_plain_message():
+    err = await _stream_error(httpx.Response(429, json={"error": {"message": "Rate limit exceeded"}}))
+    assert err.safe_message == (
+        "This model is busy or rate-limited at the provider. Try again in a moment, or pick another model.")
+
+
+@pytest.mark.parametrize("status", [401, 403])
+async def test_401_and_403_say_the_credentials_were_rejected(status):
+    err = await _stream_error(httpx.Response(status, json={"error": {"message": "No auth credentials found"}}))
+    assert err.safe_message == "The provider rejected this server's credentials. An admin needs to check the API key."
+
+
+async def test_402_says_out_of_credit_and_is_not_retried_as_a_feature_rejection():
+    up = _up(lambda: httpx.Response(402, json={"error": {"message": "Insufficient credits"}}))
+    with pytest.raises(ProviderError) as ei:
+        await _collect(OpenAICompatProvider(CFG, up.client()).stream_chat(
+            "vendor/model", HI, [TOOL], CallSettings(think="high")))
+    assert ei.value.safe_message == "The provider account is out of credit."
+    assert len(up.bodies("/api/v1/chat/completions")) == 1
+
+
+async def test_other_statuses_keep_the_provider_text():
+    err = await _stream_error(httpx.Response(500, json={"error": {"message": "upstream exploded"}}))
+    assert err.safe_message == "upstream exploded"
+    assert not err.explained
+
+
+async def test_a_key_inside_metadata_raw_is_redacted():
+    body = {"error": {"message": "Provider returned error", "metadata": {
+        "raw": "rate-limited; your key sk-or-v1-0123456789abcdef0123456789abcdef was throttled"}}}
+    err = await _stream_error(httpx.Response(429, json=body))
+    assert "sk-or-v1-0123456789abcdef" not in err.safe_message
+    assert "rate-limited" in err.safe_message
+
+
+async def test_a_long_metadata_raw_is_trimmed():
+    body = {"error": {"message": "x", "metadata": {"raw": "busy " * 200}}}
+    err = await _stream_error(httpx.Response(429, json=body))
+    assert len(err.safe_message) < 400
+
+
+async def test_a_429_mid_stream_error_payload_is_explained_too():
+    up = _up(lambda: sse(_delta(content="a"), RATE_LIMITED))
+    with pytest.raises(ProviderError) as ei:
+        await _collect(OpenAICompatProvider(CFG, up.client()).stream_chat(
+            "vendor/model", HI, [], CallSettings()))
+    assert ei.value.safe_message.startswith("This model is busy or rate-limited")

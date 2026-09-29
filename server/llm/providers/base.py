@@ -82,6 +82,49 @@ def safe_error_message(raw: bytes | str) -> str:
     return _redact_secrets(text.strip())[:300]
 
 
+# What a status means for the person chatting (Task 10). OpenRouter and
+# OpenAI-compatible servers put the reason in these statuses; the provider's
+# own text ("Provider returned error") rarely says what to do.
+RATE_LIMITED_MESSAGE = ("This model is busy or rate-limited at the provider. "
+                        "Try again in a moment, or pick another model.")
+_EXPLAINED = {
+    401: "The provider rejected this server's credentials. An admin needs to check the API key.",
+    403: "The provider rejected this server's credentials. An admin needs to check the API key.",
+    402: "The provider account is out of credit.",
+    429: RATE_LIMITED_MESSAGE,
+}
+RAW_DETAIL_CAP = 200
+
+
+def _raw_detail(raw: bytes | str) -> str | None:
+    """OpenRouter's `error.metadata.raw` — the upstream's own words, e.g.
+    "temporarily rate-limited upstream" — redacted and trimmed; None if absent."""
+    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return None
+    err = body.get("error") if isinstance(body, dict) else None
+    meta = err.get("metadata") if isinstance(err, dict) else None
+    detail = meta.get("raw") if isinstance(meta, dict) else None
+    if not isinstance(detail, str) or not detail.strip():
+        return None
+    detail = _redact_secrets(" ".join(detail.split()))
+    return detail if len(detail) <= RAW_DETAIL_CAP else detail[:RAW_DETAIL_CAP].rstrip() + "…"
+
+
+def provider_error(status: int, raw: bytes | str) -> ProviderError:
+    """The ProviderError for an error answer: a plain sentence for a status
+    that says what happened (429, 401/403, 402 — plus the provider's detail
+    on a 429), else the provider's own text. Always redacted."""
+    plain = _EXPLAINED.get(status)
+    if plain is None:
+        return ProviderError(status, safe_error_message(raw))
+    detail = _raw_detail(raw) if status == 429 else None
+    return ProviderError(status, f"{plain} (Provider said: {detail})" if detail else plain,
+                         explained=True)
+
+
 NOT_JSON_MESSAGE = "The provider sent a response that isn't JSON."
 
 
@@ -164,9 +207,8 @@ async def open_stream(client: httpx.AsyncClient, request: httpx.Request) -> http
     if resp.status_code >= 400:
         raw = await resp.aread()
         await resp.aclose()
-        message = safe_error_message(raw)
-        logger.warning("Provider answered HTTP %s: %s", resp.status_code, message)
-        raise ProviderError(resp.status_code, message)
+        logger.warning("Provider answered HTTP %s: %s", resp.status_code, safe_error_message(raw))
+        raise provider_error(resp.status_code, raw)
     return resp
 
 
@@ -184,8 +226,9 @@ async def iter_lines(resp: httpx.Response) -> AsyncIterator[str]:
 
 def is_feature_rejection(err: ProviderError) -> bool:
     """A 4xx that may mean "this model can't take that feature". Auth, missing
-    model and rate limits are never feature rejections."""
-    return 400 <= err.status < 500 and err.status not in (401, 403, 404, 408, 429)
+    model, rate limits and an account out of credit are never feature
+    rejections."""
+    return 400 <= err.status < 500 and err.status not in (401, 402, 403, 404, 408, 429)
 
 
 def settle_dropped(features: FeatureMemory, model: str, provider: str, dropped: list[str]) -> list[FeatureDropped]:

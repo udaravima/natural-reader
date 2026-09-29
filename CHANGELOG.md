@@ -22,6 +22,17 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **A provider refusal says what happened.** A free OpenRouter model that
+  was rate-limited used to show "The model provider returned an error:
+  Provider returned error". Now a `429` says the model is busy or
+  rate-limited and to try again or pick another model (with the provider's
+  own detail when it gives one), a rejected key (`401`/`403`) says an admin
+  needs to check the API key, and `402` says the account is out of credit.
+  A refusal before any reply still isn't counted against the daily budget.
+  OpenRouter is now verified end to end (paid Gemma 4 and Mistral Small
+  3.2); `.env.example` and `docs/DEPLOYMENT.md` say the key goes in
+  `INFERENCE_<NAME>_API_KEY` — a bare `OPENROUTER_API_KEY` is ignored.
+
 - **Small server fixes and stale docs.** A model id that names a provider
   but no model (`local:`) is refused as not allowed instead of being sent to
   Ollama as a model called "local:". The startup sweep for chat turns whose

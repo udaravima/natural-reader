@@ -402,6 +402,8 @@ def _provider_error(e: Exception) -> tuple[str, str]:
     if isinstance(e, ProviderUnavailable):
         return "provider_unavailable", ERROR_TEXT["provider_unavailable"]
     if isinstance(e, ProviderError):
+        if e.explained:   # already says what happened (429, 401/403, 402)
+            return "provider_error", e.safe_message
         return "provider_error", f"The model provider returned an error: {e.safe_message}"
     return "model_not_allowed", ERROR_TEXT["model_not_allowed"]
 

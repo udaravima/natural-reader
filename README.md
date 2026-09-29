@@ -375,7 +375,7 @@ Sharing, projects, conversion and who may call what: [docs/LIBRARY.md § API sur
 
 #### Model providers (same FastAPI server)
 
-Chat always runs on the server (`server/chat/`, `server/llm/`) against one or more configured **model providers** — native Ollama by default, plus any OpenAI-compatible server (vLLM, OpenRouter, LiteLLM) an admin adds in `.env`. The browser never talks to a provider directly; there is no "local mode" and no in-app screen for adding providers (`.env` + restart, see [.env.example](.env.example) and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
+Chat always runs on the server (`server/chat/`, `server/llm/`) against one or more configured **model providers** — native Ollama by default, plus any OpenAI-compatible server (vLLM, OpenRouter, LiteLLM) an admin adds in `.env`. OpenRouter has been run end to end (paid Gemma 4 and Mistral Small 3.2: chat, pins, tools, images, usage); vLLM and LiteLLM speak the same protocol but haven't been run. A refused request says what happened (rate-limited, key rejected, out of credit) — see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#configuring-providers). The browser never talks to a provider directly; there is no "local mode" and no in-app screen for adding providers (`.env` + restart, see [.env.example](.env.example) and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|

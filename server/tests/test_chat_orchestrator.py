@@ -177,6 +177,16 @@ async def test_provider_failure_saves_the_partial_reply(conn, exc, code):
         assert_fixture("error", events)
 
 
+async def test_an_explained_provider_error_is_shown_as_is(conn):
+    """Task 10: a mapped status (429/401/402) already says what happened, so
+    it isn't wrapped in "The model provider returned an error: ..."."""
+    msg = "This model is busy or rate-limited at the provider. Try again in a moment, or pick another model."
+    router = FakeRouter(steps=[([], ProviderError(429, msg, explained=True))])
+    events, claim = await _run(conn, router)
+    assert events[-1]["type"] == "error" and events[-1]["code"] == "provider_error"
+    assert events[-1]["message"] == msg
+
+
 async def test_budget_runs_out_between_steps(conn, monkeypatch):
     monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
     alice = await member(conn, "alice")

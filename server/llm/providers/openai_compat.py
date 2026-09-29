@@ -13,8 +13,8 @@ from ..types import (Capabilities, CallSettings, Chunk, Finish, Message,
                      ProviderError, ProviderUnavailable, ReasoningDelta, TextDelta, ToolCall,
                      ToolCallReady, ToolSpec, Usage)
 from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_feature_rejection,
-                   iter_lines, json_object, open_stream, parse_arguments, safe_error_message,
-                   settle_dropped)
+                   iter_lines, json_object, open_stream, parse_arguments, provider_error,
+                   safe_error_message, settle_dropped)
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class OpenAICompatProvider:
         except httpx.HTTPError as e:
             raise ProviderUnavailable(type(e).__name__) from e
         if resp.status_code != 200:
-            raise ProviderError(resp.status_code, safe_error_message(resp.content))
+            raise provider_error(resp.status_code, resp.content)
         data = json_object(resp).get("data")
         entries = {e["id"]: e for e in (data if isinstance(data, list) else [])
                    if isinstance(e, dict) and e.get("id")}
@@ -161,9 +161,10 @@ class OpenAICompatProvider:
                 except ValueError:
                     continue
                 if payload.get("error"):
-                    message = safe_error_message(json.dumps(payload))
-                    logger.warning("Provider stream error: %s", message)
-                    raise ProviderError(500, message)
+                    raw = json.dumps(payload)
+                    logger.warning("Provider stream error: %s", safe_error_message(raw))
+                    code = payload["error"].get("code") if isinstance(payload["error"], dict) else None
+                    raise provider_error(code if isinstance(code, int) and code >= 400 else 500, raw)
                 if payload.get("usage"):
                     u = payload["usage"]
                     usage = Usage(int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0))
