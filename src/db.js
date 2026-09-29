@@ -45,6 +45,11 @@ const workspaceKey = (ownerId) => `last:${ownerId}`;
 const LEGACY_PROGRESS_PREFIX = 'neural-pdf-progress-';
 export const readingProgressKey = (ownerId, fileName) => `neural-pdf-progress@${ownerId}/${fileName}`;
 
+// The chat composer's unsent text (useUserDraft); pre-release it was the
+// shared setting `neural-pdf-chatDraft`.
+const LEGACY_DRAFT_KEY = 'neural-pdf-chatDraft';
+export const chatDraftKey = (ownerId) => `neural-pdf-chatDraft@${ownerId}`;
+
 /** The signed-in user the per-browser stores are scoped to, or null. */
 export const getLibraryOwner = () => currentOwnerId;
 
@@ -170,8 +175,13 @@ const claimLegacyBrowserState = async (owner) => {
             if (localStorage.getItem(target) === null) localStorage.setItem(target, localStorage.getItem(key));
             localStorage.removeItem(key);
         }
+        const draft = localStorage.getItem(LEGACY_DRAFT_KEY);
+        if (draft !== null) {
+            if (localStorage.getItem(chatDraftKey(owner)) === null) localStorage.setItem(chatDraftKey(owner), draft);
+            localStorage.removeItem(LEGACY_DRAFT_KEY);
+        }
     } catch (e) {
-        console.error('Failed to claim legacy reading positions:', e);
+        console.error('Failed to claim legacy reading positions and draft:', e);
     }
 };
 

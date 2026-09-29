@@ -22,6 +22,7 @@ import { resolveForModel, patchForModel, migrateLegacyThinking } from './hooks/i
 import { apiFetch } from './utils/apiFetch';
 import { getOrComputeDocHash } from './utils/docHash';
 import { useWorkspaceRestore } from './hooks/useWorkspaceRestore';
+import { useUserDraft } from './hooks/useUserDraft';
 import { ownedBy, visibleTo } from './lib/visibleTo';
 import { getBook } from './db';
 import { saveWorkspaceState, clearWorkspaceState, getWorkspaceState } from './db';
@@ -93,7 +94,8 @@ export default function App() {
   // which unmounts ChatView — doesn't discard a half-typed message. The text
   // draft is persisted (survives a reload too); pending image attachments are
   // in-memory only, to avoid packing base64 blobs into localStorage.
-  const [chatDraft, setChatDraft] = usePersistedState('chatDraft', '');
+  // Per signed-in user: the next user on this browser never sees it.
+  const [chatDraft, setChatDraft] = useUserDraft(signedInUserId);
   const [chatPendingAttachments, setChatPendingAttachments] = useState([]);
   // Per-model Ollama inference settings (context window, keep-alive, thinking
   // level, max reply tokens). Keyed by model name because a 9.7B and a 3B want
