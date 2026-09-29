@@ -36,9 +36,15 @@ class _WebSearch:
         return bool(web_search_service.SEARXNG_URL)
 
     def guidance(self, ctx) -> str:
-        return ("search the internet for current or outside information (news, prices, facts the "
-                "document doesn't contain). Search by topic, and never copy text from the "
-                "document into a query.")
+        line = ("search the internet for current or outside information (news, prices, facts you "
+                "don't know). Search by topic.")
+        if ctx is not None and ctx.doc is not None and ctx.doc.state == "indexed":
+            # The walk: a small model sent "Zephyr station" (a name from the
+            # open document) to the web. No tool is named here: the document
+            # search may not be offered.
+            line += (" Never copy text from the document into a query. For names or terms you "
+                     "don't recognise, search the document first: they are probably from it.")
+        return line
 
     async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
         query = str(args.get("query") or "").strip()

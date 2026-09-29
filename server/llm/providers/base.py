@@ -241,6 +241,30 @@ async def iter_lines(resp: httpx.Response) -> AsyncIterator[str]:
         raise ProviderUnavailable(type(e).__name__) from e
 
 
+# What strict chat templates say when handed a system role (vLLM's Gemma-2:
+# "System role not supported"; Mistral v0.1/0.2: "Conversation roles must
+# alternate user/assistant/user/assistant/...").
+_SYSTEM_ROLE_REJECTED = re.compile(r"system role|roles must alternate", re.IGNORECASE)
+
+
+def rejects_system_role(err: ProviderError) -> bool:
+    return 400 <= err.status < 500 and bool(_SYSTEM_ROLE_REJECTED.search(err.safe_message))
+
+
+def fold_system(messages: list[Message]) -> list[Message]:
+    """The leading system message moved into the first user message, for a
+    model whose chat template has no system role (v2.3). The rules then open
+    that message; nothing else changes."""
+    if not messages or messages[0].role != "system":
+        return messages
+    system, rest = messages[0], list(messages[1:])
+    for i, m in enumerate(rest):
+        if m.role == "user":
+            rest[i] = replace(m, content=f"{system.content}\n\n{m.content}" if m.content else system.content)
+            return rest
+    return [Message("user", system.content), *rest]
+
+
 def is_feature_rejection(err: ProviderError) -> bool:
     """A 4xx that may mean "this model can't take that feature". Auth, missing
     model, rate limits and an account out of credit are never feature

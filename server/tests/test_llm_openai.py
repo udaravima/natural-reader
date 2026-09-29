@@ -309,3 +309,36 @@ async def test_a_403_without_a_message_shows_no_json_and_a_long_reason_is_trimme
     assert err.safe_message == "The provider refused this request."
     err = await _stream_error(httpx.Response(403, json={"error": {"message": "flagged " * 60}}))
     assert err.safe_message.endswith("…)")
+
+
+# v2.3 Task A review I5: a strict chat template (vLLM's Gemma-2, Mistral
+# v0.1/0.2) raises on any system role, and every prompt now has one. The
+# adapter folds the system message into the first user message and remembers.
+SYS = [Message("system", "RULES"), Message("user", "hi")]
+TEMPLATE_ERROR = {"error": {"message": "System role not supported", "type": "BadRequestError"}}
+
+
+async def test_a_rejected_system_role_is_folded_into_the_first_user_message_and_remembered():
+    up = _up(lambda: httpx.Response(400, json=TEMPLATE_ERROR),
+             lambda: sse(_delta(content="ok"), _finish("stop")),
+             lambda: sse(_delta(content="ok again"), _finish("stop")))
+    provider = OpenAICompatProvider(CFG, up.client())
+    first = await _collect(provider.stream_chat("vendor/model", SYS, [TOOL], CallSettings()))
+    assert FeatureDropped("system") in first
+    tried, folded = up.bodies("/api/v1/chat/completions")
+    assert tried["messages"][0]["role"] == "system"
+    assert [m["role"] for m in folded["messages"]] == ["user"]
+    assert folded["messages"][0]["content"] == "RULES\n\nhi"
+    assert "tools" in folded                                     # only the system role was dropped
+    # Remembered: the next request folds from the start, one request, no notice.
+    second = await _collect(provider.stream_chat("vendor/model", SYS, [], CallSettings()))
+    assert FeatureDropped("system") not in second
+    assert [m["role"] for m in up.bodies("/api/v1/chat/completions")[2]["messages"]] == ["user"]
+
+
+async def test_an_unrelated_400_does_not_fold_the_system_message():
+    up = _up(lambda: httpx.Response(400, json={"error": {"message": "max_tokens too large"}}))
+    with pytest.raises(ProviderError):
+        await _collect(OpenAICompatProvider(CFG, up.client()).stream_chat(
+            "vendor/model", SYS, [], CallSettings()))
+    assert all(b["messages"][0]["role"] == "system" for b in up.bodies("/api/v1/chat/completions"))

@@ -29,7 +29,10 @@ All notable changes to this project will be documented in this file.
   actually has. Text from the document is marked as quoted material, so
   instructions hidden in a PDF aren't obeyed. A small model is no longer told
   to call a tool it can't use on the last step of an answer (it used to reply
-  with the tool call written out as text).
+  with the tool call written out as text). Web search results are treated
+  as information, never as instructions. A model whose chat template has no
+  system role (e.g. Gemma 2 or Mistral 7B v0.1 served by vLLM) gets the
+  rules at the start of your message instead, remembered per model.
 
 - **A file opened from a workspace folder no longer borrows another
   document's index.** If "Your Library" held a different file with the same

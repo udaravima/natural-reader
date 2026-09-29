@@ -6,6 +6,8 @@ Prompt order is fixed for prefix-cache reuse: system rules + pins -> history
 time line belongs at the END; at the top it would change the prefix every turn
 and defeat the provider's reuse for the whole conversation. The system rules
 (server/chat/prompt.py; ruling R9 revised in v2.3) are stable within a turn.
+They name the open document, so opening another document mid-chat changes
+the prefix (one full re-read of the history by the provider), once.
 Document text only ever appears inside a delimited block (prompt.fence).
 
 The shape is also what strict chat templates accept (final review I3: vLLM's
@@ -32,7 +34,7 @@ from ..services.doc_search import ReadableDoc, search_chunks
 from ..services.embeddings import embed_one
 from . import store
 from .config import ChatConfig
-from .prompt import PASSAGES_TAG, PIN_TAG, fence, system_rules
+from .prompt import PASSAGES_TAG, PIN_TAG, display_name, fence, system_rules
 from .store import StoredMessage
 
 logger = logging.getLogger(__name__)
@@ -44,15 +46,16 @@ _MARKER = "[{kind} {name} from earlier; no longer attached]"
 def _pin_block(p: dict[str, Any]) -> str:
     """One pin: an excerpt the user chose, fenced as document text (the rules
     say what the tag means). `where` reads "page 4" or "selection, page 9"."""
-    kind = p.get("kind") or "page"
-    page = p.get("page")
+    # Pins are client-sent dicts: every field is untrusted (review I4).
+    kind = p.get("kind") if p.get("kind") in ("page", "selection") else ("page" if p.get("kind") is None else "excerpt")
+    page = p.get("page") if isinstance(p.get("page"), int) and not isinstance(p.get("page"), bool) else None
     if page is None:
-        where = kind
+        where = "excerpt" if kind == "page" and p.get("page") is not None else kind
     elif kind == "page":
         where = f"page {page}"
     else:
         where = f"{kind}, page {page}"
-    source = fence(str(p.get("fileName") or "a document")).replace('"', "'")
+    source = display_name(p.get("fileName") or "a document")
     return ("The user pinned this excerpt as primary context for their question:\n"
             f'<{PIN_TAG} source="{source}" where="{where}">\n{fence(p.get("text") or "")}\n</{PIN_TAG}>')
 
@@ -115,7 +118,7 @@ async def prefetch(doc: ReadableDoc | None, question: str, cfg: ChatConfig) -> P
 def _passages_block(name: str, passages: list[dict[str, Any]]) -> str:
     """The prefetched passages as data: fenced, labelled with their pages, and
     no instructions (the rules explain the tag)."""
-    source = fence(name).replace('"', "'")
+    source = display_name(name)
     lines = [f'<{PASSAGES_TAG} source="{source}">']
     for i, p in enumerate(passages, start=1):
         page = f" (page {p['page']})" if p["page"] is not None else ""

@@ -13,8 +13,8 @@ from ..types import (Capabilities, CallSettings, Chunk, Finish, Message,
                      ProviderError, ProviderUnavailable, ReasoningDelta, TextDelta, ToolCall,
                      ToolCallReady, ToolSpec, Usage)
 from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_feature_rejection,
-                   iter_lines, json_object, open_stream, parse_arguments, provider_error,
-                   safe_error_message, settle_dropped)
+                   fold_system, iter_lines, json_object, open_stream, parse_arguments, provider_error,
+                   rejects_system_role, safe_error_message, settle_dropped)
 
 logger = logging.getLogger(__name__)
 
@@ -100,15 +100,21 @@ class OpenAICompatProvider:
         if caps.thinking is not False and not self._features.rejected(model, "thinking"):
             effort = _EFFORT.get(settings.think)
         use_tools = bool(tools) and caps.tools is not False and not self._features.rejected(model, "tools")
+        fold = self._features.rejected(model, "system")
         dropped: list[str] = []
         while True:
-            body = self._body(model, messages, tools if use_tools else [], settings, effort)
+            body = self._body(model, fold_system(messages) if fold else messages,
+                              tools if use_tools else [], settings, effort)
             request = self._client.build_request("POST", f"{self.config.url}/chat/completions",
                                                  json=body, headers=auth_headers(self.config))
             try:
                 resp = await open_stream(self._client, request)
                 break
             except ProviderError as err:
+                if not fold and messages and messages[0].role == "system" and rejects_system_role(err):
+                    fold, feature = True, "system"   # a template with no system role
+                    dropped.append(feature)
+                    continue
                 if not is_feature_rejection(err):
                     raise
                 if effort is not None:

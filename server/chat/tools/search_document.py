@@ -43,14 +43,18 @@ class _SearchDocument:
     def available(self, ctx) -> bool:
         return ctx.doc is not None and ctx.doc.state == "indexed"
 
+    reads_documents = True   # brings the grounding and citation rules (server/chat/prompt.py)
+
     def guidance(self, ctx) -> str:
         # C1 spec §5 "steering is load-bearing": without "answer from them when
-        # they are enough", a model handed passages searches anyway.
-        return ("find passages in the open document by meaning. The user's question was already "
-                "searched before you answered: passages found for it are in their message inside "
-                "<document_passages>. Answer from those when they are enough. Search only for what "
-                "they don't cover, and with different words: names, terms or topics from the "
-                "question or from the passages.")
+        # they are enough", a model handed passages searches anyway. Worded for
+        # both cases (the rules are stable for the turn; the prefetch varies).
+        return ("find passages in the open document by meaning. If the user's message has a "
+                "<document_passages> block, those passages were found for their question: answer "
+                "from them when they are enough, and search only for what they don't cover, with "
+                "different words (names, terms or topics from the question or the passages). If it "
+                "has none, nothing matched yet: search before saying the document doesn't cover "
+                "the question.")
 
     async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
         if ctx.doc is None:

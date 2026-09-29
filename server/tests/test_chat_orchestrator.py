@@ -584,6 +584,24 @@ async def test_the_last_round_says_so_in_its_results_and_the_rules_never_change(
     assert "answer now" in orchestrator.LAST_ROUND_NOTE
 
 
+@pytest.mark.parametrize("why", ["no rounds", "model without tools"])
+async def test_no_tool_is_named_when_the_turn_offers_none(conn, open_doc, why):
+    """Review M8: CHAT_MAX_TOOL_ROUNDS=0 or a model that can't take tools:
+    the rules still say which document is open, and name no tool."""
+    from server.llm.types import Capabilities
+    router = FakeRouter(steps=[reply("From the passages (page 1).")])
+    cfg = ChatConfig(max_tool_rounds=0) if why == "no rounds" else ChatConfig()
+    if why == "model without tools":
+        router.caps = Capabilities(tools=False, thinking=True, vision=True, audio=None, context_window=None)
+    await _run(conn, router, cfg=cfg, text="q")
+    sent = router.calls[0]
+    assert sent["tools"] == []
+    system = sent["messages"][0].content
+    assert '"Thesis.pdf"' in system
+    for name in ("search_document", "web_search", "Tools you can call"):
+        assert name not in system
+
+
 async def test_no_note_while_rounds_remain(conn, open_doc):
     router = FakeRouter(steps=[
         [ToolCallReady(ToolCall("c1", "search_document", {"query": "a"})), Usage(5, 5), Finish("tool_calls")],

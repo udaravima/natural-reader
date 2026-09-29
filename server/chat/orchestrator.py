@@ -49,8 +49,11 @@ _FEATURE_NOTICE = {
     "tools": ("tools_unsupported", "This model rejected tools — answered without them."),
     "thinking": ("thinking_unsupported", "This model rejected thinking — answered without it."),
     "think_level": ("think_level_unsupported", "This model rejected the thinking level — used plain thinking."),
+    "system": ("system_role_unsupported",
+               "This model has no system role — its instructions were sent at the start of your message."),
 }
-_FEATURE_LOG = {"tools": "tool-fallback", "thinking": "think-fallback", "think_level": "think-fallback"}
+_FEATURE_LOG = {"tools": "tool-fallback", "thinking": "think-fallback", "think_level": "think-fallback",
+                "system": "system-fallback"}
 # Added to the results of the last tool round (v2.3 Task A). Worded to match
 # the rule in server/chat/prompt.py ("When a tool result says the tool rounds
 # are over, answer from what you already have").
