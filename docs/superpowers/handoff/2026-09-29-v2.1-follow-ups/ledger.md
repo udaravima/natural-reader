@@ -79,3 +79,16 @@ Task 5: minor (deferred): the served bytes aren't re-hashed against doc_id (uplo
 Task 5: minor (deferred): openServerDoc's failure path (toast, view unchanged) has no test — App isn't mounted in tests (R3).
 Task 5: minor (deferred, pre-existing): App's currentDocId effect re-runs only when pdfFileName changes, so different bytes opened under the already-open name keep the old doc's hash for the Index button (and Task 6's "already open" check) until the name changes.
 Task 5: note — a 409 tells a share recipient "Upload the file again first", which only helps if they have the file.
+Task 6: R4 check — the prefetch note already carried docId; the search_document summary did not → server adds docId/docName to it (Tool.summarize gets ctx); never sent to the model.
+Task 6: implemented 4018753 (frontend 374); review — Needs fixes: 1 Important (unstable onOpenCitation in memo deps → every streaming token remounted every reply's markdown), 6 Minor.
+Task 6: fix round 1/5 implemented 0f05193 (handler via ref, primitive memo deps, page 0 stays text, saved sentence only on the saved page, USER_GUIDE, 409 + #page-link tests); re-review: all addressed, no new breakage.
+Task 6: complete (commits b56d571..4018753 + 0f05193, review clean after 1 fix round)
+Task 6: minor (deferred): "page N" in a reply that used both web_search and the document always opens the document (per brief) — check in the walk.
+Task 6: minor (deferred): the App wiring (openDocDeps, openDocId from currentDocId) isn't mounted in tests (R3) — walk: click a citation with the doc open, not open, and after a revoke.
+Task 6: note — replies saved before this change have no docId in search_document summaries; their citations link only if the reply also had a prefetch note.
+Task 7: implemented 6bd759d + 8cacf09 (changelog); running-app check in headless Chromium: canvas error and nested-button warning reproduce on the old code and are gone; the blob: error did not reproduce (old or new) — candidate root cause fixed (reader <audio> src revoked while loaded).
+Task 7: review — Approved; 4 Minor: 3 fixed in the next commit (seq check after getTextContent + test, test comment, unconfirmed-cause comments reworded).
+Task 7: complete (commits 4018753..8cacf09 + minors commit, review Approved)
+Task 7: minor (deferred): the recent-book row is role="button" containing a <button> (axe nested-interactive), as the brief asked; holding Enter repeats open.
+Task 7: minor (deferred, pre-existing): a TTS fetch in flight when clearCache runs lands in the new page's cache at the same index, so the new page could play the old page's clip there.
+Task 7: walk — confirm the blob: error is gone with real Kokoro TTS (reopen a PDF during and after read-aloud).

@@ -6,9 +6,10 @@ import { apiFetch } from '../utils/apiFetch';
 import { useTtsEngine } from './useTtsEngine';
 
 // The reader's <audio> element must never hold a revoked blob: URL — the
-// next seek or reload of it fetches the dead URL (ERR_FILE_NOT_FOUND, seen in
-// the A1 walk on reopening a PDF). A URL is revoked when the element moves
-// on to another one, or on unmount — never while it is still loaded.
+// next seek or reload of it can fetch the dead URL (ERR_FILE_NOT_FOUND; the
+// suspected cause of the A1 walk's error on reopening a PDF). A URL is
+// revoked when the element moves on to another one, or on unmount — never
+// while it is still loaded.
 describe('reader audio blob URLs', () => {
     let n;
     let revoked;

@@ -53,7 +53,8 @@ export function useTtsEngine({
     // The blob: URL the reader's <audio> element currently holds. It stays
     // alive until the element moves on to another URL (or unmount): a seek
     // or reload of the element fetches its src again, and a revoked URL
-    // fails there with ERR_FILE_NOT_FOUND (seen on reopening a PDF).
+    // fails there with ERR_FILE_NOT_FOUND (the suspected cause of the error
+    // the A1 walk saw on reopening a PDF — not reproduced since).
     const loadedUrlRef = useRef(null);
     const loadReaderAudio = useCallback((url) => {
         const previous = loadedUrlRef.current;

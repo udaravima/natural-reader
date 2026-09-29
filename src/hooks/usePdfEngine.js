@@ -132,6 +132,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
             // Render text layer for text selection
             const textContent = await page.getTextContent();
+            if (seq !== renderSeqRef.current) return;
             const textLayerDiv = textLayerRef.current;
             if (textLayerDiv) {
                 textLayerDiv.innerHTML = '';
