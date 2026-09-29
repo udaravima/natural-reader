@@ -44,6 +44,9 @@ export function useTtsEngine({
     const bookAbortRef = useRef(null);
 
     const audioCache = useRef(new Map());
+    // Bumped by clearCache: a clip whose synthesis started under an older
+    // generation belongs to text that's no longer on screen (v2.2 Task B).
+    const cacheGenRef = useRef(0);
     const pendingRequests = useRef(new Map()); // Track in-flight fetches to avoid duplicates
     const audioRef = useRef(new Audio());
     const voicePreviewRef = useRef(new Audio());
@@ -167,6 +170,7 @@ export function useTtsEngine({
 
     // --- CACHE MANAGEMENT ---
     const clearCache = useCallback(() => {
+        cacheGenRef.current += 1;
         // The loaded URL is left to loadReaderAudio (see loadedUrlRef).
         audioCache.current.forEach(url => { if (url !== loadedUrlRef.current) URL.revokeObjectURL(url); });
         audioCache.current.clear();
@@ -192,6 +196,7 @@ export function useTtsEngine({
             return pendingRequests.current.get(index);
         }
 
+        const gen = cacheGenRef.current;
         const fetchPromise = (async () => {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
@@ -201,11 +206,18 @@ export function useTtsEngine({
                     speed: playbackSpeed,
                     signal: controller.signal,
                 });
+                if (url && gen !== cacheGenRef.current) {
+                    // The page changed while this was synthesized: the clip is
+                    // for text no longer shown, so it's dropped, not cached
+                    // under the same index of the new page.
+                    URL.revokeObjectURL(url);
+                    return null;
+                }
                 if (url) audioCache.current.set(index, url);
                 return url;
             } finally {
                 clearTimeout(timeoutId);
-                pendingRequests.current.delete(index);
+                if (gen === cacheGenRef.current) pendingRequests.current.delete(index);
             }
         })();
 

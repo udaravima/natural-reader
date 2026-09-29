@@ -22,6 +22,11 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Read aloud never plays a sentence from the page you just left.** A clip
+  still being made when the page changed (turning the page, opening another
+  document, clicking a citation) used to be kept for the same position on
+  the new page; it is now thrown away.
+
 - **Everything the browser remembers belongs to the signed-in user.** After
   "Your Library", three more things were still shared by everyone who used
   the browser: old browser-only chats, the last workspace folder (which
