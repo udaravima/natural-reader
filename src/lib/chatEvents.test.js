@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { applyEvent } from './chatEvents';
+import { applyEvent, toolStatusFor } from './chatEvents';
 import { readEvents } from './chatStream';
 import { bodyOf, loadFixture, sseText } from './chatFixtures.testutil';
 
@@ -33,10 +33,20 @@ describe('applyEvent over the backend contract fixtures', () => {
         expect(reduce(events).content).toBe('Here is the news.');
     });
 
-    it('shows "executing tool…" between the tool input and the next step', () => {
+    it('says what the tool is doing between the tool input and the next step', () => {
         const events = loadFixture('tool_round');
         const upto = events.findIndex((e) => e.type === 'tool-input-available') + 1;
-        expect(reduce(events.slice(0, upto)).toolStatus).toBe('executing tool…');
+        expect(reduce(events.slice(0, upto)).toolStatus).toBe('Searching the web…');
+    });
+
+    it('a later round says "Still searching… (round n)"', () => {
+        expect(toolStatusFor('search_documents', 1)).toBe('Searching the document…');
+        expect(toolStatusFor('read_document_pages', 1)).toBe('Reading the document…');
+        expect(toolStatusFor('search_documents', 2)).toBe('Still searching… (round 2)');
+        expect(toolStatusFor('web_search', 3)).toBe('Still searching… (round 3)');
+        expect(toolStatusFor('some_new_tool', undefined)).toBe('Running a tool…');
+        const m = applyEvent({}, { type: 'tool-input-available', toolCallId: 'c', toolName: 'search_documents', round: 2 });
+        expect(m.toolStatus).toBe('Still searching… (round 2)');
     });
 
     it('error: keeps the partial reply and records the error', () => {

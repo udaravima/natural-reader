@@ -4,6 +4,20 @@
  * replayed through it in tests, so a format change on either side fails.
  * Unknown event types return the message unchanged (forward compatible).
  */
+
+// What the reply's status line says while a tool runs. A later round of the
+// same answer is "Still searching… (round n)" (RAG spec §9).
+const TOOL_STATUS = {
+    search_documents: 'Searching the document…',
+    read_document_pages: 'Reading the document…',
+    web_search: 'Searching the web…',
+};
+
+export function toolStatusFor(toolName, round) {
+    if (round > 1) return `Still searching… (round ${round})`;
+    return TOOL_STATUS[toolName] || 'Running a tool…';
+}
+
 const settle = (msg, toolCallId, summary) => ({
     ...msg,
     toolCalls: (msg.toolCalls || []).map((tc) => (tc.id === toolCallId ? { ...tc, result_summary: summary } : tc)),
@@ -30,7 +44,7 @@ export function applyEvent(msg, ev) {
         case 'tool-input-available':
             return {
                 ...msg,
-                toolStatus: 'executing tool…',
+                toolStatus: toolStatusFor(ev.toolName, ev.round),
                 toolCalls: [...(msg.toolCalls || []),
                     { id: ev.toolCallId, name: ev.toolName, arguments: ev.input || {}, result_summary: null }],
             };

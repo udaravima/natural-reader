@@ -284,8 +284,9 @@ Chats saved before v2.3 recorded the tool as `search_document`, and their page c
 3. Provider → streams a tool call (no content for that step)
 4. Server → runs the tool itself (server/chat/tools/), streams the result as
             tool-output-available, appends it to history
-5. Server → calls the model again — WITHOUT tools once CHAT_MAX_TOOL_ROUNDS
-            (default 1) is reached, so the turn always ends in an answer
+5. Server → calls the model again, with tools while rounds remain; the last
+            round's results say so, and the step after it has no tools
+            (CHAT_MAX_TOOL_ROUNDS, default 3), so the turn always ends in an answer
 6. Provider → streams the final answer; the server relays it as SSE the whole way
 ```
 
@@ -410,5 +411,10 @@ Adding a tool is one file in `server/chat/tools/` (`name`, `spec`, `available(ct
 
 Also tabled for future work:
 
-- **Multi-iteration tool calls.** `CHAT_MAX_TOOL_ROUNDS` defaults to one round; multi-step agents need budget/loop controls before it's raised.
+- **Multi-round tool calls (v2.3).** `CHAT_MAX_TOOL_ROUNDS` defaults to 3, with these guard-rails:
+  - **Per-answer result budget:** `CHAT_TOOL_RESULT_BUDGET_CHARS`, default 24,000. Past it, a call returns "Search budget for this answer used up: answer from what you have." A result that would go past the budget is dropped unseen, and its passages don't count as shown.
+  - **Repeated calls:** a call identical to an earlier one in the same answer returns "Already searched: see the results above." without running.
+  - **Daily token budget:** checked before every step.
+  - **Web search guard:** `web_search` refuses queries over 300 characters, and any query that shares a run of 8 words with document text the model has this turn (the Stage 0 passages, pins, search results, pages read). It tells the model to search by topic instead, so document text never leaves the server through a web query.
+  - **Status line:** the reply says what is running ("Searching the document…", "Reading the document…", "Searching the web…"), and "Still searching… (round n)" from the second round on.
 - **No-chip retrieval toggle** for users who want manual whole-doc context without going through Ask page / Ask AI first.

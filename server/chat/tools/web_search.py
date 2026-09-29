@@ -2,11 +2,32 @@
 src/lib/chatTools/webSearch.js; the service's SSRF guards are unchanged."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ...llm.types import ToolSpec
 from ...services import web_search as web_search_service
 from ...services.web_search import RESULT_COUNT, web_search
+
+# Review focus 4: document text never leaves the server through a web query.
+QUERY_MAX_CHARS = 300
+COPIED_RUN_WORDS = 8     # a run this long shared with document text is a copy, not a topic
+COPIED = ("That query copies text from the document. Search the web with the topic in a few "
+          "words, not text from the document.")
+TOO_LONG = (f"That query is over {QUERY_MAX_CHARS} characters. Search the web with the topic in a "
+            "few words, not text from the document.")
+_WORD = re.compile(r"\w+")
+
+
+def _runs(text: str) -> set[tuple[str, ...]]:
+    words = _WORD.findall(text.lower())
+    return {tuple(words[i:i + COPIED_RUN_WORDS]) for i in range(len(words) - COPIED_RUN_WORDS + 1)}
+
+
+def copies_document(query: str, texts: list[str]) -> bool:
+    runs = _runs(query)
+    return bool(runs) and any(runs & _runs(t) for t in texts)
+
 
 _SPEC = ToolSpec(
     name="web_search",
@@ -49,6 +70,10 @@ class _WebSearch:
         query = str(args.get("query") or "").strip()
         if not query:
             return {"error": "query is required and must be non-empty."}
+        if len(query) > QUERY_MAX_CHARS:
+            return {"error": TOO_LONG}
+        if ctx is not None and copies_document(query, ctx.seen_text):
+            return {"error": COPIED}
         count = args.get("count", RESULT_COUNT)
         if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= 10:
             return {"error": "count must be between 1 and 10."}

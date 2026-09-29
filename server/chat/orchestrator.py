@@ -33,7 +33,7 @@ from . import store
 from .config import ChatConfig
 from .context import TurnInput, build_context
 from .store import TurnClaim, title_from_prompt
-from .tools import ToolContext, available_tools, run_tool
+from .tools import ToolContext, TurnTools, available_tools, result_text
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +235,10 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             window=_window(router, req, caps), now=datetime.now(timezone.utc),
             tools=tuple(offered if cfg.max_tool_rounds > 0 else ()), tool_ctx=tool_ctx), cfg)
         tool_ctx.shown.update(built.shown_chunk_ids)
+        # Document text the model already has: the web search guard's reference.
+        tool_ctx.seen_text.extend(built.shown_texts)
+        tool_ctx.seen_text.extend(str(p.get("text") or "") for p in pins if isinstance(p, dict))
+        turn_tools = TurnTools(tool_ctx)
         if built.notes:
             state.doc_context = {"notes": built.notes}
             yield ev("data-context", items=built.notes)
@@ -365,15 +369,16 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             # tools, and the rules (stable for the turn) can't say that.
             last_round = rounds >= cfg.max_tool_rounds
             for call in calls:
-                yield ev("tool-input-available", toolCallId=call.id, toolName=call.name, input=call.arguments)
-                run = await run_tool(call, tool_ctx, tools_now)
+                yield ev("tool-input-available", toolCallId=call.id, toolName=call.name, input=call.arguments,
+                         round=rounds)
+                run = await turn_tools.run(call, tools_now)
                 state.tool_calls.append(run.summary)
                 if run.ok:
                     yield ev("tool-output-available", toolCallId=call.id, output=run.summary["result_summary"])
                 else:
                     yield ev("tool-output-error", toolCallId=call.id, errorText=run.result["error"])
                 result = {**run.result, "note": LAST_ROUND_NOTE} if last_round else run.result
-                messages.append(Message("tool", json.dumps(result, indent=2, ensure_ascii=False),
+                messages.append(Message("tool", result_text(result),
                                         tool_call_id=call.id, name=call.name))
             await _save(claim, state)
         # Spec §5.2.1: did the model still search after a prefetch hit? Lets a

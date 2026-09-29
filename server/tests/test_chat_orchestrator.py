@@ -109,7 +109,7 @@ async def test_one_tool_round_then_answer(conn, monkeypatch):
         [TextDelta("Let me search."), ToolCallReady(ToolCall("c1", "web_search", {"query": "news"})),
          Usage(5, 2), Finish("tool_calls")],
         [TextDelta("Here is the news."), Usage(20, 4), Finish("stop")]])
-    events, claim = await _run(conn, router)
+    events, claim = await _run(conn, router, cfg=ChatConfig(max_tool_rounds=1))
     assert types(events) == ["start", "start-step", "text-start", "text-delta", "text-end", "finish-step",
                              "tool-input-available", "tool-output-available", "start-step", "text-start",
                              "text-delta", "text-end", "finish-step", "finish"]
@@ -136,7 +136,7 @@ async def test_silent_final_step_after_the_cap_is_max_steps(conn, monkeypatch):
     router = FakeRouter(steps=[
         [ToolCallReady(ToolCall("c1", "web_search", {"query": "a"})), Usage(1, 1), Finish("tool_calls")],
         [Usage(1, 0), Finish("stop")]])
-    events, _ = await _run(conn, router)
+    events, _ = await _run(conn, router, cfg=ChatConfig(max_tool_rounds=1))
     assert events[-1]["type"] == "finish" and events[-1]["finishReason"] == "max-steps"
 
 
@@ -573,7 +573,7 @@ async def test_the_last_round_says_so_in_its_results_and_the_rules_never_change(
     router = FakeRouter(steps=[
         [ToolCallReady(ToolCall("c1", "search_documents", {"query": "results"})), Usage(5, 5), Finish("tool_calls")],
         reply("The result is X (page 3).")])
-    events, claim = await _run(conn, router, text="what is the result?")
+    events, claim = await _run(conn, router, cfg=ChatConfig(max_tool_rounds=1), text="what is the result?")
     first, final = router.calls
     assert first["tools"] == ["search_documents", "read_document_pages", "web_search"] and final["tools"] == []
     assert first["messages"][0].role == "system"

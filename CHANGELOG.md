@@ -28,6 +28,18 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **The model can follow a trail through the document.** An answer can now
+  use up to 3 rounds of tool calls (`CHAT_MAX_TOOL_ROUNDS`, was 1). For
+  example, it can find the dataset a chapter uses, then search for who
+  collected it. Guard-rails:
+  - a per-answer limit on tool results (`CHAT_TOOL_RESULT_BUDGET_CHARS`);
+  - an identical repeated call isn't run twice;
+  - web search refuses queries that copy the document's text, so document
+    text isn't sent to the web.
+
+  While it works, the reply shows what it is doing, and "Still searching…
+  (round n)" from the second round on.
+
 - **Document search returns evidence, not noise.** The document search
   tool is now called `search_documents`. It leaves out weak matches
   (`CHAT_SEARCH_MIN_SCORE`, default 0.45) and labels the passages it keeps

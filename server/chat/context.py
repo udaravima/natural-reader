@@ -211,6 +211,7 @@ class BuiltContext:
     notes: list[dict[str, Any]]
     prefetch_hit: bool
     shown_chunk_ids: tuple[int, ...] = ()   # the prefetched chunks: search_documents won't repeat them
+    shown_texts: tuple[str, ...] = ()       # their text: web_search won't send it out
 
 
 async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
@@ -256,4 +257,5 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
         logger.debug("history trimmed: %d messages, %d attachments (window %s)",
                      n_messages, n_attachments, turn.window)
     return BuiltContext([system, *history_messages, current], notes, bool(pre.passages),
-                        tuple(p["id"] for p in pre.passages if p.get("id") is not None))
+                        tuple(p["id"] for p in pre.passages if p.get("id") is not None),
+                        tuple(p["text"] for p in pre.passages))

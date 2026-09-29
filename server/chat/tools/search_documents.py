@@ -112,6 +112,7 @@ class _SearchDocuments:
                 passages.append({"ref": ref, "page": r["page"], "relevance": relevance(r["score"]),
                                  "text": _cap(r["text"] or "")})
         ctx.shown.update(r["id"] for _, r in new)
+        ctx.seen_text.extend(p["text"] for p in passages)
         logger.debug("search_documents docs=%d found=%d kept=%d new=%d floor=%s top=%s",
                      len(scope), len(found), len(kept), len(new), ctx.cfg.search_min_score,
                      round(found[0][1]["score"], 4) if found else None)

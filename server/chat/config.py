@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ChatConfig:
-    max_tool_rounds: int = 1               # tool rounds before the final tools-off step
+    max_tool_rounds: int = 3               # tool rounds before the final tools-off step (RAG spec §9)
+    tool_result_budget_chars: int = 24000  # tool results one answer may add to the prompt
     prefetch_min_score: float = 0.6        # cosine similarity; >= 1 disables prefetch. A cautious guess,
                                             # tune from DEBUG logs — measured on nomic-embed-text: matching
                                             # questions scored 0.563-0.823 (5/6 >= 0.6, only 2/6 >= 0.75),
@@ -45,6 +46,8 @@ def load_chat_config(env: Mapping[str, str]) -> ChatConfig:
 
     return ChatConfig(
         max_tool_rounds=num("CHAT_MAX_TOOL_ROUNDS", d.max_tool_rounds, int, 0, 20),
+        tool_result_budget_chars=num("CHAT_TOOL_RESULT_BUDGET_CHARS", d.tool_result_budget_chars,
+                                     int, 1000, 1_000_000),
         prefetch_min_score=num("CHAT_PREFETCH_MIN_SCORE", d.prefetch_min_score, float, 0.0, 1.0),
         prefetch_k=num("CHAT_PREFETCH_K", d.prefetch_k, int, 1, 20),
         read_pages_max_chars=num("CHAT_READ_PAGES_MAX_CHARS", d.read_pages_max_chars, int, 1000, 200_000),
