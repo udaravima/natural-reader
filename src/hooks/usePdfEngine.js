@@ -269,13 +269,17 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         }
     };
 
-    const processFile = (file) => {
-        if (!file || !isLibLoaded) return;
+    // Resolves true once the document is open in the reader, false if it
+    // couldn't be (callers that pick a file ignore it; opening a server
+    // document waits on it — see App.jsx openServerDoc).
+    const processFile = (file) => new Promise((resolve) => {
+        if (!file || !isLibLoaded) { resolve(false); return; }
         const detected = detectFileType(file);
         const fileName = file.name;
 
         if (detected === 'pdf') {
             const reader = new FileReader();
+            reader.onerror = () => resolve(false);
             reader.onload = async (ev) => {
                 try {
                     const loadingTask = pdfjsLibRef.current.getDocument({ data: ev.target.result });
@@ -304,8 +308,10 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
                         console.warn('Could not load outline:', e);
                         setPdfOutline([]);
                     }
+                    resolve(true);
                 } catch {
                     setStatus("Error loading PDF");
+                    resolve(false);
                 }
             };
             reader.readAsArrayBuffer(file);
@@ -314,6 +320,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
         if (detected === 'text' || detected === 'markdown') {
             const reader = new FileReader();
+            reader.onerror = () => resolve(false);
             reader.onload = async (ev) => {
                 try {
                     const rawText = ev.target.result;
@@ -328,14 +335,16 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
                         loadTextDocument(rawText, fileName);
                     }
                     getRecentBooks().then(setRecentBooks);
+                    resolve(true);
                 } catch (e) {
                     console.error('Failed to load file:', e);
                     setStatus(detected === 'markdown' ? "Error loading markdown file" : "Error loading text file");
+                    resolve(false);
                 }
             };
             reader.readAsText(file);
         }
-    };
+    });
 
     // --- LIBRARY OPERATIONS ---
     const openFromLibrary = async (fileName) => {

@@ -40,6 +40,7 @@ import ChatView from './components/ChatView';
 import ChatSidebar from './components/ChatSidebar';
 import { AdminConsole } from './components/admin/AdminConsole';
 import LibraryPage from './components/library/LibraryPage';
+import { fetchDocFile } from './lib/serverDocFile';
 import SettingsPage from './components/settings/SettingsPage';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
@@ -429,6 +430,23 @@ export default function App() {
       setStatus("Please drop a PDF, TXT, or Markdown file");
     }
   };
+
+  // Open a server document (Library → Open) the same way as picking the
+  // file: fetch its stored bytes, then processFile saves them to this user's
+  // local library and opens them. The bytes hash to the doc id, so Index and
+  // chat find the server copy. Resolves true once it's open in the reader;
+  // on a refusal (404, 409 bytes_missing) it toasts and resolves false.
+  const openServerDoc = useCallback(async (docId, name) => {
+    let file;
+    try {
+      file = await fetchDocFile(apiHost, apiPort, docId, name);
+    } catch (e) {
+      showToast(`Could not open "${name}": ${e.message}`, 5000);
+      return false;
+    }
+    setViewMode('reader');
+    return processFile(file);
+  }, [apiHost, apiPort, processFile, setViewMode, showToast]);
 
   const handleMobileSentenceClick = (index) => {
     setCurrentSentenceIndex(index - 1);
@@ -1156,6 +1174,7 @@ export default function App() {
             apiHost={apiHost}
             apiPort={apiPort}
             showToast={showToast}
+            onOpen={(doc) => openServerDoc(doc.doc_id, doc.file_name)}
             onProjectsChanged={() => setProjectsVersion((v) => v + 1)}
           />
         ) : inSettings ? (

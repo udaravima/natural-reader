@@ -29,6 +29,7 @@ from fastapi import (
     APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Path as PathParam, Response,
     UploadFile,
 )
+from fastapi.responses import FileResponse
 from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
@@ -483,6 +484,41 @@ async def get_document(
     if not status:
         raise HTTPException(status_code=404, detail="Document not found")
     return status
+
+
+# What GET /{doc_id}/file serves each stored type as.
+_FILE_MEDIA_TYPES = {
+    "pdf": "application/pdf",
+    "text": "text/plain; charset=utf-8",
+    "markdown": "text/markdown; charset=utf-8",
+}
+
+
+@router.get("/{doc_id}/file")
+async def get_document_file(
+    doc_id: DocId, reader: Principal = Depends(_require_doc_reader)
+) -> FileResponse:
+    """The stored bytes, so anyone who can read the document — its holders,
+    share recipients, project owners and members — can open it in the reader
+    (404 to everyone else, like GET /{doc_id}). Named with the caller's own
+    name for it: their entry's, or for a project row the name its filer gave
+    (`_DISPLAY_NAME`), never a stranger's. No stored bytes (a pre-A1 row, or
+    the file has gone from disk) is 409 bytes_missing."""
+    _ensure_ready()
+    async with get_pool().connection() as conn:
+        cur = await conn.execute(
+            f"SELECT d.file_type, d.bytes_path, {_DISPLAY_NAME} "
+            f"FROM documents d {_ENTRY_JOIN} WHERE d.doc_id = %s",
+            [*_display_name_params(reader.user_id), reader.user_id, doc_id])
+        row = await cur.fetchone()
+    if row is None:
+        raise refusal(404, "not_found", "Document not found")
+    file_type, bytes_path, file_name = row
+    if not bytes_path or not Path(bytes_path).is_file():
+        raise refusal(409, "bytes_missing", "Upload the file again first.")
+    return FileResponse(
+        bytes_path, media_type=_FILE_MEDIA_TYPES.get(file_type, "application/octet-stream"),
+        filename=file_name, content_disposition_type="inline")
 
 
 @router.patch("/{doc_id}")

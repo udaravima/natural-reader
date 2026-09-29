@@ -139,6 +139,17 @@ Notes:
   change a provider — that's a `.env` + restart task for whoever runs the
   server.
 
+## Library: documents on the server
+
+**Library** (in the view switcher) lists every document you can read on the
+server: the ones you uploaded, the ones someone shared with you ("shared
+by …"), and the ones in a project you own or belong to ("via project").
+**Open** on a row opens the document in the reader, the same as picking the
+file from your computer. It is also saved to your own "Your Library" list on
+the welcome screen, and Index and chat work on it straight away. If the
+server has no copy of the file (it was indexed before server-side uploads,
+and nobody has uploaded it since), Open tells you to upload the file again.
+
 ## Chat: models and streaming
 
 Every chat message runs on the server — your browser never talks to a model

@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Open a Library document in the reader.** Each Library row has an
+  **Open** button that fetches the document from the server and opens it
+  like a file you picked; Index and chat work on it straight away. Someone
+  a document was shared with, or who sees it through a project, can now
+  read it and ask about it; before, sharing only added a line to their
+  list. The route behind it, `GET /v1/docs/{id}/file`, answers 404 to anyone
+  who can't read the document.
+
 ### Fixed
 
 - **"Your Library" on the welcome screen belongs to the signed-in user.** It

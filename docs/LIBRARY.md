@@ -128,13 +128,14 @@ Once shared, the recipient's Library shows the document with a "shared by"
 badge naming you, under the name *you* gave it (never the name some other
 uploader chose).
 
-**What a recipient can do with it today:** see it listed and filtered in
-their Library, and find it through the API (`/v1/docs/{id}/search`,
-`/markdown`). They **can't open it in the reader or ask about it in chat
-unless they have the file themselves** — the reader opens local copies, a
-Library row doesn't open anything, and no route serves the stored bytes yet.
-The same holds for a document you only see through a project. Opening a
-Library document in the reader is the next fix.
+**What a recipient can do with it:** everything a reader of the document
+can. Library → **Open** on the row fetches the stored bytes
+(`GET /v1/docs/{id}/file`), saves them to the recipient's own local library
+and opens them in the reader, exactly as if they had picked the file. Index
+and chat then work as for their own uploads, because the bytes hash to the
+same `doc_id`. The same holds for a document you only see through a project.
+A document nobody has uploaded since A1 (no stored bytes) can't be opened
+this way; **Open** then says "Upload the file again first" in a notice.
 
 The rules:
 
@@ -152,7 +153,8 @@ The rules:
 
 Filing a document into a project needs a verified **upload** entry for it —
 the same proof of possession sharing needs. Members who see it only through
-the project see it under the name its filer gave it. Once it's filed, though, ownership
+the project see it under the name its filer gave it, and can open it from
+their Library (**Open**) like any document they can read. Once it's filed, though, ownership
 of the document stops mattering: only **the project** can remove it from
 itself again. Today (before A0) that means the **project's owner**; once A0
 ships, any Maintainer will be able to. The person who filed it has no
@@ -288,6 +290,7 @@ after upgrading:
 | `POST /v1/docs` | any signed-in user (`reader`) | Multipart: `file` + optional `file_name`, `tags`, `client_doc_id` (hint only — the server's own SHA-256 always wins, with a logged WARNING on mismatch). Known bytes → `200 {doc_id, dedup: true, state}`. New bytes → `202 {doc_id, state: "extracting"}` plus a background job. `413`/`415`/`422` for oversized, unsupported, or empty files. |
 | `GET /v1/docs?q=&project_id=&tag=` | any signed-in user | Lists documents you hold an entry for, plus documents placed in projects you can see. Returns `{doc_id, file_name, state, tags, projects: [{id, name}], in_library, added_via, shared_by: {id, name} \| null}`. `file_name`/`tags` come from **your** entry when you have one; a row you see only through a project shows the name its filer gave it (else the canonical name) and no tags. |
 | `GET /v1/docs/{id}` · `POST /v1/docs/{id}/search` · `GET /v1/docs/{id}/markdown` | reader (`can_read`) | Unchanged read gate, resolved by the entries-or-placement predicate above. |
+| `GET /v1/docs/{id}/file` | reader (`can_read`) | The stored bytes, `inline`, with the stored type (`application/pdf`, `text/plain`, `text/markdown`) and **your** name for the document (your entry's, or for a project row the filer's). `404` to anyone who can't read it, including an unverified pre-A1 holder; `409 bytes_missing` when the server has no bytes for it. What the Library's **Open** button uses. |
 | `PATCH /v1/docs/{id}` | your own entry, on a doc you can read | Sets **your** `file_name`/`tags` only — there's no more `owner_user_id` to reassign. |
 | `DELETE /v1/docs/{id}` | your own entry | Removes your entry (204), then garbage-collects the content if nothing else holds it. Never touches other people's entries or any project. |
 | `PUT` / `DELETE /v1/docs/{id}/shares/{user_id}` | a verified upload-entry holder (PUT) · the sharer (DELETE) | Replaces the old `/grants/{user_id}`. See "Sharing," above. |
@@ -319,7 +322,9 @@ rows you hold an entry for — inline tag editing and a **Remove from my
 library** control (with a confirmation that says people and projects who
 have it keep their copies). A row you only see through a project shows a
 purple **"via project"** badge and has no remove control; a row someone
-shared with you shows a blue **"shared by …"** badge naming the sharer. A
+shared with you shows a blue **"shared by …"** badge naming the sharer.
+Every row has an **Open** button that opens the document in the reader (see
+"Sharing," above). A
 doc you uploaded gets a project-chip selector to file it into any project
 you can see; the **×** on a chip only appears for that project's owner,
 matching "projects govern their documents" above.

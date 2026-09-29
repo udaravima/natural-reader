@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Search, FolderOpen, FolderPlus, Share2, X, Check, Trash2, Loader2 } from 'lucide-react';
+import { Search, FolderOpen, FolderPlus, Share2, X, Check, Trash2, Loader2, BookOpen } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
 import { describeRefusal } from '../../lib/apiErrors';
 
@@ -188,11 +188,14 @@ function NewProjectForm({ theme, busy, onCreate, onCancel }) {
  * remove-from-my-library control, and (if I uploaded it) a project chip
  * selector; removing only ever affects my own copy, never anyone else's
  * entry or a project's placement. A row I only see via a project has
- * neither: it isn't mine to remove or retag. "New project" creates a project
- * I own; `onProjectsChanged` tells the reader to refresh its project picker.
+ * neither: it isn't mine to remove or retag. Every row can be opened in the
+ * reader (`onOpen(doc)`, which resolves once it's open or has failed with a
+ * notice): anything listed here is something I can read. "New project"
+ * creates a project I own; `onProjectsChanged` tells the reader to refresh
+ * its project picker.
  * Adding members has no screen until A0.
  */
-export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProjectsChanged }) {
+export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProjectsChanged, onOpen }) {
   const [docs, setDocs] = useState(null);
   const [projects, setProjects] = useState(null);
   const [search, setSearch] = useState('');
@@ -206,6 +209,8 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
   // request (a project owner double-clicking × would otherwise see a false
   // "Update failed: HTTP 404" toast from the second, already-unlinked DELETE).
   const [linkingId, setLinkingId] = useState(null);
+  // doc_id being fetched and opened — disables its Open button meanwhile.
+  const [openingId, setOpeningId] = useState(null);
   const [creatingProject, setCreatingProject] = useState(false);
   const [projectBusy, setProjectBusy] = useState(false);
   // Monotonic id so out-of-order responses can't clobber the list: fast typing
@@ -294,6 +299,15 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
       showToast(`Could not create project: ${e.message}`, 5000);
     } finally {
       setProjectBusy(false);
+    }
+  };
+
+  const openDoc = async (doc) => {
+    setOpeningId(doc.doc_id);
+    try {
+      await onOpen(doc);
+    } finally {
+      setOpeningId(null);
     }
   };
 
@@ -395,40 +409,55 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
                         </span>
                       )}
                     </div>
-                    {doc.in_library && (
-                      deleting ? (
-                        <span className="flex items-center gap-1 shrink-0">
-                          {deletingId === doc.doc_id ? (
-                            <button
-                              disabled
-                              className="flex items-center gap-1 text-[10px] text-red-500 cursor-default"
-                            >
-                              <Loader2 size={10} className="animate-spin" /> Removing…
-                            </button>
-                          ) : (
-                            <>
-                              <span className={`text-[10px] ${theme.textSecondary}`}>
-                                Remove from your library? People and projects that have it keep their copies.
-                              </span>
-                              <button onClick={() => deleteDoc(doc)} className="text-[10px] underline text-red-500">
-                                Confirm remove
-                              </button>
-                              <button onClick={() => setDeleteTarget(null)} className="text-[10px] underline">
-                                Cancel
-                              </button>
-                            </>
-                          )}
-                        </span>
-                      ) : (
+                    <div className="flex items-center gap-3 shrink-0">
+                      {onOpen && (
                         <button
-                          onClick={() => setDeleteTarget(doc.doc_id)}
-                          aria-label={`Remove ${doc.file_name} from my library`}
-                          className={`shrink-0 hover:text-red-500 ${theme.textSecondary}`}
+                          onClick={() => openDoc(doc)}
+                          disabled={openingId !== null}
+                          aria-label={`Open ${doc.file_name}`}
+                          className="flex items-center gap-1 px-2 py-0.5 text-[10px] rounded bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-default"
                         >
-                          <Trash2 size={12} />
+                          {openingId === doc.doc_id
+                            ? <Loader2 size={10} className="animate-spin" />
+                            : <BookOpen size={10} />}
+                          Open
                         </button>
-                      )
-                    )}
+                      )}
+                      {doc.in_library && (
+                        deleting ? (
+                          <span className="flex items-center gap-1 shrink-0">
+                            {deletingId === doc.doc_id ? (
+                              <button
+                                disabled
+                                className="flex items-center gap-1 text-[10px] text-red-500 cursor-default"
+                              >
+                                <Loader2 size={10} className="animate-spin" /> Removing…
+                              </button>
+                            ) : (
+                              <>
+                                <span className={`text-[10px] ${theme.textSecondary}`}>
+                                  Remove from your library? People and projects that have it keep their copies.
+                                </span>
+                                <button onClick={() => deleteDoc(doc)} className="text-[10px] underline text-red-500">
+                                  Confirm remove
+                                </button>
+                                <button onClick={() => setDeleteTarget(null)} className="text-[10px] underline">
+                                  Cancel
+                                </button>
+                              </>
+                            )}
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => setDeleteTarget(doc.doc_id)}
+                            aria-label={`Remove ${doc.file_name} from my library`}
+                            className={`shrink-0 hover:text-red-500 ${theme.textSecondary}`}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )
+                      )}
+                    </div>
                   </div>
 
                   <div className="text-[10px]">
