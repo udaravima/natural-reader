@@ -123,37 +123,40 @@ const claimLegacyBrowserState = async (owner) => {
     let db = null;
     try {
         db = await openDB();
-        if (!db.objectStoreNames.contains(SESSIONS_STORE) || !db.objectStoreNames.contains(WORKSPACE_STORE)) return;
-        const tx = db.transaction([SESSIONS_STORE, WORKSPACE_STORE], 'readwrite');
-        const sessions = tx.objectStore(SESSIONS_STORE);
-        const workspaces = tx.objectStore(WORKSPACE_STORE);
-        const all = await new Promise((resolve, reject) => {
-            const req = sessions.getAll();
-            req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error);
-        });
-        for (const rec of all) {
-            if (!rec.ownerId) sessions.put({ ...rec, ownerId: owner });
-        }
-        const legacy = await new Promise((resolve, reject) => {
-            const req = workspaces.get(LEGACY_WORKSPACE_ID);
-            req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error);
-        });
-        if (legacy) {
-            const mine = await new Promise((resolve, reject) => {
-                const req = workspaces.get(workspaceKey(owner));
+        // Both stores exist in every real database (openDB creates them);
+        // if one didn't, only this part is skipped — positions still move.
+        if (db.objectStoreNames.contains(SESSIONS_STORE) && db.objectStoreNames.contains(WORKSPACE_STORE)) {
+            const tx = db.transaction([SESSIONS_STORE, WORKSPACE_STORE], 'readwrite');
+            const sessions = tx.objectStore(SESSIONS_STORE);
+            const workspaces = tx.objectStore(WORKSPACE_STORE);
+            const all = await new Promise((resolve, reject) => {
+                const req = sessions.getAll();
                 req.onsuccess = () => resolve(req.result);
                 req.onerror = () => reject(req.error);
             });
-            if (!mine) workspaces.put({ ...legacy, id: workspaceKey(owner) });
-            workspaces.delete(LEGACY_WORKSPACE_ID);
+            for (const rec of all) {
+                if (!rec.ownerId) sessions.put({ ...rec, ownerId: owner });
+            }
+            const legacy = await new Promise((resolve, reject) => {
+                const req = workspaces.get(LEGACY_WORKSPACE_ID);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+            if (legacy) {
+                const mine = await new Promise((resolve, reject) => {
+                    const req = workspaces.get(workspaceKey(owner));
+                    req.onsuccess = () => resolve(req.result);
+                    req.onerror = () => reject(req.error);
+                });
+                if (!mine) workspaces.put({ ...legacy, id: workspaceKey(owner) });
+                workspaces.delete(LEGACY_WORKSPACE_ID);
+            }
+            await new Promise((resolve, reject) => {
+                tx.oncomplete = resolve;
+                tx.onerror = () => reject(tx.error);
+                tx.onabort = () => reject(tx.error);
+            });
         }
-        await new Promise((resolve, reject) => {
-            tx.oncomplete = resolve;
-            tx.onerror = () => reject(tx.error);
-            tx.onabort = () => reject(tx.error);
-        });
     } catch (e) {
         console.error('Failed to claim legacy chats and workspace:', e);
     } finally {
@@ -461,7 +464,9 @@ const cleanupOldBooks = async (store, ownerId) => {
 // =====================================================================
 // CHAT SESSIONS
 // Each session record:
-//   { id, title, model, createdAt, updatedAt, messages: [...], events: [...] }
+//   { id, ownerId, title, model, createdAt, updatedAt, messages: [...], events: [...] }
+// scoped to the signed-in user like the books (a pre-release record has no
+// ownerId until the first sign-in claims it).
 // `messages` is the full chat history; `events` is a per-session log
 // (sent / received / aborted / error). The recents listing strips both
 // for cheap rendering.
@@ -471,17 +476,23 @@ export const saveSession = async (session) => {
     if (!session?.id || !currentOwnerId) return false;
     try {
         const db = await openDB();
-        const existing = await getOwnSession(db, session.id);
-        if (existing === undefined) { db.close(); return false; } // someone else's id
-        const record = { ...session, ownerId: currentOwnerId, updatedAt: Date.now() };
+        // Check and write in one transaction: the id must be free or this
+        // owner's own, never someone else's.
         const tx = db.transaction(SESSIONS_STORE, 'readwrite');
         const store = tx.objectStore(SESSIONS_STORE);
+        const existing = await new Promise((resolve, reject) => {
+            const req = store.get(session.id);
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => reject(req.error);
+        });
+        if (existing && existing.ownerId !== currentOwnerId) { db.close(); return false; }
+        const record = { ...session, ownerId: currentOwnerId, updatedAt: Date.now() };
         await new Promise((resolve, reject) => {
             const req = store.put(record);
             req.onsuccess = resolve;
             req.onerror = () => reject(req.error);
         });
-        await cleanupOldSessions(store);
+        await cleanupOldSessions(store, currentOwnerId);
         db.close();
         return true;
     } catch (e) {
@@ -566,13 +577,14 @@ export const deleteSession = async (id) => {
     }
 };
 
-const cleanupOldSessions = async (store) => {
+// The cap is per owner, like the books': one user's chats never evict another's.
+const cleanupOldSessions = async (store, ownerId) => {
     const index = store.index('updatedAt');
-    const sessions = await new Promise((resolve, reject) => {
+    const sessions = (await new Promise((resolve, reject) => {
         const req = index.getAll();
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
-    });
+    })).filter((s) => s.ownerId === ownerId);
     if (sessions.length > MAX_SESSIONS) {
         sessions.sort((a, b) => a.updatedAt - b.updatedAt);
         const toDelete = sessions.slice(0, sessions.length - MAX_SESSIONS);
@@ -587,7 +599,8 @@ const cleanupOldSessions = async (store) => {
 };
 
 // =====================================================================
-// WORKSPACE STATE (single record, id 'last')
+// WORKSPACE STATE (one record per signed-in user, id 'last:<ownerId>';
+// a pre-release browser's single 'last' record is claimed at first sign-in)
 //   { id:'last', rootName, handle?, lastPath }
 // `handle` is a structured-clonable FileSystemDirectoryHandle (FSA only);
 // snapshot workspaces persist rootName + lastPath without a handle.

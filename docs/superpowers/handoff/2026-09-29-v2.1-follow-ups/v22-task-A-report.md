@@ -27,3 +27,24 @@ BASE f55206f. The plan is `docs/superpowers/plans/2026-09-29-v2.2-per-user-brows
 - backend: 610 passed (Postgres had stopped in the sandbox; restarted);
 - frontend: 400 passed, **exit 0**;
 - eslint: clean.
+
+---
+
+## Fix round 1 — FIX_BASE 69cde96 (Task A head was 7a70e4e; Tasks B and C sit between, untouched here)
+
+- **Important: the brief's "restore waits for the user" test was missing.** The gating now lives in a new hook, `src/hooks/useWorkspaceRestore.js`:
+  - no lookup until the reader is ready and a user id is known;
+  - a new lookup when the user changes;
+  - a superseded lookup's result is dropped;
+  - a failed lookup is logged.
+
+  `src/hooks/useWorkspaceRestore.test.js` has 3 tests.
+- **Minor: nothing cleared in-memory state on a user change.** App's `restoreWorkspace(saved, userId)` runs in the lookup's promise callback, so it doesn't set state inside the effect. It first drops a workspace opened for a different user (`workspaceOwnerRef`, which adopt, restore and reconnect set, and close clears).
+- **Minor: a missing store skipped the reading-position migration.** Only the IndexedDB part is skipped now, via an `if`; no error is logged, so test output stays clean.
+- **Minor: session cleanup ignored the owner.** `cleanupOldSessions` now caps per owner. Test: one user's 51 chats never evict another's.
+- **Minor: stale comments.** Both are updated (the session record shape, the workspace store).
+- **Minor: the ownership check and the save weren't atomic.** `saveSession` now checks the id's owner and writes in one read-write transaction.
+
+Suites:
+- frontend: 407 passed, exit 0, no "Failed to claim" noise in the log;
+- eslint: clean.

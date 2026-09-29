@@ -131,3 +131,15 @@ describe('reading positions', () => {
         expect(loadReadingProgress('paper.pdf')).toBeNull();
     });
 });
+
+describe('chat cap', () => {
+    it('one user\'s chats never evict another\'s', async () => {
+        await setLibraryOwner('userA');
+        await saveSession(session('a-keep'));
+        await setLibraryOwner('userB');
+        for (let i = 0; i < 51; i++) await saveSession(session(`b${i}`));
+        expect(await getRecentSessions()).toHaveLength(50);
+        await setLibraryOwner('userA');
+        expect((await getRecentSessions()).map((s) => s.id)).toEqual(['a-keep']);
+    });
+});

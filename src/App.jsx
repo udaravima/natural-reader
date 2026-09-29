@@ -21,6 +21,7 @@ import { resolveForModel, patchForModel, migrateLegacyThinking } from './hooks/i
 // Utils
 import { apiFetch } from './utils/apiFetch';
 import { getOrComputeDocHash } from './utils/docHash';
+import { useWorkspaceRestore } from './hooks/useWorkspaceRestore';
 import { getBook } from './db';
 import { saveWorkspaceState, clearWorkspaceState, getWorkspaceState } from './db';
 import {
@@ -76,6 +77,7 @@ export default function App() {
   const [apiHost, setApiHost] = usePersistedState('apiHost', '');
   const [apiPort, setApiPort] = usePersistedState('apiPort', '8000');
   const auth = useAuth(apiHost, apiPort);
+  const signedInUserId = auth.state === 'active' ? auth.user?.id : null;
   const [requestTimeout, setRequestTimeout] = usePersistedState('requestTimeout', 15);
   const [unlimitedBatchTimeout, setUnlimitedBatchTimeout] = usePersistedState('unlimitedBatchTimeout', true);
   const [mobileBreakpoint, setMobileBreakpoint] = usePersistedState('mobileBreakpoint', 768);
@@ -173,6 +175,8 @@ export default function App() {
   const [workspaceEntryPath, setWorkspaceEntryPath] = useState(null);
   const folderInputRef = useRef(null);
   const [reconnect, setReconnect] = useState(null); // { rootName } | null
+  // Who the open workspace was opened for — a new user never inherits it.
+  const workspaceOwnerRef = useRef(null);
 
   // Mirror workspace into a ref so async restore/reconnect effects can check
   // whether a manual open happened during the await without reading stale state.
@@ -621,10 +625,11 @@ export default function App() {
       showToast('No Markdown files found in that folder.', 4000);
       return;
     }
+    workspaceOwnerRef.current = signedInUserId;
     setWorkspace(ws);
     setWorkspaceEntryPath(entry);
     setViewMode('reader');
-  }, [showToast, setViewMode]);
+  }, [showToast, setViewMode, signedInUserId]);
 
   const openFolder = useCallback(async () => {
     if (typeof window !== 'undefined' && window.showDirectoryPicker) {
@@ -647,34 +652,36 @@ export default function App() {
 
   // Restore a saved workspace on load. If the FSA handle still has permission,
   // silently re-open it; otherwise surface a one-click reconnect affordance.
-  // The saved workspace belongs to the signed-in user (src/db.js), so this
-  // waits until /v1/auth/me has named them, and runs again for a new user.
-  const signedInUserId = auth.state === 'active' ? auth.user?.id : null;
-  useEffect(() => {
-    if (!isLibLoaded || !signedInUserId) return;
-    (async () => {
-      try {
-        const saved = await getWorkspaceState();
-        if (!saved) return;
-        if (saved.handle && saved.handle.queryPermission) {
-          const perm = await saved.handle.queryPermission({ mode: 'read' });
-          if (perm === 'granted') {
-            const ws = await createFsaWorkspace(saved.handle);
-            if (workspaceRef.current) return; // user opened a folder during the await
-            setWorkspace(ws);
-            setWorkspaceEntryPath(saved.lastPath || pickEntryFile(ws.listFiles()));
-          } else {
-            setReconnect({ rootName: saved.rootName }); // needs a user gesture
-          }
-        } else {
-          setReconnect({ rootName: saved.rootName }); // snapshot: must re-pick
-        }
-      } catch (e) {
-        // Don't crash mount — workspace restore is best-effort.
-        console.warn('Workspace restore failed:', e);
+  // The saved workspace belongs to the signed-in user (src/db.js):
+  // useWorkspaceRestore looks it up once /v1/auth/me has named them, and
+  // again for a new user — whose first step is dropping a folder still open
+  // from the previous one.
+  const restoreWorkspace = useCallback(async (saved, userId) => {
+    if (workspaceOwnerRef.current && workspaceOwnerRef.current !== userId) {
+      setWorkspace(null);
+      setWorkspaceEntryPath(null);
+      setReconnect(null);
+      workspaceOwnerRef.current = null;
+    }
+    if (!saved) return;
+    if (saved.handle && saved.handle.queryPermission) {
+      const perm = await saved.handle.queryPermission({ mode: 'read' });
+      if (perm === 'granted') {
+        const ws = await createFsaWorkspace(saved.handle);
+        if (workspaceRef.current) return; // user opened a folder during the await
+        workspaceOwnerRef.current = userId;
+        setWorkspace(ws);
+        setWorkspaceEntryPath(saved.lastPath || pickEntryFile(ws.listFiles()));
+      } else {
+        setReconnect({ rootName: saved.rootName }); // needs a user gesture
       }
-    })();
-  }, [isLibLoaded, signedInUserId]); // stable state setters don't need to be listed
+    } else {
+      setReconnect({ rootName: saved.rootName }); // snapshot: must re-pick
+    }
+  }, []);
+  useWorkspaceRestore({
+    ready: isLibLoaded, userId: signedInUserId, getSaved: getWorkspaceState, onSaved: restoreWorkspace,
+  });
 
   const reconnectFolder = useCallback(async () => {
     try {
@@ -684,6 +691,7 @@ export default function App() {
         if (perm === 'granted') {
           const ws = await createFsaWorkspace(saved.handle);
           if (workspaceRef.current) return; // user opened a folder during the await
+          workspaceOwnerRef.current = signedInUserId;
           setWorkspace(ws);
           setWorkspaceEntryPath(saved.lastPath || pickEntryFile(ws.listFiles()));
           setReconnect(null);
@@ -695,7 +703,7 @@ export default function App() {
       console.warn('Reconnect failed:', e);
       openFolder();
     }
-  }, [openFolder]);
+  }, [openFolder, signedInUserId]);
 
   // ---------- INDEXING ----------
   // When the open document changes, lazily hash it and fetch its backend
@@ -1070,7 +1078,7 @@ export default function App() {
           onCancelBookDownload={cancelBookDownload}
           onEnterDistractionFree={() => setDistractionFree(true)}
           workspaceName={workspace?.rootName}
-          onCloseWorkspace={() => { setWorkspace(null); setWorkspaceEntryPath(null); clearWorkspaceState(); }}
+          onCloseWorkspace={() => { workspaceOwnerRef.current = null; setWorkspace(null); setWorkspaceEntryPath(null); clearWorkspaceState(); }}
           user={auth.user}
           onLogout={auth.logout}
         />
