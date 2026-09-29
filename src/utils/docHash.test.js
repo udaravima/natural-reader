@@ -13,4 +13,13 @@ describe('docHash cache', () => {
         expect(a).not.toBe(b);
         expect(b).toBe(await sha256Hex(buf('BBBB')));
     });
+
+    it('a hash still being computed when its name is forgotten is not cached', async () => {
+        const pending = getOrComputeDocHash('paper.pdf', buf('OLD!'));  // load N, in flight
+        forgetDocHash('paper.pdf');                                   // load N+1 saved new bytes
+        await pending;
+        const next = await getOrComputeDocHash('paper.pdf', buf('NEW!')); // same size
+        expect(next).toBe(await sha256Hex(buf('NEW!')));
+    });
 });
+

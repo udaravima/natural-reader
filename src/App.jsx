@@ -186,7 +186,7 @@ export default function App() {
   const pdfEngine = usePdfEngine({ scale, setStatus, setToastMessage });
 
   const {
-    pdfDoc, pdfFileName, docLoadId, fileType, currentPage, setCurrentPage, numPages,
+    pdfDoc, pdfFileName, docLoadId, docInLibrary, fileType, currentPage, setCurrentPage, numPages,
     textItems, isLibLoaded, pdfOutline, recentBooks,
     currentSentenceIndex, setCurrentSentenceIndex,
     canvasRef, textLayerRef, fileInputRef, sentenceRefs, playbackIndexRef,
@@ -485,11 +485,13 @@ export default function App() {
   // Read the file bytes back out of IndexedDB and compute (or look up) its
   // sha256 hash. Returns null if the doc isn't in the library yet.
   const ensureDocHash = useCallback(async () => {
-    if (!pdfFileName) return null;
+    // A workspace file isn't in the local library: getBook would find a
+    // same-named book and hand back that book's id (v2.2 Task C).
+    if (!pdfFileName || !docInLibrary) return null;
     const record = await getBook(pdfFileName);
     if (!record?.data) return null;
     return getOrComputeDocHash(pdfFileName, record.data);
-  }, [pdfFileName]);
+  }, [pdfFileName, docInLibrary]);
 
   const handleAskAboutPage = useCallback(async (page) => {
     if (!pdfFileName) return;

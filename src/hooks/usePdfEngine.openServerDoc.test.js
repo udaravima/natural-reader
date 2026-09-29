@@ -136,4 +136,14 @@ describe('opening a server document', () => {
         expect(result.current.pdfFileName).toBe('report.txt');
         expect(result.current.docLoadId).toBe(first + 1);
     });
+
+    it('knows whether the open document is in the local library (a workspace file is not)', async () => {
+        const { result } = renderHook(() => usePdfEngine({ scale: 1, setStatus: vi.fn(), setToastMessage: vi.fn() }));
+        await act(async () => { await result.current.processFile(new File(['Picked.'], 'notes.md', { type: 'text/markdown' })); });
+        expect(result.current.docInLibrary).toBe(true);
+        // App opens a workspace file by calling the loaders directly: never saved locally.
+        act(() => { result.current.loadMarkdownDocument('# From the folder', 'notes.md'); });
+        expect(result.current.docInLibrary).toBe(false);
+    });
 });
+

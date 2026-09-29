@@ -22,6 +22,11 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
     // Library or citation open of a different document called "report.pdf"):
     // App keys the open document's hash on it, not on the name.
     const [docLoadId, setDocLoadId] = useState(0);
+    // Whether the open document's bytes are in the local library (picked,
+    // opened from the server, reopened from "Your Library"). A file opened
+    // from a workspace folder isn't, so App mustn't hash a same-named book
+    // for it (v2.2 Task C).
+    const [docInLibrary, setDocInLibrary] = useState(false);
     const [fileType, setFileType] = useState('pdf'); // 'pdf' | 'text' | 'markdown'
     const [textPages, setTextPages] = useState([]); // sentences[][] for .txt files
     const [markdownPages, setMarkdownPages] = useState([]); // page objects for .md files
@@ -257,7 +262,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
     // Load a plain-text document from a UTF-8 string: paginate, set state,
     // and clear PDF-only state so the viewer renders the text path.
-    const loadTextDocument = (rawText, fileName) => {
+    const loadTextDocument = (rawText, fileName, { inLibrary = false } = {}) => {
         const sentences = segmentSentences(rawText);
         const pages = paginateSentences(sentences, SENTENCES_PER_TEXT_PAGE);
         setPdfDoc(null);
@@ -268,6 +273,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         setFileType('text');
         setPdfFileName(fileName);
         setDocLoadId((n) => n + 1);
+        setDocInLibrary(inLibrary);
         applySavedProgress(fileName, pages.length);
         return pages.length;
     };
@@ -275,7 +281,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
     // Load a markdown document: parse blocks, paginate paragraph-aware, then
     // hand off to the markdown renderer. Sentences for TTS already pass through
     // markdownToSpeech() during segmentation, so the audio path stays plain.
-    const loadMarkdownDocument = (rawText, fileName) => {
+    const loadMarkdownDocument = (rawText, fileName, { inLibrary = false } = {}) => {
         const blocks = segmentMarkdown(rawText);
         const pages = paginateMarkdownBlocks(blocks, SENTENCES_PER_TEXT_PAGE);
         setPdfDoc(null);
@@ -286,6 +292,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         setFileType('markdown');
         setPdfFileName(fileName);
         setDocLoadId((n) => n + 1);
+        setDocInLibrary(inLibrary);
         applySavedProgress(fileName, pages.length);
         return pages.length;
     };
@@ -342,6 +349,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
                     setNumPages(doc.numPages);
                     setPdfFileName(fileName);
                     setDocLoadId((n) => n + 1);
+                    setDocInLibrary(true);
 
                     applySavedProgress(fileName, doc.numPages);
 
@@ -377,8 +385,8 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
                     await persistBook(file, { page: 1, sentenceIndex: -1 });
 
                     const numPages = detected === 'markdown'
-                        ? loadMarkdownDocument(rawText, fileName)
-                        : loadTextDocument(rawText, fileName);
+                        ? loadMarkdownDocument(rawText, fileName, { inLibrary: true })
+                        : loadTextDocument(rawText, fileName, { inLibrary: true });
                     getRecentBooks().then(setRecentBooks);
                     resolve({ numPages });
                 } catch (e) {
@@ -408,9 +416,9 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
             if (storedType === 'text' || storedType === 'markdown') {
                 const rawText = new TextDecoder().decode(bookData.data);
                 if (storedType === 'markdown') {
-                    loadMarkdownDocument(rawText, fileName);
+                    loadMarkdownDocument(rawText, fileName, { inLibrary: true });
                 } else {
-                    loadTextDocument(rawText, fileName);
+                    loadTextDocument(rawText, fileName, { inLibrary: true });
                 }
                 updateBookMeta(fileName, {}).then(() => {
                     getRecentBooks().then(setRecentBooks);
@@ -428,6 +436,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
             setNumPages(doc.numPages);
             setPdfFileName(fileName);
             setDocLoadId((n) => n + 1);
+            setDocInLibrary(true);
 
             applySavedProgress(fileName, doc.numPages);
 
@@ -567,6 +576,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         pdfDoc,
         pdfFileName,
         docLoadId,
+        docInLibrary,
         fileType,
         currentPage, setCurrentPage,
         numPages,

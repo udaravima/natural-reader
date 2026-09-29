@@ -16,13 +16,18 @@ export async function sha256Hex(arrayBuffer) {
         .join('');
 }
 
+// Bumped per name by forgetDocHash, so a hash still being computed for the
+// bytes that were replaced isn't cached afterwards (v2.2 Task C).
+const generation = new Map(); // fileName -> number
+
 export async function getOrComputeDocHash(fileName, arrayBuffer) {
     if (!fileName || !arrayBuffer) return null;
     const size = arrayBuffer.byteLength;
     const cached = cache.get(fileName);
     if (cached && cached.size === size) return cached.hash;
+    const gen = generation.get(fileName) || 0;
     const hash = await sha256Hex(arrayBuffer);
-    cache.set(fileName, { size, hash });
+    if ((generation.get(fileName) || 0) === gen) cache.set(fileName, { size, hash });
     return hash;
 }
 
@@ -31,6 +36,7 @@ export async function getOrComputeDocHash(fileName, arrayBuffer) {
 // the next lookup must hash afresh.
 export function forgetDocHash(fileName) {
     cache.delete(fileName);
+    generation.set(fileName, (generation.get(fileName) || 0) + 1);
 }
 
 export function clearDocHashCache() {
