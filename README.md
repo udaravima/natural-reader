@@ -2,7 +2,7 @@
 
 A modern, feature-rich document reader with **neural text-to-speech** powered by **[Kokoro TTS](https://github.com/hexgrad/kokoro)**, an **optional local-AI chat mode** powered by **[Ollama](https://ollama.com/)**, and (new in `v1.6.0`) **document-aware chat with RAG + autonomous tool calling** backed by **Postgres + pgvector**. Open PDFs, `.txt`, or `.md` files, have them read aloud with natural-sounding voices, ask the model about what you're reading, or let the model search the indexed doc on its own.
 
-> 🎯 **A web frontend for Kokoro TTS — now with chat that knows what you're reading.** Beyond the TTS reader and the standalone Ollama chat side-mode, the app can index a loaded document into pgvector and expose a `search_document` tool that your local LLM calls autonomously when a question warrants it. Everything stays local: Ollama for the LLM + embeddings, Postgres in a container for chat sessions and vectors, no cloud round-trips. A browser-based Web Speech fallback is also available for testing without any backend.
+> 🎯 **A web frontend for Kokoro TTS — now with chat that knows what you're reading.** Beyond the TTS reader and the standalone Ollama chat side-mode, the app can index a loaded document into pgvector and expose a `search_documents` tool that your local LLM calls autonomously when a question warrants it. Everything stays local: Ollama for the LLM + embeddings, Postgres in a container for chat sessions and vectors, no cloud round-trips. A browser-based Web Speech fallback is also available for testing without any backend.
 
 ![Neural Reader](https://img.shields.io/badge/React-19.x-blue) ![PDF.js](https://img.shields.io/badge/PDF.js-5.x-orange) ![Kokoro TTS](https://img.shields.io/badge/Kokoro-TTS-green) ![Ollama](https://img.shields.io/badge/Ollama-Chat-orange) ![Vite](https://img.shields.io/badge/Vite-Rolldown-purple) ![Offline](https://img.shields.io/badge/Offline-Ready-brightgreen)
 
@@ -75,9 +75,9 @@ A full end-to-end walkthrough lives in [docs/CHAT_WITH_PDF.md](docs/CHAT_WITH_PD
 - **Ask AI on a selection** — Highlight any text on the rendered page and *pin* just that snippet. Paired with the existing "Read Selection" TTS button.
 - **Pinned context** — Ask page / Ask AI create **pins**: excerpts that stay attached to the conversation and are re-sent to the model on **every** turn — positioned at the very top of the prompt so they never get buried — until you remove them. Multiple pins accumulate as removable chips, dedupe by content, are bounded (**6 pins / ~12 000 chars**), and are **saved with the chat session** (restored on reload). Whole-document breadth comes from autonomous retrieval (below), not a giant pin.
 - **Index this document** — Backed by **Postgres + pgvector**. The file is uploaded, and the **server** extracts per-page (PDF), per-block (Markdown) or per-pseudo-page (TXT) chunks on the reader's own pagination, embeds them via Ollama's `nomic-embed-text` (768-dim) and stores them in an HNSW-indexed `vector` column. A file that's already indexed on the server is indexed for you at once.
-- **Autonomous tool calling** — When a doc is indexed and the chat model reports tool support, the model gets a `search_document` tool it can invoke on its own; `web_search` is offered too when SearXNG is configured. The turn runs server-side (`server/chat/`): the server executes the call, hands the result back, and the model streams the final answer. One tool round by default (`CHAT_MAX_TOOL_ROUNDS`), then one last step with tools switched off, so the turn always ends in an answer; a model without tool support just never sees the tool. Tool calls are persisted in a `tool_calls` JSONB column and re-rendered as a 🔎 disclosure on the assistant bubble.
+- **Autonomous tool calling** — When a doc is indexed and the chat model reports tool support, the model gets a `search_documents` tool it can invoke on its own; `web_search` is offered too when SearXNG is configured. The turn runs server-side (`server/chat/`): the server executes the call, hands the result back, and the model streams the final answer. One tool round by default (`CHAT_MAX_TOOL_ROUNDS`), then one last step with tools switched off, so the turn always ends in an answer; a model without tool support just never sees the tool. Tool calls are persisted in a `tool_calls` JSONB column and re-rendered as a 🔎 disclosure on the assistant bubble.
 - **Postgres-backed chat sessions** — Sessions previously stored in IndexedDB now write to Postgres via a new `src/lib/sessionStore.js` abstraction. Legacy IDB sessions stay readable with a small **LOCAL** badge; the first message you send on one copies it onto the server (`POST /v1/chat/sessions/import`), leaving the original intact.
-- **Server-side tool registry** — `server/chat/tools/` houses one tool per file (`search_document`, `web_search`). Adding a tool later is one new file + one registry line; there is no browser-side tool code anymore.
+- **Server-side tool registry** — `server/chat/tools/` houses one tool per file (`search_documents`, `web_search`). Adding a tool later is one new file + one registry line; there is no browser-side tool code anymore.
 
 ### 👥 Accounts, Document Library & App Shell *(new in `v2.0.0`)*
 
@@ -175,7 +175,7 @@ Install this before you start. The app is split into a **React frontend** (Vite)
 |----------|---------|-----|
 | **Docker + Docker Compose**, *or* **Podman + podman-compose** | recent | Runs Postgres in a container via `docker-compose.yml`. `startup.sh` supports either engine. |
 | *— or —* host **PostgreSQL** + **pgvector** | `pg16` | Stores chat sessions and document embeddings. The provided container image is `pgvector/pgvector:pg16`. |
-| Ollama embedding model **`nomic-embed-text`** | 768-dim | Indexing / retrieval / autonomous `search_document` tool calling. The schema is hard-locked to 768 dims. |
+| Ollama embedding model **`nomic-embed-text`** | 768-dim | Indexing / retrieval / autonomous `search_documents` tool calling. The schema is hard-locked to 768 dims. |
 
 > 📦 **Disk:** budget ~335 MB for the Kokoro model + voice pack, and (only if you enable `DOCLING_ENABLED=true`) an extra ~500 MB–2 GB downloaded on first conversion for the Docling layout/table models.
 
@@ -272,7 +272,7 @@ docker-compose up -d postgres
 # Pull the embedding model (768-dim — the schema is hard-locked to this)
 ollama pull nomic-embed-text
 
-# Optional: pull a chat model that supports Ollama's tools parameter (for autonomous search_document)
+# Optional: pull a chat model that supports Ollama's tools parameter (for autonomous search_documents)
 ollama pull qwen2.5    # or llama3.1 / llama3.2 / mistral / gemma2
 ```
 
@@ -369,7 +369,7 @@ All endpoints return `503` when Postgres is unreachable.
 | `/v1/docs/{doc_id}` | `GET / PATCH / DELETE` | Status (`state`, `chunk_count`, `embedded_count`, model, dim); rename/retag **your** entry; remove it from **your** library (the content goes when nobody holds it). |
 | `/v1/docs/{doc_id}/file` | `GET` | The stored file, for anyone who can read the document (404 otherwise). The Library's **Open** button. |
 | `/v1/docs/{doc_id}/index` | `POST` | Resume, or re-index from the stored file; returns 202. Poll the doc status endpoint for progress. |
-| `/v1/docs/{doc_id}/search` | `POST` | `{query, k}` → top-k chunks by cosine similarity (HNSW). Used by the autonomous `search_document` tool. |
+| `/v1/docs/{doc_id}/search` | `POST` | `{query, k}` → top-k chunks by cosine similarity (HNSW). Used by the autonomous `search_documents` tool. |
 
 Sharing, projects, conversion and who may call what: [docs/LIBRARY.md § API surface](docs/LIBRARY.md#api-surface). There is no chunk-upload route: chunks are always derived on the server.
 
@@ -774,7 +774,7 @@ natural-reader/
 │   │   ├── context.py         # Stage 0: document prefetch, time-in-prompt, history trimming
 │   │   ├── store.py           # Turn claims/heartbeat/recovery, message + event persistence
 │   │   ├── config.py          # CHAT_* env knobs (tool rounds, prefetch, trimming, request size cap)
-│   │   └── tools/              # search_document, web_search — one file per tool, server-side only
+│   │   └── tools/              # search_documents, web_search — one file per tool, server-side only
 │   ├── llm/                   # Model provider layer (C1)
 │   │   ├── router.py          # Loads INFERENCE_PROVIDERS config, resolves "<provider>:<model>" ids
 │   │   ├── types.py           # Internal message/event types every adapter maps to/from

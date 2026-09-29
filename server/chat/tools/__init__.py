@@ -4,7 +4,7 @@ back as {"error": ...} so the model can recover (the OpenAI Agents SDK rule)."""
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ...llm.types import ToolCall, ToolSpec
@@ -15,8 +15,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ToolContext:
+    """One per turn: what the tools may read, and what this turn has seen."""
     user_id: str
     doc: ReadableDoc | None   # the open document, already checked readable
+    search_min_score: float = 0.45   # CHAT_SEARCH_MIN_SCORE: weaker passages are noise
+    # Chunk ids whose text the model already has this turn (the prefetch
+    # block, earlier searches): shown again only as a page reference.
+    shown: set[int] = field(default_factory=set)
 
 
 class Tool(Protocol):
@@ -49,9 +54,9 @@ class ToolRun:
         return "error" not in self.result
 
 
-from . import search_document, web_search  # noqa: E402 — after the shared types, by convention
+from . import search_documents, web_search  # noqa: E402 — after the shared types, by convention
 
-REGISTRY: list[Tool] = [search_document.TOOL, web_search.TOOL]
+REGISTRY: list[Tool] = [search_documents.TOOL, web_search.TOOL]
 
 
 def available_tools(ctx: ToolContext) -> list[Tool]:
@@ -73,5 +78,7 @@ async def run_tool(call: ToolCall, ctx: ToolContext, offered: list[Tool]) -> Too
             result = {"error": f"{call.name} failed: {type(e).__name__}"}
     summary = ({"error": result["error"]} if "error" in result or tool is None
                else tool.summarize(call.arguments, result, ctx))
+    # Keys starting with "_" are for summarize() only; the model never reads them.
+    result = {k: v for k, v in result.items() if not k.startswith("_")}
     return ToolRun(call.id, call.name, call.arguments, result,
                    {"name": call.name, "arguments": call.arguments, "result_summary": summary})

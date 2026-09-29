@@ -1,0 +1,138 @@
+"""search_documents: find passages in the documents in scope (spec §5.3; C2).
+
+This slice's scope is the one open, indexed document. C2 widens it (a project,
+the library) with a `scope` argument: the result shape already names each
+passage's document by a short `ref`, so nothing here is renamed then."""
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from ...db import get_pool
+from ...llm.types import ToolSpec
+from ...services.doc_search import ReadableDoc, search_chunks
+from ...services.embeddings import embed_one
+from ..prompt import display_name
+
+logger = logging.getLogger(__name__)
+
+PER_CHUNK_TEXT_CAP = 1500   # characters per passage the model reads
+# Relevance buckets over cosine similarity. Measured on nomic-embed-text:
+# matching questions scored 0.563-0.823, unrelated ones 0.428-0.513
+# (server/chat/config.py). The model sees the bucket, never the number.
+STRONG, MODERATE = 0.7, 0.55
+NONE_FOUND = "No passages about this in the document."
+NOTHING_NEW = ("Nothing new: every passage found was already shown above. "
+               "Search with different words, or answer from what you have.")
+
+_SPEC = ToolSpec(
+    name="search_documents",
+    description=(
+        "Search the open document for passages about something, by meaning (vector search over "
+        "its indexed text). Returns up to k passages, best first, each with its page and a "
+        "relevance of strong, moderate or weak; unrelated passages are left out. The user's "
+        "question was already searched before you ran, so search with different words: names, "
+        "terms, sections or tables the question or earlier passages mention. A passage already "
+        "shown this turn comes back as its page only."),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": (
+                "What to find: a topic, name, term or claim, in words likely to appear near it.")},
+            "k": {"type": "integer", "minimum": 1, "maximum": 10, "description": (
+                "How many passages (1-10). Default 5; up to 10 for broad questions.")},
+        },
+        "required": ["query"],
+    },
+)
+
+
+def relevance(score: float) -> str:
+    return "strong" if score >= STRONG else "moderate" if score >= MODERATE else "weak"
+
+
+def _cap(text: str) -> str:
+    return text if len(text) <= PER_CHUNK_TEXT_CAP else text[:PER_CHUNK_TEXT_CAP] + " [truncated]"
+
+
+def _scope(ctx) -> list[ReadableDoc]:
+    """The documents this call searches, in `ref` order (ref = position + 1)."""
+    return [ctx.doc] if ctx.doc is not None and ctx.doc.state == "indexed" else []
+
+
+class _SearchDocuments:
+    name = "search_documents"
+    spec = _SPEC
+    reads_documents = True   # brings the grounding and citation rules (server/chat/prompt.py)
+
+    def available(self, ctx) -> bool:
+        return bool(_scope(ctx))
+
+    def guidance(self, ctx) -> str:
+        # C1 spec §5 "steering is load-bearing": without "answer from them when
+        # they are enough", a model handed passages searches anyway. Worded for
+        # both cases (the rules are stable for the turn; the prefetch varies).
+        return ("find passages in the open document by meaning. If the user's message has a "
+                "<document_passages> block, those passages were found for their question: answer "
+                "from them when they are enough, and search only for what they don't cover, with "
+                "different words (names, terms or topics from the question or the passages). If it "
+                "has none, nothing matched yet: search before saying the document doesn't cover "
+                "the question.")
+
+    async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
+        scope = _scope(ctx)
+        if not scope:
+            return {"error": "No indexed document is open."}
+        query = str(args.get("query") or "").strip()
+        if not query:
+            return {"error": "query is required and must be non-empty."}
+        k = args.get("k")
+        k = max(1, min(10, int(k))) if isinstance(k, (int, float)) and not isinstance(k, bool) else 5
+        qvec = await embed_one(query)
+        # Ask for more than k when some are already shown, so a repeated
+        # search still has k new passages to offer.
+        want = k + min(len(ctx.shown), 10)
+        found: list[tuple[int, dict[str, Any]]] = []
+        async with get_pool().connection() as conn:
+            for ref, doc in enumerate(scope, start=1):
+                found += [(ref, r) for r in await search_chunks(conn, doc.doc_id, qvec, want)]
+        found.sort(key=lambda fr: fr[1]["score"], reverse=True)
+        kept = [(ref, r) for ref, r in found if r["score"] >= ctx.search_min_score]
+
+        passages: list[dict[str, Any]] = []
+        new: list[tuple[int, dict[str, Any]]] = []
+        for ref, r in kept:
+            if len(new) == k:
+                break
+            if r["id"] in ctx.shown:
+                passages.append({"ref": ref, "page": r["page"], "already_shown": True})
+            else:
+                new.append((ref, r))
+                passages.append({"ref": ref, "page": r["page"], "relevance": relevance(r["score"]),
+                                 "text": _cap(r["text"] or "")})
+        ctx.shown.update(r["id"] for _, r in new)
+        logger.debug("search_documents docs=%d found=%d kept=%d new=%d floor=%s top=%s",
+                     len(scope), len(found), len(kept), len(new), ctx.search_min_score,
+                     round(found[0][1]["score"], 4) if found else None)
+        result: dict[str, Any] = {
+            "query": query,
+            "documents": [{"ref": ref, "name": display_name(d.name)} for ref, d in enumerate(scope, start=1)],
+            "passages": passages,
+        }
+        if not new:
+            result["message"] = NOTHING_NEW if passages else NONE_FOUND
+        # For summarize() only: stripped before the model reads the result.
+        result["_saved"] = [{"page": r["page"], "score": round(r["score"], 4)} for _, r in new]
+        return result
+
+    def summarize(self, args: dict[str, Any], result: dict[str, Any], ctx) -> dict[str, Any]:
+        # docId/docName are saved with the reply so its page citations can
+        # open this document later; the raw scores are for tuning. The model
+        # reads neither.
+        saved = result.get("_saved", [])
+        return {"ok": True, "chunk_count": len(saved), "query": result["query"],
+                "summary_text": None, "docId": ctx.doc.doc_id, "docName": ctx.doc.name,
+                "passages": saved}
+
+
+TOOL = _SearchDocuments()

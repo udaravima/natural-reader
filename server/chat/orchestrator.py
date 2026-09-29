@@ -227,13 +227,14 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             claim.session_id, exclude=(claim.user_message_id, claim.assistant_message_id))
         # Tools first: the system rules describe exactly the tools this turn
         # offers (server/chat/prompt.py), so none is ever named in vain.
-        tool_ctx = ToolContext(req.user_id, doc)
+        tool_ctx = ToolContext(req.user_id, doc, search_min_score=cfg.search_min_score)
         offered = [] if caps.tools is False else available_tools(tool_ctx)
         built = await build_context(TurnInput(
             user_id=req.user_id, text=req.text, attachments=req.attachments, doc=doc,
             timezone=req.timezone, pins=pins, history=history,
             window=_window(router, req, caps), now=datetime.now(timezone.utc),
             tools=tuple(offered if cfg.max_tool_rounds > 0 else ()), tool_ctx=tool_ctx), cfg)
+        tool_ctx.shown.update(built.shown_chunk_ids)
         if built.notes:
             state.doc_context = {"notes": built.notes}
             yield ev("data-context", items=built.notes)
@@ -377,8 +378,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             await _save(claim, state)
         # Spec §5.2.1: did the model still search after a prefetch hit? Lets a
         # deployer tune CHAT_PREFETCH_MIN_SCORE. DEBUG, and no user text.
-        logger.debug("chat turn %s prefetch_hit=%s search_document_called=%s", claim.turn_id,
-                     built.prefetch_hit, any(c["name"] == "search_document" for c in state.tool_calls))
+        logger.debug("chat turn %s prefetch_hit=%s search_documents_called=%s", claim.turn_id,
+                     built.prefetch_hit, any(c["name"] == "search_documents" for c in state.tool_calls))
         if state.last_finish == "length":
             await _log_event(claim.session_id, "truncated", "reply hit the length limit")
         await _log_event(claim.session_id, "received", f"assistant reply ({len(state.content)} chars)")

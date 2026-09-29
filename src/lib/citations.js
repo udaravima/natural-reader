@@ -3,7 +3,9 @@
  * cites it as "page N" or "(page N)"; those become buttons that open that
  * document at that page. The document comes from what the server saved with
  * the reply, never from the reply text: the prefetch note in
- * `docContext.notes`, or a successful `search_document` call's summary.
+ * `docContext.notes`, or the summary of a successful call to a tool that
+ * read a document (it saves `docId`): `search_documents`, or
+ * `search_document` in chats saved before v2.3.
  */
 
 /** The document a reply's page citations refer to: `{ docId, docName }` or null. */
@@ -11,7 +13,7 @@ export function citationDoc(message) {
     const note = (message?.docContext?.notes || []).find((n) => n?.kind === 'prefetch' && n.docId);
     if (note) return { docId: note.docId, docName: note.docName };
     const call = (message?.toolCalls || []).find(
-        (tc) => tc?.name === 'search_document' && tc.result_summary?.docId);
+        (tc) => tc?.result_summary?.ok && tc.result_summary.docId);
     if (call) return { docId: call.result_summary.docId, docName: call.result_summary.docName };
     return null;
 }

@@ -10,7 +10,7 @@ from httpx import ASGITransport
 from server.auth import deps
 from server.chat import context as ctx_mod
 from server.chat import orchestrator, store
-from server.chat.tools import search_document as sd_tool
+from server.chat.tools import search_documents as sd_tool
 from server.llm.types import Capabilities, Finish, TextDelta, Usage
 from server.routers import chat_turns
 from server.services import inference_budget

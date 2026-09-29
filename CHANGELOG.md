@@ -20,6 +20,16 @@ All notable changes to this project will be documented in this file.
   isn't the one open. If you can no longer read it, a notice says so and
   you stay in chat. Replies that used no document are unchanged.
 
+### Changed
+
+- **Document search returns evidence, not noise.** The document search
+  tool is now called `search_documents`. It leaves out weak matches
+  (`CHAT_SEARCH_MIN_SCORE`, default 0.45) and labels the passages it keeps
+  strong, moderate or weak instead of showing raw scores. It doesn't repeat
+  a passage the model already has in the same answer, so a second search
+  finds something new. Citations in chats saved before this change still
+  open their document.
+
 ### Fixed
 
 - **The model gets clear rules about the document, not hints mixed into

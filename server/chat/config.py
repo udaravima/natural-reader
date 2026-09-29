@@ -18,6 +18,7 @@ class ChatConfig:
                                             # questions scored 0.563-0.823 (5/6 >= 0.6, only 2/6 >= 0.75),
                                             # unrelated ones 0.428-0.513 (none >= 0.6).
     prefetch_k: int = 4                    # passages at most
+    search_min_score: float = 0.45         # search_documents drops passages below this (noise)
     reply_reserve_tokens: int = 2048       # kept free for the reply when trimming history
     attachment_token_estimate: int = 1500  # tokens counted per image/audio when trimming (a guess)
     max_request_mb: int = 25               # turn request body cap, in MB
@@ -44,6 +45,7 @@ def load_chat_config(env: Mapping[str, str]) -> ChatConfig:
         max_tool_rounds=num("CHAT_MAX_TOOL_ROUNDS", d.max_tool_rounds, int, 0, 20),
         prefetch_min_score=num("CHAT_PREFETCH_MIN_SCORE", d.prefetch_min_score, float, 0.0, 1.0),
         prefetch_k=num("CHAT_PREFETCH_K", d.prefetch_k, int, 1, 20),
+        search_min_score=num("CHAT_SEARCH_MIN_SCORE", d.search_min_score, float, 0.0, 1.0),
         reply_reserve_tokens=num("CHAT_REPLY_RESERVE_TOKENS", d.reply_reserve_tokens, int, 0, 1_000_000),
         attachment_token_estimate=num("CHAT_ATTACHMENT_TOKEN_ESTIMATE", d.attachment_token_estimate,
                                       int, 0, 100_000),

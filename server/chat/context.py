@@ -111,7 +111,8 @@ async def prefetch(doc: ReadableDoc | None, question: str, cfg: ChatConfig) -> P
     note = {"kind": "prefetch", "docId": doc.doc_id, "docName": doc.name, "count": len(kept),
             "topScore": round(top, 4),
             "pages": sorted({r["page"] for r in kept if r.get("page") is not None})}
-    return Prefetch([{"page": r.get("page"), "score": float(r["score"]), "text": _cap(r["text"] or "")}
+    return Prefetch([{"id": r.get("id"), "page": r.get("page"), "score": float(r["score"]),
+                      "text": _cap(r["text"] or "")}
                      for r in kept], top, note)
 
 
@@ -209,6 +210,7 @@ class BuiltContext:
     messages: list[Message]
     notes: list[dict[str, Any]]
     prefetch_hit: bool
+    shown_chunk_ids: tuple[int, ...] = ()   # the prefetched chunks: search_documents won't repeat them
 
 
 async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
@@ -253,4 +255,5 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
         notes.append({"kind": "trimmed", "messages": n_messages, "attachments": n_attachments})
         logger.debug("history trimmed: %d messages, %d attachments (window %s)",
                      n_messages, n_attachments, turn.window)
-    return BuiltContext([system, *history_messages, current], notes, bool(pre.passages))
+    return BuiltContext([system, *history_messages, current], notes, bool(pre.passages),
+                        tuple(p["id"] for p in pre.passages if p.get("id") is not None))

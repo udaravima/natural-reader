@@ -10,7 +10,7 @@ from server.chat import orchestrator, store
 from server.chat.config import ChatConfig
 from server.chat.context import Prefetch
 from server.chat.orchestrator import TurnRequest, run_turn
-from server.chat.tools import search_document as sd_tool
+from server.chat.tools import search_documents as sd_tool
 from server.chat.tools import web_search as ws_tool
 from server.services.doc_search import ReadableDoc
 from server.llm.types import (CallSettings, Capabilities, FeatureDropped, Finish, ProviderError,
@@ -85,11 +85,11 @@ async def test_plain_reply_streams_saves_and_releases(conn):
     assert await _one(conn, "SELECT prompt_tokens, eval_tokens FROM inference_usage WHERE user_id=%s",
                       (alice.user_id,)) == (10, 3)
     sent = router.calls[0]
-    assert sent["tools"] == ["web_search"]                  # no open document: no search_document
+    assert sent["tools"] == ["web_search"]                  # no open document: no search_documents
     # v2.3: the rules are the one leading system message, and name only the
     # tool offered; the volatile block (just the time line) leads the user message.
     system, only = sent["messages"]
-    assert system.role == "system" and "web_search" in system.content and "search_document" not in system.content
+    assert system.role == "system" and "web_search" in system.content and "search_documents" not in system.content
     assert only.role == "user" and only.content.startswith("Current time: ") and only.content.endswith("\n\nHi")
     assert await _log(conn) == ["sent", "received"]
     assert_fixture("plain", events)
@@ -491,11 +491,11 @@ async def test_a_silent_step_adds_no_separator(conn, monkeypatch):
 
 
 @pytest.mark.parametrize("hit,calls,want", [
-    (True, [], "prefetch_hit=True search_document_called=False"),
-    (False, [ToolCall("c1", "search_document", {"query": "q"})], "prefetch_hit=False search_document_called=True"),
+    (True, [], "prefetch_hit=True search_documents_called=False"),
+    (False, [ToolCall("c1", "search_documents", {"query": "q"})], "prefetch_hit=False search_documents_called=True"),
 ])
 async def test_the_prefetch_metric_is_logged_at_debug_per_turn(conn, monkeypatch, caplog, hit, calls, want):
-    """M1 (spec §5.2.1): whether search_document still ran after a prefetch,
+    """M1 (spec §5.2.1): whether search_documents still ran after a prefetch,
     so a deployer can tune CHAT_PREFETCH_MIN_SCORE. No user text in it."""
     async def fake_prefetch(doc, question, cfg):
         return Prefetch([{"page": 1, "score": 0.9, "text": "p"}], 0.9,
@@ -539,7 +539,7 @@ OPEN_DOC = ReadableDoc("d" * 64, "Thesis.pdf", "indexed")
 
 @pytest.fixture
 def open_doc(monkeypatch):
-    """An open, indexed document, so search_document is offered; its search
+    """An open, indexed document, so search_documents is offered; its search
     finds nothing and no embedding model is called."""
     async def fake_open_doc(req):
         return OPEN_DOC
@@ -559,7 +559,7 @@ def open_doc(monkeypatch):
     monkeypatch.setattr(sd_tool, "search_chunks", fake_search_chunks)
 
 
-TEXT_CALL = '{"name": "search_document", "parameters": {"query": "the main finding"}}'
+TEXT_CALL = '{"name": "search_documents", "parameters": {"query": "the main finding"}}'
 
 
 def _in_pieces(text: str, size: int = 7) -> list:
@@ -571,11 +571,11 @@ async def test_the_last_round_says_so_in_its_results_and_the_rules_never_change(
     the turn, for the prefix cache) can't say that, so the last round's tool
     results do. Nothing ever tells the model to call a tool it doesn't have."""
     router = FakeRouter(steps=[
-        [ToolCallReady(ToolCall("c1", "search_document", {"query": "results"})), Usage(5, 5), Finish("tool_calls")],
+        [ToolCallReady(ToolCall("c1", "search_documents", {"query": "results"})), Usage(5, 5), Finish("tool_calls")],
         reply("The result is X (page 3).")])
     events, claim = await _run(conn, router, text="what is the result?")
     first, final = router.calls
-    assert first["tools"] == ["search_document", "web_search"] and final["tools"] == []
+    assert first["tools"] == ["search_documents", "web_search"] and final["tools"] == []
     assert first["messages"][0].role == "system"
     assert final["messages"][0].content == first["messages"][0].content    # same rules on every step
     tool_msg = final["messages"][-1]
@@ -598,21 +598,21 @@ async def test_no_tool_is_named_when_the_turn_offers_none(conn, open_doc, why):
     assert sent["tools"] == []
     system = sent["messages"][0].content
     assert '"Thesis.pdf"' in system
-    for name in ("search_document", "web_search", "Tools you can call"):
+    for name in ("search_documents", "web_search", "Tools you can call"):
         assert name not in system
 
 
 async def test_no_note_while_rounds_remain(conn, open_doc):
     router = FakeRouter(steps=[
-        [ToolCallReady(ToolCall("c1", "search_document", {"query": "a"})), Usage(5, 5), Finish("tool_calls")],
+        [ToolCallReady(ToolCall("c1", "search_documents", {"query": "a"})), Usage(5, 5), Finish("tool_calls")],
         reply("Done (page 1).")])
     await _run(conn, router, cfg=ChatConfig(max_tool_rounds=2), text="q")
     assert "note" not in json.loads(router.calls[1]["messages"][-1].content)
-    assert router.calls[1]["tools"] == ["search_document", "web_search"]
+    assert router.calls[1]["tools"] == ["search_documents", "web_search"]
 
 
 async def test_a_tool_call_written_as_text_is_run_not_saved(conn, open_doc, caplog):
-    """llama3.2:3b writes its search_document call as reply text. It must run
+    """llama3.2:3b writes its search_documents call as reply text. It must run
     as a tool call and leave no JSON in the answer."""
     router = FakeRouter(steps=[[*_in_pieces(TEXT_CALL), Usage(5, 20), Finish("stop")],
                                reply("The main finding is X.")])
@@ -622,39 +622,39 @@ async def test_a_tool_call_written_as_text_is_run_not_saved(conn, open_doc, capl
                              "tool-output-available", "start-step", "text-start", "text-delta", "text-end",
                              "finish-step", "finish"]
     call = next(e for e in events if e["type"] == "tool-input-available")
-    assert (call["toolName"], call["input"]) == ("search_document", {"query": "the main finding"})
+    assert (call["toolName"], call["input"]) == ("search_documents", {"query": "the main finding"})
     assert events[2]["finishReason"] == "tool_calls"
     second = router.calls[1]["messages"]
     assert second[-2].role == "assistant" and second[-2].content == ""
-    assert [(c.name, c.arguments) for c in second[-2].tool_calls] == [("search_document", {"query": "the main finding"})]
+    assert [(c.name, c.arguments) for c in second[-2].tool_calls] == [("search_documents", {"query": "the main finding"})]
     assert second[-1].role == "tool" and second[-1].tool_call_id == second[-2].tool_calls[0].id
     status, reason, content, _, tool_calls, _, _ = await _msg(conn, claim.turn_id)
     assert (status, reason, content) == ("complete", "stop", "The main finding is X.")
-    assert [t["name"] for t in tool_calls] == ["search_document"]
+    assert [t["name"] for t in tool_calls] == ["search_documents"]
     # Like a native call, its saved summary names the document (Task 6 citations).
     assert tool_calls[0]["result_summary"]["docId"] == OPEN_DOC.doc_id
     logs = [r.getMessage() for r in caplog.records]
-    assert "recovered text tool call name=search_document" in logs
-    assert any("search_document_called=True" in m for m in logs)   # the prefetch metric counts it
+    assert "recovered text tool call name=search_documents" in logs
+    assert any("search_documents_called=True" in m for m in logs)   # the prefetch metric counts it
 
 
 @pytest.mark.parametrize("written", [
     "```json\n" + TEXT_CALL + "\n```",
     "  ```\n" + TEXT_CALL + "```\n",
-    '\n{"name": "search_document", "arguments": {"query": "the main finding"}}',
-    '{"type": "function", "name": "search_document", "parameters": {"query": "the main finding"}}',
+    '\n{"name": "search_documents", "arguments": {"query": "the main finding"}}',
+    '{"type": "function", "name": "search_documents", "parameters": {"query": "the main finding"}}',
 ])
 async def test_fenced_and_variant_text_tool_calls_are_recovered(conn, open_doc, written):
     router = FakeRouter(steps=[[*_in_pieces(written, 3), Usage(5, 20), Finish("stop")],
                                reply("Answer.")])
     events, claim = await _run(conn, router)
     call = next(e for e in events if e["type"] == "tool-input-available")
-    assert (call["toolName"], call["input"]) == ("search_document", {"query": "the main finding"})
+    assert (call["toolName"], call["input"]) == ("search_documents", {"query": "the main finding"})
     assert (await _msg(conn, claim.turn_id))[2] == "Answer."
 
 
 async def test_a_text_tool_call_naming_a_tool_not_offered_is_text(conn):
-    """No open document: search_document isn't offered, so this is the answer."""
+    """No open document: search_documents isn't offered, so this is the answer."""
     router = FakeRouter(steps=[[*_in_pieces(TEXT_CALL), Usage(5, 20), Finish("stop")]])
     events, claim = await _run(conn, router)
     assert types(events) == ["start", "start-step", "text-start", "text-delta", "text-end", "finish-step", "finish"]
@@ -665,9 +665,9 @@ async def test_a_text_tool_call_naming_a_tool_not_offered_is_text(conn):
 
 @pytest.mark.parametrize("answer", [
     '{"verdict": "sound", "parameters": {"n": 3}}\nThat is the summary you asked for.',
-    '{"name": ["search_document"], "parameters": {"query": "q"}}',
-    '{"name": "search_document", "parameters": "the main finding"}',
-    '{"name": "search_document", "parameters": {"query": "q"}, "note": "extra"}',
+    '{"name": ["search_documents"], "parameters": {"query": "q"}}',
+    '{"name": "search_documents", "parameters": "the main finding"}',
+    '{"name": "search_documents", "parameters": {"query": "q"}, "note": "extra"}',
     '```json\n' + TEXT_CALL + '\n```\nThat was my search.',
 ])
 async def test_json_that_is_not_a_tool_call_is_streamed_unchanged(conn, open_doc, answer):
@@ -761,3 +761,38 @@ async def test_no_recovery_when_the_provider_already_strips_tools_for_this_model
     assert (await _msg(conn, claim.turn_id))[2] == TEXT_CALL
     [body] = up.bodies("/v1/chat/completions")
     assert "tools" not in body
+
+
+# ---- v2.3 Task B ----
+
+async def test_prefetched_passages_are_not_repeated_by_a_search_and_the_floor_comes_from_config(
+        conn, open_doc, monkeypatch):
+    """The prefetch block already holds chunk 11; a search that finds it again
+    returns only its page. CHAT_SEARCH_MIN_SCORE reaches the tool."""
+    async def fake_prefetch(doc, question, cfg):
+        return Prefetch([{"id": 11, "page": 3, "score": 0.8, "text": "prefetched"}], 0.8,
+                        {"kind": "prefetch", "docId": doc.doc_id, "docName": doc.name, "count": 1,
+                         "topScore": 0.8, "pages": [3]})
+
+    async def fake_search_chunks(conn, doc_id, qvec, k):
+        return [{"id": 11, "page": 3, "score": 0.8, "text": "prefetched"},
+                {"id": 12, "page": 5, "score": 0.6, "text": "new"},
+                {"id": 13, "page": 8, "score": 0.5, "text": "below this config's floor"}]
+
+    monkeypatch.setattr(ctx_mod, "prefetch", fake_prefetch)
+    monkeypatch.setattr(sd_tool, "search_chunks", fake_search_chunks)
+    router = FakeRouter(steps=[
+        [ToolCallReady(ToolCall("c1", "search_documents", {"query": "more"})), Usage(5, 5), Finish("tool_calls")],
+        reply("Done (page 5).")])
+    await _run(conn, router, cfg=ChatConfig(search_min_score=0.55), text="q")
+    result = json.loads(router.calls[1]["messages"][-1].content)
+    assert result["passages"] == [{"ref": 1, "page": 3, "already_shown": True},
+                                  {"ref": 1, "page": 5, "relevance": "moderate", "text": "new"}]
+    assert "_saved" not in result
+
+
+def test_chat_search_min_score_is_read_from_the_environment():
+    from server.chat.config import load_chat_config
+    assert load_chat_config({}).search_min_score == 0.45
+    assert load_chat_config({"CHAT_SEARCH_MIN_SCORE": "0.5"}).search_min_score == 0.5
+    assert load_chat_config({"CHAT_SEARCH_MIN_SCORE": "2"}).search_min_score == 0.45

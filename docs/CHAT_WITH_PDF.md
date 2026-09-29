@@ -17,7 +17,7 @@ You can now:
 1. **Pin the page you're on** — one toolbar click attaches the current page text; it stays in context across follow-ups.
 2. **Highlight a passage and pin *just* that snippet** — selection-aware, and you can stack several pins.
 3. **Index the whole document** — pgvector embeddings via Ollama's `nomic-embed-text`, then let the chat semantically retrieve passages from anywhere in the doc.
-4. **Let the model decide on its own** — once a doc is indexed, the model gets a `search_document` tool it can invoke autonomously whenever a question warrants it.
+4. **Let the model decide on its own** — once a doc is indexed, the model gets a `search_documents` tool it can invoke autonomously whenever a question warrants it.
 
 Everything is still local: Ollama for the LLM and embeddings, FastAPI + Postgres for the backend, no cloud round-trips.
 
@@ -56,7 +56,7 @@ A few load-bearing decisions worth knowing:
 
 - **Document identity = `sha256` of the file bytes**, computed lazily in the browser the first time you do anything chat-related with a doc. Filenames are metadata only — renaming a file hits the same document; editing it gets a fresh one.
 - **Chat now needs Postgres (C1).** Every turn claims the session and writes its reply to Postgres as it streams; if Postgres is unreachable, sending a message returns `503 db_unavailable` instead of a reply — this is a change from pre-C1, where the chat streamed against Ollama regardless and only session *persistence* depended on Postgres.
-- **Tool calling is server-side (C1).** `search_document` and `web_search` run in `server/chat/tools/`; there is no browser-side tool registry any more.
+- **Tool calling is server-side (C1).** `search_documents` and `web_search` run in `server/chat/tools/`; there is no browser-side tool registry any more.
 
 ---
 
@@ -192,7 +192,7 @@ the last is fully autonomous retrieval.
    the server searches it for passages relevant to your question and, if any
    score well enough, puts them straight in the prompt; it also writes the
    current time into the prompt. Both are cheaper than a tool round.
-4. The model streams its reply. If it calls a tool (`search_document`,
+4. The model streams its reply. If it calls a tool (`search_documents`,
    `web_search`), the server runs it, streams the result, and calls the model
    again — up to one tool round by default, then a final answer with tools off.
 5. The reply is written to Postgres as it streams. Closing the tab, losing the
@@ -251,11 +251,11 @@ that work instead of reprocessing it every time.
 
 > **Note:** the older per-chip "Use whole document" checkbox (manual `k=3` retrieval
 > folded into the preamble) was **retired** with this feature — its job is now done by
-> the autonomous `search_document` tool below.
+> the autonomous `search_documents` tool below.
 
 ### 6.4. Autonomous tool calling
 
-**No chip, no toggle, no manual setup.** Once a doc is indexed and the selected model reports tool support, the model gets a `search_document` tool and decides on its own whether to invoke it. Before that, **Stage 0** (C1) already tried a cheap shortcut: the server embeds your question and searches the open document *before* the model runs, and if it finds good enough passages it puts them straight in the prompt — often answering in one model call with no tool round at all. The tool stays available either way, so the model can still search for something the prefetch missed.
+**No chip, no toggle, no manual setup.** Once a doc is indexed and the selected model reports tool support, the model gets a `search_documents` tool and decides on its own whether to invoke it. Before that, **Stage 0** (C1) already tried a cheap shortcut: the server embeds your question and searches the open document *before* the model runs, and if it finds good enough passages it puts them straight in the prompt — often answering in one model call with no tool round at all. The tool stays available either way, so the model can still search for something the prefetch missed.
 
 What it looks like:
 
@@ -263,14 +263,22 @@ What it looks like:
 2. In chat (with no chip attached), ask: *"What does this document say about X?"*
 3. Either the reply just answers (Stage 0's prefetch already had enough), or a small cyan pill appears under the assistant's avatar: **🔄 Searching document…**.
 4. The pill disappears and the actual answer streams in, citing the retrieved passages.
-5. A small `🔎 search_document` disclosure appears on the assistant bubble — click to see the exact query the model used and how many chunks came back.
+5. A small `🔎 search_documents` disclosure appears on the assistant bubble. Click it to see the exact query the model used and how many new passages came back.
+
+**What the model gets back from `search_documents` (v2.3):**
+- Passages, each with its reader page and a relevance of `strong` (0.7 or more), `moderate` (0.55 or more) or `weak`. The raw scores are kept in the saved summary and the DEBUG logs; the model never sees them.
+- Passages scoring below `CHAT_SEARCH_MIN_SCORE` (default 0.45) are left out. With nothing left, the result says so in words.
+- A passage the model already has this turn comes back as `{"page": N, "already_shown": true}`, without its text. That covers passages from the Stage 0 block and from earlier searches, so searching again surfaces new material.
+- Each passage names its document by a short `ref`, listed in `documents`. Only the open document is searched today, as ref 1.
+
+Chats saved before v2.3 recorded the tool as `search_document`, and their page citations still open the document.
 
 **How the loop works (C1: entirely server-side, `server/chat/orchestrator.py`):**
 
 ```
 1. Server → Stage 0: embed the question, search the open document; good passages
             go straight into the prompt (a data-context event notes this)
-2. Server → calls the model provider with tools=[search_document, web_search…]
+2. Server → calls the model provider with tools=[search_documents, web_search…]
 3. Provider → streams a tool call (no content for that step)
 4. Server → runs the tool itself (server/chat/tools/), streams the result as
             tool-output-available, appends it to history
@@ -285,8 +293,8 @@ The browser never talks to a model provider or executes a tool directly any more
 
 - **Models without tool support** just never get the `tools` field. No breakage.
 - **A model that rejects tools or a thinking level** gets one retry without that feature; you see a one-time toast (`data-notice` event) instead of a failed turn.
-- **A model that writes its tool call as text** (`llama3.2:3b` does this: `{"name": "search_document", "parameters": {...}}` as the reply, sometimes in a ` ```json ` fence) still gets its search. While a step's reply could still be such a call, the server holds it back (at most 2,000 characters); if it is exactly one object naming a tool offered on that step, and the provider sent no real tool call, the server runs it like a real one and the JSON is never shown or saved. Anything else is released as ordinary text. Prose is never held: the first character that can't start that JSON lets the reply stream at once.
-- **No doc loaded** or **doc not indexed** → `search_document` isn't offered at all; `web_search` still is, if SearXNG is configured.
+- **A model that writes its tool call as text** (`llama3.2:3b` does this: `{"name": "search_documents", "parameters": {...}}` as the reply, sometimes in a ` ```json ` fence) still gets its search. While a step's reply could still be such a call, the server holds it back (at most 2,000 characters); if it is exactly one object naming a tool offered on that step, and the provider sent no real tool call, the server runs it like a real one and the JSON is never shown or saved. Anything else is released as ordinary text. Prose is never held: the first character that can't start that JSON lets the reply stream at once.
+- **No doc loaded** or **doc not indexed** → `search_documents` isn't offered at all; `web_search` still is, if SearXNG is configured.
 
 ---
 
@@ -391,7 +399,7 @@ A standard `docker-compose.yml` for the FastAPI backend doesn't ship yet — unt
 
 ## 11. What's next
 
-The server-side tool registry (`server/chat/tools/` — moved from the browser's `src/lib/chatTools/` in C1) is built to host more tools. `search_document` and `web_search` (SearXNG-backed) already ship; still open:
+The server-side tool registry (`server/chat/tools/` — moved from the browser's `src/lib/chatTools/` in C1) is built to host more tools. `search_documents` and `web_search` (SearXNG-backed) already ship; still open:
 
 - **`read_url`** — fetch + readability so the model can ingest a URL the user mentions.
 - **`code_interpreter`** — sandboxed Python execution. The biggest jump in scope (process isolation).

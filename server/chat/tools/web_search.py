@@ -14,8 +14,7 @@ _SPEC = ToolSpec(
         "Searches the live internet for real-time information, recent news, current prices, and "
         "up-to-date facts. Use this tool whenever a user asks about events after your knowledge "
         "cutoff, requests current data/statistics, or asks a factual question requiring live "
-        "information or verification. Not for questions about the document the user has open: "
-        "use search_document for those."),
+        "information or verification. Not for questions about the document the user has open."),
     parameters={
         "type": "object",
         "properties": {

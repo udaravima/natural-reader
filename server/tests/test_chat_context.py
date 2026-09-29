@@ -6,7 +6,7 @@ import pytest
 from server.chat import context as ctx_mod
 from server.chat.config import ChatConfig, load_chat_config
 from server.chat.context import TurnInput, build_context, pin_text, prefetch, time_line
-from server.chat.tools import search_document
+from server.chat.tools import search_documents
 from server.chat.store import StoredMessage
 from server.llm.types import Attachment, Message
 from server.services.doc_search import ReadableDoc
@@ -125,10 +125,10 @@ async def test_a_prefetch_miss_still_tells_the_model_which_document_is_open(sear
     # small model sent "Zephyr station" questions to web_search every time.
     # v2.3: the rules name it (and its search tool, only when offered).
     search["rows"] = [{"page": 1, "score": 0.2, "text": "weak"}]
-    built = await build_context(_turn(doc=DOC, tools=(search_document.TOOL,)), ChatConfig())
+    built = await build_context(_turn(doc=DOC, tools=(search_documents.TOOL,)), ChatConfig())
     system = built.messages[0].content
     assert 'The user has the document "Thesis.pdf" open in the reader.' in system
-    assert "search_document" in system
+    assert "search_documents" in system
     assert not built.prefetch_hit
     assert built.messages[-1].content == ("Current time: 2026-09-27 00:54 (Asia/Colombo)\n\n"
                                           "What does chapter 2 say?")
@@ -137,7 +137,7 @@ async def test_a_prefetch_miss_still_tells_the_model_which_document_is_open(sear
     assert [m.role for m in no_doc.messages] == ["system", "user"]
     assert "Thesis.pdf" not in no_doc.messages[0].content
     unindexed = await build_context(_turn(doc=ReadableDoc(DOC.doc_id, "Thesis.pdf", "extracting")), ChatConfig())
-    assert "search_document" not in "".join(m.content for m in unindexed.messages)
+    assert "search_documents" not in "".join(m.content for m in unindexed.messages)
 
 
 def _assert_strict_template_shape(messages, time_text="Current time: 2026-09-27 00:54 (Asia/Colombo)"):

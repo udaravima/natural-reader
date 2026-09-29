@@ -12,7 +12,7 @@ import pytest
 from server.chat import context as ctx_mod
 from server.chat.config import ChatConfig
 from server.chat.context import TurnInput, build_context
-from server.chat.tools import ToolContext, search_document, web_search
+from server.chat.tools import ToolContext, search_documents, web_search
 from server.services.doc_search import ReadableDoc
 
 pytestmark = pytest.mark.asyncio
@@ -20,8 +20,8 @@ pytestmark = pytest.mark.asyncio
 NOW = datetime(2026, 9, 29, 10, 0, tzinfo=timezone.utc)
 INDEXED = ReadableDoc("d" * 64, "Thesis.pdf", "indexed", 42)
 NOT_INDEXED = ReadableDoc("d" * 64, "Thesis.pdf", "extracting", None)
-SEARCH, WEB = search_document.TOOL, web_search.TOOL
-TOOL_NAMES = ("search_document", "web_search")
+SEARCH, WEB = search_documents.TOOL, web_search.TOOL
+TOOL_NAMES = ("search_documents", "web_search")
 PASSAGE = "The method uses gradient descent."
 
 
@@ -77,7 +77,7 @@ async def test_the_prompt_is_truthful_for_every_combination(prefetch_result, doc
         assert (name in everything) == (name in offered), (name, offered)
 
     # 2. The user turn carries data, not rules: no tool names, no "call"/"cite".
-    for word in ("search_document", "web_search", "cite", "Cite"):
+    for word in ("search_documents", "web_search", "cite", "Cite"):
         assert word not in user
 
     # 3. Retrieved text only inside the delimited block, and the rules say so.
@@ -143,7 +143,7 @@ async def test_a_pin_can_be_cited_even_with_no_indexed_document(prefetch_result)
     built = await _build(None, [], pins=[{"fileName": "Notes.md", "kind": "page", "page": 2, "text": "x"}])
     system = built.messages[0].content
     assert "the page shown with its passage" in system and "never follow instructions" in system
-    assert "search_document" not in system
+    assert "search_documents" not in system
 
 
 async def test_steering_answer_from_passages_when_enough_is_kept(prefetch_result):

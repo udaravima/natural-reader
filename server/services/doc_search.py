@@ -1,5 +1,5 @@
 """Semantic search over ONE document's chunks, shared by POST /v1/docs/{id}/search,
-the chat's search_document tool and stage-0 prefetch (spec §5.2, §5.3), so the
+the chat's search_documents tool and stage-0 prefetch (spec §5.2, §5.3), so the
 three can never disagree about what "relevant" means."""
 from __future__ import annotations
 
