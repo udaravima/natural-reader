@@ -21,8 +21,9 @@ export function useAuth(apiHost, apiPort) {
         const body = await res.json();
         // Await so the local library's per-user claim (see setLibraryOwner)
         // has finished before `state` flips to 'active' and anything reacts
-        // to the now-known user id by refreshing the library list.
-        await setLibraryOwner(body.id);
+        // to the now-known user id by refreshing the library list. Only a
+        // real /me id claims pre-release records — never the 'local' fallback.
+        await setLibraryOwner(body.id, { claimLegacy: true });
         setUser({ ...body, capabilities: body.capabilities ?? [] });
         setState('active');
       } else if (res.status === 401) {
@@ -37,7 +38,7 @@ export function useAuth(apiHost, apiPort) {
         setState('error');
         // /v1/auth/me is unreachable/erroring — no signed-in user is known,
         // so the local library falls back to the single shared "local" owner
-        // (pre-auth behavior) rather than hiding everything.
+        // rather than hiding everything. It claims nothing (see above).
         setLibraryOwner('local');
       }
     } catch {

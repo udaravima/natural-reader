@@ -6,18 +6,15 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- **The reader's local library (IndexedDB "Your Library") is scoped to the
-  signed-in user.** It used to be one shared list per browser — on a shared
-  machine, the next person to sign in saw and could open, delete, or overwrite
-  anyone else's recently-opened files. Every saved book now carries the
-  signed-in user's id (`setLibraryOwner`, called from `useAuth` once
-  `/v1/auth/me` resolves), and `getRecentBooks`/`getBook`/`deleteBook`/
-  `updateBookMeta` only ever see that user's own records; the 5-book cap is
-  now per user too. Records saved before this release (no owner yet) are
-  claimed once, by the first user who signs in on that browser, so a
-  single-user install keeps its existing library. Logging out just hides the
-  list — nothing is deleted — and the dev loopback bypass (no real auth
-  configured) keeps working under a shared `"local"` owner.
+- **"Your Library" on the welcome screen belongs to the signed-in user.** It
+  used to be one list per browser, so on a shared machine the next person to
+  sign in saw, and could open, the previous person's files. Each saved file
+  now belongs to the user who opened it, and each user sees only their own
+  (the five-file limit is per user too). Files saved before this release go
+  to the first user who signs in on that browser, so a single-user install
+  keeps its library. Signing out only hides the list; nothing is deleted.
+  When the server can't be reached to say who is signed in, the reader uses a
+  shared offline list that takes none of those older files.
 
 - **A tool call a model writes as text now runs instead of becoming the
   answer.** Small models such as `llama3.2:3b` often reply with

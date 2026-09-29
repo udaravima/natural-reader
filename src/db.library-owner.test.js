@@ -21,6 +21,29 @@ const resetDb = () => new Promise((resolve, reject) => {
 
 const makeFile = (name, text) => new File([text], name, { type: 'text/plain' });
 
+// Simulates a real existing v4 install: books keyed in-line by `fileName`,
+// no `ownerId` field at all. Opens the DB at a version *older* than the
+// current DB_VERSION so db.js's own next open triggers onupgradeneeded.
+const seedLegacyV4Db = (records = [{ fileName: 'old.pdf', text: 'ancient bytes' }]) => new Promise((resolve, reject) => {
+    const req = indexedDB.open('neural-pdf-library', 4);
+    req.onupgradeneeded = (event) => {
+        const db = event.target.result;
+        const store = db.createObjectStore('books', { keyPath: 'fileName' });
+        store.createIndex('lastOpened', 'lastOpened', { unique: false });
+        for (const r of records) {
+            store.put({
+                fileName: r.fileName,
+                data: new TextEncoder().encode(r.text).buffer,
+                size: r.text.length,
+                fileType: 'pdf',
+                lastOpened: 123,
+            });
+        }
+    };
+    req.onsuccess = () => { req.result.close(); resolve(); };
+    req.onerror = () => reject(req.error);
+});
+
 beforeEach(async () => {
     await resetDb();
     await setLibraryOwner(null); // reset module-level owner state between tests
@@ -98,63 +121,92 @@ describe('library ownership — two users on one browser', () => {
     });
 });
 
-describe('library ownership — legacy (no-owner) records are claimed once', () => {
-    it('a record saved before any owner was known is claimed by the first signed-in user', async () => {
-        // Simulate a pre-release record: saved while the owner is unknown.
-        await setLibraryOwner(null);
-        await saveBook(makeFile('legacy.pdf', 'old data'), {});
+const claim = (id) => setLibraryOwner(id, { claimLegacy: true });
 
-        // First user to sign in on this browser claims it.
-        await setLibraryOwner('userA');
-        const booksAsA = await getRecentBooks();
-        expect(booksAsA.map((b) => b.fileName)).toContain('legacy.pdf');
+describe('library ownership — legacy (pre-release) records are claimed once', () => {
+    it('the first signed-in user claims them; a later user never sees them', async () => {
+        await seedLegacyV4Db([{ fileName: 'legacy.pdf', text: 'old data' }]);
 
-        // A second, later user must not see it — it's already claimed.
-        await setLibraryOwner('userB');
-        const booksAsB = await getRecentBooks();
-        expect(booksAsB.map((b) => b.fileName)).not.toContain('legacy.pdf');
+        await claim('userA');
+        expect((await getRecentBooks()).map((b) => b.fileName)).toEqual(['legacy.pdf']);
 
-        // Switching back to userA still shows it (claim is permanent, calling
-        // setLibraryOwner('userA') again does not error or re-claim/duplicate).
-        await setLibraryOwner('userA');
-        const booksAsAAgain = await getRecentBooks();
-        expect(booksAsAAgain).toHaveLength(1);
+        await claim('userB');
+        expect(await getRecentBooks()).toHaveLength(0);
+
+        // Claiming again is a no-op: no error, no duplicate.
+        await claim('userA');
+        expect(await getRecentBooks()).toHaveLength(1);
     });
 
-    it('never overwrites an existing record the claiming user already owns under that name', async () => {
+    it('only a claim takes them — setting an owner without claimLegacy leaves them unclaimed', async () => {
+        await seedLegacyV4Db([{ fileName: 'legacy.pdf', text: 'old data' }]);
+
+        await setLibraryOwner('userA');
+        expect(await getRecentBooks()).toHaveLength(0);
+
+        await claim('userB');
+        expect(await getRecentBooks()).toHaveLength(1);
+    });
+
+    it('the "local" fallback (/v1/auth/me failed) does not take them from the real user', async () => {
+        await seedLegacyV4Db([{ fileName: 'legacy.pdf', text: 'old data' }]);
+
+        // useAuth sets "local" without claiming when /me is unreachable.
+        await setLibraryOwner('local');
+        expect(await getRecentBooks()).toHaveLength(0);
+
+        await claim('userA');
+        expect((await getRecentBooks()).map((b) => b.fileName)).toEqual(['legacy.pdf']);
+    });
+
+    it('never overwrites a record the claiming user already owns under that name', async () => {
+        await seedLegacyV4Db([{ fileName: 'x.pdf', text: 'LEGACY' }]);
+
         await setLibraryOwner('userA');
         await saveBook(makeFile('x.pdf', 'FIRST'), {});
 
-        // Logout, then a legacy-style save lands under the same name while no
-        // owner is known.
-        await setLibraryOwner(null);
-        await saveBook(makeFile('x.pdf', 'LEGACY-AGAIN'), {});
-
-        // userA signs back in — the claim must not clobber their own existing
-        // 'x.pdf'.
-        await setLibraryOwner('userA');
+        await claim('userA');
         const book = await getBook('x.pdf');
         expect(new TextDecoder().decode(book.data)).toBe('FIRST');
     });
 
     it('is race-safe: two overlapping claims for different owners never double-claim', async () => {
-        await setLibraryOwner(null);
-        await saveBook(makeFile('race.pdf', 'shared legacy'), {});
+        await seedLegacyV4Db([{ fileName: 'race.pdf', text: 'shared legacy' }]);
 
         // Fire both without awaiting the first — they race for the same
         // unclaimed record.
-        const claimA = setLibraryOwner('userA');
-        const claimB = setLibraryOwner('userB');
-        await Promise.all([claimA, claimB]);
+        await Promise.all([claim('userA'), claim('userB')]);
 
-        // Whichever owner setLibraryOwner left `currentOwnerId` as is the one
-        // we can directly check; the important invariant is exactly one
-        // owner ends up with the record, never both, never neither.
+        // Exactly one owner ends up with the record, never both, never neither.
         await setLibraryOwner('userA');
         const asA = (await getRecentBooks()).length;
         await setLibraryOwner('userB');
         const asB = (await getRecentBooks()).length;
         expect(asA + asB).toBe(1);
+    });
+});
+
+describe('library ownership — no owner known (before /me, after a 401, logged out)', () => {
+    it('saves are refused, so nothing lands where the next user could claim it', async () => {
+        await setLibraryOwner(null);
+        expect(await saveBook(makeFile('orphan.pdf', 'A secret'), {})).toBe(false);
+        expect(await getRecentBooks()).toHaveLength(0);
+
+        await claim('userB');
+        expect(await getRecentBooks()).toHaveLength(0);
+        expect(await getBook('orphan.pdf')).toBeNull();
+    });
+
+    it('updates and deletes are no-ops', async () => {
+        await setLibraryOwner('userA');
+        await saveBook(makeFile('mine.pdf', 'data'), {});
+
+        await setLibraryOwner(null);
+        expect(await updateBookMeta('mine.pdf', { page: 3 })).toBe(false);
+        expect(await deleteBook('mine.pdf')).toBe(false);
+
+        await setLibraryOwner('userA');
+        expect(await getRecentBooks()).toHaveLength(1);
     });
 });
 
@@ -174,7 +226,7 @@ describe('library ownership — logout hides records without deleting them', () 
     });
 });
 
-describe('library ownership — dev loopback bypass ("local")', () => {
+describe('library ownership — the "local" owner (/v1/auth/me unavailable)', () => {
     it('"local" behaves like any other owner id', async () => {
         await setLibraryOwner('local');
         await saveBook(makeFile('offline.pdf', 'x'), {});
@@ -185,37 +237,50 @@ describe('library ownership — dev loopback bypass ("local")', () => {
     });
 });
 
-describe('library schema migration — legacy fileName-keyed database', () => {
-    // Simulates a real existing v4 install: books keyed in-line by `fileName`,
-    // no `ownerId` field at all. Opens the DB at a version *older* than the
-    // current DB_VERSION so db.js's own next open triggers onupgradeneeded.
-    const seedLegacyV4Db = () => new Promise((resolve, reject) => {
-        const req = indexedDB.open('neural-pdf-library', 4);
-        req.onupgradeneeded = (event) => {
-            const db = event.target.result;
-            const store = db.createObjectStore('books', { keyPath: 'fileName' });
-            store.createIndex('lastOpened', 'lastOpened', { unique: false });
-            store.put({
-                fileName: 'old.pdf',
-                data: new TextEncoder().encode('ancient bytes').buffer,
-                size: 13,
-                fileType: 'pdf',
-                lastOpened: 123,
-            });
-        };
-        req.onsuccess = () => { req.result.close(); resolve(); };
-        req.onerror = () => reject(req.error);
-    });
+describe('library ownership — metadata cannot move a record to another key', () => {
+    it('ownerId/fileName in the metadata are ignored', async () => {
+        await setLibraryOwner('userA');
+        await saveBook(makeFile('a.pdf', 'x'), { ownerId: 'userB', fileName: 'b.pdf', page: 2 });
+        await updateBookMeta('a.pdf', { ownerId: 'userB', fileName: 'b.pdf' });
 
-    it('migrates a pre-release fileName-keyed record without losing it, and it is claimable', async () => {
-        await resetDb();
+        const book = await getBook('a.pdf');
+        expect(book.ownerId).toBe('userA');
+        expect(book.fileName).toBe('a.pdf');
+        expect(book.page).toBe(2);
+        await setLibraryOwner('userB');
+        expect(await getRecentBooks()).toHaveLength(0);
+    });
+});
+
+// A v1 install: keyed by fileName, no fileType (all PDFs), no other stores.
+const seedLegacyV1Db = () => new Promise((resolve, reject) => {
+    const req = indexedDB.open('neural-pdf-library', 1);
+    req.onupgradeneeded = (event) => {
+        const store = event.target.result.createObjectStore('books', { keyPath: 'fileName' });
+        store.createIndex('lastOpened', 'lastOpened', { unique: false });
+        store.put({ fileName: 'v1.pdf', data: new TextEncoder().encode('v1 bytes').buffer, size: 8, lastOpened: 1 });
+    };
+    req.onsuccess = () => { req.result.close(); resolve(); };
+    req.onerror = () => reject(req.error);
+});
+
+describe('library schema migration — legacy fileName-keyed database', () => {
+    it('migrates a pre-release v4 record without losing it, and it is claimable', async () => {
         await seedLegacyV4Db();
 
-        await setLibraryOwner('userA');
-        const books = await getRecentBooks();
-        expect(books.map((b) => b.fileName)).toContain('old.pdf');
+        await claim('userA');
+        expect((await getRecentBooks()).map((b) => b.fileName)).toContain('old.pdf');
 
         const book = await getBook('old.pdf');
         expect(new TextDecoder().decode(book.data)).toBe('ancient bytes');
+    });
+
+    it('migrates a v1 install (no fileType) in one upgrade, backfilling fileType', async () => {
+        await seedLegacyV1Db();
+
+        await claim('userA');
+        const books = await getRecentBooks();
+        expect(books).toEqual([expect.objectContaining({ fileName: 'v1.pdf', fileType: 'pdf' })]);
+        expect((await getBook('v1.pdf')).fileType).toBe('pdf');
     });
 });

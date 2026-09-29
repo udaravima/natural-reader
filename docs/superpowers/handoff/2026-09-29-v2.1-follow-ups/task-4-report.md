@@ -215,3 +215,27 @@ right reason before writing any db.js changes.
    follow-ups.
 
 No blockers. Nothing committed — staged only, per the global constraint.
+
+---
+
+## Fix round 1 (cloud session, 2026-09-29) — FIX_BASE 04a17bb
+
+Findings from the Task 4 review, and what changed:
+
+- **Important 1: the `"local"` fallback claimed the legacy library.** `setLibraryOwner(id, { claimLegacy })`: the claim runs only with `claimLegacy: true`. `useAuth` passes it only for the id a 200 `/v1/auth/me` returned; the 5xx and network-error `'local'` paths don't claim (`src/db.js` setLibraryOwner, `src/hooks/useAuth.js:22-26`).
+- **Important 2: saves with no known owner went into the claimable bucket.** `effectiveOwnerId` is gone. With no owner, `saveBook`, `updateBookMeta` and `deleteBook` return false, `getBook` returns null and `getRecentBooks` returns []. Only the v4→v5 migration writes `UNCLAIMED_OWNER`, and only a claim reads it. With the migration the only writer and one claim sweeping everything, the "collision skip" record can't arise in practice any more. It stays as a guard.
+- **Minor 1: the v1 cursor raced the store rebuild.** The v1→v2 cursor block is removed. Every version below 5 goes through the rebuild, which now backfills `fileType: rec.fileType || 'pdf'`. There is a new test for a real v1-shaped database.
+- **Minor 2: spread order.** `saveBook` sets `fileName`/`ownerId` after `...metadata`, and `updateBookMeta` restores them after `...updates`. There is a test.
+- **Minor 4: no test of the useAuth wiring.** New `src/hooks/useAuth.libraryOwner.test.jsx` (db mocked) covers:
+  - a 200 claims;
+  - a 401 or 403 clears the owner;
+  - a 500 or network error falls back to `'local'` without claiming;
+  - a later 401 clears the owner.
+- **Minor 5 and spec note: the CHANGELOG entry.** Rewritten in plain language. It no longer names internals or claims the dev bypass uses `"local"`: the bypass returns the seed admin from `/me`, per R2.
+- **Minor 3 (tabs still running v4 code get a VersionError, and their saves return false): not changed.** The next reload fixes it, and no data is lost.
+- **Minor 6 (the duplicate mount refresh): not changed.** It's harmless.
+
+**Tests:** the legacy tests now seed a real v4 database instead of saving with owner null, which is no longer possible.
+- **Red before the fix:** 6 new tests failed on the old code: claim without the flag, "local" claiming, a save with no owner, update/delete with no owner, metadata keys, and the v1 migration.
+- **After the fix:** `npx vitest run src/db.library-owner.test.js` passes 16/16, and `src/hooks/useAuth.libraryOwner.test.jsx` passes 6/6.
+- **Full suite:** `npx vitest run` → 333 passed. `npx eslint src` → 1 error (the baseline, useAuth.js:64).

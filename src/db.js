@@ -16,18 +16,17 @@ const MAX_SESSIONS = 50; // Cap chat history at 50 sessions (LRU by updatedAt)
 // record carries an `ownerId` and reads/writes are scoped to whoever is
 // currently signed in. `currentOwnerId` is set by the auth layer (useAuth)
 // via `setLibraryOwner` once `/v1/auth/me` resolves; it starts out `null`
-// ("owner not known yet") which resolves to the UNCLAIMED bucket below —
-// fail-closed in the sense that nothing but not-yet-claimed legacy records
-// can show before a real owner is known.
+// ("owner not known yet"). While it is null every read finds nothing and
+// every write is refused — fail-closed, so a file opened before sign-in or
+// after a 401 can never land somewhere the next user could see or claim.
 let currentOwnerId = null;
 
 // Sentinel `ownerId` for records saved before this release (no `ownerId`
-// field at all) or while the signed-in user isn't known yet. It's a real
-// string (never `null`/`undefined`) so it can live in an IndexedDB index —
-// indexes silently skip records whose indexed property is null/undefined.
+// field at all). Only the v4 → v5 migration writes it, and only a claim
+// (setLibraryOwner with claimLegacy) reads it. It's a real string (never
+// `null`/`undefined`) so it can live in an IndexedDB index — indexes
+// silently skip records whose indexed property is null/undefined.
 const UNCLAIMED_OWNER = '__unclaimed__';
-
-const effectiveOwnerId = () => currentOwnerId || UNCLAIMED_OWNER;
 
 // The store keeps out-of-line (explicit) keys built from owner + fileName so
 // two different users can each save a file with the same name without
@@ -39,14 +38,15 @@ const bookKey = (ownerId, fileName) => `${ownerId}\u0000${fileName}`;
 /**
  * Set the signed-in user whose books/library reads and writes should be
  * scoped to. Called by the auth layer once `/v1/auth/me` resolves — with the
- * real user id when signed in, `'local'` when the dev loopback bypass (or
- * any other auth-unavailable case) applies, or `null` to clear it (logout /
- * session no longer known), which simply hides every record until an owner
- * is set again — nothing is deleted.
+ * real user id when signed in, `'local'` when `/v1/auth/me` is unavailable,
+ * or `null` to clear it (logout / session no longer known), which simply
+ * hides every record until an owner is set again — nothing is deleted.
  *
- * Also claims every not-yet-owned (pre-release) record for the FIRST user
- * who ever calls this with a real id, so a single-user install keeps its
- * existing library. The claim is one read-write transaction (getAll the
+ * With `claimLegacy`, also claims every not-yet-owned (pre-release) record
+ * for this owner, so a single-user install keeps its existing library. Only
+ * an id `/v1/auth/me` actually returned passes it: the `'local'` fallback
+ * must not take the library away from the user who signs in a moment later.
+ * The claim is one read-write transaction (getAll the
  * UNCLAIMED_OWNER index, then delete+put each record under its new key), so
  * it's atomic: if two owners are set around the same time (e.g. two tabs),
  * IndexedDB serializes their read-write transactions against this store —
@@ -55,10 +55,10 @@ const bookKey = (ownerId, fileName) => `${ownerId}\u0000${fileName}`;
  * once nothing is left in the UNCLAIMED_OWNER bucket, calling this again for
  * the same (or any) owner is a cheap no-op.
  */
-export const setLibraryOwner = async (id) => {
+export const setLibraryOwner = async (id, { claimLegacy = false } = {}) => {
     const newOwner = id || null;
     currentOwnerId = newOwner;
-    if (!newOwner) return;
+    if (!newOwner || !claimLegacy) return;
 
     try {
         const db = await openDB();
@@ -137,7 +137,9 @@ const openDB = () => {
                 // out-of-line composite keys (owner + fileName), and write
                 // them all back tagged UNCLAIMED_OWNER so the first user to
                 // sign in claims them (see setLibraryOwner). Nothing is
-                // dropped.
+                // dropped. This also does the old v1 → v2 step (backfill
+                // fileType; every v1 record was a PDF): any version below 5
+                // passes through here, and the old store is gone afterwards.
                 const oldStore = tx.objectStore(STORE_NAME);
                 const getAllReq = oldStore.getAll();
                 getAllReq.onsuccess = () => {
@@ -148,23 +150,9 @@ const openDB = () => {
                     newStore.createIndex('ownerId', 'ownerId', { unique: false });
                     for (const rec of legacyRecords) {
                         const ownerId = rec.ownerId || UNCLAIMED_OWNER;
-                        newStore.put({ ...rec, ownerId }, bookKey(ownerId, rec.fileName));
+                        const fileType = rec.fileType || 'pdf';
+                        newStore.put({ ...rec, fileType, ownerId }, bookKey(ownerId, rec.fileName));
                     }
-                };
-            }
-            // v1 → v2: backfill fileType on existing records (all were PDFs)
-            if (event.oldVersion < 2) {
-                const tx = event.target.transaction;
-                const store = tx.objectStore(STORE_NAME);
-                const cursorReq = store.openCursor();
-                cursorReq.onsuccess = (e) => {
-                    const cursor = e.target.result;
-                    if (!cursor) return;
-                    const value = cursor.value;
-                    if (!value.fileType) {
-                        cursor.update({ ...value, fileType: 'pdf' });
-                    }
-                    cursor.continue();
                 };
             }
             // v2 → v3: add chat sessions store
@@ -191,18 +179,21 @@ const openDB = () => {
  */
 export const saveBook = async (file, metadata = {}) => {
     try {
+        const ownerId = currentOwnerId;
+        if (!ownerId) return false; // no signed-in user known — see currentOwnerId
         const db = await openDB();
         const arrayBuffer = await file.arrayBuffer();
-        const ownerId = effectiveOwnerId();
 
+        // fileName and ownerId come last: they make up the key, so metadata
+        // can never leave a record under a key that doesn't match it.
         const bookData = {
-            fileName: file.name,
-            ownerId,
             data: arrayBuffer,
             size: file.size,
             fileType: detectFileType(file),
             lastOpened: Date.now(),
-            ...metadata
+            ...metadata,
+            fileName: file.name,
+            ownerId,
         };
 
         const tx = db.transaction(STORE_NAME, 'readwrite');
@@ -231,6 +222,7 @@ export const saveBook = async (file, metadata = {}) => {
  * @returns {Object|null} - Book data with ArrayBuffer or null
  */
 export const getBook = async (fileName) => {
+    if (!currentOwnerId) return null;
     try {
         const db = await openDB();
         const tx = db.transaction(STORE_NAME, 'readonly');
@@ -240,7 +232,7 @@ export const getBook = async (fileName) => {
         // under the same fileName lives at a different key entirely, so this
         // simply won't find it and returns null, same as if it never existed.
         const result = await new Promise((resolve, reject) => {
-            const request = store.get(bookKey(effectiveOwnerId(), fileName));
+            const request = store.get(bookKey(currentOwnerId, fileName));
             request.onsuccess = () => resolve(request.result);
             request.onerror = () => reject(request.error);
         });
@@ -258,6 +250,7 @@ export const getBook = async (fileName) => {
  * @returns {Array} - List of book metadata sorted by lastOpened (newest first)
  */
 export const getRecentBooks = async () => {
+    if (!currentOwnerId) return [];
     try {
         const db = await openDB();
         const tx = db.transaction(STORE_NAME, 'readonly');
@@ -265,7 +258,7 @@ export const getRecentBooks = async () => {
         const index = store.index('ownerId');
 
         const books = await new Promise((resolve, reject) => {
-            const request = index.getAll(IDBKeyRange.only(effectiveOwnerId()));
+            const request = index.getAll(IDBKeyRange.only(currentOwnerId));
             request.onsuccess = () => resolve(request.result);
             request.onerror = () => reject(request.error);
         });
@@ -292,6 +285,7 @@ export const getRecentBooks = async () => {
  * @param {string} fileName - The filename to delete
  */
 export const deleteBook = async (fileName) => {
+    if (!currentOwnerId) return false;
     try {
         const db = await openDB();
         const tx = db.transaction(STORE_NAME, 'readwrite');
@@ -301,7 +295,7 @@ export const deleteBook = async (fileName) => {
         // the caller's own record, never one another user saved under the
         // same fileName.
         await new Promise((resolve, reject) => {
-            const request = store.delete(bookKey(effectiveOwnerId(), fileName));
+            const request = store.delete(bookKey(currentOwnerId, fileName));
             request.onsuccess = resolve;
             request.onerror = () => reject(request.error);
         });
@@ -321,11 +315,12 @@ export const deleteBook = async (fileName) => {
  * @param {Object} updates - Fields to update
  */
 export const updateBookMeta = async (fileName, updates) => {
+    if (!currentOwnerId) return false;
     try {
         const db = await openDB();
         const tx = db.transaction(STORE_NAME, 'readwrite');
         const store = tx.objectStore(STORE_NAME);
-        const key = bookKey(effectiveOwnerId(), fileName);
+        const key = bookKey(currentOwnerId, fileName);
 
         // Read and write in the same transaction to avoid race conditions.
         // Scoped to the current owner's key, so a name the caller doesn't
@@ -344,7 +339,9 @@ export const updateBookMeta = async (fileName, updates) => {
         const updatedBook = {
             ...book,
             ...updates,
-            lastOpened: Date.now()
+            lastOpened: Date.now(),
+            fileName: book.fileName, // part of the key — see saveBook
+            ownerId: book.ownerId,
         };
 
         await new Promise((resolve, reject) => {
