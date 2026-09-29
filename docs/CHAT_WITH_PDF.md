@@ -275,7 +275,12 @@ What it looks like:
 
 **What the model gets back from `search_documents` (v2.3):**
 - Passages, each with its reader page and a relevance of `strong` (0.7 or more), `moderate` (0.55 or more) or `weak`. The raw scores are kept in the saved summary, which the browser also receives, and in the DEBUG logs; the model never sees them.
-- Passages scoring below `CHAT_SEARCH_MIN_SCORE` (default 0.45) are left out. With nothing left, the result says so in words.
+- **Meaning and exact words (v2.3).** A search runs two rankings over the document and fuses them by reciprocal-rank fusion:
+  - by meaning (cosine over the embeddings);
+  - by exact words: passages containing every word of the query, from a `'simple'` full-text index that works in any language and keeps labels like "4.2" and "MIMIC-IV".
+
+  A passage found by its words stays even when it is weak in meaning, marked `"match": "words"`; one found both ways is marked `"both"`. The Stage 0 prefetch and `POST /v1/docs/{id}/search` stay meaning-only.
+- Passages scoring below `CHAT_SEARCH_MIN_SCORE` (default 0.45) are left out, unless found by their words. With nothing left, the result says so in words.
 - A passage the model already has this turn is listed by page only, as `"already_shown": [{"ref": 1, "pages": [3, 7]}]`, without its text. That covers passages from the Stage 0 block and from earlier searches, so searching again surfaces new material.
 - Each passage names its document by a short `ref`, listed in `documents`. Only the open document is searched today, as ref 1.
 

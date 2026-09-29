@@ -214,7 +214,7 @@ async def test_a_search_asks_for_enough_rows_to_skip_everything_already_shown(mo
     or it reports "nothing new" while new evidence ranks lower."""
     asked = {}
 
-    async def fake_search_chunks(conn, doc_id, qvec, k):
+    async def fake_search_chunks(conn, doc_id, qvec, k, text=None):
         asked["k"] = k
         return []
 

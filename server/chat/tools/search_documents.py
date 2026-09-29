@@ -32,7 +32,9 @@ _SPEC = ToolSpec(
     name="search_documents",
     description=(
         "Search the open document for passages about something, by meaning (vector search over "
-        "its indexed text). Returns up to k passages, best first, each with its page and a "
+        "its indexed text) and by exact words: passages containing every word of the query are "
+        "found even when their meaning is far, so put labels, names or numbers in it (Table "
+        "4.2, MIMIC-IV). Returns up to k passages, best first, each with its page and a "
         "relevance of strong, moderate or weak; unrelated passages are left out. The user's "
         "question was already searched before you ran, so search with different words: names, "
         "terms, sections or tables the question or earlier passages mention. A passage already "
@@ -94,9 +96,14 @@ class _SearchDocuments:
         found: list[tuple[int, dict[str, Any]]] = []
         async with get_pool().connection() as conn:
             for ref, doc in enumerate(scope, start=1):
-                found += [(ref, r) for r in await search_chunks(conn, doc.doc_id, qvec, want)]
-        found.sort(key=lambda fr: fr[1]["score"], reverse=True)
-        kept = [(ref, r) for ref, r in found if r["score"] >= ctx.cfg.search_min_score]
+                found += [(ref, r) for r in await search_chunks(conn, doc.doc_id, qvec, want, text=query)]
+        # Each document's list is already fused best-first; across documents
+        # (C2) there is no common rank, so cosine orders them.
+        if len(scope) > 1:
+            found.sort(key=lambda fr: fr[1]["score"], reverse=True)
+        floor = ctx.cfg.search_min_score
+        # Found by its words, a passage stays even when weak in meaning (Task F).
+        kept = [(ref, r) for ref, r in found if r["score"] >= floor or r.get("by_words")]
 
         passages: list[dict[str, Any]] = []
         new: list[tuple[int, dict[str, Any]]] = []
@@ -109,8 +116,12 @@ class _SearchDocuments:
                     seen_pages.setdefault(ref, set()).add(r["page"])
             else:
                 new.append((ref, r))
-                passages.append({"ref": ref, "page": r["page"], "relevance": relevance(r["score"]),
-                                 "text": _cap(r["text"] or "")})
+                passage = {"ref": ref, "page": r["page"], "relevance": relevance(r["score"])}
+                if r.get("by_words"):
+                    # "words": it has the query's words but not its meaning.
+                    passage["match"] = "both" if r["score"] >= floor else "words"
+                passage["text"] = _cap(r["text"] or "")
+                passages.append(passage)
         ctx.shown.update(r["id"] for _, r in new)
         ctx.seen_text.extend(p["text"] for p in passages)
         logger.debug("search_documents docs=%d found=%d kept=%d new=%d floor=%s top=%s",

@@ -40,7 +40,7 @@ def corpus(open_doc, monkeypatch):
     async def fake_embed_one(text):
         return [text]
 
-    async def fake_search_chunks(conn, doc_id, qvec, k):
+    async def fake_search_chunks(conn, doc_id, qvec, k, text=None):
         runs.append(qvec[0])
         return [dict(r) for r in CORPUS.get(qvec[0], [])]
 

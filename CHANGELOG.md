@@ -45,6 +45,11 @@ All notable changes to this project will be documented in this file.
   - Text is embedded with the prefixes the embedding model was trained with (`search_document: ` and `search_query: ` for nomic-embed-text; `EMBEDDING_DOCUMENT_PREFIX` and `EMBEDDING_QUERY_PREFIX` for other models).
   - Documents indexed before this change are rebuilt in the background the first time they're used, and stay searchable meanwhile.
 
+- **Search finds labels and names, not only meaning.** The document search
+  also matches the exact words of the query, in any language. "Table 4.2",
+  "MIMIC-IV" or "§3.1" are found even where meaning-based search ranks them
+  low.
+
 - **Document search returns evidence, not noise.** The document search
   tool is now called `search_documents`. It leaves out weak matches
   (`CHAT_SEARCH_MIN_SCORE`, default 0.45) and labels the passages it keeps
@@ -168,6 +173,9 @@ All notable changes to this project will be documented in this file.
 ### Upgrade notes
 
 - **Migration `014`** adds `documents.embedding_profile`. It is additive only.
+- **Migration `015`** adds `doc_chunks.text_search`, a stored full-text
+  column with a GIN index. Postgres rewrites `doc_chunks` once to fill it:
+  on a large library the backend's first start after upgrading takes longer.
 - **After upgrading, every indexed document is rebuilt once, in the
   background, the first time someone chats with it or searches it.** Its
   old chunks keep answering meanwhile. The rebuild re-embeds the whole

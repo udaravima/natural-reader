@@ -550,7 +550,7 @@ def open_doc(monkeypatch):
     async def fake_embed_one(text):
         return [0.0]
 
-    async def fake_search_chunks(conn, doc_id, qvec, k):
+    async def fake_search_chunks(conn, doc_id, qvec, k, text=None):
         return []
 
     monkeypatch.setattr(orchestrator, "_open_doc", fake_open_doc)
@@ -774,7 +774,7 @@ async def test_prefetched_passages_are_not_repeated_by_a_search_and_the_floor_co
                         {"kind": "prefetch", "docId": doc.doc_id, "docName": doc.name, "count": 1,
                          "topScore": 0.8, "pages": [3]})
 
-    async def fake_search_chunks(conn, doc_id, qvec, k):
+    async def fake_search_chunks(conn, doc_id, qvec, k, text=None):
         return [{"id": 11, "page": 3, "score": 0.8, "text": "prefetched"},
                 {"id": 12, "page": 5, "score": 0.6, "text": "new"},
                 {"id": 13, "page": 8, "score": 0.5, "text": "below this config's floor"}]
