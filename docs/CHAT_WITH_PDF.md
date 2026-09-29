@@ -150,7 +150,7 @@ You should see:
    - **Indexing N/M** — the embedding job runs in the background; the count polls every 2 s.
    - **Indexed** — green checkmark; the doc is now searchable.
 
-   If someone already uploaded the exact same file, it's **Indexed** at once ("Already indexed — added to your library"): nothing is extracted or embedded twice.
+   If the exact same file is already indexed on the server, it's **Indexed** at once ("Already indexed — added to your library"): nothing is extracted or embedded twice. (If that earlier upload is still being indexed, you just follow its progress.)
 
 Behind the scenes, extraction runs **on the server** (`server/services/extract.py`) and replicates the reader's own pagination exactly, so a chunk's page number is the page the reader shows:
 
@@ -171,7 +171,7 @@ psql postgresql://natural_reader:natural_reader@localhost:5433/natural_reader \
   -c "SELECT count(*) AS total, count(embedding) AS embedded FROM doc_chunks;"
 ```
 
-> **Re-indexing rebuilds from the stored file.** Clicking Index on an indexed document re-extracts and re-embeds it; the new chunk set replaces the old one in a single transaction, so search never sees half of each. It changes the document for everyone who has it, so only its sole holder or an admin may (see [LIBRARY.md](LIBRARY.md), "Why can't I re-convert?").
+> **Re-indexing rebuilds the document.** Clicking Index on an indexed document re-extracts it (from the stored file, or from its converted Markdown if it was converted) and re-embeds it. The new chunks replace the old ones in one transaction, so old and new never mix — but until re-embedding finishes, search only finds the new chunks embedded so far. It changes the document for everyone who has it, so only its sole holder or an admin may (see [LIBRARY.md](LIBRARY.md), "Why can't I re-convert?").
 
 ---
 

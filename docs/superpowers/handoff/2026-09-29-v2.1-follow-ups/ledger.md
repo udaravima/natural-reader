@@ -95,3 +95,5 @@ Task 7: walk — confirm the blob: error is gone with real Kokoro TTS (reopen a 
 Task 8: implemented 4b1654d (eslint clean — readMe() + apply in .then; refresh keeps the loading gate); review — Approved, 3 Minor: host-change keeps previous state (disclosed), stale guard now covers setLibraryOwner and refresh via one probeSeq (fixed in the next commit, 2 tests), weak test kept.
 Task 8: complete (commits a5a81ac..4b1654d + follow-up, review Approved)
 Task 9: implemented a94d30c (backend 597: /api/show DEBUG test (already implemented by df6f253), "local:" refused, recover_stale counts claims, drain_background loop; CHAT_WITH_PDF/README/ARCHITECTURE docs); review dispatched.
+Task 9: review — Approved; 3 Minor: 2 overstated doc sentences (re-index search gap; "indexed at once" only when already indexed) fixed in the next commit; the Ollama DEBUG test is a regression pin (never red — already implemented by df6f253, which is on development).
+Task 9: complete (commits 4b1654d..a94d30c + doc fix, review Approved)
