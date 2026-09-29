@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { renderHook, waitFor, act } from '@testing-library/react';
 
 vi.mock('../db', () => ({ setLibraryOwner: vi.fn(() => Promise.resolve()) }));
 
@@ -54,5 +54,27 @@ describe('useAuth → setLibraryOwner', () => {
     await apiFetch('', '', '/v1/docs');
     await waitFor(() => expect(result.current.state).toBe('anonymous'));
     expect(setLibraryOwner).toHaveBeenLastCalledWith(null);
+  });
+
+  it('refresh (the Retry button) shows loading again, then settles', async () => {
+    globalThis.fetch.mockRejectedValueOnce(new Error('network'));
+    const { result } = renderHook(() => useAuth('', ''));
+    await waitFor(() => expect(result.current.state).toBe('error'));
+
+    let finish;
+    globalThis.fetch.mockReturnValueOnce(new Promise((r) => { finish = r; }));
+    act(() => { result.current.refresh(); });
+    expect(result.current.state).toBe('loading');
+    await act(async () => { finish(jsonResponse(200, { id: 'u1', email: 'a@x.io', role: 'member' })); });
+    await waitFor(() => expect(result.current.state).toBe('active'));
+  });
+
+  it('the first probe starts in loading without setting it again', async () => {
+    globalThis.fetch.mockResolvedValue(jsonResponse(200, { id: 'u1', email: 'a@x.io', role: 'member' }));
+    const states = [];
+    const { result } = renderHook(() => { const a = useAuth('', ''); states.push(a.state); return a; });
+    await waitFor(() => expect(result.current.state).toBe('active'));
+    expect(states[0]).toBe('loading');
+    expect(states.filter((s, i) => i > 0 && s === 'loading' && states[i - 1] !== 'loading')).toEqual([]);
   });
 });
