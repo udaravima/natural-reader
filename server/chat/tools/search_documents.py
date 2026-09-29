@@ -36,7 +36,7 @@ _SPEC = ToolSpec(
         "relevance of strong, moderate or weak; unrelated passages are left out. The user's "
         "question was already searched before you ran, so search with different words: names, "
         "terms, sections or tables the question or earlier passages mention. A passage already "
-        "shown this turn comes back as its page only."),
+        "shown this turn is listed by page only, under already_shown."),
     parameters={
         "type": "object",
         "properties": {
@@ -93,7 +93,8 @@ class _SearchDocuments:
         k = max(1, min(10, int(k))) if isinstance(k, (int, float)) and not isinstance(k, bool) else 5
         qvec = await embed_one(query)
         # Look past everything already shown, so a later round still finds k
-        # new passages; 40 is HNSW's default ef_search, all it returns anyway.
+        # new passages. The search is exact (doc_search.search_chunks); 40
+        # bounds the rows read per document.
         want = min(k + len(ctx.shown), MAX_ROWS)
         found: list[tuple[int, dict[str, Any]]] = []
         async with get_pool().connection() as conn:
@@ -104,11 +105,13 @@ class _SearchDocuments:
 
         passages: list[dict[str, Any]] = []
         new: list[tuple[int, dict[str, Any]]] = []
+        seen_pages: dict[int, set[int]] = {}   # ref -> pages of passages the model already has
         for ref, r in kept:
             if len(new) == k:
                 break
             if r["id"] in ctx.shown:
-                passages.append({"ref": ref, "page": r["page"], "already_shown": True})
+                if r["page"] is not None:
+                    seen_pages.setdefault(ref, set()).add(r["page"])
             else:
                 new.append((ref, r))
                 passages.append({"ref": ref, "page": r["page"], "relevance": relevance(r["score"]),
@@ -122,8 +125,12 @@ class _SearchDocuments:
             "documents": [{"ref": ref, "name": display_name(d.name)} for ref, d in enumerate(scope, start=1)],
             "passages": passages,
         }
+        if seen_pages:
+            # One short list, however many rounds re-find the same passages.
+            result["already_shown"] = [{"ref": ref, "pages": sorted(pages)}
+                                       for ref, pages in sorted(seen_pages.items())]
         if not new:
-            result["message"] = NOTHING_NEW if passages else NONE_FOUND
+            result["message"] = NOTHING_NEW if seen_pages else NONE_FOUND
         # For summarize() only: stripped before the model reads the result.
         result["_saved"] = [{"page": r["page"], "score": round(r["score"], 4)} for _, r in new]
         return result

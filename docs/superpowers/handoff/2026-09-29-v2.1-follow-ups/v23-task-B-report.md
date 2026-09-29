@@ -71,3 +71,19 @@ Suites:
 - backend: 667 passed;
 - vitest: exit 0;
 - eslint: clean.
+
+## After the fix-round re-review (clean)
+
+The re-review found all findings addressed. Two follow-ups are applied here; the Task C review should also check them.
+
+- **Out-of-scope observation, confirmed and fixed: `search_chunks` lost the document's own passages.**
+  - The HNSW index covers every document, so a plan that walks it filters `doc_id` only after keeping `ef_search` (40) candidates library-wide.
+  - **Reproduced:** 300 closer chunks in another document, with `enable_seqscan=off` and `enable_sort=off` forcing the index walk, returned 1 of the document's 3 passages.
+  - With fresh statistics and many small documents the planner picked the `doc_id` btree plus a sort, which is exact. So the bug depends on the plan: a document holding a large share of the chunks, or stale statistics.
+  - **Fix:** a `MATERIALIZED` CTE filters to the one document first, then ranks exactly. It is deterministic on pgvector 0.6 (this sandbox) and on 0.8 (the compose image).
+  - Test: `test_a_search_finds_the_documents_own_passages_when_other_documents_are_closer`, red before the fix.
+- **Minor, applied: already-shown markers.** They collapse into `"already_shown": [{"ref": 1, "pages": [...]}]`, deduplicated by page. The size is bounded by distinct pages, not by the rounds. The description, docs, plan and tests are updated.
+- **Minor, applied:** the MAX_ROWS comment now says what is true.
+
+Suites:
+- backend: 668 passed.

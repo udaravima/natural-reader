@@ -33,18 +33,28 @@ async def readable_doc(conn, doc_id: str, user_id: str) -> ReadableDoc | None:
 
 async def search_chunks(conn, doc_id: str, qvec: list[float], k: int) -> list[dict[str, Any]]:
     """Top-k chunks by cosine similarity (higher `score` = closer). Trap: the
-    score is NOT a calibrated probability; a "good" value depends on the model."""
+    score is NOT a calibrated probability; a "good" value depends on the model.
+
+    Exact, not approximate: the HNSW index covers every document, and a plan
+    that walks it filters doc_id only AFTER keeping ef_search (40) candidates
+    library-wide, losing this document's passages whenever other documents
+    are closer. The MATERIALIZED CTE filters to the one document first (a few
+    hundred chunks: a cheap exact scan)."""
     async with conn.cursor() as cur:
         await cur.execute(
             """
+            WITH doc AS MATERIALIZED (
+                SELECT id, page, chunk_type, text, embedding
+                FROM doc_chunks
+                WHERE doc_id = %s AND embedding IS NOT NULL
+            )
             SELECT id, page, chunk_type, text,
                    1 - (embedding <=> %s::vector) AS score
-            FROM doc_chunks
-            WHERE doc_id = %s AND embedding IS NOT NULL
+            FROM doc
             ORDER BY embedding <=> %s::vector
             LIMIT %s
             """,
-            (qvec, doc_id, qvec, k),
+            (doc_id, qvec, qvec, k),
         )
         rows = await cur.fetchall()
         cols = [d.name for d in cur.description]

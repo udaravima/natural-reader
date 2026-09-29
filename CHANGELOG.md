@@ -32,6 +32,12 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Searching one document is exact, whatever else is in the library.**
+  The search could lose the open document's best passages when other
+  indexed documents were closer to the question. It now ranks only the
+  open document's own passages. This affects both the automatic search
+  before the model answers and the document search tool.
+
 - **The model gets clear rules about the document, not hints mixed into
   your message.** The rules the model follows (answer from the document's
   passages, cite pages as "(page N)", say when the document doesn't cover

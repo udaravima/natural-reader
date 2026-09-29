@@ -123,3 +123,5 @@ v2.3 (C2 slice 1, plan docs/superpowers/plans/2026-09-29-v2.3-document-qa.md): w
 v2.3 Task A: 9f02b64 + fix round 1dc4396 (I1–I5, M1–M9). The re-review found all addressed. A new minor is fixed: the system fold is always remembered.
 v2.3 Task A: complete (review clean after 1 fix round).
 v2.3 Task A: minor (deferred): zero-width characters inside a fence tag aren't normalised; a web page can fake the rounds-over note (it only ends the rounds early); the Ollama path has no system fold, because its templates map the role.
+v2.3 Task B: 95f5a1d + fix round a2f71ad (I1 over-fetch cap; minors). The re-review found all addressed. After it: search_chunks is exact per document (an HNSW post-filter loss, reproduced red), and the already-shown markers are collapsed. Task B is complete.
+v2.3 Task B: minor (deferred): the relevance buckets and floor are calibrated on nomic without prefixes; Task G re-measures after Task E. C2 library-wide scope will need an approximate search (iterative_scan on pgvector 0.8+) rather than the exact per-document scan.

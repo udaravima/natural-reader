@@ -112,11 +112,11 @@ async def test_a_passage_already_shown_this_turn_comes_back_without_its_text(ind
     first = await _search(ctx, {"query": "m", "k": 1})
     assert [p["page"] for p in first.result["passages"]] == [3]
     second = await _search(ctx, {"query": "m", "k": 1}, "c2")
-    assert second.result["passages"] == [{"ref": 1, "page": 3, "already_shown": True},
-                                         {"ref": 1, "page": 7, "relevance": "strong", "text": "half match"}]
+    assert second.result["passages"] == [{"ref": 1, "page": 7, "relevance": "strong", "text": "half match"}]
+    assert second.result["already_shown"] == [{"ref": 1, "pages": [3]}]
     assert second.summary["result_summary"]["chunk_count"] == 1
     third = await _search(ctx, {"query": "m", "k": 5}, "c3")
-    assert all(p.get("already_shown") for p in third.result["passages"])
+    assert third.result["passages"] == [] and third.result["already_shown"] == [{"ref": 1, "pages": [3, 7]}]
     assert third.result["message"] == ("Nothing new: every passage found was already shown above. "
                                        "Search with different words, or answer from what you have.")
 
@@ -127,8 +127,8 @@ async def test_the_prefetched_passages_count_as_shown(indexed):
     ctx = await _ctx(indexed)
     ctx.shown.add((await cur.fetchone())[0])
     run = await _search(ctx, {"query": "m", "k": 1})
-    assert run.result["passages"][0] == {"ref": 1, "page": 3, "already_shown": True}
-    assert run.result["passages"][1]["page"] == 7
+    assert run.result["already_shown"] == [{"ref": 1, "pages": [3]}]
+    assert [p["page"] for p in run.result["passages"]] == [7]
 
 
 async def test_search_documents_clamps_k_and_needs_a_query(indexed):
@@ -237,3 +237,23 @@ async def test_a_search_asks_for_enough_rows_to_skip_everything_already_shown(mo
     ctx = ToolContext("u", doc_search.ReadableDoc(DOC, "T.pdf", "indexed"), shown=set(range(shown)))
     await sd_tool.TOOL.execute({"query": "q", "k": 5}, ctx)
     assert asked["k"] == want
+
+
+async def test_a_search_finds_the_documents_own_passages_when_other_documents_are_closer(indexed):
+    """Task B re-review: the HNSW index covers every document's chunks and the
+    doc_id filter ran AFTER the index scan, which keeps only ef_search (40)
+    candidates library-wide. With 60 closer chunks in another document, the
+    open document's passages never came back. The search must be exact over
+    the one document (a few hundred chunks: cheap)."""
+    conn, alice = indexed
+    other = "e" * 64
+    await seed.seed_doc(conn, other, alice.user_id, file_name="Other.pdf", state="indexed")
+    for i in range(300):
+        await conn.execute(
+            "INSERT INTO doc_chunks (doc_id, ord, page, chunk_type, text, text_hash, embedding, embedding_model) "
+            "VALUES (%s, %s, 1, 'page', 'other', %s, %s::vector, 'm')", (other, i, f"o{i}", _vec(1, 0.001 * i)))
+    # The plan a large library can get: walk the HNSW index in distance order.
+    await conn.execute("SET LOCAL enable_seqscan = off")
+    await conn.execute("SET LOCAL enable_sort = off")
+    rows = await doc_search.search_chunks(conn, DOC, [1.0] + [0.0] * (EMBEDDING_DIM - 1), 3)
+    assert [r["page"] for r in rows] == [3, 7, 9]
