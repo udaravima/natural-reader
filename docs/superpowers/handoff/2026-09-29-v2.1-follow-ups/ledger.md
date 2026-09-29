@@ -65,3 +65,10 @@ Task 3: minor (deferred): hash-on-first-open test covers markdown/text, not the 
 Task 3: minor (deferred): failure-path toast test covers PDF + markdown, not text (shared call site).
 Task 3: minor (deferred): the two new test files duplicate db/pdfjs mock boilerplate.
 Task 4: implemented 04a17bb (frontend 321; composite owner\0name keys, DB_VERSION 4→5 migration, per-owner LRU cap; delete/updateBookMeta scoped) — review NOT yet dispatched (handoff to cloud session)
+Cloud session (2026-09-29, branch claude/task-mwo2ow): controller implements fixes and tasks itself (one implementer in the tree at any time), reviewers are subagents. Env: Postgres 16 + pgvector on 5433, Python 3.12 venv (3.11 lacks inspect.getasyncgenstate → 11 chat_turns failures), backend baseline 579.
+Task 4: review — Needs fixes: 2 Important (the "local" fallback claimed legacy records; saves with no known owner went into the claimable bucket), 5 Minor.
+Task 4: fix round 1/5 implemented 15e063a (claimLegacy flag, fail-closed on a null owner, v1 backfill folded into the rebuild, key fields after spreads, useAuth wiring test, CHANGELOG); re-review: all addressed, 1 new Minor (CHANGELOG "offline list" sentence) fixed in the next commit.
+Task 4: complete (commits 07ee9e5..15e063a+changelog, review clean after 1 fix round)
+Task 4: minor (deferred): tabs still running v4 code get a VersionError after the upgrade (saves return false until reload; no data lost).
+Task 4: minor (deferred): the 'local' owner is unreachable in the app today (state 'error' shows AuthErrorScreen, not the reader) — decide in the final review whether R2's fallback stays.
+Task 4: minor (deferred): the claim's collision skip is now effectively dead code (only the migration writes UNCLAIMED_OWNER).

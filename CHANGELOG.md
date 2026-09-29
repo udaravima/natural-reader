@@ -13,8 +13,6 @@ All notable changes to this project will be documented in this file.
   (the five-file limit is per user too). Files saved before this release go
   to the first user who signs in on that browser, so a single-user install
   keeps its library. Signing out only hides the list; nothing is deleted.
-  When the server can't be reached to say who is signed in, the reader uses a
-  shared offline list that takes none of those older files.
 
 - **A tool call a model writes as text now runs instead of becoming the
   answer.** Small models such as `llama3.2:3b` often reply with
