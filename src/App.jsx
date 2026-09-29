@@ -22,6 +22,7 @@ import { resolveForModel, patchForModel, migrateLegacyThinking } from './hooks/i
 import { apiFetch } from './utils/apiFetch';
 import { getOrComputeDocHash } from './utils/docHash';
 import { useWorkspaceRestore } from './hooks/useWorkspaceRestore';
+import { ownedBy, visibleTo } from './lib/visibleTo';
 import { getBook } from './db';
 import { saveWorkspaceState, clearWorkspaceState, getWorkspaceState } from './db';
 import {
@@ -170,13 +171,16 @@ export default function App() {
   const [projectsVersion, setProjectsVersion] = useState(0);
 
   const pdfContainerRef = useRef(null);
-  const [workspace, setWorkspace] = useState(null);
+  // The open workspace folder and the reconnect banner belong to the user they
+  // were opened for (src/lib/visibleTo.js): another user sees neither, from
+  // the moment they sign in, even if a restore for the previous user lands late.
+  const [ownedWorkspace, setOwnedWorkspace] = useState(null); // ownedBy(userId, ws)
+  const workspace = visibleTo(ownedWorkspace, signedInUserId);
   const workspaceRef = useRef(null);
   const [workspaceEntryPath, setWorkspaceEntryPath] = useState(null);
   const folderInputRef = useRef(null);
-  const [reconnect, setReconnect] = useState(null); // { rootName } | null
-  // Who the open workspace was opened for — a new user never inherits it.
-  const workspaceOwnerRef = useRef(null);
+  const [ownedReconnect, setOwnedReconnect] = useState(null); // ownedBy(userId, { rootName })
+  const reconnect = visibleTo(ownedReconnect, signedInUserId);
 
   // Mirror workspace into a ref so async restore/reconnect effects can check
   // whether a manual open happened during the await without reading stale state.
@@ -625,8 +629,7 @@ export default function App() {
       showToast('No Markdown files found in that folder.', 4000);
       return;
     }
-    workspaceOwnerRef.current = signedInUserId;
-    setWorkspace(ws);
+    setOwnedWorkspace(ownedBy(signedInUserId, ws));
     setWorkspaceEntryPath(entry);
     setViewMode('reader');
   }, [showToast, setViewMode, signedInUserId]);
@@ -654,29 +657,22 @@ export default function App() {
   // silently re-open it; otherwise surface a one-click reconnect affordance.
   // The saved workspace belongs to the signed-in user (src/db.js):
   // useWorkspaceRestore looks it up once /v1/auth/me has named them, and
-  // again for a new user — whose first step is dropping a folder still open
-  // from the previous one.
+  // again for a new user. Whatever it opens is tagged with `userId`, so a
+  // late result for a previous user stays invisible to the next one.
   const restoreWorkspace = useCallback(async (saved, userId) => {
-    if (workspaceOwnerRef.current && workspaceOwnerRef.current !== userId) {
-      setWorkspace(null);
-      setWorkspaceEntryPath(null);
-      setReconnect(null);
-      workspaceOwnerRef.current = null;
-    }
     if (!saved) return;
     if (saved.handle && saved.handle.queryPermission) {
       const perm = await saved.handle.queryPermission({ mode: 'read' });
       if (perm === 'granted') {
         const ws = await createFsaWorkspace(saved.handle);
         if (workspaceRef.current) return; // user opened a folder during the await
-        workspaceOwnerRef.current = userId;
-        setWorkspace(ws);
+        setOwnedWorkspace(ownedBy(userId, ws));
         setWorkspaceEntryPath(saved.lastPath || pickEntryFile(ws.listFiles()));
       } else {
-        setReconnect({ rootName: saved.rootName }); // needs a user gesture
+        setOwnedReconnect(ownedBy(userId, { rootName: saved.rootName })); // needs a user gesture
       }
     } else {
-      setReconnect({ rootName: saved.rootName }); // snapshot: must re-pick
+      setOwnedReconnect(ownedBy(userId, { rootName: saved.rootName })); // snapshot: must re-pick
     }
   }, []);
   useWorkspaceRestore({
@@ -691,10 +687,9 @@ export default function App() {
         if (perm === 'granted') {
           const ws = await createFsaWorkspace(saved.handle);
           if (workspaceRef.current) return; // user opened a folder during the await
-          workspaceOwnerRef.current = signedInUserId;
-          setWorkspace(ws);
+          setOwnedWorkspace(ownedBy(signedInUserId, ws));
           setWorkspaceEntryPath(saved.lastPath || pickEntryFile(ws.listFiles()));
-          setReconnect(null);
+          setOwnedReconnect(null);
           return;
         }
       }
@@ -1083,7 +1078,7 @@ export default function App() {
           onCancelBookDownload={cancelBookDownload}
           onEnterDistractionFree={() => setDistractionFree(true)}
           workspaceName={workspace?.rootName}
-          onCloseWorkspace={() => { workspaceOwnerRef.current = null; setWorkspace(null); setWorkspaceEntryPath(null); clearWorkspaceState(); }}
+          onCloseWorkspace={() => { setOwnedWorkspace(null); setWorkspaceEntryPath(null); clearWorkspaceState(); }}
           user={auth.user}
           onLogout={auth.logout}
         />

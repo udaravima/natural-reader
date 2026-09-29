@@ -7,8 +7,10 @@ import { useEffect, useRef } from 'react';
  * has named them would find nothing and never try again.
  *
  * `onSaved(saved, userId)` gets the lookup's result (null when that user has
- * none); a lookup superseded by a newer one is dropped. It runs in the
- * promise's callback, so it may set state.
+ * none); a lookup superseded before it lands isn't passed on. `onSaved` may
+ * still be mid-way (awaiting a folder permission) when the user changes, so
+ * whatever it opens must be tagged with `userId` (App: src/lib/visibleTo.js).
+ * It runs in the promise's callback, so it may set state.
  */
 export function useWorkspaceRestore({ ready, userId, getSaved, onSaved }) {
     // The latest callback, read when a lookup lands (App passes a new one

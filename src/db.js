@@ -601,7 +601,7 @@ const cleanupOldSessions = async (store, ownerId) => {
 // =====================================================================
 // WORKSPACE STATE (one record per signed-in user, id 'last:<ownerId>';
 // a pre-release browser's single 'last' record is claimed at first sign-in)
-//   { id:'last', rootName, handle?, lastPath }
+//   { id:'last:<ownerId>', rootName, handle?, lastPath }
 // `handle` is a structured-clonable FileSystemDirectoryHandle (FSA only);
 // snapshot workspaces persist rootName + lastPath without a handle.
 // =====================================================================

@@ -48,3 +48,18 @@ BASE f55206f. The plan is `docs/superpowers/plans/2026-09-29-v2.2-per-user-brows
 Suites:
 - frontend: 407 passed, exit 0, no "Failed to claim" noise in the log;
 - eslint: clean.
+
+## Fix round 2 — FIX_BASE 6298c48 (re-review of round 1: findings 3 and 5 open, 2 new Minor)
+
+- **Findings 3 and 5 plus the two new Minors: the previous user's workspace, reconnect banner or late restore could reach the next user.** The design changed from clearing state to owning it.
+  - `workspace` and `reconnect` are now stored as `ownedBy(userId, value)` and read through `visibleTo(owned, signedInUserId)` (`src/lib/visibleTo.js`).
+  - A different user sees neither, from the render where they sign in: no timing window, nothing to clear, and no setState in an effect.
+  - A restore for user A that finishes after user B signed in is tagged A, so B never sees it.
+  - `workspaceOwnerRef` and the clearing block are gone.
+- **Hook comment reworded:** a superseded lookup isn't passed on, and `onSaved` must tag what it opens.
+- **Finding 5 (the last stale comment):** `db.js`'s workspace record shape now reads `id:'last:<ownerId>'`.
+
+Tests and checks:
+- `src/lib/visibleTo.test.js` (2).
+- Frontend: 409 passed, exit 0. eslint clean. `vite build` exit 0.
+- Running app (headless Chromium, dev bypass): opening a folder shows its note; after a reload the reconnect banner appears for the same user.
