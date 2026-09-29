@@ -7,11 +7,12 @@ from typing import Any
 
 from ...db import get_pool
 from ...llm.types import ToolSpec
+from ...services.extract import CONTINUATION_SUFFIX
 from .scope import document_scope, documents_listing
 
 PAGES_PER_CALL = 3
 CUT_MARKER = " [cut: the rest is not shown]"
-_MIN_OVERLAP = 16   # shorter repeats between chunks are coincidence, not overlap
+_MIN_OVERLAP = 16   # a continuation's overlap is far longer (CHUNK_OVERLAP_CHARS)
 
 _SPEC = ToolSpec(
     name="read_document_pages",
@@ -45,18 +46,29 @@ def _page_number(value: Any) -> int | None:
     return None
 
 
-def join_chunks(texts: list[str]) -> str:
-    """A page's chunks in order. A chunk that starts with the end of the one
-    before (sub-page chunks overlap, Task E) is joined without the repeat."""
+def join_chunks(parts: list[tuple[str, bool]]) -> str:
+    """A page's chunks in order, as (text, is_continuation). A continuation
+    part (Task E's split) starts with the end of the part before it: joined
+    without the repeat. Other chunks are separate blocks, never merged, even
+    when their text happens to repeat."""
     out = ""
-    for text in texts:
+    for text, continuation in parts:
         if not out:
             out = text
             continue
-        overlap = next((n for n in range(min(len(out), len(text)), _MIN_OVERLAP - 1, -1)
-                        if out.endswith(text[:n])), 0)
+        overlap = 0
+        if continuation:
+            overlap = next((n for n in range(min(len(out), len(text)), _MIN_OVERLAP - 1, -1)
+                            if out.endswith(text[:n])), 0)
         out = out + text[overlap:] if overlap else out + "\n\n" + text
     return out
+
+
+def _page_count_sql() -> str:
+    # A converted document's page_count may be unknown, and its chunks skip
+    # empty pages: its doc_pages rows know every page.
+    return ("SELECT GREATEST((SELECT max(page) FROM doc_chunks WHERE doc_id = %s), "
+            "(SELECT max(page) FROM doc_pages WHERE doc_id = %s))")
 
 
 class _ReadDocumentPages:
@@ -87,39 +99,54 @@ class _ReadDocumentPages:
             return {"error": "last_page must not be before first_page."}
         async with get_pool().connection() as conn:
             count = doc.page_count
-            if not count:   # a converted document's page count isn't recorded
-                cur = await conn.execute("SELECT max(page) FROM doc_chunks WHERE doc_id = %s", (doc.doc_id,))
+            if not count:
+                cur = await conn.execute(_page_count_sql(), (doc.doc_id, doc.doc_id))
                 count = (await cur.fetchone())[0] or 0
             if first < 1 or last > count:
                 return {"error": f"This document has pages 1-{count}."}
-            messages = []
-            if last - first + 1 > PAGES_PER_CALL:
-                last = first + PAGES_PER_CALL - 1
-                messages.append(f"{PAGES_PER_CALL} pages at most per call: read from page {last + 1} "
-                                "next if you need more.")
+            wanted_last = last
+            last = min(last, first + PAGES_PER_CALL - 1)
             cur = await conn.execute(
-                "SELECT id, page, text FROM doc_chunks WHERE doc_id = %s AND page BETWEEN %s AND %s "
-                "ORDER BY page, ord", (doc.doc_id, first, last))
+                "SELECT id, page, chunk_type, text FROM doc_chunks "
+                "WHERE doc_id = %s AND page BETWEEN %s AND %s ORDER BY page, ord",
+                (doc.doc_id, first, last))
             rows = await cur.fetchall()
 
-        room = ctx.cfg.read_pages_max_chars
+        ref = 1   # the scope's first document; C2 passes a ref argument
+        cap = ctx.cfg.read_pages_max_chars
+        room = cap
         pages: list[dict[str, Any]] = []
+        messages: list[str] = []
+        cut: int | None = None
         for page in range(first, last + 1):
             if room <= 0:
                 break
-            chunks = [(cid, text or "") for cid, p, text in rows if p == page]
-            text = join_chunks([t for _, t in chunks])
+            chunks = [(cid, text or "", (ctype or "").endswith(CONTINUATION_SUFFIX))
+                      for cid, p, ctype, text in rows if p == page]
+            text = join_chunks([(t, c) for _, t, c in chunks])
             if len(text) > room:
-                pages.append({"ref": 1, "page": page, "text": text[:room] + CUT_MARKER})
-                messages.append(f"Cut at {ctx.cfg.read_pages_max_chars} characters: read fewer pages, "
-                                "or one page at a time.")
+                pages.append({"ref": ref, "page": page, "text": text[:room] + CUT_MARKER})
+                cut = page
                 break
             room -= len(text)
-            pages.append({"ref": 1, "page": page, "text": text})
+            pages.append({"ref": ref, "page": page, "text": text})
             if not text:
                 messages.append(f"Page {page} has no text (it may be an image).")
             # Whole pages only: the model now has these chunks.
-            ctx.shown.update(cid for cid, _ in chunks)
+            ctx.shown.update(cid for cid, _, _ in chunks)
+
+        # Where to continue, from what was actually returned (review I1).
+        if cut is not None and len(pages) == 1:
+            messages.append(f"Page {cut} is longer than {cap} characters: only its start is shown.")
+            resume = cut + 1
+        elif cut is not None:
+            messages.append(f"Page {cut} was cut at the size limit.")
+            resume = cut
+        else:
+            resume = pages[-1]["page"] + 1 if pages else first
+        if resume <= wanted_last:
+            span = f"page {resume}" if resume == wanted_last else f"pages {resume}-{wanted_last}"
+            messages.append(f"Not read: {span}. Read from page {resume} next.")
         result: dict[str, Any] = {"documents": documents_listing(scope), "pages": pages}
         if messages:
             result["message"] = " ".join(messages)

@@ -37,3 +37,33 @@ New `server/tests/test_chat_read_pages.py`, 18 tests; it failed at collection be
 - backend: 686 passed;
 - vitest: exit 0;
 - eslint: clean.
+
+## Fix round 1 — FIX_BASE 56b23af
+
+- **I1: the continuation hint came from the request, not from what was returned.**
+  - The message is now built after the loop:
+    - a single page over the cap: "Page N is longer than C characters: only its start is shown." Resume at N+1.
+    - a later page cut: "Page N was cut at the size limit." Resume at N.
+    - otherwise resume after the last page returned.
+  - Then "Not read: pages M-L. Read from page M next." when M ≤ the requested last page. That covers the >3 clamp, a page that ends exactly at the limit, and a cut.
+  - Tests:
+    - the >3 clamp;
+    - a single page over the cap (with its ids kept out of `shown`, minor 7);
+    - page 2 cut in 1-5;
+    - a page that ends exactly at the limit.
+
+    They failed before the fix.
+- **Minor 1: `join_chunks` could merge real text.**
+  - Overlap is removed only for a continuation part: `chunk_type` ends with `extract.CONTINUATION_SUFFIX` ("+cont"), the marker Task E's splitter must set on every part after a page's first.
+  - Tests: a continuation is joined; a refrain between two blocks is kept.
+- **Minor 2: the CTE's cost.** Only `(id, embedding)` is materialized; the top k are ranked, then the text is joined back. Order is deterministic (distance, id). The HNSW regression test still passes.
+- **Minor 3.** `MAX_ROWS = 100`, commented as a cost bound (the search is exact). The over-fetch test covers 0, 15, 60 and 200 shown. The test docstring now says 300.
+- **Minor 5.** For an unknown page count, the count is `GREATEST(max(chunk page), max(doc_pages page))`. Test: a trailing empty converted page reads as "no text", not out of range. A stale non-NULL count is not handled: `run_pipeline` keeps the PDF's count, which matches for converted PDFs.
+- **Minor 6.** `ref` is named once with a comment; the test checks page ref equals documents ref.
+- **Minor 8.** The CHAT_WITH_PDF loop diagram lists `read_document_pages`.
+- **Contracts carried to later tasks (in the ledger):**
+  - E sets "+cont" and round-trips `join_chunks(split(page)) == page`;
+  - D's web guard keeps its own record of the text returned, not `ctx.shown`.
+
+Suites:
+- backend: 692 passed.

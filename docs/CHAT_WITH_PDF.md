@@ -280,7 +280,7 @@ Chats saved before v2.3 recorded the tool as `search_document`, and their page c
 ```
 1. Server → Stage 0: embed the question, search the open document; good passages
             go straight into the prompt (a data-context event notes this)
-2. Server → calls the model provider with tools=[search_documents, web_search…]
+2. Server → calls the model provider with tools=[search_documents, read_document_pages, web_search…]
 3. Provider → streams a tool call (no content for that step)
 4. Server → runs the tool itself (server/chat/tools/), streams the result as
             tool-output-available, appends it to history

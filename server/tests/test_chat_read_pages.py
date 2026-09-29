@@ -80,7 +80,7 @@ async def test_more_than_three_pages_reads_the_first_three_and_says_where_to_con
     ctx, _ = book
     run = await _read(ctx, {"first_page": 1, "last_page": 5})
     assert [p["page"] for p in run.result["pages"]] == [1, 2, 3]
-    assert run.result["message"] == "3 pages at most per call: read from page 4 next if you need more."
+    assert run.result["message"] == "Not read: pages 4-5. Read from page 4 next."
 
 
 @pytest.mark.parametrize("args,error", [
@@ -106,25 +106,35 @@ async def test_a_page_number_sent_as_a_string_is_accepted(book):
 
 
 async def test_the_text_is_capped_with_a_marker(book):
-    ctx, _ = book
+    ctx, ids = book
     small = ToolContext(ctx.user_id, ctx.doc, cfg=ChatConfig(read_pages_max_chars=20))
     run = await _read(small, {"first_page": 2, "last_page": 3})
     text = "".join(p["text"] for p in run.result["pages"])
     assert len(text.replace(rp_tool.CUT_MARKER, "")) == 20
     assert run.result["pages"][0]["text"].endswith(rp_tool.CUT_MARKER)
     assert [p["page"] for p in run.result["pages"]] == [2]     # nothing left for page 3
-    assert run.result["message"].startswith("Cut at")
+    assert run.result["message"] == ("Page 2 is longer than 20 characters: only its start is shown. "
+                                     "Not read: page 3. Read from page 3 next.")
+    assert not ({ids[2], ids[3]} & small.shown)                # a cut page isn't "shown"
 
 
 def test_overlapping_chunks_are_joined_without_the_repeat():
-    """Task E splits long pages with an overlap; reading a page must not show
-    the overlapped text twice."""
+    """Task E splits long pages with an overlap and marks each later part a
+    continuation; reading a page must not show the overlapped text twice."""
     a = "The first part ends with this shared sentence."
     b = "this shared sentence. And the second part goes on."
-    assert rp_tool.join_chunks([a, b]) == ("The first part ends with this shared sentence. "
-                                           "And the second part goes on.")
-    assert rp_tool.join_chunks(["One.", "Two."]) == "One.\n\nTwo."
+    assert rp_tool.join_chunks([(a, False), (b, True)]) == (
+        "The first part ends with this shared sentence. And the second part goes on.")
+    assert rp_tool.join_chunks([("One.", False), ("Two.", False)]) == "One.\n\nTwo."
     assert rp_tool.join_chunks([]) == ""
+
+
+def test_blocks_that_merely_repeat_text_are_never_merged():
+    """Review minor: a refrain ending one stanza and starting the next is real
+    text. Only a continuation part's overlap is removed."""
+    a = "Stanza one ends with the refrain line here."
+    b = "with the refrain line here. Stanza two goes on."
+    assert rp_tool.join_chunks([(a, False), (b, False)]) == a + "\n\n" + b
 
 
 async def test_a_converted_document_reads_its_markdown_pages(db_conn, monkeypatch):
@@ -138,6 +148,45 @@ async def test_a_converted_document_reads_its_markdown_pages(db_conn, monkeypatc
     # page_count is unknown for a converted document: its last chunk's page bounds it.
     bad = await _read(ctx, {"first_page": 2}, "c2")
     assert bad.result == {"error": "This document has pages 1-1."}
+
+
+async def test_a_cut_later_page_says_to_read_it_on_its_own(book):
+    """Review I1: the continuation hint comes from what was returned."""
+    ctx, _ = book
+    small = ToolContext(ctx.user_id, ctx.doc, cfg=ChatConfig(read_pages_max_chars=30))
+    run = await _read(small, {"first_page": 1, "last_page": 5})
+    assert [p["page"] for p in run.result["pages"]] == [1, 2]   # page 1 whole, page 2 cut
+    assert run.result["message"] == ("Page 2 was cut at the size limit. "
+                                     "Not read: pages 2-5. Read from page 2 next.")
+
+
+async def test_a_page_ending_exactly_at_the_limit_says_what_was_not_read(book):
+    ctx, _ = book
+    exact = ToolContext(ctx.user_id, ctx.doc, cfg=ChatConfig(read_pages_max_chars=len("Page one.")))
+    run = await _read(exact, {"first_page": 1, "last_page": 3})
+    assert [p["page"] for p in run.result["pages"]] == [1]
+    assert run.result["message"] == "Not read: pages 2-3. Read from page 2 next."
+
+
+async def test_refs_come_from_the_scope(book):
+    ctx, _ = book
+    run = await _read(ctx, {"first_page": 1})
+    assert run.result["pages"][0]["ref"] == run.result["documents"][0]["ref"] == 1
+
+
+async def test_a_converted_document_counts_trailing_pages_with_no_text(db_conn, monkeypatch):
+    """Review minor: chunks_from_pages skips empty pages, so max(page) of the
+    chunks can miss the last pages; doc_pages knows them."""
+    shim_pool(monkeypatch, db_conn, rp_tool)
+    alice = await member(db_conn, "alice")
+    await seed.seed_doc(db_conn, DOC, alice.user_id, file_name="Scan.pdf", state="indexed")
+    await _chunk(db_conn, 0, 1, "text", "page-md")
+    for page, md in ((1, "text"), (2, "")):
+        await db_conn.execute("INSERT INTO doc_pages (doc_id, page, markdown) VALUES (%s,%s,%s)",
+                              (DOC, page, md))
+    ctx = ToolContext(alice.user_id, await doc_search.readable_doc(db_conn, DOC, alice.user_id))
+    run = await _read(ctx, {"first_page": 2})
+    assert run.result["message"] == "Page 2 has no text (it may be an image)."
 
 
 async def test_a_page_with_no_text_says_so(book, db_conn):

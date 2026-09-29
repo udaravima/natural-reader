@@ -207,10 +207,10 @@ def test_registry_order_is_stable():
     assert [t.name for t in chat_tools.REGISTRY] == ["search_documents", "read_document_pages", "web_search"]
 
 
-@pytest.mark.parametrize("shown,want", [(0, 5), (15, 20), (60, 40)])
+@pytest.mark.parametrize("shown,want", [(0, 5), (15, 20), (60, 65), (200, 100)])
 async def test_a_search_asks_for_enough_rows_to_skip_everything_already_shown(monkeypatch, shown, want):
     """Review I1: over three rounds a turn can have shown 20+ passages. The
-    search must look past all of them (up to HNSW's default ef_search, 40),
+    search must look past all of them (up to MAX_ROWS, a cost bound),
     or it reports "nothing new" while new evidence ranks lower."""
     asked = {}
 
@@ -243,7 +243,7 @@ async def test_a_search_asks_for_enough_rows_to_skip_everything_already_shown(mo
 async def test_a_search_finds_the_documents_own_passages_when_other_documents_are_closer(indexed):
     """Task B re-review: the HNSW index covers every document's chunks and the
     doc_id filter ran AFTER the index scan, which keeps only ef_search (40)
-    candidates library-wide. With 60 closer chunks in another document, the
+    candidates library-wide. With 300 closer chunks in another document, the
     open document's passages never came back. The search must be exact over
     the one document (a few hundred chunks: cheap)."""
     conn, alice = indexed

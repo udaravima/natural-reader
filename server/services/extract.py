@@ -17,6 +17,9 @@ from markdown_it import MarkdownIt
 from mdit_py_plugins.footnote import footnote_plugin
 
 SENTENCES_PER_PAGE = 40  # src/constants.js SENTENCES_PER_TEXT_PAGE
+# chunk_type suffix of a split part after a page's first (v2.3 Task E): it
+# starts with the end of the part before it, and a reader drops that repeat.
+CONTINUATION_SUFFIX = "+cont"
 
 # JavaScript's \s and String.prototype.trim set. Python's \s differs both ways:
 # it lacks U+FEFF and adds \x1c-\x1f.

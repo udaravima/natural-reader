@@ -23,7 +23,7 @@ PER_CHUNK_TEXT_CAP = 1500   # characters per passage the model reads
 # part of that noise through, labelled "weak". The model sees the bucket,
 # never the number.
 STRONG, MODERATE = 0.7, 0.55
-MAX_ROWS = 40
+MAX_ROWS = 100   # rows read per document per search: past the shown ones, to k new
 NONE_FOUND = "No passages about this in the document."
 NOTHING_NEW = ("Nothing new: every passage found was already shown above. "
                "Search with different words, or answer from what you have.")
@@ -88,8 +88,8 @@ class _SearchDocuments:
         k = max(1, min(10, int(k))) if isinstance(k, (int, float)) and not isinstance(k, bool) else 5
         qvec = await embed_one(query)
         # Look past everything already shown, so a later round still finds k
-        # new passages. The search is exact (doc_search.search_chunks); 40
-        # bounds the rows read per document.
+        # new passages. The search is exact (doc_search.search_chunks), so
+        # MAX_ROWS is only a cost bound.
         want = min(k + len(ctx.shown), MAX_ROWS)
         found: list[tuple[int, dict[str, Any]]] = []
         async with get_pool().connection() as conn:

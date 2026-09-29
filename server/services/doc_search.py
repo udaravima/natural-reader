@@ -38,23 +38,27 @@ async def search_chunks(conn, doc_id: str, qvec: list[float], k: int) -> list[di
     Exact, not approximate: the HNSW index covers every document, and a plan
     that walks it filters doc_id only AFTER keeping ef_search (40) candidates
     library-wide, losing this document's passages whenever other documents
-    are closer. The MATERIALIZED CTE filters to the one document first (a few
-    hundred chunks: a cheap exact scan)."""
+    are closer. The MATERIALIZED CTE filters to the one document first, then
+    ranks exactly. Only (id, embedding) is materialized; the text is joined
+    back for the top k alone (review: 5,000 chunks, ~32 ms, nothing spilled)."""
     async with conn.cursor() as cur:
         await cur.execute(
             """
             WITH doc AS MATERIALIZED (
-                SELECT id, page, chunk_type, text, embedding
+                SELECT id, embedding
                 FROM doc_chunks
                 WHERE doc_id = %s AND embedding IS NOT NULL
+            ), top AS (
+                SELECT id, embedding <=> %s::vector AS distance
+                FROM doc
+                ORDER BY distance
+                LIMIT %s
             )
-            SELECT id, page, chunk_type, text,
-                   1 - (embedding <=> %s::vector) AS score
-            FROM doc
-            ORDER BY embedding <=> %s::vector
-            LIMIT %s
+            SELECT c.id, c.page, c.chunk_type, c.text, 1 - top.distance AS score
+            FROM top JOIN doc_chunks c ON c.id = top.id
+            ORDER BY top.distance, c.id
             """,
-            (doc_id, qvec, qvec, k),
+            (doc_id, qvec, k),
         )
         rows = await cur.fetchall()
         cols = [d.name for d in cur.description]
