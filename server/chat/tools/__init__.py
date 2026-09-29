@@ -27,7 +27,8 @@ class Tool(Protocol):
 
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]: ...
 
-    def summarize(self, args: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]: ...
+    def summarize(self, args: dict[str, Any], result: dict[str, Any],
+                  ctx: ToolContext) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,6 @@ async def run_tool(call: ToolCall, ctx: ToolContext, offered: list[Tool]) -> Too
             logger.debug("Tool %s failure detail", call.name, exc_info=True)
             result = {"error": f"{call.name} failed: {type(e).__name__}"}
     summary = ({"error": result["error"]} if "error" in result or tool is None
-               else tool.summarize(call.arguments, result))
+               else tool.summarize(call.arguments, result, ctx))
     return ToolRun(call.id, call.name, call.arguments, result,
                    {"name": call.name, "arguments": call.arguments, "result_summary": summary})

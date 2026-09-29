@@ -58,9 +58,11 @@ class _SearchDocument:
             {"index": i, "page": r["page"], "score": round(r["score"], 4), "text": _cap(r["text"] or "")}
             for i, r in enumerate(rows, start=1)]}
 
-    def summarize(self, args: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    def summarize(self, args: dict[str, Any], result: dict[str, Any], ctx) -> dict[str, Any]:
+        # docId/docName are saved with the reply so its page citations can
+        # open this document later; the model never needs them.
         return {"ok": True, "chunk_count": result["chunk_count"], "query": result["query"],
-                "summary_text": None}
+                "summary_text": None, "docId": ctx.doc.doc_id, "docName": ctx.doc.name}
 
 
 TOOL = _SearchDocument()

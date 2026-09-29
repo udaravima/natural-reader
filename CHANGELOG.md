@@ -14,6 +14,12 @@ All notable changes to this project will be documented in this file.
   list. The route behind it, `GET /v1/docs/{id}/file`, answers 404 to anyone
   who can't read the document.
 
+- **Click a citation to open that page.** When a reply used a document, its
+  "page N" and "(page N)" citations are links: clicking one opens that
+  document in the reader at that page, fetching it from the server if it
+  isn't the one open. If you can no longer read it, a notice says so and
+  you stay in chat. Replies that used no document are unchanged.
+
 ### Fixed
 
 - **"Your Library" on the welcome screen belongs to the signed-in user.** It

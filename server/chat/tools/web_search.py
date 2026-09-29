@@ -44,7 +44,7 @@ class _WebSearch:
             return {"error": "count must be between 1 and 10."}
         return await web_search(query, count)
 
-    def summarize(self, args: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    def summarize(self, args: dict[str, Any], result: dict[str, Any], ctx) -> dict[str, Any]:
         n = len(result.get("results") or [])
         return {"ok": True, "chunk_count": None, "query": result.get("query"),
                 "summary_text": f'Web search for "{result.get("query")}" returned {n} result(s).'}

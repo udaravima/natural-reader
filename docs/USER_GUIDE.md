@@ -161,7 +161,13 @@ reply back token by token, saving it as it goes. If you click **Stop**, close
 the tab, or lose your connection partway through, the partial reply is kept
 and marked **Stopped** rather than lost. If you open a chat whose reply is
 still being written somewhere else (another tab or device), you'll see
-**Still generating…** until it settles. Only one reply can be in flight per
+**Still generating…** until it settles.
+
+**Citations:** when a reply used your document, the page numbers it cites
+("page 4", "(page 4)") are links. Clicking one opens that document in the
+reader at that page, opening it from the server first if it isn't the one
+you have open. If you can no longer read the document, a notice says so
+and you stay in chat. Only one reply can be in flight per
 chat at a time — sending again while one is still streaming is blocked until
 it finishes or you stop it.
 

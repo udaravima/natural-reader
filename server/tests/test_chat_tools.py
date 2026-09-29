@@ -69,8 +69,12 @@ async def test_search_document_returns_ranked_capped_passages(indexed):
     assert (first["index"], first["page"], first["score"]) == (1, 3, 1.0)
     assert first["text"].endswith(" [truncated]") and len(first["text"]) == 1500 + len(" [truncated]")
     assert (second["page"], second["score"]) == (7, 0.7071)
+    # The saved summary names the document, so a reply's "(page N)" can open it
+    # later (Task 6 citations) — the model's result doesn't need it.
     assert run.summary == {"name": "search_document", "arguments": {"query": "match", "k": 2},
-                           "result_summary": {"ok": True, "chunk_count": 2, "query": "match", "summary_text": None}}
+                           "result_summary": {"ok": True, "chunk_count": 2, "query": "match", "summary_text": None,
+                                              "docId": DOC, "docName": ctx.doc.name}}
+    assert "docId" not in run.result
 
 
 async def test_search_document_clamps_k_and_needs_a_query(indexed):

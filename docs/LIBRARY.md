@@ -78,8 +78,10 @@ else already has — pick it, and the server takes it from there.
   in the background (the same "Extracting…" → "Indexing n/m" → "Indexed"
   progression as before). Extraction happens **on the server**, from the
   verified bytes, replicating the reader's own page/section rules exactly —
-  so the page numbers in chat citations match the reader's pages. (Citations
-  are plain text today; clicking one to jump to its page isn't built yet.)
+  so the page numbers in chat citations match the reader's pages. Clicking a
+  "(page N)" citation in a reply about a document opens that document at
+  that page (through `GET /v1/docs/{id}/file` if it isn't open), or says why
+  it can't — for example, when you can no longer read it.
 - Caps: PDFs up to `PDF_UPLOAD_MAX_MB` (50 MB by default), text/Markdown up
   to `TEXT_UPLOAD_MAX_MB` (10 MB by default). Over the cap, an unsupported
   type, or an empty file is refused with a clear reason rather than a

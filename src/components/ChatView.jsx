@@ -24,6 +24,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import AttachmentPreview from "./AttachmentPreview";
+import { citationDoc, remarkCitations } from "../lib/citations";
 import { estimateTokens } from "../hooks/inference";
 import { buildPinPreamble } from "../hooks/pins";
 // VoiceRecorder is intentionally not imported — audio attachments are paused
@@ -62,6 +63,9 @@ export default function ChatView({
   setDraft = () => {},
   pendingAttachments = [],
   setPendingAttachments = () => {},
+  // (docId, page, docName) → opens that document at that page in the reader.
+  // Without it, page citations in replies stay plain text.
+  onOpenCitation = null,
 }) {
   const copyMessage = async (text) => {
     if (!text) return;
@@ -298,6 +302,7 @@ export default function ChatView({
                       ? () => downloadMessageAudio(m.id)
                       : null
                   }
+                  onOpenCitation={onOpenCitation}
                 />
               );
             })}
@@ -434,6 +439,7 @@ function MessageBubble({
   onCopy,
   isDownloading,
   onDownloadAudio,
+  onOpenCitation,
 }) {
   const isUser = message.role === "user";
   const Icon = isUser ? User : Bot;
@@ -447,6 +453,15 @@ function MessageBubble({
   const toolStatus = !isUser ? message.toolStatus : null;
   const toolCalls =
     !isUser && Array.isArray(message.toolCalls) ? message.toolCalls : null;
+  // Only a reply the server saved as having used a document gets clickable
+  // "(page N)" citations — see src/lib/citations.js.
+  const { docContext: savedContext, toolCalls: savedCalls } = message;
+  const citeDoc = useMemo(
+    () => (!isUser && onOpenCitation
+      ? citationDoc({ docContext: savedContext, toolCalls: savedCalls })
+      : null),
+    [isUser, onOpenCitation, savedContext, savedCalls],
+  );
   return (
     <div className={`flex gap-3 ${isUser ? "flex-row-reverse" : ""}`}>
       <div
@@ -524,6 +539,8 @@ function MessageBubble({
               <AssistantMarkdown
                 content={message.content}
                 darkMode={darkMode}
+                citeDoc={citeDoc}
+                onOpenCitation={onOpenCitation}
               />
             ) : (
               <p className={`text-sm ${theme.textMuted} italic`}>…</p>
@@ -686,13 +703,23 @@ function MessageStatsDisclosure({ stats, theme, darkMode }) {
 
 // Memoize the markdown component overrides — prevents react-markdown
 // from rebuilding the renderer tree on every streaming token.
-function AssistantMarkdown({ content, darkMode }) {
+function AssistantMarkdown({ content, darkMode, citeDoc = null, onOpenCitation }) {
   const components = useMemo(
     () => ({
       p: ({ children }) => (
         <p className="my-1 text-sm leading-relaxed break-words">{children}</p>
       ),
-      a: ({ children, href }) => (
+      a: ({ children, href, "data-cite-page": citePage }) => citePage && citeDoc ? (
+        <button
+          type="button"
+          onClick={() => onOpenCitation(citeDoc.docId, Number(citePage), citeDoc.docName)}
+          aria-label={`Open ${citeDoc.docName || "the document"} at page ${citePage}`}
+          title={`Open page ${citePage}`}
+          className="text-blue-500 underline decoration-dotted hover:decoration-solid"
+        >
+          {children}
+        </button>
+      ) : (
         <a
           href={href}
           target="_blank"
@@ -760,12 +787,15 @@ function AssistantMarkdown({ content, darkMode }) {
         <td className="border border-slate-500/40 px-2 py-1">{children}</td>
       ),
     }),
-    [darkMode],
+    [darkMode, citeDoc, onOpenCitation],
   );
 
   return (
     <div className="text-sm leading-relaxed">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={citeDoc ? [remarkGfm, remarkCitations] : [remarkGfm]}
+        components={components}
+      >
         {content}
       </ReactMarkdown>
     </div>

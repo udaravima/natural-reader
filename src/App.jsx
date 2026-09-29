@@ -41,6 +41,7 @@ import ChatSidebar from './components/ChatSidebar';
 import { AdminConsole } from './components/admin/AdminConsole';
 import LibraryPage from './components/library/LibraryPage';
 import { fetchDocFile } from './lib/serverDocFile';
+import { openServerDoc, openCitation } from './lib/openDoc';
 import SettingsPage from './components/settings/SettingsPage';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
@@ -431,25 +432,21 @@ export default function App() {
     }
   };
 
-  // Open a server document (Library → Open) the same way as picking the
-  // file: fetch its stored bytes, then processFile saves them to this user's
-  // local library and opens them. The bytes hash to the doc id, so Index and
-  // chat find the server copy. Resolves `{ numPages }` once it's open in the
-  // reader; on a refusal (404, 409 bytes_missing) or a file the reader can't
-  // load it toasts and resolves null, leaving the view where it was.
-  const openServerDoc = useCallback(async (docId, name) => {
-    let opened = null;
-    try {
-      const file = await fetchDocFile(apiHost, apiPort, docId, name);
-      opened = await processFile(file);
-      if (!opened) throw new Error("the reader couldn't load this file.");
-    } catch (e) {
-      showToast(`Could not open "${name}": ${e.message}`, 5000);
-      return null;
-    }
-    setViewMode('reader');
-    return opened;
-  }, [apiHost, apiPort, processFile, setViewMode, showToast]);
+  // Opening a server document — Library → Open, or a "(page N)" citation in
+  // a chat reply — goes through src/lib/openDoc.js: fetch the stored bytes,
+  // open them like a picked file, then show the reader (a refusal is a toast
+  // and the view stays put).
+  const openDocDeps = {
+    fetchDocFile: (docId, name) => fetchDocFile(apiHost, apiPort, docId, name),
+    processFile,
+    showToast,
+    showReader: () => setViewMode('reader'),
+    goToPage: (n) => { setCurrentPage(n); setCurrentSentenceIndex(-1); },
+  };
+  const handleOpenLibraryDoc = (doc) => openServerDoc(openDocDeps, doc.doc_id, doc.file_name);
+  const handleOpenCitation = (docId, page, docName) => openCitation(openDocDeps, {
+    docId, page, docName, openDocId: pdfFileName ? currentDocId : null, numPages,
+  });
 
   const handleMobileSentenceClick = (index) => {
     setCurrentSentenceIndex(index - 1);
@@ -1156,6 +1153,7 @@ export default function App() {
             setDraft={setChatDraft}
             pendingAttachments={chatPendingAttachments}
             setPendingAttachments={setChatPendingAttachments}
+            onOpenCitation={handleOpenCitation}
           />
         ) : inAdmin ? (
           // Mount gate: the console renders nothing when the current user
@@ -1177,7 +1175,7 @@ export default function App() {
             apiHost={apiHost}
             apiPort={apiPort}
             showToast={showToast}
-            onOpen={(doc) => openServerDoc(doc.doc_id, doc.file_name)}
+            onOpen={handleOpenLibraryDoc}
             onProjectsChanged={() => setProjectsVersion((v) => v + 1)}
           />
         ) : inSettings ? (
