@@ -66,6 +66,9 @@ class OllamaProvider:
         return names
 
     async def capabilities(self, model: str) -> Capabilities:
+        return self._features.apply(model, await self._shown_capabilities(model))
+
+    async def _shown_capabilities(self, model: str) -> Capabilities:
         cached = self._caps.get(model)
         if cached is not None:
             return cached

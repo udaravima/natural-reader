@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, AsyncIterator, Protocol
 
 import httpx
@@ -125,6 +125,14 @@ class FeatureMemory:
 
     def remember(self, model: str, feature: str) -> None:
         self._rejected.setdefault(model, set()).add(feature)
+
+    def apply(self, model: str, caps: Capabilities) -> Capabilities:
+        """`caps` as the model's requests will actually see them: once tools
+        were rejected, every later request drops them silently (no
+        FeatureDropped), so callers must hear tools=False here or they'd
+        offer tools that are never sent. Applied on every call, over any
+        cached value, so a rejection learned after the cache filled counts."""
+        return replace(caps, tools=False) if self.rejected(model, "tools") else caps
 
 
 class TTLCache:

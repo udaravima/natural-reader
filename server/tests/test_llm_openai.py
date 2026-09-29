@@ -150,6 +150,22 @@ async def test_capabilities_openrouter_style_and_vllm_style():
         Capabilities(context_window=32768)
 
 
+async def test_a_remembered_tools_rejection_makes_capabilities_say_no_tools():
+    """Task 2 fix round 1: vLLM lists no supported_parameters (tools=None), and
+    after a remembered rejection requests drop tools silently — capabilities()
+    must then say tools=False, though the /models list is already cached."""
+    up = _up(lambda: httpx.Response(400, json={"error": {"message": "tools not supported"}}),
+             lambda: sse(_finish("stop")),
+             models={"data": [{"id": "Qwen/Qwen2.5-7B", "max_model_len": 32768}, {"id": "other"}]})
+    provider = OpenAICompatProvider(CFG, up.client())
+    assert await provider.capabilities("Qwen/Qwen2.5-7B") == Capabilities(context_window=32768)
+    chunks = await _collect(provider.stream_chat("Qwen/Qwen2.5-7B", HI, [TOOL], CallSettings()))
+    assert FeatureDropped("tools") in chunks
+    assert await provider.capabilities("Qwen/Qwen2.5-7B") == Capabilities(tools=False, context_window=32768)
+    assert (await provider.capabilities("other")).tools is None   # per model
+    assert sum(r.url.path == "/api/v1/models" for r in up.requests) == 1   # served from the cache
+
+
 async def test_list_models():
     provider = OpenAICompatProvider(CFG, _up(lambda: sse(_finish("stop"))).client())
     assert await provider.list_models() == ["vendor/model"]

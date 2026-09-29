@@ -14,7 +14,9 @@ All notable changes to this project will be documented in this file.
   2,000 characters); if it is one object naming a tool offered on that step
   and the provider sent no real tool call, it runs as a tool call and the JSON
   is neither shown nor saved. Anything else streams as before, and prose is
-  never held.
+  never held. A model its provider has seen reject tools now reports no tool
+  support (its picker loses the "tools" badge), so it is offered none and
+  nothing it writes is taken as a call.
 
 - **`web_search` page fetches are capped by size, time and type.** A fetched
   page is now streamed and cut off at `WEB_SEARCH_MAX_RESPONSE_BYTES` instead

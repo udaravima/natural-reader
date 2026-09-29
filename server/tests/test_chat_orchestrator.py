@@ -673,3 +673,33 @@ async def test_text_that_cannot_be_a_tool_call_is_not_held(conn, pieces, first_a
             assert e["delta"] == "".join(pieces[:first_after])
     assert seen_at == first_after
     assert (await _msg(conn, claim.turn_id))[2] == "".join(pieces)
+
+
+async def test_no_recovery_when_the_provider_already_strips_tools_for_this_model(conn, open_doc):
+    """Fix round 1: once a provider remembers that a model rejected tools, it
+    strips them silently (no FeatureDropped). A vLLM-style server lists no
+    capabilities (tools=None), so only the remembered rejection says the tools
+    are never sent: the JSON is the model's answer, and no tool runs."""
+    import httpx
+
+    from server.llm.providers.base import ProviderConfig
+    from server.llm.router import Router
+    from server.tests.llm_fakes import FakeUpstream, sse
+
+    up = (FakeUpstream()
+          .on("GET", "/v1/models", lambda: httpx.Response(200, json={"data": [{"id": "Qwen"}]}))
+          .on("POST", "/v1/chat/completions", lambda: sse(
+              {"choices": [{"index": 0, "delta": {"content": TEXT_CALL}, "finish_reason": None}]},
+              {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+              {"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 20}})))
+    router = Router([ProviderConfig(name="vllm", kind="openai", url="http://vllm.test/v1")], up.client())
+    router.providers["vllm"]._features.remember("Qwen", "tools")   # learned on an earlier turn
+    alice = await member(conn, "alice")
+    claim, req = await _start(alice)
+    req = dataclasses.replace(req, model_id="vllm:Qwen")
+    events = [e async for e in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)]
+    assert types(events) == ["start", "start-step", "text-start", "text-delta", "text-end", "finish-step", "finish"]
+    assert events[3]["delta"] == TEXT_CALL                                  # never held, never run
+    assert (await _msg(conn, claim.turn_id))[2] == TEXT_CALL
+    [body] = up.bodies("/v1/chat/completions")
+    assert "tools" not in body

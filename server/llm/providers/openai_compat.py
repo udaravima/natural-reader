@@ -75,6 +75,9 @@ class OpenAICompatProvider:
         return list((await self._entries()).keys())
 
     async def capabilities(self, model: str) -> Capabilities:
+        return self._features.apply(model, await self._listed_capabilities(model))
+
+    async def _listed_capabilities(self, model: str) -> Capabilities:
         try:
             entry = (await self._entries()).get(model) or {}
         except (ProviderUnavailable, ProviderError):

@@ -111,6 +111,23 @@ async def test_rejected_tools_retry_without_and_remember():
     assert ["tools" in b for b in up.bodies("/api/chat")] == [True, False, False]
 
 
+@pytest.mark.parametrize("show", [SHOW_ALL, {"model_info": {}}])   # listed tools; an Ollama too old to list
+async def test_a_remembered_tools_rejection_makes_capabilities_say_no_tools(show):
+    """Task 2 fix round 1: later requests drop tools silently (no FeatureDropped),
+    so the caller must learn it from capabilities() — even from a cache filled
+    before the rejection was learned — or it offers tools that are never sent."""
+    up = _up(lambda: httpx.Response(400, json={"error": "model does not support tools"}),
+             lambda: ndjson(DONE), show=show)
+    provider = OllamaProvider(CFG, up.client())
+    before = await provider.capabilities("qwen2")   # fills the capability cache
+    assert before.tools is not False
+    await _collect(provider.stream_chat("qwen2", HI, [TOOL], CallSettings()))
+    assert await provider.capabilities("qwen2") == dataclasses.replace(before, tools=False)
+    assert (await provider.capabilities("other")).tools is not False   # per model
+    assert not any(isinstance(c, FeatureDropped)
+                   for c in await _collect(provider.stream_chat("qwen2", HI, [TOOL], CallSettings())))
+
+
 async def test_rejection_is_not_remembered_when_the_retry_also_fails():
     up = _up(lambda: httpx.Response(400, json={"error": "prompt too long"}),
              lambda: httpx.Response(400, json={"error": "prompt too long"}),
