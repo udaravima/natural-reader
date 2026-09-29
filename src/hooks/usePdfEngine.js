@@ -96,19 +96,39 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
     }, [currentPage]);
 
     // --- PDF RENDERING ---
+    // pdf.js refuses a second render() on a canvas that is still drawing
+    // ("Cannot use the same canvas during multiple render() operations"), and
+    // a quick page step or zoom starts one before the last has finished. So
+    // the running RenderTask is kept here and cancelled before the next one
+    // starts, and `renderSeqRef` lets a superseded render skip the text layer.
+    const renderTaskRef = useRef(null);
+    const renderSeqRef = useRef(0);
+    useEffect(() => () => renderTaskRef.current?.cancel(), []);
+
     // Visual render: canvas + text selection layer (runs on page, scale, or doc change)
     const renderPageVisual = async (pageNum, doc) => {
         if (!doc || !pdfjsLibRef.current) return;
+        const seq = ++renderSeqRef.current;
         try {
             setStatus("Rendering page...");
             const page = await doc.getPage(pageNum);
+            if (seq !== renderSeqRef.current) return; // a newer render took over
             const viewport = page.getViewport({ scale });
             const canvas = canvasRef.current;
+            if (!canvas) return;
+            renderTaskRef.current?.cancel(); // releases the canvas synchronously
             const context = canvas.getContext('2d');
             canvas.height = viewport.height;
             canvas.width = viewport.width;
 
-            await page.render({ canvasContext: context, viewport }).promise;
+            const task = page.render({ canvasContext: context, viewport });
+            renderTaskRef.current = task;
+            try {
+                await task.promise;
+            } finally {
+                if (renderTaskRef.current === task) renderTaskRef.current = null;
+            }
+            if (seq !== renderSeqRef.current) return;
 
             // Render text layer for text selection
             const textContent = await page.getTextContent();
@@ -142,6 +162,8 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
             setStatus(`Page ${pageNum} Ready`);
         } catch (err) {
+            // Cancelled because a newer render started — expected, not an error.
+            if (err?.name === 'RenderingCancelledException') return;
             console.error(err);
             setStatus("Render Error");
         }

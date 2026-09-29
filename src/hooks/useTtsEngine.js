@@ -50,6 +50,18 @@ export function useTtsEngine({
     const chatAudioRef = useRef(new Audio()); // Separate channel so chat TTS can't collide with reader TTS
     const retryCountRef = useRef(0);
 
+    // The blob: URL the reader's <audio> element currently holds. It stays
+    // alive until the element moves on to another URL (or unmount): a seek
+    // or reload of the element fetches its src again, and a revoked URL
+    // fails there with ERR_FILE_NOT_FOUND (seen on reopening a PDF).
+    const loadedUrlRef = useRef(null);
+    const loadReaderAudio = useCallback((url) => {
+        const previous = loadedUrlRef.current;
+        audioRef.current.src = url;
+        loadedUrlRef.current = url;
+        if (previous && previous !== url) URL.revokeObjectURL(previous);
+    }, []);
+
     // Pure synthesis: returns a blob URL (or null on error). Reused by reader playback,
     // selection read, voice preview, and chat sentence playback.
     const synthesizeText = useCallback(async (text, { voice, speed, signal } = {}) => {
@@ -154,9 +166,15 @@ export function useTtsEngine({
 
     // --- CACHE MANAGEMENT ---
     const clearCache = useCallback(() => {
-        audioCache.current.forEach(url => URL.revokeObjectURL(url));
+        // The loaded URL is left to loadReaderAudio (see loadedUrlRef).
+        audioCache.current.forEach(url => { if (url !== loadedUrlRef.current) URL.revokeObjectURL(url); });
         audioCache.current.clear();
         pendingRequests.current.clear();
+    }, []);
+
+    useEffect(() => () => {
+        audioCache.current.forEach(url => URL.revokeObjectURL(url));
+        if (loadedUrlRef.current) URL.revokeObjectURL(loadedUrlRef.current);
     }, []);
 
     // Clear cache when page content changes (new textItems = new page)
@@ -287,9 +305,9 @@ export function useTtsEngine({
                 if (url) {
                     retryCountRef.current = 0;
                     setStatus("Reading...");
-                    audioRef.current.src = url;
+                    loadReaderAudio(url);
                     audioRef.current.onended = () => {
-                        URL.revokeObjectURL(url);
+                        // Revoked when the next sentence replaces it.
                         audioCache.current.delete(nextIdx);
                         if (active) playLoop();
                     };
@@ -367,11 +385,10 @@ export function useTtsEngine({
                 const blob = await (await fetch(`data:audio/wav;base64,${b64}`)).blob();
                 const url = URL.createObjectURL(blob);
 
-                audioRef.current.src = url;
+                loadReaderAudio(url);
                 audioRef.current.onended = () => {
                     setIsReadingSelection(false);
                     setStatus("Selection read complete");
-                    URL.revokeObjectURL(url);
                 };
                 audioRef.current.play();
             } catch (e) {

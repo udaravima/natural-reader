@@ -57,11 +57,23 @@ export default function WelcomeScreen({
                                     ? 'from-emerald-500 to-teal-600'
                                     : 'from-blue-500 to-cyan-600';
                             const displayName = book.fileName.replace(/\.(pdf|txt|md|markdown)$/i, '');
+                            // A div acting as a button, not a <button>: it holds
+                            // the remove <button>, and a button can't contain one.
                             return (
-                            <button
+                            <div
                                 key={book.fileName}
+                                role="button"
+                                tabIndex={0}
+                                aria-label={`Open ${displayName}`}
                                 onClick={() => openFromLibrary(book.fileName)}
-                                className={`w-full flex items-center justify-between p-3 rounded-xl ${theme.bgTertiary} ${theme.hover} transition-all group border ${theme.border}`}
+                                onKeyDown={(e) => {
+                                    if (e.target !== e.currentTarget) return; // a key on the remove control
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault();
+                                        openFromLibrary(book.fileName);
+                                    }
+                                }}
+                                className={`w-full flex items-center justify-between p-3 rounded-xl ${theme.bgTertiary} ${theme.hover} transition-all group border ${theme.border} cursor-pointer`}
                             >
                                 <div className="flex items-center gap-3 text-left">
                                     <div className={`w-10 h-10 rounded-lg bg-gradient-to-br ${tileGradient} flex items-center justify-center text-white flex-shrink-0`}>
@@ -77,13 +89,15 @@ export default function WelcomeScreen({
                                     </div>
                                 </div>
                                 <button
-                                    onClick={(e) => removeFromLibrary(book.fileName, e)}
-                                    className={`p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity ${theme.hover} hover:text-red-500`}
+                                    type="button"
+                                    onClick={(e) => { e.stopPropagation(); removeFromLibrary(book.fileName, e); }}
+                                    aria-label={`Remove ${book.fileName} from library`}
+                                    className={`p-2 rounded-lg opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity ${theme.hover} hover:text-red-500`}
                                     title="Remove from library"
                                 >
                                     <Trash2 size={14} />
                                 </button>
-                            </button>
+                            </div>
                             );
                         })}
                     </div>
