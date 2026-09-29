@@ -19,6 +19,13 @@ LONG = " ".join(f"Sentence number {i} says something about the method." for i in
 DOC = hashlib.sha256(LONG).hexdigest()
 
 
+@pytest.fixture(autouse=True)
+def _fresh_rebuild_state(monkeypatch):
+    """The pipeline's per-process rebuild bookkeeping, empty for each test."""
+    monkeypatch.setattr(doc_pipeline, "_failed", {})
+    monkeypatch.setattr(doc_pipeline, "_rebuilding", set())
+
+
 @pytest.fixture
 def store(tmp_path):
     d = tmp_path / "store"
@@ -212,3 +219,64 @@ async def test_the_search_route_says_reindexing_for_a_mismatched_document(db_con
     async with as_user(owner) as c:
         r = await c.post(f"/v1/docs/{DOC}/search", json={"query": "q", "k": 3})
     assert r.status_code == 409 and r.json()["detail"]["error"] == "reindexing"
+
+
+# ---- Task E review fix round 1 ----
+
+async def test_identical_parts_are_kept_as_separate_chunks_on_their_own_pages(db_conn, embedded, store,
+                                                                             monkeypatch):
+    """Review I1: UNIQUE(doc_id, text_hash) hashed only the text, so identical
+    parts (a letterhead opening every page, repetitive text) collapsed into
+    one row on the last page, and page reads lost text."""
+    from server.chat.tools import ToolContext, read_document_pages as rp_tool
+    from server.chat.tools import available_tools, run_tool
+    from server.llm.types import ToolCall
+    from server.tests.chat_harness import shim_pool
+    owner = await _member(db_conn, "owner")
+    letterhead = "ACME Research Ltd. Confidential report. " * 20                    # ~800 chars, same on each page
+    pages = [extract.Chunk(0, 1, "page", letterhead + "Page one body. " * 60),
+             extract.Chunk(1, 2, "page", letterhead + "Page two body. " * 60),
+             extract.Chunk(2, 3, "page", " ".join(["word"] * 900))]
+    await seed.seed_doc(db_conn, DOC, owner.user_id, file_name="Long.txt", file_type="text", state="indexed")
+    await doc_pipeline.replace_chunks(db_conn, DOC, extract.split_chunks(pages))
+    first_parts = [c for c in await _chunks(db_conn) if c[1] == "page"]
+    assert [c[0] for c in first_parts] == [1, 2, 3]                                   # each page keeps its opening
+    shim_pool(monkeypatch, db_conn, rp_tool)
+    ctx = ToolContext(owner.user_id, await readable_doc(db_conn, DOC, owner.user_id))
+    for chunk in pages:
+        run = await run_tool(ToolCall("c", "read_document_pages", {"first_page": chunk.page}), ctx,
+                             available_tools(ctx))
+        assert run.result["pages"][0]["text"] == chunk.text
+
+
+async def test_a_failed_rebuild_is_not_retried_at_once(db_conn, monkeypatch, store):
+    """Review I2: without a backoff, every turn on the document started another
+    full re-embed that failed the same way."""
+    async def failing_embed(texts):
+        return [None for _ in texts]
+
+    build_docs_app(db_conn, monkeypatch, storage_dir=store, embed=failing_embed)
+    owner = await _member(db_conn, "owner")
+    await _old_index(db_conn, owner.user_id, store)
+    await doc_pipeline.run_rebuild(DOC)
+    started = []
+
+    async def recording_rebuild(doc_id):
+        started.append(doc_id)
+
+    monkeypatch.setattr(doc_pipeline, "run_rebuild", recording_rebuild)
+    doc_pipeline._schedule_rebuild(DOC)
+    await asyncio.sleep(0.01)
+    assert started == []
+    later = doc_pipeline._clock() + doc_pipeline.REBUILD_RETRY_S + 1
+    monkeypatch.setattr(doc_pipeline, "_clock", lambda: later)
+    doc_pipeline._schedule_rebuild(DOC)
+    await asyncio.sleep(0.01)
+    assert started == [DOC]
+
+
+def test_chunk_size_leaves_room_for_the_prefix_within_the_embedding_input():
+    """Review minor: a part longer than EMBEDDING_MAX_CHARS would be truncated
+    before embedding, bringing back the invisible tail."""
+    assert extract.chunk_settings({"CHUNK_MAX_CHARS": "5000"}) == (1200, 200)
+    assert extract.chunk_settings({"CHUNK_MAX_CHARS": "5000", "EMBEDDING_MAX_CHARS": "8000"})[0] == 5000

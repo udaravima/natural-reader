@@ -11,6 +11,7 @@ import asyncio
 import dataclasses
 import hashlib
 import logging
+import time
 from pathlib import Path
 
 from ..db import get_pool, is_ready
@@ -39,11 +40,18 @@ def text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def chunk_key(c: extract.Chunk) -> str:
+    """doc_chunks.text_hash, the UNIQUE(doc_id, text_hash) key. Position and
+    page are part of it: identical split parts (a letterhead opening every
+    page) must stay separate rows on their own pages (v2.3 Task E review)."""
+    return text_hash(f"{c.ord}\x00{c.page}\x00{c.text}")
+
+
 async def replace_chunks(conn, doc_id, chunks, *, embeddings=None, model=None) -> None:
     """Swap a doc's whole chunk set in ONE transaction: readers see the old set
     until commit and never a half-swapped index (spec §4, legacy content)."""
     rows = [
-        (doc_id, c.ord, c.page, c.chunk_type, c.text, text_hash(c.text),
+        (doc_id, c.ord, c.page, c.chunk_type, c.text, chunk_key(c),
          embeddings[i] if embeddings else None, model if embeddings else None)
         for i, c in enumerate(chunks)
     ]
@@ -317,6 +325,9 @@ async def run_legacy_swap(doc_id: str) -> None:
 _rebuilding: set[str] = set()
 _rebuild_tasks: set[asyncio.Task] = set()   # strong refs: a bare create_task can be collected
 _rebuild_gate = asyncio.Semaphore(1)         # one rebuild at a time: the embedding model is shared
+REBUILD_RETRY_S = 15 * 60                    # after a failure, don't re-embed on every turn
+_failed: dict[str, tuple[str, float]] = {}   # doc_id -> (profile it failed under, retry after)
+_clock = time.monotonic                      # a seam for tests (patching time.monotonic stalls asyncio)
 
 
 def ensure_current(doc: ReadableDoc | None) -> ReadableDoc | None:
@@ -337,7 +348,9 @@ def ensure_current(doc: ReadableDoc | None) -> ReadableDoc | None:
 def _schedule_rebuild(doc_id: str) -> None:
     if doc_id in _rebuilding:
         return
-    _rebuilding.add(doc_id)
+    failed = _failed.get(doc_id)
+    if failed and failed[0] == current_profile() and _clock() < failed[1]:
+        return
 
     async def job():
         try:
@@ -346,6 +359,7 @@ def _schedule_rebuild(doc_id: str) -> None:
             _rebuilding.discard(doc_id)
 
     task = asyncio.get_running_loop().create_task(job())
+    _rebuilding.add(doc_id)
     _rebuild_tasks.add(task)
     task.add_done_callback(_rebuild_tasks.discard)
 
@@ -370,7 +384,9 @@ async def run_rebuild(doc_id: str) -> None:
     The new set is built and embedded first, then swapped in with one
     transaction: state stays 'indexed' and the old set answers until then
     (plan Review focus 6). Any failure keeps the old index."""
-    async with _rebuild_gate, doc_lock(doc_id):
+    # The document's lock first: waiting on one document (a long conversion)
+    # must not hold the gate every other rebuild queues on.
+    async with doc_lock(doc_id), _rebuild_gate:
         if not is_ready():
             return
         profile, embed_model = current_profile(), model_router.get_config().embed_model
@@ -394,12 +410,23 @@ async def run_rebuild(doc_id: str) -> None:
                 raise RuntimeError("the embedding service skipped some chunks")
             async with get_pool().connection() as conn:
                 async with conn.transaction():
+                    # Routes that reset a document (POST /index, a conversion
+                    # revert, a delete) don't take doc_lock: swap only if it is
+                    # still the indexed document this rebuild started from.
+                    cur = await conn.execute("SELECT state, embedding_profile FROM documents "
+                                             "WHERE doc_id = %s FOR UPDATE", (doc_id,))
+                    now = await cur.fetchone()
+                    if not now or now[0] != "indexed" or now[1] != row[1]:
+                        logger.info("Doc %s changed during its rebuild; dropped the rebuilt set", doc_id)
+                        return
                     await replace_chunks(conn, doc_id, chunks, embeddings=vectors, model=embed_model)
                     await conn.execute(
                         "UPDATE documents SET embedding_profile = %s, embedding_model = %s, "
                         "embedding_dim = %s, updated_at = now() WHERE doc_id = %s AND state = 'indexed'",
                         (profile, embed_model, EMBEDDING_DIM, doc_id))
+            _failed.pop(doc_id, None)
             logger.info("Rebuilt doc %s: %d chunks under the current embedding profile", doc_id, len(chunks))
         except Exception as e:  # noqa: BLE001 — a background job: log, keep the old index
+            _failed[doc_id] = (profile, _clock() + REBUILD_RETRY_S)
             logger.error("Rebuild of %s failed; keeping the old index: %s", doc_id, type(e).__name__)
             logger.debug("Rebuild failure detail", exc_info=True)

@@ -73,3 +73,24 @@
 
 ## Not verified here
 There was no live Ollama run. That prefixes improve scores on nomic is its model card's claim; Task G's harness measures it. The relevance buckets and floor (Task B) were calibrated without prefixes and should be re-measured.
+
+## Fix round 1 — FIX_BASE 12b1df3 (Task F's commit sits between; this round touches only Task E code)
+
+- **I1: identical split parts collapsed into one row.**
+  - `doc_pipeline.chunk_key(c)` hashes `ord`, page and text together. `replace_chunks` stores it in `text_hash`, the `UNIQUE(doc_id, text_hash)` key.
+  - No migration: `replace_chunks` deletes the document's rows first, and two workers still converge, since the same position and text give the same key.
+  - Test: three pages, two opening with the same ~800-character letterhead and one of repetitive "word". All three keep their first part on their own page, and `read_document_pages` returns each page exactly. Mutation-checked: with the old text-only hash it fails.
+- **I2: no backoff after a failed rebuild.**
+  - `_failed[doc_id] = (profile, retry_after)`, with `REBUILD_RETRY_S` of 15 minutes. `_schedule_rebuild` skips a document whose rebuild failed under the current profile until the retry time; success clears it.
+  - The clock is a module seam (`_clock`). Patching `time.monotonic` itself stalls asyncio; the first test attempt hung the suite that way.
+  - Test: a failed rebuild, then nothing is scheduled; past the retry time it is. An autouse fixture resets the per-process bookkeeping for each test.
+- **M1.** The swap re-reads the document `FOR UPDATE` inside its transaction and drops the rebuilt set unless the document is still indexed with the profile the rebuild started from. This covers POST `/index`, a conversion revert or a delete while the rebuild runs.
+- **M2.** Lock order is now `doc_lock` first, then the global gate, so a slow document doesn't hold the gate.
+- **M3.** The CHANGELOG estimate is now "about one call per 1,000 characters".
+- **M4.** `CHUNK_MAX_CHARS` is capped at `EMBEDDING_MAX_CHARS - 64`, leaving room for the prefix; a larger value falls back to the default. Test added. Settings are still read at import, which is documented as a restart setting in `.env.example`.
+- **M5.** `_rebuilding.add` now happens after `create_task` succeeds.
+- **M6 (a full end-to-end rebuild through a real turn): not added.** The parts are tested separately, and the turn wiring is mutation-checked.
+- **For the ledger:** check `SELECT count(*) FROM documents WHERE state='indexed' AND embedding_model IS NULL` on a real upgraded database. Such documents are treated as the same model.
+
+Suites:
+- backend: 752 passed.

@@ -179,7 +179,7 @@ All notable changes to this project will be documented in this file.
 - **After upgrading, every indexed document is rebuilt once, in the
   background, the first time someone chats with it or searches it.** Its
   old chunks keep answering meanwhile. The rebuild re-embeds the whole
-  document: expect one embedding call per ~1,200 characters of text, one
+  document: expect about one embedding call per 1,000 characters of text, one
   document at a time.
 - **Changing `EMBEDDING_MODEL` no longer needs a manual re-index**, as long
   as the new model has the same dimension (`EMBEDDING_DIM`). Each document

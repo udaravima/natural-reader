@@ -243,7 +243,10 @@ def chunk_settings(env) -> tuple[int, int]:
         except ValueError:
             return default
         return value if lo <= value <= hi else default
-    max_chars = read("CHUNK_MAX_CHARS", 1200, 400, 8000)
+    # A part plus the embedding prefix must fit the embedding input, or its
+    # tail is cut off before it is embedded.
+    embed_max = read("EMBEDDING_MAX_CHARS", 2000, 500, 100_000)
+    max_chars = read("CHUNK_MAX_CHARS", 1200, 400, min(8000, embed_max - 64))
     return max_chars, read("CHUNK_OVERLAP_CHARS", min(200, max_chars // 4), _MIN_OVERLAP, max_chars // 4)
 
 
