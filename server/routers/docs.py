@@ -503,7 +503,7 @@ async def get_document_file(
     (404 to everyone else, like GET /{doc_id}). Named with the caller's own
     name for it: their entry's, or for a project row the name its filer gave
     (`_DISPLAY_NAME`), never a stranger's. No stored bytes (a pre-A1 row, or
-    the file has gone from disk) is 409 bytes_missing."""
+    the file has gone from disk) is 409 bytes_missing. Never cached."""
     _ensure_ready()
     async with get_pool().connection() as conn:
         cur = await conn.execute(
@@ -518,7 +518,11 @@ async def get_document_file(
         raise refusal(409, "bytes_missing", "Upload the file again first.")
     return FileResponse(
         bytes_path, media_type=_FILE_MEDIA_TYPES.get(file_type, "application/octet-stream"),
-        filename=file_name, content_disposition_type="inline")
+        filename=file_name, content_disposition_type="inline",
+        # A browser's cache is keyed by URL, not by who is signed in: kept
+        # there, the bytes would reach the next user of a shared browser (or
+        # a recipient after a revoke) without passing the read gate.
+        headers={"Cache-Control": "private, no-store"})
 
 
 @router.patch("/{doc_id}")

@@ -32,6 +32,19 @@ describe('fetchDocFile', () => {
         expect(detectFileType(await fetchDocFile('', '', DOC, 'f'))).toBe(expected);
     });
 
+    it.each([
+        ['application/pdf', 'notes.md', 'notes.md.pdf', 'pdf'],
+        ['application/pdf', 'readme.txt', 'readme.txt.pdf', 'pdf'],
+        ['text/markdown; charset=utf-8', 'paper.pdf', 'paper.pdf', 'markdown'],
+        ['text/plain; charset=utf-8', 'x.md', 'x.md.txt', 'text'],
+        ['text/plain; charset=utf-8', 'x.TXT', 'x.TXT', 'text'],
+    ])('a %s named %s is renamed %s so it opens as %s', async (type, name, expectedName, kind) => {
+        apiFetch.mockResolvedValue(ok('x', type));
+        const file = await fetchDocFile('', '', DOC, name);
+        expect(file.name).toBe(expectedName);
+        expect(detectFileType(file)).toBe(kind);
+    });
+
     it('a 404 throws the no-access notice', async () => {
         apiFetch.mockResolvedValue(refused(404, { error: 'not_found', message: 'Document not found' }));
         await expect(fetchDocFile('', '', DOC, 'f')).rejects.toThrow("doesn't exist or you don't have access");

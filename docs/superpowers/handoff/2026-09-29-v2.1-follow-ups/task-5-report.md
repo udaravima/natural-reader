@@ -52,3 +52,23 @@ BASE d0f79fe. Implemented by the controller (no other implementer in the tree).
 ## Known limits
 - Opening overwrites a local-library record of the same name for this user. The local library is a cache keyed by name, so this is the same as picking a same-named file.
 - A 409 tells a share recipient to "Upload the file again first", which they can do only if they have the file.
+
+---
+
+## Fix round 1 — FIX_BASE 2b0b6f0
+
+- **Important: the response was browser-cacheable.** `FileResponse(..., headers={"Cache-Control": "private, no-store"})` (`server/routers/docs.py`). The owner test asserts the header.
+- **Minor: the name decided the type before the MIME did.** `fetchDocFile` appends the stored type's extension (`.pdf`/`.md`/`.txt`) when `detectFileType({name, type})` would read the name as a different type. A PDF named "notes.md" opens as "notes.md.pdf". There are 5 new cases in `serverDocFile.test.js`.
+- **Minor: the docHash cache was keyed by (name, size).** `forgetDocHash(name)` (`src/utils/docHash.js`) is called by `processFile` for every file it opens, so new bytes under an old name are always hashed afresh. There is a new `src/utils/docHash.test.js` and a processFile test that it is called.
+- **Minor: the view switched before processFile.** `openServerDoc` now awaits `processFile`. It switches to the reader only when the file opened; otherwise it shows a toast ("the reader couldn't load this file") and the view stays put.
+  - `processFile` now resolves `{ numPages }` or null instead of true/false. Task 6 uses the page count to clamp a cited page.
+  - `loadTextDocument` and `loadMarkdownDocument` return their page count.
+- **Minor: no PDF-branch test.** Added two tests: a PDF opens through pdf.js and resolves `{ numPages: 9 }`, and a PDF that pdf.js rejects resolves null.
+- **Minor: the stranger 404 only checked the status.** The test now asserts the stranger's 404 body equals the unknown-doc 404 body.
+- **Not changed:** the served bytes aren't re-hashed against doc_id. The upload path is the only writer and it checks the hash, so this is a note for the final review.
+
+Covering runs:
+- `pytest server/tests/test_docs_file.py` → 12 passed.
+- `vitest run src/lib/serverDocFile.test.js src/utils/docHash.test.js src/hooks/usePdfEngine.openServerDoc.test.js` → 17 passed. Before the fix, 10 of them failed.
+- Full suites: backend 591 passed; frontend 360 passed outside Task 6's in-progress citation tests, which aren't in this commit.
+- eslint: 1 error (baseline).

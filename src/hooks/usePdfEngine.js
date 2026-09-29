@@ -3,6 +3,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { saveBook, getBook, getRecentBooks, deleteBook, updateBookMeta, detectFileType } from '../db';
 import { loadReadingProgress, saveReadingProgress } from './usePersistedState';
 import { SENTENCES_PER_TEXT_PAGE } from '../constants';
+import { forgetDocHash } from '../utils/docHash';
 import { segmentSentences, paginateSentences, segmentMarkdown, paginateMarkdownBlocks } from '../utils/segmentation';
 
 // Configure PDF.js worker for offline use
@@ -231,6 +232,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         setFileType('text');
         setPdfFileName(fileName);
         applySavedProgress(fileName, pages.length);
+        return pages.length;
     };
 
     // Load a markdown document: parse blocks, paginate paragraph-aware, then
@@ -247,6 +249,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         setFileType('markdown');
         setPdfFileName(fileName);
         applySavedProgress(fileName, pages.length);
+        return pages.length;
     };
 
     // Write the file to IndexedDB and wait for it to land *before* the caller
@@ -269,17 +272,19 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         }
     };
 
-    // Resolves true once the document is open in the reader, false if it
-    // couldn't be (callers that pick a file ignore it; opening a server
-    // document waits on it — see App.jsx openServerDoc).
+    // Resolves `{ numPages }` once the document is open in the reader, null
+    // if it couldn't be (callers that pick a file ignore it; opening a
+    // server document or a citation waits on it — see App.jsx openServerDoc).
     const processFile = (file) => new Promise((resolve) => {
-        if (!file || !isLibLoaded) { resolve(false); return; }
+        if (!file || !isLibLoaded) { resolve(null); return; }
         const detected = detectFileType(file);
         const fileName = file.name;
+        // These bytes replace whatever was saved under this name before.
+        forgetDocHash(fileName);
 
         if (detected === 'pdf') {
             const reader = new FileReader();
-            reader.onerror = () => resolve(false);
+            reader.onerror = () => resolve(null);
             reader.onload = async (ev) => {
                 try {
                     const loadingTask = pdfjsLibRef.current.getDocument({ data: ev.target.result });
@@ -308,10 +313,10 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
                         console.warn('Could not load outline:', e);
                         setPdfOutline([]);
                     }
-                    resolve(true);
+                    resolve({ numPages: doc.numPages });
                 } catch {
                     setStatus("Error loading PDF");
-                    resolve(false);
+                    resolve(null);
                 }
             };
             reader.readAsArrayBuffer(file);
@@ -320,7 +325,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
         if (detected === 'text' || detected === 'markdown') {
             const reader = new FileReader();
-            reader.onerror = () => resolve(false);
+            reader.onerror = () => resolve(null);
             reader.onload = async (ev) => {
                 try {
                     const rawText = ev.target.result;
@@ -329,17 +334,15 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
                     // pdfFileName internally; see persistBook above.
                     await persistBook(file, { page: 1, sentenceIndex: -1 });
 
-                    if (detected === 'markdown') {
-                        loadMarkdownDocument(rawText, fileName);
-                    } else {
-                        loadTextDocument(rawText, fileName);
-                    }
+                    const numPages = detected === 'markdown'
+                        ? loadMarkdownDocument(rawText, fileName)
+                        : loadTextDocument(rawText, fileName);
                     getRecentBooks().then(setRecentBooks);
-                    resolve(true);
+                    resolve({ numPages });
                 } catch (e) {
                     console.error('Failed to load file:', e);
                     setStatus(detected === 'markdown' ? "Error loading markdown file" : "Error loading text file");
-                    resolve(false);
+                    resolve(null);
                 }
             };
             reader.readAsText(file);

@@ -434,18 +434,21 @@ export default function App() {
   // Open a server document (Library → Open) the same way as picking the
   // file: fetch its stored bytes, then processFile saves them to this user's
   // local library and opens them. The bytes hash to the doc id, so Index and
-  // chat find the server copy. Resolves true once it's open in the reader;
-  // on a refusal (404, 409 bytes_missing) it toasts and resolves false.
+  // chat find the server copy. Resolves `{ numPages }` once it's open in the
+  // reader; on a refusal (404, 409 bytes_missing) or a file the reader can't
+  // load it toasts and resolves null, leaving the view where it was.
   const openServerDoc = useCallback(async (docId, name) => {
-    let file;
+    let opened = null;
     try {
-      file = await fetchDocFile(apiHost, apiPort, docId, name);
+      const file = await fetchDocFile(apiHost, apiPort, docId, name);
+      opened = await processFile(file);
+      if (!opened) throw new Error("the reader couldn't load this file.");
     } catch (e) {
       showToast(`Could not open "${name}": ${e.message}`, 5000);
-      return false;
+      return null;
     }
     setViewMode('reader');
-    return processFile(file);
+    return opened;
   }, [apiHost, apiPort, processFile, setViewMode, showToast]);
 
   const handleMobileSentenceClick = (index) => {

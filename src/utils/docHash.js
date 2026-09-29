@@ -26,6 +26,13 @@ export async function getOrComputeDocHash(fileName, arrayBuffer) {
     return hash;
 }
 
+// New bytes were just saved under this name (a file opened from disk or the
+// server): the size check above can't tell two same-sized files apart, so
+// the next lookup must hash afresh.
+export function forgetDocHash(fileName) {
+    cache.delete(fileName);
+}
+
 export function clearDocHashCache() {
     cache.clear();
 }

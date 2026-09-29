@@ -19,8 +19,11 @@ vi.mock('pdfjs-dist', () => ({
     Util: { transform: vi.fn() },
 }));
 vi.mock('../utils/apiFetch', () => ({ apiFetch: vi.fn() }));
+vi.mock('../utils/docHash', () => ({ forgetDocHash: vi.fn() }));
 
 import { saveBook } from '../db';
+import { getDocument } from 'pdfjs-dist';
+import { forgetDocHash } from '../utils/docHash';
 import { apiFetch } from '../utils/apiFetch';
 import { fetchDocFile } from '../lib/serverDocFile';
 
@@ -42,9 +45,39 @@ describe('opening a server document', () => {
         let opened;
         await act(async () => { opened = await result.current.processFile(file); });
 
-        expect(opened).toBe(true);
+        expect(opened).toEqual({ numPages: expect.any(Number) });
         expect(result.current.pdfFileName).toBe(name);
         expect(result.current.fileType).toBe(fileType);
         expect(saveBook).toHaveBeenCalledWith(file, { page: 1, sentenceIndex: -1 });
+    });
+
+    it('application/pdf opens through pdf.js and resolves with its page count', async () => {
+        const doc = { numPages: 9, getOutline: vi.fn(async () => []) };
+        getDocument.mockReturnValue({ promise: Promise.resolve(doc) });
+        apiFetch.mockResolvedValue(new Response('%PDF-1.4', { status: 200, headers: { 'Content-Type': 'application/pdf' } }));
+        const { result } = renderHook(() => usePdfEngine({ scale: 1, setStatus: vi.fn(), setToastMessage: vi.fn() }));
+
+        const file = await fetchDocFile('', '', 'a'.repeat(64), 'Paper');
+        let opened;
+        await act(async () => { opened = await result.current.processFile(file); });
+
+        expect(opened).toEqual({ numPages: 9 });
+        expect(result.current.pdfFileName).toBe('Paper');
+        expect(result.current.fileType).toBe('pdf');
+        expect(saveBook).toHaveBeenCalledWith(file, { page: 1, sentenceIndex: -1 });
+    });
+
+    it('a PDF pdf.js cannot load resolves null', async () => {
+        getDocument.mockReturnValue({ promise: Promise.reject(new Error('bad pdf')) });
+        const { result } = renderHook(() => usePdfEngine({ scale: 1, setStatus: vi.fn(), setToastMessage: vi.fn() }));
+        let opened;
+        await act(async () => { opened = await result.current.processFile(new File(['x'], 'x.pdf', { type: 'application/pdf' })); });
+        expect(opened).toBeNull();
+    });
+
+    it('new bytes under a name drop any hash cached for that name', async () => {
+        const { result } = renderHook(() => usePdfEngine({ scale: 1, setStatus: vi.fn(), setToastMessage: vi.fn() }));
+        await act(async () => { await result.current.processFile(new File(['hello'], 'same.txt', { type: 'text/plain' })); });
+        expect(forgetDocHash).toHaveBeenCalledWith('same.txt');
     });
 });

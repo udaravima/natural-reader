@@ -72,6 +72,10 @@ async def test_owner_gets_the_bytes_inline_with_the_stored_type(db_conn, as_user
     assert r.status_code == 200
     assert r.content == PDF
     assert r.headers["content-type"] == "application/pdf"
+    # Never kept in a browser cache (keyed by URL, not by who is signed in):
+    # the next user on a shared browser, or a revoked recipient, must go
+    # through the read gate again.
+    assert r.headers["cache-control"] == "private, no-store"
     assert _disposition(r) == ("inline", "paper.pdf")
 
 
@@ -115,12 +119,14 @@ async def test_project_member_and_owner_get_the_bytes(db_conn, as_user, stored):
         assert _disposition(r) == ("inline", "filed.pdf")
 
 
-async def test_stranger_gets_404(db_conn, as_user, stored):
+async def test_stranger_gets_the_same_404_as_an_unknown_doc(db_conn, as_user, stored):
     owner, stranger = await _member(db_conn, "owner"), await _member(db_conn, "stranger")
     await seed.seed_doc(db_conn, DOC, owner.user_id, bytes_path=stored)
     r = await _get(as_user, stranger)
     assert r.status_code == 404
     assert PDF not in r.content
+    unknown = await _get(as_user, stranger, "d" * 64)
+    assert (unknown.status_code, unknown.json()) == (404, r.json())
 
 
 async def test_unknown_doc_is_the_same_404(db_conn, as_user):
