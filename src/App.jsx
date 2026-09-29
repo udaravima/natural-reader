@@ -181,6 +181,9 @@ export default function App() {
   const folderInputRef = useRef(null);
   const [ownedReconnect, setOwnedReconnect] = useState(null); // ownedBy(userId, { rootName })
   const reconnect = visibleTo(ownedReconnect, signedInUserId);
+  // Who is signed in now, for async work that started for someone else.
+  const signedInUserRef = useRef(signedInUserId);
+  useEffect(() => { signedInUserRef.current = signedInUserId; }, [signedInUserId]);
 
   // Mirror workspace into a ref so async restore/reconnect effects can check
   // whether a manual open happened during the await without reading stale state.
@@ -630,6 +633,7 @@ export default function App() {
       return;
     }
     setOwnedWorkspace(ownedBy(signedInUserId, ws));
+    setOwnedReconnect(null); // a folder is open: no older one to reconnect
     setWorkspaceEntryPath(entry);
     setViewMode('reader');
   }, [showToast, setViewMode, signedInUserId]);
@@ -661,11 +665,15 @@ export default function App() {
   // late result for a previous user stays invisible to the next one.
   const restoreWorkspace = useCallback(async (saved, userId) => {
     if (!saved) return;
+    // After each await: if another user signed in meanwhile, their state is
+    // theirs — this restore neither shows nor overwrites it.
+    const stale = () => signedInUserRef.current !== userId;
     if (saved.handle && saved.handle.queryPermission) {
       const perm = await saved.handle.queryPermission({ mode: 'read' });
+      if (stale()) return;
       if (perm === 'granted') {
         const ws = await createFsaWorkspace(saved.handle);
-        if (workspaceRef.current) return; // user opened a folder during the await
+        if (stale() || workspaceRef.current) return; // or the user opened a folder during the await
         setOwnedWorkspace(ownedBy(userId, ws));
         setWorkspaceEntryPath(saved.lastPath || pickEntryFile(ws.listFiles()));
       } else {

@@ -115,3 +115,6 @@ Final: minor (deferred, pre-existing): a workspace file isn't saved locally, so 
 Branch done: claude/task-mwo2ow — backend 610, frontend 391 (exit 0), eslint clean. Left: the local running-app walk; the "other local stores are per-browser" follow-up task.
 v2.2 (plan docs/superpowers/plans/2026-09-29-v2.2-per-user-browser-state.md): Task A 7a70e4e (review: Needs fixes — the restore gate was untested; fix round b142b49, re-review dispatched); Task B 52b2b9c + Task C 69cde96 (review: both Approved; minors applied next: Index on a folder file says why it can't, clearDocHashCache bumps generations, test globals restored, EOF blank lines).
 v2.2 Task B/C: minor (deferred): the staleFetch test uses two 20 ms real waits; App's docInLibrary guard has no App-level test (R3).
+v2.2 Task A: fix round 2/5 1cfc767 (owned state via visibleTo) — re-review: all addressed; 1 new Minor (a late restore for the previous user could overwrite, not reveal, the new user's state) fixed in the next commit with a signed-in-user ref; adoptWorkspace also clears a pending reconnect banner.
+v2.2 Task A: complete (review clean after 2 fix rounds)
+v2.2 Task A: minor (deferred): hiding the workspace doesn't unload a document already opened from the previous user's folder into the reader (a user change without a reload only happens via an API host change; logout reloads).
