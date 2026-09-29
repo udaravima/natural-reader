@@ -342,3 +342,19 @@ async def test_an_unrelated_400_does_not_fold_the_system_message():
         await _collect(OpenAICompatProvider(CFG, up.client()).stream_chat(
             "vendor/model", SYS, [], CallSettings()))
     assert all(b["messages"][0]["role"] == "system" for b in up.bodies("/api/v1/chat/completions"))
+
+
+async def test_a_folded_system_role_is_remembered_even_when_tools_were_dropped_after_it():
+    """Re-review minor: settle_dropped remembers only the last feature, but the
+    fold is certain (the error names the system role), so it is always kept."""
+    up = _up(lambda: httpx.Response(400, json=TEMPLATE_ERROR),
+             lambda: httpx.Response(400, json={"error": {"message": "tool use is not supported"}}),
+             lambda: sse(_delta(content="ok"), _finish("stop")),
+             lambda: sse(_delta(content="ok again"), _finish("stop")))
+    provider = OpenAICompatProvider(CFG, up.client())
+    first = await _collect(provider.stream_chat("vendor/model", SYS, [TOOL], CallSettings()))
+    assert FeatureDropped("system") in first and FeatureDropped("tools") in first
+    second = await _collect(provider.stream_chat("vendor/model", SYS, [TOOL], CallSettings()))
+    assert not [c for c in second if isinstance(c, FeatureDropped)]
+    last = up.bodies("/api/v1/chat/completions")[3]
+    assert [m["role"] for m in last["messages"]] == ["user"] and "tools" not in last

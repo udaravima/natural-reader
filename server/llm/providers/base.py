@@ -274,10 +274,14 @@ def is_feature_rejection(err: ProviderError) -> bool:
 
 def settle_dropped(features: FeatureMemory, model: str, provider: str, dropped: list[str]) -> list[FeatureDropped]:
     """After a successful retry: every dropped feature is reported, but only the last one
-    — the one whose removal made the request succeed — is remembered (ruling R12).
+    — the one whose removal made the request succeed — is remembered (ruling R12), plus a
+    folded system role, whose rejection names its cause.
 
     Returns the FeatureDropped chunks to yield; also records memory and logs."""
     chunks = [FeatureDropped(feature) for feature in dropped]
+    if "system" in dropped[:-1]:
+        # Certain, not a guess: the error named the system role.
+        features.remember(model, "system")
     if dropped:
         last_feature = dropped[-1]
         features.remember(model, last_feature)

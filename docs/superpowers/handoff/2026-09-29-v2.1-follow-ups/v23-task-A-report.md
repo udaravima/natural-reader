@@ -88,3 +88,14 @@ Suites:
 - backend: 650 passed;
 - frontend: exit 0;
 - eslint: clean.
+
+## Fix round 1 re-review
+
+All findings are addressed (I1–I5, M1–M9, with M2 accepted as-is). There is no new Critical or Important breakage.
+
+Of the new minors:
+- **Fixed now:** `settle_dropped` always remembers a folded system role, not only the last dropped feature. Test: the system role, then tools, dropped in one turn, and the next turn is one request with nothing dropped. Backend suite: 651 passed.
+- **Deferred to the ledger:**
+  - an empty `kind` now reads "excerpt";
+  - zero-width characters inside a fence tag;
+  - a web page can fake the rounds-over note, which only ends the rounds early.
