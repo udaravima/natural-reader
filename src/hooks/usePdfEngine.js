@@ -392,6 +392,14 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         }
     };
 
+    // Re-reads the library list from IndexedDB — needed whenever the signed-in
+    // user changes (sign-in, sign-out, switch), since `getRecentBooks` is
+    // scoped to whoever `setLibraryOwner` currently names (see db.js) and
+    // that name changes independently of anything usePdfEngine itself does.
+    const refreshLibrary = useCallback(() => {
+        getRecentBooks().then(setRecentBooks);
+    }, []);
+
     const removeFromLibrary = async (fileName, e) => {
         e.stopPropagation();
         await deleteBook(fileName);
@@ -530,6 +538,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         loadTextDocument,
         openFromLibrary,
         removeFromLibrary,
+        refreshLibrary,
         handleFileUpload,
         calculateReadingProgress,
         calculateEstimatedTimeRemaining,

@@ -185,7 +185,7 @@ export default function App() {
     textItems, isLibLoaded, pdfOutline, recentBooks,
     currentSentenceIndex, setCurrentSentenceIndex,
     canvasRef, textLayerRef, fileInputRef, sentenceRefs, playbackIndexRef,
-    processFile, openFromLibrary, removeFromLibrary, handleFileUpload,
+    processFile, openFromLibrary, removeFromLibrary, refreshLibrary, handleFileUpload,
     calculateReadingProgress, calculateEstimatedTimeRemaining,
     markdownPageData,
     extractAllChunks,
@@ -193,6 +193,15 @@ export default function App() {
     loadMarkdownDocument,
     loadTextDocument,
   } = pdfEngine;
+
+  // The local library (src/db.js) is scoped to whichever user `setLibraryOwner`
+  // currently names — set by useAuth as soon as /v1/auth/me resolves (and
+  // cleared on logout/session loss). usePdfEngine's own recentBooks state
+  // only reflects that the moment it's told to re-read, so re-fetch it
+  // whenever the signed-in identity changes (sign-in, sign-out, user switch).
+  useEffect(() => {
+    refreshLibrary();
+  }, [auth.user?.id, auth.state, refreshLibrary]);
 
   // Per-document project/tags picker: resets whenever the loaded document
   // (pdfFileName) changes, so a selection made for one doc can't silently

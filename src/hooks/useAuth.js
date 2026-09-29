@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch, setUnauthorizedHandler, setForbiddenHandler } from '../utils/apiFetch';
 import { buildApiUrl } from '../utils/url';
+import { setLibraryOwner } from '../db';
 
 /**
  * Auth state machine driven by the backend `/v1/auth/me` probe.
@@ -18,25 +19,36 @@ export function useAuth(apiHost, apiPort) {
       const res = await apiFetch(apiHost, apiPort, '/v1/auth/me');
       if (res.ok) {
         const body = await res.json();
+        // Await so the local library's per-user claim (see setLibraryOwner)
+        // has finished before `state` flips to 'active' and anything reacts
+        // to the now-known user id by refreshing the library list.
+        await setLibraryOwner(body.id);
         setUser({ ...body, capabilities: body.capabilities ?? [] });
         setState('active');
       } else if (res.status === 401) {
         setUser(null);
         setState('anonymous');
+        setLibraryOwner(null);
       } else if (res.status === 403) {
         const body = await res.json().catch(() => ({}));
         setState(body?.detail?.status === 'disabled' ? 'disabled' : 'pending');
+        setLibraryOwner(null);
       } else {
         setState('error');
+        // /v1/auth/me is unreachable/erroring — no signed-in user is known,
+        // so the local library falls back to the single shared "local" owner
+        // (pre-auth behavior) rather than hiding everything.
+        setLibraryOwner('local');
       }
     } catch {
       setState('error');
+      setLibraryOwner('local');
     }
   }, [apiHost, apiPort]);
 
   // Any 401 from any call site drops us back to the login gate.
   useEffect(() => {
-    setUnauthorizedHandler(() => { setUser(null); setState('anonymous'); });
+    setUnauthorizedHandler(() => { setUser(null); setState('anonymous'); setLibraryOwner(null); });
     return () => setUnauthorizedHandler(null);
   }, []);
 

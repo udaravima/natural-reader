@@ -4,12 +4,103 @@
  */
 
 const DB_NAME = 'neural-pdf-library';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const STORE_NAME = 'books';
 const SESSIONS_STORE = 'chat_sessions';
 const WORKSPACE_STORE = 'workspaces';
-const MAX_BOOKS = 5; // Keep last 5 books
+const MAX_BOOKS = 5; // Keep last 5 books (per owner — see cleanupOldBooks)
 const MAX_SESSIONS = 50; // Cap chat history at 50 sessions (LRU by updatedAt)
+
+// --- LIBRARY OWNERSHIP -------------------------------------------------
+// The `books` store is shared by everyone who uses this browser, so every
+// record carries an `ownerId` and reads/writes are scoped to whoever is
+// currently signed in. `currentOwnerId` is set by the auth layer (useAuth)
+// via `setLibraryOwner` once `/v1/auth/me` resolves; it starts out `null`
+// ("owner not known yet") which resolves to the UNCLAIMED bucket below —
+// fail-closed in the sense that nothing but not-yet-claimed legacy records
+// can show before a real owner is known.
+let currentOwnerId = null;
+
+// Sentinel `ownerId` for records saved before this release (no `ownerId`
+// field at all) or while the signed-in user isn't known yet. It's a real
+// string (never `null`/`undefined`) so it can live in an IndexedDB index —
+// indexes silently skip records whose indexed property is null/undefined.
+const UNCLAIMED_OWNER = '__unclaimed__';
+
+const effectiveOwnerId = () => currentOwnerId || UNCLAIMED_OWNER;
+
+// The store keeps out-of-line (explicit) keys built from owner + fileName so
+// two different users can each save a file with the same name without
+// colliding — see the v4 → v5 migration in openDB() for why this replaced
+// the old `keyPath: 'fileName'` scheme. `\u0000` can't appear in a fileName
+// a browser would give us, so it's a safe separator.
+const bookKey = (ownerId, fileName) => `${ownerId}\u0000${fileName}`;
+
+/**
+ * Set the signed-in user whose books/library reads and writes should be
+ * scoped to. Called by the auth layer once `/v1/auth/me` resolves — with the
+ * real user id when signed in, `'local'` when the dev loopback bypass (or
+ * any other auth-unavailable case) applies, or `null` to clear it (logout /
+ * session no longer known), which simply hides every record until an owner
+ * is set again — nothing is deleted.
+ *
+ * Also claims every not-yet-owned (pre-release) record for the FIRST user
+ * who ever calls this with a real id, so a single-user install keeps its
+ * existing library. The claim is one read-write transaction (getAll the
+ * UNCLAIMED_OWNER index, then delete+put each record under its new key), so
+ * it's atomic: if two owners are set around the same time (e.g. two tabs),
+ * IndexedDB serializes their read-write transactions against this store —
+ * whichever commits first claims everything currently unclaimed, and the
+ * second one's read then finds nothing left to claim. It's also idempotent:
+ * once nothing is left in the UNCLAIMED_OWNER bucket, calling this again for
+ * the same (or any) owner is a cheap no-op.
+ */
+export const setLibraryOwner = async (id) => {
+    const newOwner = id || null;
+    currentOwnerId = newOwner;
+    if (!newOwner) return;
+
+    try {
+        const db = await openDB();
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        const store = tx.objectStore(STORE_NAME);
+        const index = store.index('ownerId');
+
+        const unclaimed = await new Promise((resolve, reject) => {
+            const request = index.getAll(IDBKeyRange.only(UNCLAIMED_OWNER));
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+        });
+
+        for (const rec of unclaimed) {
+            const newKey = bookKey(newOwner, rec.fileName);
+
+            // Don't clobber a record the new owner already has under that
+            // name — leave the legacy one unclaimed rather than lose either.
+            const existing = await new Promise((resolve, reject) => {
+                const request = store.get(newKey);
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+            if (existing) continue;
+
+            await new Promise((resolve, reject) => {
+                const request = store.delete(bookKey(UNCLAIMED_OWNER, rec.fileName));
+                request.onsuccess = resolve;
+                request.onerror = () => reject(request.error);
+            });
+            await new Promise((resolve, reject) => {
+                const request = store.put({ ...rec, ownerId: newOwner }, newKey);
+                request.onsuccess = resolve;
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        db.close();
+    } catch (e) {
+        console.error('Failed to claim legacy library records:', e);
+    }
+};
 
 // Derive fileType from a File object's name/MIME type
 export const detectFileType = (file) => {
@@ -30,9 +121,36 @@ const openDB = () => {
 
         request.onupgradeneeded = (event) => {
             const db = event.target.result;
+            const tx = event.target.transaction;
             if (!db.objectStoreNames.contains(STORE_NAME)) {
-                const store = db.createObjectStore(STORE_NAME, { keyPath: 'fileName' });
+                // Fresh install: create directly in the current (v5) shape —
+                // out-of-line keys (see bookKey) plus an `ownerId` index, so
+                // there's nothing to migrate later.
+                const store = db.createObjectStore(STORE_NAME);
                 store.createIndex('lastOpened', 'lastOpened', { unique: false });
+                store.createIndex('ownerId', 'ownerId', { unique: false });
+            } else if (event.oldVersion < 5) {
+                // v4 (or earlier) → v5: the store used to be keyed in-line by
+                // `fileName` with no `ownerId` field at all, which meant two
+                // users saving a same-named file would silently overwrite
+                // each other. Read every record out, rebuild the store with
+                // out-of-line composite keys (owner + fileName), and write
+                // them all back tagged UNCLAIMED_OWNER so the first user to
+                // sign in claims them (see setLibraryOwner). Nothing is
+                // dropped.
+                const oldStore = tx.objectStore(STORE_NAME);
+                const getAllReq = oldStore.getAll();
+                getAllReq.onsuccess = () => {
+                    const legacyRecords = getAllReq.result || [];
+                    db.deleteObjectStore(STORE_NAME);
+                    const newStore = db.createObjectStore(STORE_NAME);
+                    newStore.createIndex('lastOpened', 'lastOpened', { unique: false });
+                    newStore.createIndex('ownerId', 'ownerId', { unique: false });
+                    for (const rec of legacyRecords) {
+                        const ownerId = rec.ownerId || UNCLAIMED_OWNER;
+                        newStore.put({ ...rec, ownerId }, bookKey(ownerId, rec.fileName));
+                    }
+                };
             }
             // v1 → v2: backfill fileType on existing records (all were PDFs)
             if (event.oldVersion < 2) {
@@ -75,9 +193,11 @@ export const saveBook = async (file, metadata = {}) => {
     try {
         const db = await openDB();
         const arrayBuffer = await file.arrayBuffer();
+        const ownerId = effectiveOwnerId();
 
         const bookData = {
             fileName: file.name,
+            ownerId,
             data: arrayBuffer,
             size: file.size,
             fileType: detectFileType(file),
@@ -89,13 +209,13 @@ export const saveBook = async (file, metadata = {}) => {
         const store = tx.objectStore(STORE_NAME);
 
         await new Promise((resolve, reject) => {
-            const request = store.put(bookData);
+            const request = store.put(bookData, bookKey(ownerId, file.name));
             request.onsuccess = resolve;
             request.onerror = () => reject(request.error);
         });
 
-        // Clean up old books within the same transaction
-        await cleanupOldBooks(store);
+        // Clean up old books within the same transaction (this owner's only)
+        await cleanupOldBooks(store, ownerId);
 
         db.close();
         return true;
@@ -116,8 +236,11 @@ export const getBook = async (fileName) => {
         const tx = db.transaction(STORE_NAME, 'readonly');
         const store = tx.objectStore(STORE_NAME);
 
+        // Scoped to the current owner's key — a record saved by someone else
+        // under the same fileName lives at a different key entirely, so this
+        // simply won't find it and returns null, same as if it never existed.
         const result = await new Promise((resolve, reject) => {
-            const request = store.get(fileName);
+            const request = store.get(bookKey(effectiveOwnerId(), fileName));
             request.onsuccess = () => resolve(request.result);
             request.onerror = () => reject(request.error);
         });
@@ -139,9 +262,10 @@ export const getRecentBooks = async () => {
         const db = await openDB();
         const tx = db.transaction(STORE_NAME, 'readonly');
         const store = tx.objectStore(STORE_NAME);
+        const index = store.index('ownerId');
 
         const books = await new Promise((resolve, reject) => {
-            const request = store.getAll();
+            const request = index.getAll(IDBKeyRange.only(effectiveOwnerId()));
             request.onsuccess = () => resolve(request.result);
             request.onerror = () => reject(request.error);
         });
@@ -173,8 +297,11 @@ export const deleteBook = async (fileName) => {
         const tx = db.transaction(STORE_NAME, 'readwrite');
         const store = tx.objectStore(STORE_NAME);
 
+        // Scoped to the current owner's key, so this can only ever delete
+        // the caller's own record, never one another user saved under the
+        // same fileName.
         await new Promise((resolve, reject) => {
-            const request = store.delete(fileName);
+            const request = store.delete(bookKey(effectiveOwnerId(), fileName));
             request.onsuccess = resolve;
             request.onerror = () => reject(request.error);
         });
@@ -198,10 +325,13 @@ export const updateBookMeta = async (fileName, updates) => {
         const db = await openDB();
         const tx = db.transaction(STORE_NAME, 'readwrite');
         const store = tx.objectStore(STORE_NAME);
+        const key = bookKey(effectiveOwnerId(), fileName);
 
-        // Read and write in the same transaction to avoid race conditions
+        // Read and write in the same transaction to avoid race conditions.
+        // Scoped to the current owner's key, so a name the caller doesn't
+        // own (even if someone else has one under that name) is a no-op.
         const book = await new Promise((resolve, reject) => {
-            const request = store.get(fileName);
+            const request = store.get(key);
             request.onsuccess = () => resolve(request.result);
             request.onerror = () => reject(request.error);
         });
@@ -218,7 +348,7 @@ export const updateBookMeta = async (fileName, updates) => {
         };
 
         await new Promise((resolve, reject) => {
-            const request = store.put(updatedBook);
+            const request = store.put(updatedBook, key);
             request.onsuccess = resolve;
             request.onerror = () => reject(request.error);
         });
@@ -232,14 +362,15 @@ export const updateBookMeta = async (fileName, updates) => {
 };
 
 /**
- * Internal: Remove oldest books if over limit.
+ * Internal: Remove oldest books if over limit, scoped to one owner — so one
+ * user's uploads never evict another user's saved books.
  * Accepts an existing store to reuse the caller's transaction.
  */
-const cleanupOldBooks = async (store) => {
-    const index = store.index('lastOpened');
+const cleanupOldBooks = async (store, ownerId) => {
+    const index = store.index('ownerId');
 
     const books = await new Promise((resolve, reject) => {
-        const request = index.getAll();
+        const request = index.getAll(IDBKeyRange.only(ownerId));
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error);
     });
@@ -252,7 +383,7 @@ const cleanupOldBooks = async (store) => {
         const toDelete = books.slice(0, books.length - MAX_BOOKS);
         for (const book of toDelete) {
             await new Promise((resolve) => {
-                const request = store.delete(book.fileName);
+                const request = store.delete(bookKey(book.ownerId, book.fileName));
                 request.onsuccess = resolve;
                 request.onerror = resolve; // Continue even on error
             });

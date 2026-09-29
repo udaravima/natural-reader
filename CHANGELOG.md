@@ -6,6 +6,19 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **The reader's local library (IndexedDB "Your Library") is scoped to the
+  signed-in user.** It used to be one shared list per browser — on a shared
+  machine, the next person to sign in saw and could open, delete, or overwrite
+  anyone else's recently-opened files. Every saved book now carries the
+  signed-in user's id (`setLibraryOwner`, called from `useAuth` once
+  `/v1/auth/me` resolves), and `getRecentBooks`/`getBook`/`deleteBook`/
+  `updateBookMeta` only ever see that user's own records; the 5-book cap is
+  now per user too. Records saved before this release (no owner yet) are
+  claimed once, by the first user who signs in on that browser, so a
+  single-user install keeps its existing library. Logging out just hides the
+  list — nothing is deleted — and the dev loopback bypass (no real auth
+  configured) keeps working under a shared `"local"` owner.
+
 - **A tool call a model writes as text now runs instead of becoming the
   answer.** Small models such as `llama3.2:3b` often reply with
   `{"name": "search_document", "parameters": {...}}` as plain text, sometimes
