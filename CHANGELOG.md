@@ -22,6 +22,16 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Reader console errors on opening a PDF.** Stepping pages or zooming
+  quickly no longer logs pdf.js's "Cannot use the same canvas during
+  multiple render() operations": the previous page render is cancelled
+  first. A recent file on the welcome screen is no longer a button inside a
+  button (it opens with Enter or Space too, and its remove control stays
+  separate). The reader's read-aloud audio keeps each clip alive while it's
+  loaded, instead of discarding it at the end of a sentence or page, which
+  could make the browser fetch a discarded `blob:` URL
+  (`ERR_FILE_NOT_FOUND`).
+
 - **"Your Library" on the welcome screen belongs to the signed-in user.** It
   used to be one list per browser, so on a shared machine the next person to
   sign in saw, and could open, the previous person's files. Each saved file
