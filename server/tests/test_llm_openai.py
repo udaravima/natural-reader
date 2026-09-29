@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from server.llm.providers.base import ProviderConfig
+from server.llm.providers.base import RAW_DETAIL_CAP, ProviderConfig
 from server.llm.providers.openai_compat import OpenAICompatProvider
 from server.llm.types import (Attachment, CallSettings, Capabilities, FeatureDropped, Finish,
                               Message, ProviderError, ProviderUnavailable, ReasoningDelta,
@@ -239,10 +239,20 @@ async def test_429_without_metadata_is_just_the_plain_message():
         "This model is busy or rate-limited at the provider. Try again in a moment, or pick another model.")
 
 
-@pytest.mark.parametrize("status", [401, 403])
-async def test_401_and_403_say_the_credentials_were_rejected(status):
-    err = await _stream_error(httpx.Response(status, json={"error": {"message": "No auth credentials found"}}))
+async def test_401_says_the_credentials_were_rejected():
+    err = await _stream_error(httpx.Response(401, json={"error": {"message": "No auth credentials found"}}))
     assert err.safe_message == "The provider rejected this server's credentials. An admin needs to check the API key."
+
+
+async def test_403_says_the_request_was_refused_and_keeps_the_provider_reason():
+    """OpenRouter answers 403 when a moderated model flags the input — not a
+    key problem, so it must not send people to the admin, and the reason is
+    the only thing that tells them what to change."""
+    body = {"error": {"message": "Input flagged", "code": 403,
+                      "metadata": {"reasons": ["violence"], "flagged_input": "..."}}}
+    err = await _stream_error(httpx.Response(403, json=body))
+    assert err.safe_message == "The provider refused this request. (Provider said: Input flagged)"
+    assert "credentials" not in err.safe_message and err.explained
 
 
 async def test_402_says_out_of_credit_and_is_not_retried_as_a_feature_rejection():
@@ -268,10 +278,22 @@ async def test_a_key_inside_metadata_raw_is_redacted():
     assert "rate-limited" in err.safe_message
 
 
-async def test_a_long_metadata_raw_is_trimmed():
+async def test_a_long_metadata_raw_is_trimmed_after_redaction():
     body = {"error": {"message": "x", "metadata": {"raw": "busy " * 200}}}
     err = await _stream_error(httpx.Response(429, json=body))
-    assert len(err.safe_message) < 400
+    detail = err.safe_message.split("(Provider said: ", 1)[1].rstrip(")")
+    assert detail.endswith("…") and len(detail) <= RAW_DETAIL_CAP + 1
+    # A key straddling the cut is redacted before the cut, never half-shown.
+    straddle = "a" * (RAW_DETAIL_CAP - 10) + " sk-or-v1-0123456789abcdef0123456789abcdef tail"
+    err = await _stream_error(httpx.Response(429, json={"error": {"metadata": {"raw": straddle}}}))
+    assert "0123456789" not in err.safe_message and "sk-or-v1" not in err.safe_message
+
+
+async def test_a_models_list_401_is_explained_too():
+    up = FakeUpstream().on("GET", "/api/v1/models", lambda: httpx.Response(401, json={"error": {"message": "x"}}))
+    with pytest.raises(ProviderError) as ei:
+        await OpenAICompatProvider(CFG, up.client()).list_models()
+    assert ei.value.safe_message.startswith("The provider rejected this server's credentials")
 
 
 async def test_a_429_mid_stream_error_payload_is_explained_too():

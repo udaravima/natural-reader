@@ -52,3 +52,22 @@ The key was kept in a mode-600 file in the session scratchpad and never printed.
 - backend: 607 passed;
 - frontend: 390 passed;
 - eslint: clean.
+
+---
+
+## Fix round 1 — FIX_BASE 66c878e
+
+- **Important (plan-mandated): 403 was mapped to "credentials rejected".** OpenRouter uses 403 when a moderated model flags the input, and 401 for a bad key.
+  - **Controller decision, flagged to the user:** 403 now says "The provider refused this request." plus the provider's own reason (redacted, capped at 200 chars). Only 401 says credentials.
+  - Test `test_403_says_the_request_was_refused_and_keeps_the_provider_reason` was red before the fix.
+- **Minor: Ollama `/api/tags` non-200.** It now goes through `provider_error`. Test: a 401 behind an auth proxy is explained (red before).
+- **Minor: weak trim test.** It now asserts the `…` marker and the cap, and that a key straddling the 200-char cut is redacted before the cut. This one passed on the code as it was, so it's a pin.
+- **Minor: no `/models` test.** Added a test that a `/models` 401 is explained.
+- **Minor: USER_GUIDE and DEPLOYMENT billing wording.** Both now say "a request the provider refuses outright (no output, no usage) isn't counted".
+- **Minor: the verified list omitted Ollama `/v1`.** DEPLOYMENT now mentions that v2.1.0 ran the adapter against Ollama's `/v1`.
+- **Not changed:** OpenRouter's `metadata.raw` for free models says "add your own key". That comes from the brief's "append raw" rule and is kept, noted for the user.
+
+Suites:
+- backend: 609 passed;
+- frontend: 390 passed;
+- eslint: clean.

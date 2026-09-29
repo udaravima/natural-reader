@@ -183,10 +183,11 @@ tokens) only show the knobs the selected model's provider actually supports.
 
 **When a reply fails at the provider:** the message says why. "This model is
 busy or rate-limited" (common with free models) means try again shortly or
-pick another model. "The provider rejected this server's credentials" and
-"The provider account is out of credit" are for whoever runs your
-deployment. A reply that fails before anything was written doesn't count
-against your daily token budget.
+pick another model. "The provider refused this request" comes with the
+provider's reason (some providers refuse input their moderation flags).
+"The provider rejected this server's credentials" and "The provider account
+is out of credit" are for whoever runs your deployment. A request the
+provider refuses outright doesn't count against your daily token budget.
 
 **Adding or changing model providers is not something you can do from the
 app.** There's no provider-management screen yet — an administrator adds,

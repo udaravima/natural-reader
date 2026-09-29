@@ -336,3 +336,11 @@ async def test_an_api_show_failure_is_logged_at_debug_only(caplog):
         assert caps == Capabilities()
         records = [r for r in caplog.records if "/api/show" in r.getMessage()]
         assert records and all(r.levelno == logging.DEBUG for r in records)
+
+
+async def test_a_model_list_401_behind_an_auth_proxy_is_explained():
+    up = FakeUpstream().on("GET", "/api/tags", lambda: httpx.Response(401, text="Unauthorized"))
+    with pytest.raises(ProviderError) as ei:
+        await OllamaProvider(CFG, up.client()).list_models()
+    assert ei.value.safe_message.startswith("The provider rejected this server's credentials")
+

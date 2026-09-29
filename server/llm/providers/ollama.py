@@ -12,8 +12,8 @@ from ..types import (Capabilities, CallSettings, Chunk, Finish, Message,
                      ProviderError, ProviderUnavailable, ReasoningDelta, TextDelta, ToolCall,
                      ToolCallReady, ToolSpec, Usage)
 from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_feature_rejection,
-                   iter_lines, json_object, open_stream, parse_arguments, safe_error_message,
-                   settle_dropped)
+                   iter_lines, json_object, open_stream, parse_arguments, provider_error,
+                   safe_error_message, settle_dropped)
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ class OllamaProvider:
         except httpx.HTTPError as e:
             raise ProviderUnavailable(type(e).__name__) from e
         if resp.status_code != 200:
-            raise ProviderError(resp.status_code, safe_error_message(resp.content))
+            raise provider_error(resp.status_code, resp.content)
         names = [m["name"] for m in json_object(resp).get("models") or []
                  if isinstance(m, dict) and m.get("name")]
         self._models.put("models", names)

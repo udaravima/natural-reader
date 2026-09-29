@@ -26,8 +26,10 @@ All notable changes to this project will be documented in this file.
   was rate-limited used to show "The model provider returned an error:
   Provider returned error". Now a `429` says the model is busy or
   rate-limited and to try again or pick another model (with the provider's
-  own detail when it gives one), a rejected key (`401`/`403`) says an admin
-  needs to check the API key, and `402` says the account is out of credit.
+  own detail when it gives one), a rejected key (`401`) says an admin needs
+  to check the API key, `402` says the account is out of credit, and `403`
+  says the provider refused the request, with its reason (OpenRouter uses
+  `403` for input its moderation flags).
   A refusal before any reply still isn't counted against the daily budget.
   OpenRouter is now verified end to end (paid Gemma 4 and Mistral Small
   3.2); `.env.example` and `docs/DEPLOYMENT.md` say the key goes in

@@ -292,7 +292,8 @@ shown in the admin console's Deployment config panel.
 `mistralai/mistral-small-3.2-24b-instruct` (2026-09-29). That covered
 multi-turn chat, pins, a native `web_search` tool round, an image with a
 follow-up question, provider-reported token usage, a rate-limited free
-model and a rejected key, with no key in the logs. vLLM and LiteLLM speak
+model and a rejected key, with no key in the logs. Before that (v2.1.0),
+the same adapter was run against Ollama's own `/v1`. vLLM and LiteLLM speak
 the same protocol but haven't been run.
 
 **Trap:** the key goes in `INFERENCE_<NAME>_API_KEY`, where `<NAME>` is the
@@ -303,14 +304,15 @@ and every request then fails with "The provider rejected this server's
 credentials".
 
 **What people see when a provider refuses** (the error code stays
-`provider_error`; a refusal before any reply isn't counted against the daily
-budget):
+`provider_error`; a request the provider refuses outright produces no output
+and no usage, so it isn't counted against the daily budget):
 
 | Provider answer | Message in the chat |
 |---|---|
 | `429` | "This model is busy or rate-limited at the provider. Try again in a moment, or pick another model." — plus the provider's own detail when it sends one (OpenRouter's `error.metadata.raw`, redacted and trimmed) |
-| `401` / `403` | "The provider rejected this server's credentials. An admin needs to check the API key." |
+| `401` | "The provider rejected this server's credentials. An admin needs to check the API key." |
 | `402` | "The provider account is out of credit." |
+| `403` | "The provider refused this request." plus the provider's reason. Not treated as a key problem: OpenRouter uses `403` when a moderated model flags the input. |
 | anything else | "The model provider returned an error:" and the provider's own message, redacted |
 
 **Trap:** `OLLAMA_URL` keeps its old job of running document **embeddings**

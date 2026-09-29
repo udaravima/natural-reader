@@ -87,10 +87,12 @@ def safe_error_message(raw: bytes | str) -> str:
 # own text ("Provider returned error") rarely says what to do.
 RATE_LIMITED_MESSAGE = ("This model is busy or rate-limited at the provider. "
                         "Try again in a moment, or pick another model.")
+# 403 isn't a key problem everywhere: OpenRouter answers 403 when a moderated
+# model flags the input. So it says "refused" and keeps the provider's reason.
 _EXPLAINED = {
     401: "The provider rejected this server's credentials. An admin needs to check the API key.",
-    403: "The provider rejected this server's credentials. An admin needs to check the API key.",
     402: "The provider account is out of credit.",
+    403: "The provider refused this request.",
     429: RATE_LIMITED_MESSAGE,
 }
 RAW_DETAIL_CAP = 200
@@ -115,12 +117,18 @@ def _raw_detail(raw: bytes | str) -> str | None:
 
 def provider_error(status: int, raw: bytes | str) -> ProviderError:
     """The ProviderError for an error answer: a plain sentence for a status
-    that says what happened (429, 401/403, 402 — plus the provider's detail
-    on a 429), else the provider's own text. Always redacted."""
+    that says what happened (401, 402, 403, 429), else the provider's own
+    text. A 429 adds the upstream's detail, a 403 the provider's reason.
+    Always redacted."""
     plain = _EXPLAINED.get(status)
     if plain is None:
         return ProviderError(status, safe_error_message(raw))
-    detail = _raw_detail(raw) if status == 429 else None
+    if status == 429:
+        detail = _raw_detail(raw)
+    elif status == 403:
+        detail = safe_error_message(raw)[:RAW_DETAIL_CAP] or None
+    else:
+        detail = None
     return ProviderError(status, f"{plain} (Provider said: {detail})" if detail else plain,
                          explained=True)
 
