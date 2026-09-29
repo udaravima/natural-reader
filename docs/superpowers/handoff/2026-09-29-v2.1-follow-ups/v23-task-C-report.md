@@ -67,3 +67,11 @@ New `server/tests/test_chat_read_pages.py`, 18 tests; it failed at collection be
 
 Suites:
 - backend: 692 passed.
+
+## Re-review
+
+All findings are addressed. The two new minors are fixed in the next commit:
+- the `top` CTE orders by `(distance, id)`;
+- the cut-page message says to read that page on its own for the rest.
+
+Backend suite: 692 passed.

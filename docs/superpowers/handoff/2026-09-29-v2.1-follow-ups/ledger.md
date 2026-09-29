@@ -128,3 +128,4 @@ v2.3 Task B: minor (deferred): the relevance buckets and floor are calibrated on
 v2.3 Task C: 56b23af (review: Needs fixes, one Important: the continuation hint came from the request, not from what was returned). Fix round in the next commit.
 v2.3 contract for Task E: every split part after a page's first has chunk_type + extract.CONTINUATION_SUFFIX ("+cont"), with an exact-character overlap; test join_chunks(split(page)) == page.
 v2.3 contract for Task D: the web_search guard records the document text it returned itself (prefetch passages, search passages, pages read including cut ones), not ctx.shown, which holds whole chunks only.
+v2.3 Task C: fix round a1b75fa. The re-review found all addressed; its 2 new minors are fixed in the next commit (a deterministic top-k tiebreak inside the CTE; the cut-page wording). Task C is complete.

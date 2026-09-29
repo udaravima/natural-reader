@@ -156,7 +156,7 @@ async def test_a_cut_later_page_says_to_read_it_on_its_own(book):
     small = ToolContext(ctx.user_id, ctx.doc, cfg=ChatConfig(read_pages_max_chars=30))
     run = await _read(small, {"first_page": 1, "last_page": 5})
     assert [p["page"] for p in run.result["pages"]] == [1, 2]   # page 1 whole, page 2 cut
-    assert run.result["message"] == ("Page 2 was cut at the size limit. "
+    assert run.result["message"] == ("Page 2 was cut at the size limit: read it on its own for the rest. "
                                      "Not read: pages 2-5. Read from page 2 next.")
 
 

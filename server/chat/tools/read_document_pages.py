@@ -140,7 +140,7 @@ class _ReadDocumentPages:
             messages.append(f"Page {cut} is longer than {cap} characters: only its start is shown.")
             resume = cut + 1
         elif cut is not None:
-            messages.append(f"Page {cut} was cut at the size limit.")
+            messages.append(f"Page {cut} was cut at the size limit: read it on its own for the rest.")
             resume = cut
         else:
             resume = pages[-1]["page"] + 1 if pages else first

@@ -51,7 +51,7 @@ async def search_chunks(conn, doc_id: str, qvec: list[float], k: int) -> list[di
             ), top AS (
                 SELECT id, embedding <=> %s::vector AS distance
                 FROM doc
-                ORDER BY distance
+                ORDER BY distance, id
                 LIMIT %s
             )
             SELECT c.id, c.page, c.chunk_type, c.text, 1 - top.distance AS score
