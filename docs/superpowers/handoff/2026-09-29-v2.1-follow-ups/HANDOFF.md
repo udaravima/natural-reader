@@ -19,18 +19,34 @@ Read this first if you're a new session continuing this work, local or cloud. It
 | 10 · Provider errors; OpenRouter verified | ✅ Reviewed, 1 fix round (403 ruling: see ledger) |
 | Final whole-branch review | ✅ Done; one fix pass (see ledger) |
 
-**Suites at the branch head:** backend 610 passed, frontend 391 passed (vitest exit 0), `npx eslint src` clean.
+**v2.2 — every piece of browser state belongs to its user** ([plan](../../plans/2026-09-29-v2.2-per-user-browser-state.md)), same branch:
+
+| Task | State |
+|---|---|
+| A · Browser-only chats, workspace, reading positions per user | ✅ Reviewed, 2 fix rounds |
+| B · Read-aloud never plays the previous page's clip | ✅ Approved |
+| C · The open document's id is always its own bytes' hash | ✅ Approved |
+| Final review | ✅ One fix (the unsent chat draft is per user too), re-reviewed clean |
+
+**Suites at the branch head:** backend 610 passed, frontend 412 passed (vitest exit 0), `npx eslint src` clean, `vite build` OK.
 
 ## What is left
 
 1. **The running-app walk on the local machine** (Ollama, real Kokoro, Keycloak):
-   - two users on one browser (Task 4);
-   - Open from the Library as a real share recipient (Task 5);
-   - `llama3.2:3b` document questions (Task 2);
-   - read aloud, then reopen a PDF, and watch for a `blob:` ERR_FILE_NOT_FOUND (Task 7).
+   - two users on one browser: the library, browser-only chats, the workspace folder, reading positions and the chat draft;
+   - Open from the Library as a real share recipient;
+   - `llama3.2:3b` document questions;
+   - read aloud, then reopen a PDF (`blob:`), and a page turn during read-aloud.
+2. **Decisions for the user:**
+   - the Task 10 403 wording;
+   - ruling R2 revised (no `"local"` owner).
+3. **Next plan (proposed): v2.3, model-provider independence.** Document embeddings are the one hard Ollama dependency (`server/services/embeddings.py` calls `/api/embeddings`). The plan:
+   - an embeddings provider setting (OpenAI-compatible `/v1/embeddings`, e.g. vLLM);
+   - a guard against mixing embedding models;
+   - a re-embed path.
 
-   A cloud walk already covered Library → Open, citations (open, not open, unreadable, same-name), and the reopen console. The details are in the ledger.
-2. **A follow-up task the final review recommends:** the other per-browser local state is still shared between users. That covers the legacy IndexedDB chat sessions, the last workspace folder, and the reading position in localStorage (Review focus 4).
+   Chat, summaries and Docling already work without Ollama.
+4. **Then A0,** the project-management screen (sharing and members are still API-only).
 
 ## Rules that bind this work (from the user)
 

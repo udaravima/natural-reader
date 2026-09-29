@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { chatDraftKey } from '../db';
 
 const load = (userId) => {
@@ -23,18 +23,21 @@ export function useUserDraft(userId) {
     const [typed, setTyped] = useState(null);
     const draft = userId ? (typed?.ownerId === userId ? typed.text : load(userId)) : '';
 
+    // The latest typed draft, so the setter can resolve an updater without a
+    // side effect inside setState's (pure) updater.
+    const typedRef = useRef(null);
     const setDraft = useCallback((next) => {
         if (!userId) return;
-        setTyped((prev) => {
-            const current = prev?.ownerId === userId ? prev.text : load(userId);
-            const text = typeof next === 'function' ? next(current) : next;
-            try {
-                localStorage.setItem(chatDraftKey(userId), JSON.stringify(text));
-            } catch {
-                // storage full or blocked: the draft still lives for this session
-            }
-            return { ownerId: userId, text };
-        });
+        const prev = typedRef.current;
+        const current = prev?.ownerId === userId ? prev.text : load(userId);
+        const text = typeof next === 'function' ? next(current) : next;
+        typedRef.current = { ownerId: userId, text };
+        try {
+            localStorage.setItem(chatDraftKey(userId), JSON.stringify(text));
+        } catch {
+            // storage full or blocked: the draft still lives for this session
+        }
+        setTyped(typedRef.current);
     }, [userId]);
 
     return [draft, setDraft];
