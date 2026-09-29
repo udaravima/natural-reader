@@ -757,6 +757,11 @@ export default function App() {
 
   const handleIndexDocument = useCallback(async () => {
     if (!pdfFileName) return;
+    if (!docInLibrary) {
+      // A file opened from a folder was never saved locally (v2.2 Task C).
+      showToast('Files opened from a folder can\'t be indexed. Open the file itself with Choose File to index it.', 5000);
+      return;
+    }
     const docId = await ensureDocHash();
     if (!docId) { showToast('Could not read document bytes — re-open the file and try again.', 4000); return; }
     const setIndex = (id, patch) =>
@@ -808,7 +813,7 @@ export default function App() {
       return;
     }
     await pollIndexUntilSettled({ apiDocId: serverId, stateKey: docId, apiHost, apiPort, setDocIndexByDocId, showToast });
-  }, [pdfFileName, ensureDocHash, docIndexByDocId, showToast, apiHost, apiPort, docProjectId, docTagsText]);
+  }, [pdfFileName, docInLibrary, ensureDocHash, docIndexByDocId, showToast, apiHost, apiPort, docProjectId, docTagsText]);
 
   // ---------- DOCLING CONVERSION ----------
   // Mirror of handleIndexDocument: uploads (registers) the PDF bytes →

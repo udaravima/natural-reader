@@ -40,5 +40,6 @@ export function forgetDocHash(fileName) {
 }
 
 export function clearDocHashCache() {
+    for (const name of cache.keys()) generation.set(name, (generation.get(name) || 0) + 1);
     cache.clear();
 }

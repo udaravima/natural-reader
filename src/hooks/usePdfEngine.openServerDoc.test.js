@@ -146,4 +146,3 @@ describe('opening a server document', () => {
         expect(result.current.docInLibrary).toBe(false);
     });
 });
-

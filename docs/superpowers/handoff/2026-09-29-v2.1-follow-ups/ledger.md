@@ -113,3 +113,5 @@ Final fix pass re-review (opus): all 10 findings addressed, no new Critical/Impo
 Final: minor (deferred, pre-existing): docHash's name-keyed cache — a hash still in flight for load N can repopulate the cache after load N+1's forgetDocHash when both files have the same size.
 Final: minor (deferred, pre-existing): a workspace file isn't saved locally, so ensureDocHash hashes a same-named library book instead.
 Branch done: claude/task-mwo2ow — backend 610, frontend 391 (exit 0), eslint clean. Left: the local running-app walk; the "other local stores are per-browser" follow-up task.
+v2.2 (plan docs/superpowers/plans/2026-09-29-v2.2-per-user-browser-state.md): Task A 7a70e4e (review: Needs fixes — the restore gate was untested; fix round b142b49, re-review dispatched); Task B 52b2b9c + Task C 69cde96 (review: both Approved; minors applied next: Index on a folder file says why it can't, clearDocHashCache bumps generations, test globals restored, EOF blank lines).
+v2.2 Task B/C: minor (deferred): the staleFetch test uses two 20 ms real waits; App's docInLibrary guard has no App-level test (R3).

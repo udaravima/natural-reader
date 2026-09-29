@@ -24,8 +24,9 @@ All notable changes to this project will be documented in this file.
 
 - **A file opened from a workspace folder no longer borrows another
   document's index.** If "Your Library" held a different file with the same
-  name, Index and chat used that file's server copy. Folder files now have
-  no server document of their own, as intended.
+  name, Index and chat used that file's server copy. Folder files have no
+  server document of their own, and Index on one now says so ("open the file
+  itself with Choose File to index it").
 
 - **Read aloud never plays a sentence from the page you just left.** A clip
   still being made when the page changed (turning the page, opening another

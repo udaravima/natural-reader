@@ -22,4 +22,3 @@ describe('docHash cache', () => {
         expect(next).toBe(await sha256Hex(buf('NEW!')));
     });
 });
-

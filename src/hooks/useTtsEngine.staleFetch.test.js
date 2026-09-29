@@ -13,6 +13,7 @@ describe('read-aloud cache across a page change', () => {
     let revoked;
     let audios;
     let held; // text → resolve() for synthesis requests the test controls
+    const saved = { speech: window.speechSynthesis, create: URL.createObjectURL, revoke: URL.revokeObjectURL };
 
     beforeEach(() => {
         n = 0;
@@ -34,7 +35,12 @@ describe('read-aloud cache across a page change', () => {
             return ok;
         });
     });
-    afterEach(() => vi.restoreAllMocks());
+    afterEach(() => {
+        vi.restoreAllMocks();
+        window.speechSynthesis = saved.speech;
+        URL.createObjectURL = saved.create;
+        URL.revokeObjectURL = saved.revoke;
+    });
 
     const props = (textItems) => ({
         textItems, currentSentenceIndex: -1, setCurrentSentenceIndex: vi.fn(),
