@@ -309,4 +309,3 @@ async def test_a_403_without_a_message_shows_no_json_and_a_long_reason_is_trimme
     assert err.safe_message == "The provider refused this request."
     err = await _stream_error(httpx.Response(403, json={"error": {"message": "flagged " * 60}}))
     assert err.safe_message.endswith("…)")
-
