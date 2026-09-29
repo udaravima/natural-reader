@@ -33,7 +33,7 @@ def as_user(db_conn, monkeypatch, tmp_path):
 
     async def embed_one(text):
         return (await fake_embed([text]))[0]
-    monkeypatch.setattr(docs_router, "embed_one", embed_one)
+    monkeypatch.setattr(docs_router, "embed_query", embed_one)
 
     async def _conn():
         yield db_conn

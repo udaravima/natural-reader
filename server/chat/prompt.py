@@ -55,6 +55,10 @@ def display_name(name: Any) -> str:
 def _document_line(doc: ReadableDoc | None) -> str | None:
     if doc is None:
         return None
+    if doc.state == "reindexing":
+        return (f'The user has the document "{display_name(doc.name)}" open. It is being re-indexed for the '
+                "current search model, so its contents can't be searched for a minute or two. If they "
+                "ask what it says, tell them to ask again shortly.")
     if doc.state != "indexed":
         return (f'The user has the document "{display_name(doc.name)}" open, but it isn\'t indexed yet, so its '
                 "contents can't be searched. If they ask what it says, tell them to click Index in "

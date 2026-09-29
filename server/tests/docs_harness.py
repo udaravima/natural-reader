@@ -37,7 +37,7 @@ def build_docs_app(db_conn, monkeypatch, *, storage_dir, embed=None):
     for mod in (docs_router, doc_pipeline):
         monkeypatch.setattr(mod, "get_pool", lambda: shim)
         monkeypatch.setattr(mod, "is_ready", lambda: True)
-    monkeypatch.setattr(doc_pipeline, "embed_batch", embed or fake_embed)
+    monkeypatch.setattr(doc_pipeline, "embed_documents", embed or fake_embed)
     monkeypatch.setenv("DOC_STORAGE_DIR", str(storage_dir))
     current = {}
     app = FastAPI()

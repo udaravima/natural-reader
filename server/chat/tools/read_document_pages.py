@@ -7,7 +7,7 @@ from typing import Any
 
 from ...db import get_pool
 from ...llm.types import ToolSpec
-from ...services.extract import CONTINUATION_SUFFIX
+from ...services.extract import CHUNK_OVERLAP_CHARS, CONTINUATION_SUFFIX
 from .scope import document_scope, documents_listing
 
 PAGES_PER_CALL = 3
@@ -56,11 +56,14 @@ def join_chunks(parts: list[tuple[str, bool]]) -> str:
         if not out:
             out = text
             continue
-        overlap = 0
         if continuation:
-            overlap = next((n for n in range(min(len(out), len(text)), _MIN_OVERLAP - 1, -1)
-                            if out.endswith(text[:n])), 0)
-        out = out + text[overlap:] if overlap else out + "\n\n" + text
+            # At most the chunker's overlap: in repetitive text a longer match
+            # would swallow real characters.
+            overlap = next((n for n in range(min(len(out), len(text), CHUNK_OVERLAP_CHARS),
+                                             _MIN_OVERLAP - 1, -1) if out.endswith(text[:n])), 0)
+            out += text[overlap:] if overlap else " " + text
+        else:
+            out += "\n\n" + text
     return out
 
 

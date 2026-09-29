@@ -99,3 +99,30 @@ async def embed_batch(texts: list[str]) -> list[list[float] | None]:
             return None
 
     return await asyncio.gather(*(_safe_embed(t) for t in texts))
+
+
+# ---------- what is embedded, and how (v2.3 Task E) ----------
+
+async def embed_query(text: str) -> list[float]:
+    """A question or search, with the model's query prefix."""
+    return await embed_one(model_router.get_config().embed_query_prefix + text)
+
+
+async def embed_documents(texts: list[str]) -> list[list[float] | None]:
+    """Document chunks, with the model's document prefix (see embed_batch)."""
+    prefix = model_router.get_config().embed_document_prefix
+    return await embed_batch([prefix + t for t in texts])
+
+
+def current_profile() -> str:
+    """How chunks embedded now are made: model | prefixes | chunker. A
+    document indexed under another profile is rebuilt (doc_pipeline); vectors
+    are only compared within one model."""
+    from .extract import CHUNKER_VERSION
+    cfg = model_router.get_config()
+    return "|".join((cfg.embed_model, repr(cfg.embed_document_prefix), repr(cfg.embed_query_prefix),
+                     CHUNKER_VERSION))
+
+
+def profile_model(profile: str | None) -> str | None:
+    return profile.split("|", 1)[0] if profile else None

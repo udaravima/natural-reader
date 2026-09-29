@@ -44,7 +44,7 @@ def corpus(open_doc, monkeypatch):
         runs.append(qvec[0])
         return [dict(r) for r in CORPUS.get(qvec[0], [])]
 
-    monkeypatch.setattr(sd_tool, "embed_one", fake_embed_one)
+    monkeypatch.setattr(sd_tool, "embed_query", fake_embed_one)
     monkeypatch.setattr(sd_tool, "search_chunks", fake_search_chunks)
     monkeypatch.setattr(ws_tool, "web_search", _fake_web())
     return runs

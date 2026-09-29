@@ -160,6 +160,14 @@ Behind the scenes, extraction runs **on the server** (`server/services/extract.p
 | **Markdown** | One chunk per top-level block (paragraph / heading / list / table / blockquote), tagged with the reader page it falls on. Code blocks are skipped. |
 | **Text** | One chunk per pseudo-page (40 sentences, matching the reader's pagination). |
 
+**Sub-page chunks (v2.3).** A PDF page runs 3,000-4,000 characters, but only about 2,000 fit the embedding model, and before v2.3 the bottom half of most pages was never searchable. Any chunk longer than `CHUNK_MAX_CHARS` (default 1,200) is now split on sentence ends, else on spaces. Each part overlaps the one before by up to `CHUNK_OVERLAP_CHARS` (default 200). Every part keeps its page, so citations still open the reader's page. `read_document_pages` joins the parts back exactly.
+
+**Embedding prefixes and the profile (v2.3).**
+- Indexed text is embedded as `search_document: …` and questions as `search_query: …`. Those are the prefixes nomic-embed-text was trained with; other models are configurable, see `.env.example`.
+- Each document records the profile it was indexed under: model, prefixes and chunker.
+- A document indexed under an older profile, including everything indexed before v2.3, is rebuilt in the background the first time it is used. Its old chunks answer until the new set swaps in, in one transaction.
+- If the embedding **model** changed, the document isn't searched until then: the chat says it is being re-indexed, and `POST /v1/docs/{id}/search` answers 409 `reindexing`.
+
 The browser never sends chunks; there is no client-side chunking any more. For who can read an uploaded document (sharing, projects) and the full set of states, see [LIBRARY.md](LIBRARY.md).
 
 You can poke around the stored state with psql:

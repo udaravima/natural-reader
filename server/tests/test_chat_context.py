@@ -42,7 +42,7 @@ def search(monkeypatch):
         state["k"] = k
         return state["rows"]
 
-    monkeypatch.setattr(ctx_mod, "embed_one", fake_embed)
+    monkeypatch.setattr(ctx_mod, "embed_query", fake_embed)
     monkeypatch.setattr(ctx_mod, "search_chunks", fake_search)
     monkeypatch.setattr(ctx_mod, "get_pool", lambda: _NullPool())
     return state

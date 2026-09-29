@@ -40,6 +40,11 @@ All notable changes to this project will be documented in this file.
   While it works, the reply shows what it is doing, and "Still searching…
   (round n)" from the second round on.
 
+- **The whole of every page is searchable.**
+  - Long pages are split into overlapping parts of about 1,200 characters (`CHUNK_MAX_CHARS`, `CHUNK_OVERLAP_CHARS`). Before, the bottom half of most PDF pages was never embedded.
+  - Text is embedded with the prefixes the embedding model was trained with (`search_document: ` and `search_query: ` for nomic-embed-text; `EMBEDDING_DOCUMENT_PREFIX` and `EMBEDDING_QUERY_PREFIX` for other models).
+  - Documents indexed before this change are rebuilt in the background the first time they're used, and stay searchable meanwhile.
+
 - **Document search returns evidence, not noise.** The document search
   tool is now called `search_documents`. It leaves out weak matches
   (`CHAT_SEARCH_MIN_SCORE`, default 0.45) and labels the passages it keeps
@@ -159,6 +164,19 @@ All notable changes to this project will be documented in this file.
   IndexedDB first, and the reader opens only once that's done. If the save
   itself fails, the document still opens, with a toast: "Couldn't save this
   file locally — Index and chat about it may not work until you reopen it."
+
+### Upgrade notes
+
+- **Migration `014`** adds `documents.embedding_profile`. It is additive only.
+- **After upgrading, every indexed document is rebuilt once, in the
+  background, the first time someone chats with it or searches it.** Its
+  old chunks keep answering meanwhile. The rebuild re-embeds the whole
+  document: expect one embedding call per ~1,200 characters of text, one
+  document at a time.
+- **Changing `EMBEDDING_MODEL` no longer needs a manual re-index**, as long
+  as the new model has the same dimension (`EMBEDDING_DIM`). Each document
+  rebuilds on first use. Until it does, it can't be searched: vectors from
+  two models can't be compared.
 
 ## [2.1.0] - 2026-09-28
 

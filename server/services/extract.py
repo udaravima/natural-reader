@@ -9,6 +9,7 @@ server/tests/fixtures/segmentation pin it.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -214,3 +215,81 @@ def extract_file(path: Path, file_type: str) -> Extraction:
         raise ValueError(f"unsupported file_type {file_type!r}")
     raw = Path(path).read_bytes().decode("utf-8-sig")  # BOM stripped, like FileReader
     return extract_markdown(raw) if file_type == "markdown" else extract_text(raw)
+
+
+# ---------- sub-page chunks (v2.3 Task E) ----------
+#
+# A PDF page runs 3,000-4,000 characters, but the embedding input is capped
+# (EMBEDDING_MAX_CHARS) and a passage shown to the model at 1,500: most of
+# every page used to be invisible. After extraction (which must match the
+# reader, above), a chunk longer than CHUNK_MAX_CHARS is split into parts.
+# Each part keeps the chunk's page; every part after the first starts with
+# the end of the one before (at least _MIN_OVERLAP, at most the overlap
+# setting) and is typed chunk_type + CONTINUATION_SUFFIX, so
+# read_document_pages.join_chunks puts the page back together exactly.
+
+_MIN_OVERLAP = 16
+_SENTENCE_END = re.compile(r"[.!?][\"')\]]*(?=" + _WS_CLASS + ")")
+_WS_ONE = re.compile(_WS_CLASS)
+
+
+def chunk_settings(env) -> tuple[int, int]:
+    """(CHUNK_MAX_CHARS, CHUNK_OVERLAP_CHARS), each falling back to its
+    default when unreadable or out of range. The overlap is at most a quarter
+    of a part, so every part moves the text forward."""
+    def read(key, default, lo, hi):
+        try:
+            value = int((env.get(key) or "").strip() or default)
+        except ValueError:
+            return default
+        return value if lo <= value <= hi else default
+    max_chars = read("CHUNK_MAX_CHARS", 1200, 400, 8000)
+    return max_chars, read("CHUNK_OVERLAP_CHARS", min(200, max_chars // 4), _MIN_OVERLAP, max_chars // 4)
+
+
+CHUNK_MAX_CHARS, CHUNK_OVERLAP_CHARS = chunk_settings(os.environ)
+CHUNKER_VERSION = f"split1:{CHUNK_MAX_CHARS}:{CHUNK_OVERLAP_CHARS}"
+
+
+def _cut(text: str, start: int, limit: int) -> int:
+    """Where a part starting at `start` ends: after the last sentence end, else
+    before the last whitespace, in the second half of the window; else at the
+    window's end (text with no spaces, e.g. Chinese or Japanese)."""
+    lo = start + (limit - start) // 2
+    ends = [m.end() for m in _SENTENCE_END.finditer(text, lo, limit + 1) if m.end() <= limit]
+    if ends:
+        return ends[-1]
+    spaces = [m.start() for m in _WS_ONE.finditer(text, lo, limit)]
+    spaces = [p for p in spaces if not _WS_ONE.match(text, p - 1)]   # the first of a run
+    return spaces[-1] if spaces else limit
+
+
+def _resume(text: str, end: int, overlap: int) -> int:
+    """Where the next part starts: the earliest word start in the overlap
+    window, else exactly `overlap` characters back."""
+    for p in range(end - overlap, end - _MIN_OVERLAP + 1):
+        if not _WS_ONE.match(text, p) and _WS_ONE.match(text, p - 1):
+            return p
+    return end - overlap
+
+
+def _split_text(text: str, max_chars: int, overlap: int) -> list[str]:
+    parts: list[str] = []
+    start = 0
+    while len(text) - start > max_chars:
+        end = _cut(text, start, start + max_chars)
+        parts.append(text[start:end])
+        start = _resume(text, end, overlap)
+    parts.append(text[start:])
+    return parts
+
+
+def split_chunks(chunks: list[Chunk], max_chars: int = CHUNK_MAX_CHARS,
+                 overlap: int = CHUNK_OVERLAP_CHARS) -> list[Chunk]:
+    out: list[Chunk] = []
+    for c in chunks:
+        for i, part in enumerate(_split_text(c.text, max_chars, overlap)):
+            kind = c.chunk_type if i == 0 or c.chunk_type.endswith(CONTINUATION_SUFFIX) \
+                else c.chunk_type + CONTINUATION_SUFFIX
+            out.append(Chunk(len(out), c.page, kind, part))
+    return out

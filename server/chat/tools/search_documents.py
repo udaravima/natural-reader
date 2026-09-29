@@ -11,7 +11,7 @@ from typing import Any
 from ...db import get_pool
 from ...llm.types import ToolSpec
 from ...services.doc_search import search_chunks
-from ...services.embeddings import embed_one
+from ...services.embeddings import embed_query
 from .scope import document_scope, documents_listing
 
 logger = logging.getLogger(__name__)
@@ -86,7 +86,7 @@ class _SearchDocuments:
             return {"error": "query is required and must be non-empty."}
         k = args.get("k")
         k = max(1, min(10, int(k))) if isinstance(k, (int, float)) and not isinstance(k, bool) else 5
-        qvec = await embed_one(query)
+        qvec = await embed_query(query)
         # Look past everything already shown, so a later round still finds k
         # new passages. The search is exact (doc_search.search_chunks), so
         # MAX_ROWS is only a cost bound.

@@ -28,6 +28,7 @@ from ..llm.types import (Attachment, CallSettings, Capabilities, FeatureDropped,
                          ProviderError, ProviderTimeout, ProviderUnavailable, ReasoningDelta,
                          TextDelta, ToolCall, ToolCallReady, Usage)
 from ..services import inference_budget
+from ..services import doc_pipeline
 from ..services.doc_search import ReadableDoc, readable_doc
 from . import store
 from .config import ChatConfig
@@ -561,7 +562,9 @@ async def _open_doc(req: TurnRequest) -> ReadableDoc | None:
         return None
     try:
         async with get_pool().connection() as conn:
-            return await readable_doc(conn, req.doc_id, req.user_id)
+            doc = await readable_doc(conn, req.doc_id, req.user_id)
+        # First use under a new embedding profile starts a background rebuild.
+        return doc_pipeline.ensure_current(doc)
     except Exception:  # noqa: BLE001 — no document context is a safe fallback
         logger.warning("Open-document lookup failed for %s", req.doc_id, exc_info=True)
         return None

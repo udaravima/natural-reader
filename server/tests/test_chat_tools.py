@@ -34,7 +34,7 @@ async def indexed(db_conn, monkeypatch):
     async def fake_embed(text):
         return [1.0] + [0.0] * (EMBEDDING_DIM - 1)
 
-    monkeypatch.setattr(sd_tool, "embed_one", fake_embed)
+    monkeypatch.setattr(sd_tool, "embed_query", fake_embed)
     alice = await member(db_conn, "alice")
     await seed.seed_doc(db_conn, DOC, alice.user_id, file_name="Thesis.pdf", state="indexed")
     await _chunk(db_conn, 0, 3, "exact match " + "x" * 2000, _vec(1))
@@ -233,7 +233,7 @@ async def test_a_search_asks_for_enough_rows_to_skip_everything_already_shown(mo
             return _Conn()
 
     monkeypatch.setattr(sd_tool, "search_chunks", fake_search_chunks)
-    monkeypatch.setattr(sd_tool, "embed_one", fake_embed)
+    monkeypatch.setattr(sd_tool, "embed_query", fake_embed)
     monkeypatch.setattr(sd_tool, "get_pool", lambda: _Pool())
     ctx = ToolContext("u", doc_search.ReadableDoc(DOC, "T.pdf", "indexed"), shown=set(range(shown)))
     await sd_tool.TOOL.execute({"query": "q", "k": 5}, ctx)

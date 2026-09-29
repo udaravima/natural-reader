@@ -555,7 +555,7 @@ def open_doc(monkeypatch):
 
     monkeypatch.setattr(orchestrator, "_open_doc", fake_open_doc)
     monkeypatch.setattr(ctx_mod, "prefetch", fake_prefetch)
-    monkeypatch.setattr(sd_tool, "embed_one", fake_embed_one)
+    monkeypatch.setattr(sd_tool, "embed_query", fake_embed_one)
     monkeypatch.setattr(sd_tool, "search_chunks", fake_search_chunks)
 
 

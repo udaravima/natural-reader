@@ -31,7 +31,7 @@ from zoneinfo import ZoneInfo
 from ..db import get_pool
 from ..llm.types import Attachment, Message
 from ..services.doc_search import ReadableDoc, search_chunks
-from ..services.embeddings import embed_one
+from ..services.embeddings import embed_query
 from . import store
 from .config import ChatConfig
 from .prompt import PASSAGES_TAG, PIN_TAG, display_name, fence, system_rules
@@ -96,7 +96,7 @@ async def prefetch(doc: ReadableDoc | None, question: str, cfg: ChatConfig) -> P
     if doc is None or doc.state != "indexed" or cfg.prefetch_min_score >= 1.0 or not question.strip():
         return Prefetch()
     try:
-        qvec = await embed_one(question)
+        qvec = await embed_query(question)
         async with get_pool().connection() as conn:
             rows = await search_chunks(conn, doc.doc_id, qvec, cfg.prefetch_k)
     except Exception as e:  # noqa: BLE001 — prefetch is an optimization; the tool is still offered
