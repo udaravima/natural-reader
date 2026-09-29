@@ -75,9 +75,17 @@ describe('opening a server document', () => {
         expect(opened).toBeNull();
     });
 
-    it('new bytes under a name drop any hash cached for that name', async () => {
+    it('new bytes under a name drop any hash cached for that name, once they are saved', async () => {
+        let finishSave;
+        saveBook.mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve; }));
         const { result } = renderHook(() => usePdfEngine({ scale: 1, setStatus: vi.fn(), setToastMessage: vi.fn() }));
-        await act(async () => { await result.current.processFile(new File(['hello'], 'same.txt', { type: 'text/plain' })); });
+        let opening;
+        act(() => { opening = result.current.processFile(new File(['hello'], 'same.txt', { type: 'text/plain' })); });
+        await vi.waitFor(() => expect(saveBook).toHaveBeenCalled());
+        // A hash taken while the write is in flight reads the old record, so
+        // the name is forgotten only after the write lands.
+        expect(forgetDocHash).not.toHaveBeenCalled();
+        await act(async () => { finishSave(true); await opening; });
         expect(forgetDocHash).toHaveBeenCalledWith('same.txt');
     });
 });

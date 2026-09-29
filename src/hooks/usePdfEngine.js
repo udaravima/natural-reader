@@ -269,6 +269,11 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
             console.error('Failed to save book locally:', e);
             setToastMessage("Couldn't save this file locally — Index and chat about it may not work until you reopen it.");
             setTimeout(() => setToastMessage(null), 5000);
+        } finally {
+            // These bytes replace whatever was saved under this name. Only
+            // now: a hash taken while the write was in flight read the old
+            // record, and must not outlive it.
+            forgetDocHash(file.name);
         }
     };
 
@@ -279,8 +284,6 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         if (!file || !isLibLoaded) { resolve(null); return; }
         const detected = detectFileType(file);
         const fileName = file.name;
-        // These bytes replace whatever was saved under this name before.
-        forgetDocHash(fileName);
 
         if (detected === 'pdf') {
             const reader = new FileReader();

@@ -72,3 +72,10 @@ Task 4: complete (commits 07ee9e5..15e063a+changelog, review clean after 1 fix r
 Task 4: minor (deferred): tabs still running v4 code get a VersionError after the upgrade (saves return false until reload; no data lost).
 Task 4: minor (deferred): the 'local' owner is unreachable in the app today (state 'error' shows AuthErrorScreen, not the reader) — decide in the final review whether R2's fallback stays.
 Task 4: minor (deferred): the claim's collision skip is now effectively dead code (only the migration writes UNCLAIMED_OWNER).
+Task 5: implemented 2b0b6f0 (backend 591, frontend 346); review (opus) — Needs fixes: 1 Important (file response browser-cacheable → bytes reach the next user of a shared browser without the read gate), 5 Minor.
+Task 5: fix round 1/5 implemented 1188998 (Cache-Control private,no-store; stored type wins over name; forgetDocHash; open-then-switch; PDF-branch + 404-body tests); re-review: all addressed, 2 new Minor — forgetDocHash ran before the save landed (fixed in the next commit: moved into persistBook's finally, with an ordering test), no test of openServerDoc's failure toast (deferred).
+Task 5: complete (commits d0f79fe..1188998 + forget-order fix, review clean after 1 fix round)
+Task 5: minor (deferred): the served bytes aren't re-hashed against doc_id (upload is the only writer and checks it).
+Task 5: minor (deferred): openServerDoc's failure path (toast, view unchanged) has no test — App isn't mounted in tests (R3).
+Task 5: minor (deferred, pre-existing): App's currentDocId effect re-runs only when pdfFileName changes, so different bytes opened under the already-open name keep the old doc's hash for the Index button (and Task 6's "already open" check) until the name changes.
+Task 5: note — a 409 tells a share recipient "Upload the file again first", which only helps if they have the file.
