@@ -144,7 +144,10 @@ export default function App() {
   //     chunkCount, embeddedCount }
   const [docIndexByDocId, setDocIndexByDocId] = useState({});
   // Computed hash for the currently open document — null until lazily hashed.
-  const [currentDocId, setCurrentDocId] = useState(null);
+  // The open document's hash, tagged with the load it belongs to (see
+  // usePdfEngine's docLoadId): a new load, even under the same file name, has
+  // no id until its own bytes are hashed — never the previous document's.
+  const [docHash, setDocHash] = useState({ loadId: -1, docId: null });
 
   // Per-document docling conversion status. Shape mirrors index:
   //   { state: 'idle' | 'uploading' | 'converting' | 'converted' | 'failed',
@@ -183,7 +186,7 @@ export default function App() {
   const pdfEngine = usePdfEngine({ scale, setStatus, setToastMessage });
 
   const {
-    pdfDoc, pdfFileName, fileType, currentPage, setCurrentPage, numPages,
+    pdfDoc, pdfFileName, docLoadId, fileType, currentPage, setCurrentPage, numPages,
     textItems, isLibLoaded, pdfOutline, recentBooks,
     currentSentenceIndex, setCurrentSentenceIndex,
     canvasRef, textLayerRef, fileInputRef, sentenceRefs, playbackIndexRef,
@@ -195,6 +198,7 @@ export default function App() {
     loadMarkdownDocument,
     loadTextDocument,
   } = pdfEngine;
+  const currentDocId = pdfFileName && docHash.loadId === docLoadId ? docHash.docId : null;
 
   // The local library (src/db.js) is scoped to whichever user `setLibraryOwner`
   // currently names — set by useAuth as soon as /v1/auth/me resolves (and
@@ -583,8 +587,7 @@ export default function App() {
   const handleGoHome = useCallback(() => {
     stopPlayback();
     stopChatPlayback();
-    closeDocument();
-    setCurrentDocId(null);
+    closeDocument(); // pdfFileName '' → currentDocId null
   }, [stopPlayback, stopChatPlayback, closeDocument]);
 
   // ---------- WORKSPACE (folder open) ----------
@@ -694,14 +697,12 @@ export default function App() {
   // status so the toolbar button shows the right label on load.
   useEffect(() => {
     let cancelled = false;
-    if (!pdfFileName) {
-      setCurrentDocId(null);
-      return undefined;
-    }
+    if (!pdfFileName) return undefined;
+    const loadId = docLoadId;
     (async () => {
       const docId = await ensureDocHash();
       if (cancelled || !docId) return;
-      setCurrentDocId(docId);
+      setDocHash({ loadId, docId });
       if (docIndexByDocId[docId] && docConvertByDocId[docId]) return; // already cached
       try {
         const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}`);
@@ -739,7 +740,7 @@ export default function App() {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdfFileName, ensureDocHash]);
+  }, [pdfFileName, docLoadId, ensureDocHash]);
 
   const handleIndexDocument = useCallback(async () => {
     if (!pdfFileName) return;

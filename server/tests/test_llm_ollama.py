@@ -343,4 +343,3 @@ async def test_a_model_list_401_behind_an_auth_proxy_is_explained():
     with pytest.raises(ProviderError) as ei:
         await OllamaProvider(CFG, up.client()).list_models()
     assert ei.value.safe_message.startswith("The provider rejected this server's credentials")
-

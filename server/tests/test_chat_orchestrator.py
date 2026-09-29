@@ -585,6 +585,8 @@ async def test_a_tool_call_written_as_text_is_run_not_saved(conn, open_doc, capl
     status, reason, content, _, tool_calls, _, _ = await _msg(conn, claim.turn_id)
     assert (status, reason, content) == ("complete", "stop", "The main finding is X.")
     assert [t["name"] for t in tool_calls] == ["search_document"]
+    # Like a native call, its saved summary names the document (Task 6 citations).
+    assert tool_calls[0]["result_summary"]["docId"] == OPEN_DOC.doc_id
     logs = [r.getMessage() for r in caplog.records]
     assert "recovered text tool call name=search_document" in logs
     assert any("search_document_called=True" in m for m in logs)   # the prefetch metric counts it

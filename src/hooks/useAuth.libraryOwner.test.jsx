@@ -38,12 +38,13 @@ describe('useAuth → setLibraryOwner', () => {
   it.each([
     ['a 500', () => globalThis.fetch.mockResolvedValue(new Response('', { status: 500 }))],
     ['a network error', () => globalThis.fetch.mockRejectedValue(new Error('network'))],
-  ])('%s falls back to "local" without claiming', async (_label, arrange) => {
+  ])('%s leaves no owner (never a shared "local" one) and claims nothing', async (_label, arrange) => {
     arrange();
     const { result } = renderHook(() => useAuth('', ''));
     await waitFor(() => expect(result.current.state).toBe('error'));
-    expect(setLibraryOwner).toHaveBeenLastCalledWith('local');
-    expect(setLibraryOwner).not.toHaveBeenCalledWith('local', expect.anything());
+    expect(setLibraryOwner).toHaveBeenLastCalledWith(null);
+    expect(setLibraryOwner).not.toHaveBeenCalledWith('local');
+    expect(setLibraryOwner).not.toHaveBeenCalledWith(expect.anything(), { claimLegacy: true });
   });
 
   it('a 401 from any later call clears the owner', async () => {

@@ -18,6 +18,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 export function usePdfEngine({ scale, setStatus, setToastMessage }) {
     const [pdfDoc, setPdfDoc] = useState(null);
     const [pdfFileName, setPdfFileName] = useState('');
+    // Bumped on every document load, even one under the name already open (a
+    // Library or citation open of a different document called "report.pdf"):
+    // App keys the open document's hash on it, not on the name.
+    const [docLoadId, setDocLoadId] = useState(0);
     const [fileType, setFileType] = useState('pdf'); // 'pdf' | 'text' | 'markdown'
     const [textPages, setTextPages] = useState([]); // sentences[][] for .txt files
     const [markdownPages, setMarkdownPages] = useState([]); // page objects for .md files
@@ -172,11 +176,16 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
     // Text extraction: only runs when the page or document changes (NOT on scale change)
     // This prevents zoom from destroying the TTS audio cache and interrupting playback.
+    // Like renderSeqRef: a citation's page jump right after an open starts a
+    // second extraction, and the older one must not land last.
+    const extractSeqRef = useRef(0);
     const extractPageText = async (pageNum, doc) => {
         if (!doc || !pdfjsLibRef.current) return;
+        const seq = ++extractSeqRef.current;
         try {
             const page = await doc.getPage(pageNum);
             const textContent = await page.getTextContent();
+            if (seq !== extractSeqRef.current) return;
             const rawText = textContent.items.map(item => item.str).join(' ');
             const sentences = segmentSentences(rawText);
             setTextItems(sentences);
@@ -258,6 +267,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         setNumPages(pages.length);
         setFileType('text');
         setPdfFileName(fileName);
+        setDocLoadId((n) => n + 1);
         applySavedProgress(fileName, pages.length);
         return pages.length;
     };
@@ -275,6 +285,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         setNumPages(pages.length);
         setFileType('markdown');
         setPdfFileName(fileName);
+        setDocLoadId((n) => n + 1);
         applySavedProgress(fileName, pages.length);
         return pages.length;
     };
@@ -330,6 +341,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
                     setPdfDoc(doc);
                     setNumPages(doc.numPages);
                     setPdfFileName(fileName);
+                    setDocLoadId((n) => n + 1);
 
                     applySavedProgress(fileName, doc.numPages);
 
@@ -415,6 +427,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
             setPdfDoc(doc);
             setNumPages(doc.numPages);
             setPdfFileName(fileName);
+            setDocLoadId((n) => n + 1);
 
             applySavedProgress(fileName, doc.numPages);
 
@@ -553,6 +566,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         // State
         pdfDoc,
         pdfFileName,
+        docLoadId,
         fileType,
         currentPage, setCurrentPage,
         numPages,

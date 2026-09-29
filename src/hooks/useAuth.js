@@ -6,8 +6,8 @@ import { setLibraryOwner } from '../db';
 /**
  * One `/v1/auth/me` round trip → the auth state it means. Also tells the
  * local library whose it is (see setLibraryOwner): only a real signed-in id
- * claims pre-release records, and the 'local' fallback when /me can't be
- * reached claims nothing. Sets no React state — callers apply the result.
+ * claims pre-release records; any other outcome leaves no owner, so nothing
+ * can be read or saved locally. Sets no React state — callers apply the result.
  * `isCurrent()` says whether this probe is still the latest: a superseded
  * one (the host changed, or a refresh started) leaves the owner alone.
  */
@@ -31,12 +31,13 @@ async function readMe(apiHost, apiPort, isCurrent = () => true) {
       setOwner(null);
       return { state: body?.detail?.status === 'disabled' ? 'disabled' : 'pending', user: null };
     }
-    // /v1/auth/me is erroring — no signed-in user is known, so the local
-    // library falls back to the single shared "local" owner.
-    setOwner('local');
+    // /v1/auth/me is erroring — no signed-in user is known. No owner, not a
+    // shared one: a bucket everyone on this browser shares is exactly what
+    // the per-user library exists to prevent (final review, ruling R2 revised).
+    setOwner(null);
     return { state: 'error', user: null };
   } catch {
-    setOwner('local');
+    setOwner(null);
     return { state: 'error', user: null };
   }
 }

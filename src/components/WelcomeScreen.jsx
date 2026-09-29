@@ -68,6 +68,7 @@ export default function WelcomeScreen({
                                 onClick={() => openFromLibrary(book.fileName)}
                                 onKeyDown={(e) => {
                                     if (e.target !== e.currentTarget) return; // a key on the remove control
+                                    if (e.repeat) return; // a held key opens once
                                     if (e.key === 'Enter' || e.key === ' ') {
                                         e.preventDefault();
                                         openFromLibrary(book.fileName);

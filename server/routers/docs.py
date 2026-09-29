@@ -522,7 +522,10 @@ async def get_document_file(
         # A browser's cache is keyed by URL, not by who is signed in: kept
         # there, the bytes would reach the next user of a shared browser (or
         # a recipient after a revoke) without passing the read gate.
-        headers={"Cache-Control": "private, no-store"})
+        headers={"Cache-Control": "private, no-store",
+                 # Uploaded bytes, served inline on the API's origin: the
+                 # browser must take the type we send, never sniff one.
+                 "X-Content-Type-Options": "nosniff"})
 
 
 @router.patch("/{doc_id}")

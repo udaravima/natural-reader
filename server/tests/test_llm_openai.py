@@ -302,3 +302,11 @@ async def test_a_429_mid_stream_error_payload_is_explained_too():
         await _collect(OpenAICompatProvider(CFG, up.client()).stream_chat(
             "vendor/model", HI, [], CallSettings()))
     assert ei.value.safe_message.startswith("This model is busy or rate-limited")
+
+
+async def test_a_403_without_a_message_shows_no_json_and_a_long_reason_is_trimmed():
+    err = await _stream_error(httpx.Response(403, json={"error": {"code": 403, "metadata": {"reasons": ["x"]}}}))
+    assert err.safe_message == "The provider refused this request."
+    err = await _stream_error(httpx.Response(403, json={"error": {"message": "flagged " * 60}}))
+    assert err.safe_message.endswith("…)")
+

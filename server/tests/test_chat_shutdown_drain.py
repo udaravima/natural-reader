@@ -41,7 +41,8 @@ async def test_the_drain_stops_at_the_deadline_and_reports_what_is_left():
     assert await orchestrator.drain_background(timeout=0.1) == 1
     assert time.monotonic() - started < 1
     stuck.cancel()
-    await asyncio.sleep(0)
+    await asyncio.gather(stuck, return_exceptions=True)
+    await asyncio.sleep(0)   # let its discard callback run: _BACKGROUND is module-global
 
 
 async def test_nothing_pending_returns_at_once():

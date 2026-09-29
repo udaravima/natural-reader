@@ -69,7 +69,9 @@ describe('opening a server document', () => {
     });
 
     it('a PDF pdf.js cannot load resolves null', async () => {
-        getDocument.mockReturnValue({ promise: Promise.reject(new Error('bad pdf')) });
+        // A fresh rejected promise per call: one made up front would be an
+        // unhandled rejection until the FileReader tick attaches a handler.
+        getDocument.mockImplementation(() => ({ promise: Promise.reject(new Error('bad pdf')) }));
         const { result } = renderHook(() => usePdfEngine({ scale: 1, setStatus: vi.fn(), setToastMessage: vi.fn() }));
         let opened;
         await act(async () => { opened = await result.current.processFile(new File(['x'], 'x.pdf', { type: 'application/pdf' })); });
@@ -92,25 +94,45 @@ describe('opening a server document', () => {
 
     it('a page set right after opening (a citation) keeps the saved sentence from taking over', async () => {
         // Saved position: page 2, sentence 1. The citation then goes to page 3.
-        saveReadingProgress('cited.txt', 2, 1);
-        const text = Array.from({ length: 60 }, (_, i) => `Sentence number ${i + 1}.`).join(' ');
-        const { result } = renderHook(() => usePdfEngine({ scale: 1, setStatus: vi.fn(), setToastMessage: vi.fn() }));
-        await act(async () => { await result.current.processFile(new File([text], 'cited.txt', { type: 'text/plain' })); });
-        expect(result.current.currentPage).toBe(2);
-        act(() => { result.current.setCurrentPage(3); result.current.setCurrentSentenceIndex(-1); });
-
-        await act(async () => { await new Promise((r) => setTimeout(r, 700)); });
-        expect(result.current.currentPage).toBe(3);
-        expect(result.current.currentSentenceIndex).toBe(-1);
+        // setTimeout is faked from the start, so the 500 ms restore timer that
+        // processFile schedules is the one advanced below.
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+            saveReadingProgress('cited.txt', 2, 1);
+            const text = Array.from({ length: 60 }, (_, i) => `Sentence number ${i + 1}.`).join(' ');
+            const { result } = renderHook(() => usePdfEngine({ scale: 1, setStatus: vi.fn(), setToastMessage: vi.fn() }));
+            await act(async () => { await result.current.processFile(new File([text], 'cited.txt', { type: 'text/plain' })); });
+            expect(result.current.currentPage).toBe(2);
+            act(() => { result.current.setCurrentPage(3); result.current.setCurrentSentenceIndex(-1); });
+            act(() => { vi.advanceTimersByTime(600); });
+            expect(result.current.currentPage).toBe(3);
+            expect(result.current.currentSentenceIndex).toBe(-1);
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('with no page change after opening, the saved sentence is still restored', async () => {
-        saveReadingProgress('resume.txt', 2, 1);
-        const text = Array.from({ length: 60 }, (_, i) => `Sentence number ${i + 1}.`).join(' ');
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        try {
+            saveReadingProgress('resume.txt', 2, 1);
+            const text = Array.from({ length: 60 }, (_, i) => `Sentence number ${i + 1}.`).join(' ');
+            const { result } = renderHook(() => usePdfEngine({ scale: 1, setStatus: vi.fn(), setToastMessage: vi.fn() }));
+            await act(async () => { await result.current.processFile(new File([text], 'resume.txt', { type: 'text/plain' })); });
+            act(() => { vi.advanceTimersByTime(600); });
+            expect(result.current.currentPage).toBe(2);
+            expect(result.current.currentSentenceIndex).toBe(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('a second document under the same name is a new load (App re-hashes on docLoadId, not the name)', async () => {
         const { result } = renderHook(() => usePdfEngine({ scale: 1, setStatus: vi.fn(), setToastMessage: vi.fn() }));
-        await act(async () => { await result.current.processFile(new File([text], 'resume.txt', { type: 'text/plain' })); });
-        await act(async () => { await new Promise((r) => setTimeout(r, 700)); });
-        expect(result.current.currentPage).toBe(2);
-        expect(result.current.currentSentenceIndex).toBe(1);
+        await act(async () => { await result.current.processFile(new File(['First document.'], 'report.txt', { type: 'text/plain' })); });
+        const first = result.current.docLoadId;
+        await act(async () => { await result.current.processFile(new File(['Second document.'], 'report.txt', { type: 'text/plain' })); });
+        expect(result.current.pdfFileName).toBe('report.txt');
+        expect(result.current.docLoadId).toBe(first + 1);
     });
 });

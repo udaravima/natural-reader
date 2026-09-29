@@ -2,55 +2,35 @@
 
 Read this first if you're a new session continuing this work, local or cloud. It is self-contained. The local SDD workspace (`.superpowers/`) is git-ignored and didn't come with the clone, so the files in this folder are its tracked copy.
 
-## Where things stand
+## Where things stand (updated by the cloud session, 2026-09-29)
 
-- **The plan:** [`docs/superpowers/plans/2026-09-28-v2.1-follow-ups.md`](../../plans/2026-09-28-v2.1-follow-ups.md), 10 tasks. v2.1.0 is already released; this is the work after it.
-- **Branch:** `development`. The last commit before this handoff is `04a17bb` (Task 4).
+- **The plan:** [`docs/superpowers/plans/2026-09-28-v2.1-follow-ups.md`](../../plans/2026-09-28-v2.1-follow-ups.md), 10 tasks.
+- **Branch:** the cloud session worked on `claude/task-mwo2ow` (from `development` at `ed3e90c`); the user merges it into `development`.
 
-| Task | State | Commits |
-|---|---|---|
-| 1 · Web-search fetch caps | ✅ Done, reviewed clean | `b02343e` |
-| 2 · Recover tool calls written as text | ✅ Done, one fix round, reviewed clean | `8bcc312`, `07ee9e5` |
-| 3 · Index button follows the document on first open | ✅ Done, reviewed clean | `cf09c24` |
-| 4 · Local library belongs to the signed-in user | ⏳ Implemented, **not reviewed yet** | `04a17bb` |
-| 5 · Open a Library document (`GET /v1/docs/{id}/file` and an Open button) | ⬜ | |
-| 6 · Clickable citations | ⬜ | |
-| 7 · Reader console errors | ⬜ | |
-| 8 · The `useAuth.js` lint error (now at line ~63) | ⬜ | |
-| 9 · Deferred minors and stale docs | ⬜ | |
-| 10 · Provider errors say what happened; OpenRouter verified | ⬜ | |
+| Task | State |
+|---|---|
+| 1–3 | ✅ Done before this session |
+| 4 · Local library belongs to the signed-in user | ✅ Reviewed, 1 fix round |
+| 5 · Open a Library document | ✅ Reviewed, 1 fix round |
+| 6 · Clickable citations | ✅ Reviewed, 1 fix round |
+| 7 · Reader console errors | ✅ Approved (blob: cause fixed but not reproduced) |
+| 8 · useAuth lint error | ✅ Approved; eslint clean |
+| 9 · Deferred minors and stale docs | ✅ Approved |
+| 10 · Provider errors; OpenRouter verified | ✅ Reviewed, 1 fix round (403 ruling: see ledger) |
+| Final whole-branch review | ✅ Done; one fix pass (see ledger) |
 
-**Suites at `04a17bb`:**
-- backend: 579 passed;
-- frontend: 321 passed;
-- `npx eslint src`: exactly 1 error, the old one in `useAuth.js`, which Task 8 removes.
+**Suites at the branch head:** backend 610 passed, frontend 391 passed (vitest exit 0), `npx eslint src` clean.
 
-## What to do next, in order
+## What is left
 
-1. **Review Task 4** (range `07ee9e5..04a17bb`).
-   - Use `reviewer-template.md` in this folder, filling in:
-     - `task-4-brief.md` (the brief);
-     - `global-constraints.md`;
-     - `task-4-report.md`;
-     - a diff of the range.
-   - Things to look at hard:
-     - the IndexedDB v4→v5 migration, which changes the key scheme to `ownerId\0fileName`, and whether any existing record could be lost;
-     - claiming legacy records once;
-     - the per-owner cap on recent books;
-     - `useAuth` calling `setLibraryOwner`.
-   - Fix what it finds, then run a scoped re-review with `re-review-template.md`.
-2. **Tasks 5 to 10, one at a time.** Implement, then review, then fix rounds (at most 5), then the next task.
-   - Take each task's text from the plan file.
-   - Only one implementer may work in the tree at a time; see the ledger for what happened when two did.
-3. **Final whole-branch review** of `7dc0987..HEAD`, on the most capable model. Point it at the deferred minors in `ledger.md`. Then one fix pass and one re-review.
-4. **Walk the changes in the running app:**
-   - the Index button on a new Markdown file;
+1. **The running-app walk on the local machine** (Ollama, real Kokoro, Keycloak):
    - two users on one browser (Task 4);
-   - Open from the Library as a share recipient (Task 5);
-   - clicking a citation (Task 6);
-   - `llama3.2:3b` document questions (Task 2).
+   - Open from the Library as a real share recipient (Task 5);
+   - `llama3.2:3b` document questions (Task 2);
+   - read aloud, then reopen a PDF, and watch for a `blob:` ERR_FILE_NOT_FOUND (Task 7).
 
-   A running-app walk needs Ollama and the models, so this step belongs to the local machine, not a cloud sandbox.
+   A cloud walk already covered Library → Open, citations (open, not open, unreadable, same-name), and the reopen console. The details are in the ledger.
+2. **A follow-up task the final review recommends:** the other per-browser local state is still shared between users. That covers the legacy IndexedDB chat sessions, the last workspace folder, and the reading position in localStorage (Review focus 4).
 
 ## Rules that bind this work (from the user)
 

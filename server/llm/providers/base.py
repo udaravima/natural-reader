@@ -98,21 +98,30 @@ _EXPLAINED = {
 RAW_DETAIL_CAP = 200
 
 
-def _raw_detail(raw: bytes | str) -> str | None:
-    """OpenRouter's `error.metadata.raw` — the upstream's own words, e.g.
-    "temporarily rate-limited upstream" — redacted and trimmed; None if absent."""
+def _error_body(raw: bytes | str) -> dict:
     text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
     try:
         body = json.loads(text)
     except ValueError:
-        return None
+        return {}
     err = body.get("error") if isinstance(body, dict) else None
-    meta = err.get("metadata") if isinstance(err, dict) else None
-    detail = meta.get("raw") if isinstance(meta, dict) else None
-    if not isinstance(detail, str) or not detail.strip():
+    return err if isinstance(err, dict) else {}
+
+
+def _detail(text: Any) -> str | None:
+    """A provider's words for the user: whitespace collapsed, redacted, then
+    trimmed with a marker (redacted first, so a key across the cut is caught)."""
+    if not isinstance(text, str) or not text.strip():
         return None
-    detail = _redact_secrets(" ".join(detail.split()))
+    detail = _redact_secrets(" ".join(text.split()))
     return detail if len(detail) <= RAW_DETAIL_CAP else detail[:RAW_DETAIL_CAP].rstrip() + "…"
+
+
+def _raw_detail(raw: bytes | str) -> str | None:
+    """OpenRouter's `error.metadata.raw` — the upstream's own words, e.g.
+    "temporarily rate-limited upstream"; None if absent."""
+    meta = _error_body(raw).get("metadata")
+    return _detail(meta.get("raw")) if isinstance(meta, dict) else None
 
 
 def provider_error(status: int, raw: bytes | str) -> ProviderError:
@@ -125,8 +134,8 @@ def provider_error(status: int, raw: bytes | str) -> ProviderError:
         return ProviderError(status, safe_error_message(raw))
     if status == 429:
         detail = _raw_detail(raw)
-    elif status == 403:
-        detail = safe_error_message(raw)[:RAW_DETAIL_CAP] or None
+    elif status == 403:   # the provider's reason (its error.message), never a JSON dump
+        detail = _detail(_error_body(raw).get("message"))
     else:
         detail = None
     return ProviderError(status, f"{plain} (Provider said: {detail})" if detail else plain,

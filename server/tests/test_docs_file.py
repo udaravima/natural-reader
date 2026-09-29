@@ -76,6 +76,7 @@ async def test_owner_gets_the_bytes_inline_with_the_stored_type(db_conn, as_user
     # the next user on a shared browser, or a revoked recipient, must go
     # through the read gate again.
     assert r.headers["cache-control"] == "private, no-store"
+    assert r.headers["x-content-type-options"] == "nosniff"
     assert _disposition(r) == ("inline", "paper.pdf")
 
 

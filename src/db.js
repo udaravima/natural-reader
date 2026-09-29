@@ -38,14 +38,13 @@ const bookKey = (ownerId, fileName) => `${ownerId}\u0000${fileName}`;
 /**
  * Set the signed-in user whose books/library reads and writes should be
  * scoped to. Called by the auth layer once `/v1/auth/me` resolves — with the
- * real user id when signed in, `'local'` when `/v1/auth/me` is unavailable,
- * or `null` to clear it (logout / session no longer known), which simply
- * hides every record until an owner is set again — nothing is deleted.
+ * real user id when signed in, or `null` when no user is known (logout, a
+ * lost session, `/v1/auth/me` unavailable), which simply hides every record
+ * until an owner is set again — nothing is deleted.
  *
  * With `claimLegacy`, also claims every not-yet-owned (pre-release) record
  * for this owner, so a single-user install keeps its existing library. Only
- * an id `/v1/auth/me` actually returned passes it: the `'local'` fallback
- * must not take the library away from the user who signs in a moment later.
+ * an id `/v1/auth/me` actually returned passes it.
  * The claim is one read-write transaction (getAll the
  * UNCLAIMED_OWNER index, then delete+put each record under its new key), so
  * it's atomic: if two owners are set around the same time (e.g. two tabs),

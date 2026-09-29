@@ -65,6 +65,8 @@ async def drain_background(timeout: float) -> int:
             break
         await asyncio.wait(list(_BACKGROUND), timeout=left)
     return len(_BACKGROUND)
+
+
 # A small model (llama3.2:3b) sometimes writes its tool call as reply text,
 # `{"name": ..., "parameters": {...}}`, often in a ```json fence. A step's
 # opening text is held while it could still be one, up to this many characters.
