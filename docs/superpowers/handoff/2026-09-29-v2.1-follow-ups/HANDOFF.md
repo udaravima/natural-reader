@@ -39,9 +39,9 @@ Read this first if you're a new session continuing this work, local or cloud. It
 | E · Sub-page chunks, embedding prefixes, profile and background rebuild (migration 014) | ✅ Reviewed, 2 fix rounds |
 | F · Exact words plus meaning by reciprocal-rank fusion (migration 015) | ✅ Reviewed, 1 fix round |
 | G · `scripts/eval_doc_qa.py` evaluation harness | ✅ Reviewed, 1 fix round (Critical: it claimed the seed admin; fixed) |
-| Final whole-branch review | see the ledger |
+| Final whole-branch review | ✅ Two Important fixed: the eval loads `.env` first; scores measured under the prefixes and the relevance label dropped. Minors deferred (ledger) |
 
-**Suites at the branch head:** backend 790 passed, frontend 416 passed (vitest exit 0), `npx eslint src` clean.
+**Suites at the branch head:** backend 785 passed, frontend 416 passed (vitest exit 0), `npx eslint src` clean.
 
 ## What is left
 
@@ -54,7 +54,7 @@ Read this first if you're a new session continuing this work, local or cloud. It
    - the Task 10 403 wording;
    - ruling R2 revised (no `"local"` owner).
 3. **v2.3 local checks:**
-   - Run `python scripts/eval_doc_qa.py --model ollama:llama3.2:3b`, then a larger model, and re-tune `CHAT_SEARCH_MIN_SCORE` and the relevance buckets. They were measured before the prefixes.
+   - The scores are measured (CHAT_WITH_PDF §6.5), and the eval ran with `llama3.2:3b` in the cloud sandbox (ledger). Still to do: run it on the local machine with a larger model and with SearXNG up.
    - On the real database, count indexed documents with a NULL `embedding_model`.
    - Watch the first-use rebuilds after the upgrade.
 4. **Next plan (proposed): v2.4, model-provider independence.** Document embeddings are the one hard Ollama dependency (`server/services/embeddings.py` calls `/api/embeddings`). v2.3's embedding profile already covers changing models: each document rebuilds on first use and isn't searched across models. What is left:
