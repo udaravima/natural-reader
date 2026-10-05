@@ -26,6 +26,13 @@ All notable changes to this project will be documented in this file.
   1,500-character excerpt. The limit per read is `CHAT_READ_PAGES_MAX_CHARS`
   (default 12,000).
 
+- **An evaluation you can run against your own model.**
+  `scripts/eval_doc_qa.py --model <id>` asks the model five questions about
+  a document with planted facts, through the real chat path, and reports
+  for each whether it found the fact, cited the right page, or said the
+  document doesn't cover it. The five cover one fact, a two-step trail, a
+  table label, a page read, and a fact that isn't there.
+
 ### Changed
 
 - **The model can follow a trail through the document.** An answer can now

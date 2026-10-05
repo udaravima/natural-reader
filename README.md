@@ -812,6 +812,11 @@ npm run dev      # Start Vite dev server
 npm run build    # Build for production
 npm run preview  # Preview production build
 npm run lint     # Run ESLint
+
+# How well does a chat model answer questions about a document? Runs the real
+# chat path against a document with planted facts (needs Postgres, the
+# embedding model and the chat model; see docs/CHAT_WITH_PDF.md §6.5).
+python scripts/eval_doc_qa.py --model ollama:llama3.2:3b
 ```
 
 ---

@@ -314,6 +314,25 @@ The browser never talks to a model provider or executes a tool directly any more
 
 ---
 
+### 6.5. Measuring how well a model answers (v2.3)
+
+`scripts/eval_doc_qa.py` asks a chat model questions about a fixed document through the real chat path: Stage 0, the tool rounds, the rules. It then scores the answers. The document is a 10-page text file with planted facts, and the questions cover the journeys retrieval has to handle:
+
+| Case | Question | A pass needs |
+|---|---|---|
+| single-hop | "What is the project's codename?" | the fact and its "(page N)" |
+| two-hop | "Which dataset does the method in chapter 3 use, and who collected it?" | both facts, from two pages five apart, and both pages cited |
+| exact-label | "What does Table 7.3 report?" | the value and its page: the exact-word search's job |
+| page-read | "What does page 5 say about the field trial?" | the fact and page 5 |
+| absent | "What is the capital budget for 2030?" | a refusal ("the document doesn't seem to cover…") and no page cited |
+
+```bash
+python scripts/eval_doc_qa.py --model ollama:llama3.2:3b
+python scripts/eval_doc_qa.py --model openrouter:qwen/qwen3-8b --show-answers
+```
+
+It reads the same environment as the backend: `DATABASE_URL`, the embedding model and the chat provider. It indexes the document for an eval user once (later runs reuse it) and deletes its chats afterwards. Each line reports the tools called and the rounds used, and the exit status is 0 only when every case passed. Run it after changing a model, a prefix, `CHAT_SEARCH_MIN_SCORE` or the chunk sizes; the relevance thresholds were measured before v2.3's prefixes, so this is the way to re-tune them.
+
 ## 7. Sessions & persistence
 
 | Source | Where it lives | Badge | Editable? |
