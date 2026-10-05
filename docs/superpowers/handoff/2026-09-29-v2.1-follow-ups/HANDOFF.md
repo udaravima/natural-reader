@@ -28,7 +28,20 @@ Read this first if you're a new session continuing this work, local or cloud. It
 | C · The open document's id is always its own bytes' hash | ✅ Approved |
 | Final review | ✅ One fix (the unsent chat draft is per user too), re-reviewed clean |
 
-**Suites at the branch head:** backend 610 passed, frontend 412 passed (vitest exit 0), `npx eslint src` clean, `vite build` OK.
+**v2.3: document question-answering an agent can use unambiguously** (C2 slice 1, [plan](../../plans/2026-09-29-v2.3-document-qa.md)), same branch:
+
+| Task | State |
+|---|---|
+| A · Rules in one system message; document text fenced as data | ✅ Reviewed, 1 fix round |
+| B · `search_documents`: floor, relevance buckets, already-shown | ✅ Reviewed, 1 fix round, plus the exact per-document search fix (an HNSW post-filter loss) |
+| C · `read_document_pages` | ✅ Reviewed, 1 fix round |
+| D · Up to 3 tool rounds; result budget, repeats, web guard, round status | ✅ Reviewed, 1 fix round |
+| E · Sub-page chunks, embedding prefixes, profile and background rebuild (migration 014) | ✅ Reviewed, 2 fix rounds |
+| F · Exact words plus meaning by reciprocal-rank fusion (migration 015) | ✅ Reviewed, 1 fix round |
+| G · `scripts/eval_doc_qa.py` evaluation harness | ✅ Reviewed, 1 fix round (Critical: it claimed the seed admin; fixed) |
+| Final whole-branch review | see the ledger |
+
+**Suites at the branch head:** backend 790 passed, frontend 416 passed (vitest exit 0), `npx eslint src` clean.
 
 ## What is left
 
@@ -40,13 +53,16 @@ Read this first if you're a new session continuing this work, local or cloud. It
 2. **Decisions for the user:**
    - the Task 10 403 wording;
    - ruling R2 revised (no `"local"` owner).
-3. **Next plan (proposed): v2.3, model-provider independence.** Document embeddings are the one hard Ollama dependency (`server/services/embeddings.py` calls `/api/embeddings`). The plan:
+3. **v2.3 local checks:**
+   - Run `python scripts/eval_doc_qa.py --model ollama:llama3.2:3b`, then a larger model, and re-tune `CHAT_SEARCH_MIN_SCORE` and the relevance buckets. They were measured before the prefixes.
+   - On the real database, count indexed documents with a NULL `embedding_model`.
+   - Watch the first-use rebuilds after the upgrade.
+4. **Next plan (proposed): v2.4, model-provider independence.** Document embeddings are the one hard Ollama dependency (`server/services/embeddings.py` calls `/api/embeddings`). v2.3's embedding profile already covers changing models: each document rebuilds on first use and isn't searched across models. What is left:
    - an embeddings provider setting (OpenAI-compatible `/v1/embeddings`, e.g. vLLM);
-   - a guard against mixing embedding models;
-   - a re-embed path.
+   - a dimension other than 768, which means rebuilding the `doc_chunks.embedding` column.
 
    Chat, summaries and Docling already work without Ollama.
-4. **Then A0,** the project-management screen (sharing and members are still API-only).
+5. **Then A0,** the project-management screen, and the rest of C2 (library-wide search scope, `list_library`, per-user document refs) (sharing and members are still API-only).
 
 ## Rules that bind this work (from the user)
 
@@ -94,7 +110,7 @@ npx eslint src
   .venv/bin/python -m pytest server/tests -q
   ```
 
-  Migrations run automatically. If no Postgres can be had, say so. Run the frontend suite plus the backend tests that don't touch the pool, and leave the full backend run to the local machine.
+  Migrations run automatically. The tests expect port 5433 (`server/tests/dbutil.py`), so set `port = 5433` in `postgresql.conf` or set `TEST_DATABASE_URL` and `TEST_ADMIN_DATABASE_URL`. Use Python 3.12: 3.11 lacks `inspect.getasyncgenstate`. In a sandbox Postgres can stop between sessions: `sudo service postgresql start`. If no Postgres can be had, say so. Run the frontend suite plus the backend tests that don't touch the pool, and leave the full backend run to the local machine.
 
 **Not needed for tests:**
 - Ollama;
