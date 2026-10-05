@@ -24,6 +24,9 @@ PER_CHUNK_TEXT_CAP = 1500   # characters per passage the model reads
 # never the number.
 STRONG, MODERATE = 0.7, 0.55
 MAX_ROWS = 100   # rows read per document per search: past the shown ones, to k new
+# Only the best word matches may skip the floor: a common word ("method")
+# matches many chunks, and weak ones would crowd out passages near in meaning.
+WORD_BYPASS_RANKS = 3
 NONE_FOUND = "No passages about this in the document."
 NOTHING_NEW = ("Nothing new: every passage found was already shown above. "
                "Search with different words, or answer from what you have.")
@@ -32,13 +35,13 @@ _SPEC = ToolSpec(
     name="search_documents",
     description=(
         "Search the open document for passages about something, by meaning (vector search over "
-        "its indexed text) and by exact words: passages containing every word of the query are "
-        "found even when their meaning is far, so put labels, names or numbers in it (Table "
-        "4.2, MIMIC-IV). Returns up to k passages, best first, each with its page and a "
-        "relevance of strong, moderate or weak; unrelated passages are left out. The user's "
-        "question was already searched before you ran, so search with different words: names, "
-        "terms, sections or tables the question or earlier passages mention. A passage already "
-        "shown this turn is listed by page only, under already_shown."),
+        "its indexed text) and by exact words: a passage with every word of the query is found "
+        "even when its meaning is far. Returns up to k passages, best first, each with its page "
+        "and a relevance of strong, moderate or weak; passages far in meaning are left out "
+        "unless they have the query's words. The user's question was already searched by "
+        "meaning before you ran: search with different words, or with a label, name or number "
+        "from it or from earlier passages (Table 4.2, MIMIC-IV). A passage already shown this "
+        "turn is listed by page only, under already_shown."),
     parameters={
         "type": "object",
         "properties": {
@@ -72,12 +75,12 @@ class _SearchDocuments:
         # C1 spec §5 "steering is load-bearing": without "answer from them when
         # they are enough", a model handed passages searches anyway. Worded for
         # both cases (the rules are stable for the turn; the prefetch varies).
-        return ("find passages in the open document by meaning. If the user's message has a "
-                "<document_passages> block, those passages were found for their question: answer "
-                "from them when they are enough, and search only for what they don't cover, with "
-                "different words (names, terms or topics from the question or the passages). If it "
-                "has none, nothing matched yet: search before saying the document doesn't cover "
-                "the question.")
+        return ("find passages in the open document by meaning and by exact words. If the user's "
+                "message has a <document_passages> block, those passages were found by meaning for "
+                "their question: answer from them when they are enough, and search only for what "
+                "they don't cover, with different words or with a label, name or number from the "
+                "question or the passages (those are matched exactly). If it has none, nothing "
+                "matched yet: search before saying the document doesn't cover the question.")
 
     async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
         scope = document_scope(ctx)
@@ -103,7 +106,8 @@ class _SearchDocuments:
             found.sort(key=lambda fr: fr[1]["score"], reverse=True)
         floor = ctx.cfg.search_min_score
         # Found by its words, a passage stays even when weak in meaning (Task F).
-        kept = [(ref, r) for ref, r in found if r["score"] >= floor or r.get("by_words")]
+        kept = [(ref, r) for ref, r in found
+                if r["score"] >= floor or (r.get("word_rank") or MAX_ROWS) <= WORD_BYPASS_RANKS]
 
         passages: list[dict[str, Any]] = []
         new: list[tuple[int, dict[str, Any]]] = []
@@ -124,9 +128,9 @@ class _SearchDocuments:
                 passages.append(passage)
         ctx.shown.update(r["id"] for _, r in new)
         ctx.seen_text.extend(p["text"] for p in passages)
-        logger.debug("search_documents docs=%d found=%d kept=%d new=%d floor=%s top=%s",
+        logger.debug("search_documents docs=%d found=%d kept=%d new=%d floor=%s best_cosine=%s",
                      len(scope), len(found), len(kept), len(new), ctx.cfg.search_min_score,
-                     round(found[0][1]["score"], 4) if found else None)
+                     round(max(r["score"] for _, r in found), 4) if found else None)
         result: dict[str, Any] = {
             "query": query,
             "documents": documents_listing(scope),

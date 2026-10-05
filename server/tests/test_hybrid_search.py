@@ -64,15 +64,15 @@ async def test_a_label_is_found_by_words_when_meaning_ranks_it_low(doc):
 async def test_fusion_puts_what_both_searches_found_first(doc):
     conn, _ = doc
     rows = await doc_search.search_chunks(conn, DOC, QUERY_VEC, 4, text="Table 4.2")
-    assert rows[0]["page"] == 8                                            # rank 2 by meaning + rank 1-2 by words
-    assert [r["page"] for r in rows][1:3] == [3, 5] or [r["page"] for r in rows][1:3] == [5, 3]
+    assert [r["page"] for r in rows][:3] == [8, 3, 5]    # both lists, then words rank 1-2, then meaning rank 1
     assert all(0 <= r["score"] <= 1 for r in rows)                          # cosine, still for the floor
 
 
 async def test_without_text_the_search_is_meaning_only_as_before(doc):
     conn, _ = doc
     rows = await doc_search.search_chunks(conn, DOC, QUERY_VEC, 2)
-    assert [r["page"] for r in rows] == [5, 8] and not any(r["by_words"] for r in rows)
+    assert [r["page"] for r in rows] == [5, 8]
+    assert all("by_words" not in r for r in rows)          # the meaning-only shape, as before (/search)
 
 
 async def test_a_query_with_no_words_is_meaning_only(doc):
@@ -98,6 +98,48 @@ async def test_search_documents_keeps_a_words_match_below_the_floor_and_says_how
     assert "match" not in passages[5]                                                # meaning only: the default
 
 
-def test_the_description_says_it_matches_exact_words_too():
+def test_the_description_and_guidance_say_it_matches_exact_words_too():
+    """Review I1: the prefetch searched the question by meaning only, so its
+    labels are worth searching; "already searched: use different words"
+    alone would steer a small model away from the query that finds them."""
     d = sd_tool.TOOL.spec.description
     assert "exact words" in d and "by meaning" in d
+    assert "already searched by meaning" in d and "label, name or number" in d
+    g = sd_tool.TOOL.guidance(None)
+    assert "by meaning and by exact words" in g and "label, name or number" in g
+
+
+async def test_only_the_best_word_matches_skip_the_floor(doc, monkeypatch):
+    """Review minor: a common-word query matches many chunks by words; only
+    the top word ranks may bypass the floor, or weak passages crowd out
+    meaning ones."""
+    conn, alice = doc
+    for i in range(6):
+        await _chunk(conn, 10 + i, 20 + i, f"The method is described here, part {i}.", _vec(0.1, 1))
+    shim_pool(monkeypatch, conn, sd_tool)
+
+    async def fake_embed(text):
+        return QUERY_VEC
+
+    monkeypatch.setattr(sd_tool, "embed_query", fake_embed)
+    ctx = ToolContext(alice.user_id, await doc_search.readable_doc(conn, DOC, alice.user_id))
+    run = await run_tool(ToolCall("c1", "search_documents", {"query": "method", "k": 10}), ctx,
+                         available_tools(ctx))
+    words_only = [p for p in run.result["passages"] if p.get("match") == "words"]
+    assert len(words_only) == sd_tool.WORD_BYPASS_RANKS
+
+
+async def test_migration_015_fills_rows_that_existed_before_it(doc):
+    """Review minor: the column must be computed for existing chunks, and the
+    migration must be safe to run twice."""
+    from pathlib import Path
+    conn, _ = doc
+    await conn.execute("DROP INDEX doc_chunks_text_search_idx")
+    await conn.execute("ALTER TABLE doc_chunks DROP COLUMN text_search")
+    sql = (Path(doc_search.__file__).parents[1] / "sql" / "015_chunk_text_search.sql").read_text()
+    await conn.execute(sql)
+    await conn.execute(sql)
+    cur = await conn.execute("SELECT count(*) FROM doc_chunks WHERE doc_id = %s AND text_search IS NULL", (DOC,))
+    assert (await cur.fetchone())[0] == 0
+    rows = await doc_search.search_chunks(conn, DOC, QUERY_VEC, 3, text="Table 4.2")
+    assert 3 in [r["page"] for r in rows]

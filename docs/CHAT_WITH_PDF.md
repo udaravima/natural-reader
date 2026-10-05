@@ -279,8 +279,8 @@ What it looks like:
   - by meaning (cosine over the embeddings);
   - by exact words: passages containing every word of the query, from a `'simple'` full-text index that works in any language and keeps labels like "4.2" and "MIMIC-IV".
 
-  A passage found by its words stays even when it is weak in meaning, marked `"match": "words"`; one found both ways is marked `"both"`. The Stage 0 prefetch and `POST /v1/docs/{id}/search` stay meaning-only.
-- Passages scoring below `CHAT_SEARCH_MIN_SCORE` (default 0.45) are left out, unless found by their words. With nothing left, the result says so in words.
+  One of the 3 best word matches stays even when it is weak in meaning, marked `"match": "words"`; one found both ways is marked `"both"`. Only the top 3 get past the floor this way: a common word matches many passages, and weak ones would crowd out passages close in meaning. The Stage 0 prefetch and `POST /v1/docs/{id}/search` stay meaning-only.
+- Passages scoring below `CHAT_SEARCH_MIN_SCORE` (default 0.45) are left out, unless they are among the 3 best word matches. With nothing left, the result says so in words.
 - A passage the model already has this turn is listed by page only, as `"already_shown": [{"ref": 1, "pages": [3, 7]}]`, without its text. That covers passages from the Stage 0 block and from earlier searches, so searching again surfaces new material.
 - Each passage names its document by a short `ref`, listed in `documents`. Only the open document is searched today, as ref 1.
 

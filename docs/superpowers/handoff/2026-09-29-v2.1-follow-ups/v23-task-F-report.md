@@ -35,3 +35,24 @@ Test fakes of `search_chunks` accept the new `text` keyword.
 
 ## Suites
 - backend: 749 passed.
+
+## Fix round 1 — FIX_BASE eaa42c4 (Task E's fix round sits between; this round touches only Task F code)
+
+- **I1: the description and guidance steered the model away from labels.**
+  - The description now says the question "was already searched by meaning", and to "search with different words, or with a label, name or number from it or from earlier passages (Table 4.2, MIMIC-IV)".
+  - "Unrelated passages are left out" became "passages far in meaning are left out unless they have the query's words".
+  - The guidance now reads "by meaning and by exact words", says the prefetched passages were "found by meaning", and that a label, name or number "is matched exactly". It names no other tool, and the description stays under 700 characters.
+  - Test: `test_the_description_and_guidance_say_it_matches_exact_words_too`, which failed before the fix.
+- **M1: the GIN index was never used, and the CTE spilled.**
+  - The words ranking now reads `doc_chunks` directly (`WHERE doc_id = … AND text_search @@ tsq`), so the planner can use the GIN or doc_id index. The MATERIALIZED CTE holds `(id, embedding)` again.
+  - Calls without `text` go through `_meaning_only`, which is the pre-Task F query unchanged.
+  - The docstring is corrected.
+- **M2: the floor bypass was unbounded.** Only rows with `word_rank <= WORD_BYPASS_RANKS` (3) skip the floor. Test: a common word matching 6 weak chunks keeps exactly 3 word-only passages; it failed before the fix.
+- **M3: the migration was untested against existing rows.** Test: drop the column and index, run 015's SQL twice; the existing rows are filled and the search finds the label.
+- **M4.** The fusion-order test asserts `[8, 3, 5]`.
+- **M5: `/search` gained a key.** Rows without `text` have no `by_words`, so `/search` returns the old shape. Test added.
+- **M6.** The debug log reports `best_cosine` (the max), not the fused top row's score.
+- **Docs.** CHAT_WITH_PDF describes the top-3 bypass.
+
+Suites:
+- backend: 754 passed.
