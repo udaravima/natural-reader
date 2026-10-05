@@ -86,7 +86,17 @@ async def test_models_lists_ids_with_provider_and_capabilities(client, upstream)
     assert [m["id"] for m in models] == ["ollama:gemma3", "ollama:qwen2.5"]
     assert models[0] == {"id": "ollama:gemma3", "provider": "ollama", "kind": "ollama", "name": "gemma3",
                          "capabilities": {"tools": True, "thinking": False, "vision": False,
-                                          "audio": False, "contextWindow": 4096}}
+                                          "audio": False, "contextWindow": 4096},
+                         "limits": {"numCtxMax": 32768, "keepAliveMaxS": 1800}}
+
+
+async def test_ollama_models_carry_the_deployment_limits(client, upstream, monkeypatch):
+    """v2.4 Task F: the Settings page offers only what the server will honour."""
+    monkeypatch.setenv("INFERENCE_NUM_CTX_MAX", "16384")
+    monkeypatch.setenv("INFERENCE_KEEP_ALIVE_MAX", "-1")
+    upstream["handler"] = _tags_and_show(["gemma3"])
+    models = (await client.get("/v1/inference/models")).json()["models"]
+    assert models[0]["limits"] == {"numCtxMax": 16384, "keepAliveMaxS": None}
 
 
 async def test_models_omits_the_configured_embedding_model(client, upstream, monkeypatch):

@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Deployment limits on context size and keep-alive.**
+  `INFERENCE_NUM_CTX_MAX` (default 32,768 tokens) and
+  `INFERENCE_KEEP_ALIVE_MAX` (default 30 minutes) cap what a user's
+  Settings page can ask an Ollama model for; the page offers only values
+  within them.
+
 - **"Use this document" switch.** A chip above the chat box shows the open
   document; click it to chat without the document in this chat (no search,
   no document tools). Kept per chat and per user; pins still work.
@@ -78,6 +84,12 @@ All notable changes to this project will be documented in this file.
   table label, a page read, and a fact that isn't there.
 
 ### Changed
+
+- **"Keep model warm: Always" now means up to `INFERENCE_KEEP_ALIVE_MAX`**
+  (30 minutes by default), and a context size above `INFERENCE_NUM_CTX_MAX`
+  is reduced to it: on a shared server both used memory for everyone. A
+  single-user deployment can lift them (`-1` and `0`). Saved settings keep
+  working; the Settings page shows the capped value.
 
 - **The model can follow a trail through the document.** An answer can now
   use up to 3 rounds of tool calls (`CHAT_MAX_TOOL_ROUNDS`, was 1). For

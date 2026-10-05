@@ -117,3 +117,23 @@ describe('SettingsPage — provider-aware inference settings', () => {
     expect(screen.queryByLabelText(/thinking/i)).toBeNull();
   });
 });
+
+describe('SettingsPage — deployment limits (v2.4 Task F)', () => {
+  const model = {
+    id: 'ollama:gemma4', provider: 'ollama', kind: 'ollama', name: 'gemma4', capabilities: {},
+    limits: { numCtxMax: 16384, keepAliveMaxS: 1800 },
+  };
+
+  it('offers only what the server will honour and shows a saved value above it as capped', () => {
+    const b = bags();
+    b.chatSettings = { ...b.chatSettings, availableModels: [model], selectedModel: 'ollama:gemma4',
+      inferenceByModel: { 'ollama:gemma4': { numCtx: 65536, keepAlive: -1 } } };
+    render(<SettingsPage {...b} />);
+    const ctx = screen.getByLabelText('Context window');
+    expect([...ctx.options].map((o) => o.value)).not.toContain('32768');
+    expect(ctx.value).toBe('16384');
+    const ka = screen.getByLabelText('Keep model warm');
+    expect([...ka.options].map((o) => o.value)).not.toContain('-1');
+    expect(ka.value).toBe('30m');
+  });
+});

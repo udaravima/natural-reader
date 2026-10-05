@@ -30,7 +30,7 @@ from ..http_body import read_capped_body
 from ..http_errors import refusal
 from ..llm.router import get_router
 from ..llm.types import Attachment, CallSettings, Capabilities
-from ..services import inference_budget, model_router
+from ..services import inference_budget, inference_limits, model_router
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/chat/sessions", tags=["chat-turns"])
@@ -69,6 +69,13 @@ class SettingsIn(BaseModel):
     num_ctx: int | None = Field(default=None, ge=256, le=2_097_152)
     keep_alive: str | int | None = None
     num_predict: int | None = Field(default=None, ge=1, le=1_000_000)
+
+
+def call_settings(s: SettingsIn) -> CallSettings:
+    """The turn's settings, with the context size and keep-alive clamped to the
+    deployment's limits (v2.4 Task F: on a shared server they are everyone's RAM)."""
+    num_ctx, keep_alive = inference_limits.clamp(s.num_ctx, s.keep_alive, inference_limits.get_limits())
+    return CallSettings(think=s.think, num_ctx=num_ctx, keep_alive=keep_alive, num_predict=s.num_predict)
 
 
 class ContextIn(BaseModel):
@@ -293,8 +300,7 @@ async def post_turn(session_id: SessionId, request: Request,
         user_id=principal.user_id, session_id=session_id, model_id=model_id, text=body.message.content,
         attachments=tuple(Attachment(a.kind, a.mime, base64.b64encode(a.data).decode("ascii"), a.name)
                           for a in attachments),
-        settings=CallSettings(think=body.settings.think, num_ctx=body.settings.num_ctx,
-                              keep_alive=body.settings.keep_alive, num_predict=body.settings.num_predict),
+        settings=call_settings(body.settings),
         doc_id=body.context.doc_id, timezone=body.context.timezone)
     events = run_turn(req, claim, router=llm, cfg=cfg, deployment_budget=budget)
     return _EagerCloseStreamingResponse(_sse(events), turn=events, abandon=lambda: abandon_turn(req, claim),
