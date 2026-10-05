@@ -25,7 +25,7 @@ import os
 from pathlib import Path
 
 
-def _dict_config(logfile: Path, level: str, max_bytes: int, backups: int, audit_file: Path) -> dict:
+def _dict_config(logfile: Path, level: str, max_bytes: int, backups: int, audit_file: Path, roll_over_time: str = "midnight") -> dict:
     return {
         "version": 1,
         # Leave third-party loggers (httpx, etc.) in place instead of nuking them.
@@ -49,6 +49,7 @@ def _dict_config(logfile: Path, level: str, max_bytes: int, backups: int, audit_
                 "maxBytes": max_bytes,
                 "backupCount": backups,
                 "encoding": "utf-8",
+                "when": roll_over_time,
             },
             "audit_file": {
                 "class": "logging.handlers.RotatingFileHandler",
@@ -57,6 +58,7 @@ def _dict_config(logfile: Path, level: str, max_bytes: int, backups: int, audit_
                 "maxBytes": max_bytes,
                 "backupCount": backups,
                 "encoding": "utf-8",
+                "when": roll_over_time,
             },
         },
         # Root catches everything that propagates (our server.* loggers, httpx…).
