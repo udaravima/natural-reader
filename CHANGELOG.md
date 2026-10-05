@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Passages found before the model runs arrive as a search result, not as
+  part of your message.** Text planted in a document can no longer pose as
+  something you wrote. Models also check these passages and search again
+  when they fall short, instead of trusting them: measured on the eval,
+  two-hop and table questions went from failing every run to passing.
+
 - **An assistant profile for the deployment.** Admins give the assistant a
   name, personality, tone and house rules in the admin console's new
   **Assistant** section, with a preview of everything the model receives.

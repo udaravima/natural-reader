@@ -30,13 +30,15 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..db import get_pool
-from ..llm.types import Attachment, Message
+from ..llm.types import Attachment, Message, ToolCall
 from ..services.doc_search import ReadableDoc, search_chunks
 from ..services.embeddings import embed_query
 from . import store
 from .config import ChatConfig
 from .prompt import PASSAGES_TAG, PIN_TAG, display_name, fence, system_rules
 from .store import StoredMessage
+from .tools import result_text
+from .tools.search_documents import PREFETCH_CALL_ID, passages_result
 
 logger = logging.getLogger(__name__)
 
@@ -223,11 +225,26 @@ class BuiltContext:
 
 async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     pre = await prefetch(turn.doc, turn.text, cfg)
-    volatile = _passages_block(pre.note["docName"], pre.passages) if pre.passages else ""
-    rules = system_rules(turn.doc, turn.tools, has_pins=bool(turn.pins),
+    # v2.4 Task B: with the search tool offered, the passages arrive as that
+    # tool's result (a call the app made for the model), not inside the
+    # user's message, where a PDF's planted instruction would speak with the
+    # user's voice. Without tools (strict templates reject tool messages
+    # then) they stay a fenced block in the user's message.
+    as_tool = bool(pre.passages) and any(t.name == "search_documents" for t in turn.tools)
+    exchange: list[Message] = []
+    volatile = ""
+    if as_tool:
+        args = {"query": turn.text, "k": cfg.prefetch_k}
+        result = passages_result(turn.text, [turn.doc], [{"ref": 1, "page": p["page"], "text": p["text"]}
+                                                         for p in pre.passages])
+        exchange = [Message("assistant", "", tool_calls=(ToolCall(PREFETCH_CALL_ID, "search_documents", args),)),
+                    Message("tool", result_text(result), tool_call_id=PREFETCH_CALL_ID, name="search_documents")]
+    elif pre.passages:
+        volatile = _passages_block(pre.note["docName"], pre.passages)
+    rules = system_rules(turn.doc, turn.tools, has_pins=bool(turn.pins), prefetch=cfg.prefetch_min_score < 1.0,
                          today=today_line(turn.now, turn.timezone), profile=turn.profile)
     system = Message("system", "\n\n".join(c for c in (rules, pin_text(turn.pins)) if c))
-    fixed_chars = len(system.content) + len(volatile) + 2 + len(turn.text)
+    fixed_chars = len(system.content) + len(volatile) + 2 + len(turn.text) + sum(len(m.content) for m in exchange)
     items, n_messages, n_attachments = _fit_history(turn.history, fixed_chars, len(turn.attachments),
                                                     turn.window, cfg)
     wanted = [(i.stored.id, a["ordinal"]) for i in items for a in i.keep]
@@ -262,6 +279,6 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
         notes.append({"kind": "trimmed", "messages": n_messages, "attachments": n_attachments})
         logger.debug("history trimmed: %d messages, %d attachments (window %s)",
                      n_messages, n_attachments, turn.window)
-    return BuiltContext([system, *history_messages, current], notes, bool(pre.passages),
+    return BuiltContext([system, *history_messages, current, *exchange], notes, bool(pre.passages),
                         tuple(p["id"] for p in pre.passages if p.get("id") is not None),
                         tuple(p["text"] for p in pre.passages))

@@ -89,7 +89,7 @@ def _document_line(doc: ReadableDoc | None) -> str | None:
     return f'The user has the document "{name}" open in the reader{pages}.'
 
 
-def _procedure(doc: ReadableDoc | None, offered: set[str]) -> str:
+def _procedure(doc: ReadableDoc | None, offered: set[str], prefetch: bool = False) -> str:
     """The strategy, steps 1 to 4. Step 1 always; steps 2 to 4 when the
     document can reach the model (its tools, or prefetched passages)."""
     doc_tools = DOC_SEARCH in offered
@@ -124,6 +124,13 @@ def _procedure(doc: ReadableDoc | None, offered: set[str]) -> str:
         if DOC_READ in offered:
             find += (" Call read_document_pages to read pages in full when the user names a page, or when a "
                      "passage is cut short or points to a table, figure or section.")
+        if prefetch:
+            # v2.4 Task B: the app's own first search, shown as a tool call
+            # (context.py). The policy is per model, not per turn, so this
+            # text doesn't change between a hit and a miss.
+            find += (" When the app has already run a first search for the message, its result appears as a "
+                     "search_documents call just before your turn: check it, and search again if it doesn't "
+                     "answer.")
         lines += [find,
                   "3. Check before you answer: search returns the closest passages even when none of them "
                   "answers. Use only text that says what you report.",
@@ -159,8 +166,8 @@ def system_rules(doc: ReadableDoc | None, tools: Iterable[_Offered], *, has_pins
     """The rules for this turn. `tools` are the ones offered on its first
     step; the orchestrator's last-round note covers the final tools-off step.
     `today`: "Today is …" to the day (context.today_line), or "" for none.
-    `prefetch`: the app searches before the model runs for this model (v2.4
-    Task B adds its sentence; unused until then). `profile`: the
+    `prefetch`: the app searches before the model runs for this model (its
+    policy, not this turn's hit or miss), so step 2 says how that appears. `profile`: the
     deployment's assistant profile (services/assistant_profile.py), first."""
     tools = list(tools)
     offered = {t.name for t in tools}
@@ -171,7 +178,7 @@ def system_rules(doc: ReadableDoc | None, tools: Iterable[_Offered], *, has_pins
     line = _document_line(doc)
     if line:
         parts.append(line)
-    procedure = _procedure(doc, offered)
+    procedure = _procedure(doc, offered, prefetch)
     parts.append(procedure)
     reads_docs = any(getattr(t, "reads_documents", False) for t in tools)
     if (doc is not None and doc.state == "indexed") or has_pins or reads_docs:

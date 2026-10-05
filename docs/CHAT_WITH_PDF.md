@@ -273,6 +273,11 @@ What it looks like:
 4. The pill disappears and the actual answer streams in, citing the retrieved passages.
 5. A small `🔎 search_documents` disclosure appears on the assistant bubble. Click it to see the exact query the model used and how many new passages came back.
 
+**How the passages from Stage 0 reach the model (v2.4).** When the model is offered `search_documents`, Stage 0's passages arrive as that tool's result: an assistant message calling `search_documents` with the user's message as the query (id `prefetch1`), then the tool message with exactly what the tool returns. They are no longer pasted into the user's message, where an instruction planted in a PDF would carry the user's voice. The rules tell the model that the app may have run this first search, to check it, and to search again if it doesn't answer. A model offered no tools still gets the fenced `<document_passages>` block in the user's message, because strict chat templates reject tool messages when no tools are declared.
+
+- **Measured** (eval §6.5, `gemma4:31b-cloud`, 3 runs, 2026-10-05): as a fenced block in the user's message, the passages anchored the model: it answered from them, and missed the two-hop and exact-label facts every time (21/27). As its own search result it checked them and searched again where they fell short: 27/27, with no extra model call for simple questions.
+- **Providers checked live:** Ollama (cloud), and through OpenRouter, Gemma 4 and Mistral Small 3.2 (Mistral's API is reported to accept only 9-character alphanumeric tool-call ids; `prefetch1` is one).
+
 **How the model is told to work (v2.4).** One leading system message gives the model a strategy, a numbered procedure:
 1. **Decide what the message needs.**
    - A greeting, a thanks, or a rewrite of the last answer: reply without tools.

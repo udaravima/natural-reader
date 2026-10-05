@@ -28,6 +28,10 @@ MAX_ROWS = 100   # rows read per document per search: past the shown ones, to k 
 # matches many chunks, and weak ones would crowd out passages near in meaning.
 WORD_BYPASS_RANKS = 3
 NONE_FOUND = "No passages about this in the document."
+# The id of the search the app runs before the model (v2.4 Task B), shown to
+# the model as its own call. Nine alphanumerics: some OpenAI-compatible
+# backends (Mistral's API, as reported) accept only that shape.
+PREFETCH_CALL_ID = "prefetch1"
 NOTHING_NEW = ("Nothing new: every passage found was already shown above. "
                "Search with different words, or answer from what you have.")
 
@@ -61,6 +65,12 @@ _SPEC = ToolSpec(
         "required": ["query"],
     },
 )
+
+
+def passages_result(query: str, scope: list, passages: list[dict[str, Any]]) -> dict[str, Any]:
+    """The result as the model reads it; the prefetch's tool exchange
+    (server/chat/context.py) builds the same shape, so the two never drift."""
+    return {"query": query, "documents": documents_listing(scope), "passages": passages}
 
 
 def _cap(text: str) -> str:
@@ -125,11 +135,7 @@ class _SearchDocuments:
         logger.debug("search_documents docs=%d found=%d kept=%d new=%d floor=%s best_cosine=%s",
                      len(scope), len(found), len(kept), len(new), ctx.cfg.search_min_score,
                      round(max(r["score"] for _, r in found), 4) if found else None)
-        result: dict[str, Any] = {
-            "query": query,
-            "documents": documents_listing(scope),
-            "passages": passages,
-        }
+        result = passages_result(query, scope, passages)
         if seen_pages:
             # One short list, however many rounds re-find the same passages.
             result["already_shown"] = [{"ref": ref, "pages": sorted(pages)}

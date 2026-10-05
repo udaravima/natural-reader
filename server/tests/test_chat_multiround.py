@@ -60,7 +60,9 @@ def _fake_web(sent=None):
 
 
 def _tool_results(router_call):
-    return [json.loads(m.content) for m in router_call["messages"] if m.role == "tool"]
+    """The model's own tool calls' results (not the app's prefetch exchange, v2.4 Task B)."""
+    return [json.loads(m.content) for m in router_call["messages"]
+            if m.role == "tool" and m.tool_call_id != "prefetch1"]
 
 
 def test_three_rounds_by_default_and_the_budget_is_configurable():
@@ -212,6 +214,10 @@ async def test_every_kind_of_document_text_is_guarded(conn, open_doc, monkeypatc
     results = _tool_results(router.calls[3])
     assert "error" in results[0] and "error" in results[1] and "error" not in results[2]
     assert sent == ["hospital wing budget"]
+    # v2.4 Task B: the prefetched passage reached the model as the app's own
+    # search result, and still guards the web.
+    prefetched = [m for m in router.calls[0]["messages"] if m.role == "tool"]
+    assert len(prefetched) == 1 and prefetched[0].tool_call_id == "prefetch1" and PASSAGE in prefetched[0].content
 
 
 async def test_passages_from_an_earlier_round_are_guarded(conn, corpus):
