@@ -18,7 +18,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-SENTENCES_PER_PAGE = 40   # extract.SENTENCES_PER_PAGE: a text file's reader page
+from ..services.extract import SENTENCES_PER_PAGE   # a text file's reader page
+
 PAGES = 10
 FILE_NAME = "Eval Report.txt"
 
@@ -30,7 +31,7 @@ class Case:
     question: str
     facts: tuple[str, ...]     # planted sentences
     pages: tuple[int, ...]     # the reader page of each fact
-    expect: tuple[str, ...]    # terms a right answer contains (absent: terms the document lacks)
+    expect: tuple[str, ...]    # terms a right answer contains, "a|b" = either (absent: terms the document lacks)
 
 
 @dataclass(frozen=True)
@@ -48,9 +49,9 @@ _PLANTED = [
      [("The method in chapter 3 uses the ZEPHYR-9 dataset.", 3),
       ("The ZEPHYR-9 dataset was collected by the Aldermoor Institute.", 8)], ("zephyr-9", "aldermoor")),
     ("exact-label", "table", "What does Table 7.3 report?",
-     [("Table 7.3 reports a median latency of 41 ms.", 6)], ("41",)),
+     [("Table 7.3 reports a median latency of 41 ms.", 6)], ("41 ms|41ms|41 milliseconds",)),
     ("page-read", "page", "What does page 5 say about the field trial?",
-     [("The field trial ran for nine weeks in Tromsø.", 5)], ("nine weeks",)),
+     [("The field trial ran for nine weeks in Tromsø.", 5)], ("nine weeks|9 weeks|nine-week",)),
     ("absent", "absent", "What is the capital budget for 2030?", [], ("capital budget", "2030")),
 ]
 
@@ -83,12 +84,19 @@ def build_fixture() -> Fixture:
 # ---------- scoring ----------
 
 _CITATION = re.compile(r"\(page\s+(\d+)\)|\bpage\s+(\d+)\b", re.IGNORECASE)   # src/lib/citations.js
+_HYPHENS = re.compile("[‐‑‒–—−]")
+_NEG = r"(?:n't|not|never)"
 _REFUSAL = re.compile(
-    r"(doesn't|does not|didn't|did not) (seem to |appear to )?(cover|mention|say|contain|include|discuss)"
-    r"|(couldn't|could not|can't|cannot|didn't|did not|was unable to) find"
-    r"|not (mentioned|covered|found|included|stated)"
-    r"|no (information|mention|details?) (about|on|of|regarding)",
+    rf"{_NEG} (?:seem to |appear to )?(?:cover|mention|say|contain|include|discuss|provide|specify|give|state)"
+    rf"|(?:{_NEG}|unable to|cannot) (?:be )?(?:find|found|locate)"
+    rf"|{_NEG} (?:mentioned|covered|found|included|stated|specified|provided|given)"
+    r"|nothing (?:about|on|regarding)|says nothing|no (?:information|mention|details?|data) (?:about|on|of|regarding)"
+    rf"|{_NEG} have (?:any )?(?:information|details)",
     re.IGNORECASE)
+
+
+def _normalise(text: str) -> str:
+    return _HYPHENS.sub("-", text.replace("’", "'")).lower()
 
 
 def cited_pages(answer: str) -> set[int]:
@@ -97,7 +105,21 @@ def cited_pages(answer: str) -> set[int]:
 
 
 def is_refusal(answer: str) -> bool:
-    return bool(_REFUSAL.search(answer.replace("’", "'")))
+    return bool(_REFUSAL.search(_normalise(answer)))
+
+
+def has_term(answer: str, term: str) -> bool:
+    """`term` ("a|b" = either) as whole words, any hyphen, any case: "41 ms"
+    is not found in "410 ms"."""
+    text = _normalise(answer)
+    return any(re.search(rf"(?<!\w){re.escape(_normalise(alt))}(?!\w)", text) for alt in term.split("|"))
+
+
+def _invents_a_figure(answer: str) -> bool:
+    """For a fact the document lacks: a number other than the question's own
+    year or a cited page is an answer made up after (or instead of) a refusal."""
+    rest = _CITATION.sub(" ", answer).replace("2030", " ")
+    return bool(re.search(r"\d", rest))
 
 
 @dataclass
@@ -110,28 +132,37 @@ class Result:
     cited: bool | None = None         # fact cases: every fact's page is cited
     refused: bool | None = None       # absent case
     invented_pages: set[int] = field(default_factory=set)   # absent case: pages cited anyway
+    invented_figure: bool = False     # absent case: a number given anyway
+    error: str | None = None          # the turn ended in an error event: not the model's answer
     passed: bool = False
 
 
-def score(case: Case, answer: str, tool_calls: list[dict[str, Any]]) -> Result:
+def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], *, error: str | None = None) -> Result:
     """`tool_calls`: the turn's tool-input-available events ({toolName, round})."""
     result = Result(case, answer, [c.get("toolName") for c in tool_calls],
-                    max((c.get("round") or 0 for c in tool_calls), default=0))
+                    max((c.get("round") or 0 for c in tool_calls), default=0), error=error)
+    if error:
+        return result
     if case.kind == "absent":
         result.refused = is_refusal(answer)
         result.invented_pages = cited_pages(answer)
-        result.passed = result.refused and not result.invented_pages
+        result.invented_figure = _invents_a_figure(answer)
+        result.passed = result.refused and not result.invented_pages and not result.invented_figure
     else:
-        result.fact = all(term.lower() in answer.lower() for term in case.expect)
+        result.fact = all(has_term(answer, term) for term in case.expect)
         result.cited = set(case.pages) <= cited_pages(answer)
         result.passed = result.fact and result.cited
     return result
 
 
 def _detail(r: Result) -> str:
+    if r.error:
+        return f"the turn failed ({r.error}): fix the setup, this says nothing about the model"
     if r.case.kind == "absent":
         if r.invented_pages:
             return f"cited pages {sorted(r.invented_pages)} for a fact the document lacks"
+        if r.invented_figure:
+            return "gave a figure the document doesn't have"
         return "refused" if r.refused else "answered instead of saying the document doesn't cover it"
     fact = "fact ok" if r.fact else f"fact missing ({', '.join(r.case.expect)})"
     pages = "pages ok" if r.cited else f"pages missing (want {', '.join(map(str, r.case.pages))})"
@@ -142,40 +173,92 @@ def format_report(results: list[Result], *, model: str) -> str:
     lines = [f"Document QA eval: {model}"]
     for r in results:
         tools = ",".join(r.tools) or "-"
-        lines.append(f"{'PASS' if r.passed else 'FAIL'}  {r.case.kind:<12} rounds={r.rounds} "
-                     f"tools={tools}  {_detail(r)}")
+        verdict = "ERROR" if r.error else "PASS" if r.passed else "FAIL"
+        lines.append(f"{verdict:<5} {r.case.kind:<12} rounds={r.rounds} tools={tools}  {_detail(r)}")
     lines.append(f"{sum(r.passed for r in results)}/{len(results)} passed")
     return "\n".join(lines)
 
 
 # ---------- the live run ----------
 
-async def run_eval(model: str, *, show_answers: bool = False) -> list[Result]:
-    """Index the fixture for an eval user and ask every question through
-    run_turn. Needs DATABASE_URL, the embedding model and `model` reachable.
-    The eval user's chats are deleted afterwards; the document stays indexed
-    so a second run doesn't re-embed it."""
+EVAL_ISS, EVAL_SUB = "natural-reader-eval", "doc-qa"
+
+
+class EvalSetupError(RuntimeError):
+    """The harness couldn't run (database, models): not a verdict on the model."""
+
+
+async def eval_user(conn) -> str:
+    """The eval's own user: a row of its own, never via the OIDC resolver,
+    which binds a new identity to an unclaimed seed admin (on a dev-bypass
+    machine, the person's own account)."""
+    from ..auth.users import enroll_linked_user
+    cur = await conn.execute("SELECT id FROM users WHERE oidc_iss = %s AND oidc_sub = %s", (EVAL_ISS, EVAL_SUB))
+    row = await cur.fetchone()
+    if row:
+        return str(row[0])
+    user = await enroll_linked_user(conn, iss=EVAL_ISS, sub=EVAL_SUB, email="doc-qa-eval@example.com",
+                                   display_name="Document QA eval", capabilities=["chat", "reader"])
+    return str(user["id"])
+
+
+async def _ask(case: Case, *, user_id: str, model: str, doc_id: str, router, cfg, budget) -> Result:
     import uuid
+    from contextlib import aclosing
+
+    from ..chat import store
+    from ..chat.orchestrator import TurnRequest, run_turn
+    from ..db import get_pool
+    from ..llm.types import CallSettings
+
+    session_id = f"eval-{uuid.uuid4()}"
+    answer, calls, error = "", [], None
+    try:
+        claim = await store.begin_turn(session_id=session_id, user_id=user_id, model_id=model,
+                                       text=case.question, attachments=[], new_session_pins=None)
+        req = TurnRequest(user_id=user_id, session_id=session_id, model_id=model, text=case.question,
+                          attachments=(), settings=CallSettings(), doc_id=doc_id, timezone="UTC")
+        async with aclosing(run_turn(req, claim, router=router, cfg=cfg, deployment_budget=budget)) as events:
+            async for ev in events:
+                if ev["type"] == "text-delta":
+                    answer += ev["delta"]
+                elif ev["type"] == "tool-input-available":
+                    calls.append(ev)
+                elif ev["type"] == "error":
+                    error = ev.get("code") or "error"
+    finally:
+        # Even on an error or Ctrl-C: the eval leaves no chats behind.
+        async with get_pool().connection() as conn:
+            await conn.execute("DELETE FROM chat_sessions WHERE id = %s", (session_id,))
+    return score(case, answer, calls, error=error)
+
+
+async def run_eval(model: str, *, show_answers: bool = False) -> list[Result]:
+    """Index the fixture for the eval user and ask every question through
+    run_turn, started and stopped as the app does. Needs DATABASE_URL, the
+    embedding model and `model` reachable; raises EvalSetupError otherwise.
+    The document stays indexed, so a second run doesn't re-embed it."""
     from pathlib import Path
 
-    from ..auth.users import resolve_or_provision_user, set_status
-    from ..chat import store
+    from ..chat import orchestrator
     from ..chat.config import get_chat_config
-    from ..chat.orchestrator import TurnRequest, run_turn
     from ..db import close_db, get_pool, init_db
     from ..llm.router import get_router, start_router, stop_router
-    from ..llm.types import CallSettings
-    from ..services import doc_pipeline, doc_storage, embeddings
+    from ..services import doc_pipeline, doc_storage, embeddings, model_router, web_search
 
     fixture = build_fixture()
-    await init_db()
-    await embeddings.start_client()
-    await start_router()
+    if not await init_db():
+        raise EvalSetupError("The database isn't reachable (DATABASE_URL).")
     try:
+        await embeddings.start_client()
+        await web_search.start_client()
+        await start_router()
+        router = get_router()
+        canonical = router.canonical_id(model)
+        if not router.is_allowed(canonical):
+            raise EvalSetupError(f"{canonical} isn't allowed on this deployment (INFERENCE_MODELS).")
         async with get_pool().connection() as conn:
-            user = await resolve_or_provision_user(conn, iss="natural-reader-eval", sub="doc-qa",
-                                                   email="doc-qa-eval@example.com")
-            await set_status(conn, user["id"], "active")
+            user_id = await eval_user(conn)
             path = Path(doc_storage.storage_dir()) / f"{fixture.doc_id}.txt"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(fixture.text, encoding="utf-8")
@@ -186,34 +269,27 @@ async def run_eval(model: str, *, show_answers: bool = False) -> list[Result]:
             await conn.execute(
                 "INSERT INTO library_entries (user_id, doc_id, added_via, verified, file_name) "
                 "VALUES (%s, %s, 'upload', true, %s) ON CONFLICT DO NOTHING",
-                (user["id"], fixture.doc_id, FILE_NAME))
+                (user_id, fixture.doc_id, FILE_NAME))
         await doc_pipeline.run_pipeline(fixture.doc_id)     # a no-op once indexed
         await doc_pipeline.run_rebuild(fixture.doc_id)      # a no-op under the current profile
+        async with get_pool().connection() as conn:
+            cur = await conn.execute("SELECT state, error_message FROM documents WHERE doc_id = %s",
+                                     (fixture.doc_id,))
+            state, message = await cur.fetchone()
+        if state != "indexed":
+            raise EvalSetupError(f"The fixture didn't index ({state}: {message}). Is the embedding model up?")
 
         results = []
         for case in fixture.cases:
-            session_id = f"eval-{uuid.uuid4()}"
-            claim = await store.begin_turn(session_id=session_id, user_id=str(user["id"]), model_id=model,
-                                           text=case.question, attachments=[], new_session_pins=None)
-            req = TurnRequest(user_id=str(user["id"]), session_id=session_id, model_id=model,
-                              text=case.question, attachments=(), settings=CallSettings(),
-                              doc_id=fixture.doc_id, timezone="UTC")
-            answer, calls = "", []
-            async for ev in run_turn(req, claim, router=get_router(), cfg=get_chat_config(),
-                                     deployment_budget=None):
-                if ev["type"] == "text-delta":
-                    answer += ev["delta"]
-                elif ev["type"] == "tool-input-available":
-                    calls.append(ev)
-                elif ev["type"] == "error":
-                    answer += f"\n[error: {ev['code']}]"
-            results.append(score(case, answer, calls))
+            result = await _ask(case, user_id=user_id, model=canonical, doc_id=fixture.doc_id, router=router,
+                                cfg=get_chat_config(), budget=model_router.get_config().daily_token_budget)
+            results.append(result)
             if show_answers:
-                print(f"--- {case.kind}: {case.question}\n{answer}\n")
-            async with get_pool().connection() as conn:
-                await conn.execute("DELETE FROM chat_sessions WHERE id = %s", (session_id,))
+                print(f"--- {case.kind}: {case.question}\n{result.answer}\n")
         return results
     finally:
         await stop_router()
+        await web_search.stop_client()
         await embeddings.stop_client()
+        await orchestrator.drain_background(timeout=5)
         await close_db()

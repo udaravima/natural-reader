@@ -331,7 +331,11 @@ python scripts/eval_doc_qa.py --model ollama:llama3.2:3b
 python scripts/eval_doc_qa.py --model openrouter:qwen/qwen3-8b --show-answers
 ```
 
-It reads the same environment as the backend: `DATABASE_URL`, the embedding model and the chat provider. It indexes the document for an eval user once (later runs reuse it) and deletes its chats afterwards. Each line reports the tools called and the rounds used, and the exit status is 0 only when every case passed. Run it after changing a model, a prefix, `CHAT_SEARCH_MIN_SCORE` or the chunk sizes; the relevance thresholds were measured before v2.3's prefixes, so this is the way to re-tune them.
+It reads the same environment as the backend: `DATABASE_URL`, the embedding model and the chat provider. It indexes the document for an eval user once (later runs reuse it) and deletes its chats afterwards. Each line reports the tools called and the rounds used.
+- **Exit status:** 0 when every case passed, 1 when the model failed one, and 2 when the harness couldn't run. A turn that ended in an error (provider, budget) is reported as ERROR, not as a model failure.
+- **The eval user:** it runs as its own user (`doc-qa-eval@example.com`, chat and reader only), never as an admin. Its turns count against that user's daily budget and the deployment's.
+- **How the absent case is strict:** it fails if the answer cites any page, including "I checked page 2", or gives any figure; it passes only on a plain "the document doesn't cover it".
+- **The page-read case** names its page in the question, so it really tests the fact, not the citation. Run it after changing a model, a prefix, `CHAT_SEARCH_MIN_SCORE` or the chunk sizes; the relevance thresholds were measured before v2.3's prefixes, so this is the way to re-tune them.
 
 ## 7. Sessions & persistence
 

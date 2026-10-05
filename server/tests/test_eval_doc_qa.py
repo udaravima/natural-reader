@@ -87,3 +87,69 @@ def test_the_report_is_one_line_per_case_and_a_total():
     assert "ollama:llama3.2:3b" in lines[0]
     assert sum("PASS" in l for l in lines) == 1 and sum("FAIL" in l for l in lines) == 1
     assert lines[-1].startswith("1/2 passed")
+
+
+# ---- Task G review fix round 1 ----
+
+async def test_the_eval_user_is_its_own_row_and_never_claims_the_seed_admin(db_conn):
+    """Review C1: the OIDC resolver binds a new identity to an unclaimed seed
+    admin. On a dev-bypass machine (the one this eval is for) that is the
+    person's own admin account."""
+    from server.auth.users import SEED_ADMIN_ID
+    cur = await db_conn.execute("SELECT oidc_sub, email FROM users WHERE id = %s", (SEED_ADMIN_ID,))
+    before = await cur.fetchone()
+    first = await doc_qa.eval_user(db_conn)
+    again = await doc_qa.eval_user(db_conn)
+    assert first == again != SEED_ADMIN_ID
+    cur = await db_conn.execute("SELECT oidc_sub, email FROM users WHERE id = %s", (SEED_ADMIN_ID,))
+    assert await cur.fetchone() == before
+    cur = await db_conn.execute("SELECT capabilities, status FROM users WHERE id = %s", (first,))
+    caps, status = await cur.fetchone()
+    assert "admin" not in caps and status == "active"
+
+
+@pytest.mark.parametrize("answer", [
+    "The capital budget for 2030 isn't mentioned in the document.",
+    "The document does not provide a 2030 capital budget.",
+    "The report doesn't specify any capital budget.",
+    "There is nothing about a capital budget in it.",
+    "The report says nothing about it.",
+    "I don't have information on that from this document.",
+])
+def test_refusals_in_the_models_own_words_are_recognised(answer):
+    """Review I4."""
+    assert doc_qa.is_refusal(answer)
+
+
+@pytest.mark.parametrize("answer", [
+    "Not mentioned in the text, but it is 4 million.",
+    "The budget is 4m; earlier drafts did not include it.",
+])
+def test_a_refusal_followed_by_a_made_up_figure_fails(answer):
+    case = _case("absent", ["capital budget", "2030"], [])
+    assert not doc_qa.score(case, answer, []).passed
+
+
+@pytest.mark.parametrize("term,answer,found", [
+    ("41 ms|41ms|41 milliseconds", "a median of 41 ms", True),
+    ("41 ms|41ms|41 milliseconds", "a median of 410 ms", False),
+    ("41 ms|41ms|41 milliseconds", "a median of 141 ms", False),
+    ("nine weeks|9 weeks|nine-week", "It ran for 9 weeks.", True),
+    ("zephyr-9", "the ZEPHYR‑9 dataset", True),                   # a non-breaking hyphen
+])
+def test_facts_match_whole_words_and_any_hyphen(term, answer, found):
+    """Review M5."""
+    assert doc_qa.has_term(answer, term) == found
+
+
+def test_a_turn_that_errored_is_reported_as_an_error_not_a_model_failure():
+    """Review M8."""
+    case = _case("single-hop", ["x"], [1])
+    result = doc_qa.score(case, "", [], error="provider_error")
+    assert not result.passed and result.error == "provider_error"
+    assert "ERROR" in doc_qa.format_report([result], model="m")
+
+
+def test_the_fixture_page_size_is_the_extractors():
+    from server.services import extract
+    assert doc_qa.SENTENCES_PER_PAGE is extract.SENTENCES_PER_PAGE

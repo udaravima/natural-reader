@@ -57,3 +57,35 @@ There is no real model in this sandbox. The live run is for the local machine; i
 - backend: 772 passed;
 - vitest: exit 0;
 - eslint: clean.
+
+## Fix round 1 — FIX_BASE 29e4cb8
+
+- **C1: the eval took over an unclaimed seed admin.**
+  - `eval_user(conn)` looks the eval identity up by (iss, sub). Failing that, it creates its own row with `enroll_linked_user` (chat and reader only, active). It never goes through the OIDC resolver.
+  - DB test: the seed admin row is unchanged, the eval user is a different row with no admin capability, and a second call returns the same row. It failed before the fix (no function).
+  - Smoke re-run on a scratch database: the seed admin keeps `admin@localhost` with no OIDC sub, and the eval runs as `doc-qa-eval@example.com` with chat and reader.
+- **I2: startup parity with the app.** `run_eval` now:
+  - starts and stops the web-search client;
+  - drains the orchestrator's background tasks before `close_db`;
+  - starts everything inside the `try`.
+- **I3: sessions left behind.** Each case's turn runs inside `try/finally`, and the generator runs under `aclosing`. The session is deleted on success, on an error and on Ctrl-C.
+- **I4: the refusal check.**
+  - The regex accepts n't/not/never before mentioned / covered / provide / specify / give / state, and also "nothing about", "says nothing" and "don't have information". Curly apostrophes and hyphen variants are normalised.
+  - The absent case also fails on any figure other than the question's own year or a cited page.
+  - Tests: 6 phrasings in the model's own words, and 2 "refusal followed by a made-up figure" answers. All failed before the fix.
+- **M5: fact matching.**
+  - `has_term` matches whole words, any hyphen (U+2010-2015, U+2212) and alternatives ("a|b").
+  - Expected terms: "41 ms|41ms|41 milliseconds" and "nine weeks|9 weeks|nine-week".
+  - Tests: 410 ms and 141 ms don't match; 9 weeks and the non-breaking-hyphen form of ZEPHYR-9 do.
+- **M6 and M7.** Documented in §6.5: the page-read case tests the fact only, and the absent case is strict about any cited page.
+- **M8: exit codes.**
+  - `init_db()` returning False raises `EvalSetupError`, and so does a fixture that didn't index.
+  - A turn that ended in an error event is reported as ERROR, not as a model failure.
+  - The CLI exits 0 when everything passed, 1 when the model failed a case, 2 when the setup failed or any case errored. Test: the ERROR result and report line.
+- **M9: route parity.** The model id goes through `router.canonical_id`, a model the deployment doesn't allow is refused with `EvalSetupError`, and the deployment's daily budget is passed.
+- **M10.** `SENTENCES_PER_PAGE` is imported from `extract`. Test added.
+
+Suites:
+- backend: 788 passed;
+- vitest: exit 0;
+- eslint: clean.
