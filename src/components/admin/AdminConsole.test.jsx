@@ -269,3 +269,12 @@ describe('AdminConsole — config', () => {
     expect(await screen.findByText('none configured')).toBeInTheDocument();
   });
 });
+
+describe('AdminConsole — assistant profile', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('has an Assistant section (v2.4 Task A2)', async () => {
+    mount({ users: [user()] });
+    expect(await screen.findByRole('region', { name: 'Assistant' })).toBeTruthy();
+  });
+});

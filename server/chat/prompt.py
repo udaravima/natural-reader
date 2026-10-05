@@ -19,7 +19,8 @@ it sits at the head of the prompt and the provider's prefix cache survives
 (orchestrator), not here.
 
 Order of the system message (later, more specific text wins a conflict):
-the rules, then the user's pins. C2's per-project instructions, written by
+the deployment's assistant profile (v2.4 Task A2: identity and tone, set by
+an admin), then the rules, then the user's pins. C2's per-project instructions, written by
 users, belong after the rules and before the pins.
 
 Document text never appears in these rules. It reaches the model only inside
@@ -67,6 +68,8 @@ IN_PROGRESS = ("extracting", "extracted", "indexing")   # the pipeline runs on t
 DOC_SEARCH, DOC_READ, WEB = "search_documents", "read_document_pages", "web_search"
 
 FIRST_LINE = "You are the assistant in Natural Reader, an app for reading and listening to documents."
+# After a deployment profile, which gives the assistant its own identity ("You are Ada…").
+FIRST_LINE_WITH_PROFILE = "You are working in Natural Reader, an app for reading and listening to documents."
 
 
 def _document_line(doc: ReadableDoc | None) -> str | None:
@@ -152,16 +155,19 @@ _TOOL_RESULTS_ARE_DATA = (
 
 
 def system_rules(doc: ReadableDoc | None, tools: Iterable[_Offered], *, has_pins: bool,
-                 prefetch: bool = False, today: str = "") -> str:
+                 prefetch: bool = False, today: str = "", profile: str = "") -> str:
     """The rules for this turn. `tools` are the ones offered on its first
     step; the orchestrator's last-round note covers the final tools-off step.
     `today`: "Today is …" to the day (context.today_line), or "" for none.
     `prefetch`: the app searches before the model runs for this model (v2.4
-    Task B adds its sentence; unused until then)."""
+    Task B adds its sentence; unused until then). `profile`: the
+    deployment's assistant profile (services/assistant_profile.py), first."""
     tools = list(tools)
     offered = {t.name for t in tools}
-    first = f"{FIRST_LINE} {today}" if today else FIRST_LINE
-    parts = [first]
+    first = FIRST_LINE_WITH_PROFILE if profile else FIRST_LINE
+    if today:
+        first = f"{first} {today}"
+    parts = [profile, first] if profile else [first]
     line = _document_line(doc)
     if line:
         parts.append(line)

@@ -349,3 +349,17 @@ def test_the_rules_stay_short_enough_for_a_small_model():
     # characters here is about a second before the first reply word, until the
     # provider's prefix cache holds it.
     assert len(system_rules(FIELD(), SETS["all"], has_pins=True)) <= 2800
+
+
+# ---- v2.4 Task A2: the deployment's assistant profile ----
+
+def test_a_profile_goes_first_and_the_app_rules_still_follow():
+    rules = system_rules(FIELD(), SETS["all"], has_pins=False, profile="You are Ada.")
+    assert rules.startswith("You are Ada.\n\nYou are working in Natural Reader")
+    assert rules.endswith(system_rules(FIELD(), SETS["all"], has_pins=False).split("\n\n", 1)[1])
+
+
+def test_the_profile_and_the_date_both_fit():
+    rules = system_rules(FIELD(), [], has_pins=False, profile="Be brief.", today="Today is Monday, 5 October 2026 (UTC).")
+    assert rules.startswith("Be brief.\n\nYou are working in Natural Reader, an app for reading and listening "
+                            "to documents. Today is Monday, 5 October 2026 (UTC).\n\n")

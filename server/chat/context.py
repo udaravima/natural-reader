@@ -209,6 +209,7 @@ class TurnInput:
     now: datetime
     tools: tuple[Any, ...] = ()   # offered on the turn's first step: the rules describe exactly these
     tool_ctx: Any = None
+    profile: str = ""             # the deployment's assistant profile: leads the system message
 
 
 @dataclass
@@ -224,7 +225,7 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     pre = await prefetch(turn.doc, turn.text, cfg)
     volatile = _passages_block(pre.note["docName"], pre.passages) if pre.passages else ""
     rules = system_rules(turn.doc, turn.tools, has_pins=bool(turn.pins),
-                         today=today_line(turn.now, turn.timezone))
+                         today=today_line(turn.now, turn.timezone), profile=turn.profile)
     system = Message("system", "\n\n".join(c for c in (rules, pin_text(turn.pins)) if c))
     fixed_chars = len(system.content) + len(volatile) + 2 + len(turn.text)
     items, n_messages, n_attachments = _fit_history(turn.history, fixed_chars, len(turn.attachments),

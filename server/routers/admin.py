@@ -7,15 +7,17 @@ import secrets
 import uuid
 from urllib.parse import urlsplit
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..auth import deps, users
 from ..auth.capabilities import KNOWN_CAPABILITIES
 from ..auth.config import load_auth_config
 from ..auth.kc_admin import KCAdminError
 from ..llm.router import get_router
-from ..services import doc_content, inference_budget, model_router
+from ..services import assistant_profile, doc_content, inference_budget, model_router
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -298,3 +300,51 @@ async def inference_usage(
 ):
     days = max(1, min(90, days))
     return await inference_budget.admin_usage(conn, days=days)
+
+
+# ---------- the assistant profile (v2.4 Task A2) ----------
+
+class AssistantProfileIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(max_length=assistant_profile.PROFILE_MAX_CHARS)
+
+
+async def _assistant_view(conn) -> dict:
+    """What the admin console shows: the profile, where it comes from, and
+    the full system message a sample turn would get (an indexed 10-page
+    document, every tool, no pins), so an admin sees the profile next to the
+    app's rules before users do."""
+    from ..chat.context import today_line
+    from ..chat.prompt import system_rules
+    from ..chat.tools import REGISTRY
+    from ..services.doc_search import ReadableDoc
+
+    profile = await assistant_profile.load_profile(conn)
+    sample = ReadableDoc("0" * 64, "Example.pdf", "indexed", 10)
+    preview = system_rules(sample, REGISTRY, has_pins=False, profile=profile.text,
+                           today=today_line(datetime.now(timezone.utc), "UTC"))
+    # `text` is the effective profile, from the file too: the editor starts
+    # from it, and saving it unchanged is the console's job to skip.
+    return {"text": profile.text, "source": profile.source,
+            "fileConfigured": assistant_profile.file_path() is not None,
+            "maxChars": assistant_profile.PROFILE_MAX_CHARS, "preview": preview,
+            "warnings": assistant_profile.profile_warnings(profile.text)}
+
+
+@router.get("/assistant")
+async def get_assistant_profile(
+    _: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn),
+):
+    return await _assistant_view(conn)
+
+
+@router.put("/assistant")
+async def put_assistant_profile(
+    body: AssistantProfileIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn),
+):
+    """Save the profile; empty text clears it (the file, or none, applies)."""
+    await assistant_profile.save_profile(conn, body.text, updated_by=str(principal.user_id))
+    return await _assistant_view(conn)

@@ -797,3 +797,14 @@ def test_chat_search_min_score_is_read_from_the_environment():
     assert load_chat_config({}).search_min_score == 0.45
     assert load_chat_config({"CHAT_SEARCH_MIN_SCORE": "0.5"}).search_min_score == 0.5
     assert load_chat_config({"CHAT_SEARCH_MIN_SCORE": "2"}).search_min_score == 0.45
+
+
+async def test_the_deployment_profile_leads_the_system_message(conn):
+    """v2.4 Task A2: an admin-saved profile reaches the model first, every turn."""
+    from server.services.assistant_profile import save_profile
+    await save_profile(conn, "You are Ada, the reading-room assistant.", updated_by=None)
+    router = FakeRouter(steps=[reply("Hello!")])
+    await _run(conn, router)
+    system = router.calls[0]["messages"][0]
+    assert system.role == "system"
+    assert system.content.startswith("You are Ada, the reading-room assistant.\n\nYou are working in Natural Reader")

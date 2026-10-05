@@ -6,6 +6,13 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **An assistant profile for the deployment.** Admins give the assistant a
+  name, personality, tone and house rules in the admin console's new
+  **Assistant** section, with a preview of everything the model receives.
+  A deployer can ship it as a file instead (`CHAT_ASSISTANT_PROFILE_FILE`).
+  It comes first in every chat; the app's own rules about documents and
+  tools follow it and take precedence.
+
 - **The assistant follows one strategy for each message.** Small talk and
   "say that more simply" get a direct reply, without searching. Questions
   that could be about the open document are searched in the document before

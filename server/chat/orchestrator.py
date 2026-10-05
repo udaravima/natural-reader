@@ -27,7 +27,7 @@ from ..llm.router import UnknownModel
 from ..llm.types import (Attachment, CallSettings, Capabilities, FeatureDropped, Finish, Message,
                          ProviderError, ProviderTimeout, ProviderUnavailable, ReasoningDelta,
                          TextDelta, ToolCall, ToolCallReady, Usage)
-from ..services import inference_budget
+from ..services import assistant_profile, inference_budget
 from ..services import doc_pipeline
 from ..services.doc_search import ReadableDoc, readable_doc
 from . import store
@@ -226,6 +226,10 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         doc = await _open_doc(req)
         pins, history = await store.load_turn_context(
             claim.session_id, exclude=(claim.user_message_id, claim.assistant_message_id))
+        # One primary-key read per turn: right across several workers, and an
+        # admin's edit applies from the next message, with no cache to clear.
+        async with get_pool().connection() as conn:
+            profile = await assistant_profile.load_profile(conn)
         # Tools first: the system rules describe exactly the tools this turn
         # offers (server/chat/prompt.py), so none is ever named in vain.
         tool_ctx = ToolContext(req.user_id, doc, cfg=cfg)
@@ -234,7 +238,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             user_id=req.user_id, text=req.text, attachments=req.attachments, doc=doc,
             timezone=req.timezone, pins=pins, history=history,
             window=_window(router, req, caps), now=datetime.now(timezone.utc),
-            tools=tuple(offered if cfg.max_tool_rounds > 0 else ()), tool_ctx=tool_ctx), cfg)
+            tools=tuple(offered if cfg.max_tool_rounds > 0 else ()), tool_ctx=tool_ctx,
+            profile=profile.text), cfg)
         tool_ctx.shown.update(built.shown_chunk_ids)
         # Document text the model already has: the web search guard's reference.
         tool_ctx.seen_text.extend(built.shown_texts)

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, Shield, Loader2 } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
+import { AssistantProfileSection } from './AssistantProfileSection';
 
 /**
  * Full-height admin console (spec §3): Users (list + enroll + delete),
- * Inference usage, Deployment config — one scroll, no tabs. Visual language
+ * Inference usage, Deployment config, Assistant (v2.4) — one scroll, no tabs. Visual language
  * mirrors AdminPanel/AccountPanel (tiny text, list rows, underline buttons).
  *
  * All rails are server-side; this UI only hides/disables affordances
@@ -453,6 +454,9 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
             </div>
           )}
         </section>
+
+        {/* ---------- ASSISTANT (v2.4 Task A2) ---------- */}
+        <AssistantProfileSection theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast} />
       </div>
     </div>
   );

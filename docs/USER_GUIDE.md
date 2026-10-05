@@ -138,6 +138,21 @@ Notes:
   from the provider list above it). There's still no button here to add or
   change a provider — that's a `.env` + restart task for whoever runs the
   server.
+- The **Assistant** section sets the assistant's profile: its name,
+  personality, tone and house rules (for example "You are Ada, the
+  reading-room assistant. Answer warmly and briefly, in British English.").
+  - It goes first in every chat, from the next message on; the app's own
+    rules about documents and tools follow it and win where they conflict.
+    So a profile can't, for example, stop the assistant citing pages.
+  - The badge says where it comes from: **Set here**, **From the deployment
+    file** (the server's `CHAT_ASSISTANT_PROFILE_FILE`), or **None**.
+    **Reset to deployment default** removes what you set here.
+  - **What the model receives** shows the whole instruction text a chat
+    gets, your profile included.
+  - Keep it short: every character is read before every reply (the counter
+    shows about how many tokens), and up to 8,000 characters are allowed.
+  - Don't name the app's tools (`web_search` and so on): describe the
+    behaviour you want. The section warns you if you do.
 
 ## Library: documents on the server
 
