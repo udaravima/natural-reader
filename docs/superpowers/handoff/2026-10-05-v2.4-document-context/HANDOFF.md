@@ -2,6 +2,35 @@
 
 This is for a **local Claude Code session** on the user's machine. It is self-contained: read it, then the files it links. It continues the cloud session that built v2.1 to v2.3 on the branch `claude/task-mwo2ow`.
 
+## Status (updated 2026-10-05, local session): v2.4 built
+
+[Plan](../../plans/2026-10-05-v2.4-document-context.md), branch `feat/v2.4-document-context` (from `claude/task-mwo2ow`; not pushed, not merged).
+
+| Task | Commit | What a person gets |
+|---|---|---|
+| 0 · The eval checks the strategy | 0eb6e8b | 9 cases (small talk, general, live, follow-up added), seconds per case, `--repeat`, `--think`, `--prefetch` |
+| A · One strategy in the rules; truthful tool descriptions; the date in the rules | 20dee8e | The model decides: no tools, the document, the web, or its own knowledge; follow-ups work (the clock line no longer hijacks "that") |
+| A2 · Assistant profile | ab90a2f | Admin console → **Assistant**: name, personality, house rules; or `CHAT_ASSISTANT_PROFILE_FILE` |
+| B · Prefetch as a tool exchange | 70120ee | Document text never sits in the user's message when the model has tools |
+| C · `CHAT_PREFETCH` | fc54181, fixed 77df43d | Default `auto`: no pre-search for a model that searches itself |
+| D · Source chips | 9938f7a | "Sources: p. 3 · p. 8" under answers, clickable |
+| E · "Use this document" switch | f820e49 | A chip above the chat box, per chat and per user |
+| F · Deployment limits | 53cc242 | `INFERENCE_NUM_CTX_MAX` (32768), `INFERENCE_KEEP_ALIVE_MAX` (30m); Settings offers only those |
+| G · v2.3 minors, docs walk | bb385a3 | — |
+
+**Measured** (eval, 9 cases): `gemma4:e4b` local CPU 9/9 with the default (`auto`), 5/9 with prefetch forced on; `gemma4:31b-cloud` 27/27 (3 runs). Eval runs use `ollama:gemma4:31b-cloud` and OpenRouter with `SUMMARIZE_MODEL=gemma4:31b-cloud`; the user doesn't target models below `gemma4:e4b`.
+
+**Environment only, no screen:** `CHAT_PREFETCH`, `INFERENCE_NUM_CTX_MAX`, `INFERENCE_KEEP_ALIVE_MAX`.
+
+**Owed before merge:**
+- the running-app walk (browser tools were disconnected): admin sets a profile; chips open pages; the switch with two users on one browser;
+- **the backend doesn't start on this branch:** `server/logging_config.py` (commits 4896734, 5fa2360) gives `RotatingFileHandler` a `when=` argument; `configure_logging()` raises;
+- this machine's `.venv` is Python 3.11.15, while `server/routers/chat_turns.py:238` uses `inspect.getasyncgenstate` (3.12+): 10 `test_chat_turns` tests fail, and the stream-close path would raise in the running app.
+
+**Deferred minors:** in the plan workspace ledger's "Final:" lines, copied to the follow-ups ledger.
+
+**Next (the user's choice):** C2 multi-document projects, or vLLM (provider independence).
+
 ## 0. Before anything
 
 - **Branch.** v2.1, v2.2 and v2.3 are on `claude/task-mwo2ow`, and the user merges it into `development`.
