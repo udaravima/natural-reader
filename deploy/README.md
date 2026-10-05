@@ -17,6 +17,8 @@ and the five config values that must agree, plus the traps (the biggest: editing
 > import, and runs the backend with those vars. The manual walkthrough
 > explains what each step does and how to customize it. `./startup.sh up`
 > (without the auth rig) runs the backend with `AUTH_ENABLED=false` instead.
+> On Windows, run `startup.cmd up-with-dev-auth` (or `startup.cmd up`) instead:
+> same steps, same `.env`.
 
 Files here:
 

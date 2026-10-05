@@ -246,6 +246,34 @@ backend's startup guard allows this only on a loopback bind). Ctrl-C on either
 SIGTERMs the backend and stops the containers cleanly; `./startup.sh down` does
 the same without starting anything.
 
+#### On Windows
+
+`startup.cmd` (or `startup.ps1` in PowerShell) has the same commands as
+`startup.sh`. It runs on the Windows PowerShell 5.1 built into Windows 10/11,
+and on PowerShell 7.
+
+```bat
+startup.cmd init           :: or: startup.cmd init podman
+startup.cmd up             :: quick single-user dev, auth off
+startup.cmd up-with-dev-auth
+startup.cmd down
+```
+
+You need Docker Desktop (or Podman Desktop), Python 3.10–3.13 from
+python.org with **Add to PATH** ticked, and Node.js. `startup.cmd` runs the
+script with `-ExecutionPolicy Bypass` for that one run, so the machine's
+execution policy can stay as it is. From a PowerShell prompt you can also run
+`.\startup.ps1 up` directly if your policy allows local scripts.
+
+These parts work differently from Linux:
+- **Python:** the script uses the `py` launcher when it can, because
+  `python.exe` on a fresh Windows is often the Microsoft Store stub.
+- **The virtual environment** lives in `.venv\Scripts\`.
+- **Stopping:** Ctrl-C reaches the backend directly, and it shuts down
+  cleanly. `down` from another window has no gentler option on Windows: after
+  5 seconds it ends the backend and every worker process it started
+  (`taskkill /T`).
+
 Open **http://localhost:5173** in your browser.
 
 ### 4. (Optional) Local AI Chat with Ollama

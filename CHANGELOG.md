@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Windows startup script.** `startup.cmd` (and `startup.ps1`) do on
+  Windows what `startup.sh` does on Linux and macOS: `init`, `up`,
+  `up-with-dev-auth` and `down`. They run on the PowerShell built into
+  Windows 10/11, with no execution-policy change needed. See README §3,
+  "On Windows".
+
 - **Open a Library document in the reader.** Each Library row has an
   **Open** button that fetches the document from the server and opens it
   like a file you picked; Index and chat work on it straight away. Someone
