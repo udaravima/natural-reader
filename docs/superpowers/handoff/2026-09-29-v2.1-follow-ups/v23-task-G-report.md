@@ -89,3 +89,15 @@ Suites:
 - backend: 788 passed;
 - vitest: exit 0;
 - eslint: clean.
+
+## Fix round 1 re-review
+
+All findings are addressed. The new minors are fixed in the next commit:
+- `is_allowed` runs before `canonical_id`, and `UnknownModel` becomes `EvalSetupError` (exit 2);
+- `eval_user` refuses an eval identity bound to an admin (a database touched by the pre-fix build), and an email clash becomes `EvalSetupError`;
+- non-breaking spaces are normalised, and "9-week" is accepted;
+- the misplaced doc sentence is moved.
+
+Tests: +2. Backend suite: 790 passed.
+
+Still open: a figure written in words passes the absent check (digits only), and the route's pre-turn budget refusal isn't mirrored (an over-budget run reports ERROR).

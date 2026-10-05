@@ -138,3 +138,4 @@ v2.3 Task E: fix round 1 eaa42c4. The re-review found M4 open (the clamp fell ba
 v2.3 Task F: fix round deba05a. The re-review found all addressed; its 2 stale comments are fixed in the next commit. Deferred: a strong top word match uses up a bypass slot, and the slots are per document (relevant for C2). Task F is complete.
 v2.3 Task E: fix round 2 27a6788. The re-review found all addressed; its 3 minors are fixed in the next commit. Task E is complete.
 v2.3 Task G: 29e4cb8 (review: Needs fixes — CRITICAL: the eval provisioned through the OIDC resolver and took over an unclaimed seed admin; web search not started; sessions left behind on error; the refusal regex was weak). Fix round in the next commit.
+v2.3 Task G: fix round 551cc31. The re-review found all addressed; its minors are fixed in the next commit. Deferred: a figure in words passes the absent check; no pre-turn budget refusal. Task G is complete.

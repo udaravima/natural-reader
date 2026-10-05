@@ -51,7 +51,7 @@ _PLANTED = [
     ("exact-label", "table", "What does Table 7.3 report?",
      [("Table 7.3 reports a median latency of 41 ms.", 6)], ("41 ms|41ms|41 milliseconds",)),
     ("page-read", "page", "What does page 5 say about the field trial?",
-     [("The field trial ran for nine weeks in Tromsø.", 5)], ("nine weeks|9 weeks|nine-week",)),
+     [("The field trial ran for nine weeks in Tromsø.", 5)], ("nine weeks|9 weeks|nine-week|9-week",)),
     ("absent", "absent", "What is the capital budget for 2030?", [], ("capital budget", "2030")),
 ]
 
@@ -96,7 +96,8 @@ _REFUSAL = re.compile(
 
 
 def _normalise(text: str) -> str:
-    return _HYPHENS.sub("-", text.replace("’", "'")).lower()
+    text = text.replace("\u2019", "'").replace("\u00a0", " ").replace("\u202f", " ")
+    return _HYPHENS.sub("-", text).lower()
 
 
 def cited_pages(answer: str) -> set[int]:
@@ -193,12 +194,20 @@ async def eval_user(conn) -> str:
     which binds a new identity to an unclaimed seed admin (on a dev-bypass
     machine, the person's own account)."""
     from ..auth.users import enroll_linked_user
-    cur = await conn.execute("SELECT id FROM users WHERE oidc_iss = %s AND oidc_sub = %s", (EVAL_ISS, EVAL_SUB))
+    cur = await conn.execute("SELECT id, capabilities FROM users WHERE oidc_iss = %s AND oidc_sub = %s",
+                             (EVAL_ISS, EVAL_SUB))
     row = await cur.fetchone()
     if row:
+        if "admin" in (row[1] or []):
+            # An earlier eval build bound the seed admin to this identity.
+            raise EvalSetupError("The eval identity is bound to an admin account; unbind it first "
+                                 f"(users where oidc_iss = '{EVAL_ISS}').")
         return str(row[0])
-    user = await enroll_linked_user(conn, iss=EVAL_ISS, sub=EVAL_SUB, email="doc-qa-eval@example.com",
-                                   display_name="Document QA eval", capabilities=["chat", "reader"])
+    try:
+        user = await enroll_linked_user(conn, iss=EVAL_ISS, sub=EVAL_SUB, email="doc-qa-eval@example.com",
+                                       display_name="Document QA eval", capabilities=["chat", "reader"])
+    except ValueError as e:
+        raise EvalSetupError("Another user already has doc-qa-eval@example.com.") from e
     return str(user["id"])
 
 
@@ -243,7 +252,7 @@ async def run_eval(model: str, *, show_answers: bool = False) -> list[Result]:
     from ..chat import orchestrator
     from ..chat.config import get_chat_config
     from ..db import close_db, get_pool, init_db
-    from ..llm.router import get_router, start_router, stop_router
+    from ..llm.router import UnknownModel, get_router, start_router, stop_router
     from ..services import doc_pipeline, doc_storage, embeddings, model_router, web_search
 
     fixture = build_fixture()
@@ -254,9 +263,12 @@ async def run_eval(model: str, *, show_answers: bool = False) -> list[Result]:
         await web_search.start_client()
         await start_router()
         router = get_router()
-        canonical = router.canonical_id(model)
-        if not router.is_allowed(canonical):
-            raise EvalSetupError(f"{canonical} isn't allowed on this deployment (INFERENCE_MODELS).")
+        if not router.is_allowed(model):     # the turn route's order: allowed first, then resolved
+            raise EvalSetupError(f"{model} isn't allowed on this deployment (INFERENCE_MODELS).")
+        try:
+            canonical = router.canonical_id(model)
+        except UnknownModel as e:
+            raise EvalSetupError(f"No provider serves {model!r}: {e}") from e
         async with get_pool().connection() as conn:
             user_id = await eval_user(conn)
             path = Path(doc_storage.storage_dir()) / f"{fixture.doc_id}.txt"

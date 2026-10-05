@@ -153,3 +153,19 @@ def test_a_turn_that_errored_is_reported_as_an_error_not_a_model_failure():
 def test_the_fixture_page_size_is_the_extractors():
     from server.services import extract
     assert doc_qa.SENTENCES_PER_PAGE is extract.SENTENCES_PER_PAGE
+
+
+def test_a_non_breaking_space_and_9_week_match_too():
+    """Re-review minors."""
+    assert doc_qa.has_term("a median of 41 ms", "41 ms|41ms|41 milliseconds")
+    assert doc_qa.has_term("a 9-week trial", "nine weeks|9 weeks|nine-week|9-week")
+
+
+async def test_an_eval_identity_bound_to_an_admin_is_refused(db_conn):
+    """Re-review minor: a database an earlier eval build touched has the seed
+    admin bound to the eval identity; never run as that admin."""
+    from server.auth.users import SEED_ADMIN_ID
+    await db_conn.execute("UPDATE users SET oidc_iss = %s, oidc_sub = %s WHERE id = %s",
+                          (doc_qa.EVAL_ISS, doc_qa.EVAL_SUB, SEED_ADMIN_ID))
+    with pytest.raises(doc_qa.EvalSetupError):
+        await doc_qa.eval_user(db_conn)
