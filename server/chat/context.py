@@ -222,6 +222,7 @@ class BuiltContext:
     prefetch_hit: bool
     shown_chunk_ids: tuple[int, ...] = ()   # the prefetched chunks: search_documents won't repeat them
     shown_texts: tuple[str, ...] = ()       # their text: web_search won't send it out
+    evidence: tuple[tuple[int | None, str], ...] = ()   # (page, text): for the source chips (v2.4 Task D)
 
 
 async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
@@ -283,4 +284,5 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
                      n_messages, n_attachments, turn.window)
     return BuiltContext([system, *history_messages, current, *exchange], notes, bool(pre.passages),
                         tuple(p["id"] for p in pre.passages if p.get("id") is not None),
-                        tuple(p["text"] for p in pre.passages))
+                        tuple(p["text"] for p in pre.passages),
+                        tuple((p["page"], p["text"]) for p in pre.passages))

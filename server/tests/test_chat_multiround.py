@@ -298,3 +298,40 @@ async def test_a_call_that_failed_can_be_retried(conn, corpus, monkeypatch):
     router = FakeRouter(steps=[_call("c1", "news", "web_search"), _call("c2", "news", "web_search"), reply("Done.")])
     await _run(conn, router, text="q")
     assert calls == ["news", "news"]
+
+
+# ---- v2.4 Task D: source chips ----
+
+async def test_the_pages_an_uncited_answer_drew_on_are_sent_and_saved(conn, corpus):
+    router = FakeRouter(steps=[
+        _call("c1", "chapter 3 method"), _call("c2", "MIMIC-IV collected by"),
+        reply("It uses the MIMIC-IV dataset, collected at Beth Israel Deaconess Medical Center.")])
+    events, claim = await _run(conn, router, text="Which dataset, and who collected it?")
+    kinds = [e["type"] for e in events]
+    assert kinds.index("data-sources") < kinds.index("finish")
+    src = next(e for e in events if e["type"] == "data-sources")
+    assert (src["docId"], src["docName"], src["pages"], src["used"]) == (DOC.doc_id, "Thesis.pdf", [18, 22], True)
+    doc_context = (await _msg(conn, claim.assistant_message_id))[5]
+    assert {"kind": "sources", "docId": DOC.doc_id, "docName": "Thesis.pdf", "pages": [18, 22],
+            "used": True} in doc_context["notes"]
+
+
+async def test_a_refusal_shows_the_pages_searched_as_retrieved(conn, corpus):
+    router = FakeRouter(steps=[_call("c1", "chapter 3 method"),
+                               reply("The document doesn't seem to cover the budget.")])
+    events, _ = await _run(conn, router)
+    src = next(e for e in events if e["type"] == "data-sources")
+    assert (src["pages"], src["used"]) == ([18], False)
+
+
+async def test_no_document_text_no_sources_event(conn, corpus):
+    events, claim = await _run(conn, FakeRouter(steps=[reply("You're welcome!")]))
+    assert "data-sources" not in [e["type"] for e in events]
+
+
+async def test_a_result_dropped_for_the_budget_is_no_evidence(conn, corpus):
+    ctx = ToolContext("u", DOC, cfg=ChatConfig(tool_result_budget_chars=1000))
+    tools = TurnTools(ctx)
+    tools.used = 990
+    run = await tools.run(ToolCall("c1", "search_documents", {"query": "chapter 3 method"}), available_tools(ctx))
+    assert run.result == {"message": TurnTools.BUDGET_USED} and ctx.evidence == []

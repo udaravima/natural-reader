@@ -31,3 +31,10 @@ describe('citationDoc', () => {
         expect(citationDoc(null)).toBeNull();
     });
 });
+
+describe('citationDoc and source chips (v2.4 Task D)', () => {
+    it('finds the document from a sources note alone', () => {
+        const message = { docContext: { notes: [{ kind: 'sources', docId: 'd', docName: 'T.pdf', pages: [2], used: true }] } };
+        expect(citationDoc(message)).toEqual({ docId: 'd', docName: 'T.pdf' });
+    });
+});

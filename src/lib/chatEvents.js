@@ -29,6 +29,13 @@ export function applyEvent(msg, ev) {
             return { ...msg, id: ev.messageId, status: 'streaming' };
         case 'data-context':
             return { ...msg, docContext: { notes: ev.items || [] } };
+        case 'data-sources': {
+            // v2.4 Task D: the pages the answer drew on, saved with the reply
+            // as the same note (orchestrator.py), so a reload shows the chips.
+            const { docId, docName, pages, used } = ev;
+            const note = { kind: 'sources', docId, docName, pages: pages || [], used: !!used };
+            return { ...msg, docContext: { notes: [...(msg.docContext?.notes || []), note] } };
+        }
         case 'data-notice':
             return { ...msg, notices: [...(msg.notices || []), ev.message] };
         case 'start-step':

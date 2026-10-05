@@ -142,7 +142,9 @@ class Result:
     tools: list[str] = field(default_factory=list)
     rounds: int = 0
     fact: bool | None = None          # fact cases: every expected term is in the answer
-    cited: bool | None = None         # fact cases: every fact's page is cited
+    cited: bool | None = None         # fact cases: every fact's page is cited, inline or by a source chip
+    cited_inline: bool | None = None  # fact cases: ... by the model itself, as "(page N)"
+    chip_pages: list[int] = field(default_factory=list)   # the source chips the app showed (v2.4 Task D)
     refused: bool | None = None       # absent case
     invented_pages: set[int] = field(default_factory=set)   # absent case: pages cited anyway
     invented_figure: bool = False     # absent case: a number given anyway
@@ -154,12 +156,13 @@ class Result:
 
 
 def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], *, error: str | None = None,
-          prefetched: bool = False, web_offered: bool = True) -> Result:
+          prefetched: bool = False, web_offered: bool = True, chip_pages: list[int] | None = None) -> Result:
     """`tool_calls`: the turn's tool-input-available events ({toolName, round}).
     `prefetched`: the app searched the document before the model ran and
     handed it passages. `web_offered`: web_search is configured here."""
     result = Result(case, answer, [c.get("toolName") for c in tool_calls],
                     max((c.get("round") or 0 for c in tool_calls), default=0), error=error)
+    result.chip_pages = sorted(chip_pages or [])
     if error:
         return result
     if case.kind == "live" and not web_offered:
@@ -182,7 +185,8 @@ def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], *, error: s
         result.passed = result.refused and not result.invented_pages and not result.invented_figure
     else:
         result.fact = all(has_term(answer, term) for term in case.expect)
-        result.cited = set(case.pages) <= cited_pages(answer)
+        result.cited_inline = set(case.pages) <= cited_pages(answer)
+        result.cited = result.cited_inline or set(case.pages) <= cited_pages(answer) | set(result.chip_pages)
         result.passed = result.fact and result.cited
         result.trail = bool(DOC_TOOLS & set(result.tools)) or prefetched
     return result
@@ -214,7 +218,8 @@ def _detail(r: Result) -> str:
             return "gave a figure the document doesn't have"
         return "refused" if r.refused else "answered instead of saying the document doesn't cover it"
     fact = "fact ok" if r.fact else f"fact missing ({', '.join(r.case.expect)})"
-    pages = "pages ok" if r.cited else f"pages missing (want {', '.join(map(str, r.case.pages))})"
+    pages = ("pages ok (inline)" if r.cited_inline else "pages ok (chips)" if r.cited
+             else f"pages missing (want {', '.join(map(str, r.case.pages))})")
     return f"{fact}; {pages}"
 
 
@@ -247,6 +252,10 @@ def format_report(runs: list[list[Result]], *, model: str) -> str:
             n, p = tally.get(r.case.kind, (0, 0))
             tally[r.case.kind] = (n + 1, p + r.passed)
         lines.append("tally: " + ", ".join(f"{k} {p}/{n}" for k, (n, p) in tally.items()))
+    facts = [r for r in asked if r.cited_inline is not None]
+    if facts:
+        lines.append(f"inline citations {sum(r.cited_inline for r in facts)}/{len(facts)} "
+                     "(the model's own \"(page N)\"; chips count for a pass)")
     skipped = len(every) - len(asked)
     lines.append(f"{sum(r.passed for r in asked)}/{len(asked)} passed" + (f" ({skipped} skipped)" if skipped else ""))
     return "\n".join(lines)
@@ -284,15 +293,15 @@ async def eval_user(conn) -> str:
 
 
 async def _turn(text: str, *, session_id: str, user_id: str, model: str, doc_id: str, think: str,
-                router, cfg, budget) -> tuple[str, list[dict[str, Any]], str | None, bool]:
-    """One chat turn through the real path: (answer, tool calls, error, prefetched)."""
+                router, cfg, budget) -> tuple[str, list[dict[str, Any]], str | None, bool, list[int]]:
+    """One chat turn through the real path: (answer, tool calls, error, prefetched, chip pages)."""
     from contextlib import aclosing
 
     from ..chat import store
     from ..chat.orchestrator import TurnRequest, run_turn
     from ..llm.types import CallSettings
 
-    answer, calls, error, prefetched = "", [], None, False
+    answer, calls, error, prefetched, chips = "", [], None, False, []
     claim = await store.begin_turn(session_id=session_id, user_id=user_id, model_id=model,
                                    text=text, attachments=[], new_session_pins=None)
     req = TurnRequest(user_id=user_id, session_id=session_id, model_id=model, text=text,
@@ -303,11 +312,13 @@ async def _turn(text: str, *, session_id: str, user_id: str, model: str, doc_id:
                 answer += ev["delta"]
             elif ev["type"] == "tool-input-available":
                 calls.append(ev)
+            elif ev["type"] == "data-sources":
+                chips = list(ev.get("pages") or [])
             elif ev["type"] == "data-context":
                 prefetched = prefetched or any(i.get("kind") == "prefetch" for i in ev.get("items") or [])
             elif ev["type"] == "error":
                 error = ev.get("code") or "error"
-    return answer, calls, error, prefetched
+    return answer, calls, error, prefetched, chips
 
 
 async def _ask(case: Case, *, web_offered: bool, **turn) -> Result:
@@ -323,17 +334,18 @@ async def _ask(case: Case, *, web_offered: bool, **turn) -> Result:
     session_id = f"eval-{uuid.uuid4()}"
     try:
         for text in case.setup:
-            *_, error, _ = await _turn(text, session_id=session_id, **turn)
+            _, _, error, _, _ = await _turn(text, session_id=session_id, **turn)
             if error:
                 return score(case, "", [], error=error)
         started = time.monotonic()
-        answer, calls, error, prefetched = await _turn(case.question, session_id=session_id, **turn)
+        answer, calls, error, prefetched, chips = await _turn(case.question, session_id=session_id, **turn)
         seconds = time.monotonic() - started
     finally:
         # Even on an error or Ctrl-C: the eval leaves no chats behind.
         async with get_pool().connection() as conn:
             await conn.execute("DELETE FROM chat_sessions WHERE id = %s", (session_id,))
-    result = score(case, answer, calls, error=error, prefetched=prefetched, web_offered=web_offered)
+    result = score(case, answer, calls, error=error, prefetched=prefetched, web_offered=web_offered,
+                   chip_pages=chips)
     result.seconds = seconds
     return result
 

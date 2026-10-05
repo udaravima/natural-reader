@@ -33,6 +33,7 @@ from ..services.doc_search import ReadableDoc, readable_doc
 from . import store
 from .config import ChatConfig
 from .context import TurnInput, build_context
+from .sources import answer_sources
 from .store import TurnClaim, title_from_prompt
 from .tools import ToolContext, TurnTools, available_tools, result_text
 
@@ -243,6 +244,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         tool_ctx.shown.update(built.shown_chunk_ids)
         # Document text the model already has: the web search guard's reference.
         tool_ctx.seen_text.extend(built.shown_texts)
+        tool_ctx.evidence.extend(built.evidence)
         tool_ctx.seen_text.extend(str(p.get("text") or "") for p in pins if isinstance(p, dict))
         # The model's earlier answers in this chat often quote the document.
         # (The user's own messages are theirs to search with.)
@@ -390,6 +392,16 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                 messages.append(Message("tool", result_text(result),
                                         tool_call_id=call.id, name=call.name))
             await _save(claim, state)
+        # v2.4 Task D: the pages the answer drew on, as source chips, even when
+        # the model wrote no "(page N)". Pins aren't evidence here: a pin may
+        # come from another document than the open one these chips open.
+        if doc is not None and tool_ctx.evidence:
+            pages, kind = answer_sources(state.content, tool_ctx.evidence)
+            if pages:
+                note = {"kind": "sources", "docId": doc.doc_id, "docName": doc.name, "pages": pages,
+                        "used": kind == "used"}
+                state.doc_context = {"notes": [*((state.doc_context or {}).get("notes") or []), note]}
+                yield ev("data-sources", docId=doc.doc_id, docName=doc.name, pages=pages, used=kind == "used")
         # Spec §5.2.1: did the model still search after a prefetch hit? Lets a
         # deployer tune CHAT_PREFETCH_MIN_SCORE. DEBUG, and no user text.
         logger.debug("chat turn %s prefetch_hit=%s search_documents_called=%s", claim.turn_id,

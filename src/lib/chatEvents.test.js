@@ -72,3 +72,17 @@ describe('applyEvent over the backend contract fixtures', () => {
         expect(m).toEqual(reduce(events));
     });
 });
+
+describe('data-sources (v2.4 Task D)', () => {
+    const ev = { type: 'data-sources', docId: 'd', docName: 'T.pdf', pages: [3, 8], used: true };
+    const note = { kind: 'sources', docId: 'd', docName: 'T.pdf', pages: [3, 8], used: true };
+
+    it('appends a sources note to the reply\'s document notes', () => {
+        const m = applyEvent({ docContext: { notes: [{ kind: 'prefetch' }] } }, ev);
+        expect(m.docContext.notes).toEqual([{ kind: 'prefetch' }, note]);
+    });
+
+    it('starts the notes when the reply had none', () => {
+        expect(applyEvent({}, ev).docContext.notes).toEqual([note]);
+    });
+});

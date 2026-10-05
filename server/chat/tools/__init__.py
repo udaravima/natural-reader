@@ -27,6 +27,9 @@ class ToolContext:
     # Every piece of document text the model has this turn (prefetch, pins,
     # tool results, cut pages too): web_search refuses to send it out.
     seen_text: list[str] = field(default_factory=list, hash=False, compare=False)
+    # (page, text) of every passage or page of the open document the model has
+    # this turn: which pages the answer drew on (v2.4 Task D, chat/sources.py).
+    evidence: list[tuple[int | None, str]] = field(default_factory=list, hash=False, compare=False)
 
 
 class Tool(Protocol):
@@ -120,13 +123,14 @@ class TurnTools:
         budget = self.ctx.cfg.tool_result_budget_chars
         if self.used >= budget or key in self._too_big:
             return self._note(call, self.BUDGET_USED)
-        shown, seen = set(self.ctx.shown), len(self.ctx.seen_text)
+        shown, seen, evidence = set(self.ctx.shown), len(self.ctx.seen_text), len(self.ctx.evidence)
         run = await run_tool(call, self.ctx, offered)
         size = len(result_text(run.result))
         if self.used + size > budget:
-            # Discarded unseen: nothing it returned counts as shown.
+            # Discarded unseen: nothing it returned counts as shown, or as evidence.
             self.ctx.shown.intersection_update(shown)
             del self.ctx.seen_text[seen:]
+            del self.ctx.evidence[evidence:]
             self._too_big.add(key)
             return self._note(call, self.BUDGET_USED)
         self.used += size

@@ -594,6 +594,7 @@ function MessageBubble({
           </div>
         )}
         {!isUser && <ReplyStatus message={message} isStreamingNow={isStreamingNow} theme={theme} />}
+        {canCite && <SourceChips notes={message.docContext?.notes} theme={theme} onOpenCitation={onOpenCitation} />}
         {toolCalls && toolCalls.length > 0 && (
           <ToolCallsDisclosure
             toolCalls={toolCalls}
@@ -920,6 +921,32 @@ function ToolCallsDisclosure({ toolCalls, theme, darkMode }) {
 }
 
 // Stage-0 notes the server attached to a reply (spec §5.2, §8).
+// v2.4 Task D: the pages a reply drew on (or, when none matched, the pages it
+// searched, labelled as such), each opening that page like a citation.
+function SourceChips({ notes, theme, onOpenCitation }) {
+  const note = Array.isArray(notes) ? notes.findLast((n) => n?.kind === "sources" && n.docId) : null;
+  if (!note || !note.pages?.length) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+      <span className={note.used ? `font-bold ${theme.textSecondary}` : `italic ${theme.textMuted}`}>
+        {note.used ? "Sources" : "Searched (not cited)"}
+      </span>
+      {note.pages.map((page) => (
+        <button
+          key={page}
+          type="button"
+          onClick={() => onOpenCitation(note.docId, page, note.docName)}
+          aria-label={`Source: page ${page} of ${note.docName || "the document"}`}
+          title={`Open page ${page}`}
+          className={`px-2 py-0.5 rounded-full border ${theme.border} ${note.used ? "text-blue-500" : theme.textMuted} hover:underline`}
+        >
+          p. {page}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function ContextNotes({ notes, theme }) {
   if (!Array.isArray(notes) || notes.length === 0) return null;
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;

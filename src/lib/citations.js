@@ -5,7 +5,8 @@
  * the reply, never from the reply text: the prefetch note in
  * `docContext.notes`, or the summary of a successful call to a tool that
  * read a document (it saves `docId`): `search_documents`, or
- * `search_document` in chats saved before v2.3.
+ * `search_document` in chats saved before v2.3; or the reply's source chips
+ * note (v2.4).
  */
 
 /** The document a reply's page citations refer to: `{ docId, docName }` or null. */
@@ -15,6 +16,8 @@ export function citationDoc(message) {
     const call = (message?.toolCalls || []).find(
         (tc) => tc?.result_summary?.ok && tc.result_summary.docId);
     if (call) return { docId: call.result_summary.docId, docName: call.result_summary.docName };
+    const sources = (message?.docContext?.notes || []).find((n) => n?.kind === 'sources' && n.docId);
+    if (sources) return { docId: sources.docId, docName: sources.docName };
     return null;
 }
 

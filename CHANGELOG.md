@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Source chips under answers.** A reply that used the open document shows
+  the pages it came from as chips ("Sources: p. 3 · p. 8"); click one to open
+  that page. They appear even when the model forgets to write "(page N)".
+  When nothing in the reply matches a page, the chips show the pages that
+  were searched, labelled "Searched (not cited)".
+
 - **`CHAT_PREFETCH=on|off`** switches off the search the app runs before
   the model, for a fully agent-first setup (default on: measured as
   accurate as off, and one model call fewer for simple document questions).

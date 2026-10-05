@@ -265,3 +265,24 @@ def test_the_script_can_switch_the_prefetch_for_a_run():
     script = Path(__file__).resolve().parents[2] / "scripts" / "eval_doc_qa.py"
     out = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True).stdout
     assert "--prefetch" in out
+
+
+# ---- v2.4 Task D: chips count as cited; inline is still reported ----
+
+def test_chip_pages_count_as_cited_and_say_so():
+    case = _kind("two-hop")
+    calls = [{"toolName": "search_documents", "round": 1}]
+    by_chips = doc_qa.score(case, "ZEPHYR-9, collected by the Aldermoor Institute.", calls, chip_pages=[3, 8])
+    assert by_chips.passed and by_chips.cited and not by_chips.cited_inline
+    assert "pages ok (chips)" in doc_qa.format_report([[by_chips]], model="m")
+    inline = doc_qa.score(case, "ZEPHYR-9 (page 3), Aldermoor (page 8).", calls, chip_pages=[3, 8])
+    assert inline.cited_inline and "pages ok (inline)" in doc_qa.format_report([[inline]], model="m")
+    assert not doc_qa.score(case, "ZEPHYR-9, Aldermoor.", calls, chip_pages=[3]).passed
+
+
+def test_the_report_gives_the_inline_citation_rate():
+    case = _kind("single-hop")
+    calls = [{"toolName": "search_documents", "round": 1}]
+    a = doc_qa.score(case, "BLUE HERON (page 2).", calls, chip_pages=[2])
+    b = doc_qa.score(case, "BLUE HERON.", calls, chip_pages=[2])
+    assert "inline citations 1/2" in doc_qa.format_report([[a, b]], model="m")

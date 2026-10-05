@@ -108,3 +108,26 @@ describe('ChatView — tool call disclosure', () => {
         expect(screen.getByText(/nothing new/)).toBeTruthy();
     });
 });
+
+describe('ChatView — source chips (v2.4 Task D)', () => {
+    const sources = (used) => ({ docContext: { notes: [
+        { kind: 'sources', docId: DOC, docName: 'Thesis.pdf', pages: [3, 8], used }] } });
+
+    it('shows the pages an answer used as chips that open them', () => {
+        const onOpen = renderReply(reply('It uses ZEPHYR-9, collected by Aldermoor.', sources(true)));
+        expect(screen.getByText('Sources')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Source: page 8 of Thesis.pdf' }));
+        expect(onOpen).toHaveBeenCalledWith(DOC, 8, 'Thesis.pdf');
+    });
+
+    it('labels pages only searched as not cited', () => {
+        renderReply(reply('The document does not seem to cover it.', sources(false)));
+        expect(screen.getByText('Searched (not cited)')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Source: page 3 of Thesis.pdf' })).toBeInTheDocument();
+    });
+
+    it('shows no chips without an open handler', () => {
+        render(<ChatView {...baseProps({ messages: [q, reply('x', sources(true))] })} />);
+        expect(screen.queryByText('Sources')).toBeNull();
+    });
+});

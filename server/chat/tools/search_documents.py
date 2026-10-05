@@ -132,6 +132,7 @@ class _SearchDocuments:
                 passages.append(passage)
         ctx.shown.update(r["id"] for _, r in new)
         ctx.seen_text.extend(p["text"] for p in passages)
+        ctx.evidence.extend((p["page"], p["text"]) for p in passages)
         logger.debug("search_documents docs=%d found=%d kept=%d new=%d floor=%s best_cosine=%s",
                      len(scope), len(found), len(kept), len(new), ctx.cfg.search_min_score,
                      round(max(r["score"] for _, r in found), 4) if found else None)

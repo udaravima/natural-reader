@@ -146,6 +146,7 @@ class _ReadDocumentPages:
             span = f"page {resume}" if resume == wanted_last else f"pages {resume}-{wanted_last}"
             messages.append(f"Not read: {span}. Read from page {resume} next.")
         ctx.seen_text.extend(p["text"] for p in pages)   # cut pages too: the model has that text
+        ctx.evidence.extend((p["page"], p["text"]) for p in pages)
         result: dict[str, Any] = {"documents": documents_listing(scope), "pages": pages}
         if messages:
             result["message"] = " ".join(messages)
