@@ -2,9 +2,10 @@
 first, so a document question can be answered in ONE model call.
 
 Prompt order is fixed for prefix-cache reuse: system rules + pins -> history
--> volatile context (passages, time) -> the new message. Counterintuitive: the
-time line belongs at the END; at the top it would change the prefix every turn
-and defeat the provider's reuse for the whole conversation. The system rules
+-> volatile context (passages) -> the new message. The date is in the rules
+only to the day (v2.4: the minute clock that used to lead the user's message
+was mistaken for what "that" referred to), so the prefix changes once a day,
+not every turn. The system rules
 (server/chat/prompt.py; ruling R9 revised in v2.3) are stable within a turn.
 They name the open document, so opening another document mid-chat changes
 the prefix (one full re-read of the history by the provider), once.
@@ -67,15 +68,20 @@ def pin_text(pins: list[dict[str, Any]]) -> str:
     return "\n\n".join(_pin_block(p) for p in pins)
 
 
-def time_line(now: datetime, tz_name: str | None) -> str:
-    """The current time in the browser's timezone; anything unusable is UTC."""
+def today_line(now: datetime, tz_name: str | None) -> str:
+    """Today's date in the browser's timezone (anything unusable is UTC), for
+    the system rules. v2.4: to the day, not the minute — it used to lead the
+    user's message as "Current time: …", where a follow-up like "say that
+    more simply" was read as being about the clock (eval, 2026-10-05); in the
+    rules it changes once a day, so the prefix cache survives the day."""
     tz, label = timezone.utc, "UTC"
     if tz_name:
         try:
             tz, label = ZoneInfo(tz_name), tz_name
         except Exception:  # noqa: BLE001 — ZoneInfo raises several types for bad names
             tz, label = timezone.utc, "UTC"
-    return f"Current time: {now.astimezone(tz):%Y-%m-%d %H:%M} ({label})"
+    day = now.astimezone(tz)
+    return f"Today is {day:%A}, {day.day} {day:%B %Y} ({label})."
 
 
 @dataclass
@@ -216,10 +222,9 @@ class BuiltContext:
 
 async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     pre = await prefetch(turn.doc, turn.text, cfg)
-    parts = [_passages_block(pre.note["docName"], pre.passages)] if pre.passages else []
-    parts.append(time_line(turn.now, turn.timezone))
-    volatile = "\n\n".join(parts)
-    rules = system_rules(turn.doc, turn.tools, turn.tool_ctx, has_pins=bool(turn.pins))
+    volatile = _passages_block(pre.note["docName"], pre.passages) if pre.passages else ""
+    rules = system_rules(turn.doc, turn.tools, has_pins=bool(turn.pins),
+                         today=today_line(turn.now, turn.timezone))
     system = Message("system", "\n\n".join(c for c in (rules, pin_text(turn.pins)) if c))
     fixed_chars = len(system.content) + len(volatile) + 2 + len(turn.text)
     items, n_messages, n_attachments = _fit_history(turn.history, fixed_chars, len(turn.attachments),

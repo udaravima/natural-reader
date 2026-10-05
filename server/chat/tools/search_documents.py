@@ -33,22 +33,30 @@ NOTHING_NEW = ("Nothing new: every passage found was already shown above. "
 
 _SPEC = ToolSpec(
     name="search_documents",
+    # v2.4: says how THIS search behaves, because models search the way they'd
+    # use a web search engine. Its exact-word half is plainto_tsquery('simple'):
+    # every query word must be in the passage, unstemmed — "What does Table 7.3
+    # report?" doesn't match "Table 7.3 reports…", "Table 7.3" does (checked on
+    # Postgres 16, 2026-10-05). No claim that a search already ran: it's false
+    # whenever prefetch is off or found nothing.
     description=(
-        "Search the open document for passages about something, by meaning (vector search over "
-        "its indexed text) and by exact words: a passage with every word of the query is found "
-        "even when its meaning is far. Returns up to k passages, nearest first, each with its "
-        "page; passages far in meaning are left out unless they have the query's words. Near "
-        "in meaning isn't the same as answering: read a passage before relying on it. The user's question was already searched by "
-        "meaning before you ran: search with different words, or with a label, name or number "
-        "from it or from earlier passages (Table 4.2, MIMIC-IV). A passage already shown this "
-        "turn is listed by page only, under already_shown."),
+        "Search the open document. Not a web search engine: it compares your query with the document's "
+        "own text in two ways. By meaning (vector search): a short phrase in the document's words and "
+        "language finds passages about it, even worded differently. By exact words: a passage containing "
+        "every word of the query, spelled the same, is found even when its meaning is far, so a short "
+        "query with a distinctive name, label or number (ZEPHYR-9, Table 4.2) finds it, while a long "
+        "question rarely does. Search for one thing at a time, without quotes or operators. Returns up "
+        "to k passages, closest first, each with its page. The closest passages may still not answer the "
+        "question: read them before relying on them. Passages you already have this turn come back as "
+        "page numbers only, under already_shown."),
     parameters={
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": (
-                "What to find: a topic, name, term or claim, in words likely to appear near it.")},
+                "One thing to find, in the document's words and language: a short phrase, or a "
+                "distinctive name, label or number. Not a whole question.")},
             "k": {"type": "integer", "minimum": 1, "maximum": 10, "description": (
-                "How many passages (1-10). Default 5; up to 10 for broad questions.")},
+                "How many passages, 1-10. Default 5; more for broad questions.")},
         },
         "required": ["query"],
     },
@@ -62,21 +70,11 @@ def _cap(text: str) -> str:
 class _SearchDocuments:
     name = "search_documents"
     spec = _SPEC
-    reads_documents = True   # brings the grounding and citation rules (server/chat/prompt.py)
+    reads_documents = True   # brings the data rule (server/chat/prompt.py)
+    source = "document"
 
     def available(self, ctx) -> bool:
         return bool(document_scope(ctx))
-
-    def guidance(self, ctx) -> str:
-        # C1 spec §5 "steering is load-bearing": without "answer from them when
-        # they are enough", a model handed passages searches anyway. Worded for
-        # both cases (the rules are stable for the turn; the prefetch varies).
-        return ("find passages in the open document by meaning and by exact words. If the user's "
-                "message has a <document_passages> block, those passages were found by meaning for "
-                "their question: answer from them when they are enough, and search only for what "
-                "they don't cover, with different words or with a label, name or number from the "
-                "question or the passages (those are matched exactly). If it has none, nothing "
-                "matched yet: search before saying the document doesn't cover the question.")
 
     async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
         scope = document_scope(ctx)

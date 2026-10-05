@@ -98,15 +98,13 @@ async def test_search_documents_keeps_a_words_match_below_the_floor_and_says_how
     assert "match" not in passages[5]                                                # meaning only: the default
 
 
-def test_the_description_and_guidance_say_it_matches_exact_words_too():
-    """Review I1: the prefetch searched the question by meaning only, so its
-    labels are worth searching; "already searched: use different words"
-    alone would steer a small model away from the query that finds them."""
+def test_the_description_says_it_matches_exact_words_too():
+    """Review I1: labels are worth searching for by themselves. v2.4: and the
+    model is told why — the exact-word half needs every word of the query."""
     d = sd_tool.TOOL.spec.description
-    assert "exact words" in d and "by meaning" in d
-    assert "already searched by meaning" in d and "label, name or number" in d
-    g = sd_tool.TOOL.guidance(None)
-    assert "by meaning and by exact words" in g and "label, name or number" in g
+    assert "By exact words" in d and "By meaning" in d
+    assert "name, label or number" in d and "every word of the query" in d
+    assert "already searched" not in d                      # false whenever prefetch didn't run
 
 
 async def test_only_the_best_word_matches_skip_the_floor(doc, monkeypatch):

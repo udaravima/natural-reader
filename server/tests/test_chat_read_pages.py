@@ -197,9 +197,8 @@ async def test_a_page_with_no_text_says_so(book, db_conn):
     assert run.result["message"] == "Page 3 has no text (it may be an image)."
 
 
-def test_the_description_and_guidance_name_no_other_tool():
-    text = json.dumps({"d": rp_tool.TOOL.spec.description, "p": rp_tool.TOOL.spec.parameters,
-                       "g": rp_tool.TOOL.guidance(None)})
+def test_the_description_names_no_other_tool():
+    text = json.dumps({"d": rp_tool.TOOL.spec.description, "p": rp_tool.TOOL.spec.parameters})
     for other in chat_tools.REGISTRY:
         if other is not rp_tool.TOOL:
             assert other.name not in text

@@ -43,16 +43,19 @@ def copies_document(query: str, texts: list[str]) -> bool:
 
 _SPEC = ToolSpec(
     name="web_search",
+    # v2.4: the old text invited it for "a factual question requiring ...
+    # verification" — "What is the project's codename?" is one, and a 3B model
+    # sent it to the web every time (ledger 2026-10-05).
     description=(
-        "Searches the live internet for real-time information, recent news, current prices, and "
-        "up-to-date facts. Use this tool whenever a user asks about events after your knowledge "
-        "cutoff, requests current data/statistics, or asks a factual question requiring live "
-        "information or verification. Not for questions about the document the user has open."),
+        "Search the internet for current or outside information: news, prices, weather, recent events, "
+        "facts that can't be in the user's document. Not for the open document's contents: a name or "
+        "term you don't recognise is probably from the document, so search the document first. The "
+        "query is the topic in a few words, never text copied from the document."),
     parameters={
         "type": "object",
         "properties": {
             "query": {"type": "string",
-                      "description": "The optimized search query string used to look up information on the web."},
+                      "description": 'The topic in a few words, e.g. "Tromsø weather today".'},
             "count": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Number of results."},
         },
         "required": ["query"],
@@ -63,20 +66,10 @@ _SPEC = ToolSpec(
 class _WebSearch:
     name = "web_search"
     spec = _SPEC
+    source = "web"
 
     def available(self, ctx) -> bool:
         return bool(web_search_service.SEARXNG_URL)
-
-    def guidance(self, ctx) -> str:
-        line = ("search the internet for current or outside information (news, prices, facts you "
-                "don't know). Search by topic.")
-        if ctx is not None and ctx.doc is not None and ctx.doc.state == "indexed":
-            # The walk: a small model sent "Zephyr station" (a name from the
-            # open document) to the web. No tool is named here: the document
-            # search may not be offered.
-            line += (" Never copy text from the document into a query. For names or terms you "
-                     "don't recognise, search the document first: they are probably from it.")
-        return line
 
     async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
         query = str(args.get("query") or "").strip()

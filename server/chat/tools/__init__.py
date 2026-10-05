@@ -31,14 +31,11 @@ class ToolContext:
 
 class Tool(Protocol):
     name: str
-    spec: ToolSpec
+    spec: ToolSpec   # what it does and how to use it; never contradicts the strategy (server/chat/prompt.py)
+    source: str      # "document" | "web": where its results come from
+    reads_documents: bool   # its results are document text (brings the data rule)
 
     def available(self, ctx: ToolContext) -> bool: ...
-
-    def guidance(self, ctx: ToolContext) -> str:
-        """One line for the system rules (server/chat/prompt.py): when and how
-        to use this tool. Only offered tools are described."""
-        ...
 
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> dict[str, Any]: ...
 

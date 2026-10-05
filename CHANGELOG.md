@@ -6,6 +6,16 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **The assistant follows one strategy for each message.** Small talk and
+  "say that more simply" get a direct reply, without searching. Questions
+  that could be about the open document are searched in the document before
+  the web, and the assistant checks that a passage actually answers before
+  using it. Live questions (news, prices, weather) go to the web. It also
+  knows the document search isn't a web search engine, so it searches with
+  short phrases and exact names, labels and numbers. Follow-ups now refer to
+  your previous answer: the app's clock line no longer leads your message
+  (today's date is in the assistant's instructions instead).
+
 - **Windows startup script.** `startup.cmd` (and `startup.ps1`) do on
   Windows what `startup.sh` does on Linux and macOS: `init`, `up`,
   `up-with-dev-auth` and `down`. They run on the PowerShell built into

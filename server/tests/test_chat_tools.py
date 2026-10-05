@@ -155,9 +155,13 @@ def test_no_tool_description_names_another_tool():
 
 def test_the_search_description_says_what_it_searches_and_how():
     d = sd_tool.TOOL.spec.description
-    for words in ("open document", "by meaning", "page", "already searched", "different words", "read a passage"):
+    for words in ("open document", "By meaning", "vector search", "By exact words", "every word of the query",
+                  "page", "read them before relying on them"):
         assert words in d, words
-    assert len(d) < 700                                       # short enough for a 3B model
+    # v2.4: longer than v2.3's 700 on purpose — it is the one place the model
+    # learns that this isn't a web search engine (the user asked for it, and
+    # the exact-word half needs every query word). Still under ~200 tokens.
+    assert len(d) < 850
 
 
 async def test_a_crashing_tool_becomes_an_error_result(monkeypatch):

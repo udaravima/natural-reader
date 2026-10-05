@@ -17,10 +17,9 @@ _MIN_OVERLAP = 16   # a continuation's overlap is far longer (CHUNK_OVERLAP_CHAR
 _SPEC = ToolSpec(
     name="read_document_pages",
     description=(
-        "Read whole pages of the open document: the exact text, in reading order. Up to 3 "
-        "pages per call, from first_page to last_page. Use it when the user asks about a "
-        "particular page, or when a passage you found is cut short or points to a table, "
-        "figure or section on its page."),
+        "Read whole pages of the open document: the exact text, in reading order, up to 3 pages per "
+        "call (first_page to last_page). Use it when the user names a page, or when a passage you "
+        "found is cut short or points to a table, figure or section on its page."),
     parameters={
         "type": "object",
         "properties": {
@@ -77,15 +76,11 @@ def _page_count_sql() -> str:
 class _ReadDocumentPages:
     name = "read_document_pages"
     spec = _SPEC
-    reads_documents = True   # brings the grounding and citation rules (server/chat/prompt.py)
+    reads_documents = True   # brings the data rule (server/chat/prompt.py)
+    source = "document"
 
     def available(self, ctx) -> bool:
         return bool(document_scope(ctx))
-
-    def guidance(self, ctx) -> str:
-        return ("read whole pages of the open document, exact text, up to 3 pages per call. Use it "
-                "when the user asks what a page says, or when a passage you found is cut short or "
-                "points to a table, figure or section on its page.")
 
     async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
         scope = document_scope(ctx)

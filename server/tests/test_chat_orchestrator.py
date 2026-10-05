@@ -87,10 +87,11 @@ async def test_plain_reply_streams_saves_and_releases(conn):
     sent = router.calls[0]
     assert sent["tools"] == ["web_search"]                  # no open document: no search_documents
     # v2.3: the rules are the one leading system message, and name only the
-    # tool offered; the volatile block (just the time line) leads the user message.
+    # tool offered. v2.4: the date is in them; the user message is what they typed.
     system, only = sent["messages"]
     assert system.role == "system" and "web_search" in system.content and "search_documents" not in system.content
-    assert only.role == "user" and only.content.startswith("Current time: ") and only.content.endswith("\n\nHi")
+    assert "Today is " in system.content
+    assert only.role == "user" and only.content == "Hi"
     assert await _log(conn) == ["sent", "received"]
     assert_fixture("plain", events)
 
@@ -598,7 +599,7 @@ async def test_no_tool_is_named_when_the_turn_offers_none(conn, open_doc, why):
     assert sent["tools"] == []
     system = sent["messages"][0].content
     assert '"Thesis.pdf"' in system
-    for name in ("search_documents", "web_search", "Tools you can call"):
+    for name in ("search_documents", "web_search", "Tool results"):
         assert name not in system
 
 

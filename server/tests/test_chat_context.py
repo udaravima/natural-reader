@@ -5,7 +5,7 @@ import pytest
 
 from server.chat import context as ctx_mod
 from server.chat.config import ChatConfig, load_chat_config
-from server.chat.context import TurnInput, build_context, pin_text, prefetch, time_line
+from server.chat.context import TurnInput, build_context, pin_text, prefetch, today_line
 from server.chat.tools import search_documents
 from server.chat.store import StoredMessage
 from server.llm.types import Attachment, Message
@@ -64,13 +64,14 @@ def test_config_defaults_and_bad_values(caplog):
     assert "CHAT_PREFETCH_MIN_SCORE" in caplog.text and "CHAT_PREFETCH_K" in caplog.text
 
 
-def test_time_line_uses_the_browser_timezone():
-    assert time_line(NOW, "Asia/Colombo") == "Current time: 2026-09-27 00:54 (Asia/Colombo)"
+def test_today_line_uses_the_browser_timezone():
+    # 19:24 UTC is already the next day in Colombo (+05:30).
+    assert today_line(NOW, "Asia/Colombo") == "Today is Sunday, 27 September 2026 (Asia/Colombo)."
 
 
 @pytest.mark.parametrize("bad", ["Mars/Olympus", "", None, "../etc", "America"])
-def test_time_line_falls_back_to_utc_on_bad_timezone(bad):
-    assert time_line(NOW, bad) == "Current time: 2026-09-26 19:24 (UTC)"
+def test_today_line_falls_back_to_utc_on_bad_timezone(bad):
+    assert today_line(NOW, bad) == "Today is Saturday, 26 September 2026 (UTC)."
 
 
 def test_a_pin_is_a_fenced_excerpt():
@@ -108,14 +109,15 @@ async def test_message_order_pins_history_then_volatile_and_question_in_one_user
     built = await build_context(_turn(doc=DOC, pins=[{"text": "pinned"}], history=history), ChatConfig())
     assert built.messages[0].role == "system" and "pinned" in built.messages[0].content
     assert built.messages[0].content.startswith("You are the assistant in Natural Reader")
+    assert "Today is Sunday, 27 September 2026 (Asia/Colombo)." in built.messages[0].content
     assert [m.content for m in built.messages[1:3]] == ["earlier q", "earlier a"]
     # Final review I3: the volatile block is no longer a mid-list system
     # message (strict templates raise on it); it leads the new user message.
     last = built.messages[3]
     assert len(built.messages) == 4 and last.role == "user"
     volatile, question = last.content.rsplit("\n\n", 1)
-    assert volatile.startswith('<document_passages source="Thesis.pdf">\n[1] (page 3)\npassage text\n</document_passages>')
-    assert volatile.endswith("Current time: 2026-09-27 00:54 (Asia/Colombo)")
+    # v2.4: no clock line in the user's message (it's the date, in the rules).
+    assert volatile == '<document_passages source="Thesis.pdf">\n[1] (page 3)\npassage text\n</document_passages>'
     assert question == "What does chapter 2 say?"
     assert built.prefetch_hit and built.notes[0]["kind"] == "prefetch"
 
@@ -130,8 +132,9 @@ async def test_a_prefetch_miss_still_tells_the_model_which_document_is_open(sear
     assert 'The user has the document "Thesis.pdf" open in the reader.' in system
     assert "search_documents" in system
     assert not built.prefetch_hit
-    assert built.messages[-1].content == ("Current time: 2026-09-27 00:54 (Asia/Colombo)\n\n"
-                                          "What does chapter 2 say?")
+    # v2.4: the user's message is what they typed: a follow-up like "say that
+    # more simply" must not find an app line to refer to.
+    assert built.messages[-1].content == "What does chapter 2 say?"
 
     no_doc = await build_context(_turn(doc=None), ChatConfig())
     assert [m.role for m in no_doc.messages] == ["system", "user"]
@@ -140,16 +143,16 @@ async def test_a_prefetch_miss_still_tells_the_model_which_document_is_open(sear
     assert "search_documents" not in "".join(m.content for m in unindexed.messages)
 
 
-def _assert_strict_template_shape(messages, time_text="Current time: 2026-09-27 00:54 (Asia/Colombo)"):
+def _assert_strict_template_shape(messages, last_text="What does chapter 2 say?"):
     """What Gemma/Mistral-style chat templates accept: at most one system
     message, only first; then user/assistant strictly alternating, starting
-    and ending on user; the last user message carries the volatile block."""
+    and ending on user; the last user message ends with what the user typed."""
     systems = [i for i, m in enumerate(messages) if m.role == "system"]
     assert systems in ([], [0]), f"system messages at {systems}"
     rest = messages[1:] if systems else messages
     roles = [m.role for m in rest]
     assert roles == ["user", "assistant"] * (len(roles) // 2) + ["user"], roles
-    assert time_text in rest[-1].content
+    assert rest[-1].content.endswith(last_text)
 
 
 async def test_the_prompt_fits_strict_chat_templates(search, monkeypatch):
