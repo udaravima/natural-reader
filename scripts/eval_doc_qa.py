@@ -21,8 +21,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from server.evals.doc_qa import EvalSetupError, format_report, run_eval  # noqa: E402
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -34,6 +32,9 @@ def main() -> int:
         load_dotenv()
     except ImportError:
         pass
+    # Only now: server modules read settings (chunk size, embedding input
+    # limit) when they're imported, so .env has to be loaded first.
+    from server.evals.doc_qa import EvalSetupError, format_report, run_eval
     try:
         results = asyncio.run(run_eval(args.model, show_answers=args.show_answers))
     except EvalSetupError as e:

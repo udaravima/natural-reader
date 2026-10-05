@@ -169,3 +169,18 @@ async def test_an_eval_identity_bound_to_an_admin_is_refused(db_conn):
                           (doc_qa.EVAL_ISS, doc_qa.EVAL_SUB, SEED_ADMIN_ID))
     with pytest.raises(doc_qa.EvalSetupError):
         await doc_qa.eval_user(db_conn)
+
+
+def test_the_eval_script_loads_dotenv_before_any_server_module():
+    """Final review I1: server modules read the chunk and embedding settings
+    when they're imported, so importing one before load_dotenv() ignored .env."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    probe = ("import importlib.util, sys\n"
+             f"spec = importlib.util.spec_from_file_location('ev', {str(root / 'scripts' / 'eval_doc_qa.py')!r})\n"
+             "spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+             "print(sorted(m for m in sys.modules if m == 'server' or m.startswith('server.')))\n")
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd=root, check=True)
+    assert out.stdout.strip() == "[]"
