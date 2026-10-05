@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **"Use this document" switch.** A chip above the chat box shows the open
+  document; click it to chat without the document in this chat (no search,
+  no document tools). Kept per chat and per user; pins still work.
+
 - **Source chips under answers.** A reply that used the open document shows
   the pages it came from as chips ("Sources: p. 3 · p. 8"); click one to open
   that page. They appear even when the model forgets to write "(page N)".

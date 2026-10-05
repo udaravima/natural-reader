@@ -185,6 +185,8 @@ psql postgresql://natural_reader:natural_reader@localhost:5433/natural_reader \
 
 ## 6. Asking questions
 
+**Use this document (v2.4).** A chip above the composer, shown while a document is open, switches the document off for one chat. The turn then sends `context.doc_id: null`: no Stage 0 search, no document tools, and no document line in the rules. It is kept per signed-in user and per chat in the browser (`neural-pdf-docUse@<user>`, only "off" is stored). A new chat holds the choice until its first message gives it a session id. Pins and earlier replies' citations and source chips are unaffected.
+
 There are a few ways to give the model document context. The first two create
 **pins** — persistent excerpts that stay attached to the conversation (Section 6.3);
 the last is fully autonomous retrieval.

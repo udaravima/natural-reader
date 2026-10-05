@@ -180,6 +180,21 @@ still being written somewhere else (another tab or device), you'll see
 chat at a time — sending again while one is still streaming is blocked until
 it finishes or you stop it.
 
+**Use this document:** with a document open, a chip above the chat box
+shows its name and **Use this document**. Click it to switch the document
+off for this chat: the assistant then doesn't search or read it (the chip
+says **Not used**, with the name struck through), so a general question
+isn't answered from the document, and messages are lighter. The choice is
+kept per chat and per signed-in user; a new chat starts with it on. Pins
+you added still go with each message, and citations in earlier replies
+still open the document.
+
+**Sources:** under a reply that used your document, chips such as
+**Sources: p. 3 · p. 8** open the pages the answer came from, even when the
+reply doesn't cite them itself. When nothing in the reply matches a page
+(for example "the document doesn't cover this"), the chips read
+**Searched (not cited)** and list the pages that were looked at.
+
 **Citations:** when a reply used your document, the page numbers it cites
 ("page 4", "(page 4)") are links. Clicking one opens that document in the
 reader at that page, opening it from the server first if it isn't the one

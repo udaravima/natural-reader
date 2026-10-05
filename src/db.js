@@ -49,6 +49,8 @@ export const readingProgressKey = (ownerId, fileName) => `neural-pdf-progress@${
 // shared setting `neural-pdf-chatDraft`.
 const LEGACY_DRAFT_KEY = 'neural-pdf-chatDraft';
 export const chatDraftKey = (ownerId) => `neural-pdf-chatDraft@${ownerId}`;
+// v2.4: which chats a user switched "Use this document" off in: { [sessionId]: false }.
+export const docUseKey = (ownerId) => `neural-pdf-docUse@${ownerId}`;
 
 /** The signed-in user the per-browser stores are scoped to, or null. */
 export const getLibraryOwner = () => currentOwnerId;

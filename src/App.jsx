@@ -299,6 +299,7 @@ export default function App() {
     isLocalhost, selectedVoice, playbackSpeed, requestTimeout,
     apiHost, apiPort,
     currentDocId,
+    userId: auth.user?.id ?? null,
     synthesizeText, playChatUrl, playChatSpeech, stopChatPlayback,
     showToast,
   });
@@ -318,6 +319,7 @@ export default function App() {
     stopSpeaking,
     sessions: chatSessions,
     activeSessionId: chatActiveSessionId,
+    docUse: chatDocUse,
     events: chatEvents,
     newSession: chatNewSession,
     switchToSession: chatSwitchToSession,
@@ -1178,6 +1180,8 @@ export default function App() {
             pendingAttachments={chatPendingAttachments}
             setPendingAttachments={setChatPendingAttachments}
             onOpenCitation={handleOpenCitation}
+            openDocName={currentDocId ? pdfFileName : null}
+            docUse={chatDocUse}
           />
         ) : inAdmin ? (
           // Mount gate: the console renders nothing when the current user

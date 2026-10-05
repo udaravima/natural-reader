@@ -304,3 +304,26 @@ describe('useChatEngine — models and reload', () => {
         expect(result.current.messages[1]).toMatchObject({ status: 'complete', content: 'Hello there. And more.' });
     });
 });
+
+describe('useChatEngine — "Use this document" (v2.4 Task E)', () => {
+    beforeEach(() => localStorage.clear());
+
+    it('a chat with the document switched off sends no document, and keeps it off', async () => {
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+        act(() => result.current.docUse.setEnabled(false));
+        await act(async () => { await result.current.sendMessage('Hi'); });
+        expect(postTurn.mock.calls[0][0].body.context.doc_id).toBeNull();
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        await act(async () => { await result.current.sendMessage('Again'); });
+        expect(postTurn.mock.calls[1][0].body.context.doc_id).toBeNull();
+        expect(result.current.docUse.enabled).toBe(false);
+    });
+
+    it('sends the open document by default', async () => {
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+        await act(async () => { await result.current.sendMessage('Hi'); });
+        expect(postTurn.mock.calls[0][0].body.context.doc_id).toBe('a'.repeat(64));
+    });
+});

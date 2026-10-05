@@ -9,6 +9,7 @@ import { describeRefusal } from '../lib/apiErrors';
 import { addPin as addPinReducer, removePin as removePinReducer, MAX_PINS } from './pins';
 import { INFERENCE_DEFAULTS, toWireSettings, truncationMessage } from './inference';
 import { supportedKnobs } from '../lib/modelIds';
+import { useDocUse } from './useDocUse';
 
 const SENTENCE_TERMINATOR = /(?<=[.!?])\s+/;
 const MIN_TTS_LENGTH = 5;
@@ -43,6 +44,7 @@ export function useChatEngine({
     apiHost,            // FastAPI host — chat turns, sessions and models
     apiPort,
     currentDocId,       // sha256 of the open doc (null if none) — the server decides what to do with it
+    userId = null,      // the signed-in user: "Use this document" is kept per user and per chat (v2.4)
     synthesizeText,     // from useTtsEngine — returns Promise<blobUrl|null>
     playChatUrl,        // from useTtsEngine — plays a pre-fetched blob URL
     playChatSpeech,     // from useTtsEngine — Web Speech API fallback
@@ -97,6 +99,7 @@ export function useChatEngine({
     // because we mutate it on every event without re-rendering.
     const [sessions, setSessions] = useState([]); // metadata only (no messages/events)
     const [activeSessionId, setActiveSessionId] = useState(null);
+    const docUse = useDocUse(userId, activeSessionId);
     const activeSessionIdRef = useRef(null);
     const [events, setEvents] = useState([]); // events for the active session
     const eventsRef = useRef([]);              // mirror used inside async callbacks
@@ -418,6 +421,8 @@ export function useChatEngine({
         // Which server session gets this turn?
         let sessionId = activeSessionIdRef.current;
         let isNew = false;
+        // Read once, before the session id can change (a new or forked chat).
+        const useDoc = docUse.enabledFor(sessionId);
         if (sessionId && sessionStore.isLocalId(sessionId)) {
             // A pre-Postgres chat kept only in this browser: copy it to the
             // server (each continue of the browser copy makes a new server
@@ -442,11 +447,13 @@ export function useChatEngine({
                 return giveBack;
             }
             sessionId = forkedId;
+            docUse.adopt(forkedId, useDoc);
             setActive(forkedId);
         }
         if (!sessionId) {
             sessionId = newSessionId();
             isNew = true;
+            docUse.adopt(sessionId, useDoc);
             setActive(sessionId);
             eventsRef.current = [];
             setEvents([]);
@@ -476,7 +483,8 @@ export function useChatEngine({
             model: selectedModel,
             settings: toWireSettings(inferenceForThisMsg,
                 supportedKnobs(availableModelsRef.current.find((m) => m.id === selectedModel))),
-            context: { doc_id: currentDocId || null, timezone: browserTimezone() },
+            // "Use this document" off: no document, so no prefetch, no document tools (v2.4 Task E).
+            context: { doc_id: useDoc ? (currentDocId || null) : null, timezone: browserTimezone() },
             // Always sent: the server uses it only when this turn creates the chat
             // (a retry after a first send that failed on the network included).
             session: { pins: pinsRef.current },
@@ -585,7 +593,7 @@ export function useChatEngine({
             }
         }
         return refused ? giveBack : { sent: true };
-    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, inference, apiHost, apiPort, currentDocId,
+    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, inference, apiHost, apiPort, currentDocId, docUse,
         sessionStore, showToast, flushBufferedSentences, enqueueTts, refreshSessions, refreshEvents, refreshModels]);
 
     // A reloaded chat whose reply the server is still writing: re-read it until
@@ -631,6 +639,8 @@ export function useChatEngine({
         switchToSession,
         deleteSession,
         renameSession,
+        // "Use this document" for the active chat (v2.4 Task E)
+        docUse,
         // Persistent pinned-context
         pins,
         addPin,
