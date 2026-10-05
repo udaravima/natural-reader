@@ -43,7 +43,7 @@ async def _build(doc, tools, pins=()):
     return await build_context(TurnInput(
         user_id="u", text="What is the main result?", attachments=(), doc=doc, timezone="UTC",
         pins=list(pins), history=[], window=None, now=NOW, tools=tuple(tools),
-        tool_ctx=ToolContext("u", doc)), ChatConfig())
+        tool_ctx=ToolContext("u", doc)), ChatConfig(prefetch="on"))   # both delivery paths; auto: test_chat_context
 
 
 def _search_tools_for(doc):

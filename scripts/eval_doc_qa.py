@@ -31,7 +31,7 @@ def main() -> int:
                         help="the model's thinking (default off, as the chat sends it unless a user turns it on)")
     parser.add_argument("--repeat", type=int, default=1, choices=range(1, 11), metavar="N",
                         help="ask every case N times (1-10) and print a per-case tally")
-    parser.add_argument("--prefetch", choices=("default", "on", "off"), default="default",
+    parser.add_argument("--prefetch", choices=("default", "auto", "on", "off"), default="default",
                         help="search the document before the model runs (CHAT_PREFETCH) for this run")
     args = parser.parse_args()
     try:

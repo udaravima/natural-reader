@@ -198,12 +198,13 @@ the last is fully autonomous retrieval.
    server-sent events — nothing more happens client-side until an event arrives.
 2. The server checks your daily token budget and claims the chat (a second
    message sent while this one is still streaming gets `409`).
-3. **Stage 0** runs before the model does (unless `CHAT_PREFETCH=off` or the
-   chat's "Use this document" is off): if a document is open and indexed, the
-   server searches it for passages relevant to your question and, if any score
-   well enough, hands them to the model as the result of a first
-   `search_documents` call it made for it (a model without tools gets them in
-   its prompt). Today's date is in the system rules.
+3. **Stage 0** runs before the model does, by default only for a model that
+   can't search the document itself (`CHAT_PREFETCH=auto`), and never when the
+   chat's "Use this document" is off: the server searches the open, indexed
+   document for passages relevant to your question and, if any score well
+   enough, puts them in the prompt (with `CHAT_PREFETCH=on` and a model with
+   tools, as the result of a first `search_documents` call it made for it).
+   Today's date is in the system rules.
 4. The model streams its reply. If it calls a tool (`search_documents`,
    `read_document_pages`, `web_search`), the server runs it, streams the
    result, and calls the model again — up to 3 tool rounds by default, then a
@@ -268,7 +269,7 @@ that work instead of reprocessing it every time.
 
 ### 6.4. Autonomous tool calling
 
-**No manual setup.** Once a doc is indexed and the selected model reports tool support, the model gets a `search_documents` tool and decides on its own whether to invoke it. (The only switch is "Use this document", to leave the document out of a chat.) Before that, **Stage 0** (C1) already tried a cheap shortcut: the server embeds your question and searches the open document *before* the model runs, and if it finds good enough passages it hands them to the model as its first search's result — often answering in one model call with no tool round at all. The tool stays available either way, so the model can still search for something the prefetch missed.
+**No manual setup.** Once a doc is indexed and the selected model reports tool support, the model gets a `search_documents` tool and decides on its own whether to invoke it. (The only switch is "Use this document", to leave the document out of a chat.) With `CHAT_PREFETCH=on`, **Stage 0** (C1) first tries a cheap shortcut: the server embeds your question and searches the open document *before* the model runs, and if it finds good enough passages it hands them to the model as its first search's result. By default (`auto`) a model with tools skips that and searches for itself (see "When Stage 0 runs" below for why).
 
 What it looks like:
 
@@ -280,7 +281,7 @@ What it looks like:
 
 **How the passages from Stage 0 reach the model (v2.4).** When the model is offered `search_documents`, Stage 0's passages arrive as that tool's result: an assistant message calling `search_documents` with the user's message as the query (id `prefetch1`), then the tool message with exactly what the tool returns. They are no longer pasted into the user's message, where an instruction planted in a PDF would carry the user's voice. The rules tell the model that the app may have run this first search, to check it, and to search again if it doesn't answer. A model offered no tools still gets the fenced `<document_passages>` block in the user's message, because strict chat templates reject tool messages when no tools are declared.
 
-- **Measured** (eval §6.5, `gemma4:31b-cloud`, 3 runs, 2026-10-05): as a fenced block in the user's message, the passages anchored the model: it answered from them, and missed the two-hop and exact-label facts every time (21/27). As its own search result it checked them and searched again where they fell short: 27/27, with no extra model call for simple questions.
+- **Measured** (eval §6.5, `gemma4:31b-cloud`, 3 runs, 2026-10-05): as a fenced block in the user's message, the passages anchored the model: it answered from them, and missed the two-hop and exact-label facts every time (21/27). As its own search result it checked them and searched again where they fell short: 27/27, with no extra model call for simple questions. The smaller `gemma4:e4b` still anchored on them (5/9; see "When Stage 0 runs"), which is why Stage 0 is off for models with tools by default.
 - **Providers checked live:** Ollama (cloud), and through OpenRouter, Gemma 4 and Mistral Small 3.2 (Mistral's API is reported to accept only 9-character alphanumeric tool-call ids; `prefetch1` is one).
 
 **Sources under the answer (v2.4).** Under a reply that used the open document, a row of page chips opens each page in the reader, like a "(page N)" link:
@@ -289,7 +290,14 @@ What it looks like:
 - The chips come from the server (`data-sources` event, saved with the reply as a `sources` note), so they show after a reload too. Pins aren't counted: a pin may come from a different document than the one the chips open.
 - **Why:** a correct answer without "(page N)" was the largest failure left in the eval (2026-10-05). The eval now counts a fact case's pages as cited inline or by a chip, and reports the model's own inline citation rate separately.
 
-**Switching Stage 0 off (v2.4).** `CHAT_PREFETCH=off` turns the search before the model off, for a fully agent-first setup: the model always decides whether to search. It is on by default because, once the passages arrive as the model's own search result, on and off were equally accurate (27/27 each on the eval), and on answered single-fact and named-page questions with one model call fewer. What off saves: on a long document, small talk like "thanks!" can still score above `CHAT_PREFETCH_MIN_SCORE` (0.62 measured), and with prefetch on the model then reads up to 4 passages it doesn't need; on a CPU that's seconds per message. A model without tools always needs it on: the passages are its only way to see the document. `scripts/eval_doc_qa.py --prefetch on|off` overrides it for one run. This is a deployment setting (environment only, no screen).
+**When Stage 0 runs (v2.4): `CHAT_PREFETCH=auto|on|off`, default `auto`.** `auto` runs it only for a model offered no document tools, whose only way to see the document it is; a model with tools searches for itself (agent-first). `on` always runs it, `off` never. Measured 2026-10-05 on the eval (§6.5):
+
+| Model | on | off |
+|---|---|---|
+| `gemma4:e4b`, local CPU | 5/9 (two-hop and table answered from the handed passages, facts missing; an invented figure on the absent case) | 9/9, and no slower (single-hop 25 s against 30 s) |
+| `gemma4:31b-cloud`, 3 runs | 27/27, one model call fewer on simple questions | 27/27 |
+
+Even delivered as its own search result (above), the smaller model took the passages as enough. A large model checks them; a deployment serving only large models may prefer `on` for the saved call. `on` also costs small talk: on a long document "thanks!" can score above `CHAT_PREFETCH_MIN_SCORE` (0.62 measured), and the model then reads up to 4 passages it doesn't need. `scripts/eval_doc_qa.py --prefetch auto|on|off` overrides it for one run. This is a deployment setting (environment only, no screen).
 
 **How the model is told to work (v2.4).** One leading system message gives the model a strategy, a numbered procedure:
 1. **Decide what the message needs.**

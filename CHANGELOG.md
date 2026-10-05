@@ -22,16 +22,16 @@ All notable changes to this project will be documented in this file.
   When nothing in the reply matches a page, the chips show the pages that
   were searched, labelled "Searched (not cited)".
 
-- **`CHAT_PREFETCH=on|off`** switches off the search the app runs before
-  the model, for a fully agent-first setup (default on: measured as
-  accurate as off, and one model call fewer for simple document questions).
-  The eval takes `--prefetch on|off` for one run.
+- **`CHAT_PREFETCH=auto|on|off`** controls the search the app runs before
+  the model. The default, `auto`, runs it only for a model that can't search
+  the document itself; a model with tools searches for itself. Measured on
+  `gemma4:e4b`: 9/9 without the pre-search, 5/9 with it (handed passages,
+  it answered from them and missed facts they didn't hold). The eval takes
+  `--prefetch auto|on|off` for one run.
 
 - **Passages found before the model runs arrive as a search result, not as
-  part of your message.** Text planted in a document can no longer pose as
-  something you wrote. Models also check these passages and search again
-  when they fall short, instead of trusting them: measured on the eval,
-  two-hop and table questions went from failing every run to passing.
+  part of your message** (with `CHAT_PREFETCH=on` and a model with tools).
+  Text planted in a document can no longer pose as something you wrote.
 
 - **An assistant profile for the deployment.** Admins give the assistant a
   name, personality, tone and house rules in the admin console's new

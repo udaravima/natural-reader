@@ -210,7 +210,7 @@ async def test_every_kind_of_document_text_is_guarded(conn, open_doc, monkeypatc
         _call("c2", "quarterly revenue of the northern division fell by twelve percent", "web_search"),
         _call("c3", "hospital wing budget", "web_search"),
         reply("Done.")])
-    await _run(conn, router, text="q")
+    await _run(conn, router, cfg=ChatConfig(prefetch="on"), text="q")   # the prefetch block is one kind tested
     results = _tool_results(router.calls[3])
     assert "error" in results[0] and "error" in results[1] and "error" not in results[2]
     assert sent == ["hospital wing budget"]

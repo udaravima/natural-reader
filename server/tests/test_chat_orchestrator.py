@@ -785,7 +785,8 @@ async def test_prefetched_passages_are_not_repeated_by_a_search_and_the_floor_co
     router = FakeRouter(steps=[
         [ToolCallReady(ToolCall("c1", "search_documents", {"query": "more"})), Usage(5, 5), Finish("tool_calls")],
         reply("Done (page 5).")])
-    await _run(conn, router, cfg=ChatConfig(search_min_score=0.55), text="q")
+    # prefetch="on": this tests prefetched passages next to a search (the default, auto, skips it with tools).
+    await _run(conn, router, cfg=ChatConfig(search_min_score=0.55, prefetch="on"), text="q")
     result = json.loads(router.calls[1]["messages"][-1].content)
     assert result["already_shown"] == [{"ref": 1, "pages": [3]}]
     assert result["passages"] == [{"ref": 1, "page": 5, "text": "new"}]

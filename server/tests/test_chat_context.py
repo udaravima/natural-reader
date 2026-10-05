@@ -282,7 +282,7 @@ DOC_TOOLS = (search_documents.TOOL, read_document_pages.TOOL)
 
 async def test_prefetch_with_tools_is_a_tool_exchange_after_the_user_message(search):
     search["rows"] = [{"id": 1, "page": 3, "score": 0.8, "text": EVIL}]
-    built = await build_context(_turn(doc=DOC, tools=DOC_TOOLS), ChatConfig())
+    built = await build_context(_turn(doc=DOC, tools=DOC_TOOLS), ChatConfig(prefetch="on"))
     assert [m.role for m in built.messages] == ["system", "user", "assistant", "tool"]
     system, user, call, tool = built.messages
     assert user.content == "What does chapter 2 say?"                       # only what the user typed
@@ -304,20 +304,20 @@ async def test_prefetch_without_tools_keeps_the_fenced_block(search):
 
 async def test_a_prefetch_miss_with_tools_adds_no_exchange(search):
     search["rows"] = [{"id": 1, "page": 3, "score": 0.2, "text": "weak"}]
-    built = await build_context(_turn(doc=DOC, tools=DOC_TOOLS), ChatConfig())
+    built = await build_context(_turn(doc=DOC, tools=DOC_TOOLS), ChatConfig(prefetch="on"))
     assert [m.role for m in built.messages] == ["system", "user"]
 
 
 async def test_the_prefix_is_unchanged_by_a_prefetch_hit(search):
     search["rows"] = [{"id": 1, "page": 3, "score": 0.8, "text": "x"}]
-    hit = await build_context(_turn(doc=DOC, tools=DOC_TOOLS), ChatConfig())
+    hit = await build_context(_turn(doc=DOC, tools=DOC_TOOLS), ChatConfig(prefetch="on"))
     search["rows"] = []
-    miss = await build_context(_turn(doc=DOC, tools=DOC_TOOLS), ChatConfig())
+    miss = await build_context(_turn(doc=DOC, tools=DOC_TOOLS), ChatConfig(prefetch="on"))
     assert hit.messages[:2] == miss.messages[:2]               # the rules and the user's message
 
 
 async def test_the_rules_say_how_a_prefetched_search_appears_when_prefetch_runs(search):
-    on = (await build_context(_turn(doc=DOC, tools=DOC_TOOLS), ChatConfig())).messages[0].content
+    on = (await build_context(_turn(doc=DOC, tools=DOC_TOOLS), ChatConfig(prefetch="on"))).messages[0].content
     off = (await build_context(_turn(doc=DOC, tools=DOC_TOOLS), ChatConfig(prefetch_min_score=1.0))).messages[0].content
     assert "appears as a search_documents call just before your turn" in on
     assert "just before your turn" not in off
@@ -332,18 +332,29 @@ def test_the_tool_result_shape_is_shared_with_execute():
 
 # ---- v2.4 Task C: the prefetch switch ----
 
-def test_chat_prefetch_is_on_by_default_and_can_be_switched_off(caplog):
-    assert load_chat_config({}).prefetch is True
-    assert load_chat_config({"CHAT_PREFETCH": "off"}).prefetch is False
-    assert load_chat_config({"CHAT_PREFETCH": " ON "}).prefetch is True
+def test_chat_prefetch_is_auto_by_default_and_can_be_forced(caplog):
+    """Final review fix: gemma4:e4b (the user's model, local CPU) scored 5/9
+    with prefetch on and 9/9 off, and wasn't slower off (2026-10-05)."""
+    assert load_chat_config({}).prefetch == "auto"
+    assert load_chat_config({"CHAT_PREFETCH": "off"}).prefetch == "off"
+    assert load_chat_config({"CHAT_PREFETCH": " ON "}).prefetch == "on"
     with caplog.at_level(logging.WARNING):
-        assert load_chat_config({"CHAT_PREFETCH": "sometimes"}).prefetch is True
+        assert load_chat_config({"CHAT_PREFETCH": "sometimes"}).prefetch == "auto"
     assert "CHAT_PREFETCH" in caplog.text
+
+
+async def test_auto_prefetches_only_for_a_model_without_document_tools(search):
+    search["rows"] = [{"id": 1, "page": 3, "score": 0.9, "text": "x"}]
+    with_tools = await build_context(_turn(doc=DOC, tools=DOC_TOOLS), ChatConfig())
+    assert [m.role for m in with_tools.messages] == ["system", "user"] and search["embeds"] == 0
+    assert "just before your turn" not in with_tools.messages[0].content
+    without = await build_context(_turn(doc=DOC), ChatConfig())
+    assert "<document_passages" in without.messages[-1].content and search["embeds"] == 1
 
 
 async def test_prefetch_off_costs_no_embedding_and_no_rules_sentence(search):
     search["rows"] = [{"id": 1, "page": 3, "score": 0.9, "text": "x"}]
-    off = ChatConfig(prefetch=False)
+    off = ChatConfig(prefetch="off")
     assert (await prefetch(DOC, "q", off)).passages == [] and search["embeds"] == 0
     built = await build_context(_turn(doc=DOC, tools=DOC_TOOLS), off)
     assert [m.role for m in built.messages] == ["system", "user"]

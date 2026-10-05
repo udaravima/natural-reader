@@ -135,11 +135,13 @@ async def test_same_bytes_from_second_user_is_200_dedupe_without_rework(db_conn,
     assert r.json() == {"doc_id": doc_id, "dedup": True, "state": "indexed"}
     assert embed.calls == calls  # nothing re-embedded
     assert await _chunks(db_conn, doc_id) == chunks
-    entries = await _entries(db_conn, doc_id)
-    assert [(u, v) for u, v, _t, _n in entries] == [
-        (alice.user_id, "upload"), (bob.user_id, "upload")]
+    # Order-free: both rows are written in this test's one transaction, where
+    # now() is the same instant, so ORDER BY added_at can return either first.
+    entries = {u: (v, n) for u, v, _t, n in await _entries(db_conn, doc_id)}
+    assert entries.keys() == {alice.user_id, bob.user_id}
+    assert entries[alice.user_id][0] == entries[bob.user_id][0] == "upload"
     # Bob's entry carries his own name for the file.
-    assert entries[1][3] == "mine.txt"
+    assert entries[bob.user_id][1] == "mine.txt"
 
 
 async def test_server_hash_wins_over_client_hint(db_conn, as_user, caplog):
