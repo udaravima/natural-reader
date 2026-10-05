@@ -93,7 +93,7 @@ async def test_search_documents_keeps_a_words_match_below_the_floor_and_says_how
     run = await run_tool(ToolCall("c1", "search_documents", {"query": "Table 4.2", "k": 4}), ctx,
                          available_tools(ctx))
     passages = {p["page"]: p for p in run.result["passages"]}
-    assert passages[3]["match"] == "words" and passages[3]["relevance"] == "weak"   # cosine 0.2 < 0.45
+    assert passages[3]["match"] == "words"                                            # cosine 0.2 < 0.45
     assert passages[8]["match"] == "both"
     assert "match" not in passages[5]                                                # meaning only: the default
 

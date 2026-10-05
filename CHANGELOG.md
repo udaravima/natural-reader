@@ -65,8 +65,10 @@ All notable changes to this project will be documented in this file.
 
 - **Document search returns evidence, not noise.** The document search
   tool is now called `search_documents`. It leaves out weak matches
-  (`CHAT_SEARCH_MIN_SCORE`, default 0.45) and labels the passages it keeps
-  strong, moderate or weak instead of showing raw scores. It doesn't repeat
+  (`CHAT_SEARCH_MIN_SCORE`, default 0.45) and returns the rest nearest
+  first, with no score or relevance label: measured, closeness can't tell a
+  passage that answers from one that doesn't, so the model reads them to
+  decide (docs/CHAT_WITH_PDF.md §6.5). It doesn't repeat
   a passage the model already has in the same answer, so a second search
   finds something new. Citations in chats saved before this change still
   open their document.

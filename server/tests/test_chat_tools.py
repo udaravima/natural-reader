@@ -70,16 +70,17 @@ async def _ctx(indexed, **kw):
     return ToolContext(alice.user_id, await doc_search.readable_doc(conn, DOC, alice.user_id), **kw)
 
 
-async def test_passages_name_their_document_page_and_relevance_not_a_raw_score(indexed):
+async def test_passages_name_their_document_and_page_and_no_score_or_label(indexed):
     ctx = await _ctx(indexed)
     run = await _search(ctx, {"query": "match", "k": 2})
     assert run.ok
     assert run.result["query"] == "match"
     assert run.result["documents"] == [{"ref": 1, "name": "Thesis.pdf"}]
     first, second = run.result["passages"]
-    assert (first["ref"], first["page"], first["relevance"]) == (1, 3, "strong")
-    assert (second["page"], second["relevance"]) == (7, "strong")        # 0.7071
-    assert "score" not in first and "docId" not in run.result
+    assert (first["ref"], first["page"], second["page"]) == (1, 3, 7)    # nearest first
+    # No score and no relevance label: closeness doesn't mean the passage
+    # answers (measured 2026-10-05; search_documents.py).
+    assert "score" not in first and "relevance" not in first and "docId" not in run.result
     assert first["text"].endswith(" [truncated]") and len(first["text"]) == 1500 + len(" [truncated]")
     # The saved summary keeps the raw scores and names the document, so a
     # reply's "(page N)" can open it later (Task 6 citations).
@@ -88,12 +89,6 @@ async def test_passages_name_their_document_page_and_relevance_not_a_raw_score(i
                                               "summary_text": None, "docId": DOC, "docName": "Thesis.pdf",
                                               "passages": [{"page": 3, "score": 1.0},
                                                            {"page": 7, "score": 0.7071}]}}
-
-
-@pytest.mark.parametrize("score,bucket", [(0.95, "strong"), (0.7, "strong"), (0.62, "moderate"),
-                                          (0.55, "moderate"), (0.5, "weak"), (0.45, "weak")])
-def test_relevance_buckets(score, bucket):
-    assert sd_tool.relevance(score) == bucket
 
 
 async def test_passages_below_the_floor_are_dropped_and_none_left_says_so(indexed):
@@ -113,7 +108,7 @@ async def test_a_passage_already_shown_this_turn_comes_back_without_its_text(ind
     first = await _search(ctx, {"query": "m", "k": 1})
     assert [p["page"] for p in first.result["passages"]] == [3]
     second = await _search(ctx, {"query": "m", "k": 1}, "c2")
-    assert second.result["passages"] == [{"ref": 1, "page": 7, "relevance": "strong", "text": "half match"}]
+    assert second.result["passages"] == [{"ref": 1, "page": 7, "text": "half match"}]
     assert second.result["already_shown"] == [{"ref": 1, "pages": [3]}]
     assert second.summary["result_summary"]["chunk_count"] == 1
     third = await _search(ctx, {"query": "m", "k": 5}, "c3")
@@ -160,7 +155,7 @@ def test_no_tool_description_names_another_tool():
 
 def test_the_search_description_says_what_it_searches_and_how():
     d = sd_tool.TOOL.spec.description
-    for words in ("open document", "by meaning", "page", "relevance", "already searched", "different words"):
+    for words in ("open document", "by meaning", "page", "already searched", "different words", "read a passage"):
         assert words in d, words
     assert len(d) < 700                                       # short enough for a 3B model
 

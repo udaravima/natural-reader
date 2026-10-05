@@ -274,7 +274,7 @@ What it looks like:
 5. A small `🔎 search_documents` disclosure appears on the assistant bubble. Click it to see the exact query the model used and how many new passages came back.
 
 **What the model gets back from `search_documents` (v2.3):**
-- Passages, each with its reader page and a relevance of `strong` (0.7 or more), `moderate` (0.55 or more) or `weak`. The raw scores are kept in the saved summary, which the browser also receives, and in the DEBUG logs; the model never sees them.
+- Passages, nearest in meaning first, each with its reader page. There is no score and no relevance label: the measurements in §6.5 show that closeness can't tell a passage that answers from one that doesn't, so the model reads them to decide. The raw scores are kept in the saved summary, which the browser also receives, and in the DEBUG logs.
 - **Meaning and exact words (v2.3).** A search runs two rankings over the document and fuses them by reciprocal-rank fusion:
   - by meaning (cosine over the embeddings);
   - by exact words: passages containing every word of the query, from a `'simple'` full-text index that works in any language and keeps labels like "4.2" and "MIMIC-IV".
@@ -337,7 +337,21 @@ It reads the same environment as the backend: `DATABASE_URL`, the embedding mode
 - **How the absent case is strict:** it fails if the answer cites any page, including "I checked page 2", or gives any figure; it passes only on a plain "the document doesn't cover it".
 - **The page-read case** names its page in the question, so it really tests the fact, not the citation.
 
-Run it after changing a model, a prefix, `CHAT_SEARCH_MIN_SCORE` or the chunk sizes. The relevance thresholds were measured before v2.3's prefixes, so this is the way to re-tune them.
+Run it after changing a model, a prefix, `CHAT_SEARCH_MIN_SCORE` or the chunk sizes.
+
+**Measured scores (2026-10-05, `nomic-embed-text` through Ollama, v2.3 prefixes and chunker).** These are cosine similarities of the best passage. Each cell is min / median / max.
+
+| Document | Questions it answers | Questions it doesn't | Unrelated messages ("thanks!", "write a haiku") |
+|---|---|---|---|
+| `docs/USER_GUIDE.md` (55 passages) | 0.72 / 0.79 / 0.83 | 0.60 / 0.62 / 0.64 | 0.47 / 0.54 / 0.60 |
+| *The Adventures of Sherlock Holmes* (631 passages) | 0.66 / 0.71 / 0.78 | 0.67 / 0.72 / 0.73 | 0.51 / 0.59 / 0.65 |
+
+What follows from them:
+- **No score says "this answers the question".** On the book, questions it doesn't answer find passages as close as questions it does. A z-score against the document's own scores and the gap between the first and tenth passage overlap just as much. So `search_documents` gives no relevance label, and only reading the passage decides.
+- **`CHAT_SEARCH_MIN_SCORE` (0.45) is a noise floor only.** Every message measured, small talk included, had a passage above 0.47.
+- **`CHAT_PREFETCH_MIN_SCORE` (0.6) holds on the short guide but not on the long book.** There "thanks!" (0.62) and "write me a haiku" (0.63) still prefetch passages.
+- **The prefixes help.** In the guide, the passage that answers is in the top five for 9 of 9 questions with them, and 7 of 9 without. A query prefixed against chunks embedded without one, which is a pre-v2.3 document before its rebuild, ranks 8 of 9: no worse than none.
+- **Meaning alone ranks narrative poorly.** In the book, the passage that answers is in the top five for only 4 of 12 questions. The exact-word search, more search rounds and reading whole pages are what make up for it.
 
 ## 7. Sessions & persistence
 

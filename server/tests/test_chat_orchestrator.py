@@ -787,7 +787,7 @@ async def test_prefetched_passages_are_not_repeated_by_a_search_and_the_floor_co
     await _run(conn, router, cfg=ChatConfig(search_min_score=0.55), text="q")
     result = json.loads(router.calls[1]["messages"][-1].content)
     assert result["already_shown"] == [{"ref": 1, "pages": [3]}]
-    assert result["passages"] == [{"ref": 1, "page": 5, "relevance": "moderate", "text": "new"}]
+    assert result["passages"] == [{"ref": 1, "page": 5, "text": "new"}]
     assert "_saved" not in result
 
 

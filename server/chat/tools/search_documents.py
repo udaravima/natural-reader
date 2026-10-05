@@ -17,12 +17,12 @@ from .scope import document_scope, documents_listing
 logger = logging.getLogger(__name__)
 
 PER_CHUNK_TEXT_CAP = 1500   # characters per passage the model reads
-# Relevance buckets over cosine similarity. Measured on nomic-embed-text:
-# matching questions scored 0.563-0.823, unrelated ones 0.428-0.513
-# (server/chat/config.py), so the default floor (0.45) still lets the upper
-# part of that noise through, labelled "weak". The model sees the bucket,
-# never the number.
-STRONG, MODERATE = 0.7, 0.55
+# No relevance label (final v2.3 review, measured 2026-10-05 with
+# nomic-embed-text and its prefixes): on a 600-passage book, questions the
+# book doesn't answer found passages scoring 0.67-0.73, as close as for
+# questions it does answer (0.66-0.78), so a "strong" label would tell the
+# model a passage answers when it doesn't. The order is the only signal; the
+# model judges by reading. The floor below only drops plain noise.
 MAX_ROWS = 100   # rows read per document per search: past the shown ones, to k new
 # Only the best word matches may skip the floor: a common word ("method")
 # matches many chunks, and weak ones would crowd out passages near in meaning.
@@ -36,9 +36,9 @@ _SPEC = ToolSpec(
     description=(
         "Search the open document for passages about something, by meaning (vector search over "
         "its indexed text) and by exact words: a passage with every word of the query is found "
-        "even when its meaning is far. Returns up to k passages, best first, each with its page "
-        "and a relevance of strong, moderate or weak; passages far in meaning are left out "
-        "unless they have the query's words. The user's question was already searched by "
+        "even when its meaning is far. Returns up to k passages, nearest first, each with its "
+        "page; passages far in meaning are left out unless they have the query's words. Near "
+        "in meaning isn't the same as answering: read a passage before relying on it. The user's question was already searched by "
         "meaning before you ran: search with different words, or with a label, name or number "
         "from it or from earlier passages (Table 4.2, MIMIC-IV). A passage already shown this "
         "turn is listed by page only, under already_shown."),
@@ -53,10 +53,6 @@ _SPEC = ToolSpec(
         "required": ["query"],
     },
 )
-
-
-def relevance(score: float) -> str:
-    return "strong" if score >= STRONG else "moderate" if score >= MODERATE else "weak"
 
 
 def _cap(text: str) -> str:
@@ -120,7 +116,7 @@ class _SearchDocuments:
                     seen_pages.setdefault(ref, set()).add(r["page"])
             else:
                 new.append((ref, r))
-                passage = {"ref": ref, "page": r["page"], "relevance": relevance(r["score"])}
+                passage = {"ref": ref, "page": r["page"]}
                 if r.get("by_words"):
                     # "words": it has the query's words but not its meaning.
                     passage["match"] = "both" if r["score"] >= floor else "words"

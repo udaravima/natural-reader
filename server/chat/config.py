@@ -14,14 +14,17 @@ logger = logging.getLogger(__name__)
 class ChatConfig:
     max_tool_rounds: int = 3               # tool rounds before the final tools-off step (RAG spec §9)
     tool_result_budget_chars: int = 24000  # tool results one answer may add to the prompt
-    prefetch_min_score: float = 0.6        # cosine similarity; >= 1 disables prefetch. A cautious guess,
-                                            # tune from DEBUG logs — measured on nomic-embed-text: matching
-                                            # questions scored 0.563-0.823 (5/6 >= 0.6, only 2/6 >= 0.75),
-                                            # unrelated ones 0.428-0.513 (none >= 0.6).
+    prefetch_min_score: float = 0.6        # cosine similarity; >= 1 disables prefetch. Measured
+                                            # 2026-10-05 (nomic-embed-text, v2.3 prefixes; CHAT_WITH_PDF
+                                            # §6.5): a short user guide's answering passages scored
+                                            # 0.72-0.83 and unrelated messages ("thanks!") 0.47-0.60; on a
+                                            # 600-passage book 0.66-0.78 against 0.51-0.65, so there some
+                                            # small talk still passes. No value separates both.
     prefetch_k: int = 4                    # passages at most
     read_pages_max_chars: int = 12000      # read_document_pages: characters per call
-    search_min_score: float = 0.45         # search_documents drops passages below this; noise
-                                            # measured up to 0.513 still passes, labelled "weak"
+    search_min_score: float = 0.45         # search_documents drops passages below this: plain
+                                            # noise only. Every message measured 2026-10-05 had a
+                                            # passage above 0.47, so it rarely drops anything.
     reply_reserve_tokens: int = 2048       # kept free for the reply when trimming history
     attachment_token_estimate: int = 1500  # tokens counted per image/audio when trimming (a guess)
     max_request_mb: int = 25               # turn request body cap, in MB
