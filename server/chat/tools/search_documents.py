@@ -105,7 +105,7 @@ class _SearchDocuments:
         if len(scope) > 1:
             found.sort(key=lambda fr: fr[1]["score"], reverse=True)
         floor = ctx.cfg.search_min_score
-        # Found by its words, a passage stays even when weak in meaning (Task F).
+        # One of the best word matches stays even when weak in meaning (Task F).
         kept = [(ref, r) for ref, r in found
                 if r["score"] >= floor or (r.get("word_rank") or MAX_ROWS) <= WORD_BYPASS_RANKS]
 

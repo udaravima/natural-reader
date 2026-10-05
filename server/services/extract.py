@@ -233,21 +233,33 @@ _SENTENCE_END = re.compile(r"[.!?][\"')\]]*(?=" + _WS_CLASS + ")")
 _WS_ONE = re.compile(_WS_CLASS)
 
 
+def _read_int(env, key: str, default: int, lo: int, hi: int) -> int:
+    try:
+        value = int((env.get(key) or "").strip() or default)
+    except ValueError:
+        return default
+    return value if lo <= value <= hi else default
+
+
+def embedding_max_chars(env) -> int:
+    """EMBEDDING_MAX_CHARS: characters sent to the embedding model per text
+    (longer is truncated). The one parse, shared with services.embeddings."""
+    return _read_int(env, "EMBEDDING_MAX_CHARS", 2000, 100, 1_000_000)
+
+
+_PREFIX_ROOM = 64   # room left in the embedding input for the model's prefix
+
+
 def chunk_settings(env) -> tuple[int, int]:
-    """(CHUNK_MAX_CHARS, CHUNK_OVERLAP_CHARS), each falling back to its
-    default when unreadable or out of range. The overlap is at most a quarter
-    of a part, so every part moves the text forward."""
-    def read(key, default, lo, hi):
-        try:
-            value = int((env.get(key) or "").strip() or default)
-        except ValueError:
-            return default
-        return value if lo <= value <= hi else default
-    # A part plus the embedding prefix must fit the embedding input, or its
-    # tail is cut off before it is embedded.
-    embed_max = read("EMBEDDING_MAX_CHARS", 2000, 500, 100_000)
-    max_chars = read("CHUNK_MAX_CHARS", 1200, 400, min(8000, embed_max - 64))
-    return max_chars, read("CHUNK_OVERLAP_CHARS", min(200, max_chars // 4), _MIN_OVERLAP, max_chars // 4)
+    """(CHUNK_MAX_CHARS, CHUNK_OVERLAP_CHARS). A part plus the embedding
+    prefix always fits the embedding input, or its tail would be cut off
+    before it is embedded: the size is clamped to that, the default included.
+    The overlap is at most a quarter of a part, so every part moves the text
+    forward; unreadable or out-of-range values fall back to defaults."""
+    fit = max(100, embedding_max_chars(env) - _PREFIX_ROOM)
+    max_chars = min(_read_int(env, "CHUNK_MAX_CHARS", 1200, 100, 8000), fit)
+    overlap = _read_int(env, "CHUNK_OVERLAP_CHARS", 200, _MIN_OVERLAP, max_chars // 4)
+    return max_chars, min(overlap, max_chars // 4)
 
 
 CHUNK_MAX_CHARS, CHUNK_OVERLAP_CHARS = chunk_settings(os.environ)

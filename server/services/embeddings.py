@@ -16,6 +16,7 @@ import os
 import httpx
 
 from . import model_router
+from .extract import embedding_max_chars
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ EMBEDDING_TIMEOUT_S = float(os.environ.get("EMBEDDING_TIMEOUT_S", "30"))
 # Ollama's default context for nomic-embed-text is often 2048 tokens.
 # At ~4 chars/token the safe ceiling is ~2 000 chars.  Override via env
 # if you've set a larger context (e.g. `num_ctx` in a Modelfile).
-MAX_INPUT_CHARS = int(os.environ.get("EMBEDDING_MAX_CHARS", "2000"))
+MAX_INPUT_CHARS = embedding_max_chars(os.environ)   # one parse, shared with the chunker
 MAX_CONCURRENCY = int(os.environ.get("EMBEDDING_MAX_CONCURRENCY", "4"))
 
 _client: httpx.AsyncClient | None = None

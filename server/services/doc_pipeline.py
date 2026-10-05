@@ -384,9 +384,12 @@ async def run_rebuild(doc_id: str) -> None:
     The new set is built and embedded first, then swapped in with one
     transaction: state stays 'indexed' and the old set answers until then
     (plan Review focus 6). Any failure keeps the old index."""
-    # The document's lock first: waiting on one document (a long conversion)
-    # must not hold the gate every other rebuild queues on.
-    async with doc_lock(doc_id), _rebuild_gate:
+    # The gate first: a rebuild queued behind others must not hold its
+    # document's lock meanwhile (after an upgrade the queue is long, and the
+    # user's own Index or Convert on that document would wait it out). A
+    # rebuild rarely waits on a document's lock: it starts only for an
+    # indexed document, and conversions and re-indexing leave that state.
+    async with _rebuild_gate, doc_lock(doc_id):
         if not is_ready():
             return
         profile, embed_model = current_profile(), model_router.get_config().embed_model
@@ -401,6 +404,7 @@ async def run_rebuild(doc_id: str) -> None:
                 chunks = await _rebuild_source(conn, doc_id, row[2:])
             if not chunks:
                 logger.warning("Rebuild of %s found no text; keeping the old index", doc_id)
+                _failed[doc_id] = (profile, _clock() + REBUILD_RETRY_S)
                 return
             texts = [c.text for c in chunks]
             vectors = []

@@ -278,5 +278,29 @@ async def test_a_failed_rebuild_is_not_retried_at_once(db_conn, monkeypatch, sto
 def test_chunk_size_leaves_room_for_the_prefix_within_the_embedding_input():
     """Review minor: a part longer than EMBEDDING_MAX_CHARS would be truncated
     before embedding, bringing back the invisible tail."""
-    assert extract.chunk_settings({"CHUNK_MAX_CHARS": "5000"}) == (1200, 200)
+    assert extract.chunk_settings({"CHUNK_MAX_CHARS": "5000"}) == (1936, 200)       # clamped to 2000 - 64
     assert extract.chunk_settings({"CHUNK_MAX_CHARS": "5000", "EMBEDDING_MAX_CHARS": "8000"})[0] == 5000
+
+
+@pytest.mark.parametrize("env,want", [
+    ({"EMBEDDING_MAX_CHARS": "1000"}, (936, 200)),                              # the default is clamped too
+    ({"EMBEDDING_MAX_CHARS": "1000", "CHUNK_MAX_CHARS": "1100"}, (936, 200)),
+    ({"EMBEDDING_MAX_CHARS": "300"}, (236, 59)),                                # small inputs: parts shrink
+    ({"EMBEDDING_MAX_CHARS": "junk"}, (1200, 200)),
+])
+def test_a_part_always_fits_the_embedding_input(env, want):
+    """Re-review M4: clamp to the embedding input instead of falling back to
+    a default that may not fit; one parse of EMBEDDING_MAX_CHARS for both."""
+    assert extract.chunk_settings(env) == want
+    assert extract.embedding_max_chars(env) == (2000 if env["EMBEDDING_MAX_CHARS"] == "junk"
+                                                else int(env["EMBEDDING_MAX_CHARS"]))
+
+
+async def test_a_rebuild_that_finds_no_text_backs_off_too(db_conn, embedded, store, monkeypatch):
+    """Re-review observation: "no text" isn't an exception, but re-running the
+    extraction on every turn is still waste."""
+    owner = await _member(db_conn, "owner")
+    await _old_index(db_conn, owner.user_id, None, extracted_by="client")
+    await db_conn.execute("DELETE FROM doc_chunks WHERE doc_id = %s", (DOC,))
+    await doc_pipeline.run_rebuild(DOC)
+    assert DOC in doc_pipeline._failed

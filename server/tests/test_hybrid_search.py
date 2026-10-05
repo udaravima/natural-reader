@@ -64,7 +64,7 @@ async def test_a_label_is_found_by_words_when_meaning_ranks_it_low(doc):
 async def test_fusion_puts_what_both_searches_found_first(doc):
     conn, _ = doc
     rows = await doc_search.search_chunks(conn, DOC, QUERY_VEC, 4, text="Table 4.2")
-    assert [r["page"] for r in rows][:3] == [8, 3, 5]    # both lists, then words rank 1-2, then meaning rank 1
+    assert [r["page"] for r in rows][:3] == [8, 3, 5]    # 8: meaning 2 + words 2; 3: meaning 4 + words 1; 5: meaning 1 only
     assert all(0 <= r["score"] <= 1 for r in rows)                          # cosine, still for the floor
 
 

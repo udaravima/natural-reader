@@ -94,3 +94,27 @@ There was no live Ollama run. That prefixes improve scores on nomic is its model
 
 Suites:
 - backend: 752 passed.
+
+## Fix round 2 — FIX_BASE deba05a (re-review of round 1: M4 open)
+
+- **M4: clamp, don't fall back.**
+  - `chunk_settings` clamps `CHUNK_MAX_CHARS`, including its default, to `EMBEDDING_MAX_CHARS - 64` (minimum 100), so a part always fits the embedding input. The overlap is clamped to a quarter of that.
+  - `extract.embedding_max_chars(env)` is now the one parse of `EMBEDDING_MAX_CHARS`; `services.embeddings.MAX_INPUT_CHARS` uses it.
+  - Tests:
+    - an embedding input of 1,000 gives (936, 200), with or without `CHUNK_MAX_CHARS`;
+    - 300 gives (236, 59);
+    - an unreadable value gives (1200, 200).
+
+    They failed before the fix. The round-1 test now expects the clamp, (1936, 200).
+  - `.env.example` now actually says the chunk settings are read at startup and that the size is clamped.
+- **Round-1 side effect: the lock order.** Restored to the gate first, then the document lock, with the reason in a comment. After an upgrade a queued rebuild must not hold its document's lock while it waits, because the user's own Index or Convert would wait on the whole queue. A rebuild rarely waits on a document lock, since it starts only for an indexed document.
+- **Out-of-scope observation, applied:** "no text found" records the backoff too. Test added.
+- **Deferred to the ledger:**
+  - the dropped-swap path has no test;
+  - `_failed` isn't pruned (bounded by the number of documents);
+  - the bypass slots are per document (C2).
+
+Suites:
+- backend: 772 passed;
+- vitest: exit 0;
+- eslint: clean.
