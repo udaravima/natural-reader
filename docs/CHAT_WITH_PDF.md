@@ -198,13 +198,16 @@ the last is fully autonomous retrieval.
    server-sent events — nothing more happens client-side until an event arrives.
 2. The server checks your daily token budget and claims the chat (a second
    message sent while this one is still streaming gets `409`).
-3. **Stage 0** runs before the model does: if a document is open and indexed,
-   the server searches it for passages relevant to your question and, if any
-   score well enough, puts them straight in the prompt; it also writes the
-   current time into the prompt. Both are cheaper than a tool round.
+3. **Stage 0** runs before the model does (unless `CHAT_PREFETCH=off` or the
+   chat's "Use this document" is off): if a document is open and indexed, the
+   server searches it for passages relevant to your question and, if any score
+   well enough, hands them to the model as the result of a first
+   `search_documents` call it made for it (a model without tools gets them in
+   its prompt). Today's date is in the system rules.
 4. The model streams its reply. If it calls a tool (`search_documents`,
-   `web_search`), the server runs it, streams the result, and calls the model
-   again — up to one tool round by default, then a final answer with tools off.
+   `read_document_pages`, `web_search`), the server runs it, streams the
+   result, and calls the model again — up to 3 tool rounds by default, then a
+   final answer with tools off.
 5. The reply is written to Postgres as it streams. Closing the tab, losing the
    connection, or clicking Stop ends the turn early but keeps the partial reply,
    marked "Stopped"; a chat whose reply is still being written when you open it
@@ -265,7 +268,7 @@ that work instead of reprocessing it every time.
 
 ### 6.4. Autonomous tool calling
 
-**No chip, no toggle, no manual setup.** Once a doc is indexed and the selected model reports tool support, the model gets a `search_documents` tool and decides on its own whether to invoke it. Before that, **Stage 0** (C1) already tried a cheap shortcut: the server embeds your question and searches the open document *before* the model runs, and if it finds good enough passages it puts them straight in the prompt — often answering in one model call with no tool round at all. The tool stays available either way, so the model can still search for something the prefetch missed.
+**No manual setup.** Once a doc is indexed and the selected model reports tool support, the model gets a `search_documents` tool and decides on its own whether to invoke it. (The only switch is "Use this document", to leave the document out of a chat.) Before that, **Stage 0** (C1) already tried a cheap shortcut: the server embeds your question and searches the open document *before* the model runs, and if it finds good enough passages it hands them to the model as its first search's result — often answering in one model call with no tool round at all. The tool stays available either way, so the model can still search for something the prefetch missed.
 
 What it looks like:
 
@@ -477,7 +480,7 @@ All under `http://localhost:8000` by default. Same FastAPI app as the existing K
 | `GET` | `/v1/docs/{doc_id}` | Status: `state`, `chunk_count`, `embedded_count`, model + dim. |
 | `GET` | `/v1/docs/{doc_id}/file` | The stored file, for anyone who can read it (Library → **Open**). |
 | `POST` | `/v1/docs/{doc_id}/index` | Resume, or re-index from the stored file (202). |
-| `POST` | `/v1/docs/{doc_id}/search` | `{query, k}` → top-k chunks by cosine similarity. |
+| `POST` | `/v1/docs/{doc_id}/search` | `{query, k}` → top-k chunks by cosine similarity (meaning only, exact within the document). 409 `reindexing` while the document is rebuilt for a new embedding model. |
 | `DELETE` | `/v1/docs/{doc_id}` | Removes the document from **your** library; the content goes when nobody holds it. |
 
 The full list (rename/tags, shares, convert, converted Markdown) and who may call each is in [LIBRARY.md § API surface](LIBRARY.md#api-surface). `POST /v1/docs/{doc_id}/chunks` is gone: chunks are always derived on the server.

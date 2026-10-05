@@ -138,15 +138,19 @@ async def run_embed(doc_id: str) -> None:
                             )
                             embedded_count += 1
 
+            # Searchable with what did embed; but the profile is recorded only
+            # when every chunk embedded, so a document with gaps stays stale
+            # and its next use rebuilds it (v2.3 final review minor).
             async with pool.connection() as conn:
                 await conn.execute(
                     """
                     UPDATE documents
                     SET state = 'indexed', embedding_model = %s, embedding_dim = %s,
-                        embedding_profile = %s, error_message = NULL, updated_at = now()
+                        embedding_profile = COALESCE(%s, embedding_profile), error_message = NULL,
+                        updated_at = now()
                     WHERE doc_id = %s
                     """,
-                    (embed_model, EMBEDDING_DIM, profile, doc_id),
+                    (embed_model, EMBEDDING_DIM, None if skipped_count else profile, doc_id),
                 )
             logger.info(
                 "Indexed %d chunks for doc %s (%d embedded, %d skipped)",

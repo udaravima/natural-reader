@@ -85,6 +85,11 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **`POST /v1/docs/{id}/search` answers 409 `reindexing`** ("This document
+  is being re-indexed for the current search model. Try again shortly.")
+  while a document is rebuilt for a new embedding model, instead of
+  comparing vectors from two models.
+
 - **"Keep model warm: Always" now means up to `INFERENCE_KEEP_ALIVE_MAX`**
   (30 minutes by default), and a context size above `INFERENCE_NUM_CTX_MAX`
   is reduced to it: on a shared server both used memory for everyone. A

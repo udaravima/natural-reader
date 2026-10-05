@@ -304,3 +304,32 @@ async def test_a_rebuild_that_finds_no_text_backs_off_too(db_conn, embedded, sto
     await db_conn.execute("DELETE FROM doc_chunks WHERE doc_id = %s", (DOC,))
     await doc_pipeline.run_rebuild(DOC)
     assert DOC in doc_pipeline._failed
+
+
+# ---- v2.4 Task G: deferred v2.3 minor ----
+
+async def _unembedded(db_conn, owner, n):
+    await seed.seed_doc(db_conn, DOC, owner, file_name="Long.txt", file_type="text", state="indexing")
+    for i in range(n):
+        await db_conn.execute(
+            "INSERT INTO doc_chunks (doc_id, ord, page, chunk_type, text, text_hash) "
+            "VALUES (%s, %s, 1, 'page', %s, %s)", (DOC, i, f"chunk {i}", f"h{i}"))
+
+
+@pytest.mark.parametrize("fail_one", [True, False])
+async def test_the_profile_is_recorded_only_when_every_chunk_embedded(db_conn, monkeypatch, store, fail_one):
+    """v2.3 final review minor: a document with chunks left unembedded must
+    stay stale, so its next use rebuilds it; recording the profile hid them."""
+    build_docs_app(db_conn, monkeypatch, storage_dir=store)
+    owner = await _member(db_conn, "owner")
+    await _unembedded(db_conn, owner.user_id, 2)
+    vec = [1.0] + [0.0] * (embeddings.EMBEDDING_DIM - 1)
+
+    async def fake_embed_documents(texts):
+        return [vec, None] if fail_one else [vec for _ in texts]
+
+    monkeypatch.setattr(doc_pipeline, "embed_documents", fake_embed_documents)
+    await doc_pipeline.run_embed(DOC)
+    state, profile, _ = await _state(db_conn)
+    assert state == "indexed"                                         # what did embed is searchable
+    assert profile == (None if fail_one else embeddings.current_profile())

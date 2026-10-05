@@ -269,6 +269,12 @@ def chunk_settings(env) -> tuple[int, int]:
     return max_chars, min(overlap, max_chars // 4)
 
 
+# Changing either value changes the embedding profile (doc_pipeline), so every
+# indexed document rebuilds on its next use; until its swap, the old chunks
+# answer. Lowering CHUNK_OVERLAP_CHARS has a visible cost in that window:
+# read_document_pages joins a page's parts dropping at most the CURRENT
+# overlap, so old parts made with a longer one show their extra overlap twice.
+# Harmless (the text is right, only repeated) and gone after the swap.
 CHUNK_MAX_CHARS, CHUNK_OVERLAP_CHARS = chunk_settings(os.environ)
 CHUNKER_VERSION = f"split1:{CHUNK_MAX_CHARS}:{CHUNK_OVERLAP_CHARS}"
 

@@ -397,7 +397,7 @@ All endpoints return `503` when Postgres is unreachable.
 | `/v1/docs/{doc_id}` | `GET / PATCH / DELETE` | Status (`state`, `chunk_count`, `embedded_count`, model, dim); rename/retag **your** entry; remove it from **your** library (the content goes when nobody holds it). |
 | `/v1/docs/{doc_id}/file` | `GET` | The stored file, for anyone who can read the document (404 otherwise). The Library's **Open** button. |
 | `/v1/docs/{doc_id}/index` | `POST` | Resume, or re-index from the stored file; returns 202. Poll the doc status endpoint for progress. |
-| `/v1/docs/{doc_id}/search` | `POST` | `{query, k}` → top-k chunks by cosine similarity (HNSW). Used by the autonomous `search_documents` tool. |
+| `/v1/docs/{doc_id}/search` | `POST` | `{query, k}` → the top-k chunks by cosine similarity, an exact search within the document. It is meaning-only: the chat's `search_documents` tool adds exact-word matching. Answers 409 `reindexing` while the document is rebuilt for a new embedding model. |
 
 Sharing, projects, conversion and who may call what: [docs/LIBRARY.md § API surface](docs/LIBRARY.md#api-surface). There is no chunk-upload route: chunks are always derived on the server.
 
