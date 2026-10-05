@@ -9,6 +9,7 @@ server/tests/fixtures/segmentation pin it.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from pathlib import Path
 
 from markdown_it import MarkdownIt
 from mdit_py_plugins.footnote import footnote_plugin
+
+logger = logging.getLogger(__name__)
 
 SENTENCES_PER_PAGE = 40  # src/constants.js SENTENCES_PER_TEXT_PAGE
 # chunk_type suffix of a split part after a page's first (v2.3 Task E): it
@@ -234,20 +237,24 @@ _WS_ONE = re.compile(_WS_CLASS)
 
 
 def _read_int(env, key: str, default: int, lo: int, hi: int) -> int:
+    raw = (env.get(key) or "").strip()
     try:
-        value = int((env.get(key) or "").strip() or default)
+        value = int(raw or default)
     except ValueError:
+        value = None
+    if value is None or not lo <= value <= hi:
+        logger.warning("%s=%r is not a whole number from %d to %d; using %d", key, raw, lo, hi, default)
         return default
-    return value if lo <= value <= hi else default
+    return value
+
+
+_PREFIX_ROOM = 64   # room left in the embedding input for the model's prefix
 
 
 def embedding_max_chars(env) -> int:
     """EMBEDDING_MAX_CHARS: characters sent to the embedding model per text
     (longer is truncated). The one parse, shared with services.embeddings."""
-    return _read_int(env, "EMBEDDING_MAX_CHARS", 2000, 100, 1_000_000)
-
-
-_PREFIX_ROOM = 64   # room left in the embedding input for the model's prefix
+    return _read_int(env, "EMBEDDING_MAX_CHARS", 2000, 100 + _PREFIX_ROOM, 1_000_000)
 
 
 def chunk_settings(env) -> tuple[int, int]:

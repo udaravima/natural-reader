@@ -118,3 +118,12 @@ Suites:
 - backend: 772 passed;
 - vitest: exit 0;
 - eslint: clean.
+
+## Fix round 2 re-review
+
+All findings are addressed. The three new minors are fixed in the next commit:
+- `EMBEDDING_MAX_CHARS` must be at least 164 (100 plus the prefix room), so even the smallest part fits.
+- A setting that is unreadable or out of range logs a WARNING naming the value and the default it falls back to. It never logs user content.
+- `.env.example` says to keep a prefix under 64 characters.
+
+Backend suite: 772 passed.
