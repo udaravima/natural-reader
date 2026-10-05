@@ -85,6 +85,7 @@ def configure_logging() -> Path:
     log_dir = Path(os.environ.get("LOG_DIR", "./logs")).resolve()
     max_bytes = int(float(os.environ.get("LOG_FILE_MAX_MB", "10")) * 1024 * 1024)
     backups = int(os.environ.get("LOG_FILE_BACKUPS", "5"))
+    roll_over_time = os.environ.get("LOG_FILE_ROLL_OVER_TIME", "midnight")
 
     log_dir.mkdir(parents=True, exist_ok=True)
     logfile = log_dir / "server.log"
@@ -92,5 +93,5 @@ def configure_logging() -> Path:
     audit_file = Path(os.environ.get("LOG_AUDIT_FILE") or (log_dir / "audit.log")).resolve()
     audit_file.parent.mkdir(parents=True, exist_ok=True)
 
-    logging.config.dictConfig(_dict_config(logfile, level, max_bytes, backups, audit_file))
+    logging.config.dictConfig(_dict_config(logfile, level, max_bytes, backups, audit_file, roll_over_time))
     return logfile
