@@ -278,6 +278,8 @@ What it looks like:
 - **Measured** (eval §6.5, `gemma4:31b-cloud`, 3 runs, 2026-10-05): as a fenced block in the user's message, the passages anchored the model: it answered from them, and missed the two-hop and exact-label facts every time (21/27). As its own search result it checked them and searched again where they fell short: 27/27, with no extra model call for simple questions.
 - **Providers checked live:** Ollama (cloud), and through OpenRouter, Gemma 4 and Mistral Small 3.2 (Mistral's API is reported to accept only 9-character alphanumeric tool-call ids; `prefetch1` is one).
 
+**Switching Stage 0 off (v2.4).** `CHAT_PREFETCH=off` turns the search before the model off, for a fully agent-first setup: the model always decides whether to search. It is on by default because, once the passages arrive as the model's own search result, on and off were equally accurate (27/27 each on the eval), and on answered single-fact and named-page questions with one model call fewer. What off saves: on a long document, small talk like "thanks!" can still score above `CHAT_PREFETCH_MIN_SCORE` (0.62 measured), and with prefetch on the model then reads up to 4 passages it doesn't need; on a CPU that's seconds per message. A model without tools always needs it on: the passages are its only way to see the document. `scripts/eval_doc_qa.py --prefetch on|off` overrides it for one run. This is a deployment setting (environment only, no screen).
+
 **How the model is told to work (v2.4).** One leading system message gives the model a strategy, a numbered procedure:
 1. **Decide what the message needs.**
    - A greeting, a thanks, or a rewrite of the last answer: reply without tools.

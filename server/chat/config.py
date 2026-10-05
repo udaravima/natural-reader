@@ -14,7 +14,11 @@ logger = logging.getLogger(__name__)
 class ChatConfig:
     max_tool_rounds: int = 3               # tool rounds before the final tools-off step (RAG spec §9)
     tool_result_budget_chars: int = 24000  # tool results one answer may add to the prompt
-    prefetch_min_score: float = 0.6        # cosine similarity; >= 1 disables prefetch. Measured
+    prefetch: bool = True                  # search the open document before the model runs (v2.4 Task C:
+                                            # as a search_documents result when the model has tools, else a
+                                            # fenced block). Measured 2026-10-05: as accurate as off, and one
+                                            # model call fewer for simple document questions.
+    prefetch_min_score: float = 0.6        # cosine similarity; >= 1 also disables prefetch. Measured
                                             # 2026-10-05 (nomic-embed-text, v2.3 prefixes; CHAT_WITH_PDF
                                             # §6.5): a short user guide's answering passages scored
                                             # 0.72-0.83 and unrelated messages ("thanks!") 0.47-0.60; on a
@@ -47,7 +51,17 @@ def load_chat_config(env: Mapping[str, str]) -> ChatConfig:
             return default
         return value
 
+    def switch(key: str, default: bool) -> bool:
+        raw = (env.get(key) or "").strip().lower()
+        if not raw:
+            return default
+        if raw in ("on", "off"):
+            return raw == "on"
+        logger.warning("%s=%r is not on or off; using %s", key, raw, "on" if default else "off")
+        return default
+
     return ChatConfig(
+        prefetch=switch("CHAT_PREFETCH", d.prefetch),
         max_tool_rounds=num("CHAT_MAX_TOOL_ROUNDS", d.max_tool_rounds, int, 0, 20),
         tool_result_budget_chars=num("CHAT_TOOL_RESULT_BUDGET_CHARS", d.tool_result_budget_chars,
                                      int, 1000, 1_000_000),

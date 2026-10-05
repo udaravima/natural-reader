@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **`CHAT_PREFETCH=on|off`** switches off the search the app runs before
+  the model, for a fully agent-first setup (default on: measured as
+  accurate as off, and one model call fewer for simple document questions).
+  The eval takes `--prefetch on|off` for one run.
+
 - **Passages found before the model runs arrive as a search result, not as
   part of your message.** Text planted in a document can no longer pose as
   something you wrote. Models also check these passages and search again

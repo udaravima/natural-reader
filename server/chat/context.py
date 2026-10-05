@@ -101,7 +101,8 @@ async def prefetch(doc: ReadableDoc | None, question: str, cfg: ChatConfig) -> P
     """Search the open document before the model runs. Cost when it doesn't
     help: one embedding call. Every decision is logged at DEBUG so a deployer
     can tune CHAT_PREFETCH_MIN_SCORE on their own documents."""
-    if doc is None or doc.state != "indexed" or cfg.prefetch_min_score >= 1.0 or not question.strip():
+    if (doc is None or doc.state != "indexed" or not cfg.prefetch or cfg.prefetch_min_score >= 1.0
+            or not question.strip()):
         return Prefetch()
     try:
         qvec = await embed_query(question)
@@ -241,7 +242,8 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
                     Message("tool", result_text(result), tool_call_id=PREFETCH_CALL_ID, name="search_documents")]
     elif pre.passages:
         volatile = _passages_block(pre.note["docName"], pre.passages)
-    rules = system_rules(turn.doc, turn.tools, has_pins=bool(turn.pins), prefetch=cfg.prefetch_min_score < 1.0,
+    rules = system_rules(turn.doc, turn.tools, has_pins=bool(turn.pins),
+                         prefetch=cfg.prefetch and cfg.prefetch_min_score < 1.0,
                          today=today_line(turn.now, turn.timezone), profile=turn.profile)
     system = Message("system", "\n\n".join(c for c in (rules, pin_text(turn.pins)) if c))
     fixed_chars = len(system.content) + len(volatile) + 2 + len(turn.text) + sum(len(m.content) for m in exchange)

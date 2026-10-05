@@ -328,3 +328,23 @@ def test_the_tool_result_shape_is_shared_with_execute():
     out = passages_result("q", [DOC], [{"ref": 1, "page": 2, "text": "t"}])
     assert out == {"query": "q", "documents": [{"ref": 1, "name": "Thesis.pdf"}],
                    "passages": [{"ref": 1, "page": 2, "text": "t"}]}
+
+
+# ---- v2.4 Task C: the prefetch switch ----
+
+def test_chat_prefetch_is_on_by_default_and_can_be_switched_off(caplog):
+    assert load_chat_config({}).prefetch is True
+    assert load_chat_config({"CHAT_PREFETCH": "off"}).prefetch is False
+    assert load_chat_config({"CHAT_PREFETCH": " ON "}).prefetch is True
+    with caplog.at_level(logging.WARNING):
+        assert load_chat_config({"CHAT_PREFETCH": "sometimes"}).prefetch is True
+    assert "CHAT_PREFETCH" in caplog.text
+
+
+async def test_prefetch_off_costs_no_embedding_and_no_rules_sentence(search):
+    search["rows"] = [{"id": 1, "page": 3, "score": 0.9, "text": "x"}]
+    off = ChatConfig(prefetch=False)
+    assert (await prefetch(DOC, "q", off)).passages == [] and search["embeds"] == 0
+    built = await build_context(_turn(doc=DOC, tools=DOC_TOOLS), off)
+    assert [m.role for m in built.messages] == ["system", "user"]
+    assert "just before your turn" not in built.messages[0].content

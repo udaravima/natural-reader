@@ -256,3 +256,12 @@ def test_the_script_has_think_and_repeat_flags():
     script = Path(__file__).resolve().parents[2] / "scripts" / "eval_doc_qa.py"
     out = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True).stdout
     assert "--think" in out and "--repeat" in out
+
+
+def test_the_script_can_switch_the_prefetch_for_a_run():
+    import subprocess
+    import sys
+    from pathlib import Path
+    script = Path(__file__).resolve().parents[2] / "scripts" / "eval_doc_qa.py"
+    out = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True).stdout
+    assert "--prefetch" in out

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -30,12 +31,16 @@ def main() -> int:
                         help="the model's thinking (default off, as the chat sends it unless a user turns it on)")
     parser.add_argument("--repeat", type=int, default=1, choices=range(1, 11), metavar="N",
                         help="ask every case N times (1-10) and print a per-case tally")
+    parser.add_argument("--prefetch", choices=("default", "on", "off"), default="default",
+                        help="search the document before the model runs (CHAT_PREFETCH) for this run")
     args = parser.parse_args()
     try:
         from dotenv import load_dotenv
         load_dotenv()
     except ImportError:
         pass
+    if args.prefetch != "default":
+        os.environ["CHAT_PREFETCH"] = args.prefetch   # after .env: the flag wins for this run
     # Only now: server modules read settings (chunk size, embedding input
     # limit) when they're imported, so .env has to be loaded first.
     from server.evals.doc_qa import EvalSetupError, format_report, run_eval
