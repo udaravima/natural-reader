@@ -54,9 +54,19 @@ $EnvFile = ".env"                               # gitignored; loaded for run.py
 $ModelBaseUrl = "https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0"
 $ModelFiles = @("kokoro-v1.0.onnx", "voices-v1.0.bin")
 
-# Minimum tool versions, kept in sync with the README "Software Requirements".
+# Minimum tool versions, kept in sync with the README "Software Requirements"
+# and startup.sh. Python: Docling requires >=3.10,<4.0, but onnxruntime-openvino
+# (pinned in requirements.txt for Kokoro) publishes wheels only for
+# Python >=3.10,<3.14.
 $PythonMin = [version]"3.10.0"
-$PythonMaxExcl = [version]"4.0.0"
+$PythonMaxExcl = [version]"3.14.0"
+# Tried in order; the first in range wins. The default Python first, then an
+# older one through the py launcher, so a too-new default falls through
+# (startup.sh does the same with python3, python3.13 ... python3.10).
+$PythonCandidates = @(
+    @("py", "-3"), @("py", "-3.13"), @("py", "-3.12"), @("py", "-3.11"), @("py", "-3.10"),
+    @("python"), @("python3")
+)
 
 function Write-Step([string] $Message) { Write-Host "==> " -ForegroundColor Blue -NoNewline; Write-Host $Message }
 function Write-Warn([string] $Message) { Write-Host "warning: " -ForegroundColor Yellow -NoNewline; Write-Host $Message }
@@ -102,37 +112,31 @@ function ConvertTo-Version([string] $Text) {
     return $null
 }
 
-# The command that runs a system Python 3, as an array (exe + leading args).
-# The `py` launcher is preferred: `python.exe` on a fresh Windows is often the
-# Microsoft Store stub, which opens the Store instead of running anything.
-function Get-SystemPython {
+# The X.Y.Z version a Python command runs, or "" if it doesn't run (a missing
+# launcher version, or the Microsoft Store stub that `python.exe` often is on
+# a fresh Windows: it opens the Store instead of running anything).
+function Get-PythonVersionText([string[]] $Cmd) {
     $ErrorActionPreference = "Continue"   # a probe's stderr must not throw (5.1)
-    if (Test-Command "py") {
-        & py -3 -c "import sys" 2>$null
-        if ($LASTEXITCODE -eq 0) { return @("py", "-3") }
-    }
-    foreach ($name in @("python", "python3")) {
-        if (Test-Command $name) {
-            & $name -c "import sys" 2>$null
-            if ($LASTEXITCODE -eq 0) { return @($name) }
-        }
-    }
-    return $null
+    if (-not (Test-Command $Cmd[0])) { return "" }
+    $exe, $pre = $Cmd[0], @($Cmd | Select-Object -Skip 1)
+    $text = & $exe @pre -c "import sys; print('%d.%d.%d' % sys.version_info[:3])" 2>$null
+    if ($LASTEXITCODE -ne 0) { return "" }
+    return "$text".Trim()
 }
 
+# The first candidate Python in [$PythonMin, $PythonMaxExcl), as the command
+# array that runs it; stops with an explanation if there is none.
 function Assert-PythonVersion {
-    $ErrorActionPreference = "Continue"
-    $py = Get-SystemPython
-    if (-not $py) { Stop-WithError "Python 3 is not installed (or only the Microsoft Store stub is). Install it from https://www.python.org/downloads/ and tick 'Add to PATH'." }
-    $exe, $pre = $py[0], @($py | Select-Object -Skip 1)
-    $text = & $exe @pre -c "import sys; print('%d.%d.%d' % sys.version_info[:3])"
-    $v = ConvertTo-Version $text
-    if ($v -and $v -ge $PythonMin -and $v -lt $PythonMaxExcl) {
-        Write-Step "Python $text OK (need >=$PythonMin, <$PythonMaxExcl)"
-    } else {
-        Stop-WithError "Python $text is unsupported: need >=$PythonMin and <$PythonMaxExcl."
+    foreach ($cmd in $PythonCandidates) {
+        $text = Get-PythonVersionText $cmd
+        $v = ConvertTo-Version $text
+        if ($v -and $v -ge $PythonMin -and $v -lt $PythonMaxExcl) {
+            Write-Step "Python $text OK via $($cmd -join ' ') (need >=$PythonMin, <$PythonMaxExcl)"
+            return , $cmd
+        }
     }
-    return , $py
+    Stop-WithError ("No Python in [$PythonMin, $PythonMaxExcl) found: install Python 3.10-3.13 from " +
+        "https://www.python.org/downloads/ and tick 'Add to PATH' (onnxruntime-openvino has no 3.14 wheels).")
 }
 
 # Node ^20.19.0 || >=22.12.0: Vite 7 (Rolldown) + @vitejs/plugin-react.
@@ -448,12 +452,20 @@ function Invoke-Init([string] $Requested) {
     if (-not (Test-Path -LiteralPath "package.json")) { Stop-WithError "package.json not found: are you in the project root?" }
 
     # --- Python backend ------------------------------------------------------
+    $exe, $pre = $py[0], @($py | Select-Object -Skip 1)
+    $want = Get-PythonVersionText $py
+    $have = ""
+    if (Test-Path -LiteralPath $VenvPython) { $have = Get-PythonVersionText @((Resolve-Path -LiteralPath $VenvPython).Path) }
     if (-not (Test-Path -LiteralPath $VenvPython)) {
-        Write-Step "Creating virtual environment"
-        $exe, $pre = $py[0], @($py | Select-Object -Skip 1)
+        Write-Step "Creating virtual environment with Python $want"
+        Invoke-Native $exe (@($pre) + @("-m", "venv", $VenvDir))
+    } elseif ($have -ne $want) {
+        # Built by another Python (e.g. a 3.14 one): its packages won't fit.
+        Write-Step "Recreating virtual environment: was Python $have, need $want"
+        Remove-Item -LiteralPath $VenvDir -Recurse -Force
         Invoke-Native $exe (@($pre) + @("-m", "venv", $VenvDir))
     } else {
-        Write-Step "Virtual environment already exists at $VenvDir\"
+        Write-Step "Virtual environment already exists at $VenvDir\ (Python $have)"
     }
     Write-Step "Installing Python dependencies from requirements.txt"
     Invoke-Native $VenvPython @("-m", "pip", "install", "--upgrade", "pip")
