@@ -67,7 +67,7 @@ def chunks_of(name):
         raw = raw[raw.index("I. A SCANDAL IN BOHEMIA"):raw.index("*** END OF")]
         ex = extract.extract_text(raw)
     else:
-        ex = extract.extract_markdown(ROOT / "docs" / "USER_GUIDE.md".read_text())
+        ex = extract.extract_markdown((ROOT / "docs" / "USER_GUIDE.md").read_text())
     return [c.text for c in extract.split_chunks(ex.chunks)]
 
 
