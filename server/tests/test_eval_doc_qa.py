@@ -22,7 +22,8 @@ def test_the_fixture_covers_each_journey_and_is_the_same_every_time():
     a, b = doc_qa.build_fixture(), doc_qa.build_fixture()
     assert a.text == b.text and a.doc_id == b.doc_id
     kinds = {c.kind for c in a.cases}
-    assert kinds == {"single-hop", "two-hop", "exact-label", "page-read", "absent"}
+    assert kinds == {"single-hop", "two-hop", "exact-label", "page-read", "absent",
+                     "small-talk", "general", "live", "follow-up"}
     two_hop = next(c for c in a.cases if c.kind == "two-hop")
     assert len(set(two_hop.pages)) == 2 and abs(two_hop.pages[0] - two_hop.pages[1]) >= 3
     absent = next(c for c in a.cases if c.kind == "absent")
@@ -82,7 +83,7 @@ def test_the_score_records_tools_and_rounds():
 def test_the_report_is_one_line_per_case_and_a_total():
     case = _case("single-hop", ["x"], [1])
     results = [doc_qa.score(case, "x (page 1)", []), doc_qa.score(case, "nope", [])]
-    report = doc_qa.format_report(results, model="ollama:llama3.2:3b")
+    report = doc_qa.format_report([results], model="ollama:llama3.2:3b")
     lines = report.splitlines()
     assert "ollama:llama3.2:3b" in lines[0]
     assert sum("PASS" in l for l in lines) == 1 and sum("FAIL" in l for l in lines) == 1
@@ -147,7 +148,7 @@ def test_a_turn_that_errored_is_reported_as_an_error_not_a_model_failure():
     case = _case("single-hop", ["x"], [1])
     result = doc_qa.score(case, "", [], error="provider_error")
     assert not result.passed and result.error == "provider_error"
-    assert "ERROR" in doc_qa.format_report([result], model="m")
+    assert "ERROR" in doc_qa.format_report([[result]], model="m")
 
 
 def test_the_fixture_page_size_is_the_extractors():
@@ -184,3 +185,74 @@ def test_the_eval_script_loads_dotenv_before_any_server_module():
              "print(sorted(m for m in sys.modules if m == 'server' or m.startswith('server.')))\n")
     out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd=root, check=True)
     assert out.stdout.strip() == "[]"
+
+
+# ---- v2.4 Task 0: the eval checks the strategy too ----
+
+def _kind(kind):
+    return next(c for c in doc_qa.build_fixture().cases if c.kind == kind)
+
+
+def test_the_new_cases_exist_and_follow_up_has_its_setup_turn():
+    cases = {c.kind: c for c in doc_qa.build_fixture().cases}
+    assert {"small-talk", "general", "live", "follow-up"} <= cases.keys()
+    assert cases["follow-up"].setup == ("What is the project's codename?",)
+    assert all(c.setup == () for k, c in cases.items() if k != "follow-up")
+
+
+def test_small_talk_passes_only_without_tools_or_pages():
+    case = _kind("small-talk")
+    assert doc_qa.score(case, "You're welcome!", []).passed
+    assert not doc_qa.score(case, "You're welcome!", [{"toolName": "search_documents", "round": 1}]).passed
+    assert not doc_qa.score(case, "Glad page 2 helped (page 2).", []).passed
+
+
+def test_general_knowledge_needs_the_fact_and_no_page():
+    case = _kind("general")
+    assert doc_qa.score(case, "In 1969.", []).passed
+    assert not doc_qa.score(case, "In 1969 (page 4).", []).passed
+    assert not doc_qa.score(case, "I'm not sure.", []).passed
+
+
+def test_live_needs_web_search_and_is_skipped_without_it():
+    case = _kind("live")
+    assert doc_qa.score(case, "It's 4°C.", [{"toolName": "web_search", "round": 1}]).passed
+    assert not doc_qa.score(case, "The trial was in Tromsø (page 5).",
+                            [{"toolName": "search_documents", "round": 1}]).passed
+    skipped = doc_qa.score(case, "", [], web_offered=False)
+    assert skipped.skipped == "web_search not offered" and not skipped.passed
+    assert "SKIP" in doc_qa.format_report([[skipped]], model="m")
+
+
+def test_follow_up_passes_without_a_new_tool_call():
+    case = _kind("follow-up")
+    assert doc_qa.score(case, "Blue Heron.", []).passed
+    assert not doc_qa.score(case, "Blue Heron.", [{"toolName": "search_documents", "round": 1}]).passed
+    assert not doc_qa.score(case, "I don't remember.", []).passed
+
+
+def test_a_fact_found_without_the_journey_is_marked():
+    case = _kind("page-read")
+    r = doc_qa.score(case, "It ran for nine weeks (page 5).", [], prefetched=False)
+    assert r.passed and r.trail is False
+    assert "PASS (no trail)" in doc_qa.format_report([[r]], model="m")
+    assert doc_qa.score(case, "It ran for nine weeks (page 5).", [], prefetched=True).trail is True
+
+
+def test_the_report_shows_seconds_and_a_tally_over_repeats():
+    case = _kind("single-hop")
+    a = doc_qa.score(case, "BLUE HERON (page 2).", [{"toolName": "search_documents", "round": 1}])
+    b = doc_qa.score(case, "BLUE HERON.", [{"toolName": "search_documents", "round": 1}])
+    a.seconds, b.seconds = 4.2, 3.0
+    report = doc_qa.format_report([[a], [b]], model="m")
+    assert "4.2s" in report and "single-hop 1/2" in report
+    assert report.splitlines()[-1].startswith("1/2 passed")
+
+
+def test_the_script_has_think_and_repeat_flags():
+    import subprocess
+    import sys
+    from pathlib import Path
+    script = Path(__file__).resolve().parents[2] / "scripts" / "eval_doc_qa.py"
+    out = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True).stdout
+    assert "--think" in out and "--repeat" in out

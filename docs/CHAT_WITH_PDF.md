@@ -325,11 +325,29 @@ The browser never talks to a model provider or executes a tool directly any more
 | exact-label | "What does Table 7.3 report?" | the value and its page: the exact-word search's job |
 | page-read | "What does page 5 say about the field trial?" | the fact and page 5 |
 | absent | "What is the capital budget for 2030?" | a refusal ("the document doesn't seem to cover…") and no page cited |
+| small-talk | "Thanks, that's all I needed!" | no tool call and no page cited |
+| general | "In what year did people first walk on the Moon?" | "1969" and no page cited (tools are reported, not judged) |
+| live | "What is the weather in Tromsø right now?" | `web_search` called. Tromsø is in the document (page 5), so this checks that a name from the document with a live intent goes to the web. Shown as SKIP when SearXNG isn't configured. |
+| follow-up | "What is the project's codename?", then "Say that in five words or fewer." | the second answer has the codename and the second turn called no tool |
+
+The last four check the strategy, not the document: whether the model picks the right source, or none (v2.4).
 
 ```bash
 python scripts/eval_doc_qa.py --model ollama:llama3.2:3b
 python scripts/eval_doc_qa.py --model openrouter:qwen/qwen3-8b --show-answers
+python scripts/eval_doc_qa.py --model ollama:gemma4:31b-cloud --repeat 3     # a per-case tally over 3 runs
 ```
+
+- **`--repeat N`** (1-10) asks every case N times and ends with a tally per case (`two-hop 2/3`). One run of a small model is noisy: a single case is 11 points of the score.
+- **`--think on|off`** (default `off`, what the chat sends unless a user turns thinking on).
+- **Each line shows the seconds** the case's turn took, so a change's cost in time is measured with its effect.
+- **`PASS (no trail)`** means the answer was right, but no document tool ran and no prefetched passages were given: the model got there without the journey, from its own knowledge or by chance.
+
+**Running it without a big local model.** On a machine without a GPU, two local chat models back to back can hold both in RAM (Ollama keeps a model loaded for 5 minutes). Two alternatives that use no local RAM for the chat model:
+- an Ollama cloud model through the local daemon, e.g. `ollama:gemma4:31b-cloud` (after `ollama signin`; it runs on Ollama's servers, about 10 s a run);
+- an OpenRouter model, e.g. `openrouter:google/gemma-4-26b-a4b-it` (needs the `openrouter` provider configured).
+
+Neither hosts the small local models (`gemma4:e4b`, or `llama3.2:3b` with tools), so check those last, one at a time. The web search case still summarises pages with `SUMMARIZE_MODEL` (default `llama3.2:3b`, local), which loads it into RAM.
 
 It reads the same environment as the backend: `DATABASE_URL`, the embedding model and the chat provider. It indexes the document for an eval user once (later runs reuse it) and deletes its chats afterwards. Each line reports the tools called and the rounds used.
 - **Exit status:** 0 when every case passed, 1 when the model failed one, and 2 when the harness couldn't run. A turn that ended in an error (provider, budget) is reported as ERROR, not as a model failure.
