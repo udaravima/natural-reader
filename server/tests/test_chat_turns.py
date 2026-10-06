@@ -178,8 +178,10 @@ async def test_unknown_fields_are_422(db_conn, app):
 async def test_bad_timezone_still_streams(db_conn, app):
     r = await _post(app, await member(db_conn, "alice"), body={**BODY, "context": {"timezone": "Mars/Olympus"}})
     assert r.status_code == 200
-    volatile, question = app[1].calls[0]["messages"][-1].content.rsplit("\n\n", 1)
-    assert volatile.endswith("(UTC)") and question == "Hi"
+    # v2.4: the date is in the rules (to the day, in the browser's timezone,
+    # else UTC); the user's message is only what they typed.
+    system, user = app[1].calls[0]["messages"][0].content, app[1].calls[0]["messages"][-1].content
+    assert "Today is " in system and "(UTC)." in system and user == "Hi"
 
 
 async def test_bare_model_names_are_canonicalized(db_conn, app):

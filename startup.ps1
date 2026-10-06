@@ -55,16 +55,16 @@ $ModelBaseUrl = "https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.
 $ModelFiles = @("kokoro-v1.0.onnx", "voices-v1.0.bin")
 
 # Minimum tool versions, kept in sync with the README "Software Requirements"
-# and startup.sh. Python: Docling requires >=3.10,<4.0, but onnxruntime-openvino
-# (pinned in requirements.txt for Kokoro) publishes wheels only for
-# Python >=3.10,<3.14.
-$PythonMin = [version]"3.10.0"
+# and startup.sh. Python: the chat server uses inspect.getasyncgenstate (3.12+),
+# and onnxruntime-openvino (pinned in requirements.txt for Kokoro) publishes
+# wheels only for Python <3.14.
+$PythonMin = [version]"3.12.0"
 $PythonMaxExcl = [version]"3.14.0"
 # Tried in order; the first in range wins. The default Python first, then an
 # older one through the py launcher, so a too-new default falls through
-# (startup.sh does the same with python3, python3.13 ... python3.10).
+# (startup.sh does the same with python3, python3.13, python3.12).
 $PythonCandidates = @(
-    @("py", "-3"), @("py", "-3.13"), @("py", "-3.12"), @("py", "-3.11"), @("py", "-3.10"),
+    @("py", "-3"), @("py", "-3.13"), @("py", "-3.12"),
     @("python"), @("python3")
 )
 
@@ -135,7 +135,7 @@ function Assert-PythonVersion {
             return , $cmd
         }
     }
-    Stop-WithError ("No Python in [$PythonMin, $PythonMaxExcl) found: install Python 3.10-3.13 from " +
+    Stop-WithError ("No Python in [$PythonMin, $PythonMaxExcl) found: install Python 3.12 or 3.13 from " +
         "https://www.python.org/downloads/ and tick 'Add to PATH' (onnxruntime-openvino has no 3.14 wheels).")
 }
 

@@ -45,12 +45,12 @@ readonly MODEL_FILES=("kokoro-v1.0.onnx" "voices-v1.0.bin")
 
 # Minimum tool versions, kept in sync with the README "Software Requirements".
 # Node: Vite 7 (Rolldown) + @vitejs/plugin-react require ^20.19.0 || >=22.12.0.
-# Python: Docling requires >=3.10,<4.0, but onnxruntime-openvino (pinned in
-# requirements.txt for Kokoro) publishes wheels only for Python >=3.10,<3.14.
-# doc-chat routes use 3.10+ unions.
-readonly PYTHON_MIN="3.10.0"
+# Python: the chat server uses inspect.getasyncgenstate (3.12+;
+# server/routers/chat_turns.py), and onnxruntime-openvino (pinned in
+# requirements.txt for Kokoro) publishes wheels only for Python <3.14.
+readonly PYTHON_MIN="3.12.0"
 readonly PYTHON_MAX_EXCL="3.14.0"
-readonly PYTHON_CANDIDATES=("python3" "python3.13" "python3.12" "python3.11" "python3.10")
+readonly PYTHON_CANDIDATES=("python3" "python3.13" "python3.12")
 PYTHON_BIN="python3"
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -77,7 +77,7 @@ version_ge() { [[ "$(vercmp "$1" "$2")" != "-1" ]]; }
 version_lt() { [[ "$(vercmp "$1" "$2")" == "-1" ]]; }
 
 # Pick a python satisfying >=PYTHON_MIN, <PYTHON_MAX_EXCL. Preference order:
-# default python3 first, then python3.13..python3.10 (onnxruntime-openvino has
+# default python3 first, then python3.13, python3.12 (onnxruntime-openvino has
 # no wheels for 3.14+, so a too-new python3 falls through to an older one).
 # Sets PYTHON_BIN to the chosen interpreter.
 check_python_version() {
@@ -91,7 +91,7 @@ check_python_version() {
 			return
 		fi
 	done
-	die "No python in [$PYTHON_MIN, $PYTHON_MAX_EXCL) found — install Python 3.10–3.13 (onnxruntime-openvino has no 3.14 wheels)."
+	die "No python in [$PYTHON_MIN, $PYTHON_MAX_EXCL) found — install Python 3.12 or 3.13 (the chat server needs 3.12+; onnxruntime-openvino has no 3.14 wheels). With uv: uv python install 3.13"
 }
 
 # Verify node + npm exist and node satisfies ^20.19.0 || >=22.12.0.

@@ -85,6 +85,11 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Python 3.12 or 3.13 is required** (was 3.10–3.13): the chat server
+  already used a 3.12 function, so on 3.10 and 3.11 the stream-close path
+  failed. `startup.sh` and `startup.cmd` now look for 3.12/3.13 only and say
+  how to install one (`uv python install 3.13`).
+
 - **Logs rotate by time.** `server.log` and `audit.log` start a new file at
   midnight (`LOG_FILE_ROLL_OVER_TIME`), keeping `LOG_FILE_BACKUPS` old ones.
   `LOG_FILE_MAX_MB` is gone.

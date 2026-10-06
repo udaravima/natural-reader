@@ -157,7 +157,7 @@ Install this before you start. The app is split into a **React frontend** (Vite)
 | Software | Version | Why |
 |----------|---------|-----|
 | **Node.js** + **npm** | `20.19+` **or** `22.12+` | Frontend dev server / build. Vite 7 (Rolldown) and `@vitejs/plugin-react` declare `engines: ^20.19.0 \|\| >=22.12.0` — older Node will fail to start. npm ships with Node. |
-| **Python** | `3.10`–`3.13` | Kokoro TTS backend (`run.py`). Doc-chat routes use `\|`-style unions (3.10+); Docling pins `>=3.10,<4.0`. |
+| **Python** | `3.12`–`3.13` | The backend (`run.py`). The chat server needs 3.12+ (`inspect.getasyncgenstate`); `onnxruntime-openvino` (Kokoro) has no 3.14 wheels. |
 | **Git** | any recent | Clone the repository |
 | **wget** or **curl** | any | Download the Kokoro voice model files (~335 MB total — see step 2) |
 
@@ -259,7 +259,7 @@ startup.cmd up-with-dev-auth
 startup.cmd down
 ```
 
-You need Docker Desktop (or Podman Desktop), Python 3.10–3.13 from
+You need Docker Desktop (or Podman Desktop), Python 3.12 or 3.13 from
 python.org with **Add to PATH** ticked, and Node.js. `startup.cmd` runs the
 script with `-ExecutionPolicy Bypass` for that one run, so the machine's
 execution policy can stay as it is. From a PowerShell prompt you can also run
