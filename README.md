@@ -881,8 +881,8 @@ fetch/summary fallbacks. Tune it with env vars (see `.env.example`):
 |-----|---------|----------|
 | `LOG_LEVEL` | `INFO` | Verbosity (`DEBUG` / `INFO` / `WARNING` / …) |
 | `LOG_DIR` | `./logs` | Directory for the log file |
-| `LOG_FILE_MAX_MB` | `10` | Rotate the log after this many MB |
-| `LOG_FILE_BACKUPS` | `5` | How many rotated files to keep |
+| `LOG_FILE_ROLL_OVER_TIME` | `midnight` | When a new log file starts: `midnight`, `H` (hourly), `D`, `W0`–`W6` (weekly) |
+| `LOG_FILE_BACKUPS` | `5` | How many old files to keep (at midnight: days) |
 
 Frontend logs stay in the browser devtools console; Postgres and SearXNG keep their
 own container logs (`docker-compose logs <service>`).

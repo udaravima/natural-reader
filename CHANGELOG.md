@@ -85,6 +85,10 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Logs rotate by time.** `server.log` and `audit.log` start a new file at
+  midnight (`LOG_FILE_ROLL_OVER_TIME`), keeping `LOG_FILE_BACKUPS` old ones.
+  `LOG_FILE_MAX_MB` is gone.
+
 - **`POST /v1/docs/{id}/search` answers 409 `reindexing`** ("This document
   is being re-indexed for the current search model. Try again shortly.")
   while a document is rebuilt for a new embedding model, instead of
