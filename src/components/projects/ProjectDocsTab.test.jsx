@@ -29,6 +29,18 @@ function mount(p, a = api(), extra = {}) {
 describe('ProjectDocsTab', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('shows a failed load inline with Retry, not as an empty project, and Retry reloads', async () => {
+    const a = api({ projectDocs: vi.fn().mockRejectedValueOnce(new Error('Could not load documents.')).mockResolvedValue([placed]) });
+    const props = mount(project(), a);
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not load documents.');
+    expect(screen.queryByText('No documents in this project yet.')).toBeNull();
+    expect(props.showToast).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Placed.pdf')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(a.projectDocs).toHaveBeenCalledTimes(2);
+  });
+
   it('lists the project documents and offers only my own unfiled uploads to file', async () => {
     const a = api();
     const props = mount(project(), a);

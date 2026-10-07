@@ -189,8 +189,9 @@ and you become its Owner.
 | Maintainer | also remove any document, rename the project, and add, remove or change members up to Maintainer |
 | Owner | everything, including Owners and deleting the project |
 
-A project always keeps at least one Owner, so the last Owner can't leave or
-step down until someone else is made Owner.
+A project always keeps at least one Owner, so the last Owner can't leave until
+someone else is made Owner. You can't change your own role; another Owner (or a
+Maintainer, for roles up to Maintainer) can change it for you.
 
 **Adding people.** On a project page, open **Members → + Add people**, type a
 name or their full email address, pick the person, choose a role and press

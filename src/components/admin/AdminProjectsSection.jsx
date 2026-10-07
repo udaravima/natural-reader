@@ -10,7 +10,7 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
  * last Owner was deleted, "Add me as Owner" — the recovery path. The server
  * logs an admin adding themselves at WARNING.
  */
-export function AdminProjectsSection({ theme, apiHost, apiPort, currentUserId, showToast, onOpenProject }) {
+export function AdminProjectsSection({ theme, apiHost, apiPort, currentUserId, showToast, onOpenProject, reloadKey = 0 }) {
   const api = useMemo(() => projectsApi(apiHost, apiPort), [apiHost, apiPort]);
   const [ownerlessOnly, setOwnerlessOnly] = useState(false);
   const [rows, setRows] = useState(null);
@@ -31,7 +31,7 @@ export function AdminProjectsSection({ theme, apiHost, apiPort, currentUserId, s
     }
   }, [api, ownerlessOnly]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { load(); }, [load, reloadKey]);
 
   const recover = async (p) => {
     setBusyId(p.id);

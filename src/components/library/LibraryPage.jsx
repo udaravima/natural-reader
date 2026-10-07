@@ -286,6 +286,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
       await loadDocs(search, projectFilter);
     } catch (e) {
       showToast(`Update failed: ${e.message}`, 5000);
+      await loadProjects(); // our role may have changed; refresh `can` so stale controls go away
     } finally {
       setLinkingId(null);
     }

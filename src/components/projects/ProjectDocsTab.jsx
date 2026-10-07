@@ -9,6 +9,7 @@ import { BookOpen, Loader2, X } from 'lucide-react';
  */
 export default function ProjectDocsTab({ theme, api, project, showToast, onOpenDoc, onRefused, onChanged }) {
   const [docs, setDocs] = useState(null);
+  const [error, setError] = useState(null);
   const [mine, setMine] = useState([]);
   const [busyId, setBusyId] = useState(null);
   const [confirmId, setConfirmId] = useState(null);
@@ -24,11 +25,11 @@ export default function ProjectDocsTab({ theme, api, project, showToast, onOpenD
       ]);
       setDocs(inProject);
       setMine(all.filter((d) => d.added_via === 'upload' && !(d.projects || []).some((p) => p.id === project.id)));
+      setError(null);
     } catch (e) {
-      setDocs([]);
-      showToast(e.message, 5000);
+      setError(e.message);
     }
-  }, [api, project.id, can.file_docs, member, showToast]);
+  }, [api, project.id, can.file_docs, member]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -68,8 +69,14 @@ export default function ProjectDocsTab({ theme, api, project, showToast, onOpenD
           {mine.map((d) => <option key={d.doc_id} value={d.doc_id}>{d.file_name}</option>)}
         </select>
       )}
+      {error && (
+        <div role="alert" className="flex items-center gap-2 text-xs text-red-500">
+          <span>{error}</span>
+          <button onClick={load} className="underline">Retry</button>
+        </div>
+      )}
       {docs === null ? (
-        <p className={`text-xs ${theme.textMuted}`}>Loading…</p>
+        error ? null : <p className={`text-xs ${theme.textMuted}`}>Loading…</p>
       ) : docs.length === 0 ? (
         <p className={`text-xs ${theme.textMuted}`}>No documents in this project yet.</p>
       ) : docs.map((d) => (

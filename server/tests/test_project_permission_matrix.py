@@ -82,7 +82,32 @@ async def test_permission_matrix(db_conn, action, caller):
     assert r.status_code == MATRIX[action][CALLERS.index(caller)], r.text
 
 
-async def test_no_personal_data_at_info_or_above(db_conn, caplog, monkeypatch):
+@pytest.fixture
+def production_logging(tmp_path, monkeypatch, caplog):
+    """Apply the real logging config (so httpx/httpcore get their production levels), then
+    re-attach caplog's handler: dictConfig clears root's handlers and the configured
+    loggers don't propagate, so caplog would otherwise see nothing."""
+    from server.logging_config import configure_logging
+    names = ["", "server", "server.audit", "uvicorn", "uvicorn.error", "uvicorn.access", "httpx", "httpcore"]
+    saved = {n: (logging.getLogger(n).handlers[:], logging.getLogger(n).level, logging.getLogger(n).propagate)
+             for n in names}
+    monkeypatch.setenv("LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("LOG_LEVEL", "INFO")
+    configure_logging()
+    for n in names:
+        logging.getLogger(n).addHandler(caplog.handler)
+    yield
+    for n, (handlers, level, prop) in saved.items():
+        lg = logging.getLogger(n)
+        for h in lg.handlers[:]:
+            if h not in handlers and h is not caplog.handler:
+                h.close()
+        lg.handlers[:] = handlers
+        lg.setLevel(level)
+        lg.propagate = prop
+
+
+async def test_no_personal_data_at_info_or_above(db_conn, caplog, monkeypatch, production_logging):
     """§7: IDs, roles and counts only — never emails, names, file names or lookup text."""
     monkeypatch.setenv("USER_DIRECTORY_MODE", "open")
     owner = (await resolve_or_provision_user(db_conn, iss="i", sub="pv1", email="olu.secret@x.io",
@@ -108,7 +133,7 @@ async def test_no_personal_data_at_info_or_above(db_conn, caplog, monkeypatch):
             await c.put(f"/v1/projects/{pid}/members/{owner}", json={"role": "reader"})  # 409
             await c.delete(f"/v1/projects/{pid}/members/{ben}")
     text = "\n".join(r.getMessage() for r in caplog.records
-                     if r.name.startswith("server") and r.levelno >= logging.INFO)
+                     if r.levelno >= logging.INFO)
     for secret in ("secret", "Olusegun", "Benedikt", "Benedi", "Falcon", "Heron"):
         assert secret not in text
     assert f"member.added project={pid}" in text

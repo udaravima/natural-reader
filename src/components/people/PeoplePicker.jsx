@@ -9,10 +9,10 @@ const MIN_CHARS = 2;
  * Find a person to add or share with (A0 §4, §10). Type a name or a full
  * email address and pick from the results. The server decides who can be
  * found (USER_DIRECTORY_MODE); "Try their full email address" is advice that
- * works in every mode. `excludeIds` hides people already chosen. `lookup`
+ * works in every mode. `excludeIds` hides people already chosen (`excludedLabel` is shown when that is all the search found). `lookup`
  * resolves to [{id, name, username, email?, status}] or throws Error(notice).
  */
-export default function PeoplePicker({ theme, lookup, onPick, excludeIds = [], label = 'Find a person', disabled = false }) {
+export default function PeoplePicker({ theme, lookup, onPick, excludeIds = [], label = 'Find a person', disabled = false, excludedLabel = 'Already added.' }) {
   const [q, setQ] = useState('');
   const [results, setResults] = useState(null); // null: nothing searched for the current text
   const [busy, setBusy] = useState(false);
@@ -66,7 +66,7 @@ export default function PeoplePicker({ theme, lookup, onPick, excludeIds = [], l
       {error && <p role="alert" className="text-[10px] text-red-500">{error}</p>}
       {results !== null && !busy && !error && shown.length === 0 && (
         <p className={`text-[10px] ${theme.textMuted}`}>
-          {q.includes('@') ? 'No account uses that email address.' : 'Nobody found. Try their full email address.'}
+          {results.length > 0 ? excludedLabel : q.includes('@') ? 'No account uses that email address.' : 'Nobody found. Try their full email address.'}
         </p>
       )}
       {shown.length > 0 && (

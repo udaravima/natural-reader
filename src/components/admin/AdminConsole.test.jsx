@@ -200,6 +200,20 @@ describe('AdminConsole — users', () => {
     ));
   });
 
+  it('states what deleting a user does to their projects, and reloads the Projects section afterwards', async () => {
+    const users = [user({ id: 'me', role: 'admin' }), user({ id: 'u2', email: 'b@x.io', oidc_sub: null })];
+    mount({ users });
+    await screen.findByText('b@x.io');
+    const projectGets = () => apiFetch.mock.calls.filter(([, , path]) => path.startsWith('/v1/admin/projects')).length;
+    await waitFor(() => expect(projectGets()).toBe(1));
+    const row = screen.getByTestId('user-row-u2');
+    fireEvent.click(within(row).getByRole('button', { name: /delete/i }));
+    expect(within(row).getByText(/permanently deletes their library and chat history\. Projects they belong to stay; any they were the only Owner of become ownerless \(recover them under Projects\)\./)).toBeTruthy();
+    fireEvent.change(within(row).getByLabelText(/confirm email/i), { target: { value: 'b@x.io' } });
+    fireEvent.click(within(row).getByRole('button', { name: /confirm delete/i }));
+    await waitFor(() => expect(projectGets()).toBe(2));
+  });
+
   it('enrolls a pre-provisioned user and shows the claim instruction', async () => {
     const users = [user({ id: 'me', role: 'admin' })];
     mount({ users });

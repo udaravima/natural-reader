@@ -6,9 +6,9 @@ const theme = { bg: '', border: '', text: '', textSecondary: '', textMuted: '', 
 const ann = { id: 'u1', name: 'Ann Lee', username: 'annl', status: 'active' };
 const pen = { id: 'u2', name: 'Pen Pal', username: null, status: 'pending' };
 
-function mount({ lookup = vi.fn(async () => [ann, pen]), excludeIds = [] } = {}) {
+function mount({ lookup = vi.fn(async () => [ann, pen]), excludeIds = [], excludedLabel } = {}) {
   const onPick = vi.fn();
-  render(<PeoplePicker theme={theme} lookup={lookup} onPick={onPick} excludeIds={excludeIds} label="Find a person" />);
+  render(<PeoplePicker theme={theme} lookup={lookup} onPick={onPick} excludeIds={excludeIds} excludedLabel={excludedLabel} label="Find a person" />);
   return { lookup, onPick, box: screen.getByLabelText('Find a person') };
 }
 
@@ -41,6 +41,20 @@ describe('PeoplePicker', () => {
     fireEvent.change(box, { target: { value: 'an' } });
     expect(await screen.findByText('Pen Pal')).toBeTruthy();
     expect(screen.queryByText('Ann Lee')).toBeNull();
+  });
+
+  it('says "Already added." instead of "no account" when every result is excluded', async () => {
+    const { box } = mount({ lookup: vi.fn(async () => [ann]), excludeIds: ['u1'] });
+    fireEvent.change(box, { target: { value: 'ann@example.com' } });
+    expect(await screen.findByText('Already added.')).toBeTruthy();
+    expect(screen.queryByText(/No account uses/)).toBeNull();
+    expect(screen.queryByText(/Nobody found/)).toBeNull();
+  });
+
+  it('uses excludedLabel when given', async () => {
+    const { box } = mount({ lookup: vi.fn(async () => [ann]), excludeIds: ['u1'], excludedLabel: 'Already shared with them.' });
+    fireEvent.change(box, { target: { value: 'ann' } });
+    expect(await screen.findByText('Already shared with them.')).toBeTruthy();
   });
 
   it('says what to try when nobody is found', async () => {

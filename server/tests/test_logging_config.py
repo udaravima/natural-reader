@@ -127,3 +127,28 @@ def test_access_log_filter_leaves_other_shapes_alone():
         rec = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, "plain", args, None)
         assert flt.filter(rec) is True
         assert rec.args == args
+
+
+def test_httpx_and_httpcore_are_quiet_at_info(tmp_path, monkeypatch, isolate_logging):
+    """Request URLs carry emails and search text; INFO lines from httpx must not be emitted."""
+    monkeypatch.setenv("LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("LOG_LEVEL", "INFO")
+    names = ("httpx", "httpcore")
+    saved = {n: (logging.getLogger(n).level, logging.getLogger(n).propagate, logging.getLogger(n).handlers[:])
+             for n in names}
+    try:
+        logging_config.configure_logging()
+        for n in names:
+            lg = logging.getLogger(n)
+            assert lg.isEnabledFor(logging.INFO) is False
+            assert lg.isEnabledFor(logging.WARNING) is True
+        logging.getLogger("httpx").info("HTTP Request: GET http://kc/users?email=alice%40corp.example.com")
+        for h in logging.getLogger().handlers:
+            h.flush()
+        assert "alice" not in (tmp_path / "server.log").read_text()
+    finally:
+        for n, (lvl, prop, hs) in saved.items():
+            lg = logging.getLogger(n)
+            lg.setLevel(lvl)
+            lg.propagate = prop
+            lg.handlers[:] = hs

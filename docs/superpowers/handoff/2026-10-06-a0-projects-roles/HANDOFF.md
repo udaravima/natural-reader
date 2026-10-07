@@ -28,7 +28,7 @@
 | 8 | Admin recovery | Admin → Users → delete Sam (sole Owner) → Projects → Ownerless only → Add me as Owner | Pass — project survived ownerless; recovered; member shows "added by admin"; server logged the self-add at WARNING with IDs only |
 | 9 | See what changed | Project → Activity | Pass — every step, newest first; the deleted user reads "a former member"; the removed document keeps its name |
 
-Also checked: a Maintainer sees Edit and Leave but no Delete; the reader's "Project for this document" picker listed only projects the user may file into; the walk's server log contained no emails, names, project names, file names or lookup text, and access-log lines carried no query strings.
+Also checked: a Maintainer sees Edit and Leave but no Delete; the reader's "Project for this document" picker listed only projects the user may file into; the walk's server log was checked for plain-text emails, names, project names, file names and lookup text, and access-log lines carried no query strings. The final review then found that httpx request lines can carry URL-encoded emails (e.g. `%40`) at INFO; fixed by raising `httpx`/`httpcore` to WARNING in `server/logging_config.py`.
 
 **API-only or env-only:** none of journeys 1–9. The six settings (`USER_DIRECTORY_*`, `PROJECT_CREATION`, `PROJECT_LIMIT_PER_USER`, `PROJECT_EVENTS_RETENTION_DAYS`) are deployer env settings by design.
 
@@ -38,7 +38,7 @@ Also checked: a Maintainer sees Edit and Leave but no Delete; the reader's "Proj
 
 1. **The compose Keycloak is the real identity server on this machine.** `docker-compose.yml` interpolates `KC_HOSTNAME` and `KC_PROXY_HEADERS` from `.env`, and Keycloak stores users in the shared Postgres (`KC_DB_SCHEMA: keycloak`). Running a "local" walk against it would create real accounts. A walk needs a separate throwaway Keycloak, as done here.
 2. **Real domain in tracked files** (open-source rule): `docker-compose.yml` (a `KC_HOSTNAME` comment) and `deploy/keycloak/realm-export.json` (client redirect URIs and web origins), in addition to the `docs/DEPLOYMENT.md` issue already owed from v2.4.
-3. **UI wording:** the admin delete-user confirmation still says it "permanently deletes this user's documents" — since A0, documents filed in projects survive (the toast after deletion was updated; the confirmation wasn't).
+3. **UI wording:** the admin delete-user confirmation now says what happens to libraries and projects (fixed in the final-review pass).
 4. **UI staleness:** after deleting a user, the admin Projects section keeps showing them as an owner until it reloads (toggle the filter or revisit).
 5. **Activity wording:** an admin adding themselves reads "Admin User added Admin User as Owner" (should read "added themselves").
 6. **Not A0, unverified cause:** the app's "Log out" returned to the app without ending the Keycloak session, so the next "Sign in" skipped the password. Logging out at Keycloak's own logout page worked.

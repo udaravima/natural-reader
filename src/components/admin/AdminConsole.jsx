@@ -85,6 +85,7 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
   const [enrolling, setEnrolling] = useState(false); // POST in flight → busy button
 
   // Delete flow
+  const [projectsVersion, setProjectsVersion] = useState(0); // bumped when a deletion may have orphaned projects
   const [deleteTarget, setDeleteTarget] = useState(null); // user id
   const [deleteTyped, setDeleteTyped] = useState('');
 
@@ -247,6 +248,7 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
       if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
       setDeleteTarget(null); setDeleteTyped('');
       showToast(`Deleted ${u.email} — their library and chat history were removed; projects they belonged to stay (ownerless ones appear under Projects).`, 6000);
+      setProjectsVersion((v) => v + 1);
       await loadUsers();
     } catch (e) {
       showToast(`Delete failed: ${e.message}`, 5000);
@@ -422,7 +424,7 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
                 {deleting && (
                   <div className="flex flex-wrap items-center gap-2 text-[10px] pt-1">
                     <span className="text-red-500">
-                      This permanently deletes this user's documents and chat history.
+                      This permanently deletes their library and chat history. Projects they belong to stay; any they were the only Owner of become ownerless (recover them under Projects).
                     </span>
                     <input
                       type="text" value={deleteTyped}
@@ -444,7 +446,7 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
         </section>
 
         <AdminProjectsSection theme={theme} apiHost={apiHost} apiPort={apiPort} currentUserId={currentUserId}
-          showToast={showToast} onOpenProject={setOpenProjectId} />
+          showToast={showToast} onOpenProject={setOpenProjectId} reloadKey={projectsVersion} />
 
         {/* ---------- INFERENCE USAGE ---------- */}
         <section className="flex flex-col gap-3" aria-label="Inference usage">

@@ -13,6 +13,7 @@ import { ROLES, roleLabel } from '../../lib/projectRoles';
  */
 export default function MembersTab({ theme, api, project, currentUserId, showToast, onRefused, onChanged }) {
   const [members, setMembers] = useState(null);
+  const [error, setError] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [adding, setAdding] = useState(false);
   const [picked, setPicked] = useState(null);
@@ -22,12 +23,13 @@ export default function MembersTab({ theme, api, project, currentUserId, showToa
 
   const load = useCallback(async () => {
     try {
-      setMembers(await api.members(project.id));
+      const list = await api.members(project.id);
+      setMembers(list);
+      setError(null);
     } catch (e) {
-      setMembers([]);
-      showToast(e.message, 5000);
+      setError(e.message);
     }
-  }, [api, project.id, showToast]);
+  }, [api, project.id]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -83,14 +85,20 @@ export default function MembersTab({ theme, api, project, currentUserId, showToa
             </div>
           ) : (
             <PeoplePicker theme={theme} lookup={api.lookup} onPick={setPicked} label="Find a person to add"
-              excludeIds={(members || []).map((m) => m.user_id)} />
+              excludeIds={(members || []).map((m) => m.user_id)} excludedLabel="Already a member of this project." />
           )}
           <button onClick={() => { setAdding(false); setPicked(null); }} className="self-start text-[10px] underline">Close</button>
         </div>
       )}
 
+      {error && (
+        <div role="alert" className="flex items-center gap-2 text-xs text-red-500">
+          <span>{error}</span>
+          <button onClick={load} className="underline">Retry</button>
+        </div>
+      )}
       {members === null ? (
-        <p className={`text-xs ${theme.textMuted}`}>Loading…</p>
+        error ? null : <p className={`text-xs ${theme.textMuted}`}>Loading…</p>
       ) : (
         <ul className="flex flex-col gap-1">
           {members.map((m) => (

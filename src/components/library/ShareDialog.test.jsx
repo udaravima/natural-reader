@@ -27,6 +27,14 @@ describe('ShareDialog', () => {
     expect(screen.queryByRole('button', { name: /^Ann Lee/ })).toBeNull();
   });
 
+  it('says a found person is already shared with rather than that no account exists', async () => {
+    const a = api({ lookup: vi.fn(async () => [{ id: 'u1', name: 'Ann Lee', status: 'active' }]) });
+    render(<ShareDialog theme={theme} api={a} doc={doc} showToast={vi.fn()} onClose={vi.fn()} />);
+    await screen.findByText('Ann Lee');
+    fireEvent.change(screen.getByLabelText('Share Owned.pdf with'), { target: { value: 'ann@example.com' } });
+    expect(await screen.findByText('Already shared with them.')).toBeTruthy();
+  });
+
   it('shares with a picked person and reloads the list', async () => {
     const a = api();
     const showToast = vi.fn();

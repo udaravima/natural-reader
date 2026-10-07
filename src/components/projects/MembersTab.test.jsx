@@ -98,6 +98,28 @@ describe('MembersTab', () => {
     await waitFor(() => expect(a.putMember).toHaveBeenCalledWith('p1', 'n1', 'reader'));
   });
 
+  it('says a found person is already a member rather than that no account exists', async () => {
+    const a = api({ lookup: vi.fn(async () => [{ id: 'o1', name: 'Asha Perera', status: 'active' }]) });
+    mount(asMaintainer, a);
+    await screen.findByText('Asha Perera');
+    fireEvent.click(screen.getByRole('button', { name: '+ Add people' }));
+    fireEvent.change(screen.getByLabelText('Find a person to add'), { target: { value: 'asha@example.com' } });
+    expect(await screen.findByText('Already a member of this project.')).toBeTruthy();
+    expect(screen.queryByText(/No account uses/)).toBeNull();
+  });
+
+  it('shows a failed load inline with Retry, not as "Members (0)", and Retry reloads', async () => {
+    const a = api({ members: vi.fn().mockRejectedValueOnce(new Error('Could not load members.')).mockResolvedValue(members) });
+    const props = mount(asOwner, a);
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not load members.');
+    expect(screen.queryByText('Members (0)')).toBeNull();
+    expect(props.showToast).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Asha Perera')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(a.members).toHaveBeenCalledTimes(2);
+  });
+
   it('shows the last-owner notice and reloads the project on a refusal', async () => {
     const a = api({ removeMember: vi.fn(async () => { throw new Error('A project must keep at least one Owner.'); }) });
     const props = mount(asOwner, a);

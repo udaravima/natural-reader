@@ -87,6 +87,9 @@ def _dict_config(logfile: Path, level: str, backups: int, audit_file: Path, roll
             "uvicorn.error": {"level": level, "handlers": ["console", "file"], "propagate": False},
             "uvicorn.access": {"level": level, "handlers": ["console", "file"], "propagate": False,
                                "filters": ["drop_query"]},
+            # httpx logs full request URLs at INFO (emails, search text): personal data, keep out of logs.
+            "httpx": {"level": "WARNING", "handlers": ["console", "file"], "propagate": False},
+            "httpcore": {"level": "WARNING", "handlers": ["console", "file"], "propagate": False},
         },
     }
 

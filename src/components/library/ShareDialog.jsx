@@ -46,7 +46,7 @@ export default function ShareDialog({ theme, api, doc, showToast, onClose }) {
       </div>
       <p className={`text-[10px] ${theme.textMuted}`}>People you share with can read this document. They can't share it on.</p>
       <PeoplePicker theme={theme} lookup={api.lookup} label={`Share ${doc.file_name} with`} disabled={busyId !== null}
-        excludeIds={(shares || []).map((s) => s.user_id)}
+        excludeIds={(shares || []).map((s) => s.user_id)} excludedLabel="Already shared with them."
         onPick={(p) => run(p.id, () => api.share(doc.doc_id, p.id), `Shared ${doc.file_name} with ${p.name}.`)} />
       {error ? (
         <div role="alert" className="flex items-center gap-2 text-[10px] text-red-500">

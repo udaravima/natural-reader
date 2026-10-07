@@ -269,6 +269,30 @@ describe('LibraryPage', () => {
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/docs/d1', { method: 'DELETE' }));
   });
 
+  it('reloads projects after a refused unlink so a stale × disappears', async () => {
+    let projectLoads = 0;
+    apiFetch.mockImplementation(async (host, port, path, opts) => {
+      if (path === '/v1/projects/p1/docs/d2' && opts?.method === 'DELETE') {
+        return { ok: false, status: 403, json: async () => ({ detail: { error: 'forbidden', message: 'no' } }) };
+      }
+      if (path.startsWith('/v1/docs')) return json(200, docs);
+      if (path === '/v1/projects') {
+        projectLoads += 1;
+        // After the first load the caller has been demoted to contributor in p1.
+        return json(200, projectLoads === 1 ? projects : [{ ...projects[0], my_role: 'contributor', can: canFor('contributor') }, projects[1]]);
+      }
+      return json(404, {});
+    });
+    render(
+      <LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} darkMode={false} effectiveIsMobile={false} />
+    );
+    await screen.findByText('Teammate.pdf');
+    const row = screen.getByTestId('doc-row-d2');
+    fireEvent.click(within(row).getByLabelText(/remove teammate\.pdf from project a/i));
+    await waitFor(() => expect(projectLoads).toBe(2));
+    await waitFor(() => expect(within(screen.getByTestId('doc-row-d2')).queryByLabelText(/remove teammate\.pdf from project a/i)).toBeNull());
+  });
+
   it('shows the describeRefusal notice, not "HTTP 404", when an unlink is refused', async () => {
     const showToast = vi.fn();
     apiFetch.mockImplementation(async (host, port, path, opts) => {
