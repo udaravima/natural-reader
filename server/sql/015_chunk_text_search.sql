@@ -6,3 +6,5 @@
 ALTER TABLE doc_chunks ADD COLUMN IF NOT EXISTS text_search tsvector
     GENERATED ALWAYS AS (to_tsvector('simple', text)) STORED;
 CREATE INDEX IF NOT EXISTS doc_chunks_text_search_idx ON doc_chunks USING gin (text_search);
+
+INSERT INTO schema_migrations(version) VALUES (15) ON CONFLICT DO NOTHING;

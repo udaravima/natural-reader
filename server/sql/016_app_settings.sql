@@ -8,3 +8,5 @@ CREATE TABLE IF NOT EXISTS app_settings (
     updated_by  UUID REFERENCES users(id) ON DELETE SET NULL,
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+INSERT INTO schema_migrations(version) VALUES (16) ON CONFLICT DO NOTHING;

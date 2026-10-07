@@ -132,14 +132,11 @@ async def content_ops_refusal(conn, doc_id, user_id, *, is_admin) -> str | None:
 
 async def docs_referenced_by_user(conn, user_id) -> list[str]:
     """Docs whose last reference may vanish when this user is deleted: their
-    entries, plus placements in projects they own (projects cascade on user
-    delete until A0 ends that). Sorted: GC locks each content row, and every
-    multi-doc GC path taking them in the same order can't deadlock."""
+    library entries. Projects outlive their members (A0 §3.1), so placements
+    are never orphaned by a user deletion. Sorted: GC locks each content row,
+    and every multi-doc GC path taking them in the same order can't deadlock."""
     cur = await conn.execute(
-        "SELECT doc_id FROM library_entries WHERE user_id = %s "
-        "UNION SELECT pd.doc_id FROM project_documents pd "
-        "JOIN projects p ON p.id = pd.project_id WHERE p.owner_user_id = %s "
-        "ORDER BY 1", (user_id, user_id))
+        "SELECT doc_id FROM library_entries WHERE user_id = %s ORDER BY 1", (user_id,))
     return [r[0] for r in await cur.fetchall()]
 
 

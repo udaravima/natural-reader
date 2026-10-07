@@ -34,10 +34,7 @@ async def test_create_and_list_project(db_conn):
 async def test_non_owner_cannot_patch(db_conn):
     owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
     other = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="x@x.io")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner["id"],))
-    pid = str((await cur.fetchone())[0])
+    pid = await seed.make_project(db_conn, owner["id"], "P")
     p = deps.Principal(user_id=other["id"], email=other["email"], role="member")
     async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
                                  base_url="http://t") as c:
@@ -48,10 +45,7 @@ async def test_non_owner_cannot_patch(db_conn):
 async def test_owner_adds_and_removes_member(db_conn):
     owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
     member = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="m@x.io")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner["id"],))
-    pid = str((await cur.fetchone())[0])
+    pid = await seed.make_project(db_conn, owner["id"], "P")
     p = deps.Principal(user_id=owner["id"], email=owner["email"], role="member")
     async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
                                  base_url="http://t") as c:
@@ -62,10 +56,7 @@ async def test_owner_adds_and_removes_member(db_conn):
 async def test_non_owner_cannot_delete_project(db_conn):
     owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
     other = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="x@x.io")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner["id"],))
-    pid = str((await cur.fetchone())[0])
+    pid = await seed.make_project(db_conn, owner["id"], "P")
     p = deps.Principal(user_id=other["id"], email=other["email"], role="member")
     async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
                                  base_url="http://t") as c:
@@ -77,10 +68,7 @@ async def test_non_owner_cannot_add_member(db_conn):
     owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
     other = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="x@x.io")
     target = await resolve_or_provision_user(db_conn, iss="i", sub="s3", email="t@x.io")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner["id"],))
-    pid = str((await cur.fetchone())[0])
+    pid = await seed.make_project(db_conn, owner["id"], "P")
     p = deps.Principal(user_id=other["id"], email=other["email"], role="member")
     async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
                                  base_url="http://t") as c:
@@ -92,10 +80,7 @@ async def test_non_owner_cannot_remove_member(db_conn):
     owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
     other = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="x@x.io")
     target = await resolve_or_provision_user(db_conn, iss="i", sub="s3", email="t@x.io")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner["id"],))
-    pid = str((await cur.fetchone())[0])
+    pid = await seed.make_project(db_conn, owner["id"], "P")
     p = deps.Principal(user_id=other["id"], email=other["email"], role="member")
     async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
                                  base_url="http://t") as c:
@@ -123,10 +108,7 @@ async def test_list_excludes_other_users_projects(db_conn):
 
 async def test_add_member_nonexistent_user_404(db_conn):
     owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner["id"],))
-    pid = str((await cur.fetchone())[0])
+    pid = await seed.make_project(db_conn, owner["id"], "P")
     p = deps.Principal(user_id=owner["id"], email=owner["email"], role="member")
     fake_uid = str(uuid.uuid4())
     async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
@@ -142,10 +124,7 @@ async def test_add_member_nonexistent_user_404(db_conn):
 
 async def test_add_member_malformed_user_404(db_conn):
     owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner["id"],))
-    pid = str((await cur.fetchone())[0])
+    pid = await seed.make_project(db_conn, owner["id"], "P")
     p = deps.Principal(user_id=owner["id"], email=owner["email"], role="member")
     async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
                                  base_url="http://t") as c:
@@ -162,10 +141,7 @@ def _reader(u, role="member"):
 
 
 async def _mk_project(db_conn, owner_id, name="P"):
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,%s) RETURNING id",
-        (owner_id, name))
-    return str((await cur.fetchone())[0])
+    return await seed.make_project(db_conn, owner_id, name)
 
 
 async def _mk_doc(db_conn, doc_id, owner_id):
@@ -205,8 +181,7 @@ async def test_link_own_doc_into_project_where_member(db_conn):
     owner = await resolve_or_provision_user(db_conn, iss="i", sub="l2o", email="l2o@x.io")
     u = await resolve_or_provision_user(db_conn, iss="i", sub="l2", email="l2@x.io")
     pid = await _mk_project(db_conn, owner["id"])
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)", (pid, u["id"]))
+    await seed.add_member(db_conn, pid, u["id"])
     await _mk_doc(db_conn, DOC_A, u["id"])
     async with _client_for(db_conn, _reader(u)) as c:
         assert (await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 204
@@ -281,9 +256,8 @@ async def test_unlink_resolution_table(db_conn, linked, caller, expected):
     other = await resolve_or_provision_user(db_conn, iss="i", sub="u3", email="u3@x.io")
     pid = await _mk_project(db_conn, proj_owner["id"])
     # `other` is a plain member: members must not unlink someone else's doc.
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s),(%s,%s)",
-        (pid, doc_owner["id"], pid, other["id"]))
+    await seed.add_member(db_conn, pid, doc_owner["id"])
+    await seed.add_member(db_conn, pid, other["id"])
     await _mk_doc(db_conn, DOC_A, doc_owner["id"])
     if linked:
         await seed.place_doc(db_conn, pid, DOC_A, doc_owner["id"])

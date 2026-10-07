@@ -26,9 +26,7 @@ async def _denied(conn, doc_id, user):
 
 
 async def _project(conn, owner, name="P"):
-    cur = await conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,%s) RETURNING id", (owner, name))
-    return str((await cur.fetchone())[0])
+    return await seed.make_project(conn, owner, name)
 
 
 async def test_upload_holder_can_read(db_conn):
@@ -49,11 +47,8 @@ async def test_stranger_cannot_read(db_conn):
 async def test_project_member_can_read(db_conn):
     o = await _user(db_conn, "o", "o@x.io")
     m = await _user(db_conn, "m", "m@x.io")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id", (o,))
-    pid = str((await cur.fetchone())[0])
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)", (pid, m))
+    pid = await seed.make_project(db_conn, o, "P")
+    await seed.add_member(db_conn, pid, m)
     await _doc(db_conn, "d1", o, [pid])
     await authz.assert_can_read_doc(db_conn, "d1", m)  # no raise
 
@@ -72,14 +67,9 @@ async def test_member_of_other_project_cannot_read(db_conn):
     # join to the doc's own links.
     o = await _user(db_conn, "o", "o@x.io")
     m = await _user(db_conn, "m", "m@x.io")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'A') RETURNING id", (o,))
-    proj_a = str((await cur.fetchone())[0])
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'B') RETURNING id", (o,))
-    proj_b = str((await cur.fetchone())[0])
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)", (proj_a, m))
+    proj_a = await seed.make_project(db_conn, o, "A")
+    proj_b = await seed.make_project(db_conn, o, "B")
+    await seed.add_member(db_conn, proj_a, m)
     await _doc(db_conn, "d1", o, [proj_b])  # doc lives in B, m only belongs to A
     with pytest.raises(HTTPException) as e:
         await authz.assert_can_read_doc(db_conn, "d1", m)
@@ -98,13 +88,11 @@ async def test_can_read_one_doc_query_placeholders_match_params():
 
 
 async def test_project_owner_reads_member_filed_doc(db_conn):
-    # Regression: the owner of a project has no project_members row, and used
-    # to be a stranger to docs other members filed into their own project.
+    # A0: owners are members; the read predicate has one branch.
     alice = await _user(db_conn, "alice", "alice@x.io")
     bob = await _user(db_conn, "bob", "bob@x.io")
     pid = await _project(db_conn, alice)
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)", (pid, bob))
+    await seed.add_member(db_conn, pid, bob)
     await _doc(db_conn, "d1", bob, [pid])
     await authz.assert_can_read_doc(db_conn, "d1", alice)  # no raise
 
@@ -115,9 +103,8 @@ async def test_member_of_either_linked_project_can_read(db_conn):
     m2 = await _user(db_conn, "m2", "m2@x.io")
     p1 = await _project(db_conn, o, "A")
     p2 = await _project(db_conn, o, "B")
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s),(%s,%s)",
-        (p1, m1, p2, m2))
+    await seed.add_member(db_conn, p1, m1)
+    await seed.add_member(db_conn, p2, m2)
     await _doc(db_conn, "d1", o, [p1, p2])
     await authz.assert_can_read_doc(db_conn, "d1", m1)
     await authz.assert_can_read_doc(db_conn, "d1", m2)
@@ -133,8 +120,7 @@ async def test_placement_alone_grants_read(db_conn):
     m = await _user(db_conn, "m", "m@x.io")
     s = await _user(db_conn, "s", "s@x.io")
     pid = await _project(db_conn, o)
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)", (pid, m))
+    await seed.add_member(db_conn, pid, m)
     await _doc(db_conn, "d1", None, [pid])
     await authz.assert_can_read_doc(db_conn, "d1", o)
     await authz.assert_can_read_doc(db_conn, "d1", m)

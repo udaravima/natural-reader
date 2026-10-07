@@ -23,25 +23,22 @@ async def assert_owns_session(conn, session_id: str, user_id: str) -> None:
 
 
 def readable_docs_where(alias: str = "d") -> str:
-    """The ONE definition of "can read this document" (A1 spec §3): the user
-    has a library entry for it, or it is placed in a project the user owns or
-    belongs to — and that entry or placement is PROVED (migration 012):
-    `verified`, i.e. it traces back to someone who sent this server the
-    bytes. A pre-A1 row (the browser sent only a hash) is a claim, and never
-    grants read until its holder uploads the file. `<alias>` is a
-    `documents` row. Bind with `readable_docs_params(user_id)`. Subquery
-    aliases are underscore-prefixed so they can't shadow the caller's.
-    Resolved in SQL, never in Python."""
+    """The ONE definition of "can read this document" (A1 spec §3, A0 §3.1):
+    the user has a library entry for it, or it is placed in a project the
+    user is a member of (any role — owners are members) — and that entry or
+    placement is PROVED (migration 012): `verified`, i.e. it traces back to
+    someone who sent this server the bytes. `<alias>` is a `documents` row.
+    Bind with `readable_docs_params(user_id)`. Subquery aliases are
+    underscore-prefixed so they can't shadow the caller's. Resolved in SQL,
+    never in Python."""
     return (
         f"(EXISTS (SELECT 1 FROM library_entries _re "
         f"WHERE _re.doc_id = {alias}.doc_id AND _re.user_id = %s "
         f"AND {effective_holding_sql('_re')}) "
         f"OR EXISTS (SELECT 1 FROM project_documents _rpd "
-        f"JOIN projects _rp ON _rp.id = _rpd.project_id "
+        f"JOIN project_members _rpm ON _rpm.project_id = _rpd.project_id "
         f"WHERE _rpd.doc_id = {alias}.doc_id AND {effective_holding_sql('_rpd')} "
-        f"AND (_rp.owner_user_id = %s "
-        f"OR EXISTS (SELECT 1 FROM project_members _rpm "
-        f"WHERE _rpm.project_id = _rp.id AND _rpm.user_id = %s))))"
+        f"AND _rpm.user_id = %s))"
     )
 
 
@@ -54,7 +51,7 @@ def effective_holding_sql(holding: str) -> str:
 
 def readable_docs_params(user_id: str) -> list[str]:
     """Exactly the parameters `readable_docs_where` needs, in order."""
-    return [user_id, user_id, user_id]
+    return [user_id, user_id]
 
 
 async def assert_holds_upload(conn, doc_id: str, user_id: str) -> None:
@@ -70,23 +67,24 @@ async def assert_holds_upload(conn, doc_id: str, user_id: str) -> None:
 
 async def can_manage_project_docs(conn, user_id: str, project_id) -> bool:
     """The one seam for "may remove a document from this project" (A1 §5).
-    A1: the project owner. A0 swaps the body to "role >= maintainer"."""
+    Task 1: the Owner role. Task 2 widens it to role >= maintainer."""
     cur = await conn.execute(
-        "SELECT 1 FROM projects WHERE id = %s AND owner_user_id = %s", (project_id, user_id))
+        "SELECT 1 FROM project_members WHERE project_id = %s AND user_id = %s "
+        "AND role = 'owner'", (project_id, user_id))
     return await cur.fetchone() is not None
 
 
 def visible_projects_where(alias: str = "p") -> str:
-    """A `projects` row the user owns or is a member of. Bind with
+    """A `projects` row the user is a member of (any role). Bind with
     `visible_projects_params(user_id)`."""
     return (
-        f"({alias}.owner_user_id = %s OR EXISTS (SELECT 1 FROM project_members _vpm "
-        f"WHERE _vpm.project_id = {alias}.id AND _vpm.user_id = %s))"
+        f"EXISTS (SELECT 1 FROM project_members _vpm "
+        f"WHERE _vpm.project_id = {alias}.id AND _vpm.user_id = %s)"
     )
 
 
 def visible_projects_params(user_id: str) -> list[str]:
-    return [user_id, user_id]
+    return [user_id]
 
 
 CAN_READ_DOCS_SQL = readable_docs_where()

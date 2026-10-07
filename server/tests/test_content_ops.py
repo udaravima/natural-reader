@@ -156,10 +156,7 @@ async def test_admin_without_entry_via_project_converts(db_conn, harness, store)
     _, as_user = harness
     owner = await _member(db_conn, "pc-owner")
     admin = await _admin(db_conn, "pc-admin")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (admin.user_id,))
-    pid = (await cur.fetchone())[0]
+    pid = await seed.make_project(db_conn, admin.user_id, "P")
     path = _write(store, HEX, "pdf", make_pdf(["hi"]))
     await seed.seed_doc(db_conn, HEX, owner.user_id, file_type="pdf", bytes_path=path,
                         project_ids=[pid])
@@ -176,10 +173,7 @@ async def test_sole_holder_with_own_placement_is_in_project(db_conn, harness, st
     # holder filed it into their own project (spec §5).
     _, as_user = harness
     owner = await _member(db_conn, "ip-owner")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner.user_id,))
-    pid = (await cur.fetchone())[0]
+    pid = await seed.make_project(db_conn, owner.user_id, "P")
     path = _write(store, HEX, "pdf", make_pdf(["hi"]))
     await seed.seed_doc(db_conn, HEX, owner.user_id, file_type="pdf", bytes_path=path,
                         project_ids=[pid])

@@ -346,12 +346,8 @@ async def test_index_by_project_only_reader_is_404(db_conn, harness, store):
     _, as_user = harness
     owner = await _member(db_conn, "pr-owner")
     member = await _member(db_conn, "pr-member")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner.user_id,))
-    pid = (await cur.fetchone())[0]
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)", (pid, member.user_id))
+    pid = await seed.make_project(db_conn, owner.user_id, "P")
+    await seed.add_member(db_conn, pid, member.user_id)
     path = _write(store, DOC, "txt", TEXT)
     await seed.seed_doc(db_conn, DOC, owner.user_id, file_type="text", state="failed",
                         bytes_path=path, project_ids=[pid])
@@ -398,10 +394,7 @@ async def test_index_admin_without_entry_resumes_via_project_placement(db_conn, 
     _, as_user = harness
     owner = await _member(db_conn, "ad-owner")
     admin = await _admin(db_conn, "ad-admin")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (admin.user_id,))
-    pid = (await cur.fetchone())[0]
+    pid = await seed.make_project(db_conn, admin.user_id, "P")
     doc_id = _sha256(TEXT)  # must match: this resume actually runs the pipeline
     path = _write(store, doc_id, "txt", TEXT)
     await seed.seed_doc(db_conn, doc_id, owner.user_id, file_type="text", state="failed",

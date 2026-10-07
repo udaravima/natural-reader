@@ -39,15 +39,16 @@ class ProjectPatch(BaseModel):
 
 
 def _row(r) -> dict:
-    return {"id": str(r[0]), "owner_user_id": str(r[1]), "name": r[2],
-            "description": r[3]}
+    # Transitional (A0 Task 1): `owner_user_id` now reports `created_by`.
+    return {"id": str(r[0]), "owner_user_id": str(r[1]) if r[1] else None,
+            "name": r[2], "description": r[3]}
 
 
 async def _assert_owner(conn, project_id: str, user_id: str) -> None:
     cur = await conn.execute(
-        "SELECT owner_user_id FROM projects WHERE id = %s", (project_id,))
-    row = await cur.fetchone()
-    if row is None or str(row[0]) != user_id:
+        "SELECT 1 FROM project_members WHERE project_id = %s AND user_id = %s "
+        "AND role = 'owner'", (project_id, user_id))
+    if await cur.fetchone() is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
 
@@ -56,10 +57,13 @@ async def create_project(body: ProjectIn,
                          principal: deps.Principal = Depends(deps.get_current_user),
                          conn=Depends(deps.get_conn)):
     cur = await conn.execute(
-        "INSERT INTO projects (owner_user_id, name, description) "
-        "VALUES (%s,%s,%s) RETURNING id, owner_user_id, name, description",
+        "INSERT INTO projects (created_by, name, description) "
+        "VALUES (%s,%s,%s) RETURNING id, created_by, name, description",
         (principal.user_id, body.name, body.description))
     out = _row(await cur.fetchone())
+    await conn.execute(
+        "INSERT INTO project_members (project_id, user_id, role, added_by) "
+        "VALUES (%s,%s,'owner',%s)", (out["id"], principal.user_id, principal.user_id))
     out["is_owner"] = True
     return out
 
@@ -68,11 +72,13 @@ async def create_project(body: ProjectIn,
 async def list_projects(principal: deps.Principal = Depends(deps.get_current_user),
                         conn=Depends(deps.get_conn)):
     cur = await conn.execute(
-        f"SELECT p.id, p.owner_user_id, p.name, p.description FROM projects p "
+        f"SELECT p.id, p.created_by, p.name, p.description, "
+        f"EXISTS (SELECT 1 FROM project_members _o WHERE _o.project_id = p.id "
+        f"AND _o.user_id = %s AND _o.role = 'owner') FROM projects p "
         f"WHERE {visible_projects_where('p')} ORDER BY p.created_at DESC",
-        visible_projects_params(principal.user_id))
+        [principal.user_id, *visible_projects_params(principal.user_id)])
     rows = await cur.fetchall()
-    return [{**_row(r), "is_owner": str(r[1]) == principal.user_id} for r in rows]
+    return [{**_row(r), "is_owner": r[4]} for r in rows]
 
 
 @router.patch("/{project_id}")
@@ -86,7 +92,7 @@ async def patch_project(project_id: str, body: ProjectPatch,
         await conn.execute(f"UPDATE projects SET {sets} WHERE id = %s",
                            [*data.values(), project_id])
     cur = await conn.execute(
-        "SELECT id, owner_user_id, name, description FROM projects WHERE id = %s",
+        "SELECT id, created_by, name, description FROM projects WHERE id = %s",
         (project_id,))
     return {**_row(await cur.fetchone()), "is_owner": True}
 
@@ -126,8 +132,9 @@ async def add_member(project_id: str, user_id: str,
         # whatever runs after we return.
         async with conn.transaction():
             await conn.execute(
-                "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s) "
-                "ON CONFLICT DO NOTHING", (project_id, user_id))
+                "INSERT INTO project_members (project_id, user_id, role, added_by) "
+                "VALUES (%s,%s,'contributor',%s) ON CONFLICT DO NOTHING",
+                (project_id, user_id, principal.user_id))
     except pg_errors.ForeignKeyViolation:
         raise HTTPException(status_code=404, detail="User not found")
     return Response(status_code=204)

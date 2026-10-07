@@ -5,3 +5,5 @@
 -- the document isn't searched (another model: vectors can't be compared).
 -- NULL = indexed before v2.3 (whole-page chunks, no prefixes).
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS embedding_profile TEXT;
+
+INSERT INTO schema_migrations(version) VALUES (14) ON CONFLICT DO NOTHING;

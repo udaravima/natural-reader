@@ -52,10 +52,7 @@ async def _doc(db_conn, doc_id, owner_id, *, tags=None, project_ids=(), file_nam
 
 
 async def _project(db_conn, owner_id, name):
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,%s) RETURNING id",
-        (owner_id, name))
-    return str((await cur.fetchone())[0])
+    return await seed.make_project(db_conn, owner_id, name)
 
 
 DOC_C = "c" * 64  # caller's own upload
@@ -113,15 +110,8 @@ async def test_list_project_member_sees_project_doc_stranger_still_excluded(db_c
     member = await _member(db_conn, "member2")
     stranger = await _member(db_conn, "stranger2")
 
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner.user_id,),
-    )
-    project_id = str((await cur.fetchone())[0])
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)",
-        (project_id, member.user_id),
-    )
+    project_id = await seed.make_project(db_conn, owner.user_id, "P")
+    await seed.add_member(db_conn, project_id, member.user_id)
     await _doc(db_conn, DOC_P, owner.user_id, project_ids=[project_id])
     await _doc(db_conn, DOC_S, stranger.user_id)
 
@@ -179,9 +169,7 @@ async def test_list_projects_hide_names_the_caller_cannot_see(db_conn, docs_app)
     caller = await _member(db_conn, "caller4")
     visible = await _project(db_conn, owner.user_id, "Visible")
     hidden = await _project(db_conn, owner.user_id, "Hidden")
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)",
-        (visible, caller.user_id))
+    await seed.add_member(db_conn, visible, caller.user_id)
     await _doc(db_conn, DOC_P, owner.user_id, project_ids=[visible, hidden])
 
     docs_app.dependency_overrides[deps.get_current_user] = lambda: caller
@@ -269,9 +257,7 @@ async def test_list_same_named_projects_are_both_listed_in_stable_order(db_conn,
     other = await _member(db_conn, "other7")
     mine = await _project(db_conn, caller.user_id, "Infra")
     theirs = await _project(db_conn, other.user_id, "Infra")
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)",
-        (theirs, caller.user_id))
+    await seed.add_member(db_conn, theirs, caller.user_id)
     await _doc(db_conn, DOC_C, caller.user_id, project_ids=[mine, theirs])
 
     docs_app.dependency_overrides[deps.get_current_user] = lambda: caller
@@ -288,8 +274,7 @@ async def test_project_only_row_shows_the_filers_name_not_the_first_uploaders(db
     filer = await _member(db_conn, "i6-filer")
     member = await _member(db_conn, "i6-member")
     pid = await _project(db_conn, filer.user_id, "P")
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)", (pid, member.user_id))
+    await seed.add_member(db_conn, pid, member.user_id)
     await _doc(db_conn, DOC_P, first.user_id, file_name="first-uploader-secret.pdf")
     await seed.share_doc(db_conn, DOC_P, first.user_id, filer.user_id)
     await db_conn.execute(

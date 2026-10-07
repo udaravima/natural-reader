@@ -61,13 +61,8 @@ async def test_access_matrix(db_conn, docs_app, role, n_projects):
     projects = []
     for owner_role, member_role, name in (("p1_owner", "p1_member", "P1"),
                                           ("p2_owner", "p2_member", "P2")):
-        cur = await db_conn.execute(
-            "INSERT INTO projects (owner_user_id, name) VALUES (%s,%s) RETURNING id",
-            (uid[owner_role], name))
-        pid = str((await cur.fetchone())[0])
-        await db_conn.execute(
-            "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)",
-            (pid, uid[member_role]))
+        pid = await seed.make_project(db_conn, uid[owner_role], name)
+        await seed.add_member(db_conn, pid, uid[member_role])
         projects.append(pid)
 
     await seed.seed_doc(db_conn, DOC, uid["uploader"], file_name="f.pdf",

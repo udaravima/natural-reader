@@ -56,13 +56,7 @@ async def _get(as_user, who, doc_id=DOC):
 
 
 async def _project(db_conn, owner, *members):
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id", (owner,))
-    pid = str((await cur.fetchone())[0])
-    for m in members:
-        await db_conn.execute(
-            "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)", (pid, m))
-    return pid
+    return await seed.make_project(db_conn, owner, "P", members=[(m, "contributor") for m in members])
 
 
 async def test_owner_gets_the_bytes_inline_with_the_stored_type(db_conn, as_user, stored):

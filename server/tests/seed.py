@@ -40,3 +40,26 @@ async def place_doc(conn, project_id, doc_id, added_by, *, verified=True):
     await conn.execute(
         "INSERT INTO project_documents (project_id, doc_id, added_by, verified) "
         "VALUES (%s,%s,%s,%s)", (project_id, doc_id, added_by, verified))
+
+
+async def make_project(conn, owner_id, name="P", *, members=()):
+    """A project created by `owner_id`, who is its Owner, plus `members` as
+    (user_id, role) pairs. `owner_id=None` makes an ownerless project.
+    Returns the project id as a string."""
+    cur = await conn.execute(
+        "INSERT INTO projects (created_by, name) VALUES (%s,%s) RETURNING id",
+        (owner_id, name))
+    pid = str((await cur.fetchone())[0])
+    if owner_id is not None:
+        await add_member(conn, pid, owner_id, "owner")
+    for user_id, role in members:
+        await add_member(conn, pid, user_id, role)
+    return pid
+
+
+async def add_member(conn, project_id, user_id, role="contributor"):
+    """Membership with a role (A0); re-adding a member changes their role."""
+    await conn.execute(
+        "INSERT INTO project_members (project_id, user_id, role) VALUES (%s,%s,%s) "
+        "ON CONFLICT (project_id, user_id) DO UPDATE SET role = EXCLUDED.role",
+        (project_id, user_id, role))

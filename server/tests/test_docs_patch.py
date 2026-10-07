@@ -142,13 +142,8 @@ async def test_patch_doc_seen_only_via_project_is_404(db_conn, docs_app):
     # Reading through a project gives no entry to edit.
     owner = await _user(db_conn, "owner-proj")
     member = await _user(db_conn, "member-proj")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner.user_id,))
-    pid = (await cur.fetchone())[0]
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)",
-        (pid, member.user_id))
+    pid = await seed.make_project(db_conn, owner.user_id, "P")
+    await seed.add_member(db_conn, pid, member.user_id)
     await seed.seed_doc(db_conn, HEX, owner.user_id, file_name="f", file_type="text",
                         project_ids=[pid])
 

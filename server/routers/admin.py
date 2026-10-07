@@ -221,7 +221,8 @@ async def delete_user(
     kc=Depends(deps.get_kc_admin),
 ):
     """Hard delete (admin-console spec §4): sessions, PATs, usage, library
-    entries, owned projects and chat history all cascade; content nobody else
+    entries, project memberships and chat history all cascade (projects survive,
+    ownerless if this was their last Owner — A0); content nobody else
     holds is then garbage-collected (A1 §3). Rails are server-side — the UI
     hiding them is cosmetic. Reasons are machine-readable in detail.reason."""
     try:
@@ -247,8 +248,7 @@ async def delete_user(
         raise HTTPException(
             status_code=409, detail={"reason": "last_active_admin"}
         )
-    # Collect every doc this deletion can orphan BEFORE the rows cascade away:
-    # the user's entries, and placements in projects they own (A1 §3). GC runs
+    # Collect the user's entry docs BEFORE the rows cascade away; GC runs
     # after — a cascade never runs app code.
     doc_ids = await doc_content.docs_referenced_by_user(conn, user_id)
     await users.delete_user(conn, user_id)
