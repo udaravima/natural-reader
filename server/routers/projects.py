@@ -12,7 +12,7 @@ import uuid
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..audit import audit
@@ -20,7 +20,6 @@ from ..auth import deps
 from ..auth.authz import (
     assert_holds_upload,
     can_for,
-    can_manage_project_docs,
     require_project_role,
     visible_projects_params,
     visible_projects_where,
@@ -194,28 +193,38 @@ async def delete_member(project_id: uuid.UUID, user_id: str,
     return Response(status_code=204)
 
 
+async def _filed_name(conn, doc_id: str, user_id: str) -> str | None:
+    """The name the filer sees for the document (their entry's, else the content's)."""
+    cur = await conn.execute(
+        "SELECT COALESCE(e.file_name, d.file_name) FROM library_entries e "
+        "JOIN documents d ON d.doc_id = e.doc_id WHERE e.user_id = %s AND e.doc_id = %s",
+        (user_id, doc_id))
+    row = await cur.fetchone()
+    return row[0] if row else None
+
+
+async def _placement_name(conn, project_id, doc_id: str) -> str | None:
+    """The name the project shows for a placed document: its filer's entry
+    name, else the content's canonical name."""
+    cur = await conn.execute(
+        "SELECT COALESCE(e.file_name, d.file_name) FROM project_documents pd "
+        "JOIN documents d ON d.doc_id = pd.doc_id "
+        "LEFT JOIN library_entries e ON e.user_id = pd.added_by AND e.doc_id = pd.doc_id "
+        "WHERE pd.project_id = %s AND pd.doc_id = %s", (project_id, doc_id))
+    row = await cur.fetchone()
+    return row[0] if row else None
+
+
 @router.put("/{project_id}/docs/{doc_id}", status_code=204)
 async def link_doc(project_id: uuid.UUID, doc_id: DocId,
-                   principal: deps.Principal = Depends(deps.require_capability("reader")),
-                   conn=Depends(deps.get_conn)):
-    """File a doc into a project. Caller must hold an UPLOAD entry for the doc
-    (they proved possession) and be able to SEE the project (owner or member);
-    admins skip the visibility check, as the old PATCH project_id path did. The
-    project is checked first, so an invisible project 404s before doc ids can
-    be used to probe it. A doc someone merely shared with me, or that I only
-    read through another project, can't be filed (A1 §5); nor can a pre-A1
-    upload entry nobody verified (migration 012). Idempotent: an existing
-    placement keeps its original `added_by` — unless it is an UNVERIFIED
-    legacy placement, which this verified filing replaces (it would
-    otherwise grant the project nothing)."""
-    if principal.role == "admin":
-        cur = await conn.execute("SELECT 1 FROM projects WHERE id = %s", (project_id,))
-    else:
-        cur = await conn.execute(
-            f"SELECT 1 FROM projects p WHERE p.id = %s AND {visible_projects_where('p')}",
-            [project_id, *visible_projects_params(principal.user_id)])
-    if await cur.fetchone() is None:
-        raise HTTPException(status_code=404, detail="Project not found")
+                   principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
+    """File a doc into a project: a Contributor or above (admins only through
+    a member role, A0 §5) who holds a VERIFIED upload entry for it (A1 §5).
+    The project is checked first, so an invisible project 404s before doc
+    ids can be used to probe it. Idempotent: an existing placement keeps its
+    original `added_by` and writes no event — unless it is an UNVERIFIED
+    legacy placement, which this verified filing replaces."""
+    await require_project_role(conn, principal, project_id, "contributor", admin_ok=False)
     await assert_holds_upload(conn, doc_id, principal.user_id)
     cur = await conn.execute(
         "INSERT INTO project_documents (project_id, doc_id, added_by, verified) "
@@ -224,23 +233,36 @@ async def link_doc(project_id: uuid.UUID, doc_id: DocId,
         "WHERE NOT project_documents.verified", (project_id, doc_id, principal.user_id))
     if cur.rowcount:
         audit("placement.added", project=project_id, doc=doc_id, by=principal.user_id)
+        await project_events.record(
+            conn, project_id, principal.user_id, "document.added", doc_id=doc_id,
+            details={"name": await _filed_name(conn, doc_id, principal.user_id)})
     return Response(status_code=204)
 
 
 @router.delete("/{project_id}/docs/{doc_id}", status_code=204)
 async def unlink_doc(project_id: uuid.UUID, doc_id: DocId,
-                     principal: deps.Principal = Depends(deps.require_capability("reader")),
-                     conn=Depends(deps.get_conn)):
-    """Remove a doc from a project. Projects govern their documents (A1 §5):
-    only `can_manage_project_docs` (A1: the project owner) may — the uploader
-    has no special power. Everyone else, and a missing link, gets 404."""
-    if not await can_manage_project_docs(conn, principal.user_id, project_id):
-        raise refusal(404, "not_found", "Not found")
+                     principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
+    """Remove a doc from a project: a Maintainer or above (A0 §5; admins only
+    through a member role). The uploader has no special power over a
+    placement. A missing link is 404 — after the role check."""
+    await require_project_role(conn, principal, project_id, "maintainer", admin_ok=False)
+    name = await _placement_name(conn, project_id, doc_id)
     cur = await conn.execute(
         "DELETE FROM project_documents WHERE project_id = %s AND doc_id = %s",
         (project_id, doc_id))
     if cur.rowcount == 0:
         raise refusal(404, "not_found", "Not found")
     audit("placement.removed", project=project_id, doc=doc_id, by=principal.user_id)
+    await project_events.record(conn, project_id, principal.user_id, "document.removed",
+                                doc_id=doc_id, details={"name": name})
     await doc_content.gc_content_if_orphaned(conn, doc_id, trigger="placement_removed")
     return Response(status_code=204)
+
+
+@router.get("/{project_id}/events")
+async def get_events(project_id: uuid.UUID, before: int | None = Query(None, ge=1),
+                     limit: int = Query(50, ge=1, le=100),
+                     principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
+    await require_project_role(conn, principal, project_id, None)
+    return await project_events.page(conn, project_id, before=before, limit=limit,
+                                     show_email=_show_email())
