@@ -21,6 +21,8 @@ from ..services import assistant_profile, doc_content, inference_budget, model_r
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
+# users.project_limit is a Postgres INTEGER; larger values fail the UPDATE.
+_PG_INT_MAX = 2**31 - 1
 
 
 class UserPatchIn(BaseModel):
@@ -142,8 +144,9 @@ async def patch_user(
         await users.set_inference_budget(conn, user_id, budget)
     if "project_limit" in data:
         limit = data["project_limit"]
-        if limit is not None and limit < 0:
-            raise HTTPException(status_code=422, detail="project_limit must be >= 0")
+        if limit is not None and not 0 <= limit <= _PG_INT_MAX:
+            raise HTTPException(
+                status_code=422, detail=f"project_limit must be between 0 and {_PG_INT_MAX}")
         await users.set_project_limit(conn, user_id, limit)
     updated = await users.get_user(conn, user_id)
     if updated is None:

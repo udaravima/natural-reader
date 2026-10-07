@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-DEPLOY_DIR=/var/www/chat.oraian.net/dist
+DEPLOY_DIR=/var/www/chat.example.com/dist
 TARGET_DIR="$(dirname "$DEPLOY_DIR")"
 DATA_USER=www-data
 

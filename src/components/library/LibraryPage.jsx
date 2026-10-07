@@ -107,7 +107,7 @@ function ProjectChips({ doc, projects, theme, onLink, onUnlink, busy }) {
           onChange={(e) => { if (e.target.value) onLink(doc, e.target.value); }}
           aria-label={`Add ${doc.file_name} to project`}
           disabled={busy}
-          className={`px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg}`}
+          className={`max-w-[10rem] px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg}`}
         >
           <option value="">+ project</option>
           {addable.map((p) => (
@@ -413,7 +413,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
             value={projectFilter}
             onChange={(e) => setProjectFilter(e.target.value)}
             aria-label="Filter by project"
-            className={`px-2 py-1.5 text-xs rounded-lg border ${theme.border} ${theme.bg}`}
+            className={`max-w-full px-2 py-1.5 text-xs rounded-lg border ${theme.border} ${theme.bg}`}
           >
             <option value="">All projects</option>
             {(projects || []).map((p) => (

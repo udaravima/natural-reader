@@ -1746,7 +1746,7 @@ git commit -m "feat(inference): budget meter, 429 toast, send disabled when exha
 ### Task 13: Docs, deployment, and the manual end-to-end pass
 
 **Files:**
-- Modify: `.env.example`, `README.md`, `deploy/nginx/natural-reader.conf`, `docs/chat.oraian.net.sample`, `CHANGELOG.md`, `HANDOVER.md`
+- Modify: `.env.example`, `README.md`, `deploy/nginx/natural-reader.conf`, `docs/sample_configs/chat.example.com.sample`, `CHANGELOG.md`, `HANDOVER.md`
 
 - [ ] **Step 1: `.env.example`**
 
@@ -1774,14 +1774,14 @@ Add an `# ─── Inference gateway (model router) ───` section after th
 
 - [ ] **Step 2: README.md**
 
-- Security & Hardening: replace the "`/api/*` (Ollama) is not yet behind app auth" paragraph (~line 507) with the new reality: inference goes through `/v1/inference/*` (session cookie or PAT), allowlist + daily budgets configurable; the nginx `/api/` block should be **deleted** from both the example config and `docs/chat.oraian.net.sample` (Ollama becomes backend-only; loopback bind + no proxy exposure). Update the threat-model table's `/api/chat` and `/api/tags` rows to note they're now gated.
+- Security & Hardening: replace the "`/api/*` (Ollama) is not yet behind app auth" paragraph (~line 507) with the new reality: inference goes through `/v1/inference/*` (session cookie or PAT), allowlist + daily budgets configurable; the nginx `/api/` block should be **deleted** from both the example config and `docs/sample_configs/chat.example.com.sample` (Ollama becomes backend-only; loopback bind + no proxy exposure). Update the threat-model table's `/api/chat` and `/api/tags` rows to note they're now gated.
 - API Endpoints: add a "#### Inference Gateway (same FastAPI server)" table — `GET /v1/inference/models` (allowlisted model list + budget), `POST /v1/inference/chat` (validated NDJSON streaming passthrough; 429 when the daily budget is exhausted). Mention the SPA's **Inference source: Server | Local Ollama** setting in the chat feature bullets.
 - The minimal nginx example: remove the `/api/` location block, add a sentence that local-Ollama mode requires the user's own proxying and server mode needs nothing.
 
 - [ ] **Step 3: Reference configs**
 
 - `deploy/nginx/natural-reader.conf`: delete the `location /api/` block; add a comment that all inference now flows through `/v1/` (server mode) and local mode is the browser's own business.
-- `docs/chat.oraian.net.sample`: same removal for its `/api/` block (keep the commented hardening recipes that still apply).
+- `docs/sample_configs/chat.example.com.sample`: same removal for its `/api/` block (keep the commented hardening recipes that still apply).
 
 - [ ] **Step 4: CHANGELOG + HANDOVER**
 
@@ -1803,7 +1803,7 @@ Prerequisites: Postgres + backend + Ollama + `npm run dev` (e.g. `./startup.sh u
 - [ ] **Step 6: Commit**
 
 ```bash
-git add .env.example README.md deploy/nginx/natural-reader.conf docs/chat.oraian.net.sample CHANGELOG.md HANDOVER.md
+git add .env.example README.md deploy/nginx/natural-reader.conf docs/sample_configs/chat.example.com.sample CHANGELOG.md HANDOVER.md
 git commit -m "docs(inference): gateway config, hardening + proxy guidance, changelog"
 ```
 

@@ -69,6 +69,13 @@ describe('AdminConsole — users', () => {
     expect(lastBody('PATCH')).toEqual({ project_limit: null });
   });
 
+  it('captions the budget and project-limit fields visibly, not only for screen readers', async () => {
+    mount({ users: [user()] });
+    await screen.findByLabelText('Project limit for a@x.io');
+    expect(screen.getByText('tokens/day')).toBeVisible();
+    expect(screen.getByText('projects')).toBeVisible();
+  });
+
   it('enrolls with username, first and last name', async () => {
     mount({ users: [user()] });
     fireEvent.change(await screen.findByLabelText('Enroll email'), { target: { value: 'n@example.com' } });

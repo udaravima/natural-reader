@@ -1,26 +1,26 @@
 # Production nginx site for Natural Reader — serves the built SPA AND proxies the
 # backend on ONE origin (required for the OIDC session cookie; see DEPLOYMENT.md
 # § "same origin"). Keycloak lives on a separate origin — its companion vhost is
-# auth.oraian.net.sample. Full walkthrough + traps: ./DEPLOYMENT.md.
+# auth.example.com.sample. Full walkthrough + traps: ../DEPLOYMENT.md.
 
 server {
     listen 80;
-    server_name chat.oraian.net;
+    server_name chat.example.com;
     # Force redirect to HTTPS
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl http2;
-    server_name chat.oraian.net;
+    server_name chat.example.com;
 
     # SSL Configuration
-    ssl_certificate /etc/nginx/ssl/oraian/chat.oraian.net.crt;
-    ssl_certificate_key /etc/nginx/ssl/oraian/chat.oraian.net.key;
+    ssl_certificate /etc/nginx/ssl/example/chat.example.com.crt;
+    ssl_certificate_key /etc/nginx/ssl/example/chat.example.com.key;
 
     # Fallback (RSA)
-    ssl_certificate /etc/nginx/ssl/oraian/rsa-fallback.crt;
-    ssl_certificate_key /etc/nginx/ssl/oraian/rsa-fallback.key;
+    ssl_certificate /etc/nginx/ssl/example/rsa-fallback.crt;
+    ssl_certificate_key /etc/nginx/ssl/example/rsa-fallback.key;
 
     # Optimization for modern curves (Ed25519)
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -29,7 +29,7 @@ server {
     ssl_session_timeout 1d;
     ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
 
-    root /var/www/chat.oraian.net/dist;
+    root /var/www/chat.example.com/dist;
     index index.html;
 
     # Serve ES modules with a JS MIME type so Firefox accepts them
@@ -139,7 +139,7 @@ server {
 #
 # with the actual frontend origin(s):
 #
-#     allow_origins=["https://chat.oraian.net"]
+#     allow_origins=["https://chat.example.com"]
 #
 # Then reload uvicorn (e.g. `pkill -HUP -f uvicorn` or restart the service).
 #

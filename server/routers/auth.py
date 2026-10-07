@@ -186,11 +186,13 @@ async def logout_redirect(request: Request, conn=Depends(deps.get_conn)):
     cookie = request.cookies.get(deps.COOKIE_NAME)
     if cookie:
         await sessions.revoke_session(conn, cookie)
+    # Build the IdP URL first: it reads the id_token hint from the session.
+    url = await _post_logout_url(request)
     # Clear the OIDC-flow cookie too (it carries the id_token hint). Starlette's
     # SessionMiddleware sees an empty session and drops its cookie.
     request.session.clear()
     cfg = load_auth_config(os.environ)
-    resp = RedirectResponse(url=await _post_logout_url(request), status_code=303)
+    resp = RedirectResponse(url=url, status_code=303)
     resp.delete_cookie(deps.COOKIE_NAME, path="/", domain=cfg.cookie_domain)
     return resp
 

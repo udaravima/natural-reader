@@ -19,12 +19,13 @@ export function describeEvent(ev) {
   const subject = ev.subject?.name || 'a former member';
   const d = ev.details || {};
   const doc = ev.doc?.name || d.name || 'a document';
+  const self = Boolean(ev.actor?.id) && ev.actor.id === ev.subject?.id;
   switch (ev.kind) {
     case 'project.created': return ev.subject ? `${actor} created the project for ${subject}` : `${actor} created the project`;
     case 'project.renamed': return `${actor} renamed the project from "${d.from}" to "${d.to}"`;
     case 'project.described': return `${actor} changed the description`;
-    case 'member.added': return `${actor} added ${subject} as ${roleLabel(d.role)}`;
-    case 'member.role_changed': return `${actor} changed ${subject} from ${roleLabel(d.from)} to ${roleLabel(d.to)}`;
+    case 'member.added': return `${actor} added ${self ? 'themselves' : subject} as ${roleLabel(d.role)}`;
+    case 'member.role_changed': return `${actor} changed ${self ? 'their own role' : subject} from ${roleLabel(d.from)} to ${roleLabel(d.to)}`;
     case 'member.removed': return `${actor} removed ${subject}`;
     case 'member.left': return `${actor} left the project`;
     case 'document.added': return `${actor} added "${doc}"`;
