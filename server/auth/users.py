@@ -12,6 +12,7 @@ SEED_ADMIN_ID = "00000000-0000-0000-0000-000000000001"
 _KEYS = [
     "id", "email", "display_name", "role", "status", "oidc_iss", "oidc_sub",
     "inference_daily_token_budget", "capabilities", "created_at",
+    "username", "first_name", "last_name", "project_limit",
 ]
 _COLS = ", ".join(_KEYS)
 
@@ -69,6 +70,10 @@ async def _fetch_by(conn, where: str, params) -> dict[str, Any] | None:
     return _row(await cur.fetchone())
 
 
+_NAMES_SET = ("username=COALESCE(%s, username), first_name=COALESCE(%s, first_name), "
+              "last_name=COALESCE(%s, last_name)")
+
+
 async def resolve_or_provision_user(
     conn,
     *,
@@ -76,10 +81,17 @@ async def resolve_or_provision_user(
     sub: str,
     email: str,
     display_name: str | None = None,
+    username: str | None = None,
+    first_name: str | None = None,
+    last_name: str | None = None,
     email_verified: bool = False,
     capabilities: list[str] | None = None,
 ) -> dict[str, Any]:
     """Resolve an OIDC identity to a local user, provisioning on first sight.
+
+    `username`, `first_name`, `last_name` come from the token's `preferred_username`,
+    `given_name`, `family_name`; a claim the token lacks leaves the stored value
+    unchanged (A0 §3.1).
 
     `email_verified` must reflect the OIDC `email_verified` claim: an email is
     only trusted to CLAIM a pre-provisioned account when the IdP verified it.
@@ -96,8 +108,8 @@ async def resolve_or_provision_user(
     if found:
         await conn.execute(
             "UPDATE users SET email=%s, display_name=COALESCE(%s, display_name), "
-            "updated_at=now() WHERE id=%s",
-            (email, display_name, found["id"]),
+            f"{_NAMES_SET}, updated_at=now() WHERE id=%s",
+            (email, display_name, username, first_name, last_name, found["id"]),
         )
         if capabilities is not None:
             await set_capabilities(conn, found["id"], capabilities)
@@ -114,8 +126,8 @@ async def resolve_or_provision_user(
             raise ValueError("email not verified; cannot claim pre-provisioned account")
         await conn.execute(
             "UPDATE users SET oidc_iss=%s, oidc_sub=%s, "
-            "display_name=COALESCE(%s, display_name), updated_at=now() WHERE id=%s",
-            (iss, sub, display_name, by_email["id"]),
+            f"display_name=COALESCE(%s, display_name), {_NAMES_SET}, updated_at=now() WHERE id=%s",
+            (iss, sub, display_name, username, first_name, last_name, by_email["id"]),
         )
         if capabilities is not None:
             await set_capabilities(conn, by_email["id"], capabilities)
@@ -127,9 +139,9 @@ async def resolve_or_provision_user(
     #    see rowcount 0 and fall through to a pending member.
     cur = await conn.execute(
         "UPDATE users SET oidc_iss=%s, oidc_sub=%s, email=%s, "
-        "display_name=COALESCE(%s, display_name), updated_at=now() "
+        f"display_name=COALESCE(%s, display_name), {_NAMES_SET}, updated_at=now() "
         "WHERE id=%s AND oidc_sub IS NULL",
-        (iss, sub, email, display_name, SEED_ADMIN_ID),
+        (iss, sub, email, display_name, username, first_name, last_name, SEED_ADMIN_ID),
     )
     if cur.rowcount == 1:
         from .capabilities import BOOTSTRAP_ADMIN_CAPABILITIES
@@ -137,9 +149,10 @@ async def resolve_or_provision_user(
         return await get_user(conn, SEED_ADMIN_ID)
 
     cur = await conn.execute(
-        "INSERT INTO users (oidc_iss, oidc_sub, email, display_name, role, status) "
-        "VALUES (%s, %s, %s, %s, 'member', 'pending') RETURNING id",
-        (iss, sub, email, display_name),
+        "INSERT INTO users (oidc_iss, oidc_sub, email, display_name, username, first_name, "
+        "last_name, role, status) VALUES (%s, %s, %s, %s, %s, %s, %s, 'member', 'pending') "
+        "RETURNING id",
+        (iss, sub, email, display_name, username, first_name, last_name),
     )
     new_id = (await cur.fetchone())[0]
     return await get_user(conn, str(new_id))
