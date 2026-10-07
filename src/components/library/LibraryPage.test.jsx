@@ -33,9 +33,14 @@ const docs = [
   },
 ];
 
+const canFor = (role) => ({
+  edit: role === 'owner' || role === 'maintainer', manage_members: role === 'owner' || role === 'maintainer',
+  manage_owners: role === 'owner', file_docs: role !== 'reader', remove_docs: role === 'owner' || role === 'maintainer',
+  delete: role === 'owner', leave: true,
+});
 const projects = [
-  { id: 'p1', owner_user_id: 'me', name: 'Project A', description: null, is_owner: true },
-  { id: 'p2', owner_user_id: 'other', name: 'Project B', description: null, is_owner: false },
+  { id: 'p1', name: 'Project A', description: null, my_role: 'owner', member_count: 1, doc_count: 2, can: canFor('owner') },
+  { id: 'p2', name: 'Project B', description: null, my_role: 'contributor', member_count: 3, doc_count: 1, can: canFor('contributor') },
 ];
 
 function mount({ showToast = vi.fn() } = {}) {
@@ -160,7 +165,7 @@ describe('LibraryPage', () => {
     await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/projects/p2/docs/d1', { method: 'PUT' }));
   });
 
-  it('shows × on a chip only for the chip of a project the caller owns', async () => {
+  it('shows × on a chip only where the caller may remove documents', async () => {
     mount();
     await screen.findByText('Teammate.pdf');
     const row = screen.getByTestId('doc-row-d2');
@@ -168,7 +173,7 @@ describe('LibraryPage', () => {
     expect(within(row).queryByLabelText(/remove teammate\.pdf from project b/i)).toBeNull();
   });
 
-  it('shows × only for owned-project chips even on the uploader\'s own row', async () => {
+  it('shows × only where the caller may remove documents, even on the uploader\'s own row', async () => {
     const localDocs = [
       {
         doc_id: 'd1', file_name: 'Owned.pdf', state: 'indexed', tags: [],
@@ -276,6 +281,34 @@ describe('LibraryPage', () => {
     expect(message).not.toMatch(/HTTP 404/);
     expect(message).toMatch(/doesn't exist or you don't have access/i);
   });
+  it('offers only projects where the caller may file documents in the + project select', async () => {
+    apiFetch.mockImplementation(async (h, p, path) => {
+      if (path.startsWith('/v1/docs')) return json(200, docs);
+      if (path === '/v1/projects') return json(200, [...projects,
+        { id: 'p3', name: 'Read only', my_role: 'reader', member_count: 2, doc_count: 0, can: canFor('reader') }]);
+      return json(404, {});
+    });
+    render(<LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} />);
+    const select = await screen.findByLabelText('Add Owned.pdf to project');
+    expect([...select.options].map((o) => o.textContent)).toEqual(['+ project', 'Project A', 'Project B']);
+  });
+
+  it('switches to the Projects tab and opens a project page', async () => {
+    mount();
+    await screen.findByText('Owned.pdf');
+    apiFetch.mockImplementation(async (h, p, path) => {
+      if (path === '/v1/projects') return json(200, projects);
+      if (path === '/v1/projects/p2') return json(200, projects[1]);
+      if (path.startsWith('/v1/docs')) return json(200, []);
+      return json(404, {});
+    });
+    fireEvent.click(screen.getByRole('tab', { name: 'Projects' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open project Project B' }));
+    expect(await screen.findByRole('heading', { name: /Project B/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Projects/ }));
+    expect(await screen.findByRole('button', { name: 'Open project Project A' })).toBeTruthy();
+  });
+
 });
 
 describe('LibraryPage — New project', () => {
@@ -291,7 +324,7 @@ describe('LibraryPage — New project', () => {
           return { ok: false, status: postStatus, json: async () => ({ detail: 'boom' }) };
         }
         const body = JSON.parse(opts.body);
-        const created = { id: 'p9', owner_user_id: 'me', ...body, is_owner: true };
+        const created = { id: 'p9', ...body, my_role: 'owner', member_count: 1, doc_count: 0, can: canFor('owner') };
         serverProjects.push(created);
         return json(201, created);
       }

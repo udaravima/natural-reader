@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Search, FolderOpen, FolderPlus, Share2, X, Check, Trash2, Loader2, BookOpen } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
 import { describeRefusal } from '../../lib/apiErrors';
+import ProjectsTab from './ProjectsTab';
+import ProjectPage from '../projects/ProjectPage';
 
 // Typing pauses this long before a search-as-you-type request fires. Keeps
 // GET /v1/docs?q=... from firing on every keystroke while staying fast
@@ -64,15 +66,16 @@ function TagEditor({ doc, theme, onSave }) {
   );
 }
 
-// One chip per linked project. Projects govern their own documents: only a
-// user holding an upload entry can file a document into a project they can
-// see, and only that project's owner can remove a document from it — never
-// the uploader, and never anyone else who merely holds a library entry.
+// One chip per linked project. Projects govern their own documents (A0 §5): a
+// Contributor or above who uploaded a document files it in; only a Maintainer
+// or Owner removes it — never the uploader as such.
 function ProjectChips({ doc, projects, theme, onLink, onUnlink, busy }) {
   const linked = doc.projects || [];
   const linkedIds = new Set(linked.map((p) => p.id));
-  const ownedProjectIds = new Set((projects || []).filter((p) => p.is_owner).map((p) => p.id));
-  const addable = (projects || []).filter((p) => !linkedIds.has(p.id));
+  // Projects decide (A0 §5): × where the caller may remove documents, and
+  // "+ project" offers only projects the caller may file into.
+  const removableIds = new Set((projects || []).filter((p) => p.can?.remove_docs).map((p) => p.id));
+  const addable = (projects || []).filter((p) => p.can?.file_docs && !linkedIds.has(p.id));
 
   return (
     <div className="flex flex-wrap items-center gap-1">
@@ -84,7 +87,7 @@ function ProjectChips({ doc, projects, theme, onLink, onUnlink, busy }) {
           className={`flex items-center gap-1 px-1.5 py-0.5 rounded ${theme.bgTertiary} ${theme.textSecondary}`}
         >
           {p.name}
-          {ownedProjectIds.has(p.id) && (
+          {removableIds.has(p.id) && (
             <button
               onClick={() => onUnlink(doc, p)}
               aria-label={`Remove ${doc.file_name} from ${p.name}`}
@@ -193,9 +196,9 @@ function NewProjectForm({ theme, busy, onCreate, onCancel }) {
  * notice): anything listed here is something I can read. "New project"
  * creates a project I own; `onProjectsChanged` tells the reader to refresh
  * its project picker.
- * Adding members has no screen until A0.
+ * The Projects tab lists my projects; a project page manages its documents, members and activity (A0).
  */
-export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProjectsChanged, onOpen }) {
+export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProjectsChanged, onOpen, currentUserId }) {
   const [docs, setDocs] = useState(null);
   const [projects, setProjects] = useState(null);
   const [search, setSearch] = useState('');
@@ -213,6 +216,8 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
   const [openingId, setOpeningId] = useState(null);
   const [creatingProject, setCreatingProject] = useState(false);
   const [projectBusy, setProjectBusy] = useState(false);
+  const [view, setView] = useState('documents');
+  const [openProjectId, setOpenProjectId] = useState(null);
   // Monotonic id so out-of-order responses can't clobber the list: fast typing
   // across debounce windows can leave two GET /v1/docs in flight, and if the
   // earlier one resolves last its stale results would overwrite the newer query.
@@ -302,6 +307,11 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
     }
   };
 
+  const projectsChanged = async () => {
+    await loadProjects();
+    onProjectsChanged?.();
+  };
+
   const openDoc = async (doc) => {
     setOpeningId(doc.doc_id);
     try {
@@ -352,6 +362,28 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
           />
         )}
 
+        <div role="tablist" aria-label="Library sections" className={`flex gap-4 border-b ${theme.border}`}>
+          {[['documents', 'Documents'], ['projects', 'Projects']].map(([key, label]) => (
+            <button key={key} role="tab" aria-selected={view === key && !openProjectId}
+              onClick={() => { setView(key); setOpenProjectId(null); }}
+              className={`pb-1 text-xs ${view === key ? 'border-b-2 border-blue-500 text-blue-500' : theme.textSecondary}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {openProjectId ? (
+          <ProjectPage
+            theme={theme} apiHost={apiHost} apiPort={apiPort} projectId={openProjectId}
+            currentUserId={currentUserId} showToast={showToast}
+            onBack={() => setOpenProjectId(null)}
+            onChanged={projectsChanged}
+            onOpenDoc={onOpen ? openDoc : undefined}
+          />
+        ) : view === 'projects' ? (
+          <ProjectsTab theme={theme} projects={projects} onOpenProject={setOpenProjectId} />
+        ) : (
+          <>
         {/* Search + project filter */}
         <div className="flex flex-wrap items-center gap-2">
           <div className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg border ${theme.border} ${theme.bgTertiary} flex-1 min-w-[200px]`}>
@@ -488,6 +520,8 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
               );
             })}
           </div>
+        )}
+          </>
         )}
       </div>
     </div>

@@ -257,6 +257,8 @@ export default function App() {
   // in. Mirrors LibraryPage's loadProjects — same endpoint/shape, same
   // fail-soft-to-empty-list behavior so the picker just shows "No project"
   // options if this fetch fails rather than breaking the reader.
+  // Only projects the user may file into (A0 §10): a Reader is never offered
+  // a project that would refuse them.
   useEffect(() => {
     if (auth.state !== 'active') return;
     let cancelled = false;
@@ -265,7 +267,7 @@ export default function App() {
         const res = await apiFetch(apiHost, apiPort, '/v1/projects');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (!cancelled) setProjects(data);
+        if (!cancelled) setProjects(data.filter((p) => p.can?.file_docs));
       } catch {
         if (!cancelled) setProjects([]);
       }
@@ -1204,6 +1206,7 @@ export default function App() {
             apiPort={apiPort}
             showToast={showToast}
             onOpen={handleOpenLibraryDoc}
+            currentUserId={auth.user?.id}
             onProjectsChanged={() => setProjectsVersion((v) => v + 1)}
           />
         ) : inSettings ? (
