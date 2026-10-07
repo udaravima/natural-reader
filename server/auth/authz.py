@@ -4,6 +4,8 @@ who may manage a project's documents. Refusals are 404 for both "missing"
 and "not yours", so a caller can't tell one from the other."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from fastapi import HTTPException
 
 from ..http_errors import refusal
@@ -65,15 +67,6 @@ async def assert_holds_upload(conn, doc_id: str, user_id: str) -> None:
         raise refusal(404, "not_found", "Document not found")
 
 
-async def can_manage_project_docs(conn, user_id: str, project_id) -> bool:
-    """The one seam for "may remove a document from this project" (A1 §5).
-    Task 1: the Owner role. Task 2 widens it to role >= maintainer."""
-    cur = await conn.execute(
-        "SELECT 1 FROM project_members WHERE project_id = %s AND user_id = %s "
-        "AND role = 'owner'", (project_id, user_id))
-    return await cur.fetchone() is not None
-
-
 def visible_projects_where(alias: str = "p") -> str:
     """A `projects` row the user is a member of (any role). Bind with
     `visible_projects_params(user_id)`."""
@@ -85,6 +78,90 @@ def visible_projects_where(alias: str = "p") -> str:
 
 def visible_projects_params(user_id: str) -> list[str]:
     return [user_id]
+
+
+ROLES = ("reader", "contributor", "maintainer", "owner")
+_RANK = {r: i for i, r in enumerate(ROLES)}
+PROJECT_NOT_FOUND = "This project doesn't exist or you don't have access."
+_ROLE_MESSAGES = {
+    "reader": "Only members can do that.",
+    "contributor": "Only Contributors, Maintainers or Owners can do that.",
+    "maintainer": "Only Maintainers or Owners can do that.",
+    "owner": "Only Owners can do that.",
+}
+
+
+def role_at_least(role: str | None, minimum: str) -> bool:
+    return role is not None and _RANK[role] >= _RANK[minimum]
+
+
+def insufficient_role(required: str) -> HTTPException:
+    return refusal(403, "insufficient_role", _ROLE_MESSAGES[required], required=required)
+
+
+async def project_role(conn, user_id: str, project_id, *, lock: bool = False) -> str | None:
+    """The user's role in the project; None if not a member (or no project).
+    `lock=True` first takes the project's row lock (A0 §3.3): membership
+    writes on one project then run one at a time, and the role read here is
+    the one committed by whoever held the lock before."""
+    if lock:
+        await conn.execute("SELECT 1 FROM projects WHERE id = %s FOR UPDATE", (project_id,))
+    cur = await conn.execute(
+        "SELECT role FROM project_members WHERE project_id = %s AND user_id = %s",
+        (project_id, user_id))
+    row = await cur.fetchone()
+    return row[0] if row else None
+
+
+@dataclass(frozen=True)
+class ProjectAccess:
+    role: str | None      # the caller's member role (None: an admin who isn't a member)
+    is_admin: bool
+
+
+async def require_project_role(conn, principal, project_id, minimum: str | None, *,
+                               lock: bool = False, admin_ok: bool = True) -> ProjectAccess:
+    """Every project route's first check (A0 §5, §6). A missing project and a
+    non-member are the same 404, so a project's existence never leaks. A
+    member below `minimum` (None = any member) gets 403 insufficient_role.
+    An admin passes when `admin_ok` (the matrix's admin column); document
+    routes pass `admin_ok=False`, because admins file and remove documents
+    only through a member role."""
+    cur = await conn.execute(
+        "SELECT 1 FROM projects WHERE id = %s" + (" FOR UPDATE" if lock else ""), (project_id,))
+    if await cur.fetchone() is None:
+        raise refusal(404, "not_found", PROJECT_NOT_FOUND)
+    role = await project_role(conn, principal.user_id, project_id)
+    is_admin = principal.role == "admin"
+    if is_admin and admin_ok:
+        return ProjectAccess(role=role, is_admin=True)
+    if role is None:
+        raise refusal(404, "not_found", PROJECT_NOT_FOUND)
+    if minimum is not None and not role_at_least(role, minimum):
+        raise insufficient_role(minimum)
+    return ProjectAccess(role=role, is_admin=is_admin)
+
+
+def can_for(role: str | None, is_admin: bool) -> dict[str, bool]:
+    """What the caller may do in a project, from their role (A0 §5). The API
+    returns it with every project so the UI never re-derives the rules."""
+    def at(minimum: str) -> bool:
+        return role_at_least(role, minimum)
+    return {
+        "edit": at("maintainer") or is_admin,
+        "manage_members": at("maintainer") or is_admin,
+        "manage_owners": at("owner") or is_admin,
+        "file_docs": at("contributor"),
+        "remove_docs": at("maintainer"),
+        "delete": at("owner") or is_admin,
+        "leave": role is not None,
+    }
+
+
+async def can_manage_project_docs(conn, user_id: str, project_id) -> bool:
+    """The one seam for "may remove a document from this project" (A1 §5,
+    A0 §5): a member whose role is Maintainer or above."""
+    return role_at_least(await project_role(conn, user_id, project_id), "maintainer")
 
 
 CAN_READ_DOCS_SQL = readable_docs_where()
