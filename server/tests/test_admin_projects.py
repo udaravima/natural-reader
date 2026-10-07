@@ -64,6 +64,9 @@ async def test_admin_sets_and_clears_a_project_limit(db_conn):
     async with _client(db_conn, admin) as c:
         assert (await c.patch(f"/v1/admin/users/{u}", json={"project_limit": 5})).json()["project_limit"] == 5
         assert (await c.patch(f"/v1/admin/users/{u}", json={"project_limit": -1})).status_code == 422
+        # Past Postgres INTEGER: a clear 422, not a 500 from the UPDATE.
+        assert (await c.patch(f"/v1/admin/users/{u}", json={"project_limit": 2**31})).status_code == 422
+        assert (await c.patch(f"/v1/admin/users/{u}", json={"project_limit": 2**31 - 1})).status_code == 200
         assert (await c.patch(f"/v1/admin/users/{u}", json={"project_limit": None})).json()["project_limit"] is None
         listed = {r["id"]: r for r in (await c.get("/v1/admin/users")).json()}
     assert "project_limit" in listed[u] and "first_name" in listed[u]

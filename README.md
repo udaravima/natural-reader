@@ -468,9 +468,9 @@ For production, the typical setup is to serve the frontend as static files from 
 
 ### Example nginx config
 
-A complete, battle-tested config (Ed25519 + RSA fallback, gzip, the works) lives at [`docs/chat.oraian.net.sample`](docs/chat.oraian.net.sample). The minimal version below is what's actually load-bearing:
+A complete, battle-tested config (Ed25519 + RSA fallback, gzip, the works) lives at [`docs/sample_configs/chat.example.com.sample`](docs/sample_configs/chat.example.com.sample). The minimal version below is what's actually load-bearing:
 
-> **Running multi-user (OIDC/Keycloak)?** This section covers the SPA + backend vhost only. For the full production picture — the second vhost that fronts Keycloak ([`docs/auth.oraian.net.sample`](docs/auth.oraian.net.sample)), the same-origin cookie rule, `COOKIE_SECURE`, the Keycloak proxy-header env, and the live-realm redirect-URI trap — see **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
+> **Running multi-user (OIDC/Keycloak)?** This section covers the SPA + backend vhost only. For the full production picture — the second vhost that fronts Keycloak ([`docs/sample_configs/auth.example.com.sample`](docs/sample_configs/auth.example.com.sample)), the same-origin cookie rule, `COOKIE_SECURE`, the Keycloak proxy-header env, and the live-realm redirect-URI trap — see **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
 
 ```nginx
 server {
@@ -675,7 +675,7 @@ For a more app-like UX than the browser's basic-auth dialog: nginx checks for `A
 | **Small team / family** | Basic auth + rate limit + tighter CORS. Each user gets their own htpasswd entry. |
 | **Public-ish demo** | Basic auth + rate limit + `INFERENCE_MODELS` allowlist (the gateway never exposes models you don't list) + `INFERENCE_DAILY_TOKEN_BUDGET`. Consider token auth instead of basic. |
 
-The sample [docs/chat.oraian.net.sample](docs/chat.oraian.net.sample) includes the above mitigations as **commented-out blocks at the bottom of the file** — uncomment what you need and reload nginx.
+The sample [docs/sample_configs/chat.example.com.sample](docs/sample_configs/chat.example.com.sample) includes the above mitigations as **commented-out blocks at the bottom of the file** — uncomment what you need and reload nginx.
 
 ---
 
@@ -821,8 +821,8 @@ natural-reader/
 │   ├── RELEASE_NOTES_v1.7.0.md # Tag-page notes for v1.7.0
 │   ├── RELEASE_NOTES_v1.7.1.md # Tag-page notes for v1.7.1
 │   ├── DEPLOYMENT.md          # Production behind nginx + TLS: topology, config table, the traps
-│   ├── chat.oraian.net.sample # Prod nginx vhost — SPA + same-origin /v1 proxy (TLS, hardening recipes)
-│   └── auth.oraian.net.sample # Prod nginx vhost — reverse-proxies Keycloak (auth.oraian.net)
+│   ├── chat.example.com.sample # Prod nginx vhost — SPA + same-origin /v1 proxy (TLS, hardening recipes)
+│   └── auth.example.com.sample # Prod nginx vhost — reverse-proxies Keycloak (auth.example.com)
 ├── run.py                     # Server entry point (uvicorn) — honours WORKERS / HOST / PORT env vars
 ├── requirements.txt           # Python dependencies
 ├── vite.config.js             # Vite + Rolldown config with chunk splitting

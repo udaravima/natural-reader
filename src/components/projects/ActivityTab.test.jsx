@@ -15,6 +15,8 @@ describe('describeEvent', () => {
     [ev('project.described'), 'Asha changed the description'],
     [ev('member.added', { role: 'maintainer', via: 'member' }, { subject: ben }), 'Asha added Ben as Maintainer'],
     [ev('member.role_changed', { from: 'reader', to: 'owner' }, { subject: ben }), 'Asha changed Ben from Reader to Owner'],
+    [ev('member.added', { role: 'owner', via: 'admin' }, { subject: asha }), 'Asha added themselves as Owner'],
+    [ev('member.role_changed', { from: 'reader', to: 'owner' }, { subject: asha }), 'Asha changed their own role from Reader to Owner'],
     [ev('member.removed', { role: 'reader' }, { subject: null }), 'Asha removed a former member'],
     [ev('member.left', { role: 'reader' }, { actor: null }), 'A former member left the project'],
     [ev('document.added', { name: 'Q3.pdf' }, { doc: { id: 'd', name: 'Q3.pdf' } }), 'Asha added "Q3.pdf"'],

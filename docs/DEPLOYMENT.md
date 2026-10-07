@@ -10,18 +10,18 @@ Worked example uses two hostnames:
 
 | Hostname | Serves | nginx sample |
 | --- | --- | --- |
-| `chat.oraian.net` | the built SPA **and** the `/v1/*` backend (one origin) | [`chat.oraian.net.sample`](chat.oraian.net.sample) |
-| `auth.oraian.net` | Keycloak (OIDC provider) | [`auth.oraian.net.sample`](auth.oraian.net.sample) |
+| `chat.example.com` | the built SPA **and** the `/v1/*` backend (one origin) | [`chat.example.com.sample`](sample_configs/chat.example.com.sample) |
+| `auth.example.com` | Keycloak (OIDC provider) | [`auth.example.com.sample`](sample_configs/auth.example.com.sample) |
 
 ## The one rule that dictates the topology: same origin
 
 The app's login session is an **`HttpOnly` cookie**. Browsers only send that
 cookie back if the SPA and the backend it calls are the **same origin** — same
 scheme, host, and port. So the SPA and `/v1/*` **must** live on one hostname
-(`chat.oraian.net`), which is why a single nginx server block both serves
+(`chat.example.com`), which is why a single nginx server block both serves
 `dist/` and proxies `/v1/` to the backend.
 
-Keycloak is deliberately a **different** origin (`auth.oraian.net`). That's fine —
+Keycloak is deliberately a **different** origin (`auth.example.com`). That's fine —
 OIDC is a browser *redirect* flow, not a cookie-sharing one, so the IdP never
 needs to be same-origin with the app. Putting it on its own hostname is the
 normal, correct shape.
@@ -35,11 +35,11 @@ work at all:
 
 | # | File / place | Local dev | Production |
 | --- | --- | --- | --- |
-| 1 | `.env` → `OIDC_ISSUER` | `http://localhost:18080/realms/natural-reader` | `https://auth.oraian.net/realms/natural-reader` |
-| 2 | `.env` → `OIDC_REDIRECT_URL` | `http://localhost:5173/v1/auth/callback` | `https://chat.oraian.net/v1/auth/callback` |
+| 1 | `.env` → `OIDC_ISSUER` | `http://localhost:18080/realms/natural-reader` | `https://auth.example.com/realms/natural-reader` |
+| 2 | `.env` → `OIDC_REDIRECT_URL` | `http://localhost:5173/v1/auth/callback` | `https://chat.example.com/v1/auth/callback` |
 | 3 | `.env` → `COOKIE_SECURE` | `false` (plain http) | `true` (TLS) |
-| 4 | `.env` → `KC_PROXY_HEADERS` / `KC_HOSTNAME` | unset | `xforwarded` / `https://auth.oraian.net` |
-| 5 | the **live** Keycloak realm's client | `localhost` redirect URIs | add the `https://chat.oraian.net` callback + web origin |
+| 4 | `.env` → `KC_PROXY_HEADERS` / `KC_HOSTNAME` | unset | `xforwarded` / `https://auth.example.com` |
+| 5 | the **live** Keycloak realm's client | `localhost` redirect URIs | add the `https://chat.example.com` callback + web origin |
 | 6 | `.env` → `KC_ADMIN_CLIENT_ID` / `KC_ADMIN_CLIENT_SECRET` | optional | **set** (secret must match the `natural-reader-admin` client in the live realm) — needed for the admin console's capability editor and the founder self-heal (Trap 4) |
 
 Plus two nginx vhosts (the two `.sample` files) and the DNS + TLS certs for both
@@ -51,7 +51,7 @@ The traps below are ordered by *when they bite you* as you walk the login flow.
 
 **Symptom:** the Keycloak admin console (or login page) loads over HTTPS but the
 browser console fills with *"Mixed Content … requested an insecure resource
-`http://auth.oraian.net/resources/...`"* and *"Framing `http://auth.oraian.net/`
+`http://auth.example.com/resources/...`"* and *"Framing `http://auth.example.com/`
 violates … Content Security Policy directive: frame-src 'self'"*.
 
 **Cause:** nginx terminates TLS and forwards plain HTTP to Keycloak on
@@ -65,17 +65,17 @@ so local dev is unchanged; set them in `.env`):
 
 ```ini
 KC_PROXY_HEADERS=xforwarded          # trust nginx's X-Forwarded-Proto: https
-KC_HOSTNAME=https://auth.oraian.net  # pin the canonical public URL
+KC_HOSTNAME=https://auth.example.com  # pin the canonical public URL
 ```
 
 `KC_PROXY_HEADERS` alone makes Keycloak believe the `X-Forwarded-Proto: https`
 nginx already sends; `KC_HOSTNAME` pins the scheme+host so even a direct
-`localhost:18080` hit reports `auth.oraian.net`. Verify:
+`localhost:18080` hit reports `auth.example.com`. Verify:
 
 ```bash
-curl -s https://auth.oraian.net/realms/natural-reader/.well-known/openid-configuration \
+curl -s https://auth.example.com/realms/natural-reader/.well-known/openid-configuration \
   | grep -o '"issuer":"[^"]*"'
-# → "issuer":"https://auth.oraian.net/realms/natural-reader"   (https, not http)
+# → "issuer":"https://auth.example.com/realms/natural-reader"   (https, not http)
 ```
 
 Recreating the container to apply these is **non-destructive** — the realm and
@@ -93,7 +93,7 @@ env -u XDG_DATA_HOME .venv/bin/podman-compose up -d keycloak
 
 **Cause:** Keycloak matches the incoming `redirect_uri` against the
 `natural-reader` client's **Valid Redirect URIs** allow-list and refuses anything
-not on it. In production the backend sends `https://chat.oraian.net/v1/auth/callback`,
+not on it. In production the backend sends `https://chat.example.com/v1/auth/callback`,
 but the client only lists the `localhost` dev URIs.
 
 **The trap within the trap:** editing
@@ -105,10 +105,10 @@ for a *fresh* database.
 
 **Fix the live realm** one of two ways:
 
-- **Admin console:** `https://auth.oraian.net/admin` → realm `natural-reader` →
+- **Admin console:** `https://auth.example.com/admin` → realm `natural-reader` →
   Clients → `natural-reader` → Settings → **Valid redirect URIs**: add
-  `https://chat.oraian.net/v1/auth/callback`; **Web origins**: add
-  `https://chat.oraian.net` → Save.
+  `https://chat.example.com/v1/auth/callback`; **Web origins**: add
+  `https://chat.example.com` → Save.
 - **`kcadm` (scriptable):** run inside the container (needs the *master* admin
   password — see the admin-password note below; the `admin/admin` in compose is
   only applied on a **first-ever** boot with an empty DB):
@@ -120,21 +120,23 @@ for a *fresh* database.
   CID=$(env -u XDG_DATA_HOME podman exec natural-reader-keycloak $KC \
     get clients -r natural-reader -q clientId=natural-reader --fields id --format csv --noquotes)
   env -u XDG_DATA_HOME podman exec natural-reader-keycloak $KC update clients/$CID -r natural-reader \
-    -s 'redirectUris=["https://chat.oraian.net/v1/auth/callback","http://localhost:8080/v1/auth/callback"]' \
-    -s 'webOrigins=["https://chat.oraian.net","http://localhost:8080"]'
+    -s 'redirectUris=["https://chat.example.com/v1/auth/callback","http://localhost:8080/v1/auth/callback"]' \
+    -s 'webOrigins=["https://chat.example.com","http://localhost:8080"]'
   ```
 
-Keep the export in sync anyway (done already) so a rebuilt database starts
-correct — it's documentation, not the live config.
+The checked-in export lists only the `localhost` dev URIs (`:8080` and Vite's
+`:5173`), for sign-in and for after logout. A deployment adds its own public
+origin to its live realm this way; to have a rebuilt database start correct,
+add the same URIs to a private copy of the export, never to the checked-in one.
 
 **Same trap, different field — logout ("Invalid redirect uri" on
 `/protocol/openid-connect/logout`).** RP-initiated logout sends
-`post_logout_redirect_uri=https://chat.oraian.net/` (the SPA root, *not* the
+`post_logout_redirect_uri=https://chat.example.com/` (the SPA root, *not* the
 callback path), matched against the client's separate **Valid post logout
 redirect URIs** allow-list. A drifted live realm rejects it exactly like the
 login case. Fix it the same two ways — console (Clients → `natural-reader` →
-Settings → **Valid post logout redirect URIs**: add `https://chat.oraian.net/*`)
-or `kcadm` (`-s 'attributes."post.logout.redirect.uris"=https://chat.oraian.net/*##https://auth.oraian.net/*'`).
+Settings → **Valid post logout redirect URIs**: add `https://chat.example.com/*`)
+or `kcadm` (`-s 'attributes."post.logout.redirect.uris"=https://chat.example.com/*##https://auth.example.com/*'`).
 **Gotcha:** in the realm-export/attribute form, multiple post-logout URIs are
 delimited by **`##`**, not spaces or commas (`+` is the special token meaning
 "reuse the Valid Redirect URIs"). A space-delimited value is silently parsed as
@@ -160,7 +162,7 @@ Two independent causes, both about the cookie being set but not stored/sent:
   over HTTPS (production); keep `false` for `http://localhost` dev.
 - **SPA and backend on different origins.** If you serve the SPA from one host and
   proxy `/v1` from another, the cookie set for one isn't sent to the other. This
-  is why the single `chat.oraian.net` vhost serves *both* `dist/` and `/v1/`.
+  is why the single `chat.example.com` vhost serves *both* `dist/` and `/v1/`.
 - Leave `COOKIE_DOMAIN` **unset** unless you know you need it — a value that
   doesn't match the origin drops the cookie the same silent way.
 
@@ -229,7 +231,7 @@ Too Large`.
 **Cause:** nginx's default `client_max_body_size` is **1 MB**. Document uploads
 go through `POST /v1/docs/{id}/pdf` and are often much larger.
 
-**Fix:** the `chat.oraian.net.sample` sets `client_max_body_size 100m;` inside
+**Fix:** the `chat.example.com.sample` sets `client_max_body_size 100m;` inside
 the `/v1/` block. Raise it if you expect bigger files.
 
 ### Trap 6 (minor) — stale `ERR_QUIC_PROTOCOL_ERROR` in Chrome
@@ -363,7 +365,7 @@ Full `.env.example` block: [`../.env.example`](../.env.example), just after
 
 ## Bring-up checklist
 
-1. **DNS:** `chat.oraian.net` and `auth.oraian.net` both resolve to the host.
+1. **DNS:** `chat.example.com` and `auth.example.com` both resolve to the host.
    (A missing `auth` record shows up as the backend failing token exchange with
    `httpx.ConnectError: Name or service not known`.)
 2. **TLS certs** for both names (e.g. `certbot certonly` per host).

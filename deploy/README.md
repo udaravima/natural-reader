@@ -43,8 +43,8 @@ Files here:
   got 409 "email already linked to another identity".)
 The reference nginx vhosts live under `../docs/` (they're copied into your own
 nginx by hand, so they sit with the docs rather than the tool-consumed artifacts
-above): [`chat.oraian.net.sample`](../docs/chat.oraian.net.sample) (SPA + same-origin
-`/v1` proxy) and [`auth.oraian.net.sample`](../docs/auth.oraian.net.sample)
+above): [`chat.example.com.sample`](../docs/sample_configs/chat.example.com.sample) (SPA + same-origin
+`/v1` proxy) and [`auth.example.com.sample`](../docs/sample_configs/auth.example.com.sample)
 (Keycloak). See [../docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md).
 
 ## The one thing that matters: same origin
@@ -187,7 +187,7 @@ yet" until an admin explicitly grants some.
 ## Prod-like variant (nginx)
 
 Instead of `npm run dev`: `npm run build`, point
-[`../docs/chat.oraian.net.sample`](../docs/chat.oraian.net.sample)'s `root` at
+[`../docs/sample_configs/chat.example.com.sample`](../docs/sample_configs/chat.example.com.sample)'s `root` at
 `dist/`, install it, and set `OIDC_REDIRECT_URL` to your nginx origin. Then add
 that origin to the realm's redirect URIs — and note this must be done on the
 **live** realm (admin console or `kcadm`); editing `realm-export.json` only

@@ -6294,7 +6294,7 @@ git commit -m "refactor(chat)!: remove /v1/inference/chat and whole-record PUT; 
 
 - [ ] **Step 5: Check**
 
-Run: `grep -rn "oraian\|sk-[A-Za-z0-9]\{20,\}" .env.example docs/DEPLOYMENT.md CHANGELOG.md; npx vitest run && .venv/bin/python -m pytest server/tests -q`
+Run: `grep -rn "<real-domain>\|sk-[A-Za-z0-9]\{20,\}" .env.example docs/DEPLOYMENT.md CHANGELOG.md; npx vitest run && .venv/bin/python -m pytest server/tests -q`
 Expected: no deployment hostnames and no real-looking keys (only `sk-your-key`); all tests still pass.
 
 - [ ] **Step 6: Commit** (ask the user first)

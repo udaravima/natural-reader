@@ -5331,7 +5331,7 @@ and under `## Invariants & traps` add:
 
 - [ ] **Step 5: Check no deployment-specific value slipped in**
 
-Run: `git diff -- .env.example CHANGELOG.md docs/ | grep -inE "oraian|https?://[a-z0-9.-]+\.(net|org|io)" | grep -v example`
+Run: `git diff -- .env.example CHANGELOG.md docs/ | grep -inE "<real-domain>|https?://[a-z0-9.-]+\.(net|org|io)" | grep -v example`
 Expected: no output.
 
 - [ ] **Step 6: Commit** (ask first)

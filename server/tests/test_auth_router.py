@@ -55,3 +55,40 @@ async def test_callback_idp_error_redirects_not_500(db_conn):
         "&error_description=authentication_expired&state=abc",
     )
     assert r.status_code == 303
+
+
+async def test_logout_sends_the_id_token_hint_to_the_idp(db_conn, monkeypatch):
+    # The hint is what lets Keycloak end the SSO session without a "Do you
+    # want to log out?" page. It lives in the OIDC-flow session cookie, so it
+    # must be read before that session is cleared.
+    from urllib.parse import parse_qs, urlsplit
+
+    from starlette.middleware.sessions import SessionMiddleware
+    from starlette.requests import Request
+
+    class _Idp:
+        async def load_server_metadata(self):
+            return {"end_session_endpoint": "http://idp.test/logout"}
+
+    monkeypatch.setattr(auth_router, "_client", lambda: _Idp())
+    monkeypatch.setenv("OIDC_REDIRECT_URL", "http://app.test/v1/auth/callback")
+    app = _app(db_conn)
+
+    @app.get("/seed")
+    async def seed(request: Request):
+        request.session["id_token"] = "the-id-token"
+        return {}
+
+    app.add_middleware(SessionMiddleware, secret_key="test-secret")
+    transport = ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://app.test") as client:
+        await client.get("/seed")
+        r = await client.get("/v1/auth/logout")
+
+    assert r.status_code == 303
+    loc = urlsplit(r.headers["location"])
+    q = parse_qs(loc.query)
+    assert f"{loc.scheme}://{loc.netloc}{loc.path}" == "http://idp.test/logout"
+    assert q["id_token_hint"] == ["the-id-token"]
+    assert "client_id" not in q
+    assert q["post_logout_redirect_uri"] == ["http://app.test/"]

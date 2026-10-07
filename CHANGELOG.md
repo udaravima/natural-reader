@@ -171,6 +171,24 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Log out ends the Keycloak session too.** The app cleared its OIDC session
+  before reading the ID token it keeps for logout, so Keycloak never got the
+  `id_token_hint`. It then fell back to a confirmation page or, with the
+  checked-in dev realm, refused the return address ("Invalid redirect uri"),
+  and the next "Sign in" skipped the password. The dev realm export now
+  allows `http://localhost:8080` and Vite's `http://localhost:5173` for
+  sign-in and after logout. It also no longer carries any real deployment's
+  hostnames, which the docs and sample nginx configs now spell
+  `chat.example.com` / `auth.example.com`
+  (`docs/sample_configs/*.example.com.sample`).
+- **Admin console on a phone:** user rows wrap instead of pushing Disable and
+  Delete off-screen, and the budget and project-limit fields carry visible
+  captions ("tokens/day", "projects"). The Library's project filter no longer
+  runs past the screen edge with a long project name.
+- **Project activity** reads "added themselves" / "changed their own role"
+  when an admin adds or promotes themselves.
+- An admin project limit above 2147483647 is refused with 422 instead of a
+  500 from the database.
 - Migrations 014–016 never recorded their version and re-ran (harmlessly) on
   every startup; every migration now records itself, and a test checks it.
 
@@ -500,9 +518,9 @@ API-auth change is breaking for pre-1.9.0 open deployments — see **Changed**.
   [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 - **Production deployment behind nginx + TLS.** New guide
   [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) covers serving the SPA + backend on one
-  origin (`chat.oraian.net`) with Keycloak on its own (`auth.oraian.net`): two
-  nginx vhost samples ([docs/chat.oraian.net.sample](docs/chat.oraian.net.sample),
-  [docs/auth.oraian.net.sample](docs/auth.oraian.net.sample)), the five config
+  origin (`chat.example.com`) with Keycloak on its own (`auth.example.com`): two
+  nginx vhost samples ([docs/sample_configs/chat.example.com.sample](docs/sample_configs/chat.example.com.sample),
+  [docs/sample_configs/auth.example.com.sample](docs/sample_configs/auth.example.com.sample)), the five config
   values that must agree, and the traps (KC proxy headers, live-realm ≠ export,
   `COOKIE_SECURE`, `client_max_body_size`, stale QUIC). `docker-compose.yml` gains
   `KC_PROXY_HEADERS`/`KC_HOSTNAME` passthrough (empty by default) so Keycloak emits
@@ -572,7 +590,7 @@ API-auth change is breaking for pre-1.9.0 open deployments — see **Changed**.
   value is migrated away on boot.
 - **nginx: delete the `/api/` block.** With the gateway live, Ollama becomes
   backend-only (loopback bind, nothing proxied). The reference configs
-  (`deploy/nginx/natural-reader.conf`, `docs/chat.oraian.net.sample`) and the
+  (`deploy/nginx/natural-reader.conf`, `docs/sample_configs/chat.example.com.sample`) and the
   README example have dropped it; `proxy_buffering off` now matters on `/v1/`
   (that's where NDJSON streams).
 - Server-side summarize (web_search) and embedding calls route through
@@ -627,7 +645,7 @@ API-auth change is breaking for pre-1.9.0 open deployments — see **Changed**.
 - **Logout "Invalid redirect uri".** The `natural-reader` client's
   `post.logout.redirect.uris` in `realm-export.json` was space-delimited;
   Keycloak splits that attribute on `##`, so both URIs were parsed as one bogus
-  value and `post_logout_redirect_uri=https://chat.oraian.net/` matched nothing.
+  value and `post_logout_redirect_uri=https://chat.example.com/` matched nothing.
   Fixed the delimiter; documented the login-vs-logout allow-list drift (a live
   realm still needs the URI added by hand — `--import-realm` only seeds a fresh
   DB) in `docs/DEPLOYMENT.md` Trap 2.
@@ -836,7 +854,7 @@ API-auth change is breaking for pre-1.9.0 open deployments — see **Changed**.
 - **Model response stats footer** — every assistant bubble has a small collapsible `⚡ N tok · X.X s · Y.Y tok/s` line. Expanded view shows model name, total time, load time, prompt eval (tokens + time), generation (tokens + time + throughput), and `done_reason` when non-trivial. Pulled directly from Ollama's final NDJSON chunk.
 - **Stick-to-bottom scroll** — chat list auto-tails new tokens only when the user is already near the bottom (within 80 px). Scrolling up pauses the auto-tail so you can read history during a long stream; returning to the bottom resumes it.
 - **Reverse-proxy production deployment docs** — README now includes a worked nginx example covering both `/v1/*` and `/api/*`, plus notes on `proxy_buffering off` for streaming, Ollama Host-header allowlist (override or `OLLAMA_ORIGINS`), and serving `.mjs` files with the right MIME type so Firefox can load PDF.js's worker.
-- **Security & Hardening section in README** documenting the threat model for client-side API calls and ready-to-paste recipes for HTTP Basic Auth, IP allowlist, rate limiting, and tighter Kokoro CORS. The sample nginx config (`docs/chat.oraian.net.sample`) ships the same recipes as commented-out blocks so applying them is copy/paste.
+- **Security & Hardening section in README** documenting the threat model for client-side API calls and ready-to-paste recipes for HTTP Basic Auth, IP allowlist, rate limiting, and tighter Kokoro CORS. The sample nginx config (`docs/sample_configs/chat.example.com.sample`) ships the same recipes as commented-out blocks so applying them is copy/paste.
 
 ### Changed
 - **Voice recording / audio attachments paused** — Ollama's image projector chokes on non-image bytes (`unknown data type` on raw audio), and there's no native audio path in the daemon for this gemma4 build. The mic button + `<VoiceRecorder>` component were removed from the visible UI, and audio files are filtered out of drop / paste with a friendly toast. Component files and utilities remain on disk so re-enabling is a small re-toggle once a transcription step (Whisper) lands.

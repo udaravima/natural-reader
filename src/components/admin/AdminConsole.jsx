@@ -41,6 +41,7 @@ function BudgetField({ u, theme, onSet }) {
         title="empty = default, 0 = unlimited"
         className={`px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg} w-20`}
       />
+      <span aria-hidden="true" className={`text-[10px] ${theme.textMuted}`}>tokens/day</span>
       <button onClick={() => onSet(u, val)} className="text-[10px] underline">Set</button>
     </span>
   );
@@ -60,6 +61,7 @@ function ProjectLimitField({ u, theme, onSet }) {
         title="projects this person may create; empty = default, 0 = unlimited"
         className={`px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg} w-16`}
       />
+      <span aria-hidden="true" className={`text-[10px] ${theme.textMuted}`}>projects</span>
       <button onClick={() => onSet(u, val)} aria-label={`Set project limit for ${u.email}`} className="text-[10px] underline">Set</button>
     </span>
   );
@@ -362,8 +364,8 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
             const deleting = deleteTarget === u.id;
             return (
               <div key={u.id} data-testid={`user-row-${u.id}`} className={`flex flex-col gap-1 p-3 rounded-lg border ${theme.border} ${theme.bgSecondary}`}>
-                <div className="flex items-center justify-between gap-2 text-xs">
-                  <span className="truncate flex items-center gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="truncate flex items-center gap-2 max-w-full">
                     <span className="truncate">{u.email}</span>
                     {u.oidc_sub === null && (
                       <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-500 whitespace-nowrap">
@@ -374,7 +376,7 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
                   <span className={`text-[10px] ${theme.textMuted} whitespace-nowrap`}>
                     {u.role}/{u.status}{u.created_at ? ` · ${String(u.created_at).slice(0, 10)}` : ''}
                   </span>
-                  <span className="flex gap-2 shrink-0 items-center">
+                  <span className="flex flex-wrap gap-2 items-center">
                     <BudgetField
                       key={`${u.id}-${u.inference_daily_token_budget ?? 'null'}`}
                       u={u} theme={theme} onSet={setBudget}

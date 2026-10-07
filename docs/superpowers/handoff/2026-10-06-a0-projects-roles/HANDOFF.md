@@ -70,3 +70,13 @@ None blocks merge (final-review triage). Grouped as the ledger recorded them.
 - **Task 15:** no tests for recovery failure, Open→ProjectPage→Back swap, invalid project-limit notice; no RED captured; enroll row now 7 inputs (phone-width layout unchecked until the app walk).
 - **Task 16:** ARCHITECTURE invariant bullet lacks bold lead-in; CHANGELOG Changed items without bold leads; "Awaiting approval" capitalised in guide vs lowercase badge.
 - **Final:** ActivityTab Load-more 404 doesn't reload/route back; ProjectPage goes back on any reload error (not just 404); "Admin User added Admin User" wording; can_manage_project_docs now dead; docs.py docstrings "own or belong to"; ARCHITECTURE says re-run "stops startup" (init_db retries then 503); project_limit no upper bound (500); per-user project_limit 0 = unlimited (design note).
+
+## After the merge (2026-10-07, branch `fix/post-merge-issues`)
+
+`feat/c2-multi-document` was merged: `development` fast-forwarded to `b2a4e35`, then `development` → `master` (`f5c7d2e`, tree identical to the tested tip). Then, from "Found during the walk":
+
+- **#2 real domain** — gone from every tracked file: example.com hostnames, sample configs renamed to `docs/sample_configs/*.example.com.sample` (the old links pointed at `docs/` and were broken). The domain remains in git history and on the remote; rewriting that is a separate decision.
+- **#5 activity wording** — "added themselves" / "changed their own role".
+- **#6 logout** — reproduced with a curl probe against a throwaway Keycloak (checked-in realm): two faults. (a) `GET /v1/auth/logout` cleared the session before reading the stashed ID token, so `id_token_hint` was never sent; (b) the dev realm export allowed only the production hosts as post-logout URIs, so Keycloak answered 400 "Invalid redirect uri" and kept its session. Both fixed; the probe then showed the next sign-in asking for the password. The export also gained `localhost:5173` (the dev address `.env.example` recommends). A live realm is not changed by the export (`--import-realm` skips an existing realm).
+- **Phone width (390px), checked in the running app (dev-bypass, scratch DB):** Library Projects, project Documents/Members/Activity — fine. Fixed: admin user rows pushed Disable/Delete off-screen and hid the email; the budget and project-limit fields had no visible captions; the Library project filter overflowed with a long project name. Left: a long project name truncates in the project header (full name on the card).
+- **project_limit > INTEGER** — 422 instead of 500. (`inference_daily_token_budget` is BIGINT; only values past 9.2e18 overflow — not fixed.)
