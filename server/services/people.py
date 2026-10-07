@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+
+from ..http_errors import refusal
 
 logger = logging.getLogger(__name__)
 
@@ -139,3 +142,16 @@ async def lookup(conn, cfg: DirectoryConfig, caller_id: str, caller_email: str,
     found = [_result(r, cfg.show_email) for r in await cur.fetchall()]
     logger.debug("directory lookup: mode=%s, %d result(s)", mode, len(found))
     return found
+
+
+async def assert_addable(conn, user_id: str) -> None:
+    """404 "User not found" unless `user_id` is an existing account that isn't
+    disabled (A0 §4: disabled people can't be added or shared with)."""
+    try:
+        uuid.UUID(str(user_id))
+    except ValueError:
+        raise refusal(404, "not_found", "User not found")
+    cur = await conn.execute("SELECT status FROM users WHERE id = %s", (str(user_id),))
+    row = await cur.fetchone()
+    if row is None or row[0] == "disabled":
+        raise refusal(404, "not_found", "User not found")

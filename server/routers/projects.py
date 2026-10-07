@@ -1,35 +1,50 @@
-"""/v1/projects — grouping + primary sharing unit. Owner-only project writes; listing
-returns owned + member-of. Documents (A1 §5): a holder of an upload entry files
-them in; only the project (`can_manage_project_docs`; A1: its owner) removes
-them — the uploader has no special power over a placement. Not-permitted is
-404 (no existence leak)."""
+"""/v1/projects — projects, their members, documents and activity (A0).
+Membership (`project_members.role`, Reader < Contributor < Maintainer <
+Owner) is the only source of access. Every route's first check is
+`require_project_role`: a non-member gets 404 before any other id is
+examined, and a member below the route's role gets 403 insufficient_role.
+Project responses carry `can` (authz.can_for), so the UI never re-derives
+the rules. Documents (A1 §5): a Contributor who holds an upload entry files
+them in; only a Maintainer or Owner removes them."""
 from __future__ import annotations
 
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from psycopg import errors as pg_errors
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..audit import audit
 from ..auth import deps
 from ..auth.authz import (
     assert_holds_upload,
+    can_for,
     can_manage_project_docs,
+    require_project_role,
     visible_projects_params,
     visible_projects_where,
 )
 from ..http_errors import refusal
-from ..services import doc_content
+from ..services import doc_content, people, project_events, project_policy
 from .docs import DocId
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
+_reader = deps.require_capability("reader")
+
+
+def _clean_name(v: str | None) -> str:
+    if v is None or not v.strip():
+        raise ValueError("name must not be blank")
+    return v.strip()
 
 
 class ProjectIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=200)
     description: str | None = None
+    owner_user_id: uuid.UUID | None = None  # admins only: create for someone else
+
+    clean_name = field_validator("name")(_clean_name)
 
 
 class ProjectPatch(BaseModel):
@@ -37,11 +52,37 @@ class ProjectPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = None
 
+    clean_name = field_validator("name")(_clean_name)
 
-def _row(r) -> dict:
-    # Transitional (A0 Task 1): `owner_user_id` now reports `created_by`.
-    return {"id": str(r[0]), "owner_user_id": str(r[1]) if r[1] else None,
-            "name": r[2], "description": r[3]}
+
+def _show_email() -> bool:
+    return people.load_directory_config().show_email
+
+
+def _project_sql(where: str) -> str:
+    """Bind [caller user_id, *where params]."""
+    return (
+        "SELECT p.id, p.name, p.description, p.created_at, "
+        f"{people.person_cols('cb')}, "
+        "(SELECT role FROM project_members WHERE project_id = p.id AND user_id = %s), "
+        "(SELECT count(*) FROM project_members WHERE project_id = p.id), "
+        "(SELECT count(*) FROM project_documents WHERE project_id = p.id AND verified) "
+        f"FROM projects p LEFT JOIN users cb ON cb.id = p.created_by WHERE {where}"
+    )
+
+
+def _project(r, *, is_admin: bool, show_email: bool) -> dict:
+    my_role = r[10]
+    return {"id": str(r[0]), "name": r[1], "description": r[2], "created_at": r[3],
+            "created_by": people.person_from(r[4:10], show_email),
+            "my_role": my_role, "member_count": r[11], "doc_count": r[12],
+            "can": can_for(my_role, is_admin)}
+
+
+async def _load_project(conn, principal, project_id) -> dict:
+    cur = await conn.execute(_project_sql("p.id = %s"), (principal.user_id, project_id))
+    return _project(await cur.fetchone(), is_admin=principal.role == "admin",
+                    show_email=_show_email())
 
 
 async def _assert_owner(conn, project_id: str, user_id: str) -> None:
@@ -53,61 +94,79 @@ async def _assert_owner(conn, project_id: str, user_id: str) -> None:
 
 
 @router.post("", status_code=201)
-async def create_project(body: ProjectIn,
-                         principal: deps.Principal = Depends(deps.get_current_user),
+async def create_project(body: ProjectIn, principal: deps.Principal = Depends(_reader),
                          conn=Depends(deps.get_conn)):
+    if body.owner_user_id is not None and principal.role != "admin":
+        raise refusal(403, "insufficient_role",
+                      "Only admins can create a project for someone else.", required="admin")
+    await project_policy.check_can_create(conn, principal, project_policy.load_project_policy())
+    owner_id = str(body.owner_user_id) if body.owner_user_id else principal.user_id
+    if owner_id != principal.user_id:
+        await people.assert_addable(conn, owner_id)
     cur = await conn.execute(
-        "INSERT INTO projects (created_by, name, description) "
-        "VALUES (%s,%s,%s) RETURNING id, created_by, name, description",
+        "INSERT INTO projects (created_by, name, description) VALUES (%s,%s,%s) RETURNING id",
         (principal.user_id, body.name, body.description))
-    out = _row(await cur.fetchone())
+    pid = str((await cur.fetchone())[0])
+    via = "member" if owner_id == principal.user_id else "admin"
     await conn.execute(
-        "INSERT INTO project_members (project_id, user_id, role, added_by) "
-        "VALUES (%s,%s,'owner',%s)", (out["id"], principal.user_id, principal.user_id))
-    out["is_owner"] = True
-    return out
+        "INSERT INTO project_members (project_id, user_id, role, added_by, added_via) "
+        "VALUES (%s,%s,'owner',%s,%s)", (pid, owner_id, principal.user_id, via))
+    await project_events.record(
+        conn, pid, principal.user_id, "project.created",
+        subject_user_id=None if via == "member" else owner_id, details={"name": body.name})
+    return await _load_project(conn, principal, pid)
 
 
 @router.get("")
-async def list_projects(principal: deps.Principal = Depends(deps.get_current_user),
+async def list_projects(principal: deps.Principal = Depends(_reader),
                         conn=Depends(deps.get_conn)):
+    """Projects the caller is a member of, newest first. Admins too: every
+    project is listed under /v1/admin/projects."""
     cur = await conn.execute(
-        f"SELECT p.id, p.created_by, p.name, p.description, "
-        f"EXISTS (SELECT 1 FROM project_members _o WHERE _o.project_id = p.id "
-        f"AND _o.user_id = %s AND _o.role = 'owner') FROM projects p "
-        f"WHERE {visible_projects_where('p')} ORDER BY p.created_at DESC",
+        _project_sql(visible_projects_where("p")) + " ORDER BY p.created_at DESC",
         [principal.user_id, *visible_projects_params(principal.user_id)])
-    rows = await cur.fetchall()
-    return [{**_row(r), "is_owner": r[4]} for r in rows]
+    show_email = _show_email()
+    return [_project(r, is_admin=principal.role == "admin", show_email=show_email)
+            for r in await cur.fetchall()]
+
+
+@router.get("/{project_id}")
+async def get_project(project_id: uuid.UUID, principal: deps.Principal = Depends(_reader),
+                      conn=Depends(deps.get_conn)):
+    await require_project_role(conn, principal, project_id, None)
+    return await _load_project(conn, principal, project_id)
 
 
 @router.patch("/{project_id}")
-async def patch_project(project_id: str, body: ProjectPatch,
-                        principal: deps.Principal = Depends(deps.get_current_user),
+async def patch_project(project_id: uuid.UUID, body: ProjectPatch,
+                        principal: deps.Principal = Depends(_reader),
                         conn=Depends(deps.get_conn)):
-    await _assert_owner(conn, project_id, principal.user_id)
+    await require_project_role(conn, principal, project_id, "maintainer")
     data = body.model_dump(exclude_unset=True)
-    if data:
-        sets = ", ".join(f"{k} = %s" for k in data)
-        await conn.execute(f"UPDATE projects SET {sets} WHERE id = %s",
-                           [*data.values(), project_id])
-    cur = await conn.execute(
-        "SELECT id, created_by, name, description FROM projects WHERE id = %s",
-        (project_id,))
-    return {**_row(await cur.fetchone()), "is_owner": True}
+    cur = await conn.execute("SELECT name, description FROM projects WHERE id = %s", (project_id,))
+    old_name, old_description = await cur.fetchone()
+    if "name" in data and data["name"] != old_name:
+        await conn.execute("UPDATE projects SET name = %s WHERE id = %s", (data["name"], project_id))
+        await project_events.record(conn, project_id, principal.user_id, "project.renamed",
+                                    details={"from": old_name, "to": data["name"]})
+    if "description" in data and data["description"] != old_description:
+        await conn.execute("UPDATE projects SET description = %s WHERE id = %s",
+                           (data["description"], project_id))
+        await project_events.record(conn, project_id, principal.user_id, "project.described")
+    return await _load_project(conn, principal, project_id)
 
 
 @router.delete("/{project_id}", status_code=204)
-async def delete_project(project_id: str,
-                         principal: deps.Principal = Depends(deps.get_current_user),
+async def delete_project(project_id: uuid.UUID, principal: deps.Principal = Depends(_reader),
                          conn=Depends(deps.get_conn)):
-    await _assert_owner(conn, project_id, principal.user_id)
+    await require_project_role(conn, principal, project_id, "owner", lock=True)
     # Sorted, like admin delete_user's GC: row locks in one order can't deadlock.
     cur = await conn.execute(
         "SELECT doc_id FROM project_documents WHERE project_id = %s ORDER BY doc_id",
         (project_id,))
     doc_ids = [r[0] for r in await cur.fetchall()]
     await conn.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+    audit("project.deleted", project=project_id, by=principal.user_id)
     for doc_id in doc_ids:
         await doc_content.gc_content_if_orphaned(conn, doc_id, trigger="project_deleted")
     return Response(status_code=204)
