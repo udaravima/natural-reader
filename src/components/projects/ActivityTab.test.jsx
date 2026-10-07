@@ -53,4 +53,26 @@ describe('ActivityTab', () => {
     render(<ActivityTab theme={theme} api={{ events: vi.fn(async () => ({ events: [], next_before: null })) }} project={{ id: 'p1' }} />);
     expect(await screen.findByText('No activity yet.')).toBeTruthy();
   });
+
+  it('shows the error, not "No activity yet.", when the first load fails', async () => {
+    const api = { events: vi.fn(async () => { throw new Error('Something went wrong on the server. Try again.'); }) };
+    render(<ActivityTab theme={theme} api={api} project={{ id: 'p1' }} />);
+    expect((await screen.findByRole('alert')).textContent).toBe('Something went wrong on the server. Try again.');
+    expect(screen.queryByText('No activity yet.')).toBeNull();
+  });
+
+  it('keeps the loaded events and shows the error when Load more fails, so it can be retried', async () => {
+    const api = {
+      events: vi.fn(async (id, before) => {
+        if (before) throw new Error('Something went wrong on the server. Try again.');
+        return { events: [ev('project.described', {}, { id: 2 })], next_before: 2 };
+      }),
+    };
+    render(<ActivityTab theme={theme} api={api} project={{ id: 'p1' }} />);
+    await screen.findByText(/Asha changed the description/);
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('Something went wrong on the server. Try again.');
+    expect(screen.getByText(/Asha changed the description/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Load more' }).disabled).toBe(false);
+  });
 });

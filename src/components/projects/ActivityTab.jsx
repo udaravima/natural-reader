@@ -37,6 +37,7 @@ export default function ActivityTab({ theme, api, project }) {
   const [events, setEvents] = useState(null);
   const [next, setNext] = useState(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState(null);
 
   // Every setState here runs after the await, so calling load() from the
   // effect never sets state synchronously inside it.
@@ -45,8 +46,10 @@ export default function ActivityTab({ theme, api, project }) {
       const page = await api.events(project.id, before);
       setEvents((prev) => (before ? [...(prev || []), ...page.events] : page.events));
       setNext(page.next_before);
-    } catch {
+      setError(null);
+    } catch (e) {
       setEvents((prev) => prev || []);
+      setError(e.message);
     } finally {
       setLoadingMore(false);
     }
@@ -55,7 +58,8 @@ export default function ActivityTab({ theme, api, project }) {
   useEffect(() => { load(null); }, [load]);
 
   if (events === null) return <p className={`text-xs ${theme.textMuted}`}>Loading…</p>;
-  if (events.length === 0) return <p className={`text-xs ${theme.textMuted}`}>No activity yet.</p>;
+  const alert = error && <p role="alert" className="text-xs text-red-500">{error}</p>;
+  if (events.length === 0) return error ? alert : <p className={`text-xs ${theme.textMuted}`}>No activity yet.</p>;
   return (
     <div className="flex flex-col gap-2">
       <ul className="flex flex-col gap-1">
@@ -65,6 +69,7 @@ export default function ActivityTab({ theme, api, project }) {
           </li>
         ))}
       </ul>
+      {alert}
       {next && (
         <button onClick={() => { setLoadingMore(true); load(next); }} disabled={loadingMore}
           className="self-start text-xs underline disabled:opacity-50">
