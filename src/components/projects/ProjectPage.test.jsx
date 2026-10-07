@@ -77,6 +77,8 @@ describe('ProjectPage', () => {
     const props = mount({ 'GET /v1/projects/p1': json(404, { detail: { error: 'not_found',
       message: "This project doesn't exist or you don't have access." } }) });
     await waitFor(() => expect(props.onBack).toHaveBeenCalled());
+    expect(props.onChanged).toHaveBeenCalled();
+    expect(props.onChanged.mock.invocationCallOrder[0]).toBeLessThan(props.onBack.mock.invocationCallOrder[0]);
     expect(props.showToast).toHaveBeenCalledWith("This project doesn't exist or you don't have access.", 5000);
   });
 

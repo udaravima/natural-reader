@@ -309,6 +309,27 @@ describe('LibraryPage', () => {
     expect(await screen.findByRole('button', { name: 'Open project Project A' })).toBeTruthy();
   });
 
+  it('reloads the documents after a change made on a project page', async () => {
+    let filed = false;
+    apiFetch.mockImplementation(async (h, p, path, opts) => {
+      if (path === '/v1/projects') return json(200, projects);
+      if (path === '/v1/projects/p2') return json(200, projects[1]);
+      if (path.startsWith('/v1/projects/p2/docs/') && opts?.method === 'PUT') { filed = true; return json(204, null); }
+      if (path.startsWith('/v1/docs')) {
+        return json(200, docs.map((d) => (filed && d.doc_id === 'd1' ? { ...d, projects: [{ id: 'p2', name: 'Project B' }] } : d)));
+      }
+      return json(404, {});
+    });
+    render(<LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} />);
+    await screen.findByText('Owned.pdf');
+    fireEvent.click(screen.getByRole('tab', { name: 'Projects' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open project Project B' }));
+    fireEvent.change(await screen.findByLabelText('File a document into this project'), { target: { value: 'd1' } });
+    await waitFor(() => expect(filed).toBe(true));
+    fireEvent.click(screen.getAllByRole('tab', { name: 'Documents' })[0]);
+    const row = await screen.findByTestId('doc-row-d1');
+    await waitFor(() => expect(within(row).queryByText('No project')).toBeNull());
+  });
 });
 
 describe('LibraryPage — New project', () => {

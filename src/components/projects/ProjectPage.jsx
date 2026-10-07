@@ -32,11 +32,15 @@ export default function ProjectPage({ theme, apiHost, apiPort, projectId, curren
       if (!fresh.can.edit) setEditing(false); // lost the right to edit: leave the form
     } catch (e) {
       cb.current.showToast(e.message, 5000);
+      cb.current.onChanged?.();
       cb.current.onBack();
     }
   }, [api, projectId, cb]);
 
   useEffect(() => { reload(); }, [reload]);
+
+  // A change inside a tab: refresh this project and tell the Library.
+  const changed = () => { reload(); cb.current.onChanged?.(); };
 
   const act = async (fn) => {
     setBusy(true);
@@ -150,11 +154,11 @@ export default function ProjectPage({ theme, apiHost, apiPort, projectId, curren
 
       {tab === 'documents' && (
         <ProjectDocsTab theme={theme} api={api} project={project} showToast={showToast} onOpenDoc={onOpenDoc}
-          onRefused={reload} onChanged={reload} />
+          onRefused={reload} onChanged={changed} />
       )}
       {tab === 'members' && (
         <MembersTab theme={theme} api={api} project={project} currentUserId={currentUserId} showToast={showToast}
-          onRefused={reload} onChanged={reload} />
+          onRefused={reload} onChanged={changed} />
       )}
       {tab === 'activity' && <ActivityTab theme={theme} api={api} project={project} />}
     </div>

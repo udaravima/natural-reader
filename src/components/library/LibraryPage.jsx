@@ -241,7 +241,9 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
     try {
       const res = await apiFetch(apiHost, apiPort, '/v1/projects');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setProjects(await res.json());
+      const list = await res.json();
+      setProjects(list);
+      return list;
     } catch (e) {
       setProjects([]);
       showToast(`Could not load projects: ${e.message}`, 5000);
@@ -307,8 +309,14 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
     }
   };
 
+  // A change made on a project page (filed/removed a document, left, deleted)
+  // can alter document chips and the project list, so reload both; a filter on
+  // a project that has vanished is dropped.
   const projectsChanged = async () => {
-    await loadProjects();
+    const list = await loadProjects();
+    const filter = list && projectFilter && !list.some((p) => p.id === projectFilter) ? '' : projectFilter;
+    if (filter !== projectFilter) setProjectFilter('');
+    await loadDocs(search, filter);
     onProjectsChanged?.();
   };
 
