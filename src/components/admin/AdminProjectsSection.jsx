@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { projectsApi } from '../../lib/projectsApi';
 
@@ -15,15 +15,21 @@ export function AdminProjectsSection({ theme, apiHost, apiPort, currentUserId, s
   const [ownerlessOnly, setOwnerlessOnly] = useState(false);
   const [rows, setRows] = useState(null);
   const [busyId, setBusyId] = useState(null);
+  const [error, setError] = useState(null);
+  const reqId = useRef(0); // only the latest request may set rows/error
 
   const load = useCallback(async () => {
+    const id = ++reqId.current;
     try {
-      setRows(await api.adminProjects(ownerlessOnly));
+      const data = await api.adminProjects(ownerlessOnly);
+      if (id !== reqId.current) return;
+      setRows(data);
+      setError(null);
     } catch (e) {
-      setRows([]);
-      showToast(`Could not load projects: ${e.message}`, 5000);
+      if (id !== reqId.current) return;
+      setError(e.message);
     }
-  }, [api, ownerlessOnly, showToast]);
+  }, [api, ownerlessOnly]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -49,9 +55,15 @@ export function AdminProjectsSection({ theme, apiHost, apiPort, currentUserId, s
           Ownerless only
         </label>
       </div>
+      {error && (
+        <p role="alert" className="text-xs text-red-500 flex items-center gap-2">
+          Could not load projects: {error}
+          <button onClick={load} className="underline">Retry</button>
+        </p>
+      )}
       {rows === null ? (
-        <p className={`text-xs ${theme.textMuted}`}>Loading…</p>
-      ) : rows.length === 0 ? (
+        error ? null : <p className={`text-xs ${theme.textMuted}`}>Loading…</p>
+      ) : rows.length === 0 && error ? null : rows.length === 0 ? (
         <p className={`text-xs ${theme.textMuted}`}>{ownerlessOnly ? 'No ownerless projects.' : 'No projects yet.'}</p>
       ) : rows.map((p) => (
         <div key={p.id} className={`flex items-center justify-between gap-2 p-3 rounded-lg border ${theme.border} ${theme.bgSecondary} text-xs`}>

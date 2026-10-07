@@ -50,4 +50,38 @@ describe('AdminProjectsSection', () => {
     expect(JSON.parse(put[3].body)).toEqual({ role: 'owner' });
     expect(screen.queryByRole('button', { name: 'Add me as Owner of Owned' })).toBeNull();
   });
+
+  it('shows a failed load inline with Retry, not as an empty list', async () => {
+    let fail = true;
+    apiFetch.mockImplementation(async (h, p, path) => {
+      if (path === '/v1/admin/projects') return fail ? json(500, {}) : json(200, [owned]);
+      return json(404, {});
+    });
+    const showToast = vi.fn();
+    render(<AdminProjectsSection theme={theme} apiHost="" apiPort="" currentUserId="admin1" showToast={showToast} onOpenProject={vi.fn()} />);
+    expect((await screen.findByRole('alert')).textContent).toMatch(/Could not load projects/);
+    expect(screen.queryByText('No projects yet.')).toBeNull();
+    expect(showToast).not.toHaveBeenCalled();
+    fail = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Olu')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('ignores a stale response that resolves after a newer one', async () => {
+    let releaseAll;
+    const gate = new Promise((r) => { releaseAll = r; });
+    apiFetch.mockImplementation(async (h, p, path) => {
+      if (path === '/v1/admin/projects') { await gate; return json(200, [owned, orphan]); }
+      if (path === '/v1/admin/projects?ownerless=true') return json(200, [orphan]);
+      return json(404, {});
+    });
+    render(<AdminProjectsSection theme={theme} apiHost="" apiPort="" currentUserId="admin1" showToast={vi.fn()} onOpenProject={vi.fn()} />);
+    fireEvent.click(screen.getByLabelText('Ownerless only'));
+    await screen.findByText('Orphan');
+    releaseAll();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText('Olu')).toBeNull();
+    expect(screen.getByText('Orphan')).toBeTruthy();
+  });
 });
