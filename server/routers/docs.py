@@ -47,7 +47,7 @@ from ..auth.authz import (
 from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
 from ..http_errors import refusal
-from ..services import doc_content, doc_pipeline, doc_storage, docling_convert
+from ..services import doc_content, doc_pipeline, doc_storage, docling_convert, people
 from ..services.doc_search import ReadableDoc, search_chunks
 from ..services.embeddings import embed_query
 
@@ -588,6 +588,25 @@ async def delete_document(
     return Response(status_code=204)
 
 
+@router.get("/{doc_id}/shares")
+async def list_shares(doc_id: DocId, principal: Principal = Depends(_require_upload_holder)):
+    """The people I shared this document with (A0 §9.3), oldest share first.
+    Only a holder of a verified upload entry can share, so only they can
+    list; everyone else gets 404. Other sharers' shares are never listed."""
+    _ensure_ready()
+    show_email = people.load_directory_config().show_email
+    async with get_pool().connection() as conn:
+        cur = await conn.execute(
+            f"SELECT {people.person_cols('u')}, e.added_at FROM library_entries e "
+            "JOIN users u ON u.id = e.user_id "
+            "WHERE e.doc_id = %s AND e.shared_by = %s AND e.added_via = 'shared' "
+            "ORDER BY e.added_at, u.id", (doc_id, principal.user_id))
+        rows = await cur.fetchall()
+    return [{"user_id": p["id"], "name": p["name"],
+             "username": people.shown_username(r[4], show_email), "shared_at": r[6]}
+            for r in rows if (p := people.person_from(r[:6], show_email))]
+
+
 @router.put("/{doc_id}/shares/{user_id}", status_code=204)
 async def add_share(doc_id: DocId, user_id: str,
                     principal: Principal = Depends(_require_upload_holder)):
@@ -599,12 +618,9 @@ async def add_share(doc_id: DocId, user_id: str,
     carries the name the sharer sees, so they never see a stranger's file
     name (the canonical name is the first uploader's)."""
     _ensure_ready()
-    try:
-        uuid.UUID(user_id)
-    except ValueError:
-        raise refusal(404, "not_found", "User not found")
-    try:
-        async with get_pool().connection() as conn:
+    async with get_pool().connection() as conn:
+        await people.assert_addable(conn, user_id)  # 404 for malformed, missing or disabled
+        try:
             async with conn.transaction():  # savepoint: a caught FK error leaves conn usable
                 cur = await conn.execute(
                     "SELECT COALESCE(e.file_name, d.file_name) FROM library_entries e "
@@ -614,8 +630,8 @@ async def add_share(doc_id: DocId, user_id: str,
                 outcome = await doc_content.add_entry(
                     conn, user_id, doc_id, via="shared", verified=True,
                     shared_by=principal.user_id, file_name=row[0] if row else None)
-    except pg_errors.ForeignKeyViolation:
-        raise refusal(404, "not_found", "User not found")
+        except pg_errors.ForeignKeyViolation:
+            raise refusal(404, "not_found", "User not found")
     if outcome in ("created", "replaced"):
         audit("share.created", by=principal.user_id, to=user_id, doc=doc_id)
     return Response(status_code=204)
