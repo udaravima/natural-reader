@@ -181,3 +181,33 @@ async def test_share_gives_the_recipient_the_sharers_name_not_the_canonical_one(
     assert r.status_code == 204
     r = await _as(docs_app, recipient, "GET", f"/v1/docs/{HEX}")
     assert r.json()["file_name"] == "my-copy.txt"
+
+
+async def test_list_shares_shows_only_the_people_i_shared_with(db_conn, docs_app):
+    me, ann, bob = await _member(db_conn, "ls1"), await _member(db_conn, "ls2"), await _member(db_conn, "ls3")
+    await db_conn.execute("UPDATE users SET first_name='Ann' WHERE id=%s", (ann.user_id,))
+    await _insert_doc(db_conn, HEX, me.user_id)
+    await seed.share_doc(db_conn, HEX, me.user_id, ann.user_id)
+    await seed.seed_doc(db_conn, "b" * 64, bob.user_id, file_name="g", file_type="text")
+    await seed.share_doc(db_conn, "b" * 64, bob.user_id, ann.user_id)  # someone else's share
+    r = await _as(docs_app, me, "GET", f"/v1/docs/{HEX}/shares")
+    assert r.status_code == 200
+    rows = r.json()
+    assert [(s["user_id"], s["name"]) for s in rows] == [(ann.user_id, "Ann")]
+    assert rows[0]["shared_at"]
+
+
+async def test_list_shares_needs_an_upload_entry(db_conn, docs_app):
+    me, ann = await _member(db_conn, "ls4"), await _member(db_conn, "ls5")
+    await _insert_doc(db_conn, HEX, me.user_id)
+    await seed.share_doc(db_conn, HEX, me.user_id, ann.user_id)
+    assert (await _as(docs_app, ann, "GET", f"/v1/docs/{HEX}/shares")).status_code == 404
+
+
+async def test_sharing_with_a_disabled_account_is_not_found(db_conn, docs_app):
+    me, gone = await _member(db_conn, "ls6"), await _member(db_conn, "ls7")
+    await set_status(db_conn, gone.user_id, "disabled")
+    await _insert_doc(db_conn, HEX, me.user_id)
+    r = await _as(docs_app, me, "PUT", f"/v1/docs/{HEX}/shares/{gone.user_id}")
+    assert r.status_code == 404
+    assert await _entry(db_conn, gone.user_id) is None

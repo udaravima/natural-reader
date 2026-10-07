@@ -4,6 +4,302 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Deployment limits on context size and keep-alive.**
+  `INFERENCE_NUM_CTX_MAX` (default 32,768 tokens) and
+  `INFERENCE_KEEP_ALIVE_MAX` (default 30 minutes) cap what a user's
+  Settings page can ask an Ollama model for; the page offers only values
+  within them.
+
+- **"Use this document" switch.** A chip above the chat box shows the open
+  document; click it to chat without the document in this chat (no search,
+  no document tools). Kept per chat and per user; pins still work.
+
+- **Source chips under answers.** A reply that used the open document shows
+  the pages it came from as chips ("Sources: p. 3 · p. 8"); click one to open
+  that page. They appear even when the model forgets to write "(page N)".
+  When nothing in the reply matches a page, the chips show the pages that
+  were searched, labelled "Searched (not cited)".
+
+- **`CHAT_PREFETCH=auto|on|off`** controls the search the app runs before
+  the model. The default, `auto`, runs it only for a model that can't search
+  the document itself; a model with tools searches for itself. Measured on
+  `gemma4:e4b`: 9/9 without the pre-search, 5/9 with it (handed passages,
+  it answered from them and missed facts they didn't hold). The eval takes
+  `--prefetch auto|on|off` for one run.
+
+- **Passages found before the model runs arrive as a search result, not as
+  part of your message** (with `CHAT_PREFETCH=on` and a model with tools).
+  Text planted in a document can no longer pose as something you wrote.
+
+- **An assistant profile for the deployment.** Admins give the assistant a
+  name, personality, tone and house rules in the admin console's new
+  **Assistant** section, with a preview of everything the model receives.
+  A deployer can ship it as a file instead (`CHAT_ASSISTANT_PROFILE_FILE`).
+  It comes first in every chat; the app's own rules about documents and
+  tools follow it and take precedence.
+
+- **The assistant follows one strategy for each message.** Small talk and
+  "say that more simply" get a direct reply, without searching. Questions
+  that could be about the open document are searched in the document before
+  the web, and the assistant checks that a passage actually answers before
+  using it. Live questions (news, prices, weather) go to the web. It also
+  knows the document search isn't a web search engine, so it searches with
+  short phrases and exact names, labels and numbers. Follow-ups now refer to
+  your previous answer: the app's clock line no longer leads your message
+  (today's date is in the assistant's instructions instead).
+
+- **Windows startup script.** `startup.cmd` (and `startup.ps1`) do on
+  Windows what `startup.sh` does on Linux and macOS: `init`, `up`,
+  `up-with-dev-auth` and `down`. They run on the PowerShell built into
+  Windows 10/11, with no execution-policy change needed. See README §3,
+  "On Windows".
+
+- **Open a Library document in the reader.** Each Library row has an
+  **Open** button that fetches the document from the server and opens it
+  like a file you picked; Index and chat work on it straight away. Someone
+  a document was shared with, or who sees it through a project, can now
+  read it and ask about it; before, sharing only added a line to their
+  list. The route behind it, `GET /v1/docs/{id}/file`, answers 404 to anyone
+  who can't read the document.
+
+- **Click a citation to open that page.** When a reply used a document, its
+  "page N" and "(page N)" citations are links: clicking one opens that
+  document in the reader at that page, fetching it from the server if it
+  isn't the one open. If you can no longer read it, a notice says so and
+  you stay in chat. Replies that used no document are unchanged.
+
+- **The model can read whole pages.** Asked "what's on page 12?" or about
+  a table a search pointed to, the model reads up to 3 whole pages of the
+  open document at once. It gets the exact text instead of a
+  1,500-character excerpt. The limit per read is `CHAT_READ_PAGES_MAX_CHARS`
+  (default 12,000).
+
+- **An evaluation you can run against your own model.**
+  `scripts/eval_doc_qa.py --model <id>` asks the model five questions about
+  a document with planted facts, through the real chat path, and reports
+  for each whether it found the fact, cited the right page, or said the
+  document doesn't cover it. The five cover one fact, a two-step trail, a
+  table label, a page read, and a fact that isn't there.
+
+- **Projects for teams, with roles (A0).** Every project has members with a
+  role: Reader (read the documents), Contributor (also file their own
+  documents), Maintainer (also remove documents, rename, manage members up to
+  Maintainer) and Owner (everything, including Owners and deleting the
+  project). A project keeps at least one Owner. Library → Projects lists your
+  projects; a project page has Documents, Members and Activity tabs.
+- **Find people to add or share with.** Type a name or a full email address.
+  `USER_DIRECTORY_MODE` (exact | domain | open), `USER_DIRECTORY_DOMAINS` and
+  `USER_DIRECTORY_SHOW_EMAIL` decide who can be found; the default finds people
+  only by their full email.
+- **Share a document from the Library.** A Share button on documents you
+  uploaded; see and stop existing shares.
+- **Project activity history.** Who added or removed whom, role changes,
+  renames, documents filed and removed. `PROJECT_EVENTS_RETENTION_DAYS`
+  (default 0 = keep forever).
+- **Admin: every project and recovery.** Admin → Projects lists all projects
+  with their owners; "Ownerless only" and "Add me as Owner" recover a project
+  whose last Owner was deleted. Per-user project limits
+  (`PROJECT_LIMIT_PER_USER`, default 20) and `PROJECT_CREATION`
+  (readers | admins). Enroll takes username, first and last name.
+
+### Changed
+
+- **Python 3.12 or 3.13 is required** (was 3.10–3.13): the chat server
+  already used a 3.12 function, so on 3.10 and 3.11 the stream-close path
+  failed. `startup.sh` and `startup.cmd` now look for 3.12/3.13 only and say
+  how to install one (`uv python install 3.13`).
+
+- **Logs rotate by time.** `server.log` and `audit.log` start a new file at
+  midnight (`LOG_FILE_ROLL_OVER_TIME`), keeping `LOG_FILE_BACKUPS` old ones.
+  `LOG_FILE_MAX_MB` is gone.
+
+- **`POST /v1/docs/{id}/search` answers 409 `reindexing`** ("This document
+  is being re-indexed for the current search model. Try again shortly.")
+  while a document is rebuilt for a new embedding model, instead of
+  comparing vectors from two models.
+
+- **"Keep model warm: Always" now means up to `INFERENCE_KEEP_ALIVE_MAX`**
+  (30 minutes by default), and a context size above `INFERENCE_NUM_CTX_MAX`
+  is reduced to it: on a shared server both used memory for everyone. A
+  single-user deployment can lift them (`-1` and `0`). Saved settings keep
+  working; the Settings page shows the capped value.
+
+- **The model can follow a trail through the document.** An answer can now
+  use up to 3 rounds of tool calls (`CHAT_MAX_TOOL_ROUNDS`, was 1). For
+  example, it can find the dataset a chapter uses, then search for who
+  collected it. Guard-rails:
+  - a per-answer limit on tool results (`CHAT_TOOL_RESULT_BUDGET_CHARS`);
+  - an identical repeated call isn't run twice;
+  - web search refuses queries that copy the document's text, so document
+    text isn't sent to the web.
+
+  While it works, the reply shows what it is doing, and "Still searching…
+  (round n)" from the second round on.
+
+- **The whole of every page is searchable.**
+  - Long pages are split into overlapping parts of about 1,200 characters (`CHUNK_MAX_CHARS`, `CHUNK_OVERLAP_CHARS`). Before, the bottom half of most PDF pages was never embedded.
+  - Text is embedded with the prefixes the embedding model was trained with (`search_document: ` and `search_query: ` for nomic-embed-text; `EMBEDDING_DOCUMENT_PREFIX` and `EMBEDDING_QUERY_PREFIX` for other models).
+  - Documents indexed before this change are rebuilt in the background the first time they're used, and stay searchable meanwhile.
+
+- **Search finds labels and names, not only meaning.** The document search
+  also matches the exact words of the query, in any language. "Table 4.2",
+  "MIMIC-IV" or "§3.1" are found even where meaning-based search ranks them
+  low.
+
+- **Document search returns evidence, not noise.** The document search
+  tool is now called `search_documents`. It leaves out weak matches
+  (`CHAT_SEARCH_MIN_SCORE`, default 0.45) and returns the rest nearest
+  first, with no score or relevance label: measured, closeness can't tell a
+  passage that answers from one that doesn't, so the model reads them to
+  decide (docs/CHAT_WITH_PDF.md §6.5). It doesn't repeat
+  a passage the model already has in the same answer, so a second search
+  finds something new. Citations in chats saved before this change still
+  open their document.
+
+- **Breaking (API):** `PUT /v1/projects/{id}/members/{user_id}` now needs a
+  body `{"role": "reader|contributor|maintainer|owner"}`; a body-less call is
+  a 422. Project objects drop `is_owner` and `owner_user_id` for `my_role`,
+  `member_count`, `doc_count`, `created_by` and `can`.
+- Deleting a user no longer deletes the projects they created; only their
+  memberships go. A project left without an Owner appears in Admin → Projects.
+- Admins file and remove project documents only through a member role.
+- People's username, first and last name are refreshed from the login token.
+- Access-log lines no longer include query strings, so search and people-lookup
+  text never reaches the logs.
+
+### Fixed
+
+- Migrations 014–016 never recorded their version and re-ran (harmlessly) on
+  every startup; every migration now records itself, and a test checks it.
+
+- **Searching one document is exact, whatever else is in the library.**
+  The search could lose the open document's best passages when other
+  indexed documents were closer to the question. It now ranks only the
+  open document's own passages. This affects both the automatic search
+  before the model answers and the document search tool.
+
+- **The model gets clear rules about the document, not hints mixed into
+  your message.** The rules the model follows (answer from the document's
+  passages, cite pages as "(page N)", say when the document doesn't cover
+  something) now come in one system message that names only the tools it
+  actually has. Text from the document is marked as quoted material, so
+  instructions hidden in a PDF aren't obeyed. A small model is no longer told
+  to call a tool it can't use on the last step of an answer (it used to reply
+  with the tool call written out as text). Web search results are treated
+  as information, never as instructions. A model whose chat template has no
+  system role (e.g. Gemma 2 or Mistral 7B v0.1 served by vLLM) gets the
+  rules at the start of your message instead, remembered per model.
+
+- **A file opened from a workspace folder no longer borrows another
+  document's index.** If "Your Library" held a different file with the same
+  name, Index and chat used that file's server copy. Folder files have no
+  server document of their own, and Index on one now says so ("open the file
+  itself with Choose File to index it").
+
+- **Read aloud never plays a sentence from the page you just left.** A clip
+  still being made when the page changed (turning the page, opening another
+  document, clicking a citation) used to be kept for the same position on
+  the new page; it is now thrown away.
+
+- **Everything the browser remembers belongs to the signed-in user.** After
+  "Your Library", three more things were still shared by everyone who used
+  the browser: old browser-only chats, the last workspace folder (which
+  reopened for the next person), reading positions and the unsent chat
+  message in the composer. Each now belongs to
+  the user who signed in; the next user sees none of it. As with the
+  library, a browser's existing chats, folder, positions and draft go to the
+  first user who signs in after the update.
+
+- **A provider refusal says what happened.** A free OpenRouter model that
+  was rate-limited used to show "The model provider returned an error:
+  Provider returned error". Now a `429` says the model is busy or
+  rate-limited and to try again or pick another model (with the provider's
+  own detail when it gives one), a rejected key (`401`) says an admin needs
+  to check the API key, `402` says the account is out of credit, and `403`
+  says the provider refused the request, with its reason (OpenRouter uses
+  `403` for input its moderation flags).
+  A refusal before any reply still isn't counted against the daily budget.
+  OpenRouter is now verified end to end (paid Gemma 4 and Mistral Small
+  3.2); `.env.example` and `docs/DEPLOYMENT.md` say the key goes in
+  `INFERENCE_<NAME>_API_KEY` — a bare `OPENROUTER_API_KEY` is ignored.
+
+- **Small server fixes and stale docs.** A model id that names a provider
+  but no model (`local:`) is refused as not allowed instead of being sent to
+  Ollama as a model called "local:". The startup sweep for chat turns whose
+  worker died now logs how many claims it cleared, including ones whose
+  reply had already finished. At shutdown, the server also waits for reply
+  saves that start while it is waiting (up to the same 5 seconds).
+  `docs/CHAT_WITH_PDF.md` and the README's endpoint table now describe the
+  server-side upload and extraction pipeline instead of the old
+  client-side chunk upload.
+
+- **Reader console errors on opening a PDF.** Stepping pages or zooming
+  quickly no longer logs pdf.js's "Cannot use the same canvas during
+  multiple render() operations": the previous page render is cancelled
+  first. A recent file on the welcome screen is no longer a button inside a
+  button (it opens with Enter or Space too, and its remove control stays
+  separate). The reader's read-aloud audio keeps each clip alive while it's
+  loaded, instead of discarding it at the end of a sentence or page, which
+  could make the browser fetch a discarded `blob:` URL
+  (`ERR_FILE_NOT_FOUND`).
+
+- **"Your Library" on the welcome screen belongs to the signed-in user.** It
+  used to be one list per browser, so on a shared machine the next person to
+  sign in saw, and could open, the previous person's files. Each saved file
+  now belongs to the user who opened it, and each user sees only their own
+  (the five-file limit is per user too). Files saved before this release go
+  to the first user who signs in on that browser, so a single-user install
+  keeps its library. Signing out only hides the list; nothing is deleted.
+
+- **A tool call a model writes as text now runs instead of becoming the
+  answer.** Small models such as `llama3.2:3b` often reply with
+  `{"name": "search_document", "parameters": {...}}` as plain text, sometimes
+  in a ```` ```json ```` fence, and that JSON was saved as the reply. The server
+  now holds a step's opening text while it could still be such a call (at most
+  2,000 characters); if it is one object naming a tool offered on that step
+  and the provider sent no real tool call, it runs as a tool call and the JSON
+  is neither shown nor saved. Anything else streams as before, and prose is
+  never held. A model its provider has seen reject tools now reports no tool
+  support (its picker loses the "tools" badge), so it is offered none and
+  nothing it writes is taken as a call.
+
+- **`web_search` page fetches are capped by size, time and type.** A fetched
+  page is now streamed and cut off at `WEB_SEARCH_MAX_RESPONSE_BYTES` instead
+  of being buffered in full first — a large file (e.g. a 111 MB PDF) no
+  longer holds a chat turn open for minutes. Each fetch (redirects included)
+  has a total deadline, `WEB_SEARCH_FETCH_TOTAL_S` (default 15s), and a
+  non-text `Content-Type` (anything but `text/*`/`application/xhtml+xml`) is
+  skipped before any of the body is read. The SSRF guard is unchanged.
+
+- **The Index button no longer gets stuck on "Index" after opening a brand
+  new file.** Opening a PDF, text, or Markdown file for the first time set
+  the reader's file name before the file finished writing to IndexedDB; the
+  effect that hashes the open document to check its backend status read the
+  bytes back immediately, found nothing, and never retried, so the button
+  stayed on "Index" for the rest of the session even after the server had
+  indexed it — reopening the file was the only fix. The file now saves to
+  IndexedDB first, and the reader opens only once that's done. If the save
+  itself fails, the document still opens, with a toast: "Couldn't save this
+  file locally — Index and chat about it may not work until you reopen it."
+
+### Upgrade notes
+
+- **Migration `014`** adds `documents.embedding_profile`. It is additive only.
+- **Migration `015`** adds `doc_chunks.text_search`, a stored full-text
+  column with a GIN index. Postgres rewrites `doc_chunks` once to fill it:
+  on a large library the backend's first start after upgrading takes longer.
+- **After upgrading, every indexed document is rebuilt once, in the
+  background, the first time someone chats with it or searches it.** Its
+  old chunks keep answering meanwhile. The rebuild re-embeds the whole
+  document: expect about one embedding call per 1,000 characters of text, one
+  document at a time.
+- **Changing `EMBEDDING_MODEL` no longer needs a manual re-index**, as long
+  as the new model has the same dimension (`EMBEDDING_DIM`). Each document
+  rebuilds on first use. Until it does, it can't be searched: vectors from
+  two models can't be compared.
+
 ## [2.1.0] - 2026-09-28
 
 Chat runs **on the server**: the server builds the prompt, calls tools and the

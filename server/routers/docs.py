@@ -29,6 +29,7 @@ from fastapi import (
     APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Path as PathParam, Response,
     UploadFile,
 )
+from fastapi.responses import FileResponse
 from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field
@@ -46,9 +47,9 @@ from ..auth.authz import (
 from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
 from ..http_errors import refusal
-from ..services import doc_content, doc_pipeline, doc_storage, docling_convert
-from ..services.doc_search import search_chunks
-from ..services.embeddings import embed_one
+from ..services import doc_content, doc_pipeline, doc_storage, docling_convert, people
+from ..services.doc_search import ReadableDoc, search_chunks
+from ..services.embeddings import embed_query
 
 
 logger = logging.getLogger(__name__)
@@ -485,6 +486,48 @@ async def get_document(
     return status
 
 
+# What GET /{doc_id}/file serves each stored type as.
+_FILE_MEDIA_TYPES = {
+    "pdf": "application/pdf",
+    "text": "text/plain; charset=utf-8",
+    "markdown": "text/markdown; charset=utf-8",
+}
+
+
+@router.get("/{doc_id}/file")
+async def get_document_file(
+    doc_id: DocId, reader: Principal = Depends(_require_doc_reader)
+) -> FileResponse:
+    """The stored bytes, so anyone who can read the document — its holders,
+    share recipients, project owners and members — can open it in the reader
+    (404 to everyone else, like GET /{doc_id}). Named with the caller's own
+    name for it: their entry's, or for a project row the name its filer gave
+    (`_DISPLAY_NAME`), never a stranger's. No stored bytes (a pre-A1 row, or
+    the file has gone from disk) is 409 bytes_missing. Never cached."""
+    _ensure_ready()
+    async with get_pool().connection() as conn:
+        cur = await conn.execute(
+            f"SELECT d.file_type, d.bytes_path, {_DISPLAY_NAME} "
+            f"FROM documents d {_ENTRY_JOIN} WHERE d.doc_id = %s",
+            [*_display_name_params(reader.user_id), reader.user_id, doc_id])
+        row = await cur.fetchone()
+    if row is None:
+        raise refusal(404, "not_found", "Document not found")
+    file_type, bytes_path, file_name = row
+    if not bytes_path or not Path(bytes_path).is_file():
+        raise refusal(409, "bytes_missing", "Upload the file again first.")
+    return FileResponse(
+        bytes_path, media_type=_FILE_MEDIA_TYPES.get(file_type, "application/octet-stream"),
+        filename=file_name, content_disposition_type="inline",
+        # A browser's cache is keyed by URL, not by who is signed in: kept
+        # there, the bytes would reach the next user of a shared browser (or
+        # a recipient after a revoke) without passing the read gate.
+        headers={"Cache-Control": "private, no-store",
+                 # Uploaded bytes, served inline on the API's origin: the
+                 # browser must take the type we send, never sniff one.
+                 "X-Content-Type-Options": "nosniff"})
+
+
 @router.patch("/{doc_id}")
 async def patch_document(
     doc_id: DocId, body: DocPatchIn,
@@ -545,6 +588,25 @@ async def delete_document(
     return Response(status_code=204)
 
 
+@router.get("/{doc_id}/shares")
+async def list_shares(doc_id: DocId, principal: Principal = Depends(_require_upload_holder)):
+    """The people I shared this document with (A0 §9.3), oldest share first.
+    Only a holder of a verified upload entry can share, so only they can
+    list; everyone else gets 404. Other sharers' shares are never listed."""
+    _ensure_ready()
+    show_email = people.load_directory_config().show_email
+    async with get_pool().connection() as conn:
+        cur = await conn.execute(
+            f"SELECT {people.person_cols('u')}, e.added_at FROM library_entries e "
+            "JOIN users u ON u.id = e.user_id "
+            "WHERE e.doc_id = %s AND e.shared_by = %s AND e.added_via = 'shared' "
+            "ORDER BY e.added_at, u.id", (doc_id, principal.user_id))
+        rows = await cur.fetchall()
+    return [{"user_id": p["id"], "name": p["name"],
+             "username": people.shown_username(r[4], show_email), "shared_at": r[6]}
+            for r in rows if (p := people.person_from(r[:6], show_email))]
+
+
 @router.put("/{doc_id}/shares/{user_id}", status_code=204)
 async def add_share(doc_id: DocId, user_id: str,
                     principal: Principal = Depends(_require_upload_holder)):
@@ -556,12 +618,9 @@ async def add_share(doc_id: DocId, user_id: str,
     carries the name the sharer sees, so they never see a stranger's file
     name (the canonical name is the first uploader's)."""
     _ensure_ready()
-    try:
-        uuid.UUID(user_id)
-    except ValueError:
-        raise refusal(404, "not_found", "User not found")
-    try:
-        async with get_pool().connection() as conn:
+    async with get_pool().connection() as conn:
+        await people.assert_addable(conn, user_id)  # 404 for malformed, missing or disabled
+        try:
             async with conn.transaction():  # savepoint: a caught FK error leaves conn usable
                 cur = await conn.execute(
                     "SELECT COALESCE(e.file_name, d.file_name) FROM library_entries e "
@@ -571,8 +630,8 @@ async def add_share(doc_id: DocId, user_id: str,
                 outcome = await doc_content.add_entry(
                     conn, user_id, doc_id, via="shared", verified=True,
                     shared_by=principal.user_id, file_name=row[0] if row else None)
-    except pg_errors.ForeignKeyViolation:
-        raise refusal(404, "not_found", "User not found")
+        except pg_errors.ForeignKeyViolation:
+            raise refusal(404, "not_found", "User not found")
     if outcome in ("created", "replaced"):
         audit("share.created", by=principal.user_id, to=user_id, doc=doc_id)
     return Response(status_code=204)
@@ -666,15 +725,22 @@ async def search_document(
     # empty result set the caller has to interpret.
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT state FROM documents WHERE doc_id = %s",
+            "SELECT state, embedding_profile, embedding_model FROM documents WHERE doc_id = %s",
             (doc_id,),
         )
         row = await cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Document not found")
+    # v2.3 Task E: first use under a new embedding profile starts a rebuild;
+    # vectors from another model can't be compared with this query's.
+    current = doc_pipeline.ensure_current(ReadableDoc(doc_id, "", row[0], None, row[1], row[2]))
+    if current.state == "reindexing":
+        raise HTTPException(status_code=409, detail={
+            "error": "reindexing",
+            "message": "This document is being re-indexed for the current search model. Try again shortly."})
 
     try:
-        qvec = await embed_one(req.query)
+        qvec = await embed_query(req.query)
     except Exception as e:
         logger.exception("Embedding failed for search query")
         raise HTTPException(status_code=502, detail=f"Embedding service error: {e}") from e

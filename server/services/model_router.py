@@ -23,6 +23,20 @@ class InferenceConfig:
     summarize_model: str
     embed_model: str
     daily_token_budget: int | None           # None = unlimited
+    # Text put before what is embedded (v2.3 Task E). Retrieval-trained models
+    # expect them: nomic-embed-text was trained with these two.
+    embed_document_prefix: str = ""
+    embed_query_prefix: str = ""
+
+
+# Prefixes a model was trained with, by model-name prefix. Unlisted: none.
+_KNOWN_PREFIXES = {"nomic-embed-text": ("search_document: ", "search_query: ")}
+
+
+def _prefixes(env: Mapping[str, str], model: str) -> tuple[str, str]:
+    known = next((p for name, p in _KNOWN_PREFIXES.items() if model.startswith(name)), ("", ""))
+    # Set (even to "") wins: an empty value turns a known model's prefix off.
+    return (env.get("EMBEDDING_DOCUMENT_PREFIX", known[0]), env.get("EMBEDDING_QUERY_PREFIX", known[1]))
 
 
 def load_inference_config(env: Mapping[str, str]) -> InferenceConfig:
@@ -32,6 +46,8 @@ def load_inference_config(env: Mapping[str, str]) -> InferenceConfig:
             return None
         return tuple(m.strip() for m in raw.split(",") if m.strip())
 
+    embed_model = env.get("EMBEDDING_MODEL", "nomic-embed-text")
+    doc_prefix, query_prefix = _prefixes(env, embed_model)
     budget_raw = (env.get("INFERENCE_DAILY_TOKEN_BUDGET") or "").strip()
     budget = int(budget_raw) if budget_raw else None
 
@@ -46,9 +62,11 @@ def load_inference_config(env: Mapping[str, str]) -> InferenceConfig:
             or env.get("WEB_SEARCH_SUMMARY_MODEL")
             or "llama3.2:3b"
         ),
-        embed_model=env.get("EMBEDDING_MODEL", "nomic-embed-text"),
+        embed_model=embed_model,
         # Spec §4.3: 0/unset = unlimited, so a falsy budget collapses to None.
         daily_token_budget=budget if budget else None,
+        embed_document_prefix=doc_prefix,
+        embed_query_prefix=query_prefix,
     )
 
 

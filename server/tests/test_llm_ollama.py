@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import json
+import logging
 
 import httpx
 import pytest
@@ -15,7 +16,7 @@ from server.tests.llm_fakes import FakeUpstream, ndjson
 CFG = ProviderConfig(name="ollama", kind="ollama", url="http://ollama.test")
 SHOW_ALL = {"capabilities": ["completion", "tools", "thinking", "vision"],
             "model_info": {"qwen2.context_length": 32768}}
-TOOL = ToolSpec("search_document", "Search the open document",
+TOOL = ToolSpec("search_documents", "Search the open document",
                 {"type": "object", "properties": {"query": {"type": "string"}}})
 DONE = {"message": {"role": "assistant", "content": ""}, "done": True, "done_reason": "stop",
         "prompt_eval_count": 10, "eval_count": 5, "total_duration": 9}
@@ -54,16 +55,16 @@ async def test_missing_counts_mean_no_usage_chunk():
 
 async def test_tool_calls_as_objects_or_json_strings():
     up = _up(lambda: ndjson(
-        {"message": {"tool_calls": [{"function": {"name": "search_document", "arguments": {"query": "x"}}}]}},
-        {"message": {"tool_calls": [{"function": {"name": "search_document", "arguments": "{\"query\": \"y\"}"}}]}},
-        {"message": {"tool_calls": [{"function": {"name": "search_document", "arguments": "{not json"}}]}},
+        {"message": {"tool_calls": [{"function": {"name": "search_documents", "arguments": {"query": "x"}}}]}},
+        {"message": {"tool_calls": [{"function": {"name": "search_documents", "arguments": "{\"query\": \"y\"}"}}]}},
+        {"message": {"tool_calls": [{"function": {"name": "search_documents", "arguments": "{not json"}}]}},
         DONE))
     chunks = await _collect(OllamaProvider(CFG, up.client()).stream_chat("qwen2", HI, [TOOL], CallSettings()))
     calls = [c.call for c in chunks if isinstance(c, ToolCallReady)]
     assert [(c.id, c.name, c.arguments) for c in calls] == [
-        ("call_1", "search_document", {"query": "x"}),
-        ("call_2", "search_document", {"query": "y"}),
-        ("call_3", "search_document", {}),
+        ("call_1", "search_documents", {"query": "x"}),
+        ("call_2", "search_documents", {"query": "y"}),
+        ("call_3", "search_documents", {}),
     ]
     assert chunks[-1] == Finish("tool_calls")
 
@@ -71,23 +72,23 @@ async def test_tool_calls_as_objects_or_json_strings():
 async def test_request_body_translation():
     up = _up(lambda: ndjson(DONE))
     msgs = [Message("user", "look", attachments=(Attachment("image", "image/png", "AAA"),)),
-            Message("assistant", "", tool_calls=(ToolCall("call_1", "search_document", {"query": "x"}),)),
-            Message("tool", '{"ok": true}', tool_call_id="call_1", name="search_document")]
+            Message("assistant", "", tool_calls=(ToolCall("call_1", "search_documents", {"query": "x"}),)),
+            Message("tool", '{"ok": true}', tool_call_id="call_1", name="search_documents")]
     await _collect(OllamaProvider(CFG, up.client()).stream_chat(
         "qwen2", msgs, [TOOL], CallSettings(think="low", num_ctx=8192, num_predict=100)))
     body = up.bodies("/api/chat")[0]
     assert body["messages"] == [
         {"role": "user", "content": "look", "images": ["AAA"]},
         {"role": "assistant", "content": "",
-         "tool_calls": [{"function": {"name": "search_document", "arguments": {"query": "x"}}}]},
-        {"role": "tool", "content": '{"ok": true}', "tool_name": "search_document"},
+         "tool_calls": [{"function": {"name": "search_documents", "arguments": {"query": "x"}}}]},
+        {"role": "tool", "content": '{"ok": true}', "tool_name": "search_documents"},
     ]
     assert body["think"] == "low"
     assert body["options"] == {"num_ctx": 8192, "num_predict": 100}
     assert body["stream"] is True
     assert "keep_alive" not in body
     assert body["tools"] == [{"type": "function", "function": {
-        "name": "search_document", "description": "Search the open document",
+        "name": "search_documents", "description": "Search the open document",
         "parameters": TOOL.parameters}}]
 
 
@@ -109,6 +110,23 @@ async def test_rejected_tools_retry_without_and_remember():
     assert FeatureDropped("tools") in chunks
     await _collect(provider.stream_chat("qwen2", HI, [TOOL], CallSettings()))
     assert ["tools" in b for b in up.bodies("/api/chat")] == [True, False, False]
+
+
+@pytest.mark.parametrize("show", [SHOW_ALL, {"model_info": {}}])   # listed tools; an Ollama too old to list
+async def test_a_remembered_tools_rejection_makes_capabilities_say_no_tools(show):
+    """Task 2 fix round 1: later requests drop tools silently (no FeatureDropped),
+    so the caller must learn it from capabilities() — even from a cache filled
+    before the rejection was learned — or it offers tools that are never sent."""
+    up = _up(lambda: httpx.Response(400, json={"error": "model does not support tools"}),
+             lambda: ndjson(DONE), show=show)
+    provider = OllamaProvider(CFG, up.client())
+    before = await provider.capabilities("qwen2")   # fills the capability cache
+    assert before.tools is not False
+    await _collect(provider.stream_chat("qwen2", HI, [TOOL], CallSettings()))
+    assert await provider.capabilities("qwen2") == dataclasses.replace(before, tools=False)
+    assert (await provider.capabilities("other")).tools is not False   # per model
+    assert not any(isinstance(c, FeatureDropped)
+                   for c in await _collect(provider.stream_chat("qwen2", HI, [TOOL], CallSettings())))
 
 
 async def test_rejection_is_not_remembered_when_the_retry_also_fails():
@@ -304,3 +322,24 @@ async def test_a_slow_but_streaming_reply_is_never_cut_off_but_silence_is(monkey
         await llm_router.stop_router()
         server.close()
         await server.wait_closed()
+
+
+async def test_an_api_show_failure_is_logged_at_debug_only(caplog):
+    """Deferred C1 minor: a model the provider can't describe is routine
+    (older Ollama, a proxy) — DEBUG, never WARNING, and not cached."""
+    caplog.set_level(logging.DEBUG, logger="server.llm.providers.ollama")
+    for failure in (httpx.ConnectError("refused"), lambda: httpx.Response(500),
+                    lambda: httpx.Response(200, content=b"<html>proxy</html>")):
+        caplog.clear()
+        up = FakeUpstream().on("POST", "/api/show", failure)
+        caps = await OllamaProvider(CFG, up.client()).capabilities("qwen2")
+        assert caps == Capabilities()
+        records = [r for r in caplog.records if "/api/show" in r.getMessage()]
+        assert records and all(r.levelno == logging.DEBUG for r in records)
+
+
+async def test_a_model_list_401_behind_an_auth_proxy_is_explained():
+    up = FakeUpstream().on("GET", "/api/tags", lambda: httpx.Response(401, text="Unauthorized"))
+    with pytest.raises(ProviderError) as ei:
+        await OllamaProvider(CFG, up.client()).list_models()
+    assert ei.value.safe_message.startswith("The provider rejected this server's credentials")

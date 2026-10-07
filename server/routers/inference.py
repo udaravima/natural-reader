@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends
 from ..auth import deps
 from ..http_errors import refusal
 from ..llm.router import get_router
-from ..services import inference_budget, model_router
+from ..services import inference_budget, inference_limits, model_router
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,11 @@ async def list_models(
     cfg = model_router.get_config()
     embed_model = _strip_latest(cfg.embed_model)
     models = [m for m in models if not (m.kind == "ollama" and _strip_latest(m.name) == embed_model)]
-    out: dict = {"models": [m.to_json() for m in models]}
+    # v2.4 Task F: the limits the server clamps an Ollama model's context size
+    # and keep-alive to, so the Settings page offers only what it will honour.
+    limits = inference_limits.limits_json(inference_limits.get_limits())
+    out: dict = {"models": [{**m.to_json(), "limits": limits} if m.kind == "ollama" else m.to_json()
+                            for m in models]}
     try:
         out["budget"] = await inference_budget.budget_state(
             conn, principal.user_id, cfg.daily_token_budget)

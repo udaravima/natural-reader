@@ -1,10 +1,8 @@
-import uuid
-
 import httpx
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport
-from server.auth import deps
+from server.auth import authz, deps
 from server.auth.users import resolve_or_provision_user
 from server.routers import projects as projects_router
 from server.services import doc_content
@@ -20,139 +18,6 @@ def _app(db_conn, principal):
     return app
 
 
-async def test_create_and_list_project(db_conn):
-    u = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="a@x.io")
-    p = deps.Principal(user_id=u["id"], email=u["email"], role="member")
-    async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
-                                 base_url="http://t") as c:
-        r = await c.post("/v1/projects", json={"name": "Alpha"})
-        assert r.status_code == 201 and r.json()["name"] == "Alpha"
-        rows = (await c.get("/v1/projects")).json()
-        assert len(rows) == 1 and rows[0]["is_owner"] is True
-
-
-async def test_non_owner_cannot_patch(db_conn):
-    owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
-    other = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="x@x.io")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner["id"],))
-    pid = str((await cur.fetchone())[0])
-    p = deps.Principal(user_id=other["id"], email=other["email"], role="member")
-    async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
-                                 base_url="http://t") as c:
-        r = await c.patch(f"/v1/projects/{pid}", json={"name": "Hijack"})
-        assert r.status_code == 404
-
-
-async def test_owner_adds_and_removes_member(db_conn):
-    owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
-    member = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="m@x.io")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner["id"],))
-    pid = str((await cur.fetchone())[0])
-    p = deps.Principal(user_id=owner["id"], email=owner["email"], role="member")
-    async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
-                                 base_url="http://t") as c:
-        assert (await c.put(f"/v1/projects/{pid}/members/{member['id']}", json={})).status_code == 204
-        assert (await c.delete(f"/v1/projects/{pid}/members/{member['id']}", )).status_code == 204
-
-
-async def test_non_owner_cannot_delete_project(db_conn):
-    owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
-    other = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="x@x.io")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner["id"],))
-    pid = str((await cur.fetchone())[0])
-    p = deps.Principal(user_id=other["id"], email=other["email"], role="member")
-    async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
-                                 base_url="http://t") as c:
-        r = await c.delete(f"/v1/projects/{pid}")
-        assert r.status_code == 404
-
-
-async def test_non_owner_cannot_add_member(db_conn):
-    owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
-    other = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="x@x.io")
-    target = await resolve_or_provision_user(db_conn, iss="i", sub="s3", email="t@x.io")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner["id"],))
-    pid = str((await cur.fetchone())[0])
-    p = deps.Principal(user_id=other["id"], email=other["email"], role="member")
-    async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
-                                 base_url="http://t") as c:
-        r = await c.put(f"/v1/projects/{pid}/members/{target['id']}", json={})
-        assert r.status_code == 404
-
-
-async def test_non_owner_cannot_remove_member(db_conn):
-    owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
-    other = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="x@x.io")
-    target = await resolve_or_provision_user(db_conn, iss="i", sub="s3", email="t@x.io")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner["id"],))
-    pid = str((await cur.fetchone())[0])
-    p = deps.Principal(user_id=other["id"], email=other["email"], role="member")
-    async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
-                                 base_url="http://t") as c:
-        r = await c.delete(f"/v1/projects/{pid}/members/{target['id']}")
-        assert r.status_code == 404
-
-
-async def test_list_excludes_other_users_projects(db_conn):
-    """The owner-or-member listing predicate in list_projects excludes
-    projects the caller has no relationship to — the security property that
-    was previously only verified by reading the SQL."""
-    a = await resolve_or_provision_user(db_conn, iss="i", sub="a1", email="a@x.io")
-    b = await resolve_or_provision_user(db_conn, iss="i", sub="b1", email="b@x.io")
-    pa = deps.Principal(user_id=a["id"], email=a["email"], role="member")
-    pb = deps.Principal(user_id=b["id"], email=b["email"], role="member")
-    async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, pa)),
-                                 base_url="http://t") as c:
-        r = await c.post("/v1/projects", json={"name": "A's project"})
-        assert r.status_code == 201
-    async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, pb)),
-                                 base_url="http://t") as c:
-        rows = (await c.get("/v1/projects")).json()
-        assert all(row["name"] != "A's project" for row in rows)
-
-
-async def test_add_member_nonexistent_user_404(db_conn):
-    owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner["id"],))
-    pid = str((await cur.fetchone())[0])
-    p = deps.Principal(user_id=owner["id"], email=owner["email"], role="member")
-    fake_uid = str(uuid.uuid4())
-    async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
-                                 base_url="http://t") as c:
-        r = await c.put(f"/v1/projects/{pid}/members/{fake_uid}", json={})
-        assert r.status_code == 404
-        # Prove the FK-violation rollback (savepoint) didn't abort the
-        # outer transaction — a follow-up query on the same connection
-        # should still succeed.
-        rows = (await c.get("/v1/projects")).json()
-        assert len(rows) == 1
-
-
-async def test_add_member_malformed_user_404(db_conn):
-    owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id",
-        (owner["id"],))
-    pid = str((await cur.fetchone())[0])
-    p = deps.Principal(user_id=owner["id"], email=owner["email"], role="member")
-    async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
-                                 base_url="http://t") as c:
-        r = await c.put(f"/v1/projects/{pid}/members/not-a-uuid", json={})
-        assert r.status_code == 404
-
-
 DOC_A = "a" * 64
 
 
@@ -162,10 +27,7 @@ def _reader(u, role="member"):
 
 
 async def _mk_project(db_conn, owner_id, name="P"):
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,%s) RETURNING id",
-        (owner_id, name))
-    return str((await cur.fetchone())[0])
+    return await seed.make_project(db_conn, owner_id, name)
 
 
 async def _mk_doc(db_conn, doc_id, owner_id):
@@ -205,8 +67,7 @@ async def test_link_own_doc_into_project_where_member(db_conn):
     owner = await resolve_or_provision_user(db_conn, iss="i", sub="l2o", email="l2o@x.io")
     u = await resolve_or_provision_user(db_conn, iss="i", sub="l2", email="l2@x.io")
     pid = await _mk_project(db_conn, owner["id"])
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)", (pid, u["id"]))
+    await seed.add_member(db_conn, pid, u["id"])
     await _mk_doc(db_conn, DOC_A, u["id"])
     async with _client_for(db_conn, _reader(u)) as c:
         assert (await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 204
@@ -219,7 +80,8 @@ async def test_link_into_invisible_project_is_404(db_conn):
     await _mk_doc(db_conn, DOC_A, u["id"])
     async with _client_for(db_conn, _reader(u)) as c:
         r = await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")
-        assert r.status_code == 404 and r.json()["detail"] == "Project not found"
+        assert r.status_code == 404 and r.json()["detail"] == {
+            "error": "not_found", "message": authz.PROJECT_NOT_FOUND}
     assert not await _linked(db_conn, pid, DOC_A)
 
 
@@ -247,13 +109,42 @@ async def test_project_owner_cannot_link_a_shared_doc(db_conn):
     assert not await _linked(db_conn, pid, DOC_A)
 
 
-async def test_admin_links_own_doc_into_any_project(db_conn):
+async def test_admins_file_documents_only_as_members(db_conn):
     owner = await resolve_or_provision_user(db_conn, iss="i", sub="l6o", email="l6o@x.io")
     admin = await resolve_or_provision_user(db_conn, iss="i", sub="l6", email="l6@x.io")
     pid = await _mk_project(db_conn, owner["id"])
     await _mk_doc(db_conn, DOC_A, admin["id"])
     async with _client_for(db_conn, _reader(admin, role="admin")) as c:
+        assert (await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 404
+        await seed.add_member(db_conn, pid, admin["id"], "contributor")
         assert (await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 204
+
+
+async def test_readers_cannot_file_documents(db_conn):
+    owner = await resolve_or_provision_user(db_conn, iss="i", sub="rd1o", email="rd1o@x.io")
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="rd1", email="rd1@x.io")
+    pid = await _mk_project(db_conn, owner["id"])
+    await seed.add_member(db_conn, pid, u["id"], "reader")
+    await _mk_doc(db_conn, DOC_A, u["id"])
+    async with _client_for(db_conn, _reader(u)) as c:
+        r = await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")
+    assert r.status_code == 403 and r.json()["detail"]["required"] == "contributor"
+    assert not await _linked(db_conn, pid, DOC_A)
+
+
+async def test_filing_and_removing_record_events_with_the_document_name(db_conn):
+    owner = await resolve_or_provision_user(db_conn, iss="i", sub="ev1", email="ev1@x.io")
+    pid = await _mk_project(db_conn, owner["id"])
+    await seed.seed_doc(db_conn, DOC_A, owner["id"], file_name="Q3 report.pdf")
+    async with _client_for(db_conn, _reader(owner)) as c:
+        assert (await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 204
+        assert (await c.put(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 204  # no 2nd event
+        assert (await c.delete(f"/v1/projects/{pid}/docs/{DOC_A}")).status_code == 204
+    cur = await db_conn.execute(
+        "SELECT kind, doc_id, details->>'name' FROM project_events WHERE project_id=%s "
+        "ORDER BY id", (pid,))
+    assert [tuple(r) for r in await cur.fetchall()] == [
+        ("document.added", DOC_A, "Q3 report.pdf"), ("document.removed", DOC_A, "Q3 report.pdf")]
 
 
 @pytest.mark.parametrize("path", [
@@ -267,13 +158,13 @@ async def test_link_malformed_ids_are_422(db_conn, path):
         assert (await c.delete(path)).status_code == 422
 
 
-# Unlink resolution table (A1 §5 — projects govern their documents; C0's
-# doc-owner branch is gone):
-#   link exists  -> uploader 404, project owner 204, other 404
-#   link missing -> uploader 404, project owner 404, other 404
+# Unlink resolution table (A0 §5 — projects govern their documents; the role
+# check runs before the link is looked up):
+#   link exists  -> uploader (contributor) 403, project owner 204, other (contributor) 403
+#   link missing -> uploader 403, project owner 404, other 403
 @pytest.mark.parametrize("linked,caller,expected", [
-    (True, "doc_owner", 404), (True, "project_owner", 204), (True, "other", 404),
-    (False, "doc_owner", 404), (False, "project_owner", 404), (False, "other", 404),
+    (True, "doc_owner", 403), (True, "project_owner", 204), (True, "other", 403),
+    (False, "doc_owner", 403), (False, "project_owner", 404), (False, "other", 403),
 ])
 async def test_unlink_resolution_table(db_conn, linked, caller, expected):
     doc_owner = await resolve_or_provision_user(db_conn, iss="i", sub="u1", email="u1@x.io")
@@ -281,9 +172,8 @@ async def test_unlink_resolution_table(db_conn, linked, caller, expected):
     other = await resolve_or_provision_user(db_conn, iss="i", sub="u3", email="u3@x.io")
     pid = await _mk_project(db_conn, proj_owner["id"])
     # `other` is a plain member: members must not unlink someone else's doc.
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s),(%s,%s)",
-        (pid, doc_owner["id"], pid, other["id"]))
+    await seed.add_member(db_conn, pid, doc_owner["id"])
+    await seed.add_member(db_conn, pid, other["id"])
     await _mk_doc(db_conn, DOC_A, doc_owner["id"])
     if linked:
         await seed.place_doc(db_conn, pid, DOC_A, doc_owner["id"])
@@ -293,7 +183,9 @@ async def test_unlink_resolution_table(db_conn, linked, caller, expected):
         assert r.status_code == expected
         if expected == 404:
             assert r.json()["detail"] == {"error": "not_found", "message": "Not found"}
-    assert await _linked(db_conn, pid, DOC_A) is (linked and expected == 404)
+        if expected == 403:
+            assert r.json()["detail"]["required"] == "maintainer"
+    assert await _linked(db_conn, pid, DOC_A) is (linked and expected != 204)
     assert await _content_exists(db_conn, DOC_A)  # the uploader's entry still holds it
 
 

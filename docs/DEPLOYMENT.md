@@ -287,6 +287,34 @@ path — the adapter appends `/chat/completions` and `/models` itself. API
 keys stay on the server: never sent to the browser, never logged, never
 shown in the admin console's Deployment config panel.
 
+**What has been run against real providers:** OpenRouter, through the
+`openai` adapter, with paid `google/gemma-4-26b-a4b-it` and
+`mistralai/mistral-small-3.2-24b-instruct` (2026-09-29). That covered
+multi-turn chat, pins, a native `web_search` tool round, an image with a
+follow-up question, provider-reported token usage, a rate-limited free
+model and a rejected key, with no key in the logs. Before that (v2.1.0),
+the same adapter was run against Ollama's own `/v1`. vLLM and LiteLLM speak
+the same protocol but haven't been run.
+
+**Trap:** the key goes in `INFERENCE_<NAME>_API_KEY`, where `<NAME>` is the
+provider's name from `INFERENCE_PROVIDERS` in capitals —
+`INFERENCE_OPENROUTER_API_KEY` for a provider named `openrouter`. A bare
+`OPENROUTER_API_KEY` (the name OpenRouter's own docs use) is **ignored**,
+and every request then fails with "The provider rejected this server's
+credentials".
+
+**What people see when a provider refuses** (the error code stays
+`provider_error`; a request the provider refuses outright produces no output
+and no usage, so it isn't counted against the daily budget):
+
+| Provider answer | Message in the chat |
+|---|---|
+| `429` | "This model is busy or rate-limited at the provider. Try again in a moment, or pick another model." — plus the provider's own detail when it sends one (OpenRouter's `error.metadata.raw`, redacted and trimmed) |
+| `401` | "The provider rejected this server's credentials. An admin needs to check the API key." |
+| `402` | "The provider account is out of credit." |
+| `403` | "The provider refused this request." plus the provider's reason. Not treated as a key problem: OpenRouter uses `403` when a moderated model flags the input. |
+| anything else | "The model provider returned an error:" and the provider's own message, redacted |
+
 **Trap:** `OLLAMA_URL` keeps its old job of running document **embeddings**
 even after you set `INFERENCE_PROVIDERS` — it doesn't stop meaning
 "the Ollama chat provider" and start meaning nothing. Remove `OLLAMA_URL`

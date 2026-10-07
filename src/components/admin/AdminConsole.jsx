@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, Shield, Loader2 } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
+import { AssistantProfileSection } from './AssistantProfileSection';
+import { AdminProjectsSection } from './AdminProjectsSection';
+import ProjectPage from '../projects/ProjectPage';
 
 /**
  * Full-height admin console (spec §3): Users (list + enroll + delete),
- * Inference usage, Deployment config — one scroll, no tabs. Visual language
+ * Projects (A0), Inference usage, Deployment config, Assistant — one scroll, no tabs. Visual language
  * mirrors AdminPanel/AccountPanel (tiny text, list rows, underline buttons).
  *
  * All rails are server-side; this UI only hides/disables affordances
@@ -43,15 +46,38 @@ function BudgetField({ u, theme, onSet }) {
   );
 }
 
+// Per-user project limit (A0 §5). Same semantics as the budget: empty =
+// deployment default (PROJECT_LIMIT_PER_USER), 0 = unlimited.
+function ProjectLimitField({ u, theme, onSet }) {
+  const [val, setVal] = useState(u.project_limit == null ? '' : String(u.project_limit));
+  return (
+    <span className="flex items-center gap-1 shrink-0">
+      <input
+        type="number" min="0" value={val}
+        onChange={(e) => setVal(e.target.value)}
+        placeholder="default"
+        aria-label={`Project limit for ${u.email}`}
+        title="projects this person may create; empty = default, 0 = unlimited"
+        className={`px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg} w-16`}
+      />
+      <button onClick={() => onSet(u, val)} aria-label={`Set project limit for ${u.email}`} className="text-[10px] underline">Set</button>
+    </span>
+  );
+}
+
 export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, showToast }) {
   const [users, setUsers] = useState(null);
   const [usage, setUsage] = useState(null);
   const [config, setConfig] = useState(null);
   const [days, setDays] = useState(7);
+  const [openProjectId, setOpenProjectId] = useState(null);
 
   // Enroll form
   const [enrollEmail, setEnrollEmail] = useState('');
   const [enrollName, setEnrollName] = useState('');
+  const [enrollUsername, setEnrollUsername] = useState('');
+  const [enrollFirst, setEnrollFirst] = useState('');
+  const [enrollLast, setEnrollLast] = useState('');
   const [enrollStatus, setEnrollStatus] = useState('pending');
   const [enrollBudget, setEnrollBudget] = useState('');
   const [enrollCaps, setEnrollCaps] = useState({ reader: false, chat: false, admin: false });
@@ -59,6 +85,7 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
   const [enrolling, setEnrolling] = useState(false); // POST in flight → busy button
 
   // Delete flow
+  const [projectsVersion, setProjectsVersion] = useState(0); // bumped when a deletion may have orphaned projects
   const [deleteTarget, setDeleteTarget] = useState(null); // user id
   const [deleteTyped, setDeleteTyped] = useState('');
 
@@ -133,6 +160,9 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
     if (!enrollEmail.trim()) return;
     const body = { email: enrollEmail.trim() };
     if (enrollName.trim()) body.display_name = enrollName.trim();
+    if (enrollUsername.trim()) body.username = enrollUsername.trim();
+    if (enrollFirst.trim()) body.first_name = enrollFirst.trim();
+    if (enrollLast.trim()) body.last_name = enrollLast.trim();
     if (enrollStatus !== 'pending') body.status = enrollStatus;
     const budget = enrollBudget.trim();
     if (budget !== '') body.inference_daily_token_budget = Number(budget);
@@ -167,6 +197,7 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
       }
       setEnrollNote({ kind: 'ok', text });
       setEnrollEmail(''); setEnrollName(''); setEnrollBudget('');
+      setEnrollUsername(''); setEnrollFirst(''); setEnrollLast('');
       setEnrollStatus('pending');
       setEnrollCaps({ reader: false, chat: false, admin: false });
       await loadUsers();
@@ -188,6 +219,16 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
     await patchUser(u.id, { inference_daily_token_budget: value });
   };
 
+  const setProjectLimit = async (u, raw) => {
+    const trimmed = raw.trim();
+    const value = trimmed === '' ? null : Number(trimmed);
+    if (trimmed !== '' && (!Number.isInteger(value) || value < 0)) {
+      showToast('Project limit must be a whole number ≥ 0 (empty = default, 0 = unlimited).', 4000);
+      return;
+    }
+    await patchUser(u.id, { project_limit: value });
+  };
+
   const confirmDelete = async (u) => {
     try {
       const res = await apiFetch(apiHost, apiPort, `/v1/admin/users/${encodeURIComponent(u.id)}`, {
@@ -206,7 +247,8 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
       }
       if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
       setDeleteTarget(null); setDeleteTyped('');
-      showToast(`Deleted ${u.email} — their documents and chat history were removed.`, 6000);
+      showToast(`Deleted ${u.email} — their library and chat history were removed; projects they belonged to stay (ownerless ones appear under Projects).`, 6000);
+      setProjectsVersion((v) => v + 1);
       await loadUsers();
     } catch (e) {
       showToast(`Delete failed: ${e.message}`, 5000);
@@ -214,6 +256,17 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
   };
 
   const sectionTitle = 'text-xs font-bold uppercase tracking-wider text-blue-500';
+
+  if (openProjectId) {
+    return (
+      <div className={`h-full w-full overflow-y-auto ${theme.bg} ${theme.text}`}>
+        <div className="max-w-4xl mx-auto px-4 md:px-8 py-6">
+          <ProjectPage theme={theme} apiHost={apiHost} apiPort={apiPort} projectId={openProjectId}
+            currentUserId={currentUserId} showToast={showToast} onBack={() => setOpenProjectId(null)} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`h-full w-full overflow-y-auto ${theme.bg} ${theme.text}`}>
@@ -249,6 +302,15 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
               aria-label="Enroll display name"
               className={`px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-w-[120px]`}
             />
+            <input type="text" value={enrollUsername} onChange={(e) => setEnrollUsername(e.target.value)}
+              placeholder="username" aria-label="Enroll username"
+              className={`px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-w-[100px]`} />
+            <input type="text" value={enrollFirst} onChange={(e) => setEnrollFirst(e.target.value)}
+              placeholder="first name" aria-label="Enroll first name"
+              className={`px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-w-[100px]`} />
+            <input type="text" value={enrollLast} onChange={(e) => setEnrollLast(e.target.value)}
+              placeholder="last name" aria-label="Enroll last name"
+              className={`px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-w-[100px]`} />
             <select
               value={enrollStatus} onChange={(e) => setEnrollStatus(e.target.value)}
               aria-label="Enroll status"
@@ -317,6 +379,10 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
                       key={`${u.id}-${u.inference_daily_token_budget ?? 'null'}`}
                       u={u} theme={theme} onSet={setBudget}
                     />
+                    <ProjectLimitField
+                      key={`${u.id}-pl-${u.project_limit ?? 'null'}`}
+                      u={u} theme={theme} onSet={setProjectLimit}
+                    />
                     {u.status !== 'active' && (
                       <button onClick={() => patchUser(u.id, { status: 'active' })} className="text-[10px] text-green-600 underline">Activate</button>
                     )}
@@ -358,7 +424,7 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
                 {deleting && (
                   <div className="flex flex-wrap items-center gap-2 text-[10px] pt-1">
                     <span className="text-red-500">
-                      This permanently deletes this user's documents and chat history.
+                      This permanently deletes their library and chat history. Projects they belong to stay; any they were the only Owner of become ownerless (recover them under Projects).
                     </span>
                     <input
                       type="text" value={deleteTyped}
@@ -378,6 +444,9 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
             );
           })}
         </section>
+
+        <AdminProjectsSection theme={theme} apiHost={apiHost} apiPort={apiPort} currentUserId={currentUserId}
+          showToast={showToast} onOpenProject={setOpenProjectId} reloadKey={projectsVersion} />
 
         {/* ---------- INFERENCE USAGE ---------- */}
         <section className="flex flex-col gap-3" aria-label="Inference usage">
@@ -453,6 +522,9 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
             </div>
           )}
         </section>
+
+        {/* ---------- ASSISTANT (v2.4 Task A2) ---------- */}
+        <AssistantProfileSection theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast} />
       </div>
     </div>
   );

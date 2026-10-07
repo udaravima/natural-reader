@@ -1,7 +1,6 @@
 """
 FastAPI application factory with CORS and router setup.
 """
-import asyncio
 import logging
 import os
 import secrets
@@ -25,8 +24,9 @@ from .routers.chat_turns import router as chat_turns_router
 from .routers.docs import router as docs_router
 from .routers.inference import router as inference_router
 from .routers.projects import router as projects_router
+from .routers.people import router as people_router
 from .routers.tools import router as tools_router
-from .services import doc_storage
+from .services import doc_storage, project_events
 from .services.embeddings import start_client as start_embeddings, stop_client as stop_embeddings
 from .services.web_search import start_client as start_web_search, stop_client as stop_web_search
 
@@ -81,6 +81,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(admin_router)
     app.include_router(projects_router)
+    app.include_router(people_router)
     app.include_router(inference_router)
 
     @app.on_event("startup")
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
                 await chat_store.recover_stale()
             except Exception:
                 logger.warning("Stale chat-turn recovery failed", exc_info=True)
+            project_events.start_retention()
         await start_embeddings()
         await start_web_search()
         await start_llm_router()
@@ -117,6 +119,7 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:
+        await project_events.stop_retention()
         await stop_llm_router()
         await stop_embeddings()
         await stop_web_search()
@@ -126,11 +129,10 @@ def create_app() -> FastAPI:
         # finish before the pool goes away, or a turn mid-shutdown loses its
         # last write and comes back 'streaming' with no worker left to recover
         # it until the next startup's recover_stale() sweep.
-        pending = list(chat_orchestrator._BACKGROUND)
-        if pending:
-            _done, still_pending = await asyncio.wait(pending, timeout=5)
-            if still_pending:
-                logger.warning("%d chat turn write(s) still pending at shutdown", len(still_pending))
+        # Writes that start during the wait are waited for too.
+        still_pending = await chat_orchestrator.drain_background(timeout=5)
+        if still_pending:
+            logger.warning("%d chat turn write(s) still pending at shutdown", still_pending)
         await close_db()
 
     return app

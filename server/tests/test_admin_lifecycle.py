@@ -163,15 +163,13 @@ async def test_delete_missing_user_404(db_conn):
     assert r.status_code == 404
 
 
-async def test_delete_user_gcs_sole_held_content(db_conn, tmp_path):
-    # A1 §3: deleting a user drops their entries and (until A0) placements in
-    # projects they own; content goes only if nobody else still holds it.
+async def test_delete_user_gcs_sole_held_content_and_leaves_their_project(db_conn, tmp_path):
+    # A1 §3 + A0 §3.1: deleting a user drops their entries; content goes only
+    # if nobody else holds it. Their project survives (ownerless), so its
+    # placements still hold their content.
     admin, p = await _admin(db_conn)
     victim = await _make_user(db_conn, "b@x.io", status="active")
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'Theirs') RETURNING id",
-        (victim,))
-    victims_project = str((await cur.fetchone())[0])
+    victims_project = await seed.make_project(db_conn, victim, "Theirs")
 
     files = {}
     for name in ("sole", "co_held", "admins"):
@@ -189,10 +187,14 @@ async def test_delete_user_gcs_sole_held_content(db_conn, tmp_path):
 
     cur = await db_conn.execute(
         "SELECT doc_id FROM documents WHERE doc_id IN ('d1','d2','d3','d4')")
-    assert {r[0] for r in await cur.fetchall()} == {"d2", "d4"}
+    assert {r[0] for r in await cur.fetchall()} == {"d2", "d3", "d4"}
     assert not files["sole"].exists()
     assert files["co_held"].exists()  # the other holder's copy keeps its bytes
     assert files["admins"].exists()   # other users' content is untouched
+    cur = await db_conn.execute(
+        "SELECT created_by, (SELECT count(*) FROM project_members m WHERE m.project_id = p.id) "
+        "FROM projects p WHERE id = %s", (victims_project,))
+    assert await cur.fetchone() == (None, 0)  # ownerless, awaiting admin recovery
 
 
 # ---------- GET /v1/admin/inference/config ----------

@@ -3,6 +3,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import { saveBook, getBook, getRecentBooks, deleteBook, updateBookMeta, detectFileType } from '../db';
 import { loadReadingProgress, saveReadingProgress } from './usePersistedState';
 import { SENTENCES_PER_TEXT_PAGE } from '../constants';
+import { forgetDocHash } from '../utils/docHash';
 import { segmentSentences, paginateSentences, segmentMarkdown, paginateMarkdownBlocks } from '../utils/segmentation';
 
 // Configure PDF.js worker for offline use
@@ -17,6 +18,15 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 export function usePdfEngine({ scale, setStatus, setToastMessage }) {
     const [pdfDoc, setPdfDoc] = useState(null);
     const [pdfFileName, setPdfFileName] = useState('');
+    // Bumped on every document load, even one under the name already open (a
+    // Library or citation open of a different document called "report.pdf"):
+    // App keys the open document's hash on it, not on the name.
+    const [docLoadId, setDocLoadId] = useState(0);
+    // Whether the open document's bytes are in the local library (picked,
+    // opened from the server, reopened from "Your Library"). A file opened
+    // from a workspace folder isn't, so App mustn't hash a same-named book
+    // for it (v2.2 Task C).
+    const [docInLibrary, setDocInLibrary] = useState(false);
     const [fileType, setFileType] = useState('pdf'); // 'pdf' | 'text' | 'markdown'
     const [textPages, setTextPages] = useState([]); // sentences[][] for .txt files
     const [markdownPages, setMarkdownPages] = useState([]); // page objects for .md files
@@ -95,22 +105,43 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
     }, [currentPage]);
 
     // --- PDF RENDERING ---
+    // pdf.js refuses a second render() on a canvas that is still drawing
+    // ("Cannot use the same canvas during multiple render() operations"), and
+    // a quick page step or zoom starts one before the last has finished. So
+    // the running RenderTask is kept here and cancelled before the next one
+    // starts, and `renderSeqRef` lets a superseded render skip the text layer.
+    const renderTaskRef = useRef(null);
+    const renderSeqRef = useRef(0);
+    useEffect(() => () => renderTaskRef.current?.cancel(), []);
+
     // Visual render: canvas + text selection layer (runs on page, scale, or doc change)
     const renderPageVisual = async (pageNum, doc) => {
         if (!doc || !pdfjsLibRef.current) return;
+        const seq = ++renderSeqRef.current;
         try {
             setStatus("Rendering page...");
             const page = await doc.getPage(pageNum);
+            if (seq !== renderSeqRef.current) return; // a newer render took over
             const viewport = page.getViewport({ scale });
             const canvas = canvasRef.current;
+            if (!canvas) return;
+            renderTaskRef.current?.cancel(); // releases the canvas synchronously
             const context = canvas.getContext('2d');
             canvas.height = viewport.height;
             canvas.width = viewport.width;
 
-            await page.render({ canvasContext: context, viewport }).promise;
+            const task = page.render({ canvasContext: context, viewport });
+            renderTaskRef.current = task;
+            try {
+                await task.promise;
+            } finally {
+                if (renderTaskRef.current === task) renderTaskRef.current = null;
+            }
+            if (seq !== renderSeqRef.current) return;
 
             // Render text layer for text selection
             const textContent = await page.getTextContent();
+            if (seq !== renderSeqRef.current) return;
             const textLayerDiv = textLayerRef.current;
             if (textLayerDiv) {
                 textLayerDiv.innerHTML = '';
@@ -141,6 +172,8 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
             setStatus(`Page ${pageNum} Ready`);
         } catch (err) {
+            // Cancelled because a newer render started — expected, not an error.
+            if (err?.name === 'RenderingCancelledException') return;
             console.error(err);
             setStatus("Render Error");
         }
@@ -148,11 +181,16 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
     // Text extraction: only runs when the page or document changes (NOT on scale change)
     // This prevents zoom from destroying the TTS audio cache and interrupting playback.
+    // Like renderSeqRef: a citation's page jump right after an open starts a
+    // second extraction, and the older one must not land last.
+    const extractSeqRef = useRef(0);
     const extractPageText = async (pageNum, doc) => {
         if (!doc || !pdfjsLibRef.current) return;
+        const seq = ++extractSeqRef.current;
         try {
             const page = await doc.getPage(pageNum);
             const textContent = await page.getTextContent();
+            if (seq !== extractSeqRef.current) return;
             const rawText = textContent.items.map(item => item.str).join(' ');
             const sentences = segmentSentences(rawText);
             setTextItems(sentences);
@@ -205,6 +243,10 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         if (savedProgress && savedProgress.page <= totalPages) {
             setCurrentPage(savedProgress.page);
             setTimeout(() => {
+                // Only if the reader is still on the saved page: a page set
+                // right after opening (a chat citation) wins, and a sentence
+                // index from another page would start playback mid-page.
+                if (prevPageRef.current !== savedProgress.page) return;
                 if (savedProgress.sentenceIndex >= 0) {
                     setCurrentSentenceIndex(savedProgress.sentenceIndex);
                     playbackIndexRef.current = savedProgress.sentenceIndex;
@@ -220,7 +262,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
     // Load a plain-text document from a UTF-8 string: paginate, set state,
     // and clear PDF-only state so the viewer renders the text path.
-    const loadTextDocument = (rawText, fileName) => {
+    const loadTextDocument = (rawText, fileName, { inLibrary = false } = {}) => {
         const sentences = segmentSentences(rawText);
         const pages = paginateSentences(sentences, SENTENCES_PER_TEXT_PAGE);
         setPdfDoc(null);
@@ -230,13 +272,16 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         setNumPages(pages.length);
         setFileType('text');
         setPdfFileName(fileName);
+        setDocLoadId((n) => n + 1);
+        setDocInLibrary(inLibrary);
         applySavedProgress(fileName, pages.length);
+        return pages.length;
     };
 
     // Load a markdown document: parse blocks, paginate paragraph-aware, then
     // hand off to the markdown renderer. Sentences for TTS already pass through
     // markdownToSpeech() during segmentation, so the audio path stays plain.
-    const loadMarkdownDocument = (rawText, fileName) => {
+    const loadMarkdownDocument = (rawText, fileName, { inLibrary = false } = {}) => {
         const blocks = segmentMarkdown(rawText);
         const pages = paginateMarkdownBlocks(blocks, SENTENCES_PER_TEXT_PAGE);
         setPdfDoc(null);
@@ -246,33 +291,69 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         setNumPages(pages.length);
         setFileType('markdown');
         setPdfFileName(fileName);
+        setDocLoadId((n) => n + 1);
+        setDocInLibrary(inLibrary);
         applySavedProgress(fileName, pages.length);
+        return pages.length;
     };
 
-    const processFile = (file) => {
-        if (!file || !isLibLoaded) return;
+    // Write the file to IndexedDB and wait for it to land *before* the caller
+    // flips `pdfFileName`. App.jsx's "document changed" effect is keyed on
+    // `pdfFileName` and reads the bytes straight back out of IndexedDB
+    // (`ensureDocHash()` → `getBook`) the instant it changes; if that effect
+    // runs before this write lands, it finds nothing, `currentDocId` stays
+    // null for the whole session, and the Index button never leaves "Index"
+    // until the file is reopened. `saveBook` currently swallows its own
+    // errors and resolves to `false` rather than throwing (see db.js), so
+    // both are treated as failure here.
+    const persistBook = async (file, progress) => {
+        try {
+            const ok = await saveBook(file, progress);
+            if (ok === false) throw new Error('saveBook returned false');
+        } catch (e) {
+            console.error('Failed to save book locally:', e);
+            setToastMessage("Couldn't save this file locally — Index and chat about it may not work until you reopen it.");
+            setTimeout(() => setToastMessage(null), 5000);
+        } finally {
+            // These bytes replace whatever was saved under this name. Only
+            // now: a hash taken while the write was in flight read the old
+            // record, and must not outlive it.
+            forgetDocHash(file.name);
+        }
+    };
+
+    // Resolves `{ numPages }` once the document is open in the reader, null
+    // if it couldn't be (callers that pick a file ignore it; opening a
+    // server document or a citation waits on it — see App.jsx openServerDoc).
+    const processFile = (file) => new Promise((resolve) => {
+        if (!file || !isLibLoaded) { resolve(null); return; }
         const detected = detectFileType(file);
         const fileName = file.name;
 
         if (detected === 'pdf') {
             const reader = new FileReader();
+            reader.onerror = () => resolve(null);
             reader.onload = async (ev) => {
                 try {
                     const loadingTask = pdfjsLibRef.current.getDocument({ data: ev.target.result });
                     const doc = await loadingTask.promise;
+
+                    // Save to IndexedDB for library persistence *before*
+                    // opening the document — see persistBook above.
+                    await persistBook(file, { page: 1, sentenceIndex: -1 });
+
                     setFileType('pdf');
                     setTextPages([]);
                     setMarkdownPages([]);
                     setPdfDoc(doc);
                     setNumPages(doc.numPages);
                     setPdfFileName(fileName);
+                    setDocLoadId((n) => n + 1);
+                    setDocInLibrary(true);
 
                     applySavedProgress(fileName, doc.numPages);
 
-                    // Save to IndexedDB for library persistence
-                    saveBook(file, { page: 1, sentenceIndex: -1 }).then(() => {
-                        getRecentBooks().then(setRecentBooks);
-                    });
+                    getRecentBooks().then(setRecentBooks);
 
                     // Fetch PDF outline (Table of Contents)
                     try {
@@ -282,8 +363,10 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
                         console.warn('Could not load outline:', e);
                         setPdfOutline([]);
                     }
+                    resolve({ numPages: doc.numPages });
                 } catch {
                     setStatus("Error loading PDF");
+                    resolve(null);
                 }
             };
             reader.readAsArrayBuffer(file);
@@ -292,25 +375,29 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
 
         if (detected === 'text' || detected === 'markdown') {
             const reader = new FileReader();
-            reader.onload = (ev) => {
+            reader.onerror = () => resolve(null);
+            reader.onload = async (ev) => {
                 try {
                     const rawText = ev.target.result;
-                    if (detected === 'markdown') {
-                        loadMarkdownDocument(rawText, fileName);
-                    } else {
-                        loadTextDocument(rawText, fileName);
-                    }
-                    saveBook(file, { page: 1, sentenceIndex: -1 }).then(() => {
-                        getRecentBooks().then(setRecentBooks);
-                    });
+
+                    // Save first — loadTextDocument/loadMarkdownDocument set
+                    // pdfFileName internally; see persistBook above.
+                    await persistBook(file, { page: 1, sentenceIndex: -1 });
+
+                    const numPages = detected === 'markdown'
+                        ? loadMarkdownDocument(rawText, fileName, { inLibrary: true })
+                        : loadTextDocument(rawText, fileName, { inLibrary: true });
+                    getRecentBooks().then(setRecentBooks);
+                    resolve({ numPages });
                 } catch (e) {
                     console.error('Failed to load file:', e);
                     setStatus(detected === 'markdown' ? "Error loading markdown file" : "Error loading text file");
+                    resolve(null);
                 }
             };
             reader.readAsText(file);
         }
-    };
+    });
 
     // --- LIBRARY OPERATIONS ---
     const openFromLibrary = async (fileName) => {
@@ -329,9 +416,9 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
             if (storedType === 'text' || storedType === 'markdown') {
                 const rawText = new TextDecoder().decode(bookData.data);
                 if (storedType === 'markdown') {
-                    loadMarkdownDocument(rawText, fileName);
+                    loadMarkdownDocument(rawText, fileName, { inLibrary: true });
                 } else {
-                    loadTextDocument(rawText, fileName);
+                    loadTextDocument(rawText, fileName, { inLibrary: true });
                 }
                 updateBookMeta(fileName, {}).then(() => {
                     getRecentBooks().then(setRecentBooks);
@@ -348,6 +435,8 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
             setPdfDoc(doc);
             setNumPages(doc.numPages);
             setPdfFileName(fileName);
+            setDocLoadId((n) => n + 1);
+            setDocInLibrary(true);
 
             applySavedProgress(fileName, doc.numPages);
 
@@ -366,6 +455,14 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
             setStatus("Failed to load book");
         }
     };
+
+    // Re-reads the library list from IndexedDB — needed whenever the signed-in
+    // user changes (sign-in, sign-out, switch), since `getRecentBooks` is
+    // scoped to whoever `setLibraryOwner` currently names (see db.js) and
+    // that name changes independently of anything usePdfEngine itself does.
+    const refreshLibrary = useCallback(() => {
+        getRecentBooks().then(setRecentBooks);
+    }, []);
 
     const removeFromLibrary = async (fileName, e) => {
         e.stopPropagation();
@@ -478,6 +575,8 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         // State
         pdfDoc,
         pdfFileName,
+        docLoadId,
+        docInLibrary,
         fileType,
         currentPage, setCurrentPage,
         numPages,
@@ -505,6 +604,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         loadTextDocument,
         openFromLibrary,
         removeFromLibrary,
+        refreshLibrary,
         handleFileUpload,
         calculateReadingProgress,
         calculateEstimatedTimeRemaining,

@@ -44,11 +44,27 @@ export function useTtsEngine({
     const bookAbortRef = useRef(null);
 
     const audioCache = useRef(new Map());
+    // Bumped by clearCache: a clip whose synthesis started under an older
+    // generation belongs to text that's no longer on screen (v2.2 Task B).
+    const cacheGenRef = useRef(0);
     const pendingRequests = useRef(new Map()); // Track in-flight fetches to avoid duplicates
     const audioRef = useRef(new Audio());
     const voicePreviewRef = useRef(new Audio());
     const chatAudioRef = useRef(new Audio()); // Separate channel so chat TTS can't collide with reader TTS
     const retryCountRef = useRef(0);
+
+    // The blob: URL the reader's <audio> element currently holds. It stays
+    // alive until the element moves on to another URL (or unmount): a seek
+    // or reload of the element fetches its src again, and a revoked URL
+    // fails there with ERR_FILE_NOT_FOUND (the suspected cause of the error
+    // the A1 walk saw on reopening a PDF — not reproduced since).
+    const loadedUrlRef = useRef(null);
+    const loadReaderAudio = useCallback((url) => {
+        const previous = loadedUrlRef.current;
+        audioRef.current.src = url;
+        loadedUrlRef.current = url;
+        if (previous && previous !== url) URL.revokeObjectURL(previous);
+    }, []);
 
     // Pure synthesis: returns a blob URL (or null on error). Reused by reader playback,
     // selection read, voice preview, and chat sentence playback.
@@ -154,9 +170,16 @@ export function useTtsEngine({
 
     // --- CACHE MANAGEMENT ---
     const clearCache = useCallback(() => {
-        audioCache.current.forEach(url => URL.revokeObjectURL(url));
+        cacheGenRef.current += 1;
+        // The loaded URL is left to loadReaderAudio (see loadedUrlRef).
+        audioCache.current.forEach(url => { if (url !== loadedUrlRef.current) URL.revokeObjectURL(url); });
         audioCache.current.clear();
         pendingRequests.current.clear();
+    }, []);
+
+    useEffect(() => () => {
+        audioCache.current.forEach(url => URL.revokeObjectURL(url));
+        if (loadedUrlRef.current) URL.revokeObjectURL(loadedUrlRef.current);
     }, []);
 
     // Clear cache when page content changes (new textItems = new page)
@@ -173,6 +196,7 @@ export function useTtsEngine({
             return pendingRequests.current.get(index);
         }
 
+        const gen = cacheGenRef.current;
         const fetchPromise = (async () => {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
@@ -182,11 +206,18 @@ export function useTtsEngine({
                     speed: playbackSpeed,
                     signal: controller.signal,
                 });
+                if (url && gen !== cacheGenRef.current) {
+                    // The page changed while this was synthesized: the clip is
+                    // for text no longer shown, so it's dropped, not cached
+                    // under the same index of the new page.
+                    URL.revokeObjectURL(url);
+                    return null;
+                }
                 if (url) audioCache.current.set(index, url);
                 return url;
             } finally {
                 clearTimeout(timeoutId);
-                pendingRequests.current.delete(index);
+                if (gen === cacheGenRef.current) pendingRequests.current.delete(index);
             }
         })();
 
@@ -287,9 +318,9 @@ export function useTtsEngine({
                 if (url) {
                     retryCountRef.current = 0;
                     setStatus("Reading...");
-                    audioRef.current.src = url;
+                    loadReaderAudio(url);
                     audioRef.current.onended = () => {
-                        URL.revokeObjectURL(url);
+                        // Revoked when the next sentence replaces it.
                         audioCache.current.delete(nextIdx);
                         if (active) playLoop();
                     };
@@ -367,11 +398,10 @@ export function useTtsEngine({
                 const blob = await (await fetch(`data:audio/wav;base64,${b64}`)).blob();
                 const url = URL.createObjectURL(blob);
 
-                audioRef.current.src = url;
+                loadReaderAudio(url);
                 audioRef.current.onended = () => {
                     setIsReadingSelection(false);
                     setStatus("Selection read complete");
-                    URL.revokeObjectURL(url);
                 };
                 audioRef.current.play();
             } catch (e) {

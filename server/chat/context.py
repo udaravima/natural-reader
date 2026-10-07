@@ -1,11 +1,15 @@
 """Stage 0 (spec §5.2): build the model input with the cheap, bounded work
 first, so a document question can be answered in ONE model call.
 
-Prompt order is fixed for prefix-cache reuse: pins -> history -> volatile
-context (passages, time) -> the new message. Counterintuitive: the time line
-belongs at the END; at the top it would change the prefix every turn and
-defeat the provider's reuse for the whole conversation. There is no base
-system prompt (ruling R9); a future one goes at the head.
+Prompt order is fixed for prefix-cache reuse: system rules + pins -> history
+-> volatile context (passages) -> the new message. The date is in the rules
+only to the day (v2.4: the minute clock that used to lead the user's message
+was mistaken for what "that" referred to), so the prefix changes once a day,
+not every turn. The system rules
+(server/chat/prompt.py; ruling R9 revised in v2.3) are stable within a turn.
+They name the open document, so opening another document mid-chat changes
+the prefix (one full re-read of the history by the provider), once.
+Document text only ever appears inside a delimited block (prompt.fence).
 
 The shape is also what strict chat templates accept (final review I3: vLLM's
 Gemma/Mistral templates raise on any system message but the first, and on two
@@ -26,55 +30,60 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..db import get_pool
-from ..llm.types import Attachment, Message
+from ..llm.types import Attachment, Message, ToolCall
 from ..services.doc_search import ReadableDoc, search_chunks
-from ..services.embeddings import embed_one
+from ..services.embeddings import embed_query
 from . import store
 from .config import ChatConfig
+from .prompt import PASSAGES_TAG, PIN_TAG, display_name, fence, system_rules
 from .store import StoredMessage
+from .tools import result_text
+from .tools.search_documents import PREFETCH_CALL_ID, passages_result
 
 logger = logging.getLogger(__name__)
 
 PASSAGE_TEXT_CAP = 1500   # characters per prefetched passage
-PREFETCH_PREAMBLE = (
-    'Passages retrieved from "{name}" for this question. Answer from them when they are enough; '
-    "call search_document only if they don't contain what you need.")
-# Said on a prefetch miss: without it nothing in the prompt names the open
-# document, and a small model sends questions about it to web_search.
-OPEN_DOC_LINE = (
-    'The user has "{name}" open. Questions about names, terms or facts you don\'t recognise '
-    "are probably about it: use search_document before web_search.")
 _MARKER = "[{kind} {name} from earlier; no longer attached]"
 
 
 def _pin_block(p: dict[str, Any]) -> str:
-    """One pin, worded exactly as the SPA's old buildPinPreamble."""
-    page = f", page {p['page']}" if p.get("page") is not None else ""
-    return (f'The user is reading "{p.get("fileName") or "a document"}".\n'
-            f'Relevant excerpt ({p.get("kind") or "page"}{page}):\n\n'
-            f'"""\n{p.get("text") or ""}\n"""\n\n'
-            "Use this excerpt as primary context for the user's question. If it does "
-            "not contain the answer, say so or use the document search tool if available.")
+    """One pin: an excerpt the user chose, fenced as document text (the rules
+    say what the tag means). `where` reads "page 4" or "selection, page 9"."""
+    # Pins are client-sent dicts: every field is untrusted (review I4).
+    kind = p.get("kind") if p.get("kind") in ("page", "selection") else ("page" if p.get("kind") is None else "excerpt")
+    page = p.get("page") if isinstance(p.get("page"), int) and not isinstance(p.get("page"), bool) else None
+    if page is None:
+        where = "excerpt" if kind == "page" and p.get("page") is not None else kind
+    elif kind == "page":
+        where = f"page {page}"
+    else:
+        where = f"{kind}, page {page}"
+    source = display_name(p.get("fileName") or "a document")
+    return ("The user pinned this excerpt as primary context for their question:\n"
+            f'<{PIN_TAG} source="{source}" where="{where}">\n{fence(p.get("text") or "")}\n</{PIN_TAG}>')
 
 
-def pin_messages(pins: list[dict[str, Any]]) -> list[Message]:
-    """All pins as ONE system message (blocks separated by a blank line), or
-    none. One, not one per pin: strict templates accept a single leading
-    system message only (final review I3)."""
-    if not pins:
-        return []
-    return [Message("system", "\n\n".join(_pin_block(p) for p in pins))]
+def pin_text(pins: list[dict[str, Any]]) -> str:
+    """All pins' blocks, separated by a blank line ('' for none). They follow
+    the rules in the ONE leading system message: strict chat templates (vLLM's
+    Gemma/Mistral) accept a single leading system message only (final review I3)."""
+    return "\n\n".join(_pin_block(p) for p in pins)
 
 
-def time_line(now: datetime, tz_name: str | None) -> str:
-    """The current time in the browser's timezone; anything unusable is UTC."""
+def today_line(now: datetime, tz_name: str | None) -> str:
+    """Today's date in the browser's timezone (anything unusable is UTC), for
+    the system rules. v2.4: to the day, not the minute — it used to lead the
+    user's message as "Current time: …", where a follow-up like "say that
+    more simply" was read as being about the clock (eval, 2026-10-05); in the
+    rules it changes once a day, so the prefix cache survives the day."""
     tz, label = timezone.utc, "UTC"
     if tz_name:
         try:
             tz, label = ZoneInfo(tz_name), tz_name
         except Exception:  # noqa: BLE001 — ZoneInfo raises several types for bad names
             tz, label = timezone.utc, "UTC"
-    return f"Current time: {now.astimezone(tz):%Y-%m-%d %H:%M} ({label})"
+    day = now.astimezone(tz)
+    return f"Today is {day:%A}, {day.day} {day:%B %Y} ({label})."
 
 
 @dataclass
@@ -92,10 +101,11 @@ async def prefetch(doc: ReadableDoc | None, question: str, cfg: ChatConfig) -> P
     """Search the open document before the model runs. Cost when it doesn't
     help: one embedding call. Every decision is logged at DEBUG so a deployer
     can tune CHAT_PREFETCH_MIN_SCORE on their own documents."""
-    if doc is None or doc.state != "indexed" or cfg.prefetch_min_score >= 1.0 or not question.strip():
+    if (doc is None or doc.state != "indexed" or cfg.prefetch == "off" or cfg.prefetch_min_score >= 1.0
+            or not question.strip()):
         return Prefetch()
     try:
-        qvec = await embed_one(question)
+        qvec = await embed_query(question)
         async with get_pool().connection() as conn:
             rows = await search_chunks(conn, doc.doc_id, qvec, cfg.prefetch_k)
     except Exception as e:  # noqa: BLE001 — prefetch is an optimization; the tool is still offered
@@ -110,16 +120,20 @@ async def prefetch(doc: ReadableDoc | None, question: str, cfg: ChatConfig) -> P
     note = {"kind": "prefetch", "docId": doc.doc_id, "docName": doc.name, "count": len(kept),
             "topScore": round(top, 4),
             "pages": sorted({r["page"] for r in kept if r.get("page") is not None})}
-    return Prefetch([{"page": r.get("page"), "score": float(r["score"]), "text": _cap(r["text"] or "")}
+    return Prefetch([{"id": r.get("id"), "page": r.get("page"), "score": float(r["score"]),
+                      "text": _cap(r["text"] or "")}
                      for r in kept], top, note)
 
 
 def _passages_block(name: str, passages: list[dict[str, Any]]) -> str:
-    lines = [PREFETCH_PREAMBLE.format(name=name), ""]
+    """The prefetched passages as data: fenced, labelled with their pages, and
+    no instructions (the rules explain the tag)."""
+    source = display_name(name)
+    lines = [f'<{PASSAGES_TAG} source="{source}">']
     for i, p in enumerate(passages, start=1):
         page = f" (page {p['page']})" if p["page"] is not None else ""
-        lines += [f"[{i}]{page}", p["text"], ""]
-    return "\n".join(lines).strip()
+        lines += [f"[{i}]{page}", fence(p["text"]), ""]
+    return "\n".join(lines).rstrip() + f"\n</{PASSAGES_TAG}>"
 
 
 def _merge_same_role(messages: list[Message]) -> list[Message]:
@@ -196,6 +210,9 @@ class TurnInput:
     history: list[StoredMessage]
     window: int | None   # settings.num_ctx, else the model's context length (ruling R14); None = don't trim
     now: datetime
+    tools: tuple[Any, ...] = ()   # offered on the turn's first step: the rules describe exactly these
+    tool_ctx: Any = None
+    profile: str = ""             # the deployment's assistant profile: leads the system message
 
 
 @dataclass
@@ -203,20 +220,39 @@ class BuiltContext:
     messages: list[Message]
     notes: list[dict[str, Any]]
     prefetch_hit: bool
+    shown_chunk_ids: tuple[int, ...] = ()   # the prefetched chunks: search_documents won't repeat them
+    shown_texts: tuple[str, ...] = ()       # their text: web_search won't send it out
+    evidence: tuple[tuple[int | None, str], ...] = ()   # (page, text): for the source chips (v2.4 Task D)
 
 
 async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
-    pre = await prefetch(turn.doc, turn.text, cfg)
-    if pre.passages:
-        parts = [_passages_block(pre.note["docName"], pre.passages)]
-    elif turn.doc is not None and turn.doc.state == "indexed":
-        parts = [OPEN_DOC_LINE.format(name=turn.doc.name)]
-    else:
-        parts = []
-    parts.append(time_line(turn.now, turn.timezone))
-    volatile = "\n\n".join(parts)
-    pins = pin_messages(turn.pins)
-    fixed_chars = sum(len(m.content) for m in pins) + len(volatile) + 2 + len(turn.text)
+    # "auto" (the default): only for a model with no document tools; one that
+    # has them searches for itself (gemma4:e4b, handed passages, answered from
+    # them instead: 5/9 against 9/9 without, 2026-10-05).
+    has_doc_tools = any(t.name == "search_documents" for t in turn.tools)
+    runs = cfg.prefetch == "on" or (cfg.prefetch == "auto" and not has_doc_tools)
+    pre = await prefetch(turn.doc, turn.text, cfg) if runs else Prefetch()
+    # v2.4 Task B: with the search tool offered, the passages arrive as that
+    # tool's result (a call the app made for the model), not inside the
+    # user's message, where a PDF's planted instruction would speak with the
+    # user's voice. Without tools (strict templates reject tool messages
+    # then) they stay a fenced block in the user's message.
+    as_tool = bool(pre.passages) and any(t.name == "search_documents" for t in turn.tools)
+    exchange: list[Message] = []
+    volatile = ""
+    if as_tool:
+        args = {"query": turn.text, "k": cfg.prefetch_k}
+        result = passages_result(turn.text, [turn.doc], [{"ref": 1, "page": p["page"], "text": p["text"]}
+                                                         for p in pre.passages])
+        exchange = [Message("assistant", "", tool_calls=(ToolCall(PREFETCH_CALL_ID, "search_documents", args),)),
+                    Message("tool", result_text(result), tool_call_id=PREFETCH_CALL_ID, name="search_documents")]
+    elif pre.passages:
+        volatile = _passages_block(pre.note["docName"], pre.passages)
+    rules = system_rules(turn.doc, turn.tools, has_pins=bool(turn.pins),
+                         prefetch=cfg.prefetch == "on" and cfg.prefetch_min_score < 1.0,
+                         today=today_line(turn.now, turn.timezone), profile=turn.profile)
+    system = Message("system", "\n\n".join(c for c in (rules, pin_text(turn.pins)) if c))
+    fixed_chars = len(system.content) + len(volatile) + 2 + len(turn.text) + sum(len(m.content) for m in exchange)
     items, n_messages, n_attachments = _fit_history(turn.history, fixed_chars, len(turn.attachments),
                                                     turn.window, cfg)
     wanted = [(i.stored.id, a["ordinal"]) for i in items for a in i.keep]
@@ -251,4 +287,7 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
         notes.append({"kind": "trimmed", "messages": n_messages, "attachments": n_attachments})
         logger.debug("history trimmed: %d messages, %d attachments (window %s)",
                      n_messages, n_attachments, turn.window)
-    return BuiltContext([*pins, *history_messages, current], notes, bool(pre.passages))
+    return BuiltContext([system, *history_messages, current, *exchange], notes, bool(pre.passages),
+                        tuple(p["id"] for p in pre.passages if p.get("id") is not None),
+                        tuple(p["text"] for p in pre.passages),
+                        tuple((p["page"], p["text"]) for p in pre.passages))

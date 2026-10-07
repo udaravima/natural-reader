@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, AsyncIterator, Protocol
 
 import httpx
@@ -82,6 +82,66 @@ def safe_error_message(raw: bytes | str) -> str:
     return _redact_secrets(text.strip())[:300]
 
 
+# What a status means for the person chatting (Task 10). OpenRouter and
+# OpenAI-compatible servers put the reason in these statuses; the provider's
+# own text ("Provider returned error") rarely says what to do.
+RATE_LIMITED_MESSAGE = ("This model is busy or rate-limited at the provider. "
+                        "Try again in a moment, or pick another model.")
+# 403 isn't a key problem everywhere: OpenRouter answers 403 when a moderated
+# model flags the input. So it says "refused" and keeps the provider's reason.
+_EXPLAINED = {
+    401: "The provider rejected this server's credentials. An admin needs to check the API key.",
+    402: "The provider account is out of credit.",
+    403: "The provider refused this request.",
+    429: RATE_LIMITED_MESSAGE,
+}
+RAW_DETAIL_CAP = 200
+
+
+def _error_body(raw: bytes | str) -> dict:
+    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return {}
+    err = body.get("error") if isinstance(body, dict) else None
+    return err if isinstance(err, dict) else {}
+
+
+def _detail(text: Any) -> str | None:
+    """A provider's words for the user: whitespace collapsed, redacted, then
+    trimmed with a marker (redacted first, so a key across the cut is caught)."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    detail = _redact_secrets(" ".join(text.split()))
+    return detail if len(detail) <= RAW_DETAIL_CAP else detail[:RAW_DETAIL_CAP].rstrip() + "…"
+
+
+def _raw_detail(raw: bytes | str) -> str | None:
+    """OpenRouter's `error.metadata.raw` — the upstream's own words, e.g.
+    "temporarily rate-limited upstream"; None if absent."""
+    meta = _error_body(raw).get("metadata")
+    return _detail(meta.get("raw")) if isinstance(meta, dict) else None
+
+
+def provider_error(status: int, raw: bytes | str) -> ProviderError:
+    """The ProviderError for an error answer: a plain sentence for a status
+    that says what happened (401, 402, 403, 429), else the provider's own
+    text. A 429 adds the upstream's detail, a 403 the provider's reason.
+    Always redacted."""
+    plain = _EXPLAINED.get(status)
+    if plain is None:
+        return ProviderError(status, safe_error_message(raw))
+    if status == 429:
+        detail = _raw_detail(raw)
+    elif status == 403:   # the provider's reason (its error.message), never a JSON dump
+        detail = _detail(_error_body(raw).get("message"))
+    else:
+        detail = None
+    return ProviderError(status, f"{plain} (Provider said: {detail})" if detail else plain,
+                         explained=True)
+
+
 NOT_JSON_MESSAGE = "The provider sent a response that isn't JSON."
 
 
@@ -126,6 +186,14 @@ class FeatureMemory:
     def remember(self, model: str, feature: str) -> None:
         self._rejected.setdefault(model, set()).add(feature)
 
+    def apply(self, model: str, caps: Capabilities) -> Capabilities:
+        """`caps` as the model's requests will actually see them: once tools
+        were rejected, every later request drops them silently (no
+        FeatureDropped), so callers must hear tools=False here or they'd
+        offer tools that are never sent. Applied on every call, over any
+        cached value, so a rejection learned after the cache filled counts."""
+        return replace(caps, tools=False) if self.rejected(model, "tools") else caps
+
 
 class TTLCache:
     def __init__(self, ttl_s: float = CAPABILITY_TTL_S) -> None:
@@ -156,9 +224,8 @@ async def open_stream(client: httpx.AsyncClient, request: httpx.Request) -> http
     if resp.status_code >= 400:
         raw = await resp.aread()
         await resp.aclose()
-        message = safe_error_message(raw)
-        logger.warning("Provider answered HTTP %s: %s", resp.status_code, message)
-        raise ProviderError(resp.status_code, message)
+        logger.warning("Provider answered HTTP %s: %s", resp.status_code, safe_error_message(raw))
+        raise provider_error(resp.status_code, raw)
     return resp
 
 
@@ -174,18 +241,47 @@ async def iter_lines(resp: httpx.Response) -> AsyncIterator[str]:
         raise ProviderUnavailable(type(e).__name__) from e
 
 
+# What strict chat templates say when handed a system role (vLLM's Gemma-2:
+# "System role not supported"; Mistral v0.1/0.2: "Conversation roles must
+# alternate user/assistant/user/assistant/...").
+_SYSTEM_ROLE_REJECTED = re.compile(r"system role|roles must alternate", re.IGNORECASE)
+
+
+def rejects_system_role(err: ProviderError) -> bool:
+    return 400 <= err.status < 500 and bool(_SYSTEM_ROLE_REJECTED.search(err.safe_message))
+
+
+def fold_system(messages: list[Message]) -> list[Message]:
+    """The leading system message moved into the first user message, for a
+    model whose chat template has no system role (v2.3). The rules then open
+    that message; nothing else changes."""
+    if not messages or messages[0].role != "system":
+        return messages
+    system, rest = messages[0], list(messages[1:])
+    for i, m in enumerate(rest):
+        if m.role == "user":
+            rest[i] = replace(m, content=f"{system.content}\n\n{m.content}" if m.content else system.content)
+            return rest
+    return [Message("user", system.content), *rest]
+
+
 def is_feature_rejection(err: ProviderError) -> bool:
     """A 4xx that may mean "this model can't take that feature". Auth, missing
-    model and rate limits are never feature rejections."""
-    return 400 <= err.status < 500 and err.status not in (401, 403, 404, 408, 429)
+    model, rate limits and an account out of credit are never feature
+    rejections."""
+    return 400 <= err.status < 500 and err.status not in (401, 402, 403, 404, 408, 429)
 
 
 def settle_dropped(features: FeatureMemory, model: str, provider: str, dropped: list[str]) -> list[FeatureDropped]:
     """After a successful retry: every dropped feature is reported, but only the last one
-    — the one whose removal made the request succeed — is remembered (ruling R12).
+    — the one whose removal made the request succeed — is remembered (ruling R12), plus a
+    folded system role, whose rejection names its cause.
 
     Returns the FeatureDropped chunks to yield; also records memory and logs."""
     chunks = [FeatureDropped(feature) for feature in dropped]
+    if "system" in dropped[:-1]:
+        # Certain, not a guess: the error named the system role.
+        features.remember(model, "system")
     if dropped:
         last_feature = dropped[-1]
         features.remember(model, last_feature)

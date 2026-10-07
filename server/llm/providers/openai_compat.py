@@ -13,8 +13,8 @@ from ..types import (Capabilities, CallSettings, Chunk, Finish, Message,
                      ProviderError, ProviderUnavailable, ReasoningDelta, TextDelta, ToolCall,
                      ToolCallReady, ToolSpec, Usage)
 from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_feature_rejection,
-                   iter_lines, json_object, open_stream, parse_arguments, safe_error_message,
-                   settle_dropped)
+                   fold_system, iter_lines, json_object, open_stream, parse_arguments, provider_error,
+                   rejects_system_role, safe_error_message, settle_dropped)
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class OpenAICompatProvider:
         except httpx.HTTPError as e:
             raise ProviderUnavailable(type(e).__name__) from e
         if resp.status_code != 200:
-            raise ProviderError(resp.status_code, safe_error_message(resp.content))
+            raise provider_error(resp.status_code, resp.content)
         data = json_object(resp).get("data")
         entries = {e["id"]: e for e in (data if isinstance(data, list) else [])
                    if isinstance(e, dict) and e.get("id")}
@@ -75,6 +75,9 @@ class OpenAICompatProvider:
         return list((await self._entries()).keys())
 
     async def capabilities(self, model: str) -> Capabilities:
+        return self._features.apply(model, await self._listed_capabilities(model))
+
+    async def _listed_capabilities(self, model: str) -> Capabilities:
         try:
             entry = (await self._entries()).get(model) or {}
         except (ProviderUnavailable, ProviderError):
@@ -97,15 +100,21 @@ class OpenAICompatProvider:
         if caps.thinking is not False and not self._features.rejected(model, "thinking"):
             effort = _EFFORT.get(settings.think)
         use_tools = bool(tools) and caps.tools is not False and not self._features.rejected(model, "tools")
+        fold = self._features.rejected(model, "system")
         dropped: list[str] = []
         while True:
-            body = self._body(model, messages, tools if use_tools else [], settings, effort)
+            body = self._body(model, fold_system(messages) if fold else messages,
+                              tools if use_tools else [], settings, effort)
             request = self._client.build_request("POST", f"{self.config.url}/chat/completions",
                                                  json=body, headers=auth_headers(self.config))
             try:
                 resp = await open_stream(self._client, request)
                 break
             except ProviderError as err:
+                if not fold and messages and messages[0].role == "system" and rejects_system_role(err):
+                    fold, feature = True, "system"   # a template with no system role
+                    dropped.append(feature)
+                    continue
                 if not is_feature_rejection(err):
                     raise
                 if effort is not None:
@@ -158,9 +167,10 @@ class OpenAICompatProvider:
                 except ValueError:
                     continue
                 if payload.get("error"):
-                    message = safe_error_message(json.dumps(payload))
-                    logger.warning("Provider stream error: %s", message)
-                    raise ProviderError(500, message)
+                    raw = json.dumps(payload)
+                    logger.warning("Provider stream error: %s", safe_error_message(raw))
+                    code = payload["error"].get("code") if isinstance(payload["error"], dict) else None
+                    raise provider_error(code if isinstance(code, int) and code >= 400 else 500, raw)
                 if payload.get("usage"):
                     u = payload["usage"]
                     usage = Usage(int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0))

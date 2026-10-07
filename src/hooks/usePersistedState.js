@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { getLibraryOwner, readingProgressKey } from '../db';
 
 const PREFIX = 'neural-pdf-';
 
@@ -46,20 +47,25 @@ export function migratePersisted(key, from, to) {
 /**
  * Save/load reading progress per PDF file.
  */
+// Reading positions belong to the signed-in user (see src/db.js): none are
+// saved or restored while no user is known.
 export function saveReadingProgress(fileName, currentPage, currentSentenceIndex) {
-    if (fileName && currentPage > 0) {
+    const owner = getLibraryOwner();
+    if (owner && fileName && currentPage > 0) {
         const progress = {
             page: currentPage,
             sentenceIndex: currentSentenceIndex,
             timestamp: Date.now(),
         };
-        localStorage.setItem(`${PREFIX}progress-${fileName}`, JSON.stringify(progress));
+        localStorage.setItem(readingProgressKey(owner, fileName), JSON.stringify(progress));
     }
 }
 
 export function loadReadingProgress(fileName) {
+    const owner = getLibraryOwner();
+    if (!owner) return null;
     try {
-        const stored = localStorage.getItem(`${PREFIX}progress-${fileName}`);
+        const stored = localStorage.getItem(readingProgressKey(owner, fileName));
         if (stored) {
             const progress = JSON.parse(stored);
             // Only restore if less than 7 days old

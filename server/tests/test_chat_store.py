@@ -182,3 +182,18 @@ async def test_writes_after_session_delete_are_noops(conn):
     await _finish(claim, content="x")
     assert (await _one(conn, "SELECT count(*) FROM chat_messages WHERE session_id='s-1'"))[0] == 0
     assert (await _one(conn, "SELECT count(*) FROM chat_events WHERE session_id='s-1'"))[0] == 0
+
+
+async def test_recovery_counts_and_logs_the_claims_it_clears(conn, caplog):
+    """Deferred C1 minor: a stale claim whose reply already finished is still
+    cleared — and counted and logged, not silently dropped."""
+    alice = await member(conn, "alice")
+    done = await _begin(alice, sid="s-done")
+    await conn.execute("UPDATE chat_messages SET status = 'complete' WHERE id = %s", (done.turn_id,))
+    await conn.execute("UPDATE chat_sessions SET active_turn_heartbeat_at = now() - interval '2 minutes' "
+                       "WHERE id='s-done'")
+    with caplog.at_level("WARNING", logger="server.chat.store"):
+        assert await store.recover_stale() == 1
+    assert (await _one(conn, "SELECT active_turn_id FROM chat_sessions WHERE id='s-done'"))[0] is None
+    assert (await _one(conn, "SELECT status FROM chat_messages WHERE id=%s", (done.turn_id,)))[0] == "complete"
+    assert "Cleared 1 stale chat claim(s); 0 streaming repl" in caplog.text

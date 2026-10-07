@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import math
+import re
 import time
 from contextlib import aclosing
 from dataclasses import dataclass, field
@@ -25,14 +26,16 @@ from ..db import get_pool
 from ..llm.router import UnknownModel
 from ..llm.types import (Attachment, CallSettings, Capabilities, FeatureDropped, Finish, Message,
                          ProviderError, ProviderTimeout, ProviderUnavailable, ReasoningDelta,
-                         TextDelta, ToolCallReady, Usage)
-from ..services import inference_budget
+                         TextDelta, ToolCall, ToolCallReady, Usage)
+from ..services import assistant_profile, inference_budget
+from ..services import doc_pipeline
 from ..services.doc_search import ReadableDoc, readable_doc
 from . import store
 from .config import ChatConfig
 from .context import TurnInput, build_context
+from .sources import answer_sources
 from .store import TurnClaim, title_from_prompt
-from .tools import ToolContext, available_tools, run_tool
+from .tools import ToolContext, TurnTools, available_tools, result_text
 
 logger = logging.getLogger(__name__)
 
@@ -48,9 +51,39 @@ _FEATURE_NOTICE = {
     "tools": ("tools_unsupported", "This model rejected tools — answered without them."),
     "thinking": ("thinking_unsupported", "This model rejected thinking — answered without it."),
     "think_level": ("think_level_unsupported", "This model rejected the thinking level — used plain thinking."),
+    "system": ("system_role_unsupported",
+               "This model has no system role — its instructions were sent at the start of your message."),
 }
-_FEATURE_LOG = {"tools": "tool-fallback", "thinking": "think-fallback", "think_level": "think-fallback"}
+_FEATURE_LOG = {"tools": "tool-fallback", "thinking": "think-fallback", "think_level": "think-fallback",
+                "system": "system-fallback"}
+# Added to the results of the last tool round (v2.3 Task A). Worded to match
+# the rule in server/chat/prompt.py ("When a tool result says the tool rounds
+# are over, answer from what you already have").
+LAST_ROUND_NOTE = ("The tool rounds are over for this answer: answer now from what you found, "
+                   "and say what you could not find.")
+
 _BACKGROUND: set[asyncio.Task] = set()   # end-of-turn saves that outlive a cancelled request
+
+
+async def drain_background(timeout: float) -> int:
+    """Wait for the end-of-turn saves in `_BACKGROUND`, including ones added
+    while waiting, until none are left or `timeout` seconds pass. Returns how
+    many are still pending (used at shutdown, before the pool closes)."""
+    deadline = time.monotonic() + timeout
+    while _BACKGROUND:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        await asyncio.wait(list(_BACKGROUND), timeout=left)
+    return len(_BACKGROUND)
+
+
+# A small model (llama3.2:3b) sometimes writes its tool call as reply text,
+# `{"name": ..., "parameters": {...}}`, often in a ```json fence. A step's
+# opening text is held while it could still be one, up to this many characters.
+TEXT_TOOLCALL_PROBE_CHARS = 2000
+_FENCE_OPEN = re.compile(r"```[\w+-]*")
+_FENCED = re.compile(r"```[\w+-]*\s*(.*?)\s*(?:```)?", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -115,6 +148,63 @@ def _usage_json(u: Usage) -> dict[str, Any]:
     return {"promptTokens": u.prompt_tokens, "completionTokens": u.completion_tokens, "estimated": u.estimated}
 
 
+class _TextProbe:
+    """Holds a step's opening text while it could still be a tool call
+    written as JSON: only whitespace so far, or `{`, or a code fence heading
+    for `{`. Anything else (and anything past TEXT_TOOLCALL_PROBE_CHARS) is
+    let through at once, so ordinary prose is never delayed."""
+
+    def __init__(self, active: bool) -> None:
+        self.active = active
+        self.held = ""
+
+    def feed(self, delta: str) -> str:
+        """The text to show now: "" while holding, else everything held so far."""
+        if not self.active:
+            return delta
+        self.held += delta
+        if len(self.held) <= TEXT_TOOLCALL_PROBE_CHARS and _may_be_json_object(self.held):
+            return ""
+        return self.release()
+
+    def release(self) -> str:
+        self.active = False
+        out, self.held = self.held, ""
+        return out
+
+
+def _may_be_json_object(text: str) -> bool:
+    s = text.lstrip()
+    if not s or s[0] == "{":
+        return True
+    if not s.startswith("```"):
+        return "```".startswith(s)   # "`" or "``": maybe a fence yet
+    rest = s[_FENCE_OPEN.match(s).end():].lstrip()   # past the fence and its language tag
+    return not rest or rest[0] == "{"
+
+
+def _text_tool_call(held: str, offered: list, step: int) -> ToolCall | None:
+    """`held` as a call to one of this step's tools, if it is exactly one JSON
+    object {"name": <tool>, "parameters" | "arguments": {...}} (an optional
+    "type": "function" too), fenced or not; else None."""
+    s = held.strip()
+    if s.startswith("```"):
+        s = _FENCED.fullmatch(s).group(1)
+    try:
+        obj = json.loads(s)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict) or obj.get("type", "function") != "function":
+        return None
+    arg_keys = [k for k in ("parameters", "arguments") if k in obj]
+    if set(obj) - {"name", "parameters", "arguments", "type"} or len(arg_keys) != 1:
+        return None
+    name, args = obj.get("name"), obj[arg_keys[0]]
+    if not isinstance(args, dict) or not isinstance(name, str) or name not in {t.name for t in offered}:
+        return None
+    return ToolCall(id=f"text_call_{step}", name=name, arguments=args)
+
+
 async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: ChatConfig,
                    deployment_budget: int | None) -> AsyncIterator[dict[str, Any]]:
     seq = 0
@@ -137,17 +227,57 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         doc = await _open_doc(req)
         pins, history = await store.load_turn_context(
             claim.session_id, exclude=(claim.user_message_id, claim.assistant_message_id))
+        # One primary-key read per turn: right across several workers, and an
+        # admin's edit applies from the next message, with no cache to clear.
+        async with get_pool().connection() as conn:
+            profile = await assistant_profile.load_profile(conn)
+        # Tools first: the system rules describe exactly the tools this turn
+        # offers (server/chat/prompt.py), so none is ever named in vain.
+        tool_ctx = ToolContext(req.user_id, doc, cfg=cfg)
+        offered = [] if caps.tools is False else available_tools(tool_ctx)
         built = await build_context(TurnInput(
             user_id=req.user_id, text=req.text, attachments=req.attachments, doc=doc,
             timezone=req.timezone, pins=pins, history=history,
-            window=_window(router, req, caps), now=datetime.now(timezone.utc)), cfg)
+            window=_window(router, req, caps), now=datetime.now(timezone.utc),
+            tools=tuple(offered if cfg.max_tool_rounds > 0 else ()), tool_ctx=tool_ctx,
+            profile=profile.text), cfg)
+        tool_ctx.shown.update(built.shown_chunk_ids)
+        # Document text the model already has: the web search guard's reference.
+        tool_ctx.seen_text.extend(built.shown_texts)
+        tool_ctx.evidence.extend(built.evidence)
+        tool_ctx.seen_text.extend(str(p.get("text") or "") for p in pins if isinstance(p, dict))
+        # The model's earlier answers in this chat often quote the document.
+        # (The user's own messages are theirs to search with.)
+        tool_ctx.seen_text.extend(m.content for m in history if m.role == "assistant")
+        turn_tools = TurnTools(tool_ctx)
         if built.notes:
             state.doc_context = {"notes": built.notes}
             yield ev("data-context", items=built.notes)
-        tool_ctx = ToolContext(req.user_id, doc)
-        offered = [] if caps.tools is False else available_tools(tool_ctx)
         messages = list(built.messages)
         rounds = 0
+
+        def say(delta: str) -> list[dict[str, Any]]:
+            """Show `delta` as this step's text: text-start before its first
+            piece. State is updated before the caller yields the events: a
+            cancellation lands AT a yield (fix round 1, item 2)."""
+            nonlocal text, open_text
+            if not delta:
+                return []
+            out = []
+            if not open_text:
+                open_text = True
+                # A later step's text is a new paragraph, not a run-on
+                # ("search.The answer"); chatEvents.js adds the same
+                # separator on text-start (final review M5).
+                if state.content:
+                    state.content += "\n\n"
+                out.append(ev("text-start", id=f"t{step}"))
+            text += delta
+            state.content += delta
+            state.pending_output = text + probe.held + reasoning
+            out.append(ev("text-delta", id=f"t{step}", delta=delta))
+            return out
+
         while True:
             if await _over_budget(req.user_id, deployment_budget):
                 yield ev("error", code="budget_exhausted", message=ERROR_TEXT["budget_exhausted"])
@@ -169,7 +299,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             calls: list = []
             usage: Usage | None = None
             finish = "stop"
-            open_text = open_reasoning = False
+            open_text = open_reasoning = tools_dropped = False
+            probe = _TextProbe(active=bool(tools_now))   # nothing to recover on a tools-off step
             last_flush = time.monotonic()
             async with aclosing(router.stream_chat(req.model_id, messages, [t.spec for t in tools_now],
                                                    req.settings)) as stream:
@@ -184,24 +315,16 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                         # AT a yield, and by then this chunk's text must already
                         # be reflected — same reason state.content is set before
                         # its yield too (fix round 1, item 2).
-                        state.pending_output = text + reasoning
+                        state.pending_output = text + probe.held + reasoning
                         yield ev("reasoning-delta", id=f"r{step}", delta=chunk.text)
                     elif isinstance(chunk, TextDelta):
                         if open_reasoning:
                             open_reasoning = False
                             yield ev("reasoning-end", id=f"r{step}")
-                        if not open_text:
-                            open_text = True
-                            # A later step's text is a new paragraph, not a run-on
-                            # ("search.The answer"); chatEvents.js adds the same
-                            # separator on text-start (final review M5).
-                            if state.content:
-                                state.content += "\n\n"
-                            yield ev("text-start", id=f"t{step}")
-                        text += chunk.text
-                        state.content += chunk.text
-                        state.pending_output = text + reasoning
-                        yield ev("text-delta", id=f"t{step}", delta=chunk.text)
+                        shown = probe.feed(chunk.text)
+                        state.pending_output = text + probe.held + reasoning
+                        for e in say(shown):
+                            yield e
                     elif isinstance(chunk, ToolCallReady):
                         if tools_now:   # a tools-off step cannot call tools
                             calls.append(chunk.call)
@@ -211,6 +334,10 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                     elif isinstance(chunk, Finish):
                         finish = chunk.reason
                     elif isinstance(chunk, FeatureDropped):
+                        if chunk.feature == "tools":   # this step's reply can't be a tool call
+                            tools_dropped = True
+                            for e in say(probe.release()):
+                                yield e
                         code, notice = _FEATURE_NOTICE[chunk.feature]
                         await _log_event(claim.session_id, _FEATURE_LOG[chunk.feature], notice)
                         yield ev("data-notice", code=code, message=notice)
@@ -219,13 +346,25 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                         last_flush = time.monotonic()
             if open_reasoning:
                 yield ev("reasoning-end", id=f"r{step}")
+            recovered = (None if calls or tools_dropped or not probe.held
+                         else _text_tool_call(probe.held, tools_now, step))
+            if recovered:
+                # Run it as the native call it was meant to be; its JSON is
+                # never shown or saved (probe.held is still billed below).
+                logger.debug("recovered text tool call name=%s", recovered.name)
+                calls.append(recovered)
+                finish = "tool_calls"
+            else:
+                for e in say(probe.release()):
+                    yield e
             if open_text:
                 yield ev("text-end", id=f"t{step}")
             # Mark first, then shield the write: a cancel landing mid-write (e.g.
             # during the pool's commit) can't stop the row landing, and _finalize
             # must never charge this step a second time.
             state.step_recorded = True
-            usage = await asyncio.shield(_record_usage(req.user_id, usage, messages, text + reasoning))
+            usage = await asyncio.shield(_record_usage(req.user_id, usage, messages,
+                                                       text + probe.held + reasoning))
             state.add(usage, finish)
             yield ev("finish-step", step=step, usage=_usage_json(usage), finishReason=finish)
             await _save(claim, state)
@@ -237,21 +376,36 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             messages.append(Message("assistant", text, tool_calls=tuple(calls)))
             await _log_event(claim.session_id, "tool-call",
                              f"{len(calls)} tool call{'s' if len(calls) > 1 else ''}")
+            # The last round says so in its results: the next step offers no
+            # tools, and the rules (stable for the turn) can't say that.
+            last_round = rounds >= cfg.max_tool_rounds
             for call in calls:
-                yield ev("tool-input-available", toolCallId=call.id, toolName=call.name, input=call.arguments)
-                run = await run_tool(call, tool_ctx, tools_now)
+                yield ev("tool-input-available", toolCallId=call.id, toolName=call.name, input=call.arguments,
+                         round=rounds)
+                run = await turn_tools.run(call, tools_now)
                 state.tool_calls.append(run.summary)
                 if run.ok:
                     yield ev("tool-output-available", toolCallId=call.id, output=run.summary["result_summary"])
                 else:
                     yield ev("tool-output-error", toolCallId=call.id, errorText=run.result["error"])
-                messages.append(Message("tool", json.dumps(run.result, indent=2, ensure_ascii=False),
+                result = {**run.result, "note": LAST_ROUND_NOTE} if last_round else run.result
+                messages.append(Message("tool", result_text(result),
                                         tool_call_id=call.id, name=call.name))
             await _save(claim, state)
+        # v2.4 Task D: the pages the answer drew on, as source chips, even when
+        # the model wrote no "(page N)". Pins aren't evidence here: a pin may
+        # come from another document than the open one these chips open.
+        if doc is not None and tool_ctx.evidence:
+            pages, kind = answer_sources(state.content, tool_ctx.evidence)
+            if pages:
+                note = {"kind": "sources", "docId": doc.doc_id, "docName": doc.name, "pages": pages,
+                        "used": kind == "used"}
+                state.doc_context = {"notes": [*((state.doc_context or {}).get("notes") or []), note]}
+                yield ev("data-sources", docId=doc.doc_id, docName=doc.name, pages=pages, used=kind == "used")
         # Spec §5.2.1: did the model still search after a prefetch hit? Lets a
         # deployer tune CHAT_PREFETCH_MIN_SCORE. DEBUG, and no user text.
-        logger.debug("chat turn %s prefetch_hit=%s search_document_called=%s", claim.turn_id,
-                     built.prefetch_hit, any(c["name"] == "search_document" for c in state.tool_calls))
+        logger.debug("chat turn %s prefetch_hit=%s search_documents_called=%s", claim.turn_id,
+                     built.prefetch_hit, any(c["name"] == "search_documents" for c in state.tool_calls))
         if state.last_finish == "length":
             await _log_event(claim.session_id, "truncated", "reply hit the length limit")
         await _log_event(claim.session_id, "received", f"assistant reply ({len(state.content)} chars)")
@@ -293,6 +447,8 @@ def _provider_error(e: Exception) -> tuple[str, str]:
     if isinstance(e, ProviderUnavailable):
         return "provider_unavailable", ERROR_TEXT["provider_unavailable"]
     if isinstance(e, ProviderError):
+        if e.explained:   # already says what happened (429, 401/403, 402)
+            return "provider_error", e.safe_message
         return "provider_error", f"The model provider returned an error: {e.safe_message}"
     return "model_not_allowed", ERROR_TEXT["model_not_allowed"]
 
@@ -423,7 +579,9 @@ async def _open_doc(req: TurnRequest) -> ReadableDoc | None:
         return None
     try:
         async with get_pool().connection() as conn:
-            return await readable_doc(conn, req.doc_id, req.user_id)
+            doc = await readable_doc(conn, req.doc_id, req.user_id)
+        # First use under a new embedding profile starts a background rebuild.
+        return doc_pipeline.ensure_current(doc)
     except Exception:  # noqa: BLE001 — no document context is a safe fallback
         logger.warning("Open-document lookup failed for %s", req.doc_id, exc_info=True)
         return None

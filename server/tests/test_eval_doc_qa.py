@@ -1,0 +1,288 @@
+"""v2.3 Task G: the document-QA evaluation harness. The live run needs
+Postgres, an embedding model and a chat model (scripts/eval_doc_qa.py); the
+fixture and the scoring are pure, and tested here."""
+from __future__ import annotations
+
+import pytest
+
+from server.evals import doc_qa
+from server.services import extract
+
+
+def test_the_fixture_plants_every_fact_on_the_page_it_reports():
+    fixture = doc_qa.build_fixture()
+    pages = {c.page: c.text for c in extract.extract_text(fixture.text).chunks}
+    assert len(pages) >= 8                                         # long enough that pages matter
+    for case in fixture.cases:
+        for fact, page in zip(case.facts, case.pages):
+            assert fact in pages[page], (case.name, fact, page)
+
+
+def test_the_fixture_covers_each_journey_and_is_the_same_every_time():
+    a, b = doc_qa.build_fixture(), doc_qa.build_fixture()
+    assert a.text == b.text and a.doc_id == b.doc_id
+    kinds = {c.kind for c in a.cases}
+    assert kinds == {"single-hop", "two-hop", "exact-label", "page-read", "absent",
+                     "small-talk", "general", "live", "follow-up"}
+    two_hop = next(c for c in a.cases if c.kind == "two-hop")
+    assert len(set(two_hop.pages)) == 2 and abs(two_hop.pages[0] - two_hop.pages[1]) >= 3
+    absent = next(c for c in a.cases if c.kind == "absent")
+    assert not absent.pages and not any(t.lower() in a.text.lower() for t in absent.expect)
+
+
+@pytest.mark.parametrize("answer,pages", [
+    ("It is BLUE HERON (page 4).", {4}),
+    ("See page 2 and (Page 11); also page 0.", {2, 11}),
+    ("No citation here.", set()),
+])
+def test_cited_pages_reads_what_the_app_links(answer, pages):
+    assert doc_qa.cited_pages(answer) == pages
+
+
+@pytest.mark.parametrize("answer,refused", [
+    ("The document doesn't seem to cover the 2030 capital budget.", True),
+    ("I couldn't find anything about that in the document.", True),
+    ("The report does not mention a capital budget.", True),
+    ("The capital budget is 4 million (page 3).", False),
+])
+def test_a_refusal_is_recognised(answer, refused):
+    assert doc_qa.is_refusal(answer) == refused
+
+
+def _case(kind, expect, pages):
+    return doc_qa.Case(name="c", kind=kind, question="q", facts=("f",) * len(pages), pages=tuple(pages),
+                       expect=tuple(expect))
+
+
+def test_a_fact_case_needs_the_fact_and_every_page():
+    case = _case("two-hop", ["zephyr-9", "aldermoor"], [3, 9])
+    ok = doc_qa.score(case, "It uses ZEPHYR-9 (page 3), collected by Aldermoor (page 9).", [])
+    assert ok.passed and ok.fact and ok.cited
+    no_page = doc_qa.score(case, "It uses ZEPHYR-9 (page 3), collected by Aldermoor.", [])
+    assert no_page.fact and not no_page.cited and not no_page.passed
+    wrong = doc_qa.score(case, "It uses MIMIC (page 3) (page 9).", [])
+    assert not wrong.fact and not wrong.passed
+
+
+def test_an_absent_case_needs_a_refusal_and_no_invented_page():
+    case = _case("absent", ["capital budget"], [])
+    assert doc_qa.score(case, "The document doesn't seem to cover that.", []).passed
+    invented = doc_qa.score(case, "The document doesn't seem to cover it, but see (page 4).", [])
+    assert not invented.passed and invented.invented_pages == {4}
+    assert not doc_qa.score(case, "It is 3 million.", []).passed
+
+
+def test_the_score_records_tools_and_rounds():
+    calls = [{"toolName": "search_documents", "round": 1}, {"toolName": "read_document_pages", "round": 2},
+             {"toolName": "search_documents", "round": 2}]
+    result = doc_qa.score(_case("single-hop", ["x"], [1]), "x (page 1)", calls)
+    assert result.tools == ["search_documents", "read_document_pages", "search_documents"]
+    assert result.rounds == 2
+
+
+def test_the_report_is_one_line_per_case_and_a_total():
+    case = _case("single-hop", ["x"], [1])
+    results = [doc_qa.score(case, "x (page 1)", []), doc_qa.score(case, "nope", [])]
+    report = doc_qa.format_report([results], model="ollama:llama3.2:3b")
+    lines = report.splitlines()
+    assert "ollama:llama3.2:3b" in lines[0]
+    assert sum("PASS" in l for l in lines) == 1 and sum("FAIL" in l for l in lines) == 1
+    assert lines[-1].startswith("1/2 passed")
+
+
+# ---- Task G review fix round 1 ----
+
+async def test_the_eval_user_is_its_own_row_and_never_claims_the_seed_admin(db_conn):
+    """Review C1: the OIDC resolver binds a new identity to an unclaimed seed
+    admin. On a dev-bypass machine (the one this eval is for) that is the
+    person's own admin account."""
+    from server.auth.users import SEED_ADMIN_ID
+    cur = await db_conn.execute("SELECT oidc_sub, email FROM users WHERE id = %s", (SEED_ADMIN_ID,))
+    before = await cur.fetchone()
+    first = await doc_qa.eval_user(db_conn)
+    again = await doc_qa.eval_user(db_conn)
+    assert first == again != SEED_ADMIN_ID
+    cur = await db_conn.execute("SELECT oidc_sub, email FROM users WHERE id = %s", (SEED_ADMIN_ID,))
+    assert await cur.fetchone() == before
+    cur = await db_conn.execute("SELECT capabilities, status FROM users WHERE id = %s", (first,))
+    caps, status = await cur.fetchone()
+    assert "admin" not in caps and status == "active"
+
+
+@pytest.mark.parametrize("answer", [
+    "The capital budget for 2030 isn't mentioned in the document.",
+    "The document does not provide a 2030 capital budget.",
+    "The report doesn't specify any capital budget.",
+    "There is nothing about a capital budget in it.",
+    "The report says nothing about it.",
+    "I don't have information on that from this document.",
+])
+def test_refusals_in_the_models_own_words_are_recognised(answer):
+    """Review I4."""
+    assert doc_qa.is_refusal(answer)
+
+
+@pytest.mark.parametrize("answer", [
+    "Not mentioned in the text, but it is 4 million.",
+    "The budget is 4m; earlier drafts did not include it.",
+])
+def test_a_refusal_followed_by_a_made_up_figure_fails(answer):
+    case = _case("absent", ["capital budget", "2030"], [])
+    assert not doc_qa.score(case, answer, []).passed
+
+
+@pytest.mark.parametrize("term,answer,found", [
+    ("41 ms|41ms|41 milliseconds", "a median of 41 ms", True),
+    ("41 ms|41ms|41 milliseconds", "a median of 410 ms", False),
+    ("41 ms|41ms|41 milliseconds", "a median of 141 ms", False),
+    ("nine weeks|9 weeks|nine-week", "It ran for 9 weeks.", True),
+    ("zephyr-9", "the ZEPHYR‑9 dataset", True),                   # a non-breaking hyphen
+])
+def test_facts_match_whole_words_and_any_hyphen(term, answer, found):
+    """Review M5."""
+    assert doc_qa.has_term(answer, term) == found
+
+
+def test_a_turn_that_errored_is_reported_as_an_error_not_a_model_failure():
+    """Review M8."""
+    case = _case("single-hop", ["x"], [1])
+    result = doc_qa.score(case, "", [], error="provider_error")
+    assert not result.passed and result.error == "provider_error"
+    assert "ERROR" in doc_qa.format_report([[result]], model="m")
+
+
+def test_the_fixture_page_size_is_the_extractors():
+    from server.services import extract
+    assert doc_qa.SENTENCES_PER_PAGE is extract.SENTENCES_PER_PAGE
+
+
+def test_a_non_breaking_space_and_9_week_match_too():
+    """Re-review minors."""
+    assert doc_qa.has_term("a median of 41 ms", "41 ms|41ms|41 milliseconds")
+    assert doc_qa.has_term("a 9-week trial", "nine weeks|9 weeks|nine-week|9-week")
+
+
+async def test_an_eval_identity_bound_to_an_admin_is_refused(db_conn):
+    """Re-review minor: a database an earlier eval build touched has the seed
+    admin bound to the eval identity; never run as that admin."""
+    from server.auth.users import SEED_ADMIN_ID
+    await db_conn.execute("UPDATE users SET oidc_iss = %s, oidc_sub = %s WHERE id = %s",
+                          (doc_qa.EVAL_ISS, doc_qa.EVAL_SUB, SEED_ADMIN_ID))
+    with pytest.raises(doc_qa.EvalSetupError):
+        await doc_qa.eval_user(db_conn)
+
+
+def test_the_eval_script_loads_dotenv_before_any_server_module():
+    """Final review I1: server modules read the chunk and embedding settings
+    when they're imported, so importing one before load_dotenv() ignored .env."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    probe = ("import importlib.util, sys\n"
+             f"spec = importlib.util.spec_from_file_location('ev', {str(root / 'scripts' / 'eval_doc_qa.py')!r})\n"
+             "spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+             "print(sorted(m for m in sys.modules if m == 'server' or m.startswith('server.')))\n")
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd=root, check=True)
+    assert out.stdout.strip() == "[]"
+
+
+# ---- v2.4 Task 0: the eval checks the strategy too ----
+
+def _kind(kind):
+    return next(c for c in doc_qa.build_fixture().cases if c.kind == kind)
+
+
+def test_the_new_cases_exist_and_follow_up_has_its_setup_turn():
+    cases = {c.kind: c for c in doc_qa.build_fixture().cases}
+    assert {"small-talk", "general", "live", "follow-up"} <= cases.keys()
+    assert cases["follow-up"].setup == ("What is the project's codename?",)
+    assert all(c.setup == () for k, c in cases.items() if k != "follow-up")
+
+
+def test_small_talk_passes_only_without_tools_or_pages():
+    case = _kind("small-talk")
+    assert doc_qa.score(case, "You're welcome!", []).passed
+    assert not doc_qa.score(case, "You're welcome!", [{"toolName": "search_documents", "round": 1}]).passed
+    assert not doc_qa.score(case, "Glad page 2 helped (page 2).", []).passed
+
+
+def test_general_knowledge_needs_the_fact_and_no_page():
+    case = _kind("general")
+    assert doc_qa.score(case, "In 1969.", []).passed
+    assert not doc_qa.score(case, "In 1969 (page 4).", []).passed
+    assert not doc_qa.score(case, "I'm not sure.", []).passed
+
+
+def test_live_needs_web_search_and_is_skipped_without_it():
+    case = _kind("live")
+    assert doc_qa.score(case, "It's 4°C.", [{"toolName": "web_search", "round": 1}]).passed
+    assert not doc_qa.score(case, "The trial was in Tromsø (page 5).",
+                            [{"toolName": "search_documents", "round": 1}]).passed
+    skipped = doc_qa.score(case, "", [], web_offered=False)
+    assert skipped.skipped == "web_search not offered" and not skipped.passed
+    assert "SKIP" in doc_qa.format_report([[skipped]], model="m")
+
+
+def test_follow_up_passes_without_a_new_tool_call():
+    case = _kind("follow-up")
+    assert doc_qa.score(case, "Blue Heron.", []).passed
+    assert not doc_qa.score(case, "Blue Heron.", [{"toolName": "search_documents", "round": 1}]).passed
+    assert not doc_qa.score(case, "I don't remember.", []).passed
+
+
+def test_a_fact_found_without_the_journey_is_marked():
+    case = _kind("page-read")
+    r = doc_qa.score(case, "It ran for nine weeks (page 5).", [], prefetched=False)
+    assert r.passed and r.trail is False
+    assert "PASS (no trail)" in doc_qa.format_report([[r]], model="m")
+    assert doc_qa.score(case, "It ran for nine weeks (page 5).", [], prefetched=True).trail is True
+
+
+def test_the_report_shows_seconds_and_a_tally_over_repeats():
+    case = _kind("single-hop")
+    a = doc_qa.score(case, "BLUE HERON (page 2).", [{"toolName": "search_documents", "round": 1}])
+    b = doc_qa.score(case, "BLUE HERON.", [{"toolName": "search_documents", "round": 1}])
+    a.seconds, b.seconds = 4.2, 3.0
+    report = doc_qa.format_report([[a], [b]], model="m")
+    assert "4.2s" in report and "single-hop 1/2" in report
+    assert report.splitlines()[-1].startswith("1/2 passed")
+
+
+def test_the_script_has_think_and_repeat_flags():
+    import subprocess
+    import sys
+    from pathlib import Path
+    script = Path(__file__).resolve().parents[2] / "scripts" / "eval_doc_qa.py"
+    out = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True).stdout
+    assert "--think" in out and "--repeat" in out
+
+
+def test_the_script_can_switch_the_prefetch_for_a_run():
+    import subprocess
+    import sys
+    from pathlib import Path
+    script = Path(__file__).resolve().parents[2] / "scripts" / "eval_doc_qa.py"
+    out = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True).stdout
+    assert "--prefetch" in out
+
+
+# ---- v2.4 Task D: chips count as cited; inline is still reported ----
+
+def test_chip_pages_count_as_cited_and_say_so():
+    case = _kind("two-hop")
+    calls = [{"toolName": "search_documents", "round": 1}]
+    by_chips = doc_qa.score(case, "ZEPHYR-9, collected by the Aldermoor Institute.", calls, chip_pages=[3, 8])
+    assert by_chips.passed and by_chips.cited and not by_chips.cited_inline
+    assert "pages ok (chips)" in doc_qa.format_report([[by_chips]], model="m")
+    inline = doc_qa.score(case, "ZEPHYR-9 (page 3), Aldermoor (page 8).", calls, chip_pages=[3, 8])
+    assert inline.cited_inline and "pages ok (inline)" in doc_qa.format_report([[inline]], model="m")
+    assert not doc_qa.score(case, "ZEPHYR-9, Aldermoor.", calls, chip_pages=[3]).passed
+
+
+def test_the_report_gives_the_inline_citation_rate():
+    case = _kind("single-hop")
+    calls = [{"toolName": "search_documents", "round": 1}]
+    a = doc_qa.score(case, "BLUE HERON (page 2).", calls, chip_pages=[2])
+    b = doc_qa.score(case, "BLUE HERON.", calls, chip_pages=[2])
+    assert "inline citations 1/2" in doc_qa.format_report([[a, b]], model="m")

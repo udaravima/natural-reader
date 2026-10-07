@@ -2,7 +2,7 @@
 
 A modern, feature-rich document reader with **neural text-to-speech** powered by **[Kokoro TTS](https://github.com/hexgrad/kokoro)**, an **optional local-AI chat mode** powered by **[Ollama](https://ollama.com/)**, and (new in `v1.6.0`) **document-aware chat with RAG + autonomous tool calling** backed by **Postgres + pgvector**. Open PDFs, `.txt`, or `.md` files, have them read aloud with natural-sounding voices, ask the model about what you're reading, or let the model search the indexed doc on its own.
 
-> 🎯 **A web frontend for Kokoro TTS — now with chat that knows what you're reading.** Beyond the TTS reader and the standalone Ollama chat side-mode, the app can index a loaded document into pgvector and expose a `search_document` tool that your local LLM calls autonomously when a question warrants it. Everything stays local: Ollama for the LLM + embeddings, Postgres in a container for chat sessions and vectors, no cloud round-trips. A browser-based Web Speech fallback is also available for testing without any backend.
+> 🎯 **A web frontend for Kokoro TTS — now with chat that knows what you're reading.** Beyond the TTS reader and the standalone Ollama chat side-mode, the app can index a loaded document into pgvector and expose a `search_documents` tool that your local LLM calls autonomously when a question warrants it. Everything stays local: Ollama for the LLM + embeddings, Postgres in a container for chat sessions and vectors, no cloud round-trips. A browser-based Web Speech fallback is also available for testing without any backend.
 
 ![Neural Reader](https://img.shields.io/badge/React-19.x-blue) ![PDF.js](https://img.shields.io/badge/PDF.js-5.x-orange) ![Kokoro TTS](https://img.shields.io/badge/Kokoro-TTS-green) ![Ollama](https://img.shields.io/badge/Ollama-Chat-orange) ![Vite](https://img.shields.io/badge/Vite-Rolldown-purple) ![Offline](https://img.shields.io/badge/Offline-Ready-brightgreen)
 
@@ -74,10 +74,10 @@ A full end-to-end walkthrough lives in [docs/CHAT_WITH_PDF.md](docs/CHAT_WITH_PD
 - **Ask page** — One toolbar click *pins* the current page text (~8000 char cap) to the chat. No indexing required.
 - **Ask AI on a selection** — Highlight any text on the rendered page and *pin* just that snippet. Paired with the existing "Read Selection" TTS button.
 - **Pinned context** — Ask page / Ask AI create **pins**: excerpts that stay attached to the conversation and are re-sent to the model on **every** turn — positioned at the very top of the prompt so they never get buried — until you remove them. Multiple pins accumulate as removable chips, dedupe by content, are bounded (**6 pins / ~12 000 chars**), and are **saved with the chat session** (restored on reload). Whole-document breadth comes from autonomous retrieval (below), not a giant pin.
-- **Index this document** — Backed by **Postgres + pgvector**. Frontend extracts per-page (PDF), per-block (Markdown), or per-pseudo-page (TXT) chunks; backend embeds them via Ollama's `nomic-embed-text` (768-dim) and stores them in an HNSW-indexed `vector` column. Re-indexing is idempotent (`UNIQUE (doc_id, text_hash)`).
-- **Autonomous tool calling** — When a doc is indexed and the chat model reports tool support, the model gets a `search_document` tool it can invoke on its own; `web_search` is offered too when SearXNG is configured. The turn runs server-side (`server/chat/`): the server executes the call, hands the result back, and the model streams the final answer. One tool round by default (`CHAT_MAX_TOOL_ROUNDS`), then one last step with tools switched off, so the turn always ends in an answer; a model without tool support just never sees the tool. Tool calls are persisted in a `tool_calls` JSONB column and re-rendered as a 🔎 disclosure on the assistant bubble.
+- **Index this document** — Backed by **Postgres + pgvector**. The file is uploaded, and the **server** extracts per-page (PDF), per-block (Markdown) or per-pseudo-page (TXT) chunks on the reader's own pagination, embeds them via Ollama's `nomic-embed-text` (768-dim) and stores them in an HNSW-indexed `vector` column. A file that's already indexed on the server is indexed for you at once.
+- **Autonomous tool calling** — When a doc is indexed and the chat model reports tool support, the model gets a `search_documents` tool it can invoke on its own; `web_search` is offered too when SearXNG is configured. The turn runs server-side (`server/chat/`): the server executes the call, hands the result back, and the model streams the final answer. Up to 3 tool rounds by default (`CHAT_MAX_TOOL_ROUNDS`), so the model can follow a trail through the document, then one last step with tools switched off, so the turn always ends in an answer. Tool results share a per-answer budget (`CHAT_TOOL_RESULT_BUDGET_CHARS`), and web search refuses queries that copy the document; a model without tool support just never sees the tool. Tool calls are persisted in a `tool_calls` JSONB column and re-rendered as a 🔎 disclosure on the assistant bubble.
 - **Postgres-backed chat sessions** — Sessions previously stored in IndexedDB now write to Postgres via a new `src/lib/sessionStore.js` abstraction. Legacy IDB sessions stay readable with a small **LOCAL** badge; the first message you send on one copies it onto the server (`POST /v1/chat/sessions/import`), leaving the original intact.
-- **Server-side tool registry** — `server/chat/tools/` houses one tool per file (`search_document`, `web_search`). Adding a tool later is one new file + one registry line; there is no browser-side tool code anymore.
+- **Server-side tool registry** — `server/chat/tools/` houses one tool per file (`search_documents`, `read_document_pages`, `web_search`). Adding a tool later is one new file + one registry line; there is no browser-side tool code anymore.
 
 ### 👥 Accounts, Document Library & App Shell *(new in `v2.0.0`)*
 
@@ -157,7 +157,7 @@ Install this before you start. The app is split into a **React frontend** (Vite)
 | Software | Version | Why |
 |----------|---------|-----|
 | **Node.js** + **npm** | `20.19+` **or** `22.12+` | Frontend dev server / build. Vite 7 (Rolldown) and `@vitejs/plugin-react` declare `engines: ^20.19.0 \|\| >=22.12.0` — older Node will fail to start. npm ships with Node. |
-| **Python** | `3.10`–`3.13` | Kokoro TTS backend (`run.py`). Doc-chat routes use `\|`-style unions (3.10+); Docling pins `>=3.10,<4.0`. |
+| **Python** | `3.12`–`3.13` | The backend (`run.py`). The chat server needs 3.12+ (`inspect.getasyncgenstate`); `onnxruntime-openvino` (Kokoro) has no 3.14 wheels. |
 | **Git** | any recent | Clone the repository |
 | **wget** or **curl** | any | Download the Kokoro voice model files (~335 MB total — see step 2) |
 
@@ -175,7 +175,7 @@ Install this before you start. The app is split into a **React frontend** (Vite)
 |----------|---------|-----|
 | **Docker + Docker Compose**, *or* **Podman + podman-compose** | recent | Runs Postgres in a container via `docker-compose.yml`. `startup.sh` supports either engine. |
 | *— or —* host **PostgreSQL** + **pgvector** | `pg16` | Stores chat sessions and document embeddings. The provided container image is `pgvector/pgvector:pg16`. |
-| Ollama embedding model **`nomic-embed-text`** | 768-dim | Indexing / retrieval / autonomous `search_document` tool calling. The schema is hard-locked to 768 dims. |
+| Ollama embedding model **`nomic-embed-text`** | 768-dim | Indexing / retrieval / autonomous `search_documents` tool calling. The schema is hard-locked to 768 dims. |
 
 > 📦 **Disk:** budget ~335 MB for the Kokoro model + voice pack, and (only if you enable `DOCLING_ENABLED=true`) an extra ~500 MB–2 GB downloaded on first conversion for the Docling layout/table models.
 
@@ -246,6 +246,34 @@ backend's startup guard allows this only on a loopback bind). Ctrl-C on either
 SIGTERMs the backend and stops the containers cleanly; `./startup.sh down` does
 the same without starting anything.
 
+#### On Windows
+
+`startup.cmd` (or `startup.ps1` in PowerShell) has the same commands as
+`startup.sh`. It runs on the Windows PowerShell 5.1 built into Windows 10/11,
+and on PowerShell 7.
+
+```bat
+startup.cmd init           :: or: startup.cmd init podman
+startup.cmd up             :: quick single-user dev, auth off
+startup.cmd up-with-dev-auth
+startup.cmd down
+```
+
+You need Docker Desktop (or Podman Desktop), Python 3.12 or 3.13 from
+python.org with **Add to PATH** ticked, and Node.js. `startup.cmd` runs the
+script with `-ExecutionPolicy Bypass` for that one run, so the machine's
+execution policy can stay as it is. From a PowerShell prompt you can also run
+`.\startup.ps1 up` directly if your policy allows local scripts.
+
+These parts work differently from Linux:
+- **Python:** the script uses the `py` launcher when it can, because
+  `python.exe` on a fresh Windows is often the Microsoft Store stub.
+- **The virtual environment** lives in `.venv\Scripts\`.
+- **Stopping:** Ctrl-C reaches the backend directly, and it shuts down
+  cleanly. `down` from another window has no gentler option on Windows: after
+  5 seconds it ends the backend and every worker process it started
+  (`taskkill /T`).
+
 Open **http://localhost:5173** in your browser.
 
 ### 4. (Optional) Local AI Chat with Ollama
@@ -272,7 +300,7 @@ docker-compose up -d postgres
 # Pull the embedding model (768-dim — the schema is hard-locked to this)
 ollama pull nomic-embed-text
 
-# Optional: pull a chat model that supports Ollama's tools parameter (for autonomous search_document)
+# Optional: pull a chat model that supports Ollama's tools parameter (for autonomous search_documents)
 ollama pull qwen2.5    # or llama3.1 / llama3.2 / mistral / gemma2
 ```
 
@@ -365,15 +393,17 @@ All endpoints return `503` when Postgres is unreachable.
 | `/v1/chat/sessions/{id}` | `GET / PATCH / DELETE` | Per-session read / rename / delete. The server writes messages itself as a turn streams; there's no client-side upsert of the whole record anymore. |
 | `/v1/chat/sessions/import` | `POST` | Create-only: copies a legacy browser-only (IndexedDB) chat onto the server the first time you send a message on it. |
 | `/v1/chat/sessions/{id}/turns` | `POST` | **Run one chat turn.** Server-sent events (`text/event-stream`): text/reasoning deltas, tool calls and their results, a final `finish`, or a terminal `error`; always ends with `data: [DONE]`. One turn per session at a time — a second send gets `409 turn_in_progress`. |
-| `/v1/docs` | `POST` | Register a document by sha256 `doc_id` (idempotent). |
-| `/v1/docs/{doc_id}` | `GET / DELETE` | Status (`state`, `chunk_count`, `embedded_count`, model, dim) or cascade delete. |
-| `/v1/docs/{doc_id}/chunks` | `POST` | Bulk insert/upsert chunks (batches of ~50). Idempotent on `(doc_id, text_hash)`. |
-| `/v1/docs/{doc_id}/index` | `POST` | Kick off the background embedding job; returns 202. Poll the doc status endpoint for progress. |
-| `/v1/docs/{doc_id}/search` | `POST` | `{query, k}` → top-k chunks by cosine similarity (HNSW). Used by the autonomous `search_document` tool. |
+| `/v1/docs` | `POST / GET` | `POST`: upload a file (multipart). The server hashes the bytes itself (that SHA-256 is the `doc_id`) and extracts + indexes new content in the background; known bytes just add it to your library. `GET`: the documents you can read (`?q=`, `?project_id=`, `?tag=`). |
+| `/v1/docs/{doc_id}` | `GET / PATCH / DELETE` | Status (`state`, `chunk_count`, `embedded_count`, model, dim); rename/retag **your** entry; remove it from **your** library (the content goes when nobody holds it). |
+| `/v1/docs/{doc_id}/file` | `GET` | The stored file, for anyone who can read the document (404 otherwise). The Library's **Open** button. |
+| `/v1/docs/{doc_id}/index` | `POST` | Resume, or re-index from the stored file; returns 202. Poll the doc status endpoint for progress. |
+| `/v1/docs/{doc_id}/search` | `POST` | `{query, k}` → the top-k chunks by cosine similarity, an exact search within the document. It is meaning-only: the chat's `search_documents` tool adds exact-word matching. Answers 409 `reindexing` while the document is rebuilt for a new embedding model. |
+
+Sharing, projects, conversion and who may call what: [docs/LIBRARY.md § API surface](docs/LIBRARY.md#api-surface). There is no chunk-upload route: chunks are always derived on the server.
 
 #### Model providers (same FastAPI server)
 
-Chat always runs on the server (`server/chat/`, `server/llm/`) against one or more configured **model providers** — native Ollama by default, plus any OpenAI-compatible server (vLLM, OpenRouter, LiteLLM) an admin adds in `.env`. The browser never talks to a provider directly; there is no "local mode" and no in-app screen for adding providers (`.env` + restart, see [.env.example](.env.example) and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
+Chat always runs on the server (`server/chat/`, `server/llm/`) against one or more configured **model providers** — native Ollama by default, plus any OpenAI-compatible server (vLLM, OpenRouter, LiteLLM) an admin adds in `.env`. OpenRouter has been run end to end (paid Gemma 4 and Mistral Small 3.2: chat, pins, tools, images, usage); vLLM and LiteLLM speak the same protocol but haven't been run. A refused request says what happened (rate-limited, key rejected, out of credit) — see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#configuring-providers). The browser never talks to a provider directly; there is no "local mode" and no in-app screen for adding providers (`.env` + restart, see [.env.example](.env.example) and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -476,7 +506,7 @@ server {
         # generous timeout. The backend also sends X-Accel-Buffering: no.
         proxy_buffering off;
         proxy_read_timeout 86400;
-        # PDF uploads (POST /v1/docs/{id}/pdf) exceed nginx's 1 MB default → 413.
+        # Document uploads (POST /v1/docs) exceed nginx's 1 MB default → 413.
         client_max_body_size 100m;
     }
 
@@ -716,7 +746,9 @@ natural-reader/
 │   │   └── useTheme.js
 │   ├── lib/
 │   │   ├── sessionStore.js       # Postgres-or-IndexedDB session dispatcher (legacy IDB sessions → read-only LOCAL badge, imported to Postgres on first send)
-│   │   ├── uploadPdf.js          # Multipart upload of PDF bytes (IndexedDB → /v1/docs/{id}/pdf) for docling conversion
+│   │   ├── serverDocFile.js      # GET /v1/docs/{id}/file → a File the reader opens (Library → Open)
+│   │   ├── openDoc.js            # Open a server document (Library row or chat citation), then go to a page
+│   │   ├── citations.js          # "(page N)" citations in replies → buttons (remark plugin)
 │   │   ├── chatStream.js         # POST a turn + read its SSE response (partial lines, [DONE], abort)
 │   │   ├── chatEvents.js         # Pure reducer: turn events → message state (text, thinking, tool panel, status)
 │   │   └── chatTransport.js      # GET /v1/inference/models, budget parsing (no tool code here anymore — tools run server-side)
@@ -761,7 +793,7 @@ natural-reader/
 │   ├── routers/
 │   │   ├── chat_sessions.py   # /v1/chat/sessions/* — list / get / patch / delete / import (legacy-chat copy)
 │   │   ├── chat_turns.py      # POST /v1/chat/sessions/{id}/turns — runs one turn, frames orchestrator events as SSE
-│   │   ├── docs.py            # /v1/docs/* — register / chunks / index / search / pdf / convert / markdown
+│   │   ├── docs.py            # /v1/docs/* — upload / list / status / file / shares / index / search / convert / markdown
 │   │   ├── inference.py       # GET /v1/inference/models — every provider's models + the caller's budget
 │   │   ├── admin.py           # /v1/admin/* — user management + inference usage + deployment config view
 │   │   └── auth.py            # /v1/auth/* — OIDC login/callback, sessions, PATs
@@ -770,7 +802,7 @@ natural-reader/
 │   │   ├── context.py         # Stage 0: document prefetch, time-in-prompt, history trimming
 │   │   ├── store.py           # Turn claims/heartbeat/recovery, message + event persistence
 │   │   ├── config.py          # CHAT_* env knobs (tool rounds, prefetch, trimming, request size cap)
-│   │   └── tools/              # search_document, web_search — one file per tool, server-side only
+│   │   └── tools/              # search_documents, read_document_pages, web_search — one file per tool, server-side only
 │   ├── llm/                   # Model provider layer (C1)
 │   │   ├── router.py          # Loads INFERENCE_PROVIDERS config, resolves "<provider>:<model>" ids
 │   │   ├── types.py           # Internal message/event types every adapter maps to/from
@@ -808,6 +840,11 @@ npm run dev      # Start Vite dev server
 npm run build    # Build for production
 npm run preview  # Preview production build
 npm run lint     # Run ESLint
+
+# How well does a chat model answer questions about a document? Runs the real
+# chat path against a document with planted facts (needs Postgres, the
+# embedding model and the chat model; see docs/CHAT_WITH_PDF.md §6.5).
+python scripts/eval_doc_qa.py --model ollama:llama3.2:3b
 ```
 
 ---
@@ -844,8 +881,8 @@ fetch/summary fallbacks. Tune it with env vars (see `.env.example`):
 |-----|---------|----------|
 | `LOG_LEVEL` | `INFO` | Verbosity (`DEBUG` / `INFO` / `WARNING` / …) |
 | `LOG_DIR` | `./logs` | Directory for the log file |
-| `LOG_FILE_MAX_MB` | `10` | Rotate the log after this many MB |
-| `LOG_FILE_BACKUPS` | `5` | How many rotated files to keep |
+| `LOG_FILE_ROLL_OVER_TIME` | `midnight` | When a new log file starts: `midnight`, `H` (hourly), `D`, `W0`–`W6` (weekly) |
+| `LOG_FILE_BACKUPS` | `5` | How many old files to keep (at midnight: days) |
 
 Frontend logs stay in the browser devtools console; Postgres and SearXNG keep their
 own container logs (`docker-compose logs <service>`).

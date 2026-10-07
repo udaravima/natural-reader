@@ -1,7 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Search, FolderOpen, FolderPlus, Share2, X, Check, Trash2, Loader2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Search, FolderOpen, FolderPlus, Share2, X, Check, Trash2, Loader2, BookOpen } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
 import { describeRefusal } from '../../lib/apiErrors';
+import ProjectsTab from './ProjectsTab';
+import ProjectPage from '../projects/ProjectPage';
+import ShareDialog from './ShareDialog';
+import { projectsApi } from '../../lib/projectsApi';
 
 // Typing pauses this long before a search-as-you-type request fires. Keeps
 // GET /v1/docs?q=... from firing on every keystroke while staying fast
@@ -64,15 +68,16 @@ function TagEditor({ doc, theme, onSave }) {
   );
 }
 
-// One chip per linked project. Projects govern their own documents: only a
-// user holding an upload entry can file a document into a project they can
-// see, and only that project's owner can remove a document from it — never
-// the uploader, and never anyone else who merely holds a library entry.
+// One chip per linked project. Projects govern their own documents (A0 §5): a
+// Contributor or above who uploaded a document files it in; only a Maintainer
+// or Owner removes it — never the uploader as such.
 function ProjectChips({ doc, projects, theme, onLink, onUnlink, busy }) {
   const linked = doc.projects || [];
   const linkedIds = new Set(linked.map((p) => p.id));
-  const ownedProjectIds = new Set((projects || []).filter((p) => p.is_owner).map((p) => p.id));
-  const addable = (projects || []).filter((p) => !linkedIds.has(p.id));
+  // Projects decide (A0 §5): × where the caller may remove documents, and
+  // "+ project" offers only projects the caller may file into.
+  const removableIds = new Set((projects || []).filter((p) => p.can?.remove_docs).map((p) => p.id));
+  const addable = (projects || []).filter((p) => p.can?.file_docs && !linkedIds.has(p.id));
 
   return (
     <div className="flex flex-wrap items-center gap-1">
@@ -84,7 +89,7 @@ function ProjectChips({ doc, projects, theme, onLink, onUnlink, busy }) {
           className={`flex items-center gap-1 px-1.5 py-0.5 rounded ${theme.bgTertiary} ${theme.textSecondary}`}
         >
           {p.name}
-          {ownedProjectIds.has(p.id) && (
+          {removableIds.has(p.id) && (
             <button
               onClick={() => onUnlink(doc, p)}
               aria-label={`Remove ${doc.file_name} from ${p.name}`}
@@ -188,11 +193,14 @@ function NewProjectForm({ theme, busy, onCreate, onCancel }) {
  * remove-from-my-library control, and (if I uploaded it) a project chip
  * selector; removing only ever affects my own copy, never anyone else's
  * entry or a project's placement. A row I only see via a project has
- * neither: it isn't mine to remove or retag. "New project" creates a project
- * I own; `onProjectsChanged` tells the reader to refresh its project picker.
- * Adding members has no screen until A0.
+ * neither: it isn't mine to remove or retag. Every row can be opened in the
+ * reader (`onOpen(doc)`, which resolves once it's open or has failed with a
+ * notice): anything listed here is something I can read. "New project"
+ * creates a project I own; `onProjectsChanged` tells the reader to refresh
+ * its project picker.
+ * The Projects tab lists my projects; a project page manages its documents, members and activity (A0).
  */
-export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProjectsChanged }) {
+export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProjectsChanged, onOpen, currentUserId }) {
   const [docs, setDocs] = useState(null);
   const [projects, setProjects] = useState(null);
   const [search, setSearch] = useState('');
@@ -206,8 +214,14 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
   // request (a project owner double-clicking × would otherwise see a false
   // "Update failed: HTTP 404" toast from the second, already-unlinked DELETE).
   const [linkingId, setLinkingId] = useState(null);
+  // doc_id being fetched and opened — disables its Open button meanwhile.
+  const [openingId, setOpeningId] = useState(null);
   const [creatingProject, setCreatingProject] = useState(false);
   const [projectBusy, setProjectBusy] = useState(false);
+  const [view, setView] = useState('documents');
+  const [openProjectId, setOpenProjectId] = useState(null);
+  const [shareDocId, setShareDocId] = useState(null);
+  const api = useMemo(() => projectsApi(apiHost, apiPort), [apiHost, apiPort]);
   // Monotonic id so out-of-order responses can't clobber the list: fast typing
   // across debounce windows can leave two GET /v1/docs in flight, and if the
   // earlier one resolves last its stale results would overwrite the newer query.
@@ -231,7 +245,9 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
     try {
       const res = await apiFetch(apiHost, apiPort, '/v1/projects');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setProjects(await res.json());
+      const list = await res.json();
+      setProjects(list);
+      return list;
     } catch (e) {
       setProjects([]);
       showToast(`Could not load projects: ${e.message}`, 5000);
@@ -270,6 +286,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
       await loadDocs(search, projectFilter);
     } catch (e) {
       showToast(`Update failed: ${e.message}`, 5000);
+      await loadProjects(); // our role may have changed; refresh `can` so stale controls go away
     } finally {
       setLinkingId(null);
     }
@@ -294,6 +311,26 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
       showToast(`Could not create project: ${e.message}`, 5000);
     } finally {
       setProjectBusy(false);
+    }
+  };
+
+  // A change made on a project page (filed/removed a document, left, deleted)
+  // can alter document chips and the project list, so reload both; a filter on
+  // a project that has vanished is dropped.
+  const projectsChanged = async () => {
+    const list = await loadProjects();
+    const filter = list && projectFilter && !list.some((p) => p.id === projectFilter) ? '' : projectFilter;
+    if (filter !== projectFilter) setProjectFilter('');
+    await loadDocs(search, filter);
+    onProjectsChanged?.();
+  };
+
+  const openDoc = async (doc) => {
+    setOpeningId(doc.doc_id);
+    try {
+      await onOpen(doc);
+    } finally {
+      setOpeningId(null);
     }
   };
 
@@ -338,6 +375,28 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
           />
         )}
 
+        <div role="tablist" aria-label="Library sections" className={`flex gap-4 border-b ${theme.border}`}>
+          {[['documents', 'Documents'], ['projects', 'Projects']].map(([key, label]) => (
+            <button key={key} role="tab" aria-selected={view === key && !openProjectId}
+              onClick={() => { setView(key); setOpenProjectId(null); }}
+              className={`pb-1 text-xs ${view === key ? 'border-b-2 border-blue-500 text-blue-500' : theme.textSecondary}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {openProjectId ? (
+          <ProjectPage
+            theme={theme} apiHost={apiHost} apiPort={apiPort} projectId={openProjectId}
+            currentUserId={currentUserId} showToast={showToast}
+            onBack={() => setOpenProjectId(null)}
+            onChanged={projectsChanged}
+            onOpenDoc={onOpen ? openDoc : undefined}
+          />
+        ) : view === 'projects' ? (
+          <ProjectsTab theme={theme} projects={projects} onOpenProject={setOpenProjectId} />
+        ) : (
+          <>
         {/* Search + project filter */}
         <div className="flex flex-wrap items-center gap-2">
           <div className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg border ${theme.border} ${theme.bgTertiary} flex-1 min-w-[200px]`}>
@@ -395,40 +454,64 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
                         </span>
                       )}
                     </div>
-                    {doc.in_library && (
-                      deleting ? (
-                        <span className="flex items-center gap-1 shrink-0">
-                          {deletingId === doc.doc_id ? (
-                            <button
-                              disabled
-                              className="flex items-center gap-1 text-[10px] text-red-500 cursor-default"
-                            >
-                              <Loader2 size={10} className="animate-spin" /> Removing…
-                            </button>
-                          ) : (
-                            <>
-                              <span className={`text-[10px] ${theme.textSecondary}`}>
-                                Remove from your library? People and projects that have it keep their copies.
-                              </span>
-                              <button onClick={() => deleteDoc(doc)} className="text-[10px] underline text-red-500">
-                                Confirm remove
-                              </button>
-                              <button onClick={() => setDeleteTarget(null)} className="text-[10px] underline">
-                                Cancel
-                              </button>
-                            </>
-                          )}
-                        </span>
-                      ) : (
+                    <div className="flex items-center gap-3 shrink-0">
+                      {doc.added_via === 'upload' && (
                         <button
-                          onClick={() => setDeleteTarget(doc.doc_id)}
-                          aria-label={`Remove ${doc.file_name} from my library`}
-                          className={`shrink-0 hover:text-red-500 ${theme.textSecondary}`}
+                          onClick={() => setShareDocId(shareDocId === doc.doc_id ? null : doc.doc_id)}
+                          aria-label={`Share ${doc.file_name}`}
+                          className={`flex items-center gap-1 text-[10px] hover:text-blue-500 ${theme.textSecondary}`}
                         >
-                          <Trash2 size={12} />
+                          <Share2 size={10} /> Share
                         </button>
-                      )
-                    )}
+                      )}
+                      {onOpen && (
+                        <button
+                          onClick={() => openDoc(doc)}
+                          disabled={openingId !== null}
+                          aria-label={`Open ${doc.file_name}`}
+                          className="flex items-center gap-1 px-2 py-0.5 text-[10px] rounded bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-default"
+                        >
+                          {openingId === doc.doc_id
+                            ? <Loader2 size={10} className="animate-spin" />
+                            : <BookOpen size={10} />}
+                          Open
+                        </button>
+                      )}
+                      {doc.in_library && (
+                        deleting ? (
+                          <span className="flex items-center gap-1 shrink-0">
+                            {deletingId === doc.doc_id ? (
+                              <button
+                                disabled
+                                className="flex items-center gap-1 text-[10px] text-red-500 cursor-default"
+                              >
+                                <Loader2 size={10} className="animate-spin" /> Removing…
+                              </button>
+                            ) : (
+                              <>
+                                <span className={`text-[10px] ${theme.textSecondary}`}>
+                                  Remove from your library? People and projects that have it keep their copies.
+                                </span>
+                                <button onClick={() => deleteDoc(doc)} className="text-[10px] underline text-red-500">
+                                  Confirm remove
+                                </button>
+                                <button onClick={() => setDeleteTarget(null)} className="text-[10px] underline">
+                                  Cancel
+                                </button>
+                              </>
+                            )}
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => setDeleteTarget(doc.doc_id)}
+                            aria-label={`Remove ${doc.file_name} from my library`}
+                            className={`shrink-0 hover:text-red-500 ${theme.textSecondary}`}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        )
+                      )}
+                    </div>
                   </div>
 
                   <div className="text-[10px]">
@@ -441,6 +524,10 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
                       busy={linkingId === doc.doc_id}
                     />
                   </div>
+
+                  {shareDocId === doc.doc_id && (
+                    <ShareDialog theme={theme} api={api} doc={doc} showToast={showToast} onClose={() => setShareDocId(null)} />
+                  )}
 
                   {doc.in_library ? (
                     <TagEditor doc={doc} theme={theme} onSave={(tags) => patchDoc(doc, { tags })} />
@@ -459,6 +546,8 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
               );
             })}
           </div>
+        )}
+          </>
         )}
       </div>
     </div>

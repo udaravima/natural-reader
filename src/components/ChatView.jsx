@@ -24,6 +24,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import AttachmentPreview from "./AttachmentPreview";
+import { citationDoc, remarkCitations } from "../lib/citations";
 import { estimateTokens } from "../hooks/inference";
 import { buildPinPreamble } from "../hooks/pins";
 // VoiceRecorder is intentionally not imported — audio attachments are paused
@@ -62,6 +63,13 @@ export default function ChatView({
   setDraft = () => {},
   pendingAttachments = [],
   setPendingAttachments = () => {},
+  // (docId, page, docName) → opens that document at that page in the reader.
+  // Without it, page citations in replies stay plain text.
+  onOpenCitation = null,
+  // v2.4 Task E: the open document's name (null: none open) and the chat's
+  // "Use this document" switch ({ enabled, setEnabled }, from useChatEngine).
+  openDocName = null,
+  docUse = null,
 }) {
   const copyMessage = async (text) => {
     if (!text) return;
@@ -298,6 +306,7 @@ export default function ChatView({
                       ? () => downloadMessageAudio(m.id)
                       : null
                   }
+                  onOpenCitation={onOpenCitation}
                 />
               );
             })}
@@ -325,6 +334,9 @@ export default function ChatView({
             >
               ~{fmtTotal(ctxTokens)}{numCtx ? ` / ${fmtWindow(numCtx)}` : ''} ctx
             </div>
+          )}
+          {openDocName && docUse && (
+            <DocUseSwitch name={openDocName} docUse={docUse} theme={theme} darkMode={darkMode} />
           )}
           {/* Pin row — docs/pages/selections pinned via "Ask page" or
                         "Ask AI" on a selection. Persist across sends until
@@ -434,6 +446,7 @@ function MessageBubble({
   onCopy,
   isDownloading,
   onDownloadAudio,
+  onOpenCitation,
 }) {
   const isUser = message.role === "user";
   const Icon = isUser ? User : Bot;
@@ -447,6 +460,14 @@ function MessageBubble({
   const toolStatus = !isUser ? message.toolStatus : null;
   const toolCalls =
     !isUser && Array.isArray(message.toolCalls) ? message.toolCalls : null;
+  // Only a reply the server saved as having used a document gets clickable
+  // "(page N)" citations — see src/lib/citations.js.
+  const { docContext: savedContext, toolCalls: savedCalls } = message;
+  const canCite = !isUser && !!onOpenCitation;
+  const citeDoc = useMemo(
+    () => (canCite ? citationDoc({ docContext: savedContext, toolCalls: savedCalls }) : null),
+    [canCite, savedContext, savedCalls],
+  );
   return (
     <div className={`flex gap-3 ${isUser ? "flex-row-reverse" : ""}`}>
       <div
@@ -524,6 +545,8 @@ function MessageBubble({
               <AssistantMarkdown
                 content={message.content}
                 darkMode={darkMode}
+                citeDoc={citeDoc}
+                onOpenCitation={onOpenCitation}
               />
             ) : (
               <p className={`text-sm ${theme.textMuted} italic`}>…</p>
@@ -578,6 +601,7 @@ function MessageBubble({
           </div>
         )}
         {!isUser && <ReplyStatus message={message} isStreamingNow={isStreamingNow} theme={theme} />}
+        {canCite && <SourceChips notes={message.docContext?.notes} theme={theme} onOpenCitation={onOpenCitation} />}
         {toolCalls && toolCalls.length > 0 && (
           <ToolCallsDisclosure
             toolCalls={toolCalls}
@@ -686,13 +710,34 @@ function MessageStatsDisclosure({ stats, theme, darkMode }) {
 
 // Memoize the markdown component overrides — prevents react-markdown
 // from rebuilding the renderer tree on every streaming token.
-function AssistantMarkdown({ content, darkMode }) {
+const PLAIN_PLUGINS = [remarkGfm];
+const CITING_PLUGINS = [remarkGfm, remarkCitations];
+
+function AssistantMarkdown({ content, darkMode, citeDoc = null, onOpenCitation }) {
+  // The renderer set below must stay the same object across renders — a new
+  // one remounts the whole reply, on every streaming token. So it depends on
+  // the cited document's id and name only; the click handler, which the
+  // parent may recreate each render, is read through a ref.
+  const citeDocId = citeDoc?.docId;
+  const citeDocName = citeDoc?.docName;
+  const openCitationRef = useRef(onOpenCitation);
+  useEffect(() => { openCitationRef.current = onOpenCitation; }, [onOpenCitation]);
   const components = useMemo(
     () => ({
       p: ({ children }) => (
         <p className="my-1 text-sm leading-relaxed break-words">{children}</p>
       ),
-      a: ({ children, href }) => (
+      a: ({ children, href, "data-cite-page": citePage }) => citePage != null && citeDocId ? (
+        <button
+          type="button"
+          onClick={() => openCitationRef.current?.(citeDocId, Number(citePage), citeDocName)}
+          aria-label={`Open ${citeDocName || "the document"} at page ${citePage}`}
+          title={`Open page ${citePage}`}
+          className="text-blue-500 underline decoration-dotted hover:decoration-solid"
+        >
+          {children}
+        </button>
+      ) : (
         <a
           href={href}
           target="_blank"
@@ -760,12 +805,15 @@ function AssistantMarkdown({ content, darkMode }) {
         <td className="border border-slate-500/40 px-2 py-1">{children}</td>
       ),
     }),
-    [darkMode],
+    [darkMode, citeDocId, citeDocName],
   );
 
   return (
     <div className="text-sm leading-relaxed">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown
+        remarkPlugins={citeDocId ? CITING_PLUGINS : PLAIN_PLUGINS}
+        components={components}
+      >
         {content}
       </ReactMarkdown>
     </div>
@@ -847,6 +895,10 @@ function ToolCallsDisclosure({ toolCalls, theme, darkMode }) {
             const result = tc.result_summary || {};
             const resultLabel = result.error
               ? `error: ${result.error}`
+              : Array.isArray(result.passages) // search_documents (v2.3): new passages only
+                ? result.passages.length
+                  ? `${result.passages.length} new passage${result.passages.length === 1 ? "" : "s"}`
+                  : "nothing new"
               : result.chunk_count != null
                 ? `${result.chunk_count} chunk${result.chunk_count === 1 ? "" : "s"}`
                 : "ok";
@@ -876,6 +928,32 @@ function ToolCallsDisclosure({ toolCalls, theme, darkMode }) {
 }
 
 // Stage-0 notes the server attached to a reply (spec §5.2, §8).
+// v2.4 Task D: the pages a reply drew on (or, when none matched, the pages it
+// searched, labelled as such), each opening that page like a citation.
+function SourceChips({ notes, theme, onOpenCitation }) {
+  const note = Array.isArray(notes) ? notes.findLast((n) => n?.kind === "sources" && n.docId) : null;
+  if (!note || !note.pages?.length) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+      <span className={note.used ? `font-bold ${theme.textSecondary}` : `italic ${theme.textMuted}`}>
+        {note.used ? "Sources" : "Searched (not cited)"}
+      </span>
+      {note.pages.map((page) => (
+        <button
+          key={page}
+          type="button"
+          onClick={() => onOpenCitation(note.docId, page, note.docName)}
+          aria-label={`Source: page ${page} of ${note.docName || "the document"}`}
+          title={`Open page ${page}`}
+          className={`px-2 py-0.5 rounded-full border ${theme.border} ${note.used ? "text-blue-500" : theme.textMuted} hover:underline`}
+        >
+          p. {page}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function ContextNotes({ notes, theme }) {
   if (!Array.isArray(notes) || notes.length === 0) return null;
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -916,6 +994,28 @@ function ReplyStatus({ message, isStreamingNow, theme }) {
     );
   }
   return null;
+}
+
+// v2.4 Task E: whether this chat's messages send the open document. Off: no
+// search before the model, no document tools, no document in the rules; pins
+// and earlier citations still work.
+function DocUseSwitch({ name, docUse, theme, darkMode }) {
+  const on = docUse.enabled;
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={`Use this document: ${name}`}
+      title={on ? "The assistant can search and read this document." : "The assistant won't read this document in this chat."}
+      onClick={() => docUse.setEnabled(!on)}
+      className={`self-start flex items-center gap-2 px-3 py-1.5 rounded-full border text-[11px] ${theme.border} ${on ? (darkMode ? "bg-purple-500/10" : "bg-purple-50") : theme.bgTertiary}`}
+    >
+      <FileText size={12} className={on ? (darkMode ? "text-purple-300" : "text-purple-600") : theme.textMuted} />
+      <span className={`truncate max-w-[16rem] ${on ? theme.text : `line-through ${theme.textMuted}`}`}>{name}</span>
+      <span className={`font-bold ${on ? "text-purple-500" : theme.textMuted}`}>{on ? "Use this document" : "Not used"}</span>
+    </button>
+  );
 }
 
 export function DocContextChip({

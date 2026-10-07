@@ -1,4 +1,5 @@
 from server.services import doc_content
+from server.tests import seed
 from server.tests.seed import place_doc, seed_doc, share_doc
 
 D = "d" * 64
@@ -10,9 +11,7 @@ async def _user(conn, sub):
 
 
 async def _project(conn, owner):
-    cur = await conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id", (owner,))
-    return str((await cur.fetchone())[0])
+    return await seed.make_project(conn, owner, "P")
 
 
 async def _via(conn, user, doc=D):
@@ -81,15 +80,17 @@ async def test_gc_keeps_content_placed_in_a_project(db_conn):
     assert await doc_content.gc_content_if_orphaned(db_conn, D, trigger="test") is False
 
 
-async def test_docs_referenced_by_user_includes_owned_project_placements(db_conn):
+async def test_docs_referenced_by_user_is_their_entries_not_project_placements(db_conn):
+    # A0 §3.1: projects outlive their members, so a placement is never
+    # orphaned by deleting a user (a project they created is not "theirs").
     a, b = await _user(db_conn, "a"), await _user(db_conn, "b")
     await seed_doc(db_conn, D, a)
     p = await _project(db_conn, a)
     await seed_doc(db_conn, "e" * 64, b, project_ids=[p])
-    # Sorted, not just the right set: GC takes row locks in this order (deadlock avoidance).
-    assert await doc_content.docs_referenced_by_user(db_conn, a) == ["d" * 64, "e" * 64]
+    assert await doc_content.docs_referenced_by_user(db_conn, a) == ["d" * 64]
+    # Sorted: GC takes row locks in this order (deadlock avoidance).
     await seed_doc(db_conn, "0" * 64, a)
-    assert await doc_content.docs_referenced_by_user(db_conn, a) == ["0" * 64, D, "e" * 64]
+    assert await doc_content.docs_referenced_by_user(db_conn, a) == ["0" * 64, D]
 
 
 async def test_sweep_removes_orphans_only(db_conn):

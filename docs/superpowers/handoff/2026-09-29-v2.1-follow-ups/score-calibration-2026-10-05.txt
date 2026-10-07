@@ -1,0 +1,129 @@
+# Output of score-calibration-2026-10-05.py (nomic-embed-text via Ollama 0.x, CPU)
+# Holmes text: Project Gutenberg #1661, fetched 2026-10-05 into the script's folder as holmes.txt
+
+== guide (55 chunks), prefixed
+  rel 0.742 rank   4  best-wrong 0.831  How do I create a personal access token?
+  rel 0.720 rank   4  best-wrong 0.762  Why does the browser extension need a token?
+  rel 0.802 rank   1  best-wrong 0.694  Can I see my token again after creating it?
+  rel 0.678 rank   4  best-wrong 0.753  What happens when I run out of daily tokens?
+  rel 0.668 rank   3  best-wrong 0.727  When does the chat budget reset?
+  rel 0.792 rank   1  best-wrong 0.667  A new colleague sees waiting for approval, why?
+  rel 0.795 rank   1  best-wrong 0.666  I was made admin but there's no Admin button
+  rel 0.720 rank   1  best-wrong 0.630  How do I offboard a user properly?
+  rel 0.820 rank   1  best-wrong 0.683  Does stopping a reply early refund tokens?
+  answering chunk: min 0.668 median 0.742 max 0.820; top-1 5/9, top-5 9/9
+  best wrong chunk: median 0.694 max 0.831
+  unrelated messages, top score: min 0.470 median 0.538 max 0.596
+     0.596  Summarize this document
+     0.586  thanks!
+     0.553  Explain quantum entanglement simply
+     0.552  Can you explain that more simply?
+
+== guide (55 chunks), plain
+  rel 0.658 rank   7  best-wrong 0.865  How do I create a personal access token?
+  rel 0.670 rank   5  best-wrong 0.779  Why does the browser extension need a token?
+  rel 0.797 rank   1  best-wrong 0.667  Can I see my token again after creating it?
+  rel 0.576 rank  15  best-wrong 0.751  What happens when I run out of daily tokens?
+  rel 0.630 rank   4  best-wrong 0.711  When does the chat budget reset?
+  rel 0.769 rank   1  best-wrong 0.654  A new colleague sees waiting for approval, why?
+  rel 0.863 rank   1  best-wrong 0.717  I was made admin but there's no Admin button
+  rel 0.599 rank   1  best-wrong 0.524  How do I offboard a user properly?
+  rel 0.832 rank   1  best-wrong 0.645  Does stopping a reply early refund tokens?
+  answering chunk: min 0.576 median 0.670 max 0.863; top-1 5/9, top-5 7/9
+  best wrong chunk: median 0.711 max 0.865
+  unrelated messages, top score: min 0.423 median 0.503 max 0.643
+     0.643  Summarize this document
+     0.544  hi
+     0.539  Write me a haiku about cats
+     0.518  Can you explain that more simply?
+
+== guide (55 chunks), mixed
+  rel 0.710 rank   5  best-wrong 0.856  How do I create a personal access token?
+  rel 0.691 rank   5  best-wrong 0.788  Why does the browser extension need a token?
+  rel 0.813 rank   1  best-wrong 0.709  Can I see my token again after creating it?
+  rel 0.614 rank  15  best-wrong 0.755  What happens when I run out of daily tokens?
+  rel 0.645 rank   4  best-wrong 0.723  When does the chat budget reset?
+  rel 0.774 rank   1  best-wrong 0.668  A new colleague sees waiting for approval, why?
+  rel 0.841 rank   1  best-wrong 0.709  I was made admin but there's no Admin button
+  rel 0.627 rank   1  best-wrong 0.592  How do I offboard a user properly?
+  rel 0.846 rank   1  best-wrong 0.663  Does stopping a reply early refund tokens?
+  answering chunk: min 0.614 median 0.710 max 0.846; top-1 5/9, top-5 8/9
+  best wrong chunk: median 0.709 max 0.856
+  unrelated messages, top score: min 0.473 median 0.513 max 0.645
+     0.645  Summarize this document
+     0.555  Write me a haiku about cats
+     0.532  thanks!
+     0.516  Translate good morning into Sinhala
+
+== holmes (631 chunks), prefixed
+  rel 0.575 rank  13  best-wrong 0.692  What job did the Red-Headed League give Jabez Wilson?
+  rel 0.654 rank 115  best-wrong 0.738  Why does Holmes say Watson sees but does not observe?
+  rel 0.566 rank  22  best-wrong 0.663  What killed Julia Stoner?
+  rel 0.688 rank   5  best-wrong 0.763  Who is Neville St. Clair really?
+  rel 0.650 rank   5  best-wrong 0.709  Who was Hosmer Angel?
+  rel 0.547 rank  19  best-wrong 0.672  What did the five orange pips stand for?
+  rel 0.656 rank   4  best-wrong 0.670  Who took the beryl coronet?
+  rel 0.625 rank  16  best-wrong 0.687  What colour dress was Violet Hunter asked to wear?
+  rel 0.646 rank   8  best-wrong 0.735  How did the engineer lose his thumb?
+  rel 0.686 rank   9  best-wrong 0.777  Who did Lord St. Simon's bride run away with?
+  rel 0.763 rank   1  best-wrong 0.687  Which woman outwitted Holmes in the Bohemia scandal?
+  rel 0.606 rank   7  best-wrong 0.706  Where was the blue carbuncle hidden?
+  answering chunk: min 0.547 median 0.648 max 0.763; top-1 1/12, top-5 4/12
+  best wrong chunk: median 0.699 max 0.777
+  unrelated messages, top score: min 0.512 median 0.589 max 0.648
+     0.648  Can you explain that more simply?
+     0.631  Write me a haiku about cats
+     0.619  thanks!
+     0.605  Explain quantum entanglement simply
+
+== holmes (631 chunks), plain
+  rel 0.509 rank  16  best-wrong 0.624  What job did the Red-Headed League give Jabez Wilson?
+  rel 0.572 rank  91  best-wrong 0.660  Why does Holmes say Watson sees but does not observe?
+  rel 0.485 rank  41  best-wrong 0.616  What killed Julia Stoner?
+  rel 0.609 rank   7  best-wrong 0.687  Who is Neville St. Clair really?
+  rel 0.635 rank   4  best-wrong 0.669  Who was Hosmer Angel?
+  rel 0.445 rank  17  best-wrong 0.604  What did the five orange pips stand for?
+  rel 0.564 rank  12  best-wrong 0.682  Who took the beryl coronet?
+  rel 0.550 rank  10  best-wrong 0.625  What colour dress was Violet Hunter asked to wear?
+  rel 0.575 rank   8  best-wrong 0.673  How did the engineer lose his thumb?
+  rel 0.626 rank  15  best-wrong 0.705  Who did Lord St. Simon's bride run away with?
+  rel 0.767 rank   1  best-wrong 0.659  Which woman outwitted Holmes in the Bohemia scandal?
+  rel 0.551 rank   6  best-wrong 0.622  Where was the blue carbuncle hidden?
+  answering chunk: min 0.445 median 0.568 max 0.767; top-1 1/12, top-5 2/12
+  best wrong chunk: median 0.660 max 0.705
+  unrelated messages, top score: min 0.409 median 0.484 max 0.591
+     0.591  Write me a haiku about cats
+     0.572  Can you explain that more simply?
+     0.551  thanks!
+     0.517  hi
+
+== holmes (631 chunks), mixed
+  rel 0.479 rank  19  best-wrong 0.619  What job did the Red-Headed League give Jabez Wilson?
+  rel 0.587 rank 107  best-wrong 0.683  Why does Holmes say Watson sees but does not observe?
+  rel 0.507 rank  36  best-wrong 0.632  What killed Julia Stoner?
+  rel 0.631 rank   6  best-wrong 0.706  Who is Neville St. Clair really?
+  rel 0.631 rank   3  best-wrong 0.661  Who was Hosmer Angel?
+  rel 0.457 rank  21  best-wrong 0.632  What did the five orange pips stand for?
+  rel 0.559 rank  12  best-wrong 0.642  Who took the beryl coronet?
+  rel 0.579 rank   7  best-wrong 0.639  What colour dress was Violet Hunter asked to wear?
+  rel 0.580 rank   8  best-wrong 0.684  How did the engineer lose his thumb?
+  rel 0.647 rank  14  best-wrong 0.730  Who did Lord St. Simon's bride run away with?
+  rel 0.760 rank   1  best-wrong 0.658  Which woman outwitted Holmes in the Bohemia scandal?
+  rel 0.561 rank   6  best-wrong 0.633  Where was the blue carbuncle hidden?
+  answering chunk: min 0.457 median 0.579 max 0.760; top-1 1/12, top-5 2/12
+  best wrong chunk: median 0.650 max 0.730
+  unrelated messages, top score: min 0.444 median 0.492 max 0.574
+     0.574  Can you explain that more simply?
+     0.572  Write me a haiku about cats
+     0.542  thanks!
+     0.510  Explain quantum entanglement simply
+
+
+# Relative signals, prefixed (min/median/max). top = best passage; z = (top - mean)/std over
+# the document; gap = top1 - top10. Absent = questions about things the document lacks.
+guide  answerable top 0.72/0.79/0.83   z 2.05/2.43/3.39   top1-top10 0.11/0.15/0.21
+guide  absent     top 0.60/0.62/0.64   z 1.51/1.71/2.28   top1-top10 0.04/0.05/0.10
+guide  unrelated  top 0.47/0.54/0.60   z 1.63/2.00/2.93   top1-top10 0.02/0.05/0.09
+holmes answerable top 0.66/0.71/0.78   z 2.59/4.68/6.12   top1-top10 0.04/0.09/0.12
+holmes absent     top 0.67/0.72/0.73   z 2.71/2.79/3.97   top1-top10 0.02/0.05/0.08
+holmes unrelated  top 0.51/0.59/0.65   z 3.03/3.58/4.90   top1-top10 0.02/0.04/0.09

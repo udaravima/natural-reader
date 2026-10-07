@@ -45,9 +45,13 @@ readonly MODEL_FILES=("kokoro-v1.0.onnx" "voices-v1.0.bin")
 
 # Minimum tool versions, kept in sync with the README "Software Requirements".
 # Node: Vite 7 (Rolldown) + @vitejs/plugin-react require ^20.19.0 || >=22.12.0.
-# Python: Docling requires >=3.10,<4.0; doc-chat routes use 3.10+ unions.
-readonly PYTHON_MIN="3.10.0"
-readonly PYTHON_MAX_EXCL="4.0.0"
+# Python: the chat server uses inspect.getasyncgenstate (3.12+;
+# server/routers/chat_turns.py), and onnxruntime-openvino (pinned in
+# requirements.txt for Kokoro) publishes wheels only for Python <3.14.
+readonly PYTHON_MIN="3.12.0"
+readonly PYTHON_MAX_EXCL="3.14.0"
+readonly PYTHON_CANDIDATES=("python3" "python3.13" "python3.12")
+PYTHON_BIN="python3"
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
@@ -72,16 +76,22 @@ vercmp() {
 version_ge() { [[ "$(vercmp "$1" "$2")" != "-1" ]]; }
 version_lt() { [[ "$(vercmp "$1" "$2")" == "-1" ]]; }
 
-# Verify python3 exists and satisfies >=PYTHON_MIN, <PYTHON_MAX_EXCL.
+# Pick a python satisfying >=PYTHON_MIN, <PYTHON_MAX_EXCL. Preference order:
+# default python3 first, then python3.13, python3.12 (onnxruntime-openvino has
+# no wheels for 3.14+, so a too-new python3 falls through to an older one).
+# Sets PYTHON_BIN to the chosen interpreter.
 check_python_version() {
-	command -v python3 >/dev/null 2>&1 || die "python3 is not installed."
-	local v
-	v="$(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')"
-	if version_ge "$v" "$PYTHON_MIN" && version_lt "$v" "$PYTHON_MAX_EXCL"; then
-		log "Python $v OK (need >=$PYTHON_MIN, <$PYTHON_MAX_EXCL)"
-	else
-		die "Python $v is unsupported — need >=$PYTHON_MIN and <$PYTHON_MAX_EXCL."
-	fi
+	local c v
+	for c in "${PYTHON_CANDIDATES[@]}"; do
+		command -v "$c" >/dev/null 2>&1 || continue
+		v="$("$c" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')" || continue
+		if version_ge "$v" "$PYTHON_MIN" && version_lt "$v" "$PYTHON_MAX_EXCL"; then
+			PYTHON_BIN="$c"
+			log "Python $v OK via $c (need >=$PYTHON_MIN, <$PYTHON_MAX_EXCL)"
+			return
+		fi
+	done
+	die "No python in [$PYTHON_MIN, $PYTHON_MAX_EXCL) found — install Python 3.12 or 3.13 (the chat server needs 3.12+; onnxruntime-openvino has no 3.14 wheels). With uv: uv python install 3.13"
 }
 
 # Verify node + npm exist and node satisfies ^20.19.0 || >=22.12.0.
@@ -379,11 +389,16 @@ cmd_init() {
 	[[ -f package.json ]] || die "package.json not found — are you in the project root?"
 
 	# --- Python backend ------------------------------------------------------
+	venv_py="$("$VENV_DIR/bin/python" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null || true)"
 	if [[ ! -x "$VENV_DIR/bin/python" ]]; then
-		log "Creating virtual environment with $(python3 -V)"
-		python3 -m venv "$VENV_DIR"
+		log "Creating virtual environment with $($PYTHON_BIN -V)"
+		"$PYTHON_BIN" -m venv "$VENV_DIR"
+	elif [[ "$venv_py" != "$($PYTHON_BIN -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])')" ]]; then
+		log "Recreating virtual environment: was $venv_py, need $($PYTHON_BIN -V)"
+		rm -rf "$VENV_DIR"
+		"$PYTHON_BIN" -m venv "$VENV_DIR"
 	else
-		log "Virtual environment already exists at $VENV_DIR/"
+		log "Virtual environment already exists at $VENV_DIR/ ($venv_py)"
 	fi
 
 	log "Installing Python dependencies from requirements.txt"

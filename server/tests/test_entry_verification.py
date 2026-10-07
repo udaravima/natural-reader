@@ -33,7 +33,7 @@ def as_user(db_conn, monkeypatch, tmp_path):
 
     async def embed_one(text):
         return (await fake_embed([text]))[0]
-    monkeypatch.setattr(docs_router, "embed_one", embed_one)
+    monkeypatch.setattr(docs_router, "embed_query", embed_one)
 
     async def _conn():
         yield db_conn
@@ -50,13 +50,7 @@ async def _member(db_conn, sub):
 
 
 async def _project(db_conn, owner, *members):
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id", (owner,))
-    pid = str((await cur.fetchone())[0])
-    for m in members:
-        await db_conn.execute(
-            "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)", (pid, m))
-    return pid
+    return await seed.make_project(db_conn, owner, "P", members=[(m, "contributor") for m in members])
 
 
 async def _can_read(db_conn, user_id, doc_id=DOC) -> bool:

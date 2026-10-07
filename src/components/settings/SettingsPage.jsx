@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { KOKORO_VOICES } from '../../constants';
 import { PlayCircle, Square, Clock, VolumeX, Volume1, Volume2, Moon, Sun, Zap } from 'lucide-react';
 import { InferenceRow } from '../chat/InferenceRow';
+import { KEEP_ALIVE_OPTIONS, NUM_CTX_OPTIONS, shownValue, withinLimit } from '../../lib/inferenceLimits';
 import { AccountPanel } from '../account/AccountPanel';
 import { resolveForModel, patchForModel } from '../../hooks/inference';
 import { groupByProvider, migrateModelId, modelLabel, supportedKnobs } from '../../lib/modelIds';
@@ -50,7 +51,11 @@ export default function SettingsPage({ theme, voiceSettings, chatSettings, conne
     const configModel = migrateModelId(pickedModel, ch.availableModels);
     const inf = resolveForModel(ch.inferenceByModel, configModel);
     const setInf = (patch) => ch.setInferenceByModel((prev) => patchForModel(prev, configModel, patch));
-    const knobs = supportedKnobs(ch.availableModels.find((m) => m.id === configModel));
+    const configEntry = ch.availableModels.find((m) => m.id === configModel);
+    const knobs = supportedKnobs(configEntry);
+    // v2.4 Task F: only the context sizes and keep-alive times the server will honour.
+    const ctxOptions = withinLimit(NUM_CTX_OPTIONS, configEntry?.limits?.numCtxMax, 'numCtx');
+    const keepOptions = withinLimit(KEEP_ALIVE_OPTIONS, configEntry?.limits?.keepAliveMaxS, 'keepAlive');
     const currentVoice = KOKORO_VOICES.find((x) => x.id === v.selectedVoice);
     const VolumeIcon = v.volume === 0 ? VolumeX : v.volume < 0.5 ? Volume1 : Volume2;
     const input = `text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgTertiary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`;
@@ -173,13 +178,13 @@ export default function SettingsPage({ theme, voiceSettings, chatSettings, conne
                         </select>
                         <div className="flex flex-col gap-2 mt-1">
                             {knobs.numCtx && <InferenceRow theme={theme} label="Context window" disabled={!configModel}
-                                value={inf.numCtx === null ? 'auto' : String(inf.numCtx)}
+                                value={shownValue(inf.numCtx === null ? 'auto' : String(inf.numCtx), ctxOptions, 'numCtx')}
                                 onChange={(val) => setInf({ numCtx: val === 'auto' ? null : Number(val) })}
-                                options={[['auto', 'Auto'], ['4096', '4096'], ['8192', '8192'], ['16384', '16384'], ['32768', '32768'], ['65536', '65536']]} />}
+                                options={ctxOptions} />}
                             {knobs.keepAlive && <InferenceRow theme={theme} label="Keep model warm" disabled={!configModel}
-                                value={inf.keepAlive === null ? 'auto' : String(inf.keepAlive)}
+                                value={shownValue(inf.keepAlive === null ? 'auto' : String(inf.keepAlive), keepOptions, 'keepAlive')}
                                 onChange={(val) => setInf({ keepAlive: val === 'auto' ? null : (val === '-1' ? -1 : val) })}
-                                options={[['auto', 'Auto (5m)'], ['5m', '5 minutes'], ['30m', '30 minutes'], ['1h', '1 hour'], ['-1', 'Always']]} />}
+                                options={keepOptions} />}
                             {knobs.think && <InferenceRow theme={theme} label="Thinking" disabled={!configModel}
                                 value={inf.think}
                                 onChange={(val) => setInf({ think: val })}

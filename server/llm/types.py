@@ -124,7 +124,10 @@ class ProviderError(Exception):
     """The provider answered with an error. `safe_message` is the provider's
     own text, trimmed: never request headers, never keys."""
 
-    def __init__(self, status: int, safe_message: str) -> None:
+    def __init__(self, status: int, safe_message: str, *, explained: bool = False) -> None:
         super().__init__(f"HTTP {status}: {safe_message}")
         self.status = status
         self.safe_message = safe_message
+        # True when `safe_message` is our own plain sentence for the status
+        # (rate limit, rejected key, no credit), shown to the user as it is.
+        self.explained = explained

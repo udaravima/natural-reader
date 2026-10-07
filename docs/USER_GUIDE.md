@@ -138,6 +138,86 @@ Notes:
   from the provider list above it). There's still no button here to add or
   change a provider — that's a `.env` + restart task for whoever runs the
   server.
+- The **Assistant** section sets the assistant's profile: its name,
+  personality, tone and house rules (for example "You are Ada, the
+  reading-room assistant. Answer warmly and briefly, in British English.").
+  - It goes first in every chat, from the next message on; the app's own
+    rules about documents and tools follow it and win where they conflict.
+    So a profile can't, for example, stop the assistant citing pages.
+  - The badge says where it comes from: **Set here**, **From the deployment
+    file** (the server's `CHAT_ASSISTANT_PROFILE_FILE`), or **None**.
+    **Reset to deployment default** removes what you set here.
+  - **What the model receives** shows the whole instruction text a chat
+    gets, your profile included.
+  - Keep it short: every character is read before every reply (the counter
+    shows about how many tokens), and up to 8,000 characters are allowed.
+  - Don't name the app's tools (`web_search` and so on): describe the
+    behaviour you want. The section warns you if you do.
+
+**Projects.** Every project, with its owners and counts. **Ownerless only**
+shows projects whose last Owner was deleted; **Add me as Owner** takes one
+over (recorded as "added by admin" and logged). **Open** shows the project
+page; as an admin you can manage members, rename and delete any project, but
+you see its documents only if you're a member. Each user row has a
+**Project limit** (empty = the deployment default, 0 = unlimited). If the list
+can't be loaded, the section shows the error and a **Retry** button rather
+than an empty list.
+
+## Library: documents on the server
+
+**Library** (in the view switcher) lists every document you can read on the
+server: the ones you uploaded, the ones someone shared with you ("shared
+by …"), and the ones in a project you own or belong to ("via project").
+**Open** on a row opens the document in the reader, the same as picking the
+file from your computer. It is also saved to your own "Your Library" list on
+the welcome screen, and Index and chat work on it straight away. If the
+server has no copy of the file (it was indexed before server-side uploads,
+and nobody has uploaded it since), Open tells you to upload the file again.
+
+## Projects and people
+
+A project is a shared shelf of documents for a team. Open **Library →
+Projects** to see the projects you belong to; **New project** creates one,
+and you become its Owner.
+
+**Roles.** Each member has one role:
+
+| Role | Can |
+|---|---|
+| Reader | see the project, its members, activity and documents |
+| Contributor | also file documents they uploaded into the project |
+| Maintainer | also remove any document, rename the project, and add, remove or change members up to Maintainer |
+| Owner | everything, including Owners and deleting the project |
+
+A project always keeps at least one Owner, so the last Owner can't leave until
+someone else is made Owner. You can't change your own role; another Owner (or a
+Maintainer, for roles up to Maintainer) can change it for you.
+
+**Adding people.** On a project page, open **Members → + Add people**, type a
+name or their full email address, pick the person, choose a role and press
+**Add**. Whether typing a name finds people depends on your organisation's
+setting; a full email address always works. "Awaiting approval" means the
+account exists but an admin hasn't activated it yet. A person whose account an
+admin has disabled shows "disabled": their role can't be changed, but a
+Maintainer or Owner can still remove them.
+
+**Documents.** **Documents → File a document** adds one of your uploads. A
+Maintainer removes a document with × (a document nobody else has in their
+library is deleted with it, so you're asked first).
+
+**Activity** lists who changed what, newest first. If the history can't be loaded, the tab says so instead of showing an empty list.
+
+**Sharing one document with one person.** In the Library, press **Share** on a
+document you uploaded, find the person, and pick them. They can read it but
+can't share it on. The same panel lists who you've shared with; × stops
+sharing. If the list of people can't be loaded, the panel shows the error and a
+**Retry** button.
+
+**Leaving.** **Leave** in the project header. Documents you had in your own
+library stay there.
+
+What you can't do yet: chat with a whole project at once (planned), or upload
+a revised file as a new version of a document (planned).
 
 ## Chat: models and streaming
 
@@ -154,6 +234,29 @@ still being written somewhere else (another tab or device), you'll see
 chat at a time — sending again while one is still streaming is blocked until
 it finishes or you stop it.
 
+**Use this document:** with a document open, a chip above the chat box
+shows its name and **Use this document**. Click it to switch the document
+off for this chat: the assistant then doesn't search or read it (the chip
+says **Not used**, with the name struck through), so a general question
+isn't answered from the document, and messages are lighter. The choice is
+kept per chat and per signed-in user; a new chat starts with it on. Pins
+you added still go with each message, and citations in earlier replies
+still open the document.
+
+**Sources:** under a reply that used your document, chips such as
+**Sources: p. 3 · p. 8** open the pages the answer came from, even when the
+reply doesn't cite them itself. When nothing in the reply matches a page
+(for example "the document doesn't cover this"), the chips read
+**Searched (not cited)** and list the pages that were looked at.
+
+**Citations:** when a reply used your document, the page numbers it cites
+("page 4", "(page 4)") are links. Clicking one opens that document in the
+reader at that page, opening it from the server first if it isn't the one
+you have open. If you can no longer read the document, a notice says so
+and you stay in chat. Like any switch to the reader, clicking a citation
+while a reply is still streaming stops that reply (it's kept, marked
+**Stopped**).
+
 **Picking a model:** the model picker in the chat sidebar is grouped by
 **provider**, each group labelled with the provider's name as your deployment
 configured it (for example `ollama` or `local`, plus any other server your
@@ -161,6 +264,14 @@ deployment has) and shows what each model can do — whether it supports thinkin
 tools, images, and so on. On the **Settings** page (Chat & inference section),
 the per-model controls (context window, keep-alive, thinking level, max reply
 tokens) only show the knobs the selected model's provider actually supports.
+
+**When a reply fails at the provider:** the message says why. "This model is
+busy or rate-limited" (common with free models) means try again shortly or
+pick another model. "The provider refused this request" comes with the
+provider's reason (some providers refuse input their moderation flags).
+"The provider rejected this server's credentials" and "The provider account
+is out of credit" are for whoever runs your deployment. A request the
+provider refuses outright doesn't count against your daily token budget.
 
 **Adding or changing model providers is not something you can do from the
 app.** There's no provider-management screen yet — an administrator adds,

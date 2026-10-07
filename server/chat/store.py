@@ -102,26 +102,31 @@ WITH stale AS (
     UPDATE chat_sessions s SET active_turn_id = NULL, active_turn_heartbeat_at = NULL
     FROM stale WHERE s.id = stale.id
     RETURNING stale.active_turn_id AS turn_id
+), aborted AS (
+    UPDATE chat_messages m SET status = 'aborted', finish_reason = 'aborted'
+    FROM cleared WHERE m.id = cleared.turn_id AND m.status = 'streaming'
+    RETURNING m.id
 )
-UPDATE chat_messages m SET status = 'aborted', finish_reason = 'aborted'
-FROM cleared WHERE m.id = cleared.turn_id AND m.status = 'streaming'
-RETURNING m.id
+SELECT (SELECT count(*) FROM cleared), (SELECT count(*) FROM aborted)
 """
 
 
-async def _recover(conn, session_id: str | None) -> int:
+async def _recover(conn, session_id: str | None) -> tuple[int, int]:
     cur = await conn.execute(_RECOVER_SQL, {"stale_s": STALE_AFTER_S, "sid": session_id})
-    return len(await cur.fetchall())
+    claims, aborted = await cur.fetchone()
+    return claims, aborted
 
 
 async def recover_stale(session_id: str | None = None) -> int:
-    """Abort turns whose worker stopped heartbeating. Safe with WORKERS > 1:
-    a live turn's heartbeat is never older than HEARTBEAT_S (spec §5.5)."""
+    """Clear claims whose worker stopped heartbeating, and abort their reply
+    if it was still streaming. Safe with WORKERS > 1: a live turn's heartbeat
+    is never older than HEARTBEAT_S (spec §5.5). Returns the claims cleared."""
     async with get_pool().connection() as conn:
-        n = await _recover(conn, session_id)
-    if n:
-        logger.warning("Recovered %d stale chat turn(s)", n)
-    return n
+        claims, aborted = await _recover(conn, session_id)
+    if claims:
+        logger.warning("Cleared %d stale chat claim(s); %d streaming repl(ies) marked aborted",
+                       claims, aborted)
+    return claims
 
 
 async def session_info(session_id: str) -> SessionInfo | None:

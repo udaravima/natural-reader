@@ -130,7 +130,8 @@ class _FakeKC:
         self.smtp, self.existing = smtp, (existing or set())
         self.created, self.roles, self.temp, self.emailed, self.deleted = [], {}, {}, [], []
     async def find_user_by_email(self, email): return "kc-x" if email in self.existing else None
-    async def create_user(self, *, email, display_name=None, email_verified=False):
+    async def create_user(self, *, email, display_name=None, email_verified=False, username=None,
+                          first_name=None, last_name=None):
         self.created.append(email); return f"sub-{email}"
     async def assign_realm_roles(self, sub, names): self.roles[sub] = list(names)
     async def set_temp_password(self, sub, pw, *, temporary=True): self.temp[sub] = pw

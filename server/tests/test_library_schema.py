@@ -11,12 +11,7 @@ async def test_project_and_membership_roundtrip(db_conn):
         "INSERT INTO users (oidc_iss, oidc_sub, email, role, status) "
         "VALUES ('i','o1','o@x.io','member','active') RETURNING id")
     owner = str((await cur.fetchone())[0])
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'Proj') RETURNING id",
-        (owner,))
-    pid = str((await cur.fetchone())[0])
-    await db_conn.execute(
-        "INSERT INTO project_members (project_id, user_id) VALUES (%s,%s)", (pid, owner))
+    pid = await seed.make_project(db_conn, owner, "Proj")  # the owner is a member
     cur = await db_conn.execute(
         "SELECT count(*) FROM project_members WHERE project_id=%s", (pid,))
     assert (await cur.fetchone())[0] == 1
@@ -59,9 +54,7 @@ async def test_project_documents_links_and_cascades(db_conn):
         "INSERT INTO users (oidc_iss, oidc_sub, email, role, status) "
         "VALUES ('i','o3','o3@x.io','member','active') RETURNING id")
     owner = str((await cur.fetchone())[0])
-    cur = await db_conn.execute(
-        "INSERT INTO projects (owner_user_id, name) VALUES (%s,'P') RETURNING id", (owner,))
-    pid = str((await cur.fetchone())[0])
+    pid = await seed.make_project(db_conn, owner, "P")
     await seed.seed_doc(db_conn, "d2", owner, file_name="f.pdf", project_ids=[pid])
     cur = await db_conn.execute("SELECT added_by FROM project_documents WHERE doc_id='d2'")
     assert str((await cur.fetchone())[0]) == owner  # placements record who filed them

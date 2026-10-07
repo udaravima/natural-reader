@@ -21,6 +21,9 @@ import { resolveForModel, patchForModel, migrateLegacyThinking } from './hooks/i
 // Utils
 import { apiFetch } from './utils/apiFetch';
 import { getOrComputeDocHash } from './utils/docHash';
+import { useWorkspaceRestore } from './hooks/useWorkspaceRestore';
+import { useUserDraft } from './hooks/useUserDraft';
+import { ownedBy, visibleTo } from './lib/visibleTo';
 import { getBook } from './db';
 import { saveWorkspaceState, clearWorkspaceState, getWorkspaceState } from './db';
 import {
@@ -40,6 +43,8 @@ import ChatView from './components/ChatView';
 import ChatSidebar from './components/ChatSidebar';
 import { AdminConsole } from './components/admin/AdminConsole';
 import LibraryPage from './components/library/LibraryPage';
+import { fetchDocFile } from './lib/serverDocFile';
+import { openServerDoc, openCitation } from './lib/openDoc';
 import SettingsPage from './components/settings/SettingsPage';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
@@ -74,6 +79,7 @@ export default function App() {
   const [apiHost, setApiHost] = usePersistedState('apiHost', '');
   const [apiPort, setApiPort] = usePersistedState('apiPort', '8000');
   const auth = useAuth(apiHost, apiPort);
+  const signedInUserId = auth.state === 'active' ? auth.user?.id : null;
   const [requestTimeout, setRequestTimeout] = usePersistedState('requestTimeout', 15);
   const [unlimitedBatchTimeout, setUnlimitedBatchTimeout] = usePersistedState('unlimitedBatchTimeout', true);
   const [mobileBreakpoint, setMobileBreakpoint] = usePersistedState('mobileBreakpoint', 768);
@@ -88,7 +94,8 @@ export default function App() {
   // which unmounts ChatView — doesn't discard a half-typed message. The text
   // draft is persisted (survives a reload too); pending image attachments are
   // in-memory only, to avoid packing base64 blobs into localStorage.
-  const [chatDraft, setChatDraft] = usePersistedState('chatDraft', '');
+  // Per signed-in user: the next user on this browser never sees it.
+  const [chatDraft, setChatDraft] = useUserDraft(signedInUserId);
   const [chatPendingAttachments, setChatPendingAttachments] = useState([]);
   // Per-model Ollama inference settings (context window, keep-alive, thinking
   // level, max reply tokens). Keyed by model name because a 9.7B and a 3B want
@@ -142,7 +149,10 @@ export default function App() {
   //     chunkCount, embeddedCount }
   const [docIndexByDocId, setDocIndexByDocId] = useState({});
   // Computed hash for the currently open document — null until lazily hashed.
-  const [currentDocId, setCurrentDocId] = useState(null);
+  // The open document's hash, tagged with the load it belongs to (see
+  // usePdfEngine's docLoadId): a new load, even under the same file name, has
+  // no id until its own bytes are hashed — never the previous document's.
+  const [docHash, setDocHash] = useState({ loadId: -1, docId: null });
 
   // Per-document docling conversion status. Shape mirrors index:
   //   { state: 'idle' | 'uploading' | 'converting' | 'converted' | 'failed',
@@ -163,11 +173,19 @@ export default function App() {
   const [projectsVersion, setProjectsVersion] = useState(0);
 
   const pdfContainerRef = useRef(null);
-  const [workspace, setWorkspace] = useState(null);
+  // The open workspace folder and the reconnect banner belong to the user they
+  // were opened for (src/lib/visibleTo.js): another user sees neither, from
+  // the moment they sign in, even if a restore for the previous user lands late.
+  const [ownedWorkspace, setOwnedWorkspace] = useState(null); // ownedBy(userId, ws)
+  const workspace = visibleTo(ownedWorkspace, signedInUserId);
   const workspaceRef = useRef(null);
   const [workspaceEntryPath, setWorkspaceEntryPath] = useState(null);
   const folderInputRef = useRef(null);
-  const [reconnect, setReconnect] = useState(null); // { rootName } | null
+  const [ownedReconnect, setOwnedReconnect] = useState(null); // ownedBy(userId, { rootName })
+  const reconnect = visibleTo(ownedReconnect, signedInUserId);
+  // Who is signed in now, for async work that started for someone else.
+  const signedInUserRef = useRef(signedInUserId);
+  useEffect(() => { signedInUserRef.current = signedInUserId; }, [signedInUserId]);
 
   // Mirror workspace into a ref so async restore/reconnect effects can check
   // whether a manual open happened during the await without reading stale state.
@@ -181,11 +199,11 @@ export default function App() {
   const pdfEngine = usePdfEngine({ scale, setStatus, setToastMessage });
 
   const {
-    pdfDoc, pdfFileName, fileType, currentPage, setCurrentPage, numPages,
+    pdfDoc, pdfFileName, docLoadId, docInLibrary, fileType, currentPage, setCurrentPage, numPages,
     textItems, isLibLoaded, pdfOutline, recentBooks,
     currentSentenceIndex, setCurrentSentenceIndex,
     canvasRef, textLayerRef, fileInputRef, sentenceRefs, playbackIndexRef,
-    processFile, openFromLibrary, removeFromLibrary, handleFileUpload,
+    processFile, openFromLibrary, removeFromLibrary, refreshLibrary, handleFileUpload,
     calculateReadingProgress, calculateEstimatedTimeRemaining,
     markdownPageData,
     extractAllChunks,
@@ -193,6 +211,16 @@ export default function App() {
     loadMarkdownDocument,
     loadTextDocument,
   } = pdfEngine;
+  const currentDocId = pdfFileName && docHash.loadId === docLoadId ? docHash.docId : null;
+
+  // The local library (src/db.js) is scoped to whichever user `setLibraryOwner`
+  // currently names — set by useAuth as soon as /v1/auth/me resolves (and
+  // cleared on logout/session loss). usePdfEngine's own recentBooks state
+  // only reflects that the moment it's told to re-read, so re-fetch it
+  // whenever the signed-in identity changes (sign-in, sign-out, user switch).
+  useEffect(() => {
+    refreshLibrary();
+  }, [auth.user?.id, auth.state, refreshLibrary]);
 
   // Per-document project/tags picker: resets whenever the loaded document
   // (pdfFileName) changes, so a selection made for one doc can't silently
@@ -229,6 +257,8 @@ export default function App() {
   // in. Mirrors LibraryPage's loadProjects — same endpoint/shape, same
   // fail-soft-to-empty-list behavior so the picker just shows "No project"
   // options if this fetch fails rather than breaking the reader.
+  // Only projects the user may file into (A0 §10): a Reader is never offered
+  // a project that would refuse them.
   useEffect(() => {
     if (auth.state !== 'active') return;
     let cancelled = false;
@@ -237,7 +267,7 @@ export default function App() {
         const res = await apiFetch(apiHost, apiPort, '/v1/projects');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (!cancelled) setProjects(data);
+        if (!cancelled) setProjects(data.filter((p) => p.can?.file_docs));
       } catch {
         if (!cancelled) setProjects([]);
       }
@@ -271,6 +301,7 @@ export default function App() {
     isLocalhost, selectedVoice, playbackSpeed, requestTimeout,
     apiHost, apiPort,
     currentDocId,
+    userId: auth.user?.id ?? null,
     synthesizeText, playChatUrl, playChatSpeech, stopChatPlayback,
     showToast,
   });
@@ -290,6 +321,7 @@ export default function App() {
     stopSpeaking,
     sessions: chatSessions,
     activeSessionId: chatActiveSessionId,
+    docUse: chatDocUse,
     events: chatEvents,
     newSession: chatNewSession,
     switchToSession: chatSwitchToSession,
@@ -421,6 +453,22 @@ export default function App() {
     }
   };
 
+  // Opening a server document — Library → Open, or a "(page N)" citation in
+  // a chat reply — goes through src/lib/openDoc.js: fetch the stored bytes,
+  // open them like a picked file, then show the reader (a refusal is a toast
+  // and the view stays put).
+  const openDocDeps = {
+    fetchDocFile: (docId, name) => fetchDocFile(apiHost, apiPort, docId, name),
+    processFile,
+    showToast,
+    showReader: () => setViewMode('reader'),
+    goToPage: (n) => { setCurrentPage(n); setCurrentSentenceIndex(-1); },
+  };
+  const handleOpenLibraryDoc = (doc) => openServerDoc(openDocDeps, doc.doc_id, doc.file_name);
+  const handleOpenCitation = (docId, page, docName) => openCitation(openDocDeps, {
+    docId, page, docName, openDocId: pdfFileName ? currentDocId : null, numPages,
+  });
+
   const handleMobileSentenceClick = (index) => {
     setCurrentSentenceIndex(index - 1);
     ttsEngine.setIsPlaying(true);
@@ -454,11 +502,13 @@ export default function App() {
   // Read the file bytes back out of IndexedDB and compute (or look up) its
   // sha256 hash. Returns null if the doc isn't in the library yet.
   const ensureDocHash = useCallback(async () => {
-    if (!pdfFileName) return null;
+    // A workspace file isn't in the local library: getBook would find a
+    // same-named book and hand back that book's id (v2.2 Task C).
+    if (!pdfFileName || !docInLibrary) return null;
     const record = await getBook(pdfFileName);
     if (!record?.data) return null;
     return getOrComputeDocHash(pdfFileName, record.data);
-  }, [pdfFileName]);
+  }, [pdfFileName, docInLibrary]);
 
   const handleAskAboutPage = useCallback(async (page) => {
     if (!pdfFileName) return;
@@ -556,8 +606,7 @@ export default function App() {
   const handleGoHome = useCallback(() => {
     stopPlayback();
     stopChatPlayback();
-    closeDocument();
-    setCurrentDocId(null);
+    closeDocument(); // pdfFileName '' → currentDocId null
   }, [stopPlayback, stopChatPlayback, closeDocument]);
 
   // ---------- WORKSPACE (folder open) ----------
@@ -589,10 +638,11 @@ export default function App() {
       showToast('No Markdown files found in that folder.', 4000);
       return;
     }
-    setWorkspace(ws);
+    setOwnedWorkspace(ownedBy(signedInUserId, ws));
+    setOwnedReconnect(null); // a folder is open: no older one to reconnect
     setWorkspaceEntryPath(entry);
     setViewMode('reader');
-  }, [showToast, setViewMode]);
+  }, [showToast, setViewMode, signedInUserId]);
 
   const openFolder = useCallback(async () => {
     if (typeof window !== 'undefined' && window.showDirectoryPicker) {
@@ -615,31 +665,33 @@ export default function App() {
 
   // Restore a saved workspace on load. If the FSA handle still has permission,
   // silently re-open it; otherwise surface a one-click reconnect affordance.
-  useEffect(() => {
-    if (!isLibLoaded) return;
-    (async () => {
-      try {
-        const saved = await getWorkspaceState();
-        if (!saved) return;
-        if (saved.handle && saved.handle.queryPermission) {
-          const perm = await saved.handle.queryPermission({ mode: 'read' });
-          if (perm === 'granted') {
-            const ws = await createFsaWorkspace(saved.handle);
-            if (workspaceRef.current) return; // user opened a folder during the await
-            setWorkspace(ws);
-            setWorkspaceEntryPath(saved.lastPath || pickEntryFile(ws.listFiles()));
-          } else {
-            setReconnect({ rootName: saved.rootName }); // needs a user gesture
-          }
-        } else {
-          setReconnect({ rootName: saved.rootName }); // snapshot: must re-pick
-        }
-      } catch (e) {
-        // Don't crash mount — workspace restore is best-effort.
-        console.warn('Workspace restore failed:', e);
+  // The saved workspace belongs to the signed-in user (src/db.js):
+  // useWorkspaceRestore looks it up once /v1/auth/me has named them, and
+  // again for a new user. Whatever it opens is tagged with `userId`, so a
+  // late result for a previous user stays invisible to the next one.
+  const restoreWorkspace = useCallback(async (saved, userId) => {
+    if (!saved) return;
+    // After each await: if another user signed in meanwhile, their state is
+    // theirs — this restore neither shows nor overwrites it.
+    const stale = () => signedInUserRef.current !== userId;
+    if (saved.handle && saved.handle.queryPermission) {
+      const perm = await saved.handle.queryPermission({ mode: 'read' });
+      if (stale()) return;
+      if (perm === 'granted') {
+        const ws = await createFsaWorkspace(saved.handle);
+        if (stale() || workspaceRef.current) return; // or the user opened a folder during the await
+        setOwnedWorkspace(ownedBy(userId, ws));
+        setWorkspaceEntryPath(saved.lastPath || pickEntryFile(ws.listFiles()));
+      } else {
+        setOwnedReconnect(ownedBy(userId, { rootName: saved.rootName })); // needs a user gesture
       }
-    })();
-  }, [isLibLoaded]); // stable state setters don't need to be listed
+    } else {
+      setOwnedReconnect(ownedBy(userId, { rootName: saved.rootName })); // snapshot: must re-pick
+    }
+  }, []);
+  useWorkspaceRestore({
+    ready: isLibLoaded, userId: signedInUserId, getSaved: getWorkspaceState, onSaved: restoreWorkspace,
+  });
 
   const reconnectFolder = useCallback(async () => {
     try {
@@ -649,9 +701,9 @@ export default function App() {
         if (perm === 'granted') {
           const ws = await createFsaWorkspace(saved.handle);
           if (workspaceRef.current) return; // user opened a folder during the await
-          setWorkspace(ws);
+          setOwnedWorkspace(ownedBy(signedInUserId, ws));
           setWorkspaceEntryPath(saved.lastPath || pickEntryFile(ws.listFiles()));
-          setReconnect(null);
+          setOwnedReconnect(null);
           return;
         }
       }
@@ -660,21 +712,19 @@ export default function App() {
       console.warn('Reconnect failed:', e);
       openFolder();
     }
-  }, [openFolder]);
+  }, [openFolder, signedInUserId]);
 
   // ---------- INDEXING ----------
   // When the open document changes, lazily hash it and fetch its backend
   // status so the toolbar button shows the right label on load.
   useEffect(() => {
     let cancelled = false;
-    if (!pdfFileName) {
-      setCurrentDocId(null);
-      return undefined;
-    }
+    if (!pdfFileName) return undefined;
+    const loadId = docLoadId;
     (async () => {
       const docId = await ensureDocHash();
       if (cancelled || !docId) return;
-      setCurrentDocId(docId);
+      setDocHash({ loadId, docId });
       if (docIndexByDocId[docId] && docConvertByDocId[docId]) return; // already cached
       try {
         const res = await apiFetch(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}`);
@@ -712,10 +762,15 @@ export default function App() {
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdfFileName, ensureDocHash]);
+  }, [pdfFileName, docLoadId, ensureDocHash]);
 
   const handleIndexDocument = useCallback(async () => {
     if (!pdfFileName) return;
+    if (!docInLibrary) {
+      // A file opened from a folder was never saved locally (v2.2 Task C).
+      showToast('Files opened from a folder can\'t be indexed. Open the file itself with Choose File to index it.', 5000);
+      return;
+    }
     const docId = await ensureDocHash();
     if (!docId) { showToast('Could not read document bytes — re-open the file and try again.', 4000); return; }
     const setIndex = (id, patch) =>
@@ -767,7 +822,7 @@ export default function App() {
       return;
     }
     await pollIndexUntilSettled({ apiDocId: serverId, stateKey: docId, apiHost, apiPort, setDocIndexByDocId, showToast });
-  }, [pdfFileName, ensureDocHash, docIndexByDocId, showToast, apiHost, apiPort, docProjectId, docTagsText]);
+  }, [pdfFileName, docInLibrary, ensureDocHash, docIndexByDocId, showToast, apiHost, apiPort, docProjectId, docTagsText]);
 
   // ---------- DOCLING CONVERSION ----------
   // Mirror of handleIndexDocument: uploads (registers) the PDF bytes →
@@ -1037,7 +1092,7 @@ export default function App() {
           onCancelBookDownload={cancelBookDownload}
           onEnterDistractionFree={() => setDistractionFree(true)}
           workspaceName={workspace?.rootName}
-          onCloseWorkspace={() => { setWorkspace(null); setWorkspaceEntryPath(null); clearWorkspaceState(); }}
+          onCloseWorkspace={() => { setOwnedWorkspace(null); setWorkspaceEntryPath(null); clearWorkspaceState(); }}
           user={auth.user}
           onLogout={auth.logout}
         />
@@ -1126,6 +1181,9 @@ export default function App() {
             setDraft={setChatDraft}
             pendingAttachments={chatPendingAttachments}
             setPendingAttachments={setChatPendingAttachments}
+            onOpenCitation={handleOpenCitation}
+            openDocName={currentDocId ? pdfFileName : null}
+            docUse={chatDocUse}
           />
         ) : inAdmin ? (
           // Mount gate: the console renders nothing when the current user
@@ -1147,6 +1205,8 @@ export default function App() {
             apiHost={apiHost}
             apiPort={apiPort}
             showToast={showToast}
+            onOpen={handleOpenLibraryDoc}
+            currentUserId={auth.user?.id}
             onProjectsChanged={() => setProjectsVersion((v) => v + 1)}
           />
         ) : inSettings ? (

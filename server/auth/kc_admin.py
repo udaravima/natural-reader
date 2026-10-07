@@ -74,11 +74,16 @@ class KeycloakAdmin:
         return rows[0]["id"] if rows else None
 
     async def create_user(self, *, email: str, display_name: str | None = None,
-                          email_verified: bool = False) -> str:
-        payload = {"email": email, "username": email, "enabled": True,
+                          email_verified: bool = False, username: str | None = None,
+                          first_name: str | None = None, last_name: str | None = None) -> str:
+        # Keycloak requires a username; without one it gets the email (A0 §4),
+        # but the app row keeps username NULL until the first login fills it.
+        payload = {"email": email, "username": username or email, "enabled": True,
                    "emailVerified": email_verified}
-        if display_name:
-            payload["firstName"] = display_name
+        if first_name or display_name:
+            payload["firstName"] = first_name or display_name
+        if last_name:
+            payload["lastName"] = last_name
         r = await self._req("POST", "/users", json=payload)
         if r.status_code == 409:
             raise KCAdminError("user already exists in Keycloak")

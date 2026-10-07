@@ -68,9 +68,15 @@ def _is_loopback(bind_host: str) -> bool:
     if h in {"localhost", "localhost."}:
         return True
     try:
-        return ipaddress.ip_address(h).is_loopback
+        ip = ipaddress.ip_address(h)
     except ValueError:
         return False
+    # An IPv4-mapped address (::ffff:127.0.0.1) never qualifies. Explicit:
+    # Python 3.13 changed ipaddress to call it loopback, and which binds open
+    # the auth bypass must not depend on the interpreter's version.
+    if getattr(ip, "ipv4_mapped", None) is not None:
+        return False
+    return ip.is_loopback
 
 
 def dev_bypass_allowed(cfg: AuthConfig, bind_host: str) -> bool:
