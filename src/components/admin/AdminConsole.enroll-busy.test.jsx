@@ -28,6 +28,7 @@ describe('AdminConsole enroll — in-flight feedback', () => {
       if (path === '/v1/admin/users') return json(200, [existing]);
       if (path.startsWith('/v1/admin/inference/usage')) return json(200, []);
       if (path === '/v1/admin/inference/config') return json(200, {});
+      if (path.startsWith('/v1/admin/projects')) return json(200, []);
       return json(404, {});
     });
     render(

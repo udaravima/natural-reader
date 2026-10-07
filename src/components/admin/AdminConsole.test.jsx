@@ -13,6 +13,7 @@ const user = (over = {}) => ({
   id: 'u1', email: 'a@x.io', display_name: null, role: 'member', status: 'active',
   oidc_iss: 'https://kc', oidc_sub: 'sub-1', capabilities: [],
   inference_daily_token_budget: null, created_at: '2026-09-17T00:00:00Z',
+  project_limit: null, username: null, first_name: null, last_name: null,
   ...over,
 });
 
@@ -40,6 +41,7 @@ function mount({ users, usage = [], config = {}, showToast = vi.fn(), currentUse
     if (path === '/v1/admin/users') return json(200, users);
     if (path.startsWith('/v1/admin/inference/usage')) return json(200, usage);
     if (path === '/v1/admin/inference/config') return json(200, config);
+    if (path.startsWith('/v1/admin/projects')) return json(200, []);
     return json(404, {});
   });
   render(
@@ -55,6 +57,29 @@ const calls = (method) =>
 const lastBody = (method) => JSON.parse(calls(method).at(-1)[3].body);
 
 describe('AdminConsole — users', () => {
+  it('sets a per-user project limit, empty meaning the default', async () => {
+    mount({ users: [user()] });
+    fireEvent.change(await screen.findByLabelText('Project limit for a@x.io'), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Set project limit for a@x.io' }));
+    await waitFor(() => expect(calls('PATCH').length).toBe(1));
+    expect(lastBody('PATCH')).toEqual({ project_limit: 5 });
+    fireEvent.change(screen.getByLabelText('Project limit for a@x.io'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Set project limit for a@x.io' }));
+    await waitFor(() => expect(calls('PATCH').length).toBe(2));
+    expect(lastBody('PATCH')).toEqual({ project_limit: null });
+  });
+
+  it('enrolls with username, first and last name', async () => {
+    mount({ users: [user()] });
+    fireEvent.change(await screen.findByLabelText('Enroll email'), { target: { value: 'n@example.com' } });
+    fireEvent.change(screen.getByLabelText('Enroll username'), { target: { value: 'newbie' } });
+    fireEvent.change(screen.getByLabelText('Enroll first name'), { target: { value: 'New' } });
+    fireEvent.change(screen.getByLabelText('Enroll last name'), { target: { value: 'Person' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Enroll' }));
+    await waitFor(() => expect(calls('POST').length).toBe(1));
+    expect(lastBody('POST')).toMatchObject({ email: 'n@example.com', username: 'newbie', first_name: 'New', last_name: 'Person' });
+  });
+
   beforeEach(() => vi.clearAllMocks());
 
   it('renders rows and the awaiting-first-login badge for unlinked rows', async () => {
@@ -171,7 +196,7 @@ describe('AdminConsole — users', () => {
     await waitFor(() => expect(calls('DELETE').length).toBe(1));
     expect(calls('DELETE')[0][2]).toBe('/v1/admin/users/u2');
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(
-      expect.stringContaining('documents and chat history'), expect.anything()
+      expect.stringContaining('library and chat history'), expect.anything()
     ));
   });
 
