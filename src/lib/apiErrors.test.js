@@ -1,7 +1,20 @@
 import { describe, it, expect } from 'vitest';
-import { noticeFor, describeRefusal } from './apiErrors';
+import { noticeFor, describeRefusal, PROJECT_NOT_FOUND } from './apiErrors';
 
 describe('noticeFor', () => {
+    it('maps the A0 project refusals', () => {
+        expect(noticeFor(403, { error: 'insufficient_role', required: 'maintainer' })).toBe('Only Maintainers or Owners can do that.');
+        expect(noticeFor(403, { error: 'insufficient_role', required: 'owner' })).toBe('Only Owners can do that.');
+        expect(noticeFor(403, { error: 'insufficient_role', required: 'contributor' })).toBe('Only Contributors, Maintainers or Owners can do that.');
+        expect(noticeFor(403, { error: 'project_creation_restricted' })).toBe('Only admins can create projects here.');
+        expect(noticeFor(409, { error: 'last_owner' })).toBe('A project must keep at least one Owner.');
+        expect(noticeFor(429, { error: 'project_limit', limit: 20 })).toBe("You've reached your project limit (20). Ask an admin to raise it.");
+    });
+    it('lets a 404 carry its own message when asked, else the context notice', () => {
+        expect(noticeFor(404, { error: 'not_found', message: 'User not found' }, { serverNotFound: true, notFound: PROJECT_NOT_FOUND })).toBe('User not found');
+        expect(noticeFor(404, 'Not Found', { serverNotFound: true, notFound: PROJECT_NOT_FOUND })).toBe(PROJECT_NOT_FOUND);
+        expect(noticeFor(404, { error: 'not_found', message: 'Document not found' })).toBe("This document doesn't exist or you don't have access.");
+    });
     it('explains both content_shared reasons', () => {
         expect(noticeFor(409, { error: 'content_shared', reason: 'other_holders' })).toMatch(/Other people also use/);
         expect(noticeFor(409, { error: 'content_shared', reason: 'in_project' })).toMatch(/Remove it from the project first/);
