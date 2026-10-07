@@ -32,6 +32,18 @@ from pathlib import Path
 ROLL_OVER_TIMES = ("S", "M", "H", "D", "MIDNIGHT", *(f"W{d}" for d in range(7)))
 
 
+class DropQueryString(logging.Filter):
+    """Strip the query string from uvicorn access-log lines: search and lookup
+    text (``?q=``) is personal data and must never reach the logs. Method, path
+    and status stay. Records of any other shape pass through untouched."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str):
+            record.args = (*args[:2], args[2].partition("?")[0], *args[3:])
+        return True
+
+
 def _rotating_file(path: Path, backups: int, roll_over_time: str) -> dict:
     return {
         "class": "logging.handlers.TimedRotatingFileHandler",
@@ -48,6 +60,7 @@ def _dict_config(logfile: Path, level: str, backups: int, audit_file: Path, roll
         "version": 1,
         # Leave third-party loggers (httpx, etc.) in place instead of nuking them.
         "disable_existing_loggers": False,
+        "filters": {"drop_query": {"()": DropQueryString}},
         "formatters": {
             "standard": {
                 "format": "%(asctime)s %(levelname)-8s %(name)s: %(message)s",
@@ -72,7 +85,8 @@ def _dict_config(logfile: Path, level: str, backups: int, audit_file: Path, roll
             # propagation so lines aren't emitted twice.
             "uvicorn": {"level": level, "handlers": ["console", "file"], "propagate": False},
             "uvicorn.error": {"level": level, "handlers": ["console", "file"], "propagate": False},
-            "uvicorn.access": {"level": level, "handlers": ["console", "file"], "propagate": False},
+            "uvicorn.access": {"level": level, "handlers": ["console", "file"], "propagate": False,
+                               "filters": ["drop_query"]},
         },
     }
 

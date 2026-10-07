@@ -144,6 +144,7 @@ async def test_lookup_route_needs_reader_and_logs_no_query(db_conn, caplog, monk
                 r = await c.get("/v1/users/lookup", params={"q": "secret"})
         assert r.status_code == status
     assert [p["name"] for p in r.json()] == ["Secret"]
-    # httpx logs the request URL itself; the rule is about this app's loggers.
+    # httpx logs the request URL itself; uvicorn's access log is covered by the
+    # logging_config.DropQueryString filter. This checks this app's own loggers.
     assert not any("secret" in rec.getMessage().lower()
                    for rec in caplog.records if rec.name.startswith("server"))

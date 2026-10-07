@@ -102,3 +102,28 @@ def test_an_unknown_rotation_time_falls_back_to_midnight_and_says_so(tmp_path, m
     timed = [h for h in logging.getLogger().handlers if isinstance(h, TimedRotatingFileHandler)]
     assert timed[0].when == "MIDNIGHT"
     assert "LOG_FILE_ROLL_OVER_TIME" in capsys.readouterr().err
+
+
+def _access_record(args):
+    return logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1,
+                             '%s - "%s %s HTTP/%s" %d', args, None)
+
+
+def test_access_log_drops_query_string(tmp_path, monkeypatch, isolate_logging):
+    monkeypatch.setenv("LOG_DIR", str(tmp_path))
+    logging_config.configure_logging()
+    flt = logging.getLogger("uvicorn.access").filters[0]
+    rec = _access_record(("127.0.0.1:5000", "GET",
+                          "/v1/users/lookup?q=secret.person%40example.com", "1.1", 200))
+    assert flt.filter(rec) is True
+    msg = rec.getMessage()
+    assert "/v1/users/lookup" in msg and "GET" in msg and "200" in msg
+    assert "secret" not in msg and "?" not in msg
+
+
+def test_access_log_filter_leaves_other_shapes_alone():
+    flt = logging_config.DropQueryString()
+    for args in (None, ("only", "two"), ("a", "b", 3, "d", 5, 6)):
+        rec = logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, "plain", args, None)
+        assert flt.filter(rec) is True
+        assert rec.args == args
