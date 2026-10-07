@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Search, FolderOpen, FolderPlus, Share2, X, Check, Trash2, Loader2, BookOpen } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
 import { describeRefusal } from '../../lib/apiErrors';
 import ProjectsTab from './ProjectsTab';
 import ProjectPage from '../projects/ProjectPage';
+import ShareDialog from './ShareDialog';
+import { projectsApi } from '../../lib/projectsApi';
 
 // Typing pauses this long before a search-as-you-type request fires. Keeps
 // GET /v1/docs?q=... from firing on every keystroke while staying fast
@@ -218,6 +220,8 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
   const [projectBusy, setProjectBusy] = useState(false);
   const [view, setView] = useState('documents');
   const [openProjectId, setOpenProjectId] = useState(null);
+  const [shareDocId, setShareDocId] = useState(null);
+  const api = useMemo(() => projectsApi(apiHost, apiPort), [apiHost, apiPort]);
   // Monotonic id so out-of-order responses can't clobber the list: fast typing
   // across debounce windows can leave two GET /v1/docs in flight, and if the
   // earlier one resolves last its stale results would overwrite the newer query.
@@ -450,6 +454,15 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
                       )}
                     </div>
                     <div className="flex items-center gap-3 shrink-0">
+                      {doc.added_via === 'upload' && (
+                        <button
+                          onClick={() => setShareDocId(shareDocId === doc.doc_id ? null : doc.doc_id)}
+                          aria-label={`Share ${doc.file_name}`}
+                          className={`flex items-center gap-1 text-[10px] hover:text-blue-500 ${theme.textSecondary}`}
+                        >
+                          <Share2 size={10} /> Share
+                        </button>
+                      )}
                       {onOpen && (
                         <button
                           onClick={() => openDoc(doc)}
@@ -510,6 +523,10 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
                       busy={linkingId === doc.doc_id}
                     />
                   </div>
+
+                  {shareDocId === doc.doc_id && (
+                    <ShareDialog theme={theme} api={api} doc={doc} showToast={showToast} onClose={() => setShareDocId(null)} />
+                  )}
 
                   {doc.in_library ? (
                     <TagEditor doc={doc} theme={theme} onSave={(tags) => patchDoc(doc, { tags })} />

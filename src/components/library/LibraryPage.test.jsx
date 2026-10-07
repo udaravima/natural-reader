@@ -45,6 +45,7 @@ const projects = [
 
 function mount({ showToast = vi.fn() } = {}) {
   apiFetch.mockImplementation(async (host, port, path) => {
+    if (path === '/v1/docs/d1/shares') return json(200, []);
     if (path.startsWith('/v1/docs')) return json(200, docs);
     if (path === '/v1/projects') return json(200, projects);
     if (path.startsWith('/v1/projects/')) return json(204, {});
@@ -59,6 +60,15 @@ const docsCalls = () => apiFetch.mock.calls.filter(([, , path]) => path.startsWi
 
 describe('LibraryPage', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it('offers Share only on rows I uploaded, and opens the share dialog', async () => {
+    mount();
+    await screen.findByText('Owned.pdf');
+    expect(screen.queryByRole('button', { name: 'Share Teammate.pdf' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Share ViaProject.pdf' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Share Owned.pdf' }));
+    expect(await screen.findByRole('dialog', { name: 'Share Owned.pdf' })).toBeTruthy();
+  });
 
   it('fetches docs and projects on mount and renders library and via-project rows', async () => {
     mount();
