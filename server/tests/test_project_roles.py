@@ -7,8 +7,6 @@ from server.auth import authz, deps
 from server.auth.users import resolve_or_provision_user
 from server.tests import seed
 
-pytestmark = pytest.mark.asyncio
-
 
 async def _user(conn, sub):
     return (await resolve_or_provision_user(conn, iss="i", sub=sub, email=f"{sub}@x.io"))["id"]

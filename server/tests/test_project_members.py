@@ -204,7 +204,7 @@ async def test_two_owners_demoting_each_other_at_once_leave_exactly_one_owner():
     setup = await AsyncConnection.connect(TEST_URL, autocommit=True)
     a_conn = await AsyncConnection.connect(TEST_URL)
     b_conn = await AsyncConnection.connect(TEST_URL)
-    pid, ids = None, []
+    pid, ids, b_task = None, [], None
     try:
         for who in ("a", "b"):
             # Direct INSERTs: on a committed connection, resolve_or_provision_user's
@@ -232,13 +232,64 @@ async def test_two_owners_demoting_each_other_at_once_leave_exactly_one_owner():
             "SELECT user_id FROM project_members WHERE project_id = %s AND role = 'owner'", (pid,))
         assert [str(r[0]) for r in await cur.fetchall()] == [a]
     finally:
-        await a_conn.close()
-        await b_conn.close()
-        if pid:
-            await setup.execute("DELETE FROM projects WHERE id = %s", (pid,))
-        if ids:
-            await setup.execute("DELETE FROM users WHERE id = ANY(%s::uuid[])", (ids,))
-        cur = await setup.execute("SELECT 1 FROM users WHERE id = %s",
-                                  ("00000000-0000-0000-0000-000000000001",))
-        assert await cur.fetchone() == (1,)  # the seed admin survived
-        await setup.close()
+        await _race_cleanup(setup, a_conn, b_conn, b_task, pid, ids)
+    assert await _seed_admin_survives(setup)
+    await setup.close()
+
+
+async def test_two_sole_owners_leaving_at_once_leave_exactly_one_owner():
+    """§3.3, the leave route. Two Owners, nobody else. Without the row lock
+    both leaves see "another Owner remains" and commit: zero Owners."""
+    tag = secrets.token_hex(4)
+    setup = await AsyncConnection.connect(TEST_URL, autocommit=True)
+    a_conn = await AsyncConnection.connect(TEST_URL)
+    b_conn = await AsyncConnection.connect(TEST_URL)
+    pid, ids, b_task = None, [], None
+    try:
+        for who in ("a", "b"):
+            cur = await setup.execute(
+                "INSERT INTO users (oidc_iss, oidc_sub, email, role, status) "
+                "VALUES ('race', %s, %s, 'member', 'active') RETURNING id",
+                (f"{who}-{tag}", f"{who}-{tag}@race.example.com"))
+            ids.append(str((await cur.fetchone())[0]))
+        a, b = ids
+        pid = await seed.make_project(setup, a, f"Race {tag}", members=[(b, "owner")])
+
+        await project_members.remove_member(a_conn, _p(a), pid, a)  # A's transaction stays open
+        b_task = asyncio.create_task(project_members.remove_member(b_conn, _p(b), pid, b))
+        await asyncio.sleep(0.5)
+        assert not b_task.done()  # waiting on the project row lock A holds
+        await a_conn.commit()
+        with pytest.raises(HTTPException) as e:
+            await b_task
+        assert e.value.status_code == 409 and e.value.detail["error"] == "last_owner"
+        await b_conn.rollback()
+        cur = await setup.execute(
+            "SELECT user_id FROM project_members WHERE project_id = %s AND role = 'owner'", (pid,))
+        assert [str(r[0]) for r in await cur.fetchall()] == [b]
+    finally:
+        await _race_cleanup(setup, a_conn, b_conn, b_task, pid, ids)
+    assert await _seed_admin_survives(setup)
+    await setup.close()
+
+
+async def _race_cleanup(setup, a_conn, b_conn, b_task, pid, ids):
+    """Stop a still-waiting task before closing its connection; delete only this test's rows."""
+    if b_task is not None and not b_task.done():
+        b_task.cancel()
+        try:
+            await b_task
+        except (asyncio.CancelledError, HTTPException):
+            pass
+    await a_conn.close()
+    await b_conn.close()
+    if pid:
+        await setup.execute("DELETE FROM projects WHERE id = %s", (pid,))
+    if ids:
+        await setup.execute("DELETE FROM users WHERE id = ANY(%s::uuid[])", (ids,))
+
+
+async def _seed_admin_survives(setup) -> bool:
+    cur = await setup.execute("SELECT 1 FROM users WHERE id = %s",
+                              ("00000000-0000-0000-0000-000000000001",))
+    return await cur.fetchone() == (1,)
