@@ -17,7 +17,7 @@ from ..auth.capabilities import KNOWN_CAPABILITIES
 from ..auth.config import load_auth_config
 from ..auth.kc_admin import KCAdminError
 from ..llm.router import get_router
-from ..services import assistant_profile, doc_content, inference_budget, model_router
+from ..services import assistant_profile, doc_content, inference_budget, model_router, people
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -27,6 +27,7 @@ class UserPatchIn(BaseModel):
     status: str | None = None
     inference_daily_token_budget: int | None = None
     capabilities: list[str] | None = None
+    project_limit: int | None = None
 
 
 class UserEnrollIn(BaseModel):
@@ -34,6 +35,9 @@ class UserEnrollIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     email: str
     display_name: str | None = None
+    username: str | None = Field(default=None, max_length=100)
+    first_name: str | None = Field(default=None, max_length=100)
+    last_name: str | None = Field(default=None, max_length=100)
     status: str = "pending"
     inference_daily_token_budget: int | None = None
     capabilities: list[str] = []
@@ -136,10 +140,45 @@ async def patch_user(
         if budget is not None and budget < 0:
             raise HTTPException(status_code=422, detail="budget must be >= 0")
         await users.set_inference_budget(conn, user_id, budget)
+    if "project_limit" in data:
+        limit = data["project_limit"]
+        if limit is not None and limit < 0:
+            raise HTTPException(status_code=422, detail="project_limit must be >= 0")
+        await users.set_project_limit(conn, user_id, limit)
     updated = await users.get_user(conn, user_id)
     if updated is None:
         raise HTTPException(status_code=404, detail="User not found")
     return updated
+
+
+@router.get("/projects")
+async def list_projects(ownerless: bool = False,
+                        _: deps.Principal = Depends(deps.require_admin),
+                        conn=Depends(deps.get_conn)):
+    """Every project (A0 §9.5): owners, member and document counts, and
+    whether it is ownerless (its last Owner was deleted) — the recovery list.
+    Admins see owners' emails as labels' last resort, like the Users list."""
+    cur = await conn.execute(
+        "SELECT p.id, p.name, p.created_at, "
+        "(SELECT count(*) FROM project_members m WHERE m.project_id = p.id), "
+        "(SELECT count(*) FROM project_documents d WHERE d.project_id = p.id AND d.verified), "
+        "COALESCE((SELECT json_agg(json_build_object('id', u.id, 'first_name', u.first_name, "
+        "'last_name', u.last_name, 'display_name', u.display_name, 'username', u.username, "
+        "'email', u.email) ORDER BY m.added_at, u.id) "
+        "FROM project_members m JOIN users u ON u.id = m.user_id "
+        "WHERE m.project_id = p.id AND m.role = 'owner'), '[]'::json) "
+        "FROM projects p "
+        "WHERE NOT %s OR NOT EXISTS (SELECT 1 FROM project_members m "
+        "WHERE m.project_id = p.id AND m.role = 'owner') "
+        "ORDER BY p.created_at DESC, p.id", (ownerless,))
+    out = []
+    for r in await cur.fetchall():
+        owners = [{"id": o["id"], "name": people.person_label(
+            first_name=o["first_name"], last_name=o["last_name"], display_name=o["display_name"],
+            username=o["username"], email=o["email"], show_email=True)} for o in r[5]]
+        out.append({"id": str(r[0]), "name": r[1], "created_at": r[2], "member_count": r[3],
+                    "doc_count": r[4], "owners": owners, "ownerless": not owners})
+    return out
 
 
 @router.post("/users", status_code=201)
@@ -169,7 +208,8 @@ async def enroll_user(
             user = await users.enroll_user(
                 conn, email=body.email, display_name=body.display_name,
                 status=body.status, capabilities=caps,
-                inference_daily_token_budget=body.inference_daily_token_budget)
+                inference_daily_token_budget=body.inference_daily_token_budget,
+                username=body.username, first_name=body.first_name, last_name=body.last_name)
         except ValueError:
             raise HTTPException(status_code=409, detail="email already exists")
         return {"user": user, "onboarding": "manual"}
@@ -182,7 +222,8 @@ async def enroll_user(
         raise HTTPException(status_code=409, detail="email already exists in Keycloak")
     try:
         sub = await kc.create_user(email=body.email, display_name=body.display_name,
-                                   email_verified=True)
+                                   email_verified=True, username=body.username,
+                                   first_name=body.first_name, last_name=body.last_name)
     except KCAdminError as e:
         raise HTTPException(status_code=502, detail=f"Keycloak create failed: {e}")
     try:
@@ -198,7 +239,8 @@ async def enroll_user(
         user = await users.enroll_linked_user(
             conn, iss=iss, sub=sub, email=body.email,
             display_name=body.display_name, capabilities=caps, status=body.status,
-            inference_daily_token_budget=body.inference_daily_token_budget)
+            inference_daily_token_budget=body.inference_daily_token_budget,
+            username=body.username, first_name=body.first_name, last_name=body.last_name)
     except Exception as e:  # compensate: no orphaned Keycloak user
         try:
             await kc.delete_user(sub)

@@ -100,3 +100,18 @@ async def test_realm_smtp_configured():
     def off(req): return httpx.Response(200, json={"smtpServer": {}})
     assert await KeycloakAdmin(ISSUER, "s", "s", http=_authed(on)).realm_smtp_configured() is True
     assert await KeycloakAdmin(ISSUER, "s", "s", http=_authed(off)).realm_smtp_configured() is False
+
+
+async def test_create_user_sends_username_and_names():
+    import json
+    seen = []
+
+    def handler(req):
+        seen.append(json.loads(req.content))
+        return httpx.Response(201, headers={"Location": "http://kc.test/admin/realms/nr/users/u1"})
+    kc = KeycloakAdmin(ISSUER, "svc", "sec", http=_authed(handler))
+    await kc.create_user(email="n@x.io", username="newbie", first_name="New", last_name="Person")
+    await kc.create_user(email="d@x.io", display_name="Dee")
+    assert (seen[0]["username"], seen[0]["firstName"], seen[0]["lastName"]) == ("newbie", "New", "Person")
+    assert seen[1]["username"] == "d@x.io" and seen[1]["firstName"] == "Dee"
+    assert "lastName" not in seen[1]
