@@ -98,10 +98,17 @@ def test_retention_days_parsing(caplog):
 async def test_purge_removes_only_older_events_and_zero_keeps_all(db_conn):
     owner = await _user(db_conn, "o")
     pid = await seed.make_project(db_conn, owner)
-    await db_conn.execute(
-        "INSERT INTO project_events (project_id, at, kind) VALUES (%s, now() - interval '40 days', "
-        "'project.described')", (pid,))
+    for age, kind in (("40 days", "project.renamed"), ("5 days", "project.described")):
+        await db_conn.execute(
+            "INSERT INTO project_events (project_id, at, kind) VALUES (%s, now() - %s::interval, %s)",
+            (pid, age, kind))
+
+    async def kinds():
+        cur = await db_conn.execute(
+            "SELECT kind FROM project_events WHERE project_id=%s ORDER BY kind", (pid,))
+        return [r[0] for r in await cur.fetchall()]
+
     assert await project_events.purge(db_conn, 0) == 0
+    assert await kinds() == ["project.described", "project.renamed"]  # zero keeps all
     assert await project_events.purge(db_conn, 30) == 1
-    cur = await db_conn.execute("SELECT kind FROM project_events WHERE project_id=%s", (pid,))
-    assert [r[0] for r in await cur.fetchall()] == []
+    assert await kinds() == ["project.described"]  # the 5-day-old event survives
