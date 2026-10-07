@@ -159,7 +159,9 @@ shows projects whose last Owner was deleted; **Add me as Owner** takes one
 over (recorded as "added by admin" and logged). **Open** shows the project
 page; as an admin you can manage members, rename and delete any project, but
 you see its documents only if you're a member. Each user row has a
-**Project limit** (empty = the deployment default, 0 = unlimited).
+**Project limit** (empty = the deployment default, 0 = unlimited). If the list
+can't be loaded, the section shows the error and a **Retry** button rather
+than an empty list.
 
 ## Library: documents on the server
 
@@ -194,18 +196,21 @@ step down until someone else is made Owner.
 name or their full email address, pick the person, choose a role and press
 **Add**. Whether typing a name finds people depends on your organisation's
 setting; a full email address always works. "Awaiting approval" means the
-account exists but an admin hasn't activated it yet.
+account exists but an admin hasn't activated it yet. A person whose account an
+admin has disabled shows "disabled": their role can't be changed, but a
+Maintainer or Owner can still remove them.
 
 **Documents.** **Documents → File a document** adds one of your uploads. A
 Maintainer removes a document with × (a document nobody else has in their
 library is deleted with it, so you're asked first).
 
-**Activity** lists who changed what, newest first.
+**Activity** lists who changed what, newest first. If the history can't be loaded, the tab says so instead of showing an empty list.
 
 **Sharing one document with one person.** In the Library, press **Share** on a
 document you uploaded, find the person, and pick them. They can read it but
 can't share it on. The same panel lists who you've shared with; × stops
-sharing.
+sharing. If the list of people can't be loaded, the panel shows the error and a
+**Retry** button.
 
 **Leaving.** **Leave** in the project header. Documents you had in your own
 library stay there.
