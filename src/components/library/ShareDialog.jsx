@@ -10,15 +10,18 @@ import PeoplePicker from '../people/PeoplePicker';
 export default function ShareDialog({ theme, api, doc, showToast, onClose }) {
   const [shares, setShares] = useState(null);
   const [busyId, setBusyId] = useState(null);
+  // Set when the share list fails to load; distinct from a genuinely empty list.
+  const [error, setError] = useState(null);
 
   const load = useCallback(async () => {
     try {
-      setShares(await api.shares(doc.doc_id));
+      const list = await api.shares(doc.doc_id);
+      setShares(list);
+      setError(null);
     } catch (e) {
-      setShares([]);
-      showToast(e.message, 5000);
+      setError(e.message);
     }
-  }, [api, doc.doc_id, showToast]);
+  }, [api, doc.doc_id]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -45,7 +48,12 @@ export default function ShareDialog({ theme, api, doc, showToast, onClose }) {
       <PeoplePicker theme={theme} lookup={api.lookup} label={`Share ${doc.file_name} with`} disabled={busyId !== null}
         excludeIds={(shares || []).map((s) => s.user_id)}
         onPick={(p) => run(p.id, () => api.share(doc.doc_id, p.id), `Shared ${doc.file_name} with ${p.name}.`)} />
-      {shares === null ? (
+      {error ? (
+        <div role="alert" className="flex items-center gap-2 text-[10px] text-red-500">
+          <span>{error}</span>
+          <button onClick={load} className="underline">Retry</button>
+        </div>
+      ) : shares === null ? (
         <p className={`text-[10px] ${theme.textMuted}`}>Loading…</p>
       ) : shares.length === 0 ? (
         <p className={`text-[10px] ${theme.textMuted}`}>Not shared with anyone yet.</p>

@@ -45,4 +45,29 @@ describe('ShareDialog', () => {
     fireEvent.click(await screen.findByLabelText('Stop sharing with Ann Lee'));
     await waitFor(() => expect(a.unshare).toHaveBeenCalledWith('d1', 'u1'));
   });
+
+  it('shows a failed list load inline with Retry, not as an empty list', async () => {
+    const a = api({
+      shares: vi.fn()
+        .mockRejectedValueOnce(new Error('Something went wrong on the server. Try again.'))
+        .mockResolvedValueOnce([{ user_id: 'u1', name: 'Ann Lee', username: 'annl', shared_at: '2026-10-06T00:00:00Z' }]),
+    });
+    render(<ShareDialog theme={theme} api={a} doc={doc} showToast={vi.fn()} onClose={vi.fn()} />);
+    expect((await screen.findByRole('alert')).textContent).toContain('Something went wrong on the server. Try again.');
+    expect(screen.queryByText('Not shared with anyone yet.')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Ann Lee')).toBeTruthy();
+    expect(a.shares).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('toasts a failed share', async () => {
+    const a = api({ share: vi.fn(async () => { throw new Error('User not found'); }) });
+    const showToast = vi.fn();
+    render(<ShareDialog theme={theme} api={a} doc={doc} showToast={showToast} onClose={vi.fn()} />);
+    await screen.findByText('Ann Lee');
+    fireEvent.change(screen.getByLabelText('Share Owned.pdf with'), { target: { value: 'ra' } });
+    fireEvent.click(await screen.findByRole('button', { name: /Bob Ray/ }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith('User not found', 5000));
+  });
 });
