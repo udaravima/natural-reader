@@ -83,6 +83,27 @@ All notable changes to this project will be documented in this file.
   document doesn't cover it. The five cover one fact, a two-step trail, a
   table label, a page read, and a fact that isn't there.
 
+- **Projects for teams, with roles (A0).** Every project has members with a
+  role: Reader (read the documents), Contributor (also file their own
+  documents), Maintainer (also remove documents, rename, manage members up to
+  Maintainer) and Owner (everything, including Owners and deleting the
+  project). A project keeps at least one Owner. Library → Projects lists your
+  projects; a project page has Documents, Members and Activity tabs.
+- **Find people to add or share with.** Type a name or a full email address.
+  `USER_DIRECTORY_MODE` (exact | domain | open), `USER_DIRECTORY_DOMAINS` and
+  `USER_DIRECTORY_SHOW_EMAIL` decide who can be found; the default finds people
+  only by their full email.
+- **Share a document from the Library.** A Share button on documents you
+  uploaded; see and stop existing shares.
+- **Project activity history.** Who added or removed whom, role changes,
+  renames, documents filed and removed. `PROJECT_EVENTS_RETENTION_DAYS`
+  (default 0 = keep forever).
+- **Admin: every project and recovery.** Admin → Projects lists all projects
+  with their owners; "Ownerless only" and "Add me as Owner" recover a project
+  whose last Owner was deleted. Per-user project limits
+  (`PROJECT_LIMIT_PER_USER`, default 20) and `PROJECT_CREATION`
+  (readers | admins). Enroll takes username, first and last name.
+
 ### Changed
 
 - **Python 3.12 or 3.13 is required** (was 3.10–3.13): the chat server
@@ -137,7 +158,21 @@ All notable changes to this project will be documented in this file.
   finds something new. Citations in chats saved before this change still
   open their document.
 
+- **Breaking (API):** `PUT /v1/projects/{id}/members/{user_id}` now needs a
+  body `{"role": "reader|contributor|maintainer|owner"}`; a body-less call is
+  a 422. Project objects drop `is_owner` and `owner_user_id` for `my_role`,
+  `member_count`, `doc_count`, `created_by` and `can`.
+- Deleting a user no longer deletes the projects they created; only their
+  memberships go. A project left without an Owner appears in Admin → Projects.
+- Admins file and remove project documents only through a member role.
+- People's username, first and last name are refreshed from the login token.
+- Access-log lines no longer include query strings, so search and people-lookup
+  text never reaches the logs.
+
 ### Fixed
+
+- Migrations 014–016 never recorded their version and re-ran (harmlessly) on
+  every startup; every migration now records itself, and a test checks it.
 
 - **Searching one document is exact, whatever else is in the library.**
   The search could lose the open document's best passages when other

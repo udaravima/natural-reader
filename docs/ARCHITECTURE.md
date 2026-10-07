@@ -187,6 +187,21 @@ Chat turns run entirely server-side now; the browser has no chat transport logic
 - **`web_search.py`** — SearXNG query → parallel fetch of results (**SSRF guard**: DNS must resolve to public addresses only, and redirects are followed manually with the check re-applied at every hop, max 4) → trafilatura extraction → small-model summary, `SUMMARIZE_MODEL` (from `model_router`) run through the `llm/` provider router (C1) rather than a direct Ollama call. Degrades to the snippet on any failure. Each fetch is capped three ways: the final hop is streamed and cut off at `WEB_SEARCH_MAX_RESPONSE_BYTES` rather than buffered whole, the whole walk (redirects included) runs under one `WEB_SEARCH_FETCH_TOTAL_S` deadline, and a non-text `Content-Type` is skipped before any body is read.
 - **`docling_convert.py`** — PDF→Markdown, disabled by default (`DOCLING_ENABLED=false`), lazy imports so the server boots without docling installed. Presets fast/standard/accurate; heavy sync work in `asyncio.to_thread`.
 
+### Projects, roles and activity (A0)
+
+- `project_members.role` (reader < contributor < maintainer < owner) is the
+  only source of project access; `projects.created_by` is history. Every
+  project route starts with `authz.require_project_role` (404 non-member,
+  403 `insufficient_role`); responses carry `can` from `authz.can_for`, and
+  the UI renders from it.
+- Membership writes take `SELECT … FROM projects … FOR UPDATE` first and read
+  the caller's role after it, so concurrent changes on one project serialize
+  and the last-Owner rule can't be raced (`services/project_members.py`).
+- `project_events` gets one row per change in the same transaction
+  (`services/project_events.py`); `audit.log` stays the operators' trail.
+- The people directory (`services/people.py`) owns the person-label rule and
+  the `USER_DIRECTORY_*` modes.
+
 ### TTS pipeline
 
 `server/model.py` loads Kokoro (~325 MB) **at import time** — missing model files are a hard `exit(1)`. Execution provider priority: CUDA → OpenVINO GPU → NPU → CPU, with fallback at session creation.
@@ -235,4 +250,8 @@ The SPA is `npm run dev` on :5173. The Vite proxy makes it same-origin with back
 - **A document's own hash is not its `doc_id`, the server's is** (`doc_content.py`, `docs.py` `register_document`) — the browser's sha256 (`docHash.js`) only ever travels as `client_doc_id`, an advisory hint logged at WARNING on mismatch. Never key a lookup off the client's computed hash without also handling "the server disagreed."
 - **Your own project placement still blocks convert/re-index/delete-markdown** (`content_ops_refusal`) — filing a document into any project you can see (owner or member) counts as another reader of the content, even though you put it there yourself. "Am I the only holder" always checks placements too, not just other people's entries.
 - **A cascade never garbage-collects** — every code path that `DELETE`s a `library_entries` or `project_documents` row must call `gc_content_if_orphaned` itself afterward; an SQL `ON DELETE CASCADE` (project delete, user delete) skips it silently unless the caller collected the affected `doc_id`s first. The startup sweep is the safety net, not a substitute for wiring this into a new path.
+- Every `server/sql/NNN_*.sql` must end with
+  `INSERT INTO schema_migrations(version) VALUES (NNN) ON CONFLICT DO NOTHING;`
+  — the runner doesn't record versions, and a non-idempotent migration that
+  re-runs stops startup. `test_every_migration_records_its_version` checks it.
 - **Stale docstrings**: `webSearch.js`/`currentTimeDate.js` claim to be unregistered stubs, but both are in the registry — trust the registry line. `VoiceRecorder` is intentionally dead until Whisper lands.

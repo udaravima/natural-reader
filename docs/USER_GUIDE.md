@@ -154,6 +154,13 @@ Notes:
   - Don't name the app's tools (`web_search` and so on): describe the
     behaviour you want. The section warns you if you do.
 
+**Projects.** Every project, with its owners and counts. **Ownerless only**
+shows projects whose last Owner was deleted; **Add me as Owner** takes one
+over (recorded as "added by admin" and logged). **Open** shows the project
+page; as an admin you can manage members, rename and delete any project, but
+you see its documents only if you're a member. Each user row has a
+**Project limit** (empty = the deployment default, 0 = unlimited).
+
 ## Library: documents on the server
 
 **Library** (in the view switcher) lists every document you can read on the
@@ -164,6 +171,47 @@ file from your computer. It is also saved to your own "Your Library" list on
 the welcome screen, and Index and chat work on it straight away. If the
 server has no copy of the file (it was indexed before server-side uploads,
 and nobody has uploaded it since), Open tells you to upload the file again.
+
+## Projects and people
+
+A project is a shared shelf of documents for a team. Open **Library →
+Projects** to see the projects you belong to; **New project** creates one,
+and you become its Owner.
+
+**Roles.** Each member has one role:
+
+| Role | Can |
+|---|---|
+| Reader | see the project, its members, activity and documents |
+| Contributor | also file documents they uploaded into the project |
+| Maintainer | also remove any document, rename the project, and add, remove or change members up to Maintainer |
+| Owner | everything, including Owners and deleting the project |
+
+A project always keeps at least one Owner, so the last Owner can't leave or
+step down until someone else is made Owner.
+
+**Adding people.** On a project page, open **Members → + Add people**, type a
+name or their full email address, pick the person, choose a role and press
+**Add**. Whether typing a name finds people depends on your organisation's
+setting; a full email address always works. "Awaiting approval" means the
+account exists but an admin hasn't activated it yet.
+
+**Documents.** **Documents → File a document** adds one of your uploads. A
+Maintainer removes a document with × (a document nobody else has in their
+library is deleted with it, so you're asked first).
+
+**Activity** lists who changed what, newest first.
+
+**Sharing one document with one person.** In the Library, press **Share** on a
+document you uploaded, find the person, and pick them. They can read it but
+can't share it on. The same panel lists who you've shared with; × stops
+sharing.
+
+**Leaving.** **Leave** in the project header. Documents you had in your own
+library stay there.
+
+What you can't do yet: chat with a whole project at once (planned), or upload
+a revised file as a new version of a document (planned).
 
 ## Chat: models and streaming
 
