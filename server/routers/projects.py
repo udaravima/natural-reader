@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import uuid
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Response
-from psycopg import errors as pg_errors
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..audit import audit
@@ -25,7 +26,7 @@ from ..auth.authz import (
     visible_projects_where,
 )
 from ..http_errors import refusal
-from ..services import doc_content, people, project_events, project_policy
+from ..services import doc_content, people, project_events, project_members, project_policy
 from .docs import DocId
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
@@ -83,14 +84,6 @@ async def _load_project(conn, principal, project_id) -> dict:
     cur = await conn.execute(_project_sql("p.id = %s"), (principal.user_id, project_id))
     return _project(await cur.fetchone(), is_admin=principal.role == "admin",
                     show_email=_show_email())
-
-
-async def _assert_owner(conn, project_id: str, user_id: str) -> None:
-    cur = await conn.execute(
-        "SELECT 1 FROM project_members WHERE project_id = %s AND user_id = %s "
-        "AND role = 'owner'", (project_id, user_id))
-    if await cur.fetchone() is None:
-        raise HTTPException(status_code=404, detail="Project not found")
 
 
 @router.post("", status_code=201)
@@ -172,45 +165,32 @@ async def delete_project(project_id: uuid.UUID, principal: deps.Principal = Depe
     return Response(status_code=204)
 
 
-@router.put("/{project_id}/members/{user_id}", status_code=204)
-async def add_member(project_id: str, user_id: str,
-                     principal: deps.Principal = Depends(deps.get_current_user),
-                     conn=Depends(deps.get_conn)):
-    # Owner guard first — a non-owner must 404 before user_id is validated,
-    # so an invalid/nonexistent user_id can't be used to probe whether the
-    # project itself exists.
-    await _assert_owner(conn, project_id, principal.user_id)
-    try:
-        uuid.UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="User not found")
-    try:
-        # Nested transaction (savepoint when already inside one, e.g. the
-        # test harness's outer tx) so a caught FK violation rolls back just
-        # this INSERT — the connection's transaction stays usable for
-        # whatever runs after we return.
-        async with conn.transaction():
-            await conn.execute(
-                "INSERT INTO project_members (project_id, user_id, role, added_by) "
-                "VALUES (%s,%s,'contributor',%s) ON CONFLICT DO NOTHING",
-                (project_id, user_id, principal.user_id))
-    except pg_errors.ForeignKeyViolation:
-        raise HTTPException(status_code=404, detail="User not found")
-    return Response(status_code=204)
+class MemberIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: Literal["reader", "contributor", "maintainer", "owner"]
+
+
+@router.get("/{project_id}/members")
+async def get_members(project_id: uuid.UUID, principal: deps.Principal = Depends(_reader),
+                      conn=Depends(deps.get_conn)):
+    await require_project_role(conn, principal, project_id, None)
+    return await project_members.list_members(conn, project_id, show_email=_show_email())
+
+
+@router.put("/{project_id}/members/{user_id}")
+async def put_member(project_id: uuid.UUID, user_id: str, body: MemberIn,
+                     principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
+    """Add a person or change their role (A0 §9.2). The body is required: a
+    body-less PUT (accepted before A0) is a 422."""
+    return await project_members.put_member(conn, principal, project_id, user_id, body.role,
+                                            show_email=_show_email())
 
 
 @router.delete("/{project_id}/members/{user_id}", status_code=204)
-async def remove_member(project_id: str, user_id: str,
-                        principal: deps.Principal = Depends(deps.get_current_user),
-                        conn=Depends(deps.get_conn)):
-    await _assert_owner(conn, project_id, principal.user_id)
-    try:
-        uuid.UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="User not found")
-    await conn.execute(
-        "DELETE FROM project_members WHERE project_id=%s AND user_id=%s",
-        (project_id, user_id))
+async def delete_member(project_id: uuid.UUID, user_id: str,
+                        principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
+    """Remove a member, or leave when `user_id` is the caller's own."""
+    await project_members.remove_member(conn, principal, project_id, user_id)
     return Response(status_code=204)
 
 

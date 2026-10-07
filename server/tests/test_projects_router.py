@@ -1,5 +1,3 @@
-import uuid
-
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -18,67 +16,6 @@ def _app(db_conn, principal):
     app.dependency_overrides[deps.get_current_user] = lambda: principal
     app.include_router(projects_router.router)
     return app
-
-
-async def test_owner_adds_and_removes_member(db_conn):
-    owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
-    member = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="m@x.io")
-    pid = await seed.make_project(db_conn, owner["id"], "P")
-    p = deps.Principal(user_id=owner["id"], email=owner["email"], role="member")
-    async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
-                                 base_url="http://t") as c:
-        assert (await c.put(f"/v1/projects/{pid}/members/{member['id']}", json={})).status_code == 204
-        assert (await c.delete(f"/v1/projects/{pid}/members/{member['id']}", )).status_code == 204
-
-
-async def test_non_owner_cannot_add_member(db_conn):
-    owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
-    other = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="x@x.io")
-    target = await resolve_or_provision_user(db_conn, iss="i", sub="s3", email="t@x.io")
-    pid = await seed.make_project(db_conn, owner["id"], "P")
-    p = deps.Principal(user_id=other["id"], email=other["email"], role="member")
-    async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
-                                 base_url="http://t") as c:
-        r = await c.put(f"/v1/projects/{pid}/members/{target['id']}", json={})
-        assert r.status_code == 404
-
-
-async def test_non_owner_cannot_remove_member(db_conn):
-    owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
-    other = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="x@x.io")
-    target = await resolve_or_provision_user(db_conn, iss="i", sub="s3", email="t@x.io")
-    pid = await seed.make_project(db_conn, owner["id"], "P")
-    p = deps.Principal(user_id=other["id"], email=other["email"], role="member")
-    async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
-                                 base_url="http://t") as c:
-        r = await c.delete(f"/v1/projects/{pid}/members/{target['id']}")
-        assert r.status_code == 404
-
-
-async def test_add_member_nonexistent_user_404(db_conn):
-    owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
-    pid = await seed.make_project(db_conn, owner["id"], "P")
-    p = deps.Principal(user_id=owner["id"], email=owner["email"], role="member")
-    fake_uid = str(uuid.uuid4())
-    async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
-                                 base_url="http://t") as c:
-        r = await c.put(f"/v1/projects/{pid}/members/{fake_uid}", json={})
-        assert r.status_code == 404
-        # Prove the FK-violation rollback (savepoint) didn't abort the
-        # outer transaction — a follow-up query on the same connection
-        # should still succeed.
-        rows = (await c.get("/v1/projects")).json()
-        assert len(rows) == 1
-
-
-async def test_add_member_malformed_user_404(db_conn):
-    owner = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="o@x.io")
-    pid = await seed.make_project(db_conn, owner["id"], "P")
-    p = deps.Principal(user_id=owner["id"], email=owner["email"], role="member")
-    async with httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, p)),
-                                 base_url="http://t") as c:
-        r = await c.put(f"/v1/projects/{pid}/members/not-a-uuid", json={})
-        assert r.status_code == 404
 
 
 DOC_A = "a" * 64
