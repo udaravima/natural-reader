@@ -34,7 +34,7 @@ One image, `natural-reader-backend`, built from `Containerfile` at the repo root
   - working directory `/app`, so `server/model.py`'s relative model paths resolve unchanged;
   - runs as a non-root user (uid 1000, `app`); entrypoint `python run.py`;
   - `HOST` defaults to `127.0.0.1`, so the backend's loopback-only dev-bypass guard behaves exactly as today.
-- **`.containerignore`** excludes at least `.env`, `.env.*`, `data/`, `logs/`, `tmp/`, `.venv/`, `node_modules/`, `dist/`, `.git/`, `.local/`, `*.onnx`, `voices-*.bin`, `searxng/settings.yml`, `__pycache__/`. `tmp/` is excluded explicitly because it can hold credential files.
+- **`.dockerignore`** (read by both Docker and podman; Docker ignores `.containerignore`) is an allow-list: `*`, then re-include only `server/`, `run.py` and `requirements*.txt`, then re-exclude `server/tests/` and `__pycache__/`. It therefore excludes at least `.env`, `.env.*`, `data/`, `logs/`, `tmp/`, `.venv/`, `node_modules/`, `dist/`, `.git/`, `.local/`, `*.onnx`, `voices-*.bin`, `searxng/settings.yml`, `__pycache__/`. `tmp/` is excluded explicitly because it can hold credential files.
 
 ## 3. Networking: host network
 
@@ -67,12 +67,12 @@ Inbound exposure is unchanged: the backend binds `127.0.0.1:8000` only.
 | Source (dev mode only) | `./server`, `./run.py` | `/app/server`, `/app/run.py` | bind mount via `compose.dev.yml` |
 
 **Rules:**
-- A path setting in `.env` names the **host** path. Compose uses it as the mount source and pins the in-container path. Without that, `DOC_STORAGE_DIR=/srv/docs` would point at an empty folder inside the container, and uploads would vanish on recreate.
+- A path setting in `.env` names the **host** path. `startup.sh` turns it into `NR_DATA_DIR` / `NR_LOG_DIR` / `NR_PROFILE_FILE`, which compose uses as the mount sources, and compose pins the in-container paths. Separate `NR_*` names are required (verified 2026-10-07): podman-compose 1.5 fills a volume's `${VAR}` from the service's own `environment:` block, so `${DOC_STORAGE_DIR}` would resolve to the in-container path, and it cannot nest defaults (`${A:-${B:-x}}`). Running compose directly without `startup.sh` uses the defaults unless `NR_*` are set. Without that, `DOC_STORAGE_DIR=/srv/docs` would point at an empty folder inside the container, and uploads would vanish on recreate.
 - **`DOC_STORAGE_DIR` takes precedence over `PDF_STORAGE_DIR`,** as in the app.
 - **Assistant profile:** when `CHAT_ASSISTANT_PROFILE_FILE` is set, `startup.sh` passes the extra mount and overrides the variable to the in-container path. When it's unset, nothing is mounted, and the app behaves as today (no file profile).
 - **Ownership:**
   - under rootless podman, `userns_mode: keep-id` maps the container user to the invoking host user, so files written to `data/` and `logs/` stay owned by that user;
-  - under Docker, the container runs as uid 1000, and the docs note to build with `--build-arg APP_UID=$(id -u)` if the host user differs.
+  - `startup.sh` builds with `APP_UID` = the invoking user's uid (1000 when run as root), so the container user matches the host user under Docker too.
 - **`.env` changes apply on the next backend restart,** as today.
 
 ## 5. Two run modes
@@ -83,7 +83,7 @@ Both modes bind port 8000, so only one runs at a time.
 |---|---|---|
 | Code | baked into the image | working tree mounted in (`compose.dev.yml`); restart to apply edits, no rebuild |
 | Process | detached; independent of any terminal | foreground; Ctrl-C tears the stack down (unchanged behaviour) |
-| Restart | `restart: unless-stopped`, plus `enable-autostart` for reboots | none |
+| Restart | `restart: always`, plus `enable-autostart` for reboots | none |
 | Auth | per `.env` | `up`: `AUTH_ENABLED=false` (loopback only); `up-with-dev-auth`: Keycloak rig |
 
 **Commands:**
@@ -181,5 +181,5 @@ Two constraints on the walk:
 |---|---|---|
 | Unpinned `requirements.txt` | two builds can pull different versions | as today for the venv; pinning is a separate decision |
 | Image size | ~1 GB base, ~3–4 GB with Docling | Docling is opt-in; layer order keeps code rebuilds small |
-| `podman-restart.service` restarts only containers with a restart policy | Postgres/Keycloak/SearXNG already have `unless-stopped`; the backend gets it too | covered |
-| Host user uid ≠ 1000 under Docker | files in `data/` owned by uid 1000 | `APP_UID` build arg, documented |
+| `podman-restart.service` restarts only `restart-policy=always` containers (verified: its `ExecStart` filters on `always`) | with `unless-stopped`, nothing would return after a reboot | all four services use `restart: always`; `stop` removes containers (`compose down`), so `always` never overrides a deliberate stop |
+| Host user uid ≠ 1000 | files in `data/` owned by another uid | `APP_UID` built from the invoking user's uid |
