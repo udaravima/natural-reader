@@ -203,35 +203,42 @@ async def _filed_name(conn, doc_id: str, user_id: str) -> str | None:
     return row[0] if row else None
 
 
-async def _placement_name(conn, project_id, doc_id: str) -> str | None:
-    """The name the project shows for a placed document: its filer's entry
-    name, else the content's canonical name."""
-    cur = await conn.execute(
-        "SELECT COALESCE(e.file_name, d.file_name) FROM project_documents pd "
-        "JOIN documents d ON d.doc_id = pd.doc_id "
-        "LEFT JOIN library_entries e ON e.user_id = pd.added_by AND e.doc_id = pd.doc_id "
-        "WHERE pd.project_id = %s AND pd.doc_id = %s", (project_id, doc_id))
-    row = await cur.fetchone()
-    return row[0] if row else None
-
-
 @router.put("/{project_id}/docs/{doc_id}", status_code=204)
 async def link_doc(project_id: uuid.UUID, doc_id: DocId,
                    principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
     """File a doc into a project: a Contributor or above (admins only through
     a member role, A0 §5) who holds a VERIFIED upload entry for it (A1 §5).
     The project is checked first, so an invisible project 404s before doc
-    ids can be used to probe it. Idempotent: an existing placement keeps its
-    original `added_by` and writes no event — unless it is an UNVERIFIED
-    legacy placement, which this verified filing replaces."""
+    ids can be used to probe it. Filing creates a new project document at v1
+    (migration 018). Idempotent: content already current in the project
+    writes no event — unless that version is an UNVERIFIED legacy one, which
+    this verified filing proves. (V1 Task 7 replaces this with the
+    name-match flow.)"""
     await require_project_role(conn, principal, project_id, "contributor", admin_ok=False)
     await assert_holds_upload(conn, doc_id, principal.user_id)
+    # CURRENT, verified or not: the content's current version in this project.
     cur = await conn.execute(
-        "INSERT INTO project_documents (project_id, doc_id, added_by, verified) "
-        "VALUES (%s,%s,%s,true) ON CONFLICT (project_id, doc_id) DO UPDATE "
-        "SET added_by = EXCLUDED.added_by, verified = true "
-        "WHERE NOT project_documents.verified", (project_id, doc_id, principal.user_id))
-    if cur.rowcount:
+        "UPDATE project_documents SET added_by = %s, verified = true "
+        "WHERE project_id = %s AND doc_id = %s AND is_current AND NOT verified RETURNING 1",
+        (principal.user_id, project_id, doc_id))
+    changed = await cur.fetchone() is not None
+    if not changed:
+        cur = await conn.execute(  # CURRENT
+            "SELECT 1 FROM project_documents WHERE project_id = %s AND doc_id = %s AND is_current",
+            (project_id, doc_id))
+        if await cur.fetchone() is None:
+            cur = await conn.execute(
+                "INSERT INTO project_docs (project_id, created_by, last_version) "
+                "VALUES (%s,%s,1) RETURNING id", (project_id, principal.user_id))
+            pdoc = (await cur.fetchone())[0]
+            await conn.execute(
+                "INSERT INTO project_documents (project_id, project_doc_id, version, doc_id, "
+                "file_name, origin, is_current, added_by, verified) "
+                "VALUES (%s,%s,1,%s,%s,'upload',true,%s,true)",
+                (project_id, pdoc, doc_id, await _filed_name(conn, doc_id, principal.user_id),
+                 principal.user_id))
+            changed = True
+    if changed:
         audit("placement.added", project=project_id, doc=doc_id, by=principal.user_id)
         await project_events.record(
             conn, project_id, principal.user_id, "document.added", doc_id=doc_id,
@@ -243,19 +250,29 @@ async def link_doc(project_id: uuid.UUID, doc_id: DocId,
 async def unlink_doc(project_id: uuid.UUID, doc_id: DocId,
                      principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
     """Remove a doc from a project: a Maintainer or above (A0 §5; admins only
-    through a member role). The uploader has no special power over a
-    placement. A missing link is 404 — after the role check."""
+    through a member role). Removes the project document whose history holds
+    this content, with every version, then GCs each version's content. A
+    missing link is 404 — after the role check. (V1 Task 7 removes this
+    route for DELETE …/documents/{id}.)"""
     await require_project_role(conn, principal, project_id, "maintainer", admin_ok=False)
-    name = await _placement_name(conn, project_id, doc_id)
-    cur = await conn.execute(
-        "DELETE FROM project_documents WHERE project_id = %s AND doc_id = %s",
-        (project_id, doc_id))
-    if cur.rowcount == 0:
+    cur = await conn.execute(  # HISTORY: the document holding this content
+        "SELECT v.project_doc_id, c.file_name FROM project_documents v "
+        "JOIN project_documents c ON c.project_doc_id = v.project_doc_id AND c.is_current "
+        "WHERE v.project_id = %s AND v.doc_id = %s LIMIT 1", (project_id, doc_id))
+    row = await cur.fetchone()
+    if row is None:
         raise refusal(404, "not_found", "Not found")
+    pdoc, name = row
+    cur = await conn.execute(  # HISTORY, verified or not: everything the delete drops
+        "SELECT DISTINCT doc_id FROM project_documents WHERE project_doc_id = %s ORDER BY 1",
+        (pdoc,))
+    doc_ids = [r[0] for r in await cur.fetchall()]
+    await conn.execute("DELETE FROM project_docs WHERE id = %s", (pdoc,))
     audit("placement.removed", project=project_id, doc=doc_id, by=principal.user_id)
     await project_events.record(conn, project_id, principal.user_id, "document.removed",
                                 doc_id=doc_id, details={"name": name})
-    await doc_content.gc_content_if_orphaned(conn, doc_id, trigger="placement_removed")
+    for d in doc_ids:
+        await doc_content.gc_content_if_orphaned(conn, d, trigger="placement_removed")
     return Response(status_code=204)
 
 
