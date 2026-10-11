@@ -45,7 +45,17 @@ npx vitest run                                       # 163 passed @ 2026-09-17
 
 # Lint
 npm run lint
+
+# Opt-in, slow: build and run the real backend image and the compose Keycloak
+# entrypoint (deselected by default via pytest.ini addopts)
+.venv/bin/python -m pytest -m container -q
 ```
+
+`startup.sh` is tested without containers: `server/tests/startup_harness.py`
+copies the script into a temp project and replaces podman, compose, curl, npm,
+loginctl and systemctl with stubs that record their arguments
+(`test_startup_script.py`). `test_container_files.py` renders the compose
+files with the real podman-compose.
 
 Backend test conventions that matter when writing new cases:
 

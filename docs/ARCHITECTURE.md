@@ -204,7 +204,7 @@ Chat turns run entirely server-side now; the browser has no chat transport logic
 
 ### TTS pipeline
 
-`server/model.py` loads Kokoro (~325 MB) **at import time** — missing model files are a hard `exit(1)`. Execution provider priority: CUDA → OpenVINO GPU → NPU → CPU, with fallback at session creation.
+`server/model.py` loads Kokoro (~325 MB) **at import time** — missing model files are a hard `exit(1)`. Execution provider priority: CUDA → OpenVINO GPU → NPU → CPU, with fallback at session creation — but only the providers of the *installed* ONNX Runtime build exist. `requirements.txt` and the container install the CPU build, so out of the box this is CPU; an accelerated build is a manual swap (README, Hardware Acceleration).
 
 The critical invariant: **Kokoro is not thread-safe**, so all inference runs in an executor under a **global `asyncio.Lock`** (`server/endpoints.py`). Concurrent requests queue rather than corrupt the voice files. This is why the frontend's bounded prefetch matters, why `batch_synthesize` holds the lock for one whole batch instead of per-sentence, and why the request-size caps (`TTS_MAX_*` in `schemas.py`) exist — one oversized request under a global lock stalls TTS for everyone.
 

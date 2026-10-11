@@ -126,6 +126,19 @@ in one pass, each with a test that failed first:
 - **M8:** the container is CPU-only (no `/dev/dri`), and `.openvino_cache` sits outside the cache volume, so it's rebuilt on every recreate.
 - **podman-compose recreate noise** when the compose file changes between starts (see the walk notes).
 
+## After the walk: Windows and ONNX Runtime (f285d3c)
+
+- Windows bare-metal fixes from a Windows run: UTF-8 console and selector
+  event loop (`server/platform_compat.py`, applied when `server` loads;
+  `run.py` passes `loop=` to uvicorn, which ignores the policy on Windows),
+  Postgres at `127.0.0.1`, `PYTHONUTF8=1` in `startup.ps1`. Simulated in
+  tests from Linux; confirmed only by the user's Windows run.
+- `requirements.txt` installs the CPU `onnxruntime`. OpenVINO had never run:
+  `kokoro-onnx` pulls in `onnxruntime`, both builds write one folder, and the
+  app fell back to CPU silently. The image went from 1.28 GB to 793 MB.
+- GPU/NPU acceleration for the container is deferred by the user's decision.
+  It needs an opt-in image variant tested on hardware that has one.
+
 ## Open steps (the user's decision)
 
 1. **AppArmor fix for pasta** (root). Add a signal rule to the profile and reload it:

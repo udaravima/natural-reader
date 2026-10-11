@@ -137,7 +137,7 @@ Natural Reader is now a **multi-user, authenticated application**. End-user walk
 | **Icons** | Lucide React |
 | **Storage** | localStorage + IndexedDB (`books` + `chat_sessions` stores) |
 | **TTS Backend** | FastAPI, Kokoro ONNX, Uvicorn |
-| **TTS Inference** | ONNX Runtime (CUDA / OpenVINO / CPU) |
+| **TTS Inference** | ONNX Runtime (CPU by default; CUDA / OpenVINO builds opt-in on bare metal) |
 | **Chat Backend (optional)** | [Ollama](https://ollama.com/) — local LLM server (default `:11434`) |
 | **Doc Chat Backend (optional, new in 1.6)** | FastAPI routers: `/v1/chat/sessions/*` and `/v1/docs/*` |
 | **Doc Storage / RAG** | Postgres 16 + [pgvector](https://github.com/pgvector/pgvector) (HNSW, cosine), embedded via Ollama `nomic-embed-text` |

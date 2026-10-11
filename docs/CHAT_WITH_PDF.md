@@ -514,7 +514,7 @@ Trade-offs:
 
 Same trick helps any synth-heavy workflow (the reader's per-page TTS, "Read selection", chat read-aloud), not just audiobook export.
 
-A standard `docker-compose.yml` for the FastAPI backend doesn't ship yet — until it does, run the server directly or wrap `WORKERS=4 python run.py` in your favorite process manager (systemd / supervisor / pm2-with-python-interpreter).
+The backend also ships as a container (`./startup.sh start`, see [DEPLOYMENT.md](DEPLOYMENT.md)); set `WORKERS=4` in `.env` and it reaches the container. Bare metal, wrap `WORKERS=4 python run.py` in your favorite process manager (systemd / supervisor / pm2-with-python-interpreter).
 
 ## 11. What's next
 
