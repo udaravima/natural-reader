@@ -37,7 +37,7 @@ def readable_docs_where(alias: str = "d") -> str:
         f"(EXISTS (SELECT 1 FROM library_entries _re "
         f"WHERE _re.doc_id = {alias}.doc_id AND _re.user_id = %s "
         f"AND {effective_holding_sql('_re')}) "
-        f"OR EXISTS (SELECT 1 FROM project_documents _rpd "
+        f"OR EXISTS (SELECT 1 FROM project_documents _rpd "  # HISTORY: old versions read
         f"JOIN project_members _rpm ON _rpm.project_id = _rpd.project_id "
         f"WHERE _rpd.doc_id = {alias}.doc_id AND {effective_holding_sql('_rpd')} "
         f"AND _rpm.user_id = %s))"
@@ -53,6 +53,27 @@ def effective_holding_sql(holding: str) -> str:
 
 def readable_docs_params(user_id: str) -> list[str]:
     """Exactly the parameters `readable_docs_where` needs, in order."""
+    return [user_id, user_id]
+
+
+def listed_docs_where(alias: str = "d") -> str:
+    """`readable_docs_where` narrowed to what is LISTED (V1 spec §2): the
+    user's verified entry, or a verified CURRENT version in a project they
+    belong to. Old versions stay readable (history) but are never a Library
+    row, or every revision would come back as a duplicate. Bind with
+    `listed_docs_params(user_id)`."""
+    return (
+        f"(EXISTS (SELECT 1 FROM library_entries _le "
+        f"WHERE _le.doc_id = {alias}.doc_id AND _le.user_id = %s "
+        f"AND {effective_holding_sql('_le')}) "
+        f"OR EXISTS (SELECT 1 FROM project_documents _lpd "  # CURRENT
+        f"JOIN project_members _lpm ON _lpm.project_id = _lpd.project_id "
+        f"WHERE _lpd.doc_id = {alias}.doc_id AND _lpd.is_current "
+        f"AND {effective_holding_sql('_lpd')} AND _lpm.user_id = %s))"
+    )
+
+
+def listed_docs_params(user_id: str) -> list[str]:
     return [user_id, user_id]
 
 
