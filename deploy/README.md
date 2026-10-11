@@ -14,7 +14,7 @@ and the five config values that must agree, plus the traps (the biggest: editing
 > **Shortcut:** `./startup.sh up-with-dev-auth` automates steps 1–3 below — it
 > starts the Postgres/Keycloak/SearXNG containers, creates `.env` on first run
 > (the local realm values + a generated `SESSION_SECRET`), waits for the realm
-> import, and runs the backend with those vars. The manual walkthrough
+> import, and runs the backend container (your working tree) with those vars. The manual walkthrough
 > explains what each step does and how to customize it. `./startup.sh up`
 > (without the auth rig) runs the backend with `AUTH_ENABLED=false` instead.
 > On Windows, run `startup.cmd up-with-dev-auth` (or `startup.cmd up`) instead:

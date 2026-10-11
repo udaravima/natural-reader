@@ -22,6 +22,7 @@ per-page export, VLM pipeline, etc.) we degrade gracefully rather than 500.
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import logging
 import os
 import re
@@ -40,6 +41,26 @@ _converter_lock = asyncio.Lock()
 
 def is_enabled() -> bool:
     return DOCLING_ENABLED
+
+
+def check_available() -> bool:
+    """Startup check: DOCLING_ENABLED=true needs Docling installed.
+
+    The container image installs Docling only when built with
+    WITH_DOCLING=true (startup.sh matches it to .env). If the two disagree,
+    say so once at startup instead of failing every conversion.
+    """
+    if not DOCLING_ENABLED:
+        return True
+    if importlib.util.find_spec("docling") is not None:
+        return True
+    logger.error(
+        "DOCLING_ENABLED=true but Docling is not installed in this environment: "
+        "conversions will fail with 503. Container: run ./startup.sh rebuild "
+        "(it builds with Docling when .env enables it). Venv: pip install -r "
+        "requirements-docling.txt"
+    )
+    return False
 
 
 def _normalize_options(options: dict | None) -> dict:

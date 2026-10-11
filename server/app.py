@@ -26,7 +26,7 @@ from .routers.inference import router as inference_router
 from .routers.projects import router as projects_router
 from .routers.people import router as people_router
 from .routers.tools import router as tools_router
-from .services import doc_storage, project_events
+from .services import doc_storage, docling_convert, project_events
 from .services.embeddings import start_client as start_embeddings, stop_client as stop_embeddings
 from .services.web_search import start_client as start_web_search, stop_client as stop_web_search
 
@@ -92,6 +92,7 @@ def create_app() -> FastAPI:
             bind_host=os.environ.get("HOST", "127.0.0.1"),
             session_secret=_auth_cfg.session_secret,
         )
+        docling_convert.check_available()
         # init_db retries on its own and never raises — the app comes up even
         # when Postgres is down so TTS keeps serving. Chat routes will return
         # 503 until the DB is reachable.

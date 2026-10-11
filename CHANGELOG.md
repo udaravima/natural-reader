@@ -6,6 +6,22 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **The backend runs in a container.** A `Containerfile` (Python 3.13, the
+  Kokoro voice model baked in, Docling optional) and a `backend` service in
+  `docker-compose.yml` with host networking and `data/` and `logs/`
+  bind-mounted from the host. A host OS upgrade no longer moves the Python
+  under the app.
+
+- **`./startup.sh quickstart [--single-user]`** takes a fresh clone to a
+  running app in one command, with no host Python: it writes a local-dev
+  `.env`, starts the stack and runs the frontend dev server. Re-running it
+  resumes after a failure.
+
+- **`./startup.sh start`, `stop`, `rebuild`, `logs` and `enable-autostart`**
+  for live mode. `enable-autostart` brings a podman stack back after a
+  reboot. `LOCAL_KEYCLOAK=auto|true|false` says whether `start` runs the
+  compose Keycloak. `pytest -m container` builds and runs the real image.
+
 - **Deployment limits on context size and keep-alive.**
   `INFERENCE_NUM_CTX_MAX` (default 32,768 tokens) and
   `INFERENCE_KEEP_ALIVE_MAX` (default 30 minutes) cap what a user's
@@ -106,6 +122,13 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **`up` / `up-with-dev-auth` run the backend container on your working
+  tree** (code edits apply on restart). `BACKEND_RUNTIME=venv` keeps the
+  bare-metal backend, from the shell or as the checkout's default in `.env`. Docling moved to `requirements-docling.txt`. Every
+  compose service now uses `restart: always`, because podman's boot service
+  restarts only those. Generated secrets are 64 hex characters, made without
+  Python.
+
 - **Python 3.12 or 3.13 is required** (was 3.10–3.13): the chat server
   already used a 3.12 function, so on 3.10 and 3.11 the stream-close path
   failed. `startup.sh` and `startup.cmd` now look for 3.12/3.13 only and say
@@ -168,6 +191,11 @@ All notable changes to this project will be documented in this file.
 - People's username, first and last name are refreshed from the login token.
 - Access-log lines no longer include query strings, so search and people-lookup
   text never reaches the logs.
+
+### Removed
+
+- **The `DOCLING_ENABLED=true` line in `startup.sh`.** It was never
+  exported, so it never reached the backend; `.env` controls Docling.
 
 ### Fixed
 
@@ -303,6 +331,17 @@ All notable changes to this project will be documented in this file.
   file locally — Index and chat about it may not work until you reopen it."
 
 ### Upgrade notes
+
+- **Switching to the backend container:** run `./startup.sh stop` (or
+  `down`) first. The first `start` builds the image (~1.3 GB of downloads,
+  more with Docling). Existing `data/`, `logs/` and `.env` are used as they
+  are, and documents uploaded before the switch still open (and ones
+  uploaded in the container open after a rollback to the venv). On podman,
+  run `./startup.sh enable-autostart` once for reboots; an empty
+  `pod_natural-reader` left by the old layout can go (`podman pod rm
+  pod_natural-reader`). Only `.env` (plus `HOST`/`PORT`/`WORKERS`) reaches the
+  container, so move any key exported only in your shell into `.env`. The
+  container runs on Linux x86_64; Windows and macOS keep the bare-metal flow.
 
 - **Migration `014`** adds `documents.embedding_profile`. It is additive only.
 - **Migration `015`** adds `doc_chunks.text_search`, a stored full-text

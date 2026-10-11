@@ -148,6 +148,27 @@ Natural Reader is now a **multi-user, authenticated application**. End-user walk
 
 ## 🚀 Getting Started
 
+### Quickstart (Linux)
+
+```bash
+git clone https://github.com/udaravima/natural-reader.git && cd natural-reader
+./startup.sh quickstart            # or: ./startup.sh quickstart --single-user
+```
+
+It checks for a container engine (podman with podman-compose 1.1+, or Docker with the Compose plugin 2.24+) and Node 20.19+/22.12+. **No host Python is needed:** the backend runs in a container. It writes a local-dev `.env` (never touching an existing one), builds the backend image, starts Postgres, Keycloak, SearXNG and the backend, then the frontend dev server. Open <http://localhost:5173> and sign in as `admin-user` / `password`. `--single-user` turns sign-in off and skips Keycloak. Re-running it after a failure picks up where it stopped.
+
+| Command | What it does |
+|---|---|
+| `./startup.sh start` | live mode: the whole stack, detached, the backend running the code baked into its image |
+| `./startup.sh stop` | stop and remove the containers (data stays in volumes and `data/`) |
+| `./startup.sh rebuild` | rebuild the backend image after code changes; recreate only the backend |
+| `./startup.sh logs` | follow the backend's output |
+| `./startup.sh enable-autostart` | podman: come back after a reboot (enables lingering and `podman-restart.service`) |
+| `./startup.sh up` / `up-with-dev-auth` | dev: the backend container runs your working tree; Ctrl-C stops everything |
+| `BACKEND_RUNTIME=venv ./startup.sh up` | the bare-metal backend, as before the container (needs `./startup.sh init` and Python 3.12–3.13). Put `BACKEND_RUNTIME=venv` in `.env` to make it the default for `up` / `up-with-dev-auth` |
+
+**Supported:** Linux on x86_64. **Not supported in the container:** ARM machines, including Apple Silicon Macs (the Kokoro runtime `onnxruntime-openvino` has no ARM Linux build), and macOS in general is untested (its stock bash 3.2 can't run `startup.sh`). **Windows** and macOS use the bare-metal flow (`startup.ps1` / `startup.cmd` on Windows, Python 3.12–3.13) described below.
+
 ### Software Requirements
 
 Install this before you start. The app is split into a **React frontend** (Vite) and a **Python TTS backend** (FastAPI). Chat and RAG layer on optional extras.
@@ -181,6 +202,8 @@ Install this before you start. The app is split into a **React frontend** (Vite)
 
 ### 1. Clone & Install Dependencies
 
+> Bare-metal setup (Windows, macOS, or `BACKEND_RUNTIME=venv`). On Linux, the Quickstart above is the shorter path.
+
 ```bash
 git clone https://github.com/udaravima/natural-reader.git
 cd natural-reader
@@ -193,6 +216,7 @@ python3 -m venv .venv
 source .venv/bin/activate        # Linux / macOS
 # .venv\Scripts\activate         # Windows
 pip install -r requirements.txt
+pip install -r requirements-docling.txt   # optional: only for DOCLING_ENABLED=true
 ```
 
 ### 2. Download Voice Models
@@ -216,7 +240,8 @@ Place both files in the project root directory.
 > local OIDC rig against a Keycloak container.
 
 ```bash
-# Terminal 1 — quick single-user dev (Postgres + SearXNG + TTS backend, auth off)
+# Terminal 1 — quick single-user dev (Postgres + SearXNG + the backend container
+# running your working tree, auth off; BACKEND_RUNTIME=venv for the bare-metal one)
 ./startup.sh up
 
 # Or, the full local OIDC rig (also starts Keycloak on :18080, creates .env on
@@ -243,8 +268,8 @@ npm run dev
 first run — see `deploy/README.md`); edit it to change ports or point at a
 different IdP. `up` also reads `.env` but forces `AUTH_ENABLED=false` (the
 backend's startup guard allows this only on a loopback bind). Ctrl-C on either
-SIGTERMs the backend and stops the containers cleanly; `./startup.sh down` does
-the same without starting anything.
+stops the backend and the containers cleanly; `./startup.sh stop` (or `down`)
+does the same without starting anything.
 
 #### On Windows
 
@@ -569,7 +594,7 @@ In addition, [server/app.py](server/app.py) defaults to `allow_origins=["*"]` (w
 ### What is *not* a vulnerability (worth saying out loud)
 
 - **Chat history, sessions, document library** — all in IndexedDB, sandboxed per origin. Other websites can't read them.
-- **Bind addresses** — Kokoro and Ollama listen on `127.0.0.1` only by default (both now; Kokoro via [run.py](run.py) — set `HOST=0.0.0.0` explicitly for a container/proxy deployment). Only the proxy is internet-facing.
+- **Bind addresses** — Kokoro and Ollama listen on `127.0.0.1` only by default (both now; Kokoro via [run.py](run.py)). The backend container uses host networking and keeps that `127.0.0.1` bind, so leave `HOST` unset behind nginx; `HOST=0.0.0.0` exposes the port on every interface. Only the proxy is internet-facing.
 - **TLS** — terminated at nginx with a real cert; in-transit traffic is fine.
 - **Input shapes** — both backends do ML inference. There's no shell-out, no eval, no SQL. The risk is *resource consumption*, not RCE.
 

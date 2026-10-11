@@ -1,0 +1,11 @@
+# Build-context ALLOW-list: everything is excluded unless re-included below, so a
+# new secret-bearing file (.env, tmp/ credentials, data/) can never ship by default.
+# Read by Docker and podman (podman also reads .containerignore; Docker does not).
+*
+!server/
+!run.py
+!requirements.txt
+!requirements-docling.txt
+server/tests/
+**/__pycache__/
+**/*.pyc

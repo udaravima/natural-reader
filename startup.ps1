@@ -469,7 +469,7 @@ function Invoke-Init([string] $Requested) {
     }
     Write-Step "Installing Python dependencies from requirements.txt"
     Invoke-Native $VenvPython @("-m", "pip", "install", "--upgrade", "pip")
-    Invoke-Native $VenvPython @("-m", "pip", "install", "-r", "requirements.txt")
+    Invoke-Native $VenvPython @("-m", "pip", "install", "-r", "requirements.txt", "-r", "requirements-docling.txt")
 
     # --- Kokoro model files --------------------------------------------------
     # Non-empty, not merely present: a zero-byte leftover from an aborted run
