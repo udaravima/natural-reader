@@ -122,6 +122,14 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **Kokoro uses the CPU build of ONNX Runtime (`onnxruntime`).** The
+  OpenVINO build in `requirements.txt` never actually ran: `kokoro-onnx`
+  also installs `onnxruntime`, both write the same `onnxruntime/` folder,
+  and the app fell back to CPU without saying so, on Linux and in the
+  image. The image is about 500 MB smaller. To accelerate a bare-metal
+  install, swap the build as the README's Hardware Acceleration section
+  shows, then check the startup providers line.
+
 - **`up` / `up-with-dev-auth` run the backend container on your working
   tree** (code edits apply on restart). `BACKEND_RUNTIME=venv` keeps the
   bare-metal backend, from the shell or as the checkout's default in `.env`. Docling moved to `requirements-docling.txt`. Every
@@ -198,6 +206,13 @@ All notable changes to this project will be documented in this file.
   exported, so it never reached the backend; `.env` controls Docling.
 
 ### Fixed
+
+- **Windows bare metal:** the backend no longer crashes printing ✓ / → on
+  a cp1252 console (UTF-8 console streams, and `PYTHONUTF8=1` in
+  `startup.ps1`). Chat and documents work: uvicorn and `asyncio.run` now
+  use a selector event loop, because psycopg can't use the Windows default.
+  Postgres is reached at `127.0.0.1:5433` rather than `localhost`, which
+  Windows tries as IPv6 `::1` first.
 
 - **Log out ends the Keycloak session too.** The app cleared its OIDC session
   before reading the ID token it keeps for logout, so Keycloak never got the

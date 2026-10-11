@@ -49,8 +49,18 @@ bound to the host's loopback (Postgres `:5433`, Keycloak `:18080`, SearXNG
 the browser and the backend. A bridged container sees its own loopback, not the
 host's, so each of those would need a different URL. With host networking
 nothing changes: the backend still binds `127.0.0.1:8000` (`HOST`), and nginx
-keeps proxying to it. The container is supported on Linux x86_64 only (the
-Kokoro runtime has no ARM Linux build).
+keeps proxying to it. The container is supported on Linux x86_64; ARM is
+untested.
+
+### CPU only
+
+The image runs Kokoro (and Docling) on the CPU. It passes no GPU or NPU device
+into the container and ships no accelerated ONNX Runtime. Intel GPUs and NPUs
+would need `/dev/dri` / `/dev/accel`, the render group and Intel's compute
+runtime in the image; NVIDIA would need the NVIDIA container toolkit and an
+`onnxruntime-gpu` image with CUDA libraries (gigabytes). For acceleration
+today, run the backend bare metal with an accelerated build (README, Hardware
+Acceleration).
 
 ### Paths are host paths
 

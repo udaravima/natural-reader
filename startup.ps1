@@ -56,8 +56,7 @@ $ModelFiles = @("kokoro-v1.0.onnx", "voices-v1.0.bin")
 
 # Minimum tool versions, kept in sync with the README "Software Requirements"
 # and startup.sh. Python: the chat server uses inspect.getasyncgenstate (3.12+),
-# and onnxruntime-openvino (pinned in requirements.txt for Kokoro) publishes
-# wheels only for Python <3.14.
+# and 3.14 is untested with the pinned dependencies, so it is excluded.
 $PythonMin = [version]"3.12.0"
 $PythonMaxExcl = [version]"3.14.0"
 # Tried in order; the first in range wins. The default Python first, then an
@@ -136,7 +135,7 @@ function Assert-PythonVersion {
         }
     }
     Stop-WithError ("No Python in [$PythonMin, $PythonMaxExcl) found: install Python 3.12 or 3.13 from " +
-        "https://www.python.org/downloads/ and tick 'Add to PATH' (onnxruntime-openvino has no 3.14 wheels).")
+        "https://www.python.org/downloads/ and tick 'Add to PATH' (3.14 is untested).")
 }
 
 # Node ^20.19.0 || >=22.12.0: Vite 7 (Rolldown) + @vitejs/plugin-react.
@@ -503,6 +502,8 @@ function Invoke-Init([string] $Requested) {
 function Invoke-Up([string] $Mode) {
     $engineName = Resolve-Engine
     if (-not (Test-Path -LiteralPath $VenvPython)) { Stop-WithError "Python environment missing. Run '.\startup.ps1 init' first." }
+    # Windows consoles default to cp1252; the backend prints and logs UTF-8.
+    $env:PYTHONUTF8 = "1"
 
     if ($Mode -eq "dev-auth") {
         Initialize-EnvFile

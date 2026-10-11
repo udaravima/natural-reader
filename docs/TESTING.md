@@ -60,7 +60,7 @@ Backend test conventions that matter when writing new cases:
 - Budget tests need a real `users` row (FK target) — provision with
   `resolve_or_provision_user`.
 - Reset a poisoned test DB:
-  `psql "postgresql://natural_reader:natural_reader@localhost:5433/postgres" -c 'DROP DATABASE IF EXISTS natural_reader_test;'`
+  `psql "postgresql://natural_reader:natural_reader@127.0.0.1:5433/postgres" -c 'DROP DATABASE IF EXISTS natural_reader_test;'`
 
 ## Feature → test ownership
 

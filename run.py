@@ -13,6 +13,7 @@ import os
 import uvicorn
 
 from server.logging_config import configure_logging
+from server.platform_compat import uvicorn_loop
 
 if __name__ == "__main__":
     # Configure logging before anything else so startup messages are captured to
@@ -29,7 +30,8 @@ if __name__ == "__main__":
     # When workers > 1 uvicorn needs an import string so each child can
     # re-import the app. The single-worker path is unchanged.
     if workers > 1:
-        uvicorn.run("server.app:app", host=host, port=port, workers=workers, log_config=None)
+        uvicorn.run("server.app:app", host=host, port=port, workers=workers, log_config=None,
+                    loop=uvicorn_loop())
     else:
         from server.app import app
-        uvicorn.run(app, host=host, port=port, log_config=None)
+        uvicorn.run(app, host=host, port=port, log_config=None, loop=uvicorn_loop())

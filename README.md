@@ -167,7 +167,7 @@ It checks for a container engine (podman with podman-compose 1.1+, or Docker wit
 | `./startup.sh up` / `up-with-dev-auth` | dev: the backend container runs your working tree; Ctrl-C stops everything |
 | `BACKEND_RUNTIME=venv ./startup.sh up` | the bare-metal backend, as before the container (needs `./startup.sh init` and Python 3.12–3.13). Put `BACKEND_RUNTIME=venv` in `.env` to make it the default for `up` / `up-with-dev-auth` |
 
-**Supported:** Linux on x86_64. **Not supported in the container:** ARM machines, including Apple Silicon Macs (the Kokoro runtime `onnxruntime-openvino` has no ARM Linux build), and macOS in general is untested (its stock bash 3.2 can't run `startup.sh`). **Windows** and macOS use the bare-metal flow (`startup.ps1` / `startup.cmd` on Windows, Python 3.12–3.13) described below.
+**Supported:** Linux on x86_64. **Not supported in the container:** ARM machines, including Apple Silicon Macs (untested there), and macOS in general is untested (its stock bash 3.2 can't run `startup.sh`). **Windows** and macOS use the bare-metal flow (`startup.ps1` / `startup.cmd` on Windows, Python 3.12–3.13) described below.
 
 ### Software Requirements
 
@@ -178,7 +178,7 @@ Install this before you start. The app is split into a **React frontend** (Vite)
 | Software | Version | Why |
 |----------|---------|-----|
 | **Node.js** + **npm** | `20.19+` **or** `22.12+` | Frontend dev server / build. Vite 7 (Rolldown) and `@vitejs/plugin-react` declare `engines: ^20.19.0 \|\| >=22.12.0` — older Node will fail to start. npm ships with Node. |
-| **Python** | `3.12`–`3.13` | The backend (`run.py`). The chat server needs 3.12+ (`inspect.getasyncgenstate`); `onnxruntime-openvino` (Kokoro) has no 3.14 wheels. |
+| **Python** | `3.12`–`3.13` | The backend (`run.py`). The chat server needs 3.12+ (`inspect.getasyncgenstate`); 3.14 is untested. |
 | **Git** | any recent | Clone the repository |
 | **wget** or **curl** | any | Download the Kokoro voice model files (~335 MB total — see step 2) |
 
@@ -362,7 +362,11 @@ All knobs are optional; see the `WEB_SEARCH_*` and `SEARXNG_URL` entries in `.en
 
 ### Hardware Acceleration
 
-The TTS backend automatically detects and uses the best available hardware:
+The TTS backend uses the best execution provider that the installed ONNX
+Runtime build offers. `requirements.txt` installs the **CPU** build, and so
+does the container image. To accelerate a bare-metal install, swap the build
+in your venv. Remove `onnxruntime` first: `kokoro-onnx` pulls it in, and two
+builds in one venv overwrite each other, which leaves you silently on CPU.
 
 | Priority | Hardware | Package | Notes |
 |----------|----------|---------|-------|
@@ -373,12 +377,15 @@ The TTS backend automatically detects and uses the best available hardware:
 | 5 | **CPU** | `onnxruntime` | Standard fallback |
 
 ```bash
-# For Intel Arc / NPU (default in requirements.txt)
-pip install onnxruntime-openvino openvino>=2024.0.0
-
-# For NVIDIA GPU
-pip install onnxruntime-gpu
+# Intel Arc GPU / NPU / CPU via OpenVINO
+pip uninstall -y onnxruntime && pip install onnxruntime-openvino openvino
+# NVIDIA GPU
+pip uninstall -y onnxruntime && pip install onnxruntime-gpu
 ```
+
+Check the backend's startup line `Available ONNX Runtime providers: [...]`:
+it must list `OpenVINOExecutionProvider` or `CUDAExecutionProvider`, or you are
+on CPU. The container is CPU-only (see `docs/DEPLOYMENT.md`).
 
 ---
 
