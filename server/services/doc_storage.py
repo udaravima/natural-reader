@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,27 @@ _EXT = {"pdf": "pdf", "text": "txt", "markdown": "md"}
 def storage_dir() -> Path:
     raw = os.environ.get("DOC_STORAGE_DIR") or os.environ.get("PDF_STORAGE_DIR") or "./data/pdfs"
     return Path(raw).resolve()
+
+
+_STORED_NAME = re.compile(r"[0-9a-f]{64}\.(?:pdf|txt|md)")
+
+
+def resolve_stored(raw: str | os.PathLike | None) -> Path | None:
+    """Where a document's bytes are now.
+
+    documents.bytes_path holds the absolute path at upload time, and the
+    bare-metal backend and the container (/app/data/pdfs) see the same files
+    under different paths. Use the stored path while it exists; otherwise
+    look for the same <doc_id>.<ext> file in the current storage folder.
+    Only our own file names are re-homed, so a stored value can never point
+    outside it.
+    """
+    if not raw:
+        return None
+    stored = Path(raw)
+    if stored.exists() or not _STORED_NAME.fullmatch(stored.name):
+        return stored
+    return storage_dir() / stored.name
 
 
 def _cap_mb(file_type: str) -> int:

@@ -212,6 +212,7 @@ async def run_pipeline(doc_id: str) -> None:
         if row is None:
             return
         state, file_type, bytes_path, conversion_state = row
+        bytes_path = doc_storage.resolve_stored(bytes_path)
         if state in ("stored", "extracting", "failed"):
             # Only native extraction from verified bytes makes content
             # server-derived; re-seeding from converted pages leaves
@@ -285,7 +286,7 @@ async def run_legacy_swap(doc_id: str) -> None:
             row = await cur.fetchone()
         if not row or row[0] != "indexed" or row[1] != "client" or not row[2]:
             return
-        bytes_path = row[2]
+        bytes_path = doc_storage.resolve_stored(row[2])
         # Legacy doc ids ARE the sha256 of their bytes (spec §4), so benign
         # legacy bytes always pass this. A mismatch means the bytes were
         # swapped in unverified (e.g. via the old, unverified /pdf route).
@@ -372,6 +373,7 @@ async def _rebuild_source(conn, doc_id: str, row) -> list[extract.Chunk]:
     """The text to re-chunk: converted pages; else the verified stored file;
     else (legacy content with no usable bytes) the chunks it has."""
     file_type, bytes_path, conversion_state, extracted_by = row
+    bytes_path = doc_storage.resolve_stored(bytes_path)
     if conversion_state == "converted":
         return await _page_chunks(conn, doc_id)
     if extracted_by == "server" and bytes_path and Path(bytes_path).is_file():

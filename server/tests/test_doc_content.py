@@ -74,6 +74,17 @@ async def test_gc_removes_only_orphans_and_their_bytes(db_conn, tmp_path):
     assert (await cur.fetchone())[0] == 0 and not f.exists()
 
 
+async def test_gc_removes_bytes_recorded_under_the_other_runtimes_folder(db_conn, tmp_path, monkeypatch):
+    monkeypatch.setenv("DOC_STORAGE_DIR", str(tmp_path))
+    a = await _user(db_conn, "a")
+    f = tmp_path / f"{D}.pdf"
+    f.write_bytes(b"%PDF-1.4")
+    await seed_doc(db_conn, D, a, bytes_path=f"/app/data/pdfs/{D}.pdf")
+    await doc_content.remove_entry(db_conn, a, D)
+    assert await doc_content.gc_content_if_orphaned(db_conn, D, trigger="test") is True
+    assert not f.exists()
+
+
 async def test_gc_keeps_content_placed_in_a_project(db_conn):
     a = await _user(db_conn, "a")
     await seed_doc(db_conn, D, None, project_ids=[await _project(db_conn, a)])

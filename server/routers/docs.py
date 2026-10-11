@@ -415,6 +415,7 @@ async def _after_upload(doc_id: str, staged, created: bool, existing):
             raise
         return doc_pipeline.run_pipeline
     state, extracted_by, bytes_path, conversion_state = existing
+    bytes_path = doc_storage.resolve_stored(bytes_path)
     old_file_ok = bool(bytes_path) and (
         await asyncio.to_thread(doc_storage.sha256_file, Path(bytes_path))) == doc_id
     if not old_file_ok or extracted_by == "client":
@@ -514,6 +515,7 @@ async def get_document_file(
     if row is None:
         raise refusal(404, "not_found", "Document not found")
     file_type, bytes_path, file_name = row
+    bytes_path = doc_storage.resolve_stored(bytes_path)
     if not bytes_path or not Path(bytes_path).is_file():
         raise refusal(409, "bytes_missing", "Upload the file again first.")
     return FileResponse(
@@ -689,6 +691,7 @@ async def start_index_job(doc_id: DocId, background: BackgroundTasks,
         if row is None:
             raise refusal(404, "not_found", "Document not found")
         state, bytes_path, conversion_state = row
+        bytes_path = doc_storage.resolve_stored(bytes_path)
         if state == "indexed":
             reason = await doc_content.content_ops_refusal(
                 conn, doc_id, principal.user_id, is_admin=is_admin)
@@ -774,7 +777,8 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
             if not row or not row[0]:
                 raise RuntimeError("No retained PDF for this document")
 
-            pages = await docling_convert.convert_pdf_to_markdown_pages(Path(row[0]), options)
+            pages = await docling_convert.convert_pdf_to_markdown_pages(
+                doc_storage.resolve_stored(row[0]), options)
             if not pages:
                 raise RuntimeError("Conversion produced no pages")
 
