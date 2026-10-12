@@ -137,6 +137,17 @@ describe('ProjectDocsTab', () => {
     await waitFor(() => expect(a.mergeDocuments).toHaveBeenCalledWith('p1', 'x', 'y'));
   });
 
+  it('tells same-named documents apart in the merge picker by version and last uploader', async () => {
+    const twinA = { ...report, id: 'a', version: 4, versions_count: 4, updated_by: { id: 'u1', name: 'Cara' } };
+    const twinB = { ...report, id: 'b', version: 1, versions_count: 1, updated_by: { id: 'u2', name: 'Olive' } };
+    mount(maintainer(), api({ documents: vi.fn(async () => [twinA, twinB, final]) }));
+    fireEvent.click(await screen.findByRole('button', { name: 'More actions for report-final.pdf' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mark as newer version of…' }));
+    const options = within(screen.getByLabelText('Mark report-final.pdf as a newer version of'))
+      .getAllByRole('option').slice(1).map((o) => o.textContent);
+    expect(options).toEqual(['report.pdf · v4 · Cara', 'report.pdf · v1 · Olive']);
+  });
+
   it("refreshes an open history when another row's merge adds a version to it", async () => {
     const merged = { ...report, version: 3, versions_count: 3 };
     const v3 = { ...history[0], version: 3, doc_id: 'h3', file_name: 'report-final.pdf', origin: 'merge', origin_version: 1 };

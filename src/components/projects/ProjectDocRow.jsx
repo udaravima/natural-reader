@@ -108,7 +108,12 @@ export default function ProjectDocRow({ theme, api, project, doc, others, mine, 
             aria-label={`Mark ${doc.name} as a newer version of`}
             className={`self-start max-w-full px-1.5 py-0.5 rounded border ${theme.border} ${theme.bg}`}>
             <option value="">Pick the document it replaces…</option>
-            {others.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+            {/* Version and last uploader tell same-named duplicates apart, the usual merge case. */}
+            {others.map((o) => (
+              <option key={o.id} value={o.id}>
+                {[o.name, `v${o.version}`, o.updated_by?.name].filter(Boolean).join(' · ')}
+              </option>
+            ))}
           </select>
           {target && (
             <>
