@@ -64,6 +64,13 @@ def display_name(name: Any) -> str:
     return text if len(text) <= NAME_CAP else text[:NAME_CAP].rstrip() + "…"
 
 
+def version_note_text(note: dict) -> str:
+    """How an old version is described to the model (V1 spec §7). The
+    project's name is someone else's text: one inert line, like any name."""
+    return (f'version {note["version"]} in project "{display_name(note["project"]["name"])}"; '
+            f'not the current version, which is version {note["current_version"]}')
+
+
 IN_PROGRESS = ("extracting", "extracted", "indexing")   # the pipeline runs on to "indexed" by itself
 DOC_SEARCH, DOC_READ, WEB = "search_documents", "read_document_pages", "web_search"
 
@@ -73,6 +80,14 @@ FIRST_LINE_WITH_PROFILE = "You are working in Natural Reader, an app for reading
 
 
 def _document_line(doc: ReadableDoc | None) -> str | None:
+    line = _document_line_base(doc)
+    if line and doc is not None and doc.version_note:
+        line += (f" It is an older version: {version_note_text(doc.version_note)}. "
+                 "Its facts may be out of date, so say so when that matters.")
+    return line
+
+
+def _document_line_base(doc: ReadableDoc | None) -> str | None:
     if doc is None:
         return None
     name = display_name(doc.name)

@@ -12,9 +12,9 @@ an SQL ON DELETE CASCADE never runs this code.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 from ..audit import audit
+from . import doc_storage
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,7 @@ async def gc_content_if_orphaned(conn, doc_id, *, trigger: str) -> bool:
             return False
         if row[0]:
             try:
-                Path(row[0]).unlink(missing_ok=True)
+                doc_storage.resolve_stored(row[0]).unlink(missing_ok=True)
             except OSError as e:
                 logger.warning("Could not remove bytes for doc %s: %s", doc_id, e)
         await conn.execute("DELETE FROM documents WHERE doc_id = %s", (doc_id,))

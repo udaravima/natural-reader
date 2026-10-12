@@ -1,5 +1,6 @@
 import { apiFetch } from '../utils/apiFetch';
 import { describeRefusal, noticeFor } from './apiErrors';
+import { projectsApi } from './projectsApi';
 
 /**
  * Parse a free-text tags field (comma-separated) into a clean array: trimmed,
@@ -36,7 +37,8 @@ export function parseTagsInput(text) {
  *
  * Returns `{docId, dedup, state}` from the server's response. `docId` is the
  * server's hash, which is authoritative even if it differs from the client's
- * own guess (a lying or stale `clientDocId`).
+ * own guess (a lying or stale `clientDocId`). `link` (when it linked): the
+ * filing's outcome, see linkDocToProject.
  */
 export async function registerDocument({
     apiHost, apiPort, file, fileName, clientDocId, projectId, tags, linkProject = true,
@@ -51,23 +53,21 @@ export async function registerDocument({
     const body = await res.json();
     const result = { docId: body.doc_id, dedup: !!body.dedup, state: body.state };
     if (projectId && linkProject) {
-        await linkDocToProject({ apiHost, apiPort, projectId, docId: result.docId });
+        result.link = await linkDocToProject({ apiHost, apiPort, projectId, docId: result.docId });
     }
     return result;
 }
 
 // Fail-soft: the document is in the library either way; a failed link is
-// logged and must not block the indexing/conversion that follows.
-export async function linkDocToProject({ apiHost, apiPort, projectId, docId }) {
+// logged and must not block the indexing/conversion that follows. Returns
+// the outcome (V1): { filed }, { conflict } — the project already has this
+// name or these bytes, so the app asks (NameMatchDialog) — or { error }.
+export async function linkDocToProject({ apiHost, apiPort, projectId, docId, choice }) {
     try {
-        const res = await apiFetch(
-            apiHost, apiPort,
-            `/v1/projects/${encodeURIComponent(projectId)}/docs/${encodeURIComponent(docId)}`,
-            { method: 'PUT' },
-        );
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return await projectsApi(apiHost, apiPort).fileDoc(projectId, docId, choice);
     } catch (e) {
         console.error('Doc project link failed:', e);
+        return { error: e.message };
     }
 }
 

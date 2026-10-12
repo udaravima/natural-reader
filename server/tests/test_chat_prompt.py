@@ -373,3 +373,15 @@ def test_the_profile_and_the_date_both_fit():
     rules = system_rules(FIELD(), [], has_pins=False, profile="Be brief.", today="Today is Monday, 5 October 2026 (UTC).")
     assert rules.startswith("Be brief.\n\nYou are working in Natural Reader, an app for reading and listening "
                             "to documents. Today is Monday, 5 October 2026 (UTC).\n\n")
+
+
+def test_an_old_version_is_named_as_one_in_the_rules():
+    from server.chat.prompt import system_rules
+    from server.services.doc_search import ReadableDoc
+    note = {"project": {"id": "p", "name": "Q3 <team>"}, "version": 1, "current_version": 3}
+    doc = ReadableDoc("d" * 64, "report.pdf", "indexed", 4, version_note=note)
+    rules = system_rules(doc, [], has_pins=False)
+    assert 'It is an older version: version 1 in project "Q3 ‹team›"' in rules
+    assert "say so when that matters" in rules
+    plain = system_rules(ReadableDoc("d" * 64, "report.pdf", "indexed", 4), [], has_pins=False)
+    assert "older version" not in plain

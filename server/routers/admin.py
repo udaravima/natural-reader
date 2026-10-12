@@ -164,7 +164,8 @@ async def list_projects(ownerless: bool = False,
     cur = await conn.execute(
         "SELECT p.id, p.name, p.created_at, "
         "(SELECT count(*) FROM project_members m WHERE m.project_id = p.id), "
-        "(SELECT count(*) FROM project_documents d WHERE d.project_id = p.id AND d.verified), "
+        "(SELECT count(*) FROM project_documents d "  # CURRENT
+        "WHERE d.project_id = p.id AND d.verified AND d.is_current), "
         "COALESCE((SELECT json_agg(json_build_object('id', u.id, 'first_name', u.first_name, "
         "'last_name', u.last_name, 'display_name', u.display_name, 'username', u.username, "
         "'email', u.email) ORDER BY m.added_at, u.id) "

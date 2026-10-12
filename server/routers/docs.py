@@ -39,15 +39,17 @@ from ..auth.authz import (
     assert_can_read_doc,
     assert_holds_upload,
     effective_holding_sql,
-    readable_docs_params,
-    readable_docs_where,
+    listed_docs_params,
+    listed_docs_where,
     visible_projects_params,
     visible_projects_where,
 )
 from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
-from ..http_errors import refusal
-from ..services import doc_content, doc_pipeline, doc_storage, docling_convert, people
+from ..http_errors import BUSY_MESSAGE, refusal
+from ..services import (
+    doc_content, doc_pipeline, doc_storage, doc_versions, docling_convert, people,
+)
 from ..services.doc_search import ReadableDoc, search_chunks
 from ..services.embeddings import embed_query
 
@@ -111,19 +113,22 @@ def _epoch_ms(ts) -> int:
 
 
 def _doc_projects_sql(alias: str) -> str:
-    """JSON array `[{id, name}]` of the projects `<alias>` is placed in that the
-    caller can see. Everyone — including whoever uploaded it — sees only
-    projects they own or belong to: listing others would leak their names, and
-    under A1 an uploader can't unlink from a project anyway. A placement that
-    doesn't grant read (unverified — migration 012) isn't listed either.
-    Sorted by name, then id. Bind with `_doc_projects_params(user_id)`; SELECT-list params come
-    BEFORE join and WHERE params."""
+    """JSON array `[{id, name, document_id, version, versions_count}]`: the
+    visible projects where `<alias>` is a document's verified CURRENT version
+    (V1 spec §5.2). An old version is never a chip — `newer_in` covers it.
+    Everyone, including whoever uploaded it, sees only projects they belong
+    to: listing others would leak their names. Sorted by name, then id. Bind
+    with `_doc_projects_params(user_id)`; SELECT-list params come BEFORE join
+    and WHERE params."""
     return (
-        "COALESCE((SELECT json_agg(json_build_object('id', _vp.id, 'name', _vp.name) "
+        "COALESCE((SELECT json_agg(json_build_object('id', _vp.id, 'name', _vp.name, "
+        "'document_id', _vpd.project_doc_id, 'version', _vpd.version, "
+        "'versions_count', (SELECT count(*) FROM project_documents _vc "  # HISTORY
+        "WHERE _vc.project_doc_id = _vpd.project_doc_id AND _vc.verified)) "
         "ORDER BY _vp.name, _vp.id) "
-        "FROM project_documents _vpd JOIN projects _vp ON _vp.id = _vpd.project_id "
-        f"WHERE _vpd.doc_id = {alias}.doc_id AND {effective_holding_sql('_vpd')} "
-        f"AND {visible_projects_where('_vp')}), '[]'::json)"
+        "FROM project_documents _vpd JOIN projects _vp ON _vp.id = _vpd.project_id "  # CURRENT
+        f"WHERE _vpd.doc_id = {alias}.doc_id AND _vpd.is_current "
+        f"AND {effective_holding_sql('_vpd')} AND {visible_projects_where('_vp')}), '[]'::json)"
     )
 
 
@@ -137,24 +142,12 @@ _ENTRY_JOIN = (
     "LEFT JOIN library_entries _me ON _me.doc_id = d.doc_id AND _me.user_id = %s "
     "LEFT JOIN users _sb ON _sb.id = _me.shared_by"
 )
-# The name the caller sees. Their own entry's name; for a row they see only
-# through a project, the name the user who filed it there gave it (their
-# entry's); else the canonical name. The canonical name is the FIRST uploader
-# anywhere's file name, so falling back to it for a project row would show a
-# stranger's name. Needs `_ENTRY_JOIN`; bind with `_display_name_params`.
-_DISPLAY_NAME = (
-    "COALESCE(_me.file_name, CASE WHEN _me.user_id IS NULL THEN ("
-    "SELECT _ne.file_name FROM project_documents _npd "
-    "JOIN projects _np ON _np.id = _npd.project_id "
-    "JOIN library_entries _ne ON _ne.user_id = _npd.added_by AND _ne.doc_id = _npd.doc_id "
-    "WHERE _npd.doc_id = d.doc_id AND _ne.file_name IS NOT NULL "
-    f"AND {effective_holding_sql('_npd')} AND {visible_projects_where('_np')} "
-    "ORDER BY _npd.added_at, _npd.project_id LIMIT 1) END, d.file_name)"
-)
-
-
-def _display_name_params(user_id: str) -> list[str]:
-    return visible_projects_params(user_id)
+# The name the caller sees (V1 spec §7): their entry's; for a row they see
+# only through a project, the name stored on a visible version (as filed —
+# never borrowed live from the filer's entry); else the canonical name.
+# Needs `_ENTRY_JOIN`; bind with `_display_name_params`.
+_DISPLAY_NAME = doc_versions.display_name_sql("d", "_me")
+_display_name_params = doc_versions.display_name_params
 
 
 # Bind with `_display_name_params(user_id)`.
@@ -182,6 +175,7 @@ async def _fetch_doc_status(conn, doc_id: str, user_id: str) -> dict[str, Any] |
                    d.conversion_state, d.conversion_options, d.conversion_error,
                    d.converted_at, d.bytes_path, {_ENTRY_COLS},
                    {_doc_projects_sql('d')} AS projects,
+                   {doc_versions.versions_in_sql('d')} AS versions_in,
                    COALESCE(c.cnt, 0) AS chunk_count,
                    COALESCE(c.embedded, 0) AS embedded_count,
                    COALESCE(p.page_cnt, 0) AS converted_page_count
@@ -199,7 +193,8 @@ async def _fetch_doc_status(conn, doc_id: str, user_id: str) -> dict[str, Any] |
             ) p ON p.doc_id = d.doc_id
             WHERE d.doc_id = %s
             """,
-            [*_display_name_params(user_id), *_doc_projects_params(user_id), user_id, doc_id],
+            [*_display_name_params(user_id), *_doc_projects_params(user_id),
+             *doc_versions.versions_in_params(user_id), user_id, doc_id],
         )
         row = await cur.fetchone()
         if not row:
@@ -270,17 +265,18 @@ async def list_documents(
     principal: Principal = Depends(require_capability("reader")),
 ) -> list[dict[str, Any]]:
     """
-    List docs in my library (uploaded or shared with me) plus docs placed in
-    projects I own or belong to. Access is resolved in SQL via
-    `readable_docs_where` — never post-filtered in Python — so a doc nobody
+    List docs in my library (uploaded or shared with me) plus the CURRENT
+    versions of documents in projects I belong to (V1 spec §2: old versions
+    are readable, never listed). Access is resolved in SQL via
+    `listed_docs_where` — never post-filtered in Python — so a doc nobody
     gave me can never appear, even if it happens to match `q`/`tag`. Name,
     tags, `added_via` and `shared_by` come from MY entry; a project-only row
     has `in_library: false` and the name its filer gave it (`_DISPLAY_NAME`).
     """
     _ensure_ready()
     uid = principal.user_id
-    where = [readable_docs_where("d")]
-    where_params: list[Any] = readable_docs_params(uid)
+    where = [listed_docs_where("d")]
+    where_params: list[Any] = listed_docs_params(uid)
     if q:
         # Match the name the caller is shown, never a name they can't see.
         where.append(f"({_DISPLAY_NAME} ILIKE %s OR %s = ANY(_me.tags))")
@@ -291,7 +287,7 @@ async def list_documents(
         where.append(
             "EXISTS (SELECT 1 FROM project_documents _fpd "
             "JOIN projects _fp ON _fp.id = _fpd.project_id "
-            f"WHERE _fpd.doc_id = d.doc_id AND _fpd.project_id = %s "
+            f"WHERE _fpd.doc_id = d.doc_id AND _fpd.project_id = %s AND _fpd.is_current "  # CURRENT
             f"AND {effective_holding_sql('_fpd')} AND {visible_projects_where('_fp')})"
         )
         where_params += [project_id, *visible_projects_params(uid)]
@@ -299,12 +295,14 @@ async def list_documents(
         where.append("%s = ANY(_me.tags)")
         where_params.append(tag)
     sql = (
-        f"SELECT d.doc_id, d.state, {_ENTRY_COLS}, {_doc_projects_sql('d')} AS projects "
+        f"SELECT d.doc_id, d.state, {_ENTRY_COLS}, {_doc_projects_sql('d')} AS projects, "
+        f"{doc_versions.versions_in_sql('d', only_old=True)} AS newer_in "
         f"FROM documents d {_ENTRY_JOIN} "
         f"WHERE {' AND '.join(where)} ORDER BY d.updated_at DESC"
     )
     # psycopg binds by position: SELECT-list params, then the join, then WHERE.
-    params = [*_display_name_params(uid), *_doc_projects_params(uid), uid, *where_params]
+    params = [*_display_name_params(uid), *_doc_projects_params(uid),
+              *doc_versions.versions_in_params(uid), uid, *where_params]
     pool = get_pool()
     async with pool.connection() as conn:
         cur = await conn.execute(sql, params)
@@ -363,13 +361,21 @@ async def register_document(
     return {"doc_id": doc_id, "dedup": not created, "state": state}
 
 
-async def _add_upload_entry(user_id: str, staged, name: str, tags: list[str]):
-    """Create-or-find the content and give the user an upload entry, in one
-    transaction. Retries ONCE if a GC removed the row between our conflicting
-    INSERT and our lock (spec §3, races) — the caller never sees a 5xx."""
+async def _store_and_hold(staged, name: str, hold, *, prelock=None):
+    """Create-or-find the content and insert ONE holding for it, in one
+    transaction (A1 spec §3, races): the content row is inserted, or locked
+    FOR SHARE if it exists, then `hold(conn, created)` inserts the holding —
+    a library entry, or (V1) a project document's version — and returns its
+    outcome; raising rolls it all back. `prelock(conn)` runs FIRST in the
+    same transaction: a version upload locks its document there, so the lock
+    order is project_docs → documents everywhere (V1 spec §4.4). Retries ONCE
+    if a GC removed the row between our conflicting INSERT and our lock — the
+    caller never sees a 5xx. Returns (created, existing, outcome)."""
     for attempt in (1, 2):
         async with get_pool().connection() as conn:
             async with conn.transaction():
+                if prelock is not None:
+                    await prelock(conn)
                 cur = await conn.execute(
                     "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, state, "
                     "extracted_by) VALUES (%s,%s,%s,%s,'extracting','server') "
@@ -384,16 +390,25 @@ async def _add_upload_entry(user_id: str, staged, name: str, tags: list[str]):
                             logger.warning("Upload of %s lost a race with GC; retrying once",
                                            staged.sha256)
                             continue
-                        raise refusal(503, "busy", "Please try again.")
-                # The bytes are in hand: this is the one caller that verifies.
-                outcome = await doc_content.add_entry(
-                    conn, user_id, staged.sha256, via="upload", verified=True, tags=tags,
-                    file_name=None if created else name)
-        if outcome != "exists":
-            audit("entry.added", user=user_id, doc=staged.sha256, via="upload",
-                  dedup=str(not created).lower())
-        return created, existing
+                        raise refusal(503, "busy", BUSY_MESSAGE)
+                outcome = await hold(conn, created)
+        return created, existing, outcome
     raise AssertionError("unreachable")
+
+
+async def _add_upload_entry(user_id: str, staged, name: str, tags: list[str]):
+    """The library holding: an upload entry — the one caller that verifies,
+    because the bytes are in hand."""
+    async def hold(conn, created):
+        return await doc_content.add_entry(
+            conn, user_id, staged.sha256, via="upload", verified=True, tags=tags,
+            file_name=None if created else name)
+
+    created, existing, outcome = await _store_and_hold(staged, name, hold)
+    if outcome != "exists":
+        audit("entry.added", user=user_id, doc=staged.sha256, via="upload",
+              dedup=str(not created).lower())
+    return created, existing
 
 
 async def _after_upload(doc_id: str, staged, created: bool, existing):
@@ -415,6 +430,7 @@ async def _after_upload(doc_id: str, staged, created: bool, existing):
             raise
         return doc_pipeline.run_pipeline
     state, extracted_by, bytes_path, conversion_state = existing
+    bytes_path = doc_storage.resolve_stored(bytes_path)
     old_file_ok = bool(bytes_path) and (
         await asyncio.to_thread(doc_storage.sha256_file, Path(bytes_path))) == doc_id
     if not old_file_ok or extracted_by == "client":
@@ -514,6 +530,7 @@ async def get_document_file(
     if row is None:
         raise refusal(404, "not_found", "Document not found")
     file_type, bytes_path, file_name = row
+    bytes_path = doc_storage.resolve_stored(bytes_path)
     if not bytes_path or not Path(bytes_path).is_file():
         raise refusal(409, "bytes_missing", "Upload the file again first.")
     return FileResponse(
@@ -689,6 +706,7 @@ async def start_index_job(doc_id: DocId, background: BackgroundTasks,
         if row is None:
             raise refusal(404, "not_found", "Document not found")
         state, bytes_path, conversion_state = row
+        bytes_path = doc_storage.resolve_stored(bytes_path)
         if state == "indexed":
             reason = await doc_content.content_ops_refusal(
                 conn, doc_id, principal.user_id, is_admin=is_admin)
@@ -774,7 +792,8 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
             if not row or not row[0]:
                 raise RuntimeError("No retained PDF for this document")
 
-            pages = await docling_convert.convert_pdf_to_markdown_pages(Path(row[0]), options)
+            pages = await docling_convert.convert_pdf_to_markdown_pages(
+                doc_storage.resolve_stored(row[0]), options)
             if not pages:
                 raise RuntimeError("Conversion produced no pages")
 

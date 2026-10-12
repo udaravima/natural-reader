@@ -7,6 +7,9 @@ gives someone else an entry, a *placement* files content into a project.
 Rows are VERIFIED by default — they model post-A1 state, where every holding
 traces back to someone who uploaded the bytes. Pass `verified=False` to seed
 a legacy row as migration 012 leaves it (a pre-A1 claim nobody proved).
+
+A placement is a project document's version (V1, migration 018): place_doc makes
+a new document at v1; add_version appends to one.
 """
 from __future__ import annotations
 
@@ -36,10 +39,43 @@ async def share_doc(conn, doc_id, sharer_id, recipient_id, *, verified=True):
         (recipient_id, doc_id, sharer_id, verified))
 
 
-async def place_doc(conn, project_id, doc_id, added_by, *, verified=True):
+async def place_doc(conn, project_id, doc_id, added_by, *, verified=True, file_name=None):
+    """File content into a project as a NEW document: version 1, current
+    (V1 spec §3). Named like migration 018 names a placement: `file_name`,
+    else the filer's entry name, else the canonical name. Returns the
+    project document's id."""
+    cur = await conn.execute(
+        "INSERT INTO project_docs (project_id, created_by, last_version) "
+        "VALUES (%s,%s,1) RETURNING id", (project_id, added_by))
+    pdoc = str((await cur.fetchone())[0])
     await conn.execute(
-        "INSERT INTO project_documents (project_id, doc_id, added_by, verified) "
-        "VALUES (%s,%s,%s,%s)", (project_id, doc_id, added_by, verified))
+        "INSERT INTO project_documents (project_id, project_doc_id, version, doc_id, file_name, "
+        "origin, is_current, added_by, verified) VALUES (%s,%s,1,%s,COALESCE(%s,"
+        "(SELECT e.file_name FROM library_entries e WHERE e.user_id = %s AND e.doc_id = %s),"
+        "(SELECT d.file_name FROM documents d WHERE d.doc_id = %s)),'upload',true,%s,%s)",
+        (project_id, pdoc, doc_id, file_name, added_by, doc_id, doc_id, added_by, verified))
+    return pdoc
+
+
+async def add_version(conn, project_doc_id, doc_id, added_by, *, file_name=None, verified=True,
+                      origin="upload", origin_version=None, note=None, current=True):
+    """Append a version to a project document WITHOUT the service's rules,
+    for building histories in tests. `current=True` makes it the current one.
+    Named `file_name`, else the content's canonical name. Returns its number."""
+    cur = await conn.execute(
+        "UPDATE project_docs SET last_version = last_version + 1 WHERE id = %s "
+        "RETURNING last_version, project_id", (project_doc_id,))
+    n, project_id = await cur.fetchone()
+    if current:
+        await conn.execute("UPDATE project_documents SET is_current = false "
+                           "WHERE project_doc_id = %s AND is_current", (project_doc_id,))
+    await conn.execute(
+        "INSERT INTO project_documents (project_id, project_doc_id, version, doc_id, file_name, "
+        "note, origin, origin_version, is_current, added_by, verified) VALUES (%s,%s,%s,%s,"
+        "COALESCE(%s,(SELECT d.file_name FROM documents d WHERE d.doc_id = %s)),%s,%s,%s,%s,%s,%s)",
+        (project_id, project_doc_id, n, doc_id, file_name, doc_id, note, origin, origin_version,
+         current, added_by, verified))
+    return n
 
 
 async def make_project(conn, owner_id, name="P", *, members=()):

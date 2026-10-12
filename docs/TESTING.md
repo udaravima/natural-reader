@@ -38,14 +38,24 @@ spot a feature that shipped without coverage.
 # Backend — REQUIRES Postgres up (conftest migrates natural_reader_test on a
 # real connection; without the DB every test errors, not skips).
 podman-compose up -d postgres          # or: env -u XDG_DATA_HOME .venv/bin/podman-compose ...
-.venv/bin/python -m pytest server/tests/ -q          # 143 passed @ 2026-09-17
+.venv/bin/python -m pytest server/tests/ -q          # 1235 passed, 16 skipped, 2 deselected @ 2026-10-12
 
 # Frontend (vitest, jsdom — no services needed)
-npx vitest run                                       # 163 passed @ 2026-09-17
+npx vitest run                                       # 574 passed (83 files) @ 2026-10-12
 
 # Lint
 npm run lint
+
+# Opt-in, slow: build and run the real backend image and the compose Keycloak
+# entrypoint (deselected by default via pytest.ini addopts)
+.venv/bin/python -m pytest -m container -q
 ```
+
+`startup.sh` is tested without containers: `server/tests/startup_harness.py`
+copies the script into a temp project and replaces podman, compose, curl, npm,
+loginctl and systemctl with stubs that record their arguments
+(`test_startup_script.py`). `test_container_files.py` renders the compose
+files with the real podman-compose.
 
 Backend test conventions that matter when writing new cases:
 
@@ -60,7 +70,7 @@ Backend test conventions that matter when writing new cases:
 - Budget tests need a real `users` row (FK target) — provision with
   `resolve_or_provision_user`.
 - Reset a poisoned test DB:
-  `psql "postgresql://natural_reader:natural_reader@localhost:5433/postgres" -c 'DROP DATABASE IF EXISTS natural_reader_test;'`
+  `psql "postgresql://natural_reader:natural_reader@127.0.0.1:5433/postgres" -c 'DROP DATABASE IF EXISTS natural_reader_test;'`
 
 ## Feature → test ownership
 
@@ -239,6 +249,32 @@ no `_UsageTap` any more; usage accounting lives in the orchestrator.
 `test_security_hardening.py` — path traversal on `doc_id` (hex-regex gate),
 PDF storage path escape, CORS origin parsing (wildcard vs explicit list,
 credentials off/on), TTS/batch request size caps.
+
+### Document versions (V1)
+
+A project's documents gain a version history (spec:
+[superpowers/specs/2026-10-12-document-versions-design.md](superpowers/specs/2026-10-12-document-versions-design.md);
+rules in [LIBRARY.md](LIBRARY.md) "Versions (V1)"). The backend tests share
+`server/tests/versions_harness.py`, which builds an app with the project and
+document routers over real Postgres.
+
+| File | Pins |
+|---|---|
+| `test_migration_018.py` | a pre-018 database upgrades: every placement (normal, unverified legacy, filer renamed their entry, filer removed it) becomes a current v1 whose `file_name` equals what the project displayed before; `verified` kept; `last_version = 1` |
+| `test_document_versions_schema.py` | one current version per document; content current in at most one document per project (the duplicate guard); a version can't belong to another project's document; notes capped at 500 characters; removing a document removes its versions but not content someone else holds; the test seed names a placement like the migration does |
+| `test_doc_versions_read.py` | the current-versions listing (one row per document, sorted by name); history newest first, unverified versions hidden; another project's document is 404; `versions_in` names only visible projects and flags current; the highest number is reported when content repeats; the display-name order (my entry, a version's name, the canonical name); an old version is readable but not listed; SQL placeholders match their params |
+| `test_doc_versions_write.py` | add / restore / delete / merge / remove rules: a new current version is recorded; the same-bytes table (`already_current`, older bytes become a restore, `current_elsewhere`); restore appends a copy and refuses bytes a later version already holds; deleting an old version collects orphaned content and keeps shared content; merge order, numbering and refusals (`merge_self` only for a visible document); numbers are never reused; a legacy unverified current version is verified in place; note cleaning |
+| `test_doc_versions_concurrency.py` | two simultaneous uploads become consecutive versions; the same bytes into one document at once is one version and one 409; crossed merges: one wins, the other 404s, no deadlock; a version write overlapping a project deletion: both complete, no deadlock; the same bytes into two documents at once is a 409, not a 500 |
+| `test_project_documents_routes.py` | the `/v1/projects/{id}/documents` routes end to end: list, history, add, restore, delete, merge, remove; refusal shapes (every 409 names the document); `from-library` needs your own verified upload; note length is the service's rule (422), not pydantic's; a `DeadlockDetected` is `503 busy`, not a 500 |
+| `test_version_upload.py` | the multipart upload: new bytes become the indexed current version with no library entry added; known bytes aren't reprocessed; same-bytes rules; a row upload ignores another document's name; the note and the role are checked before any bytes are stored; a lost race with garbage collection retries once; the document is locked before the content row |
+| `test_project_filing.py` | `PUT …/docs/{doc_id}`: a new file is a new document and refiling is idempotent; a matching name asks, and `as_version_of` / `keep_both` both work; the same name in another project doesn't ask; older bytes offer a restore and win over a name match; content current elsewhere can't become another document's version; a legacy unverified current version is proved, not duplicated; a lost filing race is a 409 |
+| `test_project_permission_matrix.py` | every project-document action (see documents, see history, add a version, restore, delete an old version, merge, remove) against reader / contributor / maintainer / owner / non-member / admin-non-member, and a full walk through filing, versions, merge and removal writes no names, file names or notes at INFO or above (IDs, roles and counts only) |
+| `test_chat_tools.py`, `test_chat_prompt.py` | an old version's document listing carries `version_note` (and a current one doesn't); the system rules gain the older-version sentence only when a note is present |
+| `ProjectDocsTab.test.jsx` | one row per document with its version count; history newest first with Open / Restore / Delete by role; upload from a file or from my library, with a note; "matched an older version" message; merge and remove confirmations (naming the versions); an open history refreshes when another row's merge changes it; Reader sees no controls; a refusal reloads |
+| `NameMatchDialog.test.jsx`, `useProjectFiling.test.jsx` | the dialog's buttons for a name match and for an older version; Escape cancels; the hook files straight through, opens the dialog on a conflict, retries with the choice, and reports other refusals |
+| `LibraryPage.test.jsx` | chips show the version a project is on and the name opens the project; × asks first when there are several versions; the "has a newer version" line with Open current |
+| `OldVersionBanner.test.jsx`, `useVersionStatus.test.jsx`, `versions.test.js` | the banner's text and Open current, nothing when current, in normal flow (never over the toolbar); the hook refetches on a new version; the rule "old somewhere and current nowhere" (the README case shows no banner) |
+| `ActivityTab.test.jsx` | the four version events render as sentences |
 
 ### Frontend: auth UI
 

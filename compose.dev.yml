@@ -1,0 +1,9 @@
+# Dev overlay (./startup.sh up / up-with-dev-auth): run the working tree, not the
+# code baked into the image. Edits apply on restart; no rebuild. Never restarts
+# on its own (Ctrl-C on `up` tears the stack down, as before).
+services:
+  backend:
+    volumes:
+      - ./server:/app/server:ro
+      - ./run.py:/app/run.py:ro
+    restart: "no"

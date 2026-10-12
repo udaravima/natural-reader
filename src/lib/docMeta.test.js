@@ -98,6 +98,17 @@ describe('registerDocument', () => {
     expect(err).toHaveBeenCalled();
     err.mockRestore();
   });
+
+  it('returns the filing conflict so the app can ask', async () => {
+    const detail = { error: 'name_exists', document: { id: 'x', name: 'a.pdf', version: 1 } };
+    apiFetch.mockImplementation(async (host, port, path, opts) => {
+      if (path === '/v1/docs' && opts?.method === 'POST') return json(202, { doc_id: 'd1', dedup: false, state: 'stored' });
+      if (opts?.method === 'PUT') return { ok: false, status: 409, json: async () => ({ detail }) };
+      return json(404, {});
+    });
+    const result = await registerDocument({ ...baseArgs, tags: [], projectId: 'p1' });
+    expect(result.link).toEqual({ conflict: detail });
+  });
 });
 
 describe('parseTagsInput', () => {

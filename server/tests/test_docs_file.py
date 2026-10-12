@@ -74,6 +74,17 @@ async def test_owner_gets_the_bytes_inline_with_the_stored_type(db_conn, as_user
     assert _disposition(r) == ("inline", "paper.pdf")
 
 
+async def test_bytes_stored_under_the_other_runtimes_folder_are_still_served(db_conn, as_user, stored):
+    # Uploaded by the container (/app/data/pdfs), read by the bare-metal
+    # backend, or the reverse: same file, different absolute path.
+    owner = await _member(db_conn, "owner")
+    await seed.seed_doc(db_conn, DOC, owner.user_id, file_name="paper.pdf",
+                        bytes_path=f"/app/data/pdfs/{DOC}.pdf")
+    r = await _get(as_user, owner)
+    assert r.status_code == 200
+    assert r.content == PDF
+
+
 async def test_share_recipient_gets_the_bytes_under_the_name_the_sharer_gave(
         db_conn, as_user, stored):
     owner, recipient = await _member(db_conn, "owner"), await _member(db_conn, "recipient")

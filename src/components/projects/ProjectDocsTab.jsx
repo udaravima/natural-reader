@@ -1,18 +1,29 @@
-import { useCallback, useEffect, useState } from 'react';
-import { BookOpen, Loader2, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import ProjectDocRow from './ProjectDocRow';
+import NameMatchDialog from './NameMatchDialog';
+import { useProjectFiling } from '../../hooks/useProjectFiling';
+import { PROCESSING_STATES } from '../../lib/docStatusPoller';
+
+// While a row's content is still being indexed, the list is re-read so its
+// badge follows the state to indexed or failed (V1 §6). One read at a time;
+// capped, like the reader's index poll, so content stuck in `stored` (an
+// interrupted upload waiting for Index) doesn't poll for ever.
+const POLL_MS = 3000;
+const MAX_POLLS = 200; // ~10 minutes
 
 /**
- * A project's documents (A0 §10). Contributors and above file their own
- * uploads in; Maintainers and Owners remove any — after a confirmation,
- * because content nobody else holds is deleted with its last placement.
- * An admin who isn't a member sees counts only (§5), so this says so.
+ * A project's documents (A0 §10, V1 §6): one row per document — its current
+ * version — with the history underneath. Contributors file their own uploads
+ * in, upload new versions and restore old ones; Maintainers and Owners also
+ * merge documents, delete old versions and remove documents, after a
+ * confirmation. Filing a name or file the project already has asks first.
+ * An admin who isn't a member sees counts only (A0 §5), so this says so.
  */
 export default function ProjectDocsTab({ theme, api, project, showToast, onOpenDoc, onRefused, onChanged }) {
   const [docs, setDocs] = useState(null);
   const [error, setError] = useState(null);
   const [mine, setMine] = useState([]);
-  const [busyId, setBusyId] = useState(null);
-  const [confirmId, setConfirmId] = useState(null);
+  const [busy, setBusy] = useState(false);
   const member = project.my_role !== null;
   const { can } = project;
 
@@ -20,11 +31,11 @@ export default function ProjectDocsTab({ theme, api, project, showToast, onOpenD
     if (!member) return;
     try {
       const [inProject, all] = await Promise.all([
-        api.projectDocs(project.id),
+        api.documents(project.id),
         can.file_docs ? api.myDocs() : Promise.resolve([]),
       ]);
       setDocs(inProject);
-      setMine(all.filter((d) => d.added_via === 'upload' && !(d.projects || []).some((p) => p.id === project.id)));
+      setMine(all.filter((d) => d.added_via === 'upload'));
       setError(null);
     } catch (e) {
       setError(e.message);
@@ -33,40 +44,67 @@ export default function ProjectDocsTab({ theme, api, project, showToast, onOpenD
 
   useEffect(() => { load(); }, [load]);
 
-  const run = async (docId, fn, ok) => {
-    setBusyId(docId);
+  const settling = (docs || []).some((d) => PROCESSING_STATES.has(d.state));
+  const [pollTick, setPollTick] = useState(0);
+  const polls = useRef(0);
+  useEffect(() => {
+    if (!settling) { polls.current = 0; return undefined; }
+    if (polls.current >= MAX_POLLS) return undefined;
+    let live = true;
+    // The next read is scheduled only after this one finishes: no overlap.
+    const timer = setTimeout(async () => {
+      polls.current += 1;
+      await load();
+      if (live) setPollTick((n) => n + 1);
+    }, POLL_MS);
+    return () => { live = false; clearTimeout(timer); };
+  }, [settling, pollTick, load]);
+
+  // One action at a time across the tab. Any refusal reloads, because our
+  // role may have changed; `ok` is a message or a function of the result.
+  const run = useCallback(async (fn, ok) => {
+    setBusy(true);
     try {
-      await fn();
-      if (ok) showToast(ok, 3000);
+      const out = await fn();
+      const message = typeof ok === 'function' ? ok(out) : ok;
+      if (message) showToast(message, 3000);
       onChanged?.();
+      return true;
     } catch (e) {
       showToast(e.message, 5000);
       onRefused?.();
+      return false;
     } finally {
-      setBusyId(null);
-      setConfirmId(null);
+      setBusy(false);
       await load();
     }
-  };
+  }, [load, onChanged, onRefused, showToast]);
+
+  const filing = useProjectFiling({
+    fileDoc: api.fileDoc,
+    onFiled: (_filed, t) => { showToast(`Filed ${t.label} into ${project.name}.`, 3000); onChanged?.(); load(); },
+    onError: (message) => { showToast(message, 5000); onRefused?.(); load(); },
+  });
 
   if (!member) {
-    return <p className={`text-xs ${theme.textMuted}`}>Only members can see this project's documents.</p>;
+    return <p className={`text-xs ${theme.textMuted}`}>Only members can see this project&apos;s documents.</p>;
   }
+  const unfiled = mine.filter((d) => !(d.projects || []).some((p) => p.id === project.id));
   return (
     <div className="flex flex-col gap-2">
-      {can.file_docs && mine.length > 0 && (
+      {can.file_docs && unfiled.length > 0 && (
         <select
           value=""
           onChange={(e) => {
-            const d = mine.find((x) => x.doc_id === e.target.value);
-            if (d) run(d.doc_id, () => api.fileDoc(project.id, d.doc_id), `Filed ${d.file_name} into ${project.name}.`);
+            const d = unfiled.find((x) => x.doc_id === e.target.value);
+            if (d) filing.file({ projectId: project.id, projectName: project.name, docId: d.doc_id, label: d.file_name });
           }}
-          disabled={busyId !== null}
+          disabled={busy || filing.busy}
           aria-label="File a document into this project"
           className={`self-start px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg}`}
         >
           <option value="">File a document…</option>
-          {mine.map((d) => <option key={d.doc_id} value={d.doc_id}>{d.file_name}</option>)}
+          {unfiled.map((d) => <option key={d.doc_id} value={d.doc_id}>{d.file_name}</option>)}
         </select>
       )}
       {error && (
@@ -80,40 +118,10 @@ export default function ProjectDocsTab({ theme, api, project, showToast, onOpenD
       ) : docs.length === 0 ? (
         <p className={`text-xs ${theme.textMuted}`}>No documents in this project yet.</p>
       ) : docs.map((d) => (
-        <div key={d.doc_id} className={`flex flex-col gap-1 p-2 rounded-lg border ${theme.border} ${theme.bgSecondary}`}>
-          <div className="flex items-center justify-between gap-2">
-            <span className="flex items-center gap-2 min-w-0">
-              <span className="text-xs font-bold truncate">{d.file_name}</span>
-              <span className={`text-[10px] px-1.5 py-0.5 rounded ${theme.bgTertiary} ${theme.textSecondary}`}>{d.state}</span>
-            </span>
-            <span className="flex items-center gap-2 shrink-0">
-              {onOpenDoc && (
-                <button onClick={() => onOpenDoc(d)} aria-label={`Open ${d.file_name}`}
-                  className="flex items-center gap-1 px-2 py-0.5 text-[10px] rounded bg-blue-500 text-white hover:bg-blue-600">
-                  <BookOpen size={10} /> Open
-                </button>
-              )}
-              {can.remove_docs && (
-                <button onClick={() => setConfirmId(d.doc_id)} disabled={busyId !== null}
-                  aria-label={`Remove ${d.file_name} from ${project.name}`}
-                  className={`hover:text-red-500 disabled:opacity-50 ${theme.textSecondary}`}>
-                  {busyId === d.doc_id ? <Loader2 size={12} className="animate-spin" /> : <X size={12} />}
-                </button>
-              )}
-            </span>
-          </div>
-          {confirmId === d.doc_id && (
-            <div className="flex flex-wrap items-center gap-2 text-[10px]">
-              <span className={theme.textSecondary}>
-                Remove from {project.name}? If nobody else has it in their library, it is deleted.
-              </span>
-              <button onClick={() => run(d.doc_id, () => api.unfileDoc(project.id, d.doc_id), `Removed ${d.file_name}.`)}
-                className="underline text-red-500">Confirm remove</button>
-              <button onClick={() => setConfirmId(null)} className="underline">Cancel</button>
-            </div>
-          )}
-        </div>
+        <ProjectDocRow key={d.id} theme={theme} api={api} project={project} doc={d}
+          others={docs.filter((o) => o.id !== d.id)} mine={mine} busy={busy} run={run} onOpenDoc={onOpenDoc} />
       ))}
+      {filing.dialog && <NameMatchDialog theme={theme} {...filing.dialog} />}
     </div>
   );
 }

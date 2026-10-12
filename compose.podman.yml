@@ -1,0 +1,13 @@
+# Added by startup.sh when the engine is podman: map the container user to the
+# invoking host user so files in data/ and logs/ stay theirs. Docker has no
+# keep-id; there the image is built with APP_UID = the host uid instead.
+#
+# in_pod: false — podman-compose otherwise puts every service in one pod, and
+# podman refuses --pod together with --userns (keep-id): the backend would
+# never be created. Host networking needs no pod.
+x-podman:
+  in_pod: false
+
+services:
+  backend:
+    userns_mode: keep-id

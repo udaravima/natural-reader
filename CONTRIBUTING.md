@@ -36,12 +36,16 @@ break.
 The `startup.sh` script bootstraps everything:
 
 ```bash
-./startup.sh init              # venv + Python deps, Kokoro models, npm install + build
-./startup.sh up                # Postgres + SearXNG containers, backend with auth off
-./startup.sh up-with-dev-auth  # also Keycloak + backend with the local OIDC rig (creates .env)
+./startup.sh quickstart        # fresh clone → running app (no host Python needed)
+./startup.sh up                # Postgres + SearXNG + the backend container on your working tree, auth off
+./startup.sh up-with-dev-auth  # also Keycloak + the local OIDC rig (creates .env)
+./startup.sh init              # bare metal / tests: venv + Python deps, Kokoro models, npm install + build
 ```
 
-`up` runs in the foreground; Ctrl-C stops the backend and the containers cleanly.
+`up` runs in the foreground; Ctrl-C stops the backend and the containers
+cleanly. `BACKEND_RUNTIME=venv` (shell or `.env`) runs the backend from
+`.venv` instead, as before the container. The backend tests always run from
+`.venv`, so contributors still need `./startup.sh init`.
 Both modes refuse to start if the backend port is already occupied. For frontend
 development with hot-reload, run the dev server in a second shell:
 

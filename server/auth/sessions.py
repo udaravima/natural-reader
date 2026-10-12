@@ -6,6 +6,8 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
+from . import touch
+
 
 def _hash(raw: str) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -32,17 +34,18 @@ async def resolve_session(conn, raw_token: str) -> dict | None:
         return None
     token_hash = _hash(raw_token)
     cur = await conn.execute(
-        "SELECT user_id, expires_at FROM sessions WHERE id = %s", (token_hash,)
+        "SELECT user_id, expires_at, last_seen_at FROM sessions WHERE id = %s", (token_hash,)
     )
     row = await cur.fetchone()
     if row is None:
         return None
-    user_id, expires_at = row
+    user_id, expires_at, last_seen_at = row
     if expires_at <= datetime.now(timezone.utc):
         return None
-    await conn.execute(
-        "UPDATE sessions SET last_seen_at = now() WHERE id = %s", (token_hash,)
-    )
+    if touch.due(last_seen_at):
+        await touch.stamp(
+            "UPDATE sessions SET last_seen_at = now() WHERE id = %s", (token_hash,)
+        )
     return await users.get_user(conn, str(user_id))
 
 

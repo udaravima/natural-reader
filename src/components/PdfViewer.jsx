@@ -57,6 +57,7 @@ export default function PdfViewer({
     setViewMode,
     distractionFree = false,
     openFolder,
+    banner = null, // in-flow notice above the toolbar (e.g. the old-version banner); shown in distraction-free too
 }) {
     const isText = fileType === 'text';
     const isMarkdown = fileType === 'markdown';
@@ -79,6 +80,8 @@ export default function PdfViewer({
     ];
     return (
         <section className={`flex-1 flex flex-col overflow-hidden ${theme.viewportBg} transition-colors duration-300`}>
+
+            {banner}
 
             {/* PDF OPTIONS TOOLBAR */}
             {hasDoc && !distractionFree && (

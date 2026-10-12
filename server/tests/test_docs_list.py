@@ -55,6 +55,17 @@ async def _project(db_conn, owner_id, name):
     return await seed.make_project(db_conn, owner_id, name)
 
 
+async def _pdoc(db_conn, project_id):
+    """The id of the (single) project document in a project."""
+    cur = await db_conn.execute("SELECT id FROM project_docs WHERE project_id = %s", (project_id,))
+    return str((await cur.fetchone())[0])
+
+
+def _chip(project_id, name, document_id):
+    return {"id": project_id, "name": name, "document_id": document_id,
+            "version": 1, "versions_count": 1}
+
+
 DOC_C = "c" * 64  # caller's own upload
 DOC_S = "s" * 64  # stranger's doc — must NEVER appear for the caller
 DOC_G = "9" * 64  # owner's upload, shared with the caller
@@ -83,7 +94,7 @@ async def test_list_returns_own_and_shared_not_stranger(db_conn, docs_app):
         by_id = {row["doc_id"]: row for row in body}
         own, shared = by_id[DOC_C], by_id[DOC_G]
         assert set(own) == {"doc_id", "state", "file_name", "tags", "added_via",
-                            "shared_by", "in_library", "projects"}  # no owner fields
+                            "shared_by", "in_library", "projects", "newer_in"}  # no owner fields
         assert own["in_library"] is True
         assert own["added_via"] == "upload"
         assert own["shared_by"] is None
@@ -125,7 +136,7 @@ async def test_list_project_member_sees_project_doc_stranger_still_excluded(db_c
         assert DOC_S not in ids
 
         row = next(row for row in body if row["doc_id"] == DOC_P)
-        assert row["projects"] == [{"id": project_id, "name": "P"}]
+        assert row["projects"] == [_chip(project_id, "P", await _pdoc(db_conn, project_id))]
         # Project-only: no entry of mine, so canonical name and no tags.
         assert row["in_library"] is False
         assert row["added_via"] is None
@@ -175,7 +186,7 @@ async def test_list_projects_hide_names_the_caller_cannot_see(db_conn, docs_app)
     docs_app.dependency_overrides[deps.get_current_user] = lambda: caller
     async with _client(docs_app) as client:
         row = next(r for r in (await client.get("/v1/docs")).json() if r["doc_id"] == DOC_P)
-        assert row["projects"] == [{"id": visible, "name": "Visible"}]
+        assert row["projects"] == [_chip(visible, "Visible", await _pdoc(db_conn, visible))]
 
 
 async def test_uploader_does_not_see_links_to_projects_they_cannot_see(db_conn, docs_app):
@@ -263,7 +274,8 @@ async def test_list_same_named_projects_are_both_listed_in_stable_order(db_conn,
     docs_app.dependency_overrides[deps.get_current_user] = lambda: caller
     async with _client(docs_app) as client:
         row = (await client.get("/v1/docs")).json()[0]
-        assert row["projects"] == [{"id": i, "name": "Infra"} for i in sorted([mine, theirs])]
+        assert row["projects"] == [_chip(i, "Infra", await _pdoc(db_conn, i))
+                                   for i in sorted([mine, theirs])]
 
 
 async def test_project_only_row_shows_the_filers_name_not_the_first_uploaders(db_conn, docs_app):
@@ -295,3 +307,66 @@ async def test_project_only_row_shows_the_filers_name_not_the_first_uploaders(db
 
 async def test_display_name_placeholders_match_params():
     assert docs_router._DISPLAY_NAME.count("%s") == len(docs_router._display_name_params("u"))
+
+
+DOC_V1, DOC_V2 = "7" * 64, "8" * 64
+
+
+async def test_an_old_version_is_readable_but_never_a_library_row(db_conn, docs_app):
+    owner = await _member(db_conn, "v-owner")
+    reader = await _member(db_conn, "v-reader")
+    pid = await _project(db_conn, owner.user_id, "P")
+    await seed.add_member(db_conn, pid, reader.user_id, "reader")
+    await _doc(db_conn, DOC_V1, owner.user_id, file_name="r1.pdf")
+    await _doc(db_conn, DOC_V2, owner.user_id, file_name="r2.pdf")
+    pdoc = await seed.place_doc(db_conn, pid, DOC_V1, owner.user_id)
+    await seed.add_version(db_conn, pdoc, DOC_V2, owner.user_id)
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: reader
+    async with _client(docs_app) as c:
+        rows = (await c.get("/v1/docs")).json()
+        assert [r["doc_id"] for r in rows] == [DOC_V2]
+        assert rows[0]["projects"] == [{"id": pid, "name": "P", "document_id": pdoc,
+                                        "version": 2, "versions_count": 2}]
+        assert (await c.get(f"/v1/docs/{DOC_V1}")).status_code == 200  # still readable
+        filtered = (await c.get("/v1/docs", params={"project_id": pid})).json()
+        assert [r["doc_id"] for r in filtered] == [DOC_V2]
+
+
+async def test_newer_in_names_the_projects_that_moved_on(db_conn, docs_app):
+    owner = await _member(db_conn, "n-owner")
+    pa = await _project(db_conn, owner.user_id, "Alpha")
+    pb = await _project(db_conn, owner.user_id, "Beta")
+    await _doc(db_conn, DOC_V1, owner.user_id, file_name="readme.md")
+    await _doc(db_conn, DOC_V2, owner.user_id, file_name="readme-2.md")
+    await seed.place_doc(db_conn, pa, DOC_V1, owner.user_id)          # current in Alpha
+    pdoc = await seed.place_doc(db_conn, pb, DOC_V1, owner.user_id)
+    await seed.add_version(db_conn, pdoc, DOC_V2, owner.user_id)       # Beta moved on
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: owner
+    async with _client(docs_app) as c:
+        rows = {r["doc_id"]: r for r in (await c.get("/v1/docs")).json()}
+        mine = rows[DOC_V1]  # owner's own entry: listed, with Alpha's chip
+        assert [p["name"] for p in mine["projects"]] == ["Alpha"]
+        assert [(n["project"]["name"], n["current_version"], n["current_doc_id"])
+                for n in mine["newer_in"]] == [("Beta", 2, DOC_V2)]
+        status = (await c.get(f"/v1/docs/{DOC_V1}")).json()
+        assert [(v["project"]["name"], v["is_current"]) for v in status["versions_in"]] == [
+            ("Alpha", True), ("Beta", False)]
+
+
+async def test_project_name_stays_as_filed_after_the_filer_renames_their_copy(db_conn, docs_app):
+    """Review Focus 1: the name is stored on the version (spec §3.2), no
+    longer borrowed live from the filer's entry."""
+    filer = await _member(db_conn, "f-filer")
+    reader = await _member(db_conn, "f-reader")
+    pid = await _project(db_conn, filer.user_id, "P")
+    await seed.add_member(db_conn, pid, reader.user_id, "reader")
+    await _doc(db_conn, DOC_V1, filer.user_id, file_name="Q3 report.pdf")
+    await seed.place_doc(db_conn, pid, DOC_V1, filer.user_id)
+    await db_conn.execute("UPDATE library_entries SET file_name = 'my scratch copy.pdf' "
+                          "WHERE user_id = %s", (filer.user_id,))
+    docs_app.dependency_overrides[deps.get_current_user] = lambda: reader
+    async with _client(docs_app) as c:
+        assert [r["file_name"] for r in (await c.get("/v1/docs")).json()] == ["Q3 report.pdf"]
+    await db_conn.execute("DELETE FROM library_entries WHERE user_id = %s", (filer.user_id,))
+    async with _client(docs_app) as c:
+        assert [r["file_name"] for r in (await c.get("/v1/docs")).json()] == ["Q3 report.pdf"]

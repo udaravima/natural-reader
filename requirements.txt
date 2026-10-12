@@ -15,10 +15,6 @@ httpx>=0.27
 authlib>=1.3
 itsdangerous>=2.1
 
-# Document conversion (PDF/DOCX/PPTX/HTML/images → Markdown).
-# Only needed when DOCLING_ENABLED=true. Pulls in transformers + torch (CPU);
-# first conversion downloads layout/table models (~500 MB to ~2 GB total).
-docling>=2.0
 # Required by FastAPI to parse multipart/form-data PDF uploads.
 python-multipart
 
@@ -46,16 +42,15 @@ pydantic
 # Uncomment if required by your setup
 # torch
 
-# ONNX Runtime execution providers (install ONE based on your hardware):
-# For NVIDIA GPUs:
-# onnxruntime-gpu
-
-# For Intel Arc GPUs and Intel NPUs (via OpenVINO):
-onnxruntime-openvino
-openvino>=2024.0.0
-
-# For CPU-only (lightest option):
-# onnxruntime
+# ONNX Runtime for Kokoro: the CPU build. kokoro-onnx itself requires
+# `onnxruntime`, so listing an accelerated build here as well installs BOTH
+# into the same onnxruntime/ folder; the later one overwrites the other and
+# the app silently runs on CPU (that is what happened with
+# onnxruntime-openvino). To accelerate, swap it in a venv after installing:
+#   NVIDIA:            pip uninstall -y onnxruntime && pip install onnxruntime-gpu
+#   Intel GPU/NPU/CPU: pip uninstall -y onnxruntime && pip install onnxruntime-openvino openvino
+# then check the startup line "Available ONNX Runtime providers".
+onnxruntime
 
 # Backend test harness (dev). respx mocks httpx; pytest-asyncio runs async tests.
 pytest

@@ -48,6 +48,11 @@ import { openServerDoc, openCitation } from './lib/openDoc';
 import SettingsPage from './components/settings/SettingsPage';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
+import NameMatchDialog from './components/projects/NameMatchDialog';
+import { useProjectFiling } from './hooks/useProjectFiling';
+import { useVersionStatus } from './hooks/useVersionStatus';
+import OldVersionBanner from './components/OldVersionBanner';
+import { projectsApi } from './lib/projectsApi';
 import DistractionFreeBar from './components/DistractionFreeBar';
 
 // Overlays
@@ -230,6 +235,23 @@ export default function App() {
     tagsText: docTagsText, setTagsText: setDocTagsText,
   } = useDocMetaPicker(pdfFileName);
 
+  // V1 §4.2: filing from the reader can hit a name or bytes the project already has.
+  const projectApi = useMemo(() => projectsApi(apiHost, apiPort), [apiHost, apiPort]);
+  const projectFiling = useProjectFiling({
+    fileDoc: projectApi.fileDoc,
+    onFiled: (_filed, t) => showToast(`Filed ${t.label} into ${t.projectName}.`, 3000),
+    // A dropped connection surfaces as the browser's raw text ("Failed to fetch"); say it plainly.
+    onError: (message) => showToast(
+      `Could not file into the project: ${/failed to fetch|networkerror|load failed|network request failed/i.test(message) ? 'the server could not be reached.' : message}`,
+      5000,
+    ),
+  });
+  const promptFiling = projectFiling.prompt;
+  const askAboutFiling = useCallback((projectId, docId, label, conflict) => {
+    const projectName = (projects || []).find((p) => p.id === projectId)?.name || 'the project';
+    promptFiling({ projectId, projectName, docId, label }, conflict);
+  }, [projects, promptFiling]);
+
   const inChat = viewMode === 'chat';
   const inAdmin = viewMode === 'admin';
   // Library, unlike admin, is available to any authenticated active user — it's
@@ -245,6 +267,7 @@ export default function App() {
   const canReader = caps.includes('reader');
   const canChat = caps.includes('chat');
   const canAdmin = caps.includes('admin');
+  const versionOld = useVersionStatus({ apiHost, apiPort, docId: currentDocId, enabled: Boolean(canReader), refreshKey: projectsVersion });
 
   // Boot coercion (admin-console spec §3, generalized to all three views): a
   // persisted viewMode the user no longer (or never did) have the capability
@@ -816,13 +839,14 @@ export default function App() {
     // button reading a key nothing updates if the two ever disagree.
     const serverId = result.docId;
     if (serverId !== docId) console.warn('Server doc id differs from local hash', { docId, serverId });
+    if (result.link?.conflict) askAboutFiling(docProjectId, serverId, pdfFileName, result.link.conflict);
     setIndex(docId, { state: result.state });
     if (result.dedup && result.state === 'indexed' && !reuploadForReindex) {
       showToast('Already indexed — added to your library.', 4000);
       return;
     }
     await pollIndexUntilSettled({ apiDocId: serverId, stateKey: docId, apiHost, apiPort, setDocIndexByDocId, showToast });
-  }, [pdfFileName, docInLibrary, ensureDocHash, docIndexByDocId, showToast, apiHost, apiPort, docProjectId, docTagsText]);
+  }, [pdfFileName, docInLibrary, ensureDocHash, docIndexByDocId, showToast, apiHost, apiPort, docProjectId, docTagsText, askAboutFiling]);
 
   // ---------- DOCLING CONVERSION ----------
   // Mirror of handleIndexDocument: uploads (registers) the PDF bytes →
@@ -892,7 +916,10 @@ export default function App() {
     }
 
     // Now that the kick-off succeeded, link the project (fail-soft — see linkDocToProject).
-    if (docProjectId) linkDocToProject({ apiHost, apiPort, projectId: docProjectId, docId: convertDocId });
+    if (docProjectId) {
+      linkDocToProject({ apiHost, apiPort, projectId: docProjectId, docId: convertDocId })
+        .then((out) => { if (out?.conflict) askAboutFiling(docProjectId, convertDocId, pdfFileName, out.conflict); });
+    }
 
     showToast('Converting with Docling — this can take a few minutes.', 4000);
 
@@ -902,7 +929,7 @@ export default function App() {
       apiDocId: convertDocId, stateKey: docId, apiHost, apiPort,
       setDocConvertByDocId, setDocIndexByDocId, setDocViewByDocId, showToast,
     });
-  }, [pdfFileName, fileType, ensureDocHash, showToast, apiHost, apiPort, docProjectId, docTagsText]);
+  }, [pdfFileName, fileType, ensureDocHash, showToast, apiHost, apiPort, docProjectId, docTagsText, askAboutFiling]);
 
   const openConvertDialog = useCallback(() => setConvertDialogOpen(true), []);
   const closeConvertDialog = useCallback(() => setConvertDialogOpen(false), []);
@@ -1183,6 +1210,7 @@ export default function App() {
             setPendingAttachments={setChatPendingAttachments}
             onOpenCitation={handleOpenCitation}
             openDocName={currentDocId ? pdfFileName : null}
+            openDocVersion={currentDocId && versionOld ? versionOld.version : null}
             docUse={chatDocUse}
           />
         ) : inAdmin ? (
@@ -1265,6 +1293,8 @@ export default function App() {
             setViewMode={setCurrentDocView}
             distractionFree={distractionFree}
             openFolder={openFolder}
+            banner={<OldVersionBanner old={versionOld}
+              onOpenCurrent={(o) => openServerDoc(openDocDeps, o.current_doc_id, o.current_name)} />}
           />
           {reconnect && !workspace && (
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-2 rounded-lg shadow-lg bg-white/90 dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700">
@@ -1287,6 +1317,7 @@ export default function App() {
         pageCount={numPages}
         initialOptions={currentConvertEntry?.options}
       />
+      {projectFiling.dialog && <NameMatchDialog theme={theme} {...projectFiling.dialog} />}
 
       {!distractionFree && (
         <MobileBottomNav

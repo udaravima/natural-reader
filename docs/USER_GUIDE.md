@@ -185,8 +185,8 @@ and you become its Owner.
 | Role | Can |
 |---|---|
 | Reader | see the project, its members, activity and documents |
-| Contributor | also file documents they uploaded into the project |
-| Maintainer | also remove any document, rename the project, and add, remove or change members up to Maintainer |
+| Contributor | also file documents they uploaded into the project, upload new versions and restore old ones |
+| Maintainer | also remove any document, delete old versions, merge documents, rename the project, and add, remove or change members up to Maintainer |
 | Owner | everything, including Owners and deleting the project |
 
 A project always keeps at least one Owner, so the last Owner can't leave until
@@ -201,9 +201,27 @@ account exists but an admin hasn't activated it yet. A person whose account an
 admin has disabled shows "disabled": their role can't be changed, but a
 Maintainer or Owner can still remove them.
 
-**Documents.** **Documents → File a document** adds one of your uploads. A
-Maintainer removes a document with × (a document nobody else has in their
-library is deleted with it, so you're asked first).
+**Documents.** **Documents → File a document** adds one of your uploads. If the
+project already has a document with that name (letter case and spaces ignored),
+or the exact same file as an older version, you're asked: **Add as new version**
+(or **Restore vN as current**), **Keep both**, or **Cancel**.
+
+**Versions.** Each document keeps its history. **v3 · 3 versions** opens it:
+every version can be opened; Contributors can **Restore** an old one (it comes
+back as a new version on top, nothing is lost) and use **⋯ → Upload new
+version** (a file, or one from your library, with an optional note);
+Maintainers can **Delete** an old version for good, and use **⋯ → Mark as
+newer version of…** to merge two documents that are really one (this can't be
+undone, but every file stays in the history). The Library and the project's
+document list show only each document's current version. If you open an old
+version, chat answers from that version and says it's an old one. A citation
+in an old chat opens the version it quoted, with a banner saying it's an old
+version and a link to the current one.
+If you keep your own copy of a document a project has since moved past, your
+Library row says so and offers **Open current**.
+
+A Maintainer removes a document with × (with all its versions; a file nobody
+else has in their library is deleted with it, so you're asked first).
 
 **Activity** lists who changed what, newest first. If the history can't be loaded, the tab says so instead of showing an empty list.
 
@@ -216,8 +234,9 @@ sharing. If the list of people can't be loaded, the panel shows the error and a
 **Leaving.** **Leave** in the project header. Documents you had in your own
 library stay there.
 
-What you can't do yet: chat with a whole project at once (planned), or upload
-a revised file as a new version of a document (planned).
+What you can't do yet: chat with a whole project at once (planned), compare two
+versions or review a version before it becomes current (planned), or rename a
+document without uploading a new version.
 
 ## Chat: models and streaming
 

@@ -1,0 +1,8 @@
+# Added by startup.sh only when CHAT_ASSISTANT_PROFILE_FILE names a readable
+# file: mount it read-only at a fixed path and point the app there.
+services:
+  backend:
+    volumes:
+      - ${NR_PROFILE_FILE}:/app/config/assistant-profile:ro
+    environment:
+      CHAT_ASSISTANT_PROFILE_FILE: /app/config/assistant-profile

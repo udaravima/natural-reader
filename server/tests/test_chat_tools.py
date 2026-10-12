@@ -6,6 +6,7 @@ import pytest
 from server.chat import tools as chat_tools
 from server.chat.config import ChatConfig
 from server.chat.tools import ToolContext, available_tools, run_tool
+from server.chat.tools import scope
 from server.chat.tools import search_documents as sd_tool
 from server.chat.tools import web_search as ws_tool
 from server.llm.types import ToolCall
@@ -257,3 +258,29 @@ async def test_a_search_finds_the_documents_own_passages_when_other_documents_ar
     await conn.execute("SET LOCAL enable_sort = off")
     rows = await doc_search.search_chunks(conn, DOC, [1.0] + [0.0] * (EMBEDDING_DIM - 1), 3)
     assert [r["page"] for r in rows] == [3, 7, 9]
+
+
+async def test_an_old_version_carries_a_version_note_into_the_listing(indexed):
+    conn, alice = indexed
+    pid = await seed.make_project(conn, alice.user_id, "Thesis group")
+    newer = "e" * 64
+    await seed.seed_doc(conn, newer, alice.user_id, file_name="Thesis v2.pdf", state="indexed")
+    pdoc = await seed.place_doc(conn, pid, DOC, alice.user_id)
+    await seed.add_version(conn, pdoc, newer, alice.user_id)
+    doc = await doc_search.readable_doc(conn, DOC, alice.user_id)
+    assert doc.version_note["project"]["name"] == "Thesis group"
+    [item] = scope.documents_listing([doc])
+    assert item["version_note"] == ('version 1 in project "Thesis group"; '
+                                    "not the current version, which is version 2")
+    current = await doc_search.readable_doc(conn, newer, alice.user_id)
+    assert current.version_note is None
+    assert "version_note" not in scope.documents_listing([current])[0]
+
+
+async def test_a_project_only_reader_sees_the_name_as_filed_not_the_canonical_one(indexed):
+    conn, alice = indexed
+    bob = await member(conn, "bob-chat")
+    pid = await seed.make_project(conn, alice.user_id, "P", members=[(bob.user_id, "reader")])
+    await seed.place_doc(conn, pid, DOC, alice.user_id, file_name="Group thesis.pdf")
+    doc = await doc_search.readable_doc(conn, DOC, bob.user_id)
+    assert doc.name == "Group thesis.pdf"

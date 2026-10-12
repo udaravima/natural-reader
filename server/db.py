@@ -21,7 +21,7 @@ from .services import doc_content
 logger = logging.getLogger(__name__)
 
 DEFAULT_DATABASE_URL = (
-    "postgresql://natural_reader:natural_reader@localhost:5433/natural_reader"
+    "postgresql://natural_reader:natural_reader@127.0.0.1:5433/natural_reader"
 )
 
 # Measured: the planner overestimates `GET /v1/docs` rows ~12x (an OR of

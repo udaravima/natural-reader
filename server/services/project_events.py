@@ -26,6 +26,9 @@ KINDS = frozenset({
     "project.created", "project.renamed", "project.described",
     "member.added", "member.role_changed", "member.removed", "member.left",
     "document.added", "document.removed",
+    # V1 (spec §4.1): a document's history changed.
+    "document.version_added", "document.version_restored", "document.merged",
+    "document.version_deleted",
 })
 _AUDITED_DETAILS = ("role", "from", "to", "via")  # roles only; never names
 MAX_PAGE = 100

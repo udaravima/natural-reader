@@ -21,7 +21,11 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-    restart: unless-stopped
+    # always, not unless-stopped: podman-restart.service (./startup.sh
+    # enable-autostart) only restarts restart-policy=always containers after a
+    # reboot. `./startup.sh stop` removes containers, so this never overrides a
+    # deliberate stop.
+    restart: always
 
   searxng:
     image: searxng/searxng:latest   # pin to a dated tag for reproducibility
@@ -36,7 +40,7 @@ services:
       - ./searxng:/etc/searxng:rw
     environment:
       SEARXNG_BASE_URL: http://localhost:18043/
-    restart: unless-stopped
+    restart: always
 
   # Local-dev OIDC identity provider. NOT production: start-dev runs without
   # TLS and ships bootstrap admin creds (production Keycloak — TLS, HA, dedicated
@@ -50,6 +54,15 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.0
     container_name: natural-reader-keycloak
+    # Keycloak refuses an empty KC_PROXY_HEADERS ("Expected values are:
+    # forwarded, xforwarded") and restarts forever, and ${KC_PROXY_HEADERS:-}
+    # below is empty unless .env sets it (a fresh clone doesn't). Drop it when
+    # empty, then run kc.sh with `command` exactly as the image would.
+    entrypoint:
+      - /bin/bash
+      - -c
+      - '[ -n "$${KC_PROXY_HEADERS}" ] || unset KC_PROXY_HEADERS; exec /opt/keycloak/bin/kc.sh "$$@"'
+      - kc.sh
     command: ["start-dev", "--import-realm", "--http-port=8080"]
     depends_on:
       - postgres
@@ -79,7 +92,44 @@ services:
       - "127.0.0.1:18080:8080"
     volumes:
       - ./deploy/keycloak:/opt/keycloak/data/import:ro
-    restart: unless-stopped
+    restart: always
+
+  # The FastAPI backend (TTS, chat, documents). Host networking: it is a client
+  # of Postgres :5433, Keycloak :18080, SearXNG :18043 and Ollama :11434, all
+  # bound to 127.0.0.1 on the host, and the OIDC issuer must be the same URL
+  # for the browser and the backend. It still binds 127.0.0.1:8000 only (HOST).
+  # Host paths come from startup.sh as NR_* variables (podman-compose fills a
+  # volume's ${VAR} from this service's own environment block, so the host side
+  # must never share a name with an in-container setting).
+  backend:
+    build:
+      context: .
+      dockerfile: Containerfile
+      args:
+        WITH_DOCLING: ${NR_WITH_DOCLING:-false}
+        APP_UID: ${NR_APP_UID:-1000}
+    image: natural-reader-backend:latest
+    container_name: natural-reader-backend
+    network_mode: host
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DOC_STORAGE_DIR: /app/data/pdfs
+      LOG_DIR: /app/logs
+      LOG_AUDIT_FILE: /app/logs/audit.log
+      HF_HOME: /app/.cache/huggingface
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
+      # run.py settings: the shell's or .env's value, else run.py's default.
+      HOST: ${HOST:-127.0.0.1}
+      PORT: ${PORT:-8000}
+      WORKERS: ${WORKERS:-1}
+    volumes:
+      - ${NR_DATA_DIR:-./data/pdfs}:/app/data/pdfs
+      - ${NR_LOG_DIR:-./logs}:/app/logs
+      - cache:/app/.cache
+    restart: always
 
 volumes:
   pgdata:
+  cache:

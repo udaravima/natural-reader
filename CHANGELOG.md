@@ -2,9 +2,34 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [2.2.0] - 2026-10-12
+
+Projects become **team spaces with roles** (Reader, Contributor, Maintainer,
+Owner), managed in the app. A revised file becomes **a new version** of a
+project's document, with its history kept; chat and search see only current
+versions. The backend can run **in a container**. Document chat searches whole
+pages and exact words. Breaking API changes and five migrations, one of them
+(`018`) without a down step: take a `pg_dump` and read **Upgrade notes** first.
+Release notes:
+[docs/Release_notes/RELEASE_NOTES_v2.2.0.md](docs/Release_notes/RELEASE_NOTES_v2.2.0.md).
 
 ### Added
+
+- **The backend runs in a container.** A `Containerfile` (Python 3.13, the
+  Kokoro voice model baked in, Docling optional) and a `backend` service in
+  `docker-compose.yml` with host networking and `data/` and `logs/`
+  bind-mounted from the host. A host OS upgrade no longer moves the Python
+  under the app.
+
+- **`./startup.sh quickstart [--single-user]`** takes a fresh clone to a
+  running app in one command, with no host Python: it writes a local-dev
+  `.env`, starts the stack and runs the frontend dev server. Re-running it
+  resumes after a failure.
+
+- **`./startup.sh start`, `stop`, `rebuild`, `logs` and `enable-autostart`**
+  for live mode. `enable-autostart` brings a podman stack back after a
+  reboot. `LOCAL_KEYCLOAK=auto|true|false` says whether `start` runs the
+  compose Keycloak. `pytest -m container` builds and runs the real image.
 
 - **Deployment limits on context size and keep-alive.**
   `INFERENCE_NUM_CTX_MAX` (default 32,768 tokens) and
@@ -104,7 +129,34 @@ All notable changes to this project will be documented in this file.
   (`PROJECT_LIMIT_PER_USER`, default 20) and `PROJECT_CREATION`
   (readers | admins). Enroll takes username, first and last name.
 
+- **Document versions in projects.** A revised file becomes a new version of a
+  project's document instead of a second document: upload it from the
+  document's ⋯ menu, or file a same-named file and choose *Add as new
+  version*. Each document keeps its history: open any version, restore one
+  (it comes back on top; nothing is lost), delete an old one, or merge two
+  documents that are really one. The Library and the project listings show
+  only current versions; if you open an old version, chat answers from it and
+  says it's an old version. An old chat's citation opens the version it
+  quoted, labelled, and the reader shows an old-version banner with a link to
+  the current one.
+  Activity records who added, restored, merged or deleted versions.
+
 ### Changed
+
+- **Kokoro uses the CPU build of ONNX Runtime (`onnxruntime`).** The
+  OpenVINO build in `requirements.txt` never actually ran: `kokoro-onnx`
+  also installs `onnxruntime`, both write the same `onnxruntime/` folder,
+  and the app fell back to CPU without saying so, on Linux and in the
+  image. The image is about 500 MB smaller. To accelerate a bare-metal
+  install, swap the build as the README's Hardware Acceleration section
+  shows, then check the startup providers line.
+
+- **`up` / `up-with-dev-auth` run the backend container on your working
+  tree** (code edits apply on restart). `BACKEND_RUNTIME=venv` keeps the
+  bare-metal backend, from the shell or as the checkout's default in `.env`. Docling moved to `requirements-docling.txt`. Every
+  compose service now uses `restart: always`, because podman's boot service
+  restarts only those. Generated secrets are 64 hex characters, made without
+  Python.
 
 - **Python 3.12 or 3.13 is required** (was 3.10–3.13): the chat server
   already used a 3.12 function, so on 3.10 and 3.11 the stream-close path
@@ -169,7 +221,46 @@ All notable changes to this project will be documented in this file.
 - Access-log lines no longer include query strings, so search and people-lookup
   text never reaches the logs.
 
+- **API (breaking):** `PUT /v1/projects/{id}/docs/{doc_id}` returns
+  `200`/`201 {document_id, version}` instead of an empty `204`, takes the
+  query parameters `as_version_of` and `keep_both`, and answers
+  `409 name_exists` / `409 older_version` until the caller passes one of them.
+  `DELETE /v1/projects/{id}/docs/{doc_id}` is removed: use
+  `DELETE /v1/projects/{id}/documents/{document_id}`, which removes the
+  document with its history. New routes under `/v1/projects/{id}/documents`
+  list documents and versions, upload (`…/versions`, `…/versions/from-library`),
+  restore, delete a version, merge and remove.
+- **API: Library and counts.** `GET /v1/docs` lists current versions only and
+  its rows gain `newer_in`; the project chips on each row gain `document_id`,
+  `version` and `versions_count`. `GET /v1/docs/{id}` gains `versions_in`.
+  `doc_count` (project list, project page, admin console) counts documents,
+  not versions.
+- A project's name for a document is stored when it is filed and no longer
+  changes when the filer renames or removes their own copy.
+
+### Removed
+
+- **The `DOCLING_ENABLED=true` line in `startup.sh`.** It was never
+  exported, so it never reached the backend; `.env` controls Docling.
+
 ### Fixed
+
+- **Uploading a large file no longer freezes your other requests.** Every
+  request from the same login (cookie or access token) used to hang until
+  the upload's indexing finished, about a minute for a big file. Signing in
+  a request stamped "last seen" on the request's own database connection,
+  and FastAPI keeps that connection open until the background indexing
+  ends, so the stamp's row lock blocked the next request's stamp. The stamp
+  is now committed at once on its own short connection, at most once a
+  minute per session or token (`last_seen_at` / `last_used_at` are now
+  accurate to the minute).
+
+- **Windows bare metal:** the backend no longer crashes printing ✓ / → on
+  a cp1252 console (UTF-8 console streams, and `PYTHONUTF8=1` in
+  `startup.ps1`). Chat and documents work: uvicorn and `asyncio.run` now
+  use a selector event loop, because psycopg can't use the Windows default.
+  Postgres is reached at `127.0.0.1:5433` rather than `localhost`, which
+  Windows tries as IPv6 `::1` first.
 
 - **Log out ends the Keycloak session too.** The app cleared its OIDC session
   before reading the ID token it keeps for logout, so Keycloak never got the
@@ -304,6 +395,17 @@ All notable changes to this project will be documented in this file.
 
 ### Upgrade notes
 
+- **Switching to the backend container:** run `./startup.sh stop` (or
+  `down`) first. The first `start` builds the image (~1.3 GB of downloads,
+  more with Docling). Existing `data/`, `logs/` and `.env` are used as they
+  are, and documents uploaded before the switch still open (and ones
+  uploaded in the container open after a rollback to the venv). On podman,
+  run `./startup.sh enable-autostart` once for reboots; an empty
+  `pod_natural-reader` left by the old layout can go (`podman pod rm
+  pod_natural-reader`). Only `.env` (plus `HOST`/`PORT`/`WORKERS`) reaches the
+  container, so move any key exported only in your shell into `.env`. The
+  container runs on Linux x86_64; Windows and macOS keep the bare-metal flow.
+
 - **Migration `014`** adds `documents.embedding_profile`. It is additive only.
 - **Migration `015`** adds `doc_chunks.text_search`, a stored full-text
   column with a GIN index. Postgres rewrites `doc_chunks` once to fill it:
@@ -317,6 +419,15 @@ All notable changes to this project will be documented in this file.
   as the new model has the same dimension (`EMBEDDING_DIM`). Each document
   rebuilds on first use. Until it does, it can't be searched: vectors from
   two models can't be compared.
+
+- **Take a `pg_dump` before upgrading.** Migration `018` changes the primary
+  key of `project_documents` and has no down step, so the dump is the only way
+  back. Existing project documents become version 1 of themselves, with the
+  names they show today. Existing duplicates are not merged automatically: use
+  **Mark as newer version of…** on the Documents tab.
+- **Custom scripts that call `PUT` or `DELETE /v1/projects/{id}/docs/{doc_id}`
+  will break** (see Changed). The app itself is updated in the same release;
+  nothing in `extension/`, `scripts/` or `deploy/` calls them.
 
 ## [2.1.0] - 2026-09-28
 

@@ -6,7 +6,7 @@ import hashlib
 import secrets
 from datetime import datetime, timezone
 
-from . import users
+from . import touch, users
 
 
 def _hash(raw: str) -> str:
@@ -28,18 +28,20 @@ async def resolve_token(conn, raw_token: str) -> dict | None:
     if not raw_token or not raw_token.startswith("nrp_"):
         return None
     cur = await conn.execute(
-        "SELECT id, user_id, expires_at FROM personal_access_tokens WHERE token_hash=%s",
+        "SELECT id, user_id, expires_at, last_used_at FROM personal_access_tokens "
+        "WHERE token_hash=%s",
         (_hash(raw_token),),
     )
     row = await cur.fetchone()
     if row is None:
         return None
-    tid, user_id, expires_at = row
+    tid, user_id, expires_at, last_used_at = row
     if expires_at is not None and expires_at <= datetime.now(timezone.utc):
         return None
-    await conn.execute(
-        "UPDATE personal_access_tokens SET last_used_at=now() WHERE id=%s", (tid,)
-    )
+    if touch.due(last_used_at):
+        await touch.stamp(
+            "UPDATE personal_access_tokens SET last_used_at=now() WHERE id=%s", (tid,)
+        )
     return await users.get_user(conn, str(user_id))
 
 

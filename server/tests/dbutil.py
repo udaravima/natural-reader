@@ -10,11 +10,11 @@ from psycopg import AsyncConnection
 TEST_DB = "natural_reader_test"
 ADMIN_URL = os.environ.get(
     "TEST_ADMIN_DATABASE_URL",
-    "postgresql://natural_reader:natural_reader@localhost:5433/postgres",
+    "postgresql://natural_reader:natural_reader@127.0.0.1:5433/postgres",
 )
 TEST_URL = os.environ.get(
     "TEST_DATABASE_URL",
-    f"postgresql://natural_reader:natural_reader@localhost:5433/{TEST_DB}",
+    f"postgresql://natural_reader:natural_reader@127.0.0.1:5433/{TEST_DB}",
 )
 SQL_DIR = Path(__file__).resolve().parents[1] / "sql"
 

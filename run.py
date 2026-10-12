@@ -13,6 +13,7 @@ import os
 import uvicorn
 
 from server.logging_config import configure_logging
+from server.platform_compat import uvicorn_loop
 
 if __name__ == "__main__":
     # Configure logging before anything else so startup messages are captured to
@@ -20,16 +21,17 @@ if __name__ == "__main__":
     # replacing this config with its own console-only setup.
     logfile = configure_logging()
     workers = max(1, int(os.environ.get("WORKERS", "1")))
-    # Bind localhost by default (SEC-2): off-box exposure must be opt-in. A
-    # containerized/proxied deployment sets HOST=0.0.0.0 explicitly so only the
-    # reverse proxy is internet-facing.
+    # Bind localhost by default (SEC-2): off-box exposure must be opt-in. The
+    # compose backend uses host networking, so 127.0.0.1 is still right behind
+    # a local reverse proxy; only a bridged container needs HOST=0.0.0.0.
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8000"))
     print(f"Starting Neural Voice Server on http://{host}:{port} (workers={workers}); logging to {logfile}")
     # When workers > 1 uvicorn needs an import string so each child can
     # re-import the app. The single-worker path is unchanged.
     if workers > 1:
-        uvicorn.run("server.app:app", host=host, port=port, workers=workers, log_config=None)
+        uvicorn.run("server.app:app", host=host, port=port, workers=workers, log_config=None,
+                    loop=uvicorn_loop())
     else:
         from server.app import app
-        uvicorn.run(app, host=host, port=port, log_config=None)
+        uvicorn.run(app, host=host, port=port, log_config=None, loop=uvicorn_loop())

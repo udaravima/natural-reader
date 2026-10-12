@@ -4,8 +4,9 @@ Owner) is the only source of access. Every route's first check is
 `require_project_role`: a non-member gets 404 before any other id is
 examined, and a member below the route's role gets 403 insufficient_role.
 Project responses carry `can` (authz.can_for), so the UI never re-derives
-the rules. Documents (A1 §5): a Contributor who holds an upload entry files
-them in; only a Maintainer or Owner removes them."""
+the rules. Documents (A1 §5, V1): a Contributor who holds an upload entry
+files them in (§4.2's name-match flow); versions, merges and removal live in
+routers/project_documents.py."""
 from __future__ import annotations
 
 import uuid
@@ -25,7 +26,14 @@ from ..auth.authz import (
     visible_projects_where,
 )
 from ..http_errors import refusal
-from ..services import doc_content, people, project_events, project_members, project_policy
+from ..services import (
+    doc_content,
+    doc_versions,
+    people,
+    project_events,
+    project_members,
+    project_policy,
+)
 from .docs import DocId
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
@@ -66,7 +74,8 @@ def _project_sql(where: str) -> str:
         f"{people.person_cols('cb')}, "
         "(SELECT role FROM project_members WHERE project_id = p.id AND user_id = %s), "
         "(SELECT count(*) FROM project_members WHERE project_id = p.id), "
-        "(SELECT count(*) FROM project_documents WHERE project_id = p.id AND verified) "
+        "(SELECT count(*) FROM project_documents "  # CURRENT: documents, not versions
+        "WHERE project_id = p.id AND verified AND is_current) "
         f"FROM projects p LEFT JOIN users cb ON cb.id = p.created_by WHERE {where}"
     )
 
@@ -153,8 +162,8 @@ async def delete_project(project_id: uuid.UUID, principal: deps.Principal = Depe
                          conn=Depends(deps.get_conn)):
     await require_project_role(conn, principal, project_id, "owner", lock=True)
     # Sorted, like admin delete_user's GC: row locks in one order can't deadlock.
-    cur = await conn.execute(
-        "SELECT doc_id FROM project_documents WHERE project_id = %s ORDER BY doc_id",
+    cur = await conn.execute(  # HISTORY, verified or not: everything the cascade drops
+        "SELECT DISTINCT doc_id FROM project_documents WHERE project_id = %s ORDER BY doc_id",
         (project_id,))
     doc_ids = [r[0] for r in await cur.fetchall()]
     await conn.execute("DELETE FROM projects WHERE id = %s", (project_id,))
@@ -193,70 +202,26 @@ async def delete_member(project_id: uuid.UUID, user_id: str,
     return Response(status_code=204)
 
 
-async def _filed_name(conn, doc_id: str, user_id: str) -> str | None:
-    """The name the filer sees for the document (their entry's, else the content's)."""
-    cur = await conn.execute(
-        "SELECT COALESCE(e.file_name, d.file_name) FROM library_entries e "
-        "JOIN documents d ON d.doc_id = e.doc_id WHERE e.user_id = %s AND e.doc_id = %s",
-        (user_id, doc_id))
-    row = await cur.fetchone()
-    return row[0] if row else None
-
-
-async def _placement_name(conn, project_id, doc_id: str) -> str | None:
-    """The name the project shows for a placed document: its filer's entry
-    name, else the content's canonical name."""
-    cur = await conn.execute(
-        "SELECT COALESCE(e.file_name, d.file_name) FROM project_documents pd "
-        "JOIN documents d ON d.doc_id = pd.doc_id "
-        "LEFT JOIN library_entries e ON e.user_id = pd.added_by AND e.doc_id = pd.doc_id "
-        "WHERE pd.project_id = %s AND pd.doc_id = %s", (project_id, doc_id))
-    row = await cur.fetchone()
-    return row[0] if row else None
-
-
-@router.put("/{project_id}/docs/{doc_id}", status_code=204)
-async def link_doc(project_id: uuid.UUID, doc_id: DocId,
+@router.put("/{project_id}/docs/{doc_id}")
+async def link_doc(project_id: uuid.UUID, doc_id: DocId, response: Response,
+                   as_version_of: uuid.UUID | None = Query(None),
+                   keep_both: bool = Query(False),
                    principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
-    """File a doc into a project: a Contributor or above (admins only through
-    a member role, A0 §5) who holds a VERIFIED upload entry for it (A1 §5).
-    The project is checked first, so an invisible project 404s before doc
-    ids can be used to probe it. Idempotent: an existing placement keeps its
-    original `added_by` and writes no event — unless it is an UNVERIFIED
-    legacy placement, which this verified filing replaces."""
+    """File a doc from my library into a project (V1 spec §4.2): a
+    Contributor or above (admins only through a member role, A0 §5) who holds
+    a VERIFIED upload entry for it (A1 §5). The project is checked first, so
+    an invisible project 404s before doc ids can be used to probe it. A name
+    or bytes the project already has → 409 name_exists / older_version; the
+    caller retries with `as_version_of` or `keep_both`. 201 when something
+    was filed, 200 when it already was."""
     await require_project_role(conn, principal, project_id, "contributor", admin_ok=False)
     await assert_holds_upload(conn, doc_id, principal.user_id)
-    cur = await conn.execute(
-        "INSERT INTO project_documents (project_id, doc_id, added_by, verified) "
-        "VALUES (%s,%s,%s,true) ON CONFLICT (project_id, doc_id) DO UPDATE "
-        "SET added_by = EXCLUDED.added_by, verified = true "
-        "WHERE NOT project_documents.verified", (project_id, doc_id, principal.user_id))
-    if cur.rowcount:
-        audit("placement.added", project=project_id, doc=doc_id, by=principal.user_id)
-        await project_events.record(
-            conn, project_id, principal.user_id, "document.added", doc_id=doc_id,
-            details={"name": await _filed_name(conn, doc_id, principal.user_id)})
-    return Response(status_code=204)
-
-
-@router.delete("/{project_id}/docs/{doc_id}", status_code=204)
-async def unlink_doc(project_id: uuid.UUID, doc_id: DocId,
-                     principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
-    """Remove a doc from a project: a Maintainer or above (A0 §5; admins only
-    through a member role). The uploader has no special power over a
-    placement. A missing link is 404 — after the role check."""
-    await require_project_role(conn, principal, project_id, "maintainer", admin_ok=False)
-    name = await _placement_name(conn, project_id, doc_id)
-    cur = await conn.execute(
-        "DELETE FROM project_documents WHERE project_id = %s AND doc_id = %s",
-        (project_id, doc_id))
-    if cur.rowcount == 0:
-        raise refusal(404, "not_found", "Not found")
-    audit("placement.removed", project=project_id, doc=doc_id, by=principal.user_id)
-    await project_events.record(conn, project_id, principal.user_id, "document.removed",
-                                doc_id=doc_id, details={"name": name})
-    await doc_content.gc_content_if_orphaned(conn, doc_id, trigger="placement_removed")
-    return Response(status_code=204)
+    status, body = await doc_versions.file_from_library(
+        conn, principal.user_id, project_id, doc_id,
+        file_name=await doc_versions.filed_name(conn, doc_id, principal.user_id),
+        as_version_of=as_version_of, keep_both=keep_both)
+    response.status_code = status
+    return body
 
 
 @router.get("/{project_id}/events")

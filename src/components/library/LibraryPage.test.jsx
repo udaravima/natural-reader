@@ -23,12 +23,13 @@ const docs = [
   },
   {
     doc_id: 'd2', file_name: 'Teammate.pdf', state: 'indexed', tags: [],
-    projects: [{ id: 'p1', name: 'Project A' }, { id: 'p2', name: 'Project B' }],
+    projects: [{ id: 'p1', name: 'Project A', document_id: 'pa-2', version: 1, versions_count: 1 },
+               { id: 'p2', name: 'Project B', document_id: 'pb-2', version: 1, versions_count: 1 }],
     in_library: true, added_via: 'shared', shared_by: { id: 'u2', name: 'Ann' },
   },
   {
     doc_id: 'd3', file_name: 'ViaProject.pdf', state: 'indexed', tags: [],
-    projects: [{ id: 'p1', name: 'Project A' }],
+    projects: [{ id: 'p1', name: 'Project A', document_id: 'pa-3', version: 1, versions_count: 1 }],
     in_library: false, added_via: null, shared_by: null,
   },
 ];
@@ -212,14 +213,14 @@ describe('LibraryPage', () => {
     await screen.findByText('Teammate.pdf');
     const before = docsCalls().length;
     fireEvent.click(within(screen.getByTestId('doc-row-d2')).getByLabelText(/remove teammate\.pdf from project a/i));
-    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/projects/p1/docs/d2', { method: 'DELETE' }));
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/projects/p1/documents/pa-2', { method: 'DELETE' }));
     await waitFor(() => expect(docsCalls().length).toBeGreaterThan(before));
   });
 
   it('guards against a double-click on × — only one DELETE fires while the link change is in flight', async () => {
     let resolveDelete;
     apiFetch.mockImplementation(async (host, port, path, opts) => {
-      if (path === '/v1/projects/p1/docs/d2' && opts?.method === 'DELETE') {
+      if (path === '/v1/projects/p1/documents/pa-2' && opts?.method === 'DELETE') {
         return new Promise((resolve) => {
           resolveDelete = () => resolve(json(204, {}));
         });
@@ -240,7 +241,7 @@ describe('LibraryPage', () => {
     fireEvent.click(removeBtn);
 
     const deleteCalls = () => apiFetch.mock.calls.filter(
-      ([, , path, opts]) => path === '/v1/projects/p1/docs/d2' && opts?.method === 'DELETE'
+      ([, , path, opts]) => path === '/v1/projects/p1/documents/pa-2' && opts?.method === 'DELETE'
     );
     // Give the second click's event handler a chance to run before asserting
     // only one request actually went out.
@@ -272,7 +273,7 @@ describe('LibraryPage', () => {
   it('reloads projects after a refused unlink so a stale × disappears', async () => {
     let projectLoads = 0;
     apiFetch.mockImplementation(async (host, port, path, opts) => {
-      if (path === '/v1/projects/p1/docs/d2' && opts?.method === 'DELETE') {
+      if (path === '/v1/projects/p1/documents/pa-2' && opts?.method === 'DELETE') {
         return { ok: false, status: 403, json: async () => ({ detail: { error: 'forbidden', message: 'no' } }) };
       }
       if (path.startsWith('/v1/docs')) return json(200, docs);
@@ -296,7 +297,7 @@ describe('LibraryPage', () => {
   it('shows the describeRefusal notice, not "HTTP 404", when an unlink is refused', async () => {
     const showToast = vi.fn();
     apiFetch.mockImplementation(async (host, port, path, opts) => {
-      if (path === '/v1/projects/p1/docs/d2' && opts?.method === 'DELETE') {
+      if (path === '/v1/projects/p1/documents/pa-2' && opts?.method === 'DELETE') {
         return { ok: false, status: 404, json: async () => ({ detail: { error: 'not_found', message: 'nope' } }) };
       }
       if (path.startsWith('/v1/docs')) return json(200, docs);
@@ -349,6 +350,7 @@ describe('LibraryPage', () => {
       if (path === '/v1/projects') return json(200, projects);
       if (path === '/v1/projects/p2') return json(200, projects[1]);
       if (path.startsWith('/v1/projects/p2/docs/') && opts?.method === 'PUT') { filed = true; return json(204, null); }
+      if (path === '/v1/projects/p2/documents') return json(200, []);
       if (path.startsWith('/v1/docs')) {
         return json(200, docs.map((d) => (filed && d.doc_id === 'd1' ? { ...d, projects: [{ id: 'p2', name: 'Project B' }] } : d)));
       }
@@ -363,6 +365,67 @@ describe('LibraryPage', () => {
     fireEvent.click(screen.getAllByRole('tab', { name: 'Documents' })[0]);
     const row = await screen.findByTestId('doc-row-d1');
     await waitFor(() => expect(within(row).queryByText('No project')).toBeNull());
+  });
+
+  it('shows each chip with the version the project is on, and the chip opens the project', async () => {
+    mount();
+    await screen.findByText('Teammate.pdf');
+    const row = screen.getByTestId('doc-row-d2');
+    expect(within(row).getAllByText('· v1')).toHaveLength(2);
+    fireEvent.click(within(row).getByRole('button', { name: 'Open project Project A' }));
+    await waitFor(() => expect(apiFetch.mock.calls.some(([, , path]) => path === '/v1/projects/p1')).toBe(true));
+  });
+
+  it('asks before × removes a document that has several versions', async () => {
+    const versioned = docs.map((d) => (d.doc_id === 'd2'
+      ? { ...d, projects: [{ id: 'p1', name: 'Project A', document_id: 'pa-2', version: 3, versions_count: 3 }] } : d));
+    apiFetch.mockImplementation(async (host, port, path, opts) => {
+      if (path.startsWith('/v1/docs')) return json(200, versioned);
+      if (path === '/v1/projects') return json(200, projects);
+      if (opts?.method === 'DELETE') return json(204, {});
+      return json(404, {});
+    });
+    render(<LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} />);
+    await screen.findByText('Teammate.pdf');
+    const row = screen.getByTestId('doc-row-d2');
+    fireEvent.click(within(row).getByLabelText(/remove teammate\.pdf from project a/i));
+    expect(within(row).getByText('Remove Teammate.pdf and its 3 versions from Project A?')).toBeInTheDocument();
+    expect(apiFetch.mock.calls.some(([, , , o]) => o?.method === 'DELETE')).toBe(false);
+    fireEvent.click(within(row).getByRole('button', { name: 'Confirm remove from Project A' }));
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/projects/p1/documents/pa-2', { method: 'DELETE' }));
+  });
+
+  it('says when a project has a newer version of my copy and opens the current one', async () => {
+    const onOpen = vi.fn(async () => {});
+    const behind = docs.map((d) => (d.doc_id === 'd1' ? { ...d, newer_in: [{
+      project: { id: 'p2', name: 'Project B' }, document_id: 'pb-9', version: 1, current_version: 3,
+      current_doc_id: 'h3', current_name: 'Owned v3.pdf', is_current: false }] } : d));
+    apiFetch.mockImplementation(async (host, port, path) => {
+      if (path.startsWith('/v1/docs')) return json(200, behind);
+      if (path === '/v1/projects') return json(200, projects);
+      return json(404, {});
+    });
+    render(<LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} onOpen={onOpen} />);
+    const row = await screen.findByTestId('doc-row-d1');
+    expect(within(row).getByText(/Project B has a newer version \(v3\)/)).toBeInTheDocument();
+    fireEvent.click(within(row).getByRole('button', { name: 'Open current version from Project B' }));
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith({ doc_id: 'h3', file_name: 'Owned v3.pdf' }));
+  });
+
+  it('files through the name-match dialog when the project already has the name', async () => {
+    const detail = { error: 'name_exists', message: 'm', document: { id: 'pb-1', name: 'Owned.pdf', version: 1 } };
+    apiFetch.mockImplementation(async (host, port, path, opts) => {
+      if (path.startsWith('/v1/docs')) return json(200, docs);
+      if (path === '/v1/projects') return json(200, projects);
+      if (path === '/v1/projects/p2/docs/d1' && opts?.method === 'PUT') return { ok: false, status: 409, json: async () => ({ detail }) };
+      if (path === '/v1/projects/p2/docs/d1?keep_both=true') return json(201, { document_id: 'n', version: 1 });
+      return json(404, {});
+    });
+    render(<LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} />);
+    const row = await screen.findByTestId('doc-row-d1');
+    fireEvent.change(within(row).getByLabelText(/add owned\.pdf to project/i), { target: { value: 'p2' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Keep both' }));
+    await waitFor(() => expect(apiFetch.mock.calls.some(([, , path]) => path === '/v1/projects/p2/docs/d1?keep_both=true')).toBe(true));
   });
 });
 

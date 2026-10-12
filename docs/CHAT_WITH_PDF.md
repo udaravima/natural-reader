@@ -86,7 +86,7 @@ This brings up `pgvector/pgvector:pg16` on host port **5433** (chosen to avoid c
 Verify:
 
 ```bash
-psql postgresql://natural_reader:natural_reader@localhost:5433/natural_reader -c "SELECT 1;"
+psql postgresql://natural_reader:natural_reader@127.0.0.1:5433/natural_reader -c "SELECT 1;"
 ```
 
 If you don't have Docker, you can use a host Postgres — set the `DATABASE_URL` env var when starting `run.py`:
@@ -173,9 +173,9 @@ The browser never sends chunks; there is no client-side chunking any more. For w
 You can poke around the stored state with psql:
 
 ```bash
-psql postgresql://natural_reader:natural_reader@localhost:5433/natural_reader \
+psql postgresql://natural_reader:natural_reader@127.0.0.1:5433/natural_reader \
   -c "SELECT doc_id, file_name, state, page_count FROM documents;"
-psql postgresql://natural_reader:natural_reader@localhost:5433/natural_reader \
+psql postgresql://natural_reader:natural_reader@127.0.0.1:5433/natural_reader \
   -c "SELECT count(*) AS total, count(embedding) AS embedded FROM doc_chunks;"
 ```
 
@@ -514,7 +514,7 @@ Trade-offs:
 
 Same trick helps any synth-heavy workflow (the reader's per-page TTS, "Read selection", chat read-aloud), not just audiobook export.
 
-A standard `docker-compose.yml` for the FastAPI backend doesn't ship yet — until it does, run the server directly or wrap `WORKERS=4 python run.py` in your favorite process manager (systemd / supervisor / pm2-with-python-interpreter).
+The backend also ships as a container (`./startup.sh start`, see [DEPLOYMENT.md](DEPLOYMENT.md)); set `WORKERS=4` in `.env` and it reaches the container. Bare metal, wrap `WORKERS=4 python run.py` in your favorite process manager (systemd / supervisor / pm2-with-python-interpreter).
 
 ## 11. What's next
 

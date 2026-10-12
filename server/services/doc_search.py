@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..auth.authz import readable_docs_params, readable_docs_where
+from . import doc_versions
 
 TEXT_CAP = 4000   # characters per returned chunk
 
@@ -19,19 +20,26 @@ class ReadableDoc:
     page_count: int | None = None   # the reader's pages (set by extraction); None if unknown
     embedding_profile: str | None = None   # how its chunks were made (v2.3 Task E); None = before v2.3
     embedding_model: str | None = None     # the model its vectors came from
+    version_note: dict | None = None  # V1 §7: an old version and nowhere current (old_version_of)
 
 
 async def readable_doc(conn, doc_id: str, user_id: str) -> ReadableDoc | None:
     """The document if `user_id` may read it (the one SQL definition in
-    authz.readable_docs_where), else None. Never trusts the id alone."""
+    authz.readable_docs_where), else None. Never trusts the id alone. Named
+    as the Library names it (doc_versions.display_name_sql), and carrying a
+    version note when it is an old version (V1 spec §7)."""
     cur = await conn.execute(
-        "SELECT d.doc_id, COALESCE((SELECT e.file_name FROM library_entries e "
-        "WHERE e.doc_id = d.doc_id AND e.user_id = %s), d.file_name), d.state, d.page_count, "
-        "d.embedding_profile, d.embedding_model "
-        f"FROM documents d WHERE d.doc_id = %s AND {readable_docs_where('d')}",
-        [user_id, doc_id, *readable_docs_params(user_id)])
+        f"SELECT d.doc_id, {doc_versions.display_name_sql('d', '_me')}, d.state, d.page_count, "
+        "d.embedding_profile, d.embedding_model FROM documents d "
+        "LEFT JOIN library_entries _me ON _me.doc_id = d.doc_id AND _me.user_id = %s "
+        f"WHERE d.doc_id = %s AND {readable_docs_where('d')}",
+        [*doc_versions.display_name_params(user_id), user_id, doc_id,
+         *readable_docs_params(user_id)])
     row = await cur.fetchone()
-    return ReadableDoc(row[0], row[1] or "document", *row[2:]) if row else None
+    if not row:
+        return None
+    note = doc_versions.old_version_of(await doc_versions.versions_in(conn, doc_id, user_id))
+    return ReadableDoc(row[0], row[1] or "document", *row[2:], version_note=note)
 
 
 RRF_K = 60           # reciprocal-rank fusion's constant (Cormack et al., 2009)

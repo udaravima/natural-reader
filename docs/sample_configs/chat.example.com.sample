@@ -154,7 +154,7 @@ server {
 #      `docker-compose up -d postgres` on the same host (binds to 127.0.0.1:5433)
 #      or set DATABASE_URL when starting `python run.py`:
 #
-#          export DATABASE_URL=postgresql://natural_reader:natural_reader@localhost:5433/natural_reader
+#          export DATABASE_URL=postgresql://natural_reader:natural_reader@127.0.0.1:5433/natural_reader
 #
 #   b) Ollama reachable for embeddings — the daemon needs `nomic-embed-text` pulled:
 #          ollama pull nomic-embed-text

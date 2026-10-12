@@ -31,4 +31,14 @@ describe('ChatView — "Use this document" (v2.4 Task E)', () => {
         expect(sw.getAttribute('aria-checked')).toBe('false');
         expect(sw.getAttribute('title')).toBe("The assistant won't read this document in this chat.");
     });
+
+    it('labels an old version of the open document', () => {
+        render(<ChatView {...props({ openDocName: 'Thesis.pdf', openDocVersion: 2, docUse: { enabled: true, setEnabled: vi.fn() } })} />);
+        expect(screen.getByRole('switch', { name: 'Use this document: Thesis.pdf' }).textContent).toContain('· v2 (old version)');
+    });
+
+    it('has no version label for a current document', () => {
+        render(<ChatView {...props({ openDocName: 'Thesis.pdf', docUse: { enabled: true, setEnabled: vi.fn() } })} />);
+        expect(screen.getByRole('switch', { name: 'Use this document: Thesis.pdf' }).textContent).not.toContain('old version');
+    });
 });

@@ -21,6 +21,13 @@ describe('describeEvent', () => {
     [ev('member.left', { role: 'reader' }, { actor: null }), 'A former member left the project'],
     [ev('document.added', { name: 'Q3.pdf' }, { doc: { id: 'd', name: 'Q3.pdf' } }), 'Asha added "Q3.pdf"'],
     [ev('document.removed', { name: 'Old.pdf' }, { doc: { id: 'd', name: 'Old.pdf' } }), 'Asha removed "Old.pdf"'],
+    [ev('document.version_added', { name: 'r.pdf', version: 3, note: 'fixed table 4' }, { doc: { id: 'd', name: 'r.pdf' } }), 'Asha uploaded v3 of "r.pdf" — "fixed table 4"'],
+    [ev('document.version_added', { name: 'r.pdf', version: 2 }, { doc: { id: 'd', name: 'r.pdf' } }), 'Asha uploaded v2 of "r.pdf"'],
+    [ev('document.version_restored', { name: 'r.pdf', version: 4, from_version: 1 }, { doc: { id: 'd', name: 'r.pdf' } }), 'Asha restored v1 of "r.pdf" (now v4)'],
+    [ev('document.merged', { from_name: 'r-final.pdf', into_name: 'r.pdf', versions: 2 }), 'Asha merged "r-final.pdf" into "r.pdf" (2 versions)'],
+    [ev('document.merged', { from_name: 'b.pdf', into_name: 'a.pdf', versions: 1 }), 'Asha merged "b.pdf" into "a.pdf" (1 version)'],
+    [ev('document.version_deleted', { name: 'r.pdf', version: 2 }, { doc: { id: 'd', name: 'r.pdf' } }), 'Asha deleted v2 of "r.pdf"'],
+    [ev('document.removed', { name: 'r.pdf', versions: 3 }, { doc: { id: 'd', name: 'r.pdf' } }), 'Asha removed "r.pdf" and its 3 versions'],
   ])('%#', (event, text) => {
     expect(describeEvent(event)).toBe(text);
   });

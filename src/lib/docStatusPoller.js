@@ -5,7 +5,7 @@ import { apiFetch } from '../utils/apiFetch';
  * poll loop below should keep going. Anything else — a terminal state, or a
  * state neither poller recognizes — ends the loop.
  */
-const PROCESSING_STATES = new Set(['stored', 'extracting', 'extracted', 'indexing']);
+export const PROCESSING_STATES = new Set(['stored', 'extracting', 'extracted', 'indexing']);
 
 const POLL_MS = 2000;
 const MAX_INDEX_POLLS = 300; // ~10 minutes

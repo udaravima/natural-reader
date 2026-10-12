@@ -61,6 +61,6 @@ describe('LibraryPage — Open', () => {
   it('shows no Open button when there is nothing to open into', async () => {
     mount(undefined);
     await screen.findByText('Owned.pdf');
-    expect(screen.queryByRole('button', { name: /^Open / })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Open (?!project )/ })).toBeNull();
   });
 });

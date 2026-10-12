@@ -4,8 +4,10 @@ import { apiFetch } from '../../utils/apiFetch';
 import { describeRefusal } from '../../lib/apiErrors';
 import ProjectsTab from './ProjectsTab';
 import ProjectPage from '../projects/ProjectPage';
+import NameMatchDialog from '../projects/NameMatchDialog';
 import ShareDialog from './ShareDialog';
 import { projectsApi } from '../../lib/projectsApi';
+import { useProjectFiling } from '../../hooks/useProjectFiling';
 
 // Typing pauses this long before a search-as-you-type request fires. Keeps
 // GET /v1/docs?q=... from firing on every keystroke while staying fast
@@ -68,53 +70,64 @@ function TagEditor({ doc, theme, onSave }) {
   );
 }
 
-// One chip per linked project. Projects govern their own documents (A0 §5): a
-// Contributor or above who uploaded a document files it in; only a Maintainer
-// or Owner removes it — never the uploader as such.
-function ProjectChips({ doc, projects, theme, onLink, onUnlink, busy }) {
+// One chip per project where this content is the CURRENT version (V1 §5.2),
+// with the version that project is on; the name opens the project. Projects
+// govern their documents (A0 §5): × where the caller may remove documents —
+// it removes the document with its history, so several versions are named
+// first (V1 §6); "+ project" offers only projects the caller may file into.
+function ProjectChips({ doc, projects, theme, onLink, onUnlink, onOpenProject, busy }) {
+  const [confirm, setConfirm] = useState(null);
   const linked = doc.projects || [];
   const linkedIds = new Set(linked.map((p) => p.id));
-  // Projects decide (A0 §5): × where the caller may remove documents, and
-  // "+ project" offers only projects the caller may file into.
   const removableIds = new Set((projects || []).filter((p) => p.can?.remove_docs).map((p) => p.id));
   const addable = (projects || []).filter((p) => p.can?.file_docs && !linkedIds.has(p.id));
+  const remove = (p) => { setConfirm(null); onUnlink(doc, p); };
 
   return (
-    <div className="flex flex-wrap items-center gap-1">
-      <FolderOpen size={10} className={theme.textSecondary} />
-      {linked.length === 0 && <span className={theme.textSecondary}>No project</span>}
-      {linked.map((p) => (
-        <span
-          key={p.id}
-          className={`flex items-center gap-1 px-1.5 py-0.5 rounded ${theme.bgTertiary} ${theme.textSecondary}`}
-        >
-          {p.name}
-          {removableIds.has(p.id) && (
-            <button
-              onClick={() => onUnlink(doc, p)}
-              aria-label={`Remove ${doc.file_name} from ${p.name}`}
-              disabled={busy}
-              className="hover:text-red-500 disabled:opacity-50 disabled:cursor-default"
-            >
-              <X size={10} />
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-1">
+        <FolderOpen size={10} className={theme.textSecondary} />
+        {linked.length === 0 && <span className={theme.textSecondary}>No project</span>}
+        {linked.map((p) => (
+          <span key={p.id} className={`flex items-center gap-1 px-1.5 py-0.5 rounded ${theme.bgTertiary} ${theme.textSecondary}`}>
+            <button onClick={() => onOpenProject?.(p.id)} aria-label={`Open project ${p.name}`} className="hover:text-blue-500">
+              {p.name}
             </button>
-          )}
+            {p.version != null && <span>· v{p.version}</span>}
+            {removableIds.has(p.id) && (
+              <button
+                onClick={() => ((p.versions_count || 1) > 1 ? setConfirm(p.id) : remove(p))}
+                aria-label={`Remove ${doc.file_name} from ${p.name}`}
+                disabled={busy}
+                className="-m-1 p-[7px] hover:text-red-500 disabled:opacity-50 disabled:cursor-default"
+              >
+                <X size={10} />
+              </button>
+            )}
+          </span>
+        ))}
+        {doc.added_via === 'upload' && addable.length > 0 && (
+          <select
+            value=""
+            onChange={(e) => { if (e.target.value) onLink(doc, e.target.value); }}
+            aria-label={`Add ${doc.file_name} to project`}
+            disabled={busy}
+            className={`max-w-[10rem] px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg}`}
+          >
+            <option value="">+ project</option>
+            {addable.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        )}
+      </div>
+      {linked.filter((p) => p.id === confirm).map((p) => (
+        <span key={p.id} className="flex flex-wrap items-center gap-2">
+          <span className={theme.textSecondary}>{`Remove ${doc.file_name} and its ${p.versions_count} versions from ${p.name}?`}</span>
+          <button onClick={() => remove(p)} aria-label={`Confirm remove from ${p.name}`} className="underline text-red-500">Confirm remove</button>
+          <button onClick={() => setConfirm(null)} className="underline">Cancel</button>
         </span>
       ))}
-      {doc.added_via === 'upload' && addable.length > 0 && (
-        <select
-          value=""
-          onChange={(e) => { if (e.target.value) onLink(doc, e.target.value); }}
-          aria-label={`Add ${doc.file_name} to project`}
-          disabled={busy}
-          className={`max-w-[10rem] px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg}`}
-        >
-          <option value="">+ project</option>
-          {addable.map((p) => (
-            <option key={p.id} value={p.id}>{p.name}</option>
-          ))}
-        </select>
-      )}
     </div>
   );
 }
@@ -199,6 +212,7 @@ function NewProjectForm({ theme, busy, onCreate, onCancel }) {
  * creates a project I own; `onProjectsChanged` tells the reader to refresh
  * its project picker.
  * The Projects tab lists my projects; a project page manages its documents, members and activity (A0).
+ * A project shows only its current version; a row of mine that a project has moved past says so (V1 §6).
  */
 export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProjectsChanged, onOpen, currentUserId }) {
   const [docs, setDocs] = useState(null);
@@ -278,21 +292,39 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
     }
   };
 
-  const changeLink = async (doc, projectId, method) => {
+  // Filing (V1 §4.2): a name or file the project already has asks first.
+  const filing = useProjectFiling({
+    fileDoc: api.fileDoc,
+    onFiled: async () => { await loadDocs(search, projectFilter); },
+    onError: async (message) => {
+      showToast(`Update failed: ${message}`, 5000);
+      await loadProjects(); // our role may have changed; refresh `can` so stale controls go away
+    },
+  });
+  const linkDoc = async (doc, projectId) => {
+    const p = (projects || []).find((x) => x.id === projectId);
     setLinkingId(doc.doc_id);
     try {
-      const res = await apiFetch(apiHost, apiPort, `/v1/projects/${projectId}/docs/${doc.doc_id}`, { method });
-      if (!res.ok) throw new Error(await describeRefusal(res));
-      await loadDocs(search, projectFilter);
-    } catch (e) {
-      showToast(`Update failed: ${e.message}`, 5000);
-      await loadProjects(); // our role may have changed; refresh `can` so stale controls go away
+      await filing.file({ projectId, projectName: p?.name || 'the project', docId: doc.doc_id, label: doc.file_name });
     } finally {
       setLinkingId(null);
     }
   };
-  const linkDoc = (doc, projectId) => changeLink(doc, projectId, 'PUT');
-  const unlinkDoc = (doc, project) => changeLink(doc, project.id, 'DELETE');
+  // × removes the project's document — with its history (V1 §5.2).
+  const unlinkDoc = async (doc, chip) => {
+    setLinkingId(doc.doc_id);
+    try {
+      const res = await apiFetch(apiHost, apiPort,
+        `/v1/projects/${chip.id}/documents/${chip.document_id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(await describeRefusal(res));
+      await loadDocs(search, projectFilter);
+    } catch (e) {
+      showToast(`Update failed: ${e.message}`, 5000);
+      await loadProjects();
+    } finally {
+      setLinkingId(null);
+    }
+  };
 
   const createProject = async (body) => {
     setProjectBusy(true);
@@ -521,9 +553,21 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
                       theme={theme}
                       onLink={linkDoc}
                       onUnlink={unlinkDoc}
+                      onOpenProject={setOpenProjectId}
                       busy={linkingId === doc.doc_id}
                     />
                   </div>
+                  {(doc.newer_in || []).map((n) => (
+                    <div key={n.document_id} className={`flex flex-wrap items-center gap-1 text-[10px] ${theme.textMuted}`}>
+                      <span>{n.project.name} has a newer version (v{n.current_version})</span>
+                      {onOpen && (
+                        <button onClick={() => openDoc({ doc_id: n.current_doc_id, file_name: n.current_name })}
+                          aria-label={`Open current version from ${n.project.name}`} className="underline font-bold">
+                          Open current
+                        </button>
+                      )}
+                    </div>
+                  ))}
 
                   {shareDocId === doc.doc_id && (
                     <ShareDialog theme={theme} api={api} doc={doc} showToast={showToast} onClose={() => setShareDocId(null)} />
@@ -550,6 +594,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
           </>
         )}
       </div>
+      {filing.dialog && <NameMatchDialog theme={theme} {...filing.dialog} />}
     </div>
   );
 }

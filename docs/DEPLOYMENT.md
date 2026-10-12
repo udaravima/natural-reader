@@ -13,6 +13,93 @@ Worked example uses two hostnames:
 | `chat.example.com` | the built SPA **and** the `/v1/*` backend (one origin) | [`chat.example.com.sample`](sample_configs/chat.example.com.sample) |
 | `auth.example.com` | Keycloak (OIDC provider) | [`auth.example.com.sample`](sample_configs/auth.example.com.sample) |
 
+## Running the backend in a container
+
+The backend ships as a container image (`Containerfile`, the `backend` service in
+`docker-compose.yml`). Python is pinned inside the image, so a host OS upgrade
+can't move the interpreter under the app. Windows hosts keep the bare-metal flow
+(`startup.ps1`).
+
+### Live mode
+
+| Command | Effect |
+| --- | --- |
+| `./startup.sh start` | builds the image if needed, then runs Postgres, SearXNG, Keycloak (see below) and the backend, all detached |
+| `./startup.sh rebuild` | ship new code: rebuild the image, recreate only the backend; Postgres and Keycloak keep running |
+| `./startup.sh logs` | follow the backend's output (the rotating `server.log` is still written under `LOG_DIR`) |
+| `./startup.sh stop` | stop and remove the containers; volumes and `data/` stay |
+
+**Rollback** to the bare-metal backend: `./startup.sh stop`, then
+`BACKEND_RUNTIME=venv ./startup.sh up-with-dev-auth` (needs `./startup.sh init`).
+
+### Surviving reboots
+
+Every service uses `restart: always`. On **podman**, run `./startup.sh
+enable-autostart` once: it enables lingering for your user (user services run
+without a login session) and `podman-restart.service`, which restarts only
+containers whose restart policy is `always`. On **Docker**, the daemon restarts
+them itself once it starts at boot (`systemctl enable docker`). `stop` removes
+the containers, so a deliberate stop stays stopped.
+
+### Host networking
+
+The backend runs with `network_mode: host`. It is a *client* of four services
+bound to the host's loopback (Postgres `:5433`, Keycloak `:18080`, SearXNG
+`:18043`, Ollama `:11434`), and the OIDC issuer URL must be the same string for
+the browser and the backend. A bridged container sees its own loopback, not the
+host's, so each of those would need a different URL. With host networking
+nothing changes: the backend still binds `127.0.0.1:8000` (`HOST`), and nginx
+keeps proxying to it. The container is supported on Linux x86_64; ARM is
+untested.
+
+### CPU only
+
+The image runs Kokoro (and Docling) on the CPU. It passes no GPU or NPU device
+into the container and ships no accelerated ONNX Runtime. Intel GPUs and NPUs
+would need `/dev/dri` / `/dev/accel`, the render group and Intel's compute
+runtime in the image; NVIDIA would need the NVIDIA container toolkit and an
+`onnxruntime-gpu` image with CUDA libraries (gigabytes). For acceleration
+today, run the backend bare metal with an accelerated build (README, Hardware
+Acceleration).
+
+### Paths are host paths
+
+`DOC_STORAGE_DIR` (or the legacy `PDF_STORAGE_DIR`), `LOG_DIR` and
+`CHAT_ASSISTANT_PROFILE_FILE` in `.env` name locations **on the host**.
+`startup.sh` mounts them into the container at fixed paths, and files written
+there belong to the user who ran it. Running compose by hand? Set `NR_DATA_DIR`,
+`NR_LOG_DIR` and (optionally) `NR_PROFILE_FILE` to those host paths (absolute)
+and add `-f compose.profile.yml` for the profile; otherwise the defaults
+`./data/pdfs` and `./logs` are used. On podman also add `-f compose.podman.yml`:
+without its keep-id mapping the container can't write those folders, and
+without its `in_pod: false` podman refuses to create the backend.
+`LOG_AUDIT_FILE` is ignored in the container: `audit.log` is written under
+`LOG_DIR`.
+
+Only `.env` reaches the backend container, plus `HOST`, `PORT` and `WORKERS`,
+which also pass through from the shell. A key exported only in your shell
+profile (as the bare-metal backend would have seen it) must move into `.env`.
+
+Documents keep working across the switch, in both directions: the database
+records each upload's path as the runtime that stored it saw it, and the
+backend finds the same `<doc_id>.<ext>` file in its own storage folder when
+that path doesn't exist.
+
+### Keycloak
+
+`LOCAL_KEYCLOAK=auto|true|false` (default `auto`) decides whether `start` runs
+the compose Keycloak. `auto` means yes when `OIDC_ISSUER` is
+`http://localhost:18080/…` **or** `KC_HOSTNAME` is set, because `KC_HOSTNAME` only
+configures the compose Keycloak. A live site fronting it as
+`https://auth.example.com` therefore still gets it. Use `false` for an external IdP.
+
+### Docling
+
+`DOCLING_ENABLED` in `.env` also selects the image variant: `start` and `rebuild`
+build with Docling (CPU-only torch, several GB larger) exactly when it is on.
+Turning it on later takes `./startup.sh rebuild`. A mismatch is logged once at
+startup.
+
 ## The one rule that dictates the topology: same origin
 
 The app's login session is an **`HttpOnly` cookie**. Browsers only send that
@@ -375,9 +462,9 @@ Full `.env.example` block: [`../.env.example`](../.env.example), just after
 5. **`.env`:** the six production values from the table above — the five
    scheme+host ones **and** `KC_ADMIN_CLIENT_ID`/`KC_ADMIN_CLIENT_SECRET` (start
    from [`../.env.example`](../.env.example)).
-6. **Bring up services:** `env -u XDG_DATA_HOME .venv/bin/podman-compose up -d
-   postgres keycloak searxng`, then run the backend (`HOST=0.0.0.0` or bound to
-   the loopback nginx proxies to).
+6. **Bring up services:** `./startup.sh start` (Postgres, Keycloak, SearXNG and
+   the backend container, which stays bound to the loopback nginx proxies to),
+   then `./startup.sh enable-autostart` so it survives reboots.
 7. **Fix the live realm** (Trap 2) — add the https redirect URI + web origin.
 8. **Grant the founder their realm roles** (Trap 4) — either re-import the
    corrected export into a fresh DB, or assign `admin`/`reader`/`chat` to your
