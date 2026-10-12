@@ -236,6 +236,16 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Uploading a large file no longer freezes your other requests.** Every
+  request from the same login (cookie or access token) used to hang until
+  the upload's indexing finished, about a minute for a big file. Signing in
+  a request stamped "last seen" on the request's own database connection,
+  and FastAPI keeps that connection open until the background indexing
+  ends, so the stamp's row lock blocked the next request's stamp. The stamp
+  is now committed at once on its own short connection, at most once a
+  minute per session or token (`last_seen_at` / `last_used_at` are now
+  accurate to the minute).
+
 - **Windows bare metal:** the backend no longer crashes printing ✓ / → on
   a cp1252 console (UTF-8 console streams, and `PYTHONUTF8=1` in
   `startup.ps1`). Chat and documents work: uvicorn and `asyncio.run` now

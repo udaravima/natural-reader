@@ -60,7 +60,7 @@ Not checked: the reader showing `link.error` on a *failed* filing. No filing fai
 
 ## Found during the walk
 
-### 1. After an upload, the uploader's whole session freezes until indexing finishes (pre-existing, app-wide; **not fixed**, needs a decision)
+### 1. After an upload, the uploader's whole session freezes until indexing finishes (pre-existing, app-wide; **fixed after the merge** on `fix/session-touch-freeze`, option (a); see the end of this finding)
 
 **What the user sees.** Cara uploads a large new version. The toast says "README.md is now v3 (indexing…)", but the row keeps saying "v2 · 2 versions" for the full minute the index takes (802 chunks on this CPU-only machine). Every other request she makes, in any tab, also hangs for that minute: a plain `fetch('/v1/projects')` took 49.7 s. Other users are unaffected. Olive watched the same row move from indexing to indexed in real time. With small files the window is under a second, which is why J1 looks fine at first.
 
@@ -86,6 +86,22 @@ Not checked: the reader showing `link.error` on a *failed* filing. No filing fai
 - (c) Commit and release the request connection explicitly before returning from those routes.
 
 Option (a) is the smallest and fixes every route at once. It needs a check that `server/tests`' transactional-connection override still isolates tests.
+
+**Fixed (2026-10-12, option a, TDD).**
+
+- **Change:** `server/auth/touch.py` stamps `sessions.last_seen_at` and `personal_access_tokens.last_used_at` on a separate pooled connection that commits at once, and at most once every 60 s per credential. Nothing reads either column more precisely; `last_seen_at` is never read at all. `resolve_session` and `resolve_token` call it. The request connection now only reads.
+- **Test isolation:** with no pool open (unit tests on a bare connection), the stamp is skipped. The `get_conn` override is untouched.
+- **RED:** `server/tests/test_auth_touch.py` (4 tests, scratch database, the request connection left open mid-transaction):
+  - the stamp isn't visible to other connections;
+  - the token stamp isn't either;
+  - request B timed out behind request A's lock;
+  - a recent stamp was repeated.
+- **GREEN:** the full backend suite gives 1235 passed, 16 skipped, 2 deselected, and the same 3 warnings.
+- **Running app:** I ran a backend under `env -i` on a scratch database and stamped with a personal access token, whose last use I had backdated an hour so the stamp would fire.
+  - Uploading a 600 KB Markdown file gave 1841 chunks and took 90 s to index.
+  - Throughout, `GET /v1/projects` answered in 2–8 ms, against 49.7 s in the walk.
+  - There were no lock waits. A stamp fired mid-index, about 60 s in, and blocked nothing.
+- **Still true:** the upload request's connection stays open, idle in transaction with no row locks, until its index ends. That connection is one pool slot (max 10) per running index. Many simultaneous indexes could still exhaust the pool; options (b) and (c) above would fix that, and they weren't needed for the freeze.
 
 ### 2. Merge picker couldn't tell same-named documents apart (**fixed**, TDD)
 
@@ -180,7 +196,7 @@ None of these blocks merge (final-review triage, upheld by the fix-wave re-revie
 
 **From this walk:**
 
-- Finding 1, the upload session freeze, needs a decision.
+- Finding 1, the upload session freeze: fixed after the merge (option a); the pool-slot limit noted there remains.
 - Observations 3a–3j.
 - The unverified `link.error`-on-failed-filing item.
 - The final review's "declined to judge" #3: there is no Retry-indexing control on the Documents tab for a failed version. No index failed in the walk, so it is still untried.
@@ -195,5 +211,4 @@ None of these blocks merge (final-review triage, upheld by the fix-wave re-revie
 - **Limit storage:** there are no quotas or version-retention limits. Every version keeps its content and index until someone deletes it.
 - **Spot same-named documents at a glance:** the "same name as another document" marker is deferred. Since this walk, the merge picker does tell them apart (finding 2).
 - **Follow backup guidance:** `docs/DEPLOYMENT.md` has none yet. The CHANGELOG says to take a `pg_dump` before upgrading, because 018 changes a primary key and has no down step.
-- **Keep working while a big upload indexes** (finding 1). Until that is fixed, the uploader's other requests wait for the index to finish.
 - **Version documents in a personal library.** Not planned: history exists only inside projects (user decision, 2026-10-11).
