@@ -120,6 +120,16 @@ All notable changes to this project will be documented in this file.
   (`PROJECT_LIMIT_PER_USER`, default 20) and `PROJECT_CREATION`
   (readers | admins). Enroll takes username, first and last name.
 
+- **Document versions in projects.** A revised file becomes a new version of a
+  project's document instead of a second document: upload it from the
+  document's ⋯ menu, or file a same-named file and choose *Add as new
+  version*. Each document keeps its history: open any version, restore one
+  (it comes back on top; nothing is lost), delete an old one, or merge two
+  documents that are really one. The Library and chat see only the current
+  version; an old chat's citation opens the version it quoted, labelled, and
+  the reader shows an old-version banner with a link to the current one.
+  Activity records who added, restored, merged or deleted versions.
+
 ### Changed
 
 - **Kokoro uses the CPU build of ONNX Runtime (`onnxruntime`).** The
@@ -199,6 +209,23 @@ All notable changes to this project will be documented in this file.
 - People's username, first and last name are refreshed from the login token.
 - Access-log lines no longer include query strings, so search and people-lookup
   text never reaches the logs.
+
+- **API (breaking):** `PUT /v1/projects/{id}/docs/{doc_id}` returns
+  `200`/`201 {document_id, version}` instead of an empty `204`, takes the
+  query parameters `as_version_of` and `keep_both`, and answers
+  `409 name_exists` / `409 older_version` until the caller passes one of them.
+  `DELETE /v1/projects/{id}/docs/{doc_id}` is removed: use
+  `DELETE /v1/projects/{id}/documents/{document_id}`, which removes the
+  document with its history. New routes under `/v1/projects/{id}/documents`
+  list documents and versions, upload (`…/versions`, `…/versions/from-library`),
+  restore, delete a version, merge and remove.
+- **API: Library and counts.** `GET /v1/docs` lists current versions only and
+  its rows gain `newer_in`; the project chips on each row gain `document_id`,
+  `version` and `versions_count`. `GET /v1/docs/{id}` gains `versions_in`.
+  `doc_count` (project list, project page, admin console) counts documents,
+  not versions.
+- A project's name for a document is stored when it is filed and no longer
+  changes when the filer renames or removes their own copy.
 
 ### Removed
 
@@ -371,6 +398,15 @@ All notable changes to this project will be documented in this file.
   as the new model has the same dimension (`EMBEDDING_DIM`). Each document
   rebuilds on first use. Until it does, it can't be searched: vectors from
   two models can't be compared.
+
+- **Take a `pg_dump` before upgrading.** Migration `018` changes the primary
+  key of `project_documents` and has no down step, so the dump is the only way
+  back. Existing project documents become version 1 of themselves, with the
+  names they show today. Existing duplicates are not merged automatically: use
+  **Mark as newer version of…** on the Documents tab.
+- **Custom scripts that call `PUT` or `DELETE /v1/projects/{id}/docs/{doc_id}`
+  will break** (see Changed). The app itself is updated in the same release;
+  nothing in `extension/`, `scripts/` or `deploy/` calls them.
 
 ## [2.1.0] - 2026-09-28
 

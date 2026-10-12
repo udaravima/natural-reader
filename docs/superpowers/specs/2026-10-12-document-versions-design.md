@@ -1,7 +1,7 @@
 # Document versions (V1)
 
 **Date:** 2026-10-12 (brainstormed 2026-10-11/12)
-**Status:** Design, awaiting the user's review of this written spec, then an implementation plan.
+**Status:** Built. This spec has been brought in line with what was built; places where the build differs from the first design are marked "(changed in the build: …)".
 **Branch:** `feat/v1-document-versions` (from `development` at c4dc6f5)
 **Program:** the second of five, in this order: A0 → **V1 document versions** → C2.1 project chat → V2 compare and review → C2.2 digests (agreed 2026-10-06).
 **Depends on:** A1 (content vs library entries, migrations 011–012) and A0 (project roles, activity feed, migration 017), both built.
@@ -95,6 +95,7 @@ project_documents                 -- existing; every row is now ONE VERSION
 - **`last_version`:** a new version gets `last_version + 1`, set under the document's row lock. Numbers are never reused, even if a future version (V2) deletes the highest one. People refer to "v2" in comments and chats, and a reused number would silently change what "v2" means.
 - **A document's displayed name** is its current version's `file_name`. Storing the name per version fixes a latent problem. Today a project *borrows* a document's name live from the filer's personal entry ([projects.py:206](../../../server/routers/projects.py) `_placement_name`). If the filer renames their copy, the project's name changes for everyone. If they remove their copy, the project falls back to the content's canonical name, which is the first uploader anywhere's file name and possibly a stranger's.
 - **Unverified versions** (legacy placements, migration 012) behave exactly as unverified placements do today: invisible. They're left out of listings, history, counts, `versions_in` and `newer_in`, and they can't be restored or merged. `_verify_holdings` ([doc_content.py:68](../../../server/services/doc_content.py)) still verifies them by `added_by` when their filer uploads the bytes. `versions_count` counts only verified versions.
+- **Known limit: a version upload verifies only this project's legacy row.** Uploading a version's bytes verifies this project's unverified *current* row for that content (`verify_legacy_current`, §4.2 step 0), and nothing else. It does not verify the uploader's other legacy holdings of the same content (their library entry, or their placements in other projects), which `_verify_holdings` would verify on a plain `POST /v1/docs` upload. Those stay invisible until the uploader uploads the file the ordinary way. This is deliberate: a version upload is a project action and shouldn't change what is visible elsewhere.
 
 ### 3.3 Unchanged
 
@@ -140,13 +141,14 @@ The four new kinds join `KINDS` in [project_events.py](../../../server/services/
 
 ### 4.2 Filing from a library: the name-match prompt
 
-`PUT /v1/projects/{pid}/docs/{doc_id}` files a document from your library: Contributor+, holding a verified upload entry, as today. It serves all three filing paths: the reader's upload-into-project, the Documents tab's "File a document…", and the Library's "+ project" chip. The prompt is decided on the server, so all three get it. The **filed name** is the filer's display name for their entry, `COALESCE(entry.file_name, documents.file_name)`, and it becomes the new version's `file_name`. The checks run in this order; the first that applies wins:
+`PUT /v1/projects/{pid}/docs/{doc_id}` files a document from your library: Contributor+, holding a verified upload entry, as today. It serves all three filing paths: the reader's upload-into-project, the Documents tab's "File a document…", and the Library's "+ project" chip. The prompt is decided on the server, so all three get it. The **filed name** is the filer's display name for their entry, `COALESCE(entry.file_name, documents.file_name)`, and it becomes the new version's `file_name`. The checks run in this order; the first that applies wins (changed in the build: the explicit `as_version_of` choice is its own step, ahead of the two prompts):
 
 0. **Legacy: an *unverified* current version in this project holds this content** → verify it in place (`verified = true`, `added_by` = the filer), as today's `ON CONFLICT … WHERE NOT verified` does. Then continue with step 1. This step exists because the duplicate-guard index ignores `verified`. Without it, a new current row for the same content would hit a `unique_violation`.
-1. **The content is already current in this project** → idempotent `200 {document_id, version}`, with no event. This is today's behaviour.
-2. **The content is an old version of a document D in this project** → `409 older_version {document, version}`. *Unless* the request says `as_version_of=D`, which becomes a restore of that version (`201`, event `document.version_restored`), or `keep_both=true`. The byte match is checked before the name match because it's the stronger evidence.
-3. **A current document has the same name**, compared with `lower(btrim(...))` against verified current versions → `409 name_exists {document}`. *Unless* the request says `as_version_of=<id>`, which becomes a new version of that document under the same-bytes rules of §4.3 (`201`, event `document.version_added`), or `keep_both=true`.
-4. Otherwise → a **new document**, v1, `origin = upload`, `201 {document_id, version: 1}`, event `document.added`.
+1. **The content is already current in this project** → idempotent `200 {document_id, version}`, with no event. This is today's behaviour. (If the request names `as_version_of` and that is a *different* document from the one holding the content, it is `409 current_elsewhere` instead: the content can't be current in two documents.)
+2. **An explicit choice wins.** If the request says `as_version_of=<id>`, the file becomes a new version of that document under the same-bytes rules of §4.3 (`201 {document_id, version, restored_from}`; event `document.version_added`, or `document.version_restored` when §4.3 made it a restore). This holds even when the bytes are an old version of a *different* document D: the user chose that document, so it gets the version and D is left alone. Steps 3 to 5 are not consulted.
+3. **The content is an old version of a document D in this project** → `409 older_version {document, version}`. *Unless* the request says `as_version_of=D` (step 2: a restore of that version) or `keep_both=true`. The byte match is checked before the name match because it's the stronger evidence.
+4. **A current document has the same name**, compared with `lower(btrim(...))` against verified current versions → `409 name_exists {document}`. *Unless* the request says `as_version_of=<id>` (step 2) or `keep_both=true`.
+5. Otherwise → a **new document**, v1, `origin = upload`, `201 {document_id, version: 1}`, event `document.added`.
 
 The same in-place verification (step 0) applies when a version upload's content matches an unverified current version elsewhere in the project. After it, §4.3's `current_elsewhere` applies normally.
 
@@ -160,7 +162,7 @@ The name match is **advisory, not a constraint.** Two people filing the same nam
 | one of this document's older (verified) versions *k* | accepted **as a restore of *k*** (`origin = restore`), and the response says `restored_from: k` |
 | another document's current version in this project | `409 current_elsewhere {document}`: "merge them instead" |
 
-Restore applies the third rule too: restoring content that is current in another document gives `409 current_elsewhere`.
+Restore applies the same rules. Restoring content that is current in another document gives `409 current_elsewhere`. Restoring a version whose bytes are already the current version's bytes gives `409 already_current`. That covers the chosen row being the current one, and also an older row (say v1) whose bytes a later version (say v3, itself a restore of v1) already holds as current. Without this, restore would append a version identical to the one on top.
 
 ### 4.4 Transactions, locking and the upload pipeline
 
@@ -183,7 +185,8 @@ These are addressed by the project document's id. A content hash no longer ident
 |---|---|---|
 | `GET /v1/projects/{pid}/documents` | Reader+ | Current, verified versions only: `[{id, name, version, versions_count, doc_id, state, updated_at, updated_by: {id, name}}]`, sorted by name |
 | `GET /v1/projects/{pid}/documents/{id}/versions` | Reader+ | Verified versions, newest first: `[{version, doc_id, file_name, note, origin, origin_version, added_by: {id, name}, added_at, is_current, state}]` |
-| `POST /v1/projects/{pid}/documents/{id}/versions` | Contributor+ | Multipart `file` + optional `file_name` and `note` (the name defaults to the uploaded file's, trimmed, ≤ 255 characters, as for `POST /v1/docs`), **or** JSON `{doc_id, note}` for a file you uploaded to your library (the name is your entry's display name) → `201 {version, doc_id, state, restored_from}` (`restored_from` is `null` unless §4.3 made it a restore). Starts indexing for new content. |
+| `POST /v1/projects/{pid}/documents/{id}/versions` | Contributor+ | Multipart `file` + optional `file_name` and `note` (the name defaults to the uploaded file's, trimmed, ≤ 255 characters, as for `POST /v1/docs`) → `201 {version, doc_id, state, restored_from}` (`restored_from` is `null` unless §4.3 made it a restore). Starts indexing for new content. |
+| `POST /v1/projects/{pid}/documents/{id}/versions/from-library` | Contributor+ | JSON `{doc_id, note}` for a file you uploaded to your library (the name is your entry's display name) → `201`, same shape. (Changed in the build: its own route, because FastAPI validates one body type per route, so the multipart and JSON forms can't share one.) |
 | `POST /v1/projects/{pid}/documents/{id}/versions/{n}/restore` | Contributor+ | → `201`, same shape |
 | `DELETE /v1/projects/{pid}/documents/{id}/versions/{n}` | Maintainer+ | → `204` |
 | `POST /v1/projects/{pid}/documents/{id}/merge` `{from}` | Maintainer+ | `{id}` = A, the one that stays; `from` = B, the one absorbed → `200` with A's row, shaped as in the listing |
@@ -198,22 +201,22 @@ Nothing outside the SPA calls these routes: checked across `extension/`, `script
 | `PUT /v1/projects/{pid}/docs/{doc_id}` | Returns `200`/`201 {document_id, version}` (was an empty `204`). Accepts `as_version_of` or `keep_both` query parameters. Can return `409 name_exists` / `older_version` (§4.2). |
 | `DELETE /v1/projects/{pid}/docs/{doc_id}` | **Removed.** Use `DELETE …/documents/{id}`. |
 | `GET /v1/projects`, `GET /v1/projects/{pid}`, `GET /v1/admin/projects` | `doc_count` counts **documents** (current versions), not version rows (§3.4). The shape is unchanged. |
-| `GET /v1/docs` (Library) | Rows come from `listed_docs_where` (§2), so rows reached through a project are current versions only. The `projects` chips become `[{id, name, document_id, version}]` and list only projects where this content is current. New `newer_in: [{project: {id, name}, document_id, current_version}]` lists visible project documents where this content is an old version and not current. `?project_id=` filters to content current in that project. |
-| `GET /v1/docs/{doc_id}` | New `versions_in: [{project: {id, name}, document_id, version, current_version, is_current}]`: every visible project document whose verified history holds this content. `version` is its highest number there (restore can put the same content in one history twice). |
+| `GET /v1/docs` (Library) | Rows come from `listed_docs_where` (§2), so rows reached through a project are current versions only. The `projects` chips become `[{id, name, document_id, version, versions_count}]` and list only projects where this content is current (`versions_count` is the document's verified versions, which the chip's × confirmation names). New `newer_in` lists visible project documents where this content is an old version and not current; its items have the same shape as `versions_in` below, and `current_doc_id` and `current_name` are what *Open current* opens. (Changed in the build: the items carry `current_doc_id` and `current_name`, and the chips carry `versions_count`.) `?project_id=` filters to content current in that project. |
+| `GET /v1/docs/{doc_id}` | New `versions_in: [{project: {id, name}, document_id, version, current_version, current_doc_id, current_name, is_current}]`: every visible project document whose verified history holds this content. `version` is its highest number there (restore can put the same content in one history twice). |
 
 `versions_in` and `newer_in` only ever name **projects the caller is a member of**. Showing others would leak project names (the same rule as `_doc_projects_sql`).
 
 ### 5.3 Refusals
 
-- **`404 not_found`:** anything the caller can't see, including a non-member's project, another project's document id, a missing version number, an unverified version, or a `from` document in another project. "Not yours" and "not there" are indistinguishable, as everywhere since A1.
+- **`404 not_found`:** anything the caller can't see, including a non-member's project, another project's document id, a missing version number, an unverified version, or a `from` document in another project. A merge checks that **both** documents are visible in the project *before* it checks for a self-merge: merging an invisible document into itself is a 404, and only a visible document gives `409 merge_self`. Otherwise the 409 would confirm that an id exists. "Not yours" and "not there" are indistinguishable, as everywhere since A1.
 - **`403 insufficient_role`** (A0): a member below the route's role.
 - **`409`:** a conflict with current state. Every `409` body names the document involved (`{document: {id, name, version}}`), so the app can say *which* one:
 
 | Code | Meaning |
 |---|---|
-| `already_current` | the uploaded content is already this document's current version |
+| `already_current` | the uploaded or restored content is already this document's current version (§4.3) |
 | `current_elsewhere` | the content is another document's current version in this project |
-| `older_version` | filing content that is an old version of a document (§4.2) |
+| `older_version` | filing content that is an old version of a document (§4.2); the body also carries that version's number as `version` |
 | `name_exists` | filing a name that matches a current document (§4.2) |
 | `is_current` | deleting the current version: remove the document instead |
 | `merge_self` | merging a document into itself |
@@ -235,6 +238,7 @@ report-final.pdf  [indexed]  v3 · 3 versions ▾            [Open] [⋯] [×]
 - **Upload new version** opens a strip under the row: *Choose file…* **or** *From my library ▾* (your own verified uploads), an optional *What changed?* note, then **Upload**. Toast: "report.pdf is now v4 (indexing…)", or "…restored v1" when §4.3 made it a restore. The state badge follows indexing as today.
 - **Mark as newer version of…** asks you to pick another document in the project, then confirms inline: *"report-final.pdf becomes v2 of report.pdf, and the row will be called report-final.pdf. This can't be undone; every file stays in the history."*
 - **Restore** (`can.file_docs`) and **Delete** (`can.remove_docs`, inline confirm, today's Remove pattern) sit on history lines. Neither is offered on the current version.
+- **An open history stays current.** It refetches whenever its document's version or version count changes, whichever action or row caused it (this row's upload, another row's merge into it, the filing dialog). A history never shows a stale list under a header that has moved on.
 - **Remove (×)** works as today, but its confirmation adds "…and its *N* versions" when *N* > 1.
 - A refusal (`409`/`403`) is a toast with the server's message, followed by a reload, like the tab's existing `run` helper.
 
@@ -249,7 +253,8 @@ For `older_version`, the first button reads **Restore v1 as current**. The chose
 
 **Library** ([LibraryPage.jsx](../../../src/components/library/LibraryPage.jsx)):
 
-- Chips read `[Project X · v3]` and open the project's page.
+- Chips read `[Project X · v3]`. The project's name opens the project's page; the version is plain text. (Changed in the build: only the name is the link.)
+- Chip **×** (shown where you may remove documents from that project) removes the project's document *with its history*; with more than one version it first asks *Remove … and its N versions from …?*. With one version it removes straight away, as before.
 - A row with `newer_in` shows a muted line: *Project X has a newer version (v3) · **Open current***. This is the agreed "two rows, clearly labelled" behaviour (option A, 2026-10-11): your personal copy stays yours, nobody else's action changes it, and you can remove it or open the current version.
 - Version actions are **not** in the Library. They live on each project's Documents tab, so "which project's README am I changing?" always has exactly one answer.
 
@@ -271,7 +276,7 @@ The reader and chat already address content by hash, and every version has its o
   Old version — v1 of report.pdf in Project X (current is v3) · Open current
   ```
 
-  If it's old in several projects, the banner names the first by project name. The README case: content that's current in Project Y and old in Project X shows **no banner**, because it *is* a current document (Y's). X having moved on shows on your Library row instead.
+  The banner is a strip in normal page flow **above** the viewer toolbar, so it never covers a control, and it wraps at phone width. It stays visible in distraction-free mode, because the warning matters most when nothing else is on screen. If it's old in several projects, the banner names the first by project name. The README case: content that's current in Project Y and old in Project X shows **no banner**, because it *is* a current document (Y's). X having moved on shows on your Library row instead.
 - **Chat follows what you're reading.** With v1 open, "This document" chat answers from v1, and citations point at v1's pages. To stop the model presenting v1's facts as current, the open document's `ReadableDoc` gains a `version_note`, set under the banner's rule. The model then sees it in the tools' document listing ([scope.py](../../../server/chat/tools/scope.py) `documents_listing`):
 
   ```json
@@ -324,7 +329,7 @@ The reader and chat already address content by hash, and every version has its o
   - merge: order, numbering from `last_version`, `origin`/`origin_version`, B gone, B's hashes still readable, `merge_self`, `from` in another project → 404;
   - removing a document: every version's content GC'd;
   - numbers are never reused.
-- **Roles.** Each action × reader / contributor / maintainer / owner / non-member / admin-non-member, added to `test_library_access_matrix.py`.
+- **Roles.** Each action × reader / contributor / maintainer / owner / non-member / admin-non-member, in `server/tests/test_project_permission_matrix.py` (changed in the build: not `test_library_access_matrix.py`).
 - **Leaks:**
   - `versions_in` and `newer_in` never name a project the caller isn't in;
   - a non-member gets 404 on every new route;
