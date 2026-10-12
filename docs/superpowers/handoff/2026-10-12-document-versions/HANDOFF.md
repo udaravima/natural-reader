@@ -1,7 +1,7 @@
 # V1 — document versions: handoff
 
-**Branch:** `feat/v1-document-versions` (from `development` at `c4dc6f5`; not pushed, not merged). **Spec:** `docs/superpowers/specs/2026-10-12-document-versions-design.md`. **Plan:** `docs/superpowers/plans/2026-10-12-document-versions.md`.
-**Commits:** `368013b` (spec) … `77e4826` (final-review fix wave), 18 in all. Task 16 adds one walk fix, the `docs/TESTING.md` counts and this handoff, all uncommitted for review.
+**Branch:** `feat/v1-document-versions` (from `development` at `c4dc6f5`). **Merged** into `development` on 2026-10-12 as a fast-forward to `491749f`; not pushed, not in `master`. **Spec:** `docs/superpowers/specs/2026-10-12-document-versions-design.md`. **Plan:** `docs/superpowers/plans/2026-10-12-document-versions.md`.
+**Commits:** `368013b` (spec) … `491749f` (this handoff), 20 in all: the spec, the plan, 15 task commits, the final-review fix wave `77e4826`, the walk fix `3824743` and this handoff. The gate below ran on `491749f`, the same tree `development` now points at.
 
 ## Gate (2026-10-12)
 
