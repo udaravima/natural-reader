@@ -2,7 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [2.2.0] - 2026-10-12
+
+Projects become **team spaces with roles** (Reader, Contributor, Maintainer,
+Owner), managed in the app. A revised file becomes **a new version** of a
+project's document, with its history kept; chat and search see only current
+versions. The backend can run **in a container**. Document chat searches whole
+pages and exact words. Breaking API changes and five migrations, one of them
+(`018`) without a down step: take a `pg_dump` and read **Upgrade notes** first.
+Release notes:
+[docs/Release_notes/RELEASE_NOTES_v2.2.0.md](docs/Release_notes/RELEASE_NOTES_v2.2.0.md).
 
 ### Added
 
