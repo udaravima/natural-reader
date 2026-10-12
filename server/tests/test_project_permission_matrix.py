@@ -12,6 +12,7 @@ from httpx import ASGITransport
 from server.auth import deps
 from server.auth.users import resolve_or_provision_user
 from server.routers import people as people_router
+from server.routers import project_documents as pd_router
 from server.routers import projects as projects_router
 from server.tests import seed
 
@@ -20,6 +21,8 @@ pytestmark = pytest.mark.asyncio
 CALLERS = ("none", "reader", "contributor", "maintainer", "owner", "admin", "admin+c")
 DOC_MINE = "1" * 64     # the caller holds an upload entry for it
 DOC_PLACED = "2" * 64   # already in the project, filed by the base owner
+DOC_V2 = "3" * 64       # v2 of the placed document, filed by the base owner
+DOC_OTHER = "4" * 64    # a second document in the project (merge source)
 
 #                 action               none reader contrib maint owner admin admin+c
 MATRIX = {
@@ -33,10 +36,17 @@ MATRIX = {
     "add owner":       (404, 403, 403, 403, 200, 200, 200),
     "remove an owner": (404, 403, 403, 403, 204, 204, 204),
     "delete project":  (404, 403, 403, 403, 204, 204, 204),
+    "see documents":      (404, 200, 200, 200, 200, 404, 200),
+    "see history":        (404, 200, 200, 200, 200, 404, 200),
+    "add a version":      (404, 403, 201, 201, 201, 404, 201),
+    "restore a version":  (404, 403, 201, 201, 201, 404, 201),
+    "delete old version": (404, 403, 403, 204, 204, 404, 403),
+    "merge documents":    (404, 403, 403, 200, 200, 404, 403),
+    "remove a document":  (404, 403, 403, 204, 204, 404, 403),
 }
 
 
-def _call(c, action, pid, target, second_owner):
+def _call(c, action, pid, target, second_owner, docs):
     base = f"/v1/projects/{pid}"
     return {
         "see project": lambda: c.get(base),
@@ -49,6 +59,15 @@ def _call(c, action, pid, target, second_owner):
         "add owner": lambda: c.put(f"{base}/members/{target}", json={"role": "owner"}),
         "remove an owner": lambda: c.delete(f"{base}/members/{second_owner}"),
         "delete project": lambda: c.delete(base),
+        "see documents": lambda: c.get(f"{base}/documents"),
+        "see history": lambda: c.get(f"{base}/documents/{docs['placed']}/versions"),
+        "add a version": lambda: c.post(f"{base}/documents/{docs['placed']}/versions/from-library",
+                                        json={"doc_id": DOC_MINE}),
+        "restore a version": lambda: c.post(f"{base}/documents/{docs['placed']}/versions/1/restore"),
+        "delete old version": lambda: c.delete(f"{base}/documents/{docs['placed']}/versions/1"),
+        "merge documents": lambda: c.post(f"{base}/documents/{docs['placed']}/merge",
+                                          json={"from": docs["other"]}),
+        "remove a document": lambda: c.delete(f"{base}/documents/{docs['placed']}"),
     }[action]()
 
 
@@ -66,7 +85,13 @@ async def test_permission_matrix(db_conn, action, caller):
     members = [(second_owner, "owner")] + ([(me, member_role)] if member_role else [])
     pid = await seed.make_project(db_conn, base_owner, members=members)
     await seed.seed_doc(db_conn, DOC_MINE, me, file_name="mine.pdf")
-    await seed.seed_doc(db_conn, DOC_PLACED, base_owner, file_name="placed.pdf", project_ids=[pid])
+    await seed.seed_doc(db_conn, DOC_PLACED, base_owner, file_name="placed.pdf")
+    await seed.seed_doc(db_conn, DOC_V2, base_owner, file_name="placed-2.pdf")
+    await seed.seed_doc(db_conn, DOC_OTHER, base_owner, file_name="other.pdf")
+    placed = await seed.place_doc(db_conn, pid, DOC_PLACED, base_owner)
+    await seed.add_version(db_conn, placed, DOC_V2, base_owner)
+    other = await seed.place_doc(db_conn, pid, DOC_OTHER, base_owner)
+    docs = {"placed": placed, "other": other}
 
     app = FastAPI()
 
@@ -77,8 +102,9 @@ async def test_permission_matrix(db_conn, action, caller):
         user_id=me, email="me@x.io", role="admin" if caller.startswith("admin") else "member",
         capabilities=frozenset({"reader"}))
     app.include_router(projects_router.router)
+    app.include_router(pd_router.router)
     async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
-        r = await _call(c, action, pid, target, second_owner)
+        r = await _call(c, action, pid, target, second_owner, docs)
     assert r.status_code == MATRIX[action][CALLERS.index(caller)], r.text
 
 

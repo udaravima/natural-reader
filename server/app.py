@@ -23,6 +23,7 @@ from .routers.chat_sessions import router as chat_sessions_router
 from .routers.chat_turns import router as chat_turns_router
 from .routers.docs import router as docs_router
 from .routers.inference import router as inference_router
+from .routers.project_documents import router as project_documents_router
 from .routers.projects import router as projects_router
 from .routers.people import router as people_router
 from .routers.tools import router as tools_router
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(admin_router)
     app.include_router(projects_router)
+    app.include_router(project_documents_router)
     app.include_router(people_router)
     app.include_router(inference_router)
 
