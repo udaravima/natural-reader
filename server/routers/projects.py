@@ -25,7 +25,14 @@ from ..auth.authz import (
     visible_projects_where,
 )
 from ..http_errors import refusal
-from ..services import doc_content, people, project_events, project_members, project_policy
+from ..services import (
+    doc_content,
+    doc_versions,
+    people,
+    project_events,
+    project_members,
+    project_policy,
+)
 from .docs import DocId
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
@@ -194,16 +201,6 @@ async def delete_member(project_id: uuid.UUID, user_id: str,
     return Response(status_code=204)
 
 
-async def _filed_name(conn, doc_id: str, user_id: str) -> str | None:
-    """The name the filer sees for the document (their entry's, else the content's)."""
-    cur = await conn.execute(
-        "SELECT COALESCE(e.file_name, d.file_name) FROM library_entries e "
-        "JOIN documents d ON d.doc_id = e.doc_id WHERE e.user_id = %s AND e.doc_id = %s",
-        (user_id, doc_id))
-    row = await cur.fetchone()
-    return row[0] if row else None
-
-
 @router.put("/{project_id}/docs/{doc_id}", status_code=204)
 async def link_doc(project_id: uuid.UUID, doc_id: DocId,
                    principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
@@ -236,14 +233,14 @@ async def link_doc(project_id: uuid.UUID, doc_id: DocId,
                 "INSERT INTO project_documents (project_id, project_doc_id, version, doc_id, "
                 "file_name, origin, is_current, added_by, verified) "
                 "VALUES (%s,%s,1,%s,%s,'upload',true,%s,true)",
-                (project_id, pdoc, doc_id, await _filed_name(conn, doc_id, principal.user_id),
-                 principal.user_id))
+                (project_id, pdoc, doc_id,
+                 await doc_versions.filed_name(conn, doc_id, principal.user_id), principal.user_id))
             changed = True
     if changed:
         audit("placement.added", project=project_id, doc=doc_id, by=principal.user_id)
         await project_events.record(
             conn, project_id, principal.user_id, "document.added", doc_id=doc_id,
-            details={"name": await _filed_name(conn, doc_id, principal.user_id)})
+            details={"name": await doc_versions.filed_name(conn, doc_id, principal.user_id)})
     return Response(status_code=204)
 
 
