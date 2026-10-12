@@ -363,13 +363,21 @@ async def register_document(
     return {"doc_id": doc_id, "dedup": not created, "state": state}
 
 
-async def _add_upload_entry(user_id: str, staged, name: str, tags: list[str]):
-    """Create-or-find the content and give the user an upload entry, in one
-    transaction. Retries ONCE if a GC removed the row between our conflicting
-    INSERT and our lock (spec §3, races) — the caller never sees a 5xx."""
+async def _store_and_hold(staged, name: str, hold, *, prelock=None):
+    """Create-or-find the content and insert ONE holding for it, in one
+    transaction (A1 spec §3, races): the content row is inserted, or locked
+    FOR SHARE if it exists, then `hold(conn, created)` inserts the holding —
+    a library entry, or (V1) a project document's version — and returns its
+    outcome; raising rolls it all back. `prelock(conn)` runs FIRST in the
+    same transaction: a version upload locks its document there, so the lock
+    order is project_docs → documents everywhere (V1 spec §4.4). Retries ONCE
+    if a GC removed the row between our conflicting INSERT and our lock — the
+    caller never sees a 5xx. Returns (created, existing, outcome)."""
     for attempt in (1, 2):
         async with get_pool().connection() as conn:
             async with conn.transaction():
+                if prelock is not None:
+                    await prelock(conn)
                 cur = await conn.execute(
                     "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, state, "
                     "extracted_by) VALUES (%s,%s,%s,%s,'extracting','server') "
@@ -385,15 +393,24 @@ async def _add_upload_entry(user_id: str, staged, name: str, tags: list[str]):
                                            staged.sha256)
                             continue
                         raise refusal(503, "busy", "Please try again.")
-                # The bytes are in hand: this is the one caller that verifies.
-                outcome = await doc_content.add_entry(
-                    conn, user_id, staged.sha256, via="upload", verified=True, tags=tags,
-                    file_name=None if created else name)
-        if outcome != "exists":
-            audit("entry.added", user=user_id, doc=staged.sha256, via="upload",
-                  dedup=str(not created).lower())
-        return created, existing
+                outcome = await hold(conn, created)
+        return created, existing, outcome
     raise AssertionError("unreachable")
+
+
+async def _add_upload_entry(user_id: str, staged, name: str, tags: list[str]):
+    """The library holding: an upload entry — the one caller that verifies,
+    because the bytes are in hand."""
+    async def hold(conn, created):
+        return await doc_content.add_entry(
+            conn, user_id, staged.sha256, via="upload", verified=True, tags=tags,
+            file_name=None if created else name)
+
+    created, existing, outcome = await _store_and_hold(staged, name, hold)
+    if outcome != "exists":
+        audit("entry.added", user=user_id, doc=staged.sha256, via="upload",
+              dedup=str(not created).lower())
+    return created, existing
 
 
 async def _after_upload(doc_id: str, staged, created: bool, existing):

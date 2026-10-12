@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Response, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..auth import deps
 from ..auth.authz import assert_holds_upload, require_project_role
-from ..services import doc_versions, people
+from ..services import doc_storage, doc_versions, people
+from . import docs as docs_router
 from .docs import DOC_ID_PATTERN
 
 router = APIRouter(prefix="/v1/projects/{project_id}/documents", tags=["projects"])
@@ -53,6 +54,42 @@ async def list_versions(project_id: uuid.UUID, document_id: uuid.UUID,
     await require_project_role(conn, principal, project_id, None, admin_ok=False)
     return await doc_versions.list_versions(conn, project_id, document_id,
                                             show_email=_show_email())
+
+
+@router.post("/{document_id}/versions", status_code=201)
+async def upload_version(project_id: uuid.UUID, document_id: uuid.UUID,
+                         background: BackgroundTasks, file: UploadFile = File(...),
+                         file_name: str | None = Form(None), note: str | None = Form(None),
+                         principal: deps.Principal = Depends(_reader)):
+    """A revised file's bytes become the document's new version (spec §4.4).
+    The role and the note are checked before any bytes are stored; A1's
+    pipeline stores or dedupes the content and inserts the version as its
+    holding, the document locked first; no library entry is added. New
+    content is extracted and embedded in the background, as for any upload."""
+    docs_router._ensure_ready()
+    async with docs_router.get_pool().connection() as conn:
+        await require_project_role(conn, principal, project_id, "contributor", admin_ok=False)
+    note = doc_versions.clean_note(note)
+    name = (file_name or file.filename or "").strip()[:255] or "document"
+    staged = await doc_storage.stage_upload(file, name)
+
+    async def prelock(conn):
+        await doc_versions.lock_document(conn, project_id, document_id)
+
+    async def hold(conn, _created):
+        return await doc_versions.add_version(conn, principal.user_id, project_id, document_id,
+                                              doc_id=staged.sha256, file_name=name, note=note)
+
+    try:
+        created, existing, out = await docs_router._store_and_hold(staged, name, hold,
+                                                                  prelock=prelock)
+        job = await docs_router._after_upload(staged.sha256, staged, created, existing)
+    finally:
+        doc_storage.discard(staged)  # no-op once placed
+    if job is not None:
+        background.add_task(job, staged.sha256)
+    async with docs_router.get_pool().connection() as conn:
+        return {**out, "state": await _state(conn, staged.sha256)}
 
 
 @router.post("/{document_id}/versions/from-library", status_code=201)
