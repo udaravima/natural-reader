@@ -349,6 +349,7 @@ describe('LibraryPage', () => {
       if (path === '/v1/projects') return json(200, projects);
       if (path === '/v1/projects/p2') return json(200, projects[1]);
       if (path.startsWith('/v1/projects/p2/docs/') && opts?.method === 'PUT') { filed = true; return json(204, null); }
+      if (path === '/v1/projects/p2/documents') return json(200, []);
       if (path.startsWith('/v1/docs')) {
         return json(200, docs.map((d) => (filed && d.doc_id === 'd1' ? { ...d, projects: [{ id: 'p2', name: 'Project B' }] } : d)));
       }

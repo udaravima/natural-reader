@@ -73,10 +73,6 @@ export function projectsApi(host, port) {
     deleteVersion: (id, docId, n) => call(`${document(id, docId)}/versions/${n}`, { method: 'DELETE' }),
     mergeDocuments: (id, intoId, fromId) => call(`${document(id, intoId)}/merge`, { method: 'POST', body: { from: fromId } }),
     removeDocument: (id, docId) => call(document(id, docId), { method: 'DELETE' }),
-    // Removed in Task 12/13 with ProjectDocsTab's rewrite (P17); the server's
-    // DELETE …/docs/{doc_id} is already gone, so unfileDoc no longer works.
-    unfileDoc: (id, docId) => call(`${project(id)}/docs/${enc(docId)}`, { method: 'DELETE' }),
-    projectDocs: (id) => call(`/v1/docs?project_id=${enc(id)}`),
     myDocs: () => call('/v1/docs'),
     lookup: (q) => call(`/v1/users/lookup?q=${enc(q)}`),
     shares: (docId) => call(`/v1/docs/${enc(docId)}/shares`),
