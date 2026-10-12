@@ -463,3 +463,62 @@ async def remove_document(conn, user_id: str, project_id, document_id) -> None:
           versions=versions, by=user_id)
     for d in doc_ids:
         await doc_content.gc_content_if_orphaned(conn, d, trigger="placement_removed")
+
+
+OLDER_VERSION = "This file is an older version of a document in this project."
+NAME_EXISTS = "A document with this name is already in this project."
+
+
+async def _older_version_of(conn, project_id, doc_id: str):
+    cur = await conn.execute(  # HISTORY, not current anywhere here (step 1 ran first)
+        "SELECT project_doc_id, max(version) FROM project_documents "
+        "WHERE project_id = %s AND doc_id = %s AND verified GROUP BY project_doc_id "
+        "ORDER BY project_doc_id LIMIT 1", (project_id, doc_id))
+    row = await cur.fetchone()
+    return (str(row[0]), row[1]) if row else None
+
+
+async def _same_name(conn, project_id, file_name: str) -> str | None:
+    cur = await conn.execute(  # CURRENT
+        "SELECT project_doc_id FROM project_documents WHERE project_id = %s AND is_current "
+        "AND verified AND lower(btrim(file_name)) = lower(btrim(%s)) "
+        "ORDER BY added_at, project_doc_id LIMIT 1", (project_id, file_name))
+    row = await cur.fetchone()
+    return str(row[0]) if row else None
+
+
+async def file_from_library(conn, user_id: str, project_id, doc_id: str, *, file_name: str,
+                            as_version_of=None, keep_both: bool = False) -> tuple[int, dict]:
+    """Spec §4.2, first match wins: 0 prove a legacy unverified current
+    version; 1 already current here → 200 (or 409 current_elsewhere when the
+    caller asked for another document); `as_version_of` → a new version of
+    that document under §4.3; 2 an old version of D → 409 older_version;
+    3 a current document with this name → 409 name_exists; 4 a new document.
+    `keep_both` skips 2 and 3. The name match is advisory, not a constraint."""
+    proved = await verify_legacy_current(conn, project_id, doc_id, user_id)
+    if proved:
+        audit("placement.added", project=project_id, doc=doc_id, document=proved, by=user_id)
+        await project_events.record(conn, project_id, user_id, "document.added", doc_id=doc_id,
+                                    details={"name": (await document_ref(conn, proved))["name"]})
+    current = await _current_holder(conn, project_id, doc_id)
+    if current is not None:
+        if as_version_of is not None and str(as_version_of) != current:
+            raise _conflict("current_elsewhere", CURRENT_ELSEWHERE,
+                            await document_ref(conn, current))
+        ref = await document_ref(conn, current)
+        return 200, {"document_id": current, "version": ref["version"]}
+    if as_version_of is not None:
+        out = await add_version(conn, user_id, project_id, as_version_of, doc_id=doc_id,
+                                file_name=file_name)
+        return 201, {"document_id": str(as_version_of), "version": out["version"],
+                     "restored_from": out["restored_from"]}
+    if not keep_both:
+        older = await _older_version_of(conn, project_id, doc_id)
+        if older:
+            raise _conflict("older_version", OLDER_VERSION, await document_ref(conn, older[0]),
+                            version=older[1])
+        same = await _same_name(conn, project_id, file_name)
+        if same:
+            raise _conflict("name_exists", NAME_EXISTS, await document_ref(conn, same))
+    pdoc = await create_document(conn, user_id, project_id, doc_id, file_name=file_name)
+    return 201, {"document_id": pdoc, "version": 1}

@@ -4,8 +4,9 @@ Owner) is the only source of access. Every route's first check is
 `require_project_role`: a non-member gets 404 before any other id is
 examined, and a member below the route's role gets 403 insufficient_role.
 Project responses carry `can` (authz.can_for), so the UI never re-derives
-the rules. Documents (A1 §5): a Contributor who holds an upload entry files
-them in; only a Maintainer or Owner removes them."""
+the rules. Documents (A1 §5, V1): a Contributor who holds an upload entry
+files them in (§4.2's name-match flow); versions, merges and removal live in
+routers/project_documents.py."""
 from __future__ import annotations
 
 import uuid
@@ -201,77 +202,26 @@ async def delete_member(project_id: uuid.UUID, user_id: str,
     return Response(status_code=204)
 
 
-@router.put("/{project_id}/docs/{doc_id}", status_code=204)
-async def link_doc(project_id: uuid.UUID, doc_id: DocId,
+@router.put("/{project_id}/docs/{doc_id}")
+async def link_doc(project_id: uuid.UUID, doc_id: DocId, response: Response,
+                   as_version_of: uuid.UUID | None = Query(None),
+                   keep_both: bool = Query(False),
                    principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
-    """File a doc into a project: a Contributor or above (admins only through
-    a member role, A0 §5) who holds a VERIFIED upload entry for it (A1 §5).
-    The project is checked first, so an invisible project 404s before doc
-    ids can be used to probe it. Filing creates a new project document at v1
-    (migration 018). Idempotent: content already current in the project
-    writes no event — unless that version is an UNVERIFIED legacy one, which
-    this verified filing proves. (V1 Task 7 replaces this with the
-    name-match flow.)"""
+    """File a doc from my library into a project (V1 spec §4.2): a
+    Contributor or above (admins only through a member role, A0 §5) who holds
+    a VERIFIED upload entry for it (A1 §5). The project is checked first, so
+    an invisible project 404s before doc ids can be used to probe it. A name
+    or bytes the project already has → 409 name_exists / older_version; the
+    caller retries with `as_version_of` or `keep_both`. 201 when something
+    was filed, 200 when it already was."""
     await require_project_role(conn, principal, project_id, "contributor", admin_ok=False)
     await assert_holds_upload(conn, doc_id, principal.user_id)
-    # CURRENT, verified or not: the content's current version in this project.
-    cur = await conn.execute(
-        "UPDATE project_documents SET added_by = %s, verified = true "
-        "WHERE project_id = %s AND doc_id = %s AND is_current AND NOT verified RETURNING 1",
-        (principal.user_id, project_id, doc_id))
-    changed = await cur.fetchone() is not None
-    if not changed:
-        cur = await conn.execute(  # CURRENT
-            "SELECT 1 FROM project_documents WHERE project_id = %s AND doc_id = %s AND is_current",
-            (project_id, doc_id))
-        if await cur.fetchone() is None:
-            cur = await conn.execute(
-                "INSERT INTO project_docs (project_id, created_by, last_version) "
-                "VALUES (%s,%s,1) RETURNING id", (project_id, principal.user_id))
-            pdoc = (await cur.fetchone())[0]
-            await conn.execute(
-                "INSERT INTO project_documents (project_id, project_doc_id, version, doc_id, "
-                "file_name, origin, is_current, added_by, verified) "
-                "VALUES (%s,%s,1,%s,%s,'upload',true,%s,true)",
-                (project_id, pdoc, doc_id,
-                 await doc_versions.filed_name(conn, doc_id, principal.user_id), principal.user_id))
-            changed = True
-    if changed:
-        audit("placement.added", project=project_id, doc=doc_id, by=principal.user_id)
-        await project_events.record(
-            conn, project_id, principal.user_id, "document.added", doc_id=doc_id,
-            details={"name": await doc_versions.filed_name(conn, doc_id, principal.user_id)})
-    return Response(status_code=204)
-
-
-@router.delete("/{project_id}/docs/{doc_id}", status_code=204)
-async def unlink_doc(project_id: uuid.UUID, doc_id: DocId,
-                     principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
-    """Remove a doc from a project: a Maintainer or above (A0 §5; admins only
-    through a member role). Removes the project document whose history holds
-    this content, with every version, then GCs each version's content. A
-    missing link is 404 — after the role check. (V1 Task 7 removes this
-    route for DELETE …/documents/{id}.)"""
-    await require_project_role(conn, principal, project_id, "maintainer", admin_ok=False)
-    cur = await conn.execute(  # HISTORY: the document holding this content
-        "SELECT v.project_doc_id, c.file_name FROM project_documents v "
-        "JOIN project_documents c ON c.project_doc_id = v.project_doc_id AND c.is_current "
-        "WHERE v.project_id = %s AND v.doc_id = %s LIMIT 1", (project_id, doc_id))
-    row = await cur.fetchone()
-    if row is None:
-        raise refusal(404, "not_found", "Not found")
-    pdoc, name = row
-    cur = await conn.execute(  # HISTORY, verified or not: everything the delete drops
-        "SELECT DISTINCT doc_id FROM project_documents WHERE project_doc_id = %s ORDER BY 1",
-        (pdoc,))
-    doc_ids = [r[0] for r in await cur.fetchall()]
-    await conn.execute("DELETE FROM project_docs WHERE id = %s", (pdoc,))
-    audit("placement.removed", project=project_id, doc=doc_id, by=principal.user_id)
-    await project_events.record(conn, project_id, principal.user_id, "document.removed",
-                                doc_id=doc_id, details={"name": name})
-    for d in doc_ids:
-        await doc_content.gc_content_if_orphaned(conn, d, trigger="placement_removed")
-    return Response(status_code=204)
+    status, body = await doc_versions.file_from_library(
+        conn, principal.user_id, project_id, doc_id,
+        file_name=await doc_versions.filed_name(conn, doc_id, principal.user_id),
+        as_version_of=as_version_of, keep_both=keep_both)
+    response.status_code = status
+    return body
 
 
 @router.get("/{project_id}/events")

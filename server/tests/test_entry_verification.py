@@ -210,7 +210,7 @@ async def test_verified_uploaders_new_shares_and_placements_are_verified(db_conn
     async with as_user(author) as c:
         assert (await c.post("/v1/docs", files={"file": ("a.txt", TEXT)})).status_code == 202
         assert (await c.put(f"/v1/docs/{DOC}/shares/{friend.user_id}")).status_code == 204
-        assert (await c.put(f"/v1/projects/{pid}/docs/{DOC}")).status_code == 204
+        assert (await c.put(f"/v1/projects/{pid}/docs/{DOC}")).status_code == 201
     assert await _verified(db_conn, "library_entries", user_id=author.user_id, doc_id=DOC)
     assert await _verified(db_conn, "library_entries", user_id=friend.user_id, doc_id=DOC)
     assert await _verified(db_conn, "project_documents", project_id=pid, doc_id=DOC)

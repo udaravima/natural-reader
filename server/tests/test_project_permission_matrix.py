@@ -15,6 +15,7 @@ from server.routers import people as people_router
 from server.routers import project_documents as pd_router
 from server.routers import projects as projects_router
 from server.tests import seed
+from server.tests.versions_harness import build_versions_app
 
 pytestmark = pytest.mark.asyncio
 
@@ -29,8 +30,7 @@ MATRIX = {
     "see project":     (404, 200, 200, 200, 200, 200, 200),
     "see members":     (404, 200, 200, 200, 200, 200, 200),
     "see activity":    (404, 200, 200, 200, 200, 200, 200),
-    "file own doc":    (404, 403, 204, 204, 204, 404, 204),
-    "remove any doc":  (404, 403, 403, 204, 204, 404, 403),
+    "file own doc":    (404, 403, 201, 201, 201, 404, 201),
     "edit":            (404, 403, 403, 200, 200, 200, 200),
     "add contributor": (404, 403, 403, 200, 200, 200, 200),
     "add owner":       (404, 403, 403, 403, 200, 200, 200),
@@ -53,7 +53,6 @@ def _call(c, action, pid, target, second_owner, docs):
         "see members": lambda: c.get(f"{base}/members"),
         "see activity": lambda: c.get(f"{base}/events"),
         "file own doc": lambda: c.put(f"{base}/docs/{DOC_MINE}"),
-        "remove any doc": lambda: c.delete(f"{base}/docs/{DOC_PLACED}"),
         "edit": lambda: c.patch(base, json={"name": "Renamed"}),
         "add contributor": lambda: c.put(f"{base}/members/{target}", json={"role": "contributor"}),
         "add owner": lambda: c.put(f"{base}/members/{target}", json={"role": "owner"}),
@@ -133,7 +132,8 @@ def production_logging(tmp_path, monkeypatch, caplog):
         lg.propagate = prop
 
 
-async def test_no_personal_data_at_info_or_above(db_conn, caplog, monkeypatch, production_logging):
+async def test_no_personal_data_at_info_or_above(db_conn, caplog, monkeypatch, tmp_path,
+                                                 production_logging):
     """§7: IDs, roles and counts only — never emails, names, file names or lookup text."""
     monkeypatch.setenv("USER_DIRECTORY_MODE", "open")
     owner = (await resolve_or_provision_user(db_conn, iss="i", sub="pv1", email="olu.secret@x.io",
@@ -141,15 +141,15 @@ async def test_no_personal_data_at_info_or_above(db_conn, caplog, monkeypatch, p
     ben = (await resolve_or_provision_user(db_conn, iss="i", sub="pv2", email="ben.secret@x.io",
                                            first_name="Benedikt"))["id"]
     await db_conn.execute("UPDATE users SET status='active' WHERE id = ANY(%s::uuid[])", ([owner, ben],))
-    app = FastAPI()
-
-    async def _conn():
-        yield db_conn
-    app.dependency_overrides[deps.get_conn] = _conn
+    store = tmp_path / "store"
+    store.mkdir()
+    app, _as_user = build_versions_app(db_conn, monkeypatch, storage_dir=store)
     app.dependency_overrides[deps.get_current_user] = lambda: deps.Principal(
         user_id=owner, email="olu.secret@x.io", role="member", capabilities=frozenset({"reader"}))
-    app.include_router(projects_router.router)
     app.include_router(people_router.router)
+    lib = ["a" * 64, "b" * 64, "c" * 64]  # library docs the owner files below
+    for d, name in zip(lib, ("Zebra Plan.pdf", "zebra plan.pdf", "Quokka Notes.pdf")):
+        await seed.seed_doc(db_conn, d, owner, file_name=name)
     with caplog.at_level(logging.INFO):
         async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             pid = (await c.post("/v1/projects", json={"name": "Codename Falcon"})).json()["id"]
@@ -158,8 +158,26 @@ async def test_no_personal_data_at_info_or_above(db_conn, caplog, monkeypatch, p
             await c.patch(f"/v1/projects/{pid}", json={"name": "Codename Heron"})
             await c.put(f"/v1/projects/{pid}/members/{owner}", json={"role": "reader"})  # 409
             await c.delete(f"/v1/projects/{pid}/members/{ben}")
+            # Documents: file, name-match ask, version from the library, a
+            # multipart version upload, restore, merge, removal.
+            r = await c.put(f"/v1/projects/{pid}/docs/{lib[0]}")
+            zebra = r.json()["document_id"]
+            assert (await c.put(f"/v1/projects/{pid}/docs/{lib[1]}")).status_code == 409
+            r = await c.put(f"/v1/projects/{pid}/docs/{lib[1]}", params={"as_version_of": zebra})
+            assert r.status_code == 201
+            r = await c.post(f"/v1/projects/{pid}/documents/{zebra}/versions",
+                             files={"file": ("Hush Memo.txt", b"A hush memo. It is short.",
+                                             "text/plain")}, data={"note": "Classified rewrite"})
+            assert r.status_code == 201, r.text
+            assert (await c.post(f"/v1/projects/{pid}/documents/{zebra}/versions/1/restore")
+                    ).status_code == 201
+            quokka = (await c.put(f"/v1/projects/{pid}/docs/{lib[2]}")).json()["document_id"]
+            assert (await c.post(f"/v1/projects/{pid}/documents/{zebra}/merge",
+                                 json={"from": quokka})).status_code == 200
+            assert (await c.delete(f"/v1/projects/{pid}/documents/{zebra}")).status_code == 204
     text = "\n".join(r.getMessage() for r in caplog.records
                      if r.levelno >= logging.INFO)
-    for secret in ("secret", "Olusegun", "Benedikt", "Benedi", "Falcon", "Heron"):
+    for secret in ("secret", "Olusegun", "Benedikt", "Benedi", "Falcon", "Heron", "Zebra", "zebra",
+                   "Quokka", "Hush", "Classified"):
         assert secret not in text
     assert f"member.added project={pid}" in text
