@@ -4,7 +4,7 @@ it (a project, the library) here, for every document tool at once."""
 from __future__ import annotations
 
 from ...services.doc_search import ReadableDoc
-from ..prompt import display_name
+from ..prompt import display_name, version_note_text
 
 
 def document_scope(ctx) -> list[ReadableDoc]:
@@ -12,5 +12,12 @@ def document_scope(ctx) -> list[ReadableDoc]:
 
 
 def documents_listing(scope: list[ReadableDoc]) -> list[dict]:
-    """How a result names its documents: a short ref plus the reader's name."""
-    return [{"ref": ref, "name": display_name(d.name)} for ref, d in enumerate(scope, start=1)]
+    """How a result names its documents: a short ref plus the reader's name,
+    and a version note when the document is an old version (V1 spec §7)."""
+    items = []
+    for ref, d in enumerate(scope, start=1):
+        item = {"ref": ref, "name": display_name(d.name)}
+        if d.version_note:
+            item["version_note"] = version_note_text(d.version_note)
+        items.append(item)
+    return items
