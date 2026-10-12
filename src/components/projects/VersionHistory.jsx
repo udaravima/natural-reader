@@ -61,7 +61,7 @@ export default function VersionHistory({ theme, api, project, doc, busy, run, on
             {!v.is_current && can.remove_docs && (confirm === v.version ? (
               <span className="flex flex-wrap items-center gap-2">
                 <span className={theme.textSecondary}>Delete v{v.version} for good? Its file goes if nothing else uses it.</span>
-                <button className="underline text-red-500"
+                <button disabled={busy} className="underline text-red-500 disabled:opacity-50"
                   onClick={() => act(() => api.deleteVersion(project.id, doc.id, v.version), `Deleted v${v.version}.`)}>
                   Confirm delete
                 </button>

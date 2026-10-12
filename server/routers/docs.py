@@ -41,14 +41,12 @@ from ..auth.authz import (
     effective_holding_sql,
     listed_docs_params,
     listed_docs_where,
-    readable_docs_params,
-    readable_docs_where,
     visible_projects_params,
     visible_projects_where,
 )
 from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
-from ..http_errors import refusal
+from ..http_errors import BUSY_MESSAGE, refusal
 from ..services import (
     doc_content, doc_pipeline, doc_storage, doc_versions, docling_convert, people,
 )
@@ -392,7 +390,7 @@ async def _store_and_hold(staged, name: str, hold, *, prelock=None):
                             logger.warning("Upload of %s lost a race with GC; retrying once",
                                            staged.sha256)
                             continue
-                        raise refusal(503, "busy", "Please try again.")
+                        raise refusal(503, "busy", BUSY_MESSAGE)
                 outcome = await hold(conn, created)
         return created, existing, outcome
     raise AssertionError("unreachable")

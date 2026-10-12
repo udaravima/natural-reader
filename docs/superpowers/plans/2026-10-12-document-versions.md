@@ -19,7 +19,7 @@
   - `409` with the codes `already_current`, `current_elsewhere`, `older_version`, `name_exists`, `is_current`, `merge_self`. Every 409 body carries `document: {id, name, version}` (§5.3).
 - **Roles** (§4.1). Reader+ reads history. Contributor+ (`can.file_docs`) uploads and restores. Maintainer+ (`can.remove_docs`) merges, deletes versions and removes documents. Admins act **only through a member role**: every document and version route calls `require_project_role(..., admin_ok=False)`.
 - **Check, then write.** Every refusal is raised before the first write. A write that can fail on a constraint runs inside `async with conn.transaction():` (a savepoint), and the caught `pg_errors.UniqueViolation` becomes a 409. This follows the pattern at `server/routers/docs.py` `add_share`.
-- **Lock order is `project_docs` → `documents`, everywhere** (§4.4). A document's row is locked `FOR UPDATE` before any content row is touched. A merge locks both documents in id order.
+- **Lock order is `projects` → `project_docs` → `documents`, everywhere** (§4.4). The project's row is taken `FOR KEY SHARE` first (corrected after the final review: without it, a version write and `delete_project` can deadlock), then the document's row `FOR UPDATE`, before any content row is touched. A merge locks both documents in id order.
 - **Query groups** (§3.4). Every new or changed query on `project_documents` carries a comment, `-- HISTORY` (every verified version) or `-- CURRENT` (the verified current version).
 - **Audit and INFO logs** carry only IDs, roles, counts and version numbers: **never** file names, notes, emails or project names. This is enforced by `test_no_personal_data_at_info_or_above` in `server/tests/test_project_permission_matrix.py`.
 - **UI:**
@@ -731,8 +731,10 @@ Two query groups (spec §3.4), named on every query here:
 A query in the wrong group fails predictably: HISTORY narrowed to current
 breaks reading old versions; CURRENT left unfiltered lists duplicates.
 
-Lock order (spec §4.4): a document's project_docs row FOR UPDATE first, then
-content. GC locks content only, so no cycle is possible.
+Lock order (spec §4.4): projects → project_docs → documents. A write first
+takes its project's row FOR KEY SHARE, then the document's project_docs row
+FOR UPDATE, then content. GC locks content only. (Corrected after the final
+review; the text first written here missed the projects step.)
 """
 from __future__ import annotations
 

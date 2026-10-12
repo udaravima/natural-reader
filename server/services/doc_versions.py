@@ -12,8 +12,13 @@ Two query groups (spec §3.4), named on every query here:
 A query in the wrong group fails predictably: HISTORY narrowed to current
 breaks reading old versions; CURRENT left unfiltered lists duplicates.
 
-Lock order (spec §4.4): a document's project_docs row FOR UPDATE first, then
-content. GC locks content only, so no cycle is possible.
+Lock order (spec §4.4): projects → project_docs → documents. A write first
+takes its project's row FOR KEY SHARE, then the document's project_docs row
+FOR UPDATE, then content. The first lock is not optional: inserting a
+version's row takes KEY SHARE on the project through its foreign key anyway,
+and delete_project locks the project FOR UPDATE before its cascade reaches
+project_docs, so taking that KEY SHARE late (after project_docs) is a
+deadlock cycle. GC locks content only.
 """
 from __future__ import annotations
 
@@ -162,10 +167,19 @@ async def document_ref(conn, document_id) -> dict[str, Any] | None:
     return {"id": str(document_id), "name": row[0], "version": row[1]} if row else None
 
 
+async def lock_project_key(conn, project_id) -> None:
+    """The first lock of every history write (spec §4.4): the project row
+    FOR KEY SHARE. It doesn't block a rename (FOR NO KEY UPDATE); it makes
+    delete_project wait until this write commits, instead of the cascade
+    and this write's foreign-key check waiting on each other."""
+    await conn.execute("SELECT 1 FROM projects WHERE id = %s FOR KEY SHARE", (project_id,))
+
+
 async def lock_document(conn, project_id, document_id) -> int:
-    """Lock the document's row — always the first lock (spec §4.4) — and
-    return its last_version. 404 unless it is a visible document of this
-    project."""
+    """Lock the project's key, then the document's row (spec §4.4's order),
+    and return its last_version. 404 unless it is a visible document of
+    this project."""
+    await lock_project_key(conn, project_id)
     cur = await conn.execute(
         "SELECT last_version FROM project_docs WHERE id = %s AND project_id = %s FOR UPDATE",
         (document_id, project_id))
@@ -404,6 +418,7 @@ async def merge_documents(conn, user_id: str, project_id, into_id, from_id) -> N
     current; from's row goes. One-way. Both rows are locked in id order, so
     two crossed merges can't deadlock: the loser finds its document gone."""
     ids = sorted({str(into_id), str(from_id)})
+    await lock_project_key(conn, project_id)
     cur = await conn.execute(
         "SELECT id, last_version FROM project_docs WHERE id = ANY(%s::uuid[]) AND project_id = %s "
         "ORDER BY id FOR UPDATE", (ids, project_id))
@@ -496,15 +511,15 @@ async def file_from_library(conn, user_id: str, project_id, doc_id: str, *, file
     3 a current document with this name → 409 name_exists; 4 a new document.
     `keep_both` skips 2 and 3. The name match is advisory, not a constraint."""
     proved = await verify_legacy_current(conn, project_id, doc_id, user_id)
-    if proved:
+    current = await _current_holder(conn, project_id, doc_id)
+    if current is not None and as_version_of is not None and str(as_version_of) != current:
+        raise _conflict("current_elsewhere", CURRENT_ELSEWHERE,
+                        await document_ref(conn, current))
+    if proved:  # only after step 1 can no longer refuse: a refusal rolls step 0 back
         audit("placement.added", project=project_id, doc=doc_id, document=proved, by=user_id)
         await project_events.record(conn, project_id, user_id, "document.added", doc_id=doc_id,
                                     details={"name": (await document_ref(conn, proved))["name"]})
-    current = await _current_holder(conn, project_id, doc_id)
     if current is not None:
-        if as_version_of is not None and str(as_version_of) != current:
-            raise _conflict("current_elsewhere", CURRENT_ELSEWHERE,
-                            await document_ref(conn, current))
         ref = await document_ref(conn, current)
         return 200, {"document_id": current, "version": ref["version"]}
     if as_version_of is not None:

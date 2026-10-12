@@ -212,9 +212,11 @@ back as a new version on top, nothing is lost) and use **⋯ → Upload new
 version** (a file, or one from your library, with an optional note);
 Maintainers can **Delete** an old version for good, and use **⋯ → Mark as
 newer version of…** to merge two documents that are really one (this can't be
-undone, but every file stays in the history). Chat and the Library see only a
-document's current version. A citation in an old chat opens the version it
-quoted, with a banner saying it's an old version and a link to the current one.
+undone, but every file stays in the history). The Library and the project's
+document list show only each document's current version. If you open an old
+version, chat answers from that version and says it's an old one. A citation
+in an old chat opens the version it quoted, with a banner saying it's an old
+version and a link to the current one.
 If you keep your own copy of a document a project has since moved past, your
 Library row says so and offers **Open current**.
 

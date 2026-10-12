@@ -7,10 +7,13 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport
+from psycopg import errors as pg_errors
 
 from server.auth import deps
+from server.http_errors import install_handlers
 from server.routers import project_documents as pd_router
 from server.routers import projects as projects_router
+from server.services import doc_versions
 from server.tests import seed
 from server.tests.chat_harness import member
 
@@ -21,6 +24,7 @@ C1, C2, C3 = "1" * 64, "2" * 64, "3" * 64
 
 def _client(db_conn, principal):
     app = FastAPI()
+    install_handlers(app)  # as server/app.py does
 
     async def _conn():
         yield db_conn
@@ -59,6 +63,21 @@ async def test_list_history_add_restore_delete_merge_remove(db_conn, proj):
         assert r.status_code == 200 and r.json()["name"] == "other.pdf"
         assert (await c.delete(f"{base}/{x}")).status_code == 204
         assert (await c.get(base)).json() == []
+
+
+async def test_a_deadlock_is_a_503_busy_not_a_500(db_conn, proj, monkeypatch):
+    """Spec §4.4's safety net: if Postgres still breaks a lock cycle by
+    aborting this request, the caller gets the busy refusal and can retry."""
+    alice, pid, x = proj
+
+    async def deadlocked(*_a, **_k):
+        raise pg_errors.DeadlockDetected("deadlock detected")
+    monkeypatch.setattr(doc_versions, "add_version", deadlocked)
+    async with _client(db_conn, alice) as c:
+        r = await c.post(f"/v1/projects/{pid}/documents/{x}/versions/from-library",
+                         json={"doc_id": C2})
+    assert r.status_code == 503
+    assert r.json() == {"detail": {"error": "busy", "message": "Please try again."}}
 
 
 async def test_refusal_shapes(db_conn, proj):

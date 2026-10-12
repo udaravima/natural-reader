@@ -99,7 +99,7 @@ function ProjectChips({ doc, projects, theme, onLink, onUnlink, onOpenProject, b
                 onClick={() => ((p.versions_count || 1) > 1 ? setConfirm(p.id) : remove(p))}
                 aria-label={`Remove ${doc.file_name} from ${p.name}`}
                 disabled={busy}
-                className="hover:text-red-500 disabled:opacity-50 disabled:cursor-default"
+                className="-m-1 p-[7px] hover:text-red-500 disabled:opacity-50 disabled:cursor-default"
               >
                 <X size={10} />
               </button>

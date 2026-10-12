@@ -61,5 +61,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS project_documents_one_current
 CREATE UNIQUE INDEX IF NOT EXISTS project_documents_current_content
     ON project_documents (project_id, doc_id) WHERE is_current;
 -- project_documents_doc_idx (doc_id) stays: it serves the read predicate.
+-- The old key was the only index with project_id first; project deletion
+-- (its enumeration and the FK cascade from projects) still needs one.
+CREATE INDEX IF NOT EXISTS project_documents_project_idx ON project_documents(project_id);
 
 INSERT INTO schema_migrations(version) VALUES (18) ON CONFLICT DO NOTHING;

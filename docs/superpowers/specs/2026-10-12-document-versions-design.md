@@ -85,6 +85,7 @@ project_documents                 -- existing; every row is now ONE VERSION
   UNIQUE (project_doc_id)     WHERE is_current        -- one current version per document
   UNIQUE (project_id, doc_id) WHERE is_current        -- content is current in ≤ 1 document per project
   INDEX project_documents_doc_idx (doc_id)            -- kept: serves the read predicate
+  INDEX project_documents_project_idx (project_id)    -- replaces the old key's project_id-first lookup (project deletion)
 ```
 
 ### 3.2 What each part guarantees
@@ -166,8 +167,9 @@ Restore applies the same rules. Restoring content that is current in another doc
 
 ### 4.4 Transactions, locking and the upload pipeline
 
-- **Every action locks its document's `project_docs` row `FOR UPDATE` first.** A merge locks both rows in `id` order, so two crossed merges (A←B and B←A at once) can't deadlock. One wins, and the other gets 404 because its document is gone.
-- **Lock order is always `project_docs` → `documents`.** GC locks `documents` and never touches `project_docs`, so no deadlock cycle is possible.
+- **Lock order is always `projects` → `project_docs` → `documents`.** Every action first takes its project's row `FOR KEY SHARE`, then locks its document's `project_docs` row `FOR UPDATE`, then touches content. GC locks `documents` and never touches `project_docs`.
+- **Why the `projects` lock comes first.** Inserting a version row takes `FOR KEY SHARE` on the project anyway, through its foreign key. `delete_project` locks the project `FOR UPDATE` and then cascades into `project_docs`. If the version write took `project_docs` first and the project's key share only at its `INSERT`, the two would wait on each other: a deadlock, which Postgres breaks by aborting one side. Taken first, the key share makes a project deletion wait for the write to commit. It doesn't block a rename, which takes `FOR NO KEY UPDATE`. As a safety net, any `DeadlockDetected` that still reaches a route is answered `503 busy` "Please try again." (both sides roll back fully, and a retry succeeds).
+- **A merge locks both `project_docs` rows in `id` order** (after the project's key share), so two crossed merges (A←B and B←A at once) can't deadlock. One wins, and the other gets 404 because its document is gone.
 - **Two simultaneous version uploads become v3 and v4, never two v3s.** If anything slips past the locks, the unique indexes refuse it, and the route maps a `unique_violation` to `409` (the matching code from §4.3), never a 500.
 - **Uploading bytes reuses A1's pipeline** ([docs.py:366](../../../server/routers/docs.py) `_add_upload_entry`, `_after_upload`). `_add_upload_entry` is generalised so its single transaction inserts **either** a library entry **or** a version row as "the holding". That keeps A1's GC-race guarantees: the `FOR SHARE` lock on existing content, the one retry after losing to a GC, and bytes placed only after the `INSERT` commits. "Upload new version" adds **no** library entry. Otherwise every uploader would collect a stale personal copy that becomes a duplicate row as soon as the next version arrives.
 - **A refused version upload creates nothing.** A refusal (§4.3) can only happen when the content already exists. The transaction rolls back, and `doc_storage.discard` drops the staged file.
@@ -307,7 +309,7 @@ The reader and chat already address content by hash, and every version has its o
    - set `project_doc_id`, `version = 1`, `origin = 'upload'`, `is_current = true` on the placement, with `verified` unchanged.
 3. `file_name` = **the name the project shows today**: `COALESCE(filer's entry file_name, documents.file_name)`, the same expression as `_placement_name`. Nothing visibly renames during the upgrade.
 4. Set the new columns `NOT NULL`. Swap the primary key `(project_id, doc_id)` → `(project_doc_id, version)`. Add the composite FK and the two partial unique indexes. These can't fail on existing data, because the old primary key (one row per content per project) is stricter than "one *current* per content per project".
-5. Keep `project_documents_doc_idx`. Record version 18.
+5. Keep `project_documents_doc_idx`, and add `project_documents_project_idx (project_id)`: the old primary key was the only index with `project_id` first. Record version 18.
 
 **Existing duplicates are not merged automatically.** Same name doesn't mean same document, and only a person can tell. After the upgrade, existing duplicates have to be spotted by eye and merged with *Mark as newer version of…* (a "same name" marker was considered and deferred; §10).
 
@@ -339,7 +341,8 @@ The reader and chat already address content by hash, and every version has its o
 - **Concurrency:**
   - two simultaneous version uploads → v3 and v4, with no 500;
   - crossed merges → one wins, the other 404s, no deadlock;
-  - a `unique_violation` is mapped to a 409.
+  - a version write overlapping a project deletion → both complete, no deadlock (the `projects` key share is taken first);
+  - a `unique_violation` is mapped to a 409, and a `DeadlockDetected` to `503 busy`.
 - **Name match:**
   - `name_exists`, `as_version_of`, `keep_both`, `older_version`, and the precedence order of §4.2;
   - letter case and surrounding spaces are ignored;

@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor, within, act, cleanup } from '@testing-library/react';
 import ProjectDocsTab from './ProjectDocsTab';
 
 const theme = { bg: '', bgSecondary: '', bgTertiary: '', border: '', text: '', textSecondary: '', textMuted: '' };
@@ -158,6 +158,31 @@ describe('ProjectDocsTab', () => {
     expect(within(screen.getByTestId('version-3')).getByText('current')).toBeTruthy();
   });
 
+  it('a double tap on Confirm delete sends one request', async () => {
+    let finish;
+    const a = api({ deleteVersion: vi.fn(() => new Promise((r) => { finish = r; })) });
+    mount(maintainer(), a);
+    fireEvent.click(await screen.findByRole('button', { name: 'History of report.pdf' }));
+    fireEvent.click(within(await screen.findByTestId('version-1')).getByRole('button', { name: 'Delete v1' }));
+    const confirm = screen.getByRole('button', { name: 'Confirm delete' });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    expect(a.deleteVersion).toHaveBeenCalledTimes(1);
+    await act(async () => finish(null));
+  });
+
+  it('a double tap on Confirm remove sends one request', async () => {
+    let finish;
+    const a = api({ removeDocument: vi.fn(() => new Promise((r) => { finish = r; })) });
+    mount(maintainer(), a);
+    fireEvent.click(await screen.findByLabelText('Remove report.pdf from Q3'));
+    const confirm = screen.getByRole('button', { name: 'Confirm remove' });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    expect(a.removeDocument).toHaveBeenCalledTimes(1);
+    await act(async () => finish(null));
+  });
+
   it('asks before removing, naming the versions, then removes', async () => {
     const a = api();
     mount(maintainer(), a);
@@ -199,5 +224,63 @@ describe('ProjectDocsTab', () => {
     mount(project({ my_role: null, can: can() }), a);
     expect(await screen.findByText("Only members can see this project's documents.")).toBeTruthy();
     expect(a.documents).not.toHaveBeenCalled();
+  });
+});
+
+describe('ProjectDocsTab while content is indexing', () => {
+  beforeEach(() => { vi.clearAllMocks(); vi.useFakeTimers(); });
+  afterEach(() => vi.useRealTimers());
+
+  const badge = () => screen.getByText('report.pdf').nextSibling.textContent;
+  const flush = () => act(async () => {});
+  const advance = (ms) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+
+  it('re-reads the list every 3 s until every row has settled, then stops', async () => {
+    const documents = vi.fn()
+      .mockResolvedValueOnce([{ ...report, state: 'stored' }, final])
+      .mockResolvedValueOnce([{ ...report, state: 'indexing' }, final])
+      .mockResolvedValue([report, final]);
+    mount(project(), api({ documents }));
+    await flush();
+    expect(badge()).toBe('stored');
+    await advance(2999);
+    expect(documents).toHaveBeenCalledTimes(1);
+    await advance(1);
+    expect(documents).toHaveBeenCalledTimes(2);
+    expect(badge()).toBe('indexing');
+    await advance(3000);
+    expect(documents).toHaveBeenCalledTimes(3);
+    expect(badge()).toBe('indexed');
+    await advance(30000);
+    expect(documents).toHaveBeenCalledTimes(3);
+  });
+
+  it('never starts a read while the previous one is still out', async () => {
+    let finish;
+    const documents = vi.fn()
+      .mockResolvedValueOnce([{ ...report, state: 'extracting' }])
+      .mockImplementationOnce(() => new Promise((r) => { finish = r; }))
+      .mockResolvedValue([report]);
+    mount(project(), api({ documents }));
+    await flush();
+    await advance(3000);
+    expect(documents).toHaveBeenCalledTimes(2);
+    await advance(12000);
+    expect(documents).toHaveBeenCalledTimes(2);
+    await act(async () => finish([{ ...report, state: 'indexing' }]));
+    await advance(3000);
+    expect(documents).toHaveBeenCalledTimes(3);
+    expect(badge()).toBe('indexed');
+  });
+
+  it('stops when the tab unmounts', async () => {
+    const documents = vi.fn(async () => [{ ...report, state: 'extracting' }]);
+    mount(project(), api({ documents }));
+    await flush();
+    await advance(3000);
+    expect(documents).toHaveBeenCalledTimes(2);
+    cleanup();
+    await advance(30000);
+    expect(documents).toHaveBeenCalledTimes(2);
   });
 });

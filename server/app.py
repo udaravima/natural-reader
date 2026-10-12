@@ -12,6 +12,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .appconfig import cors_allow_credentials, parse_cors_origins
 from .auth.config import load_auth_config, startup_guard
 from .db import close_db, init_db
+from .http_errors import install_handlers
 from .logging_config import configure_logging
 from .chat import orchestrator as chat_orchestrator
 from .chat import store as chat_store
@@ -39,6 +40,7 @@ def create_app() -> FastAPI:
     # app module rather than going through run.py's __main__.
     configure_logging()
     app = FastAPI()
+    install_handlers(app)
 
     # CORS origins come from FRONTEND_ORIGIN (comma-separated). Default stays
     # permissive so the content-script extension keeps working; credentials are

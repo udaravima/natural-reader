@@ -1,6 +1,8 @@
 """doc_versions' writes (V1 spec §4): every change appends or removes a
 version under the document's lock, applies the same-bytes rules, records
 one event, and refuses before writing anything."""
+import logging
+
 import pytest
 from fastapi import HTTPException
 
@@ -226,6 +228,21 @@ async def test_a_legacy_unverified_current_version_is_verified_in_place(db_conn,
     assert await doc_versions.verify_legacy_current(db_conn, pid, C3, alice.user_id) == y
     assert await doc_versions.document_ref(db_conn, y) is not None
     assert await doc_versions.verify_legacy_current(db_conn, pid, C3, alice.user_id) is None
+
+
+async def test_a_refused_filing_logs_no_placement_for_the_rolled_back_proof(db_conn, proj,
+                                                                            caplog):
+    """Step 0 proves the legacy row, then step 1 refuses (its content is
+    current in another document): the refusal rolls the proof back, so no
+    audit line may claim the placement was added."""
+    alice, pid, x = proj
+    bob = await member(db_conn, "w-bob3")
+    await seed.place_doc(db_conn, pid, C3, bob.user_id, verified=False)
+    with caplog.at_level(logging.INFO, logger="server.audit"):
+        await _refused(doc_versions.file_from_library(db_conn, alice.user_id, pid, C3,
+                                                      file_name="f3.pdf", as_version_of=x),
+                       409, "current_elsewhere")
+    assert not [r for r in caplog.records if "placement.added" in r.getMessage()]
 
 
 async def test_clean_note():

@@ -56,7 +56,7 @@ export default function ProjectDocRow({ theme, api, project, doc, others, mine, 
           )}
           {can.file_docs && (
             <button onClick={() => setMenu(!menu)} aria-label={`More actions for ${doc.name}`} aria-haspopup="menu"
-              disabled={busy} className={`hover:text-blue-500 disabled:opacity-50 ${theme.textSecondary}`}>
+              disabled={busy} className={`-m-1 p-1.5 hover:text-blue-500 disabled:opacity-50 ${theme.textSecondary}`}>
               <MoreHorizontal size={12} />
             </button>
           )}
@@ -70,7 +70,7 @@ export default function ProjectDocRow({ theme, api, project, doc, others, mine, 
           )}
           {can.remove_docs && (
             <button onClick={() => setPanel('remove')} disabled={busy} aria-label={`Remove ${doc.name} from ${project.name}`}
-              className={`hover:text-red-500 disabled:opacity-50 ${theme.textSecondary}`}>
+              className={`-m-1 p-1.5 hover:text-red-500 disabled:opacity-50 ${theme.textSecondary}`}>
               <X size={12} />
             </button>
           )}
@@ -136,7 +136,7 @@ export default function ProjectDocRow({ theme, api, project, doc, others, mine, 
               : `Remove ${doc.name} from ${project.name}?`}
             {' '}If nobody else has it in their library, it is deleted.
           </span>
-          <button className="underline text-red-500"
+          <button disabled={busy} className="underline text-red-500 disabled:opacity-50"
             onClick={async () => after(await run(() => api.removeDocument(project.id, doc.id), `Removed ${doc.name}.`))}>
             Confirm remove
           </button>

@@ -88,6 +88,10 @@ async def test_018_turns_every_placement_into_a_current_v1_named_as_before():
             assert set(docs) == {r[5] for r in rows.values()}
             assert all(p == pid and lv == 1 for p, _by, lv in docs.values())
             assert docs[rows[B][5]][1] == bob  # created_by = who filed it
+            assert await _one(conn, "SELECT indexdef FROM pg_indexes "
+                                    "WHERE indexname = 'project_documents_project_idx'") == (
+                "CREATE INDEX project_documents_project_idx ON public.project_documents "
+                "USING btree (project_id)",)
             assert await _one(conn, "SELECT 1 FROM schema_migrations WHERE version = 18") == (1,)
         finally:
             await conn.close()

@@ -167,9 +167,10 @@ placement.
 ## Versions (V1)
 
 A revised file becomes a **new version of a document in a project**, not a
-second document. A project shows each document once, with its history; search
-and chat see only the current version; old versions stay openable and
-restorable. History exists **only inside projects**: a personal library stays
+second document. A project shows each document once, with its history; the
+Library and project listings show only current versions; old versions stay
+openable and restorable, and chat answers from whichever version is open,
+saying so when it's an old one. History exists **only inside projects**: a personal library stays
 flat. (Design: [superpowers/specs/2026-10-12-document-versions-design.md](superpowers/specs/2026-10-12-document-versions-design.md).)
 
 ### The model

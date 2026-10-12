@@ -17,7 +17,7 @@ export default function NameMatchDialog({ theme, projectName, conflict, busy = f
         role="dialog"
         aria-modal="true"
         aria-label="Already in this project"
-        onKeyDown={(e) => { if (e.key === 'Escape') onCancel(); }}
+        onKeyDown={(e) => { if (e.key === 'Escape' && !busy) onCancel(); }}
         className={`w-full max-w-sm flex flex-col gap-3 p-4 rounded-lg border ${theme.border} ${theme.bg}`}
       >
         <p className="text-sm">

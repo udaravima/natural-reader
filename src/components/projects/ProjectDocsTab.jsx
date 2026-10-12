@@ -1,7 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import ProjectDocRow from './ProjectDocRow';
 import NameMatchDialog from './NameMatchDialog';
 import { useProjectFiling } from '../../hooks/useProjectFiling';
+import { PROCESSING_STATES } from '../../lib/docStatusPoller';
+
+// While a row's content is still being indexed, the list is re-read so its
+// badge follows the state to indexed or failed (V1 §6). One read at a time;
+// capped, like the reader's index poll, so content stuck in `stored` (an
+// interrupted upload waiting for Index) doesn't poll for ever.
+const POLL_MS = 3000;
+const MAX_POLLS = 200; // ~10 minutes
 
 /**
  * A project's documents (A0 §10, V1 §6): one row per document — its current
@@ -35,6 +43,22 @@ export default function ProjectDocsTab({ theme, api, project, showToast, onOpenD
   }, [api, project.id, can.file_docs, member]);
 
   useEffect(() => { load(); }, [load]);
+
+  const settling = (docs || []).some((d) => PROCESSING_STATES.has(d.state));
+  const [pollTick, setPollTick] = useState(0);
+  const polls = useRef(0);
+  useEffect(() => {
+    if (!settling) { polls.current = 0; return undefined; }
+    if (polls.current >= MAX_POLLS) return undefined;
+    let live = true;
+    // The next read is scheduled only after this one finishes: no overlap.
+    const timer = setTimeout(async () => {
+      polls.current += 1;
+      await load();
+      if (live) setPollTick((n) => n + 1);
+    }, POLL_MS);
+    return () => { live = false; clearTimeout(timer); };
+  }, [settling, pollTick, load]);
 
   // One action at a time across the tab. Any refusal reloads, because our
   // role may have changed; `ok` is a message or a function of the result.

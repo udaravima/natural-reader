@@ -33,4 +33,11 @@ describe('NameMatchDialog', () => {
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
     expect(onCancel).toHaveBeenCalled();
   });
+
+  it('Escape does nothing while the choice is being sent', () => {
+    const onCancel = vi.fn();
+    render(<NameMatchDialog theme={theme} projectName="Q3" conflict={{ error: 'name_exists', document: doc }} busy onChoose={vi.fn()} onCancel={onCancel} />);
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(onCancel).not.toHaveBeenCalled();
+  });
 });

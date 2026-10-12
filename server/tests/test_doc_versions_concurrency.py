@@ -1,7 +1,8 @@
 """Spec §4.4 on real, separately committing connections: the document lock
 makes a second upload of the same bytes see the first one's commit (409, not
-a duplicate version), crossed merges can't deadlock, and the unique index
-turns a lost race into a 409, never a 500.
+a duplicate version), crossed merges can't deadlock, a version write and a
+project deletion can't deadlock (the projects → project_docs order), and the
+unique index turns a lost race into a 409, never a 500.
 
 The lock tests force the overlap instead of hoping for it: a third
 connection holds the row lock(s), both actions are started, and only once
@@ -15,6 +16,8 @@ import pytest
 from fastapi import HTTPException
 from psycopg import AsyncConnection
 
+from server.auth.deps import Principal
+from server.routers import projects as projects_router
 from server.services import doc_versions
 from server.tests.dbutil import ADMIN_URL, apply_migrations, url_for
 
@@ -159,3 +162,41 @@ async def test_same_bytes_into_two_documents_at_once_is_a_409_not_a_500(scratch)
     errors = [r for r in results if isinstance(r, Exception)]
     assert len(errors) == 1 and isinstance(errors[0], HTTPException)
     assert (errors[0].status_code, errors[0].detail["error"]) == (409, "current_elsewhere")
+
+
+async def test_version_write_and_project_delete_overlap_without_deadlock(scratch):
+    """Spec §4.4's order is projects → project_docs → documents. The forced
+    interleaving: the version write locks its document, then waits (a
+    blocker holds the current version's row, which _append updates before
+    its INSERT); delete_project then locks the project FOR UPDATE and
+    cascades. Had the write taken project_docs first and the project's key
+    share only at its INSERT's foreign-key check, the two would wait on each
+    other and Postgres would abort one (DeadlockDetected). Taken first, the
+    key share makes the delete wait, and both complete."""
+    url, conn, uid, pid = scratch
+    x = await _new_doc(url, uid, pid, C[1])
+    owner = Principal(user_id=uid, email="c@x.io", role="member")
+    blocker = await AsyncConnection.connect(url)
+    tasks = []
+    try:
+        async with blocker.transaction():
+            await blocker.execute("SELECT 1 FROM project_documents WHERE project_doc_id = %s "
+                                  "AND is_current FOR UPDATE", (x,))
+            tasks.append(asyncio.ensure_future(_in_tx(
+                url, lambda c: doc_versions.add_version(c, uid, pid, x, doc_id=C[2],
+                                                        file_name="b"))))
+            await asyncio.wait_for(_until_blocked(conn, 1), timeout=10)
+            tasks.append(asyncio.ensure_future(_in_tx(
+                url, lambda c: projects_router.delete_project(pid, owner, c))))
+            await asyncio.wait_for(_until_blocked(conn, 2), timeout=10)
+        results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True),
+                                         timeout=20)
+    finally:
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await blocker.close()
+    assert not [r for r in results if isinstance(r, Exception)], results
+    assert results[0]["version"] == 2 and results[1].status_code == 204
+    cur = await conn.execute("SELECT count(*) FROM projects WHERE id = %s", (pid,))
+    assert (await cur.fetchone())[0] == 0

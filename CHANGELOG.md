@@ -125,9 +125,11 @@ All notable changes to this project will be documented in this file.
   document's ⋯ menu, or file a same-named file and choose *Add as new
   version*. Each document keeps its history: open any version, restore one
   (it comes back on top; nothing is lost), delete an old one, or merge two
-  documents that are really one. The Library and chat see only the current
-  version; an old chat's citation opens the version it quoted, labelled, and
-  the reader shows an old-version banner with a link to the current one.
+  documents that are really one. The Library and the project listings show
+  only current versions; if you open an old version, chat answers from it and
+  says it's an old version. An old chat's citation opens the version it
+  quoted, labelled, and the reader shows an old-version banner with a link to
+  the current one.
   Activity records who added, restored, merged or deleted versions.
 
 ### Changed
