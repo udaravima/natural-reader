@@ -66,7 +66,8 @@ def _project_sql(where: str) -> str:
         f"{people.person_cols('cb')}, "
         "(SELECT role FROM project_members WHERE project_id = p.id AND user_id = %s), "
         "(SELECT count(*) FROM project_members WHERE project_id = p.id), "
-        "(SELECT count(*) FROM project_documents WHERE project_id = p.id AND verified) "
+        "(SELECT count(*) FROM project_documents "  # CURRENT: documents, not versions
+        "WHERE project_id = p.id AND verified AND is_current) "
         f"FROM projects p LEFT JOIN users cb ON cb.id = p.created_by WHERE {where}"
     )
 
@@ -153,8 +154,8 @@ async def delete_project(project_id: uuid.UUID, principal: deps.Principal = Depe
                          conn=Depends(deps.get_conn)):
     await require_project_role(conn, principal, project_id, "owner", lock=True)
     # Sorted, like admin delete_user's GC: row locks in one order can't deadlock.
-    cur = await conn.execute(
-        "SELECT doc_id FROM project_documents WHERE project_id = %s ORDER BY doc_id",
+    cur = await conn.execute(  # HISTORY, verified or not: everything the cascade drops
+        "SELECT DISTINCT doc_id FROM project_documents WHERE project_id = %s ORDER BY doc_id",
         (project_id,))
     doc_ids = [r[0] for r in await cur.fetchall()]
     await conn.execute("DELETE FROM projects WHERE id = %s", (project_id,))

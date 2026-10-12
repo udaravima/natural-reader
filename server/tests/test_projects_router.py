@@ -274,3 +274,30 @@ async def test_deleting_project_keeps_doc_held_in_someones_library(db_conn):
     async with _client_for(db_conn, _reader(owner)) as c:
         assert (await c.delete(f"/v1/projects/{pid}")).status_code == 204
     assert await _content_exists(db_conn, DOC_A)
+
+
+async def test_doc_count_counts_documents_not_versions(db_conn):
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="dc1", email="dc1@x.io")
+    pid = await _mk_project(db_conn, u["id"])
+    for d in (DOC_A, "b" * 64, "c" * 64):
+        await _mk_doc(db_conn, d, u["id"])
+    pdoc = await seed.place_doc(db_conn, pid, DOC_A, u["id"])
+    await seed.add_version(db_conn, pdoc, "b" * 64, u["id"])
+    await seed.add_version(db_conn, pdoc, "c" * 64, u["id"])
+    async with _client_for(db_conn, _reader(u)) as c:
+        assert (await c.get(f"/v1/projects/{pid}")).json()["doc_count"] == 1
+        assert [p["doc_count"] for p in (await c.get("/v1/projects")).json()] == [1]
+
+
+async def test_deleting_a_project_gcs_every_versions_content(db_conn, tmp_path):
+    owner = await resolve_or_provision_user(db_conn, iss="i", sub="dv1", email="dv1@x.io")
+    pid = await _mk_project(db_conn, owner["id"])
+    await seed.seed_doc(db_conn, DOC_A, None)
+    await seed.seed_doc(db_conn, "b" * 64, None)
+    pdoc = await seed.place_doc(db_conn, pid, DOC_A, owner["id"])
+    await seed.add_version(db_conn, pdoc, "b" * 64, owner["id"])
+    await seed.add_version(db_conn, pdoc, DOC_A, owner["id"], origin="restore", origin_version=1)
+    async with _client_for(db_conn, _reader(owner)) as c:
+        assert (await c.delete(f"/v1/projects/{pid}")).status_code == 204
+    assert not await _content_exists(db_conn, DOC_A)
+    assert not await _content_exists(db_conn, "b" * 64)

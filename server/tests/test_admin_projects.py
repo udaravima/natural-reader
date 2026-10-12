@@ -82,3 +82,15 @@ async def test_enroll_takes_username_and_names_without_copying_the_email(db_conn
     u = await get_user(db_conn, r.json()["user"]["id"])
     assert (u["username"], u["first_name"], u["last_name"]) == ("newbie", "New", "Person")
     assert (await get_user(db_conn, bare.json()["user"]["id"]))["username"] is None
+
+
+async def test_admin_doc_count_counts_documents_not_versions(db_conn):
+    admin, olu = await _user(db_conn, "ad2"), await _user(db_conn, "ol2", "Olu")
+    pid = await seed.make_project(db_conn, olu, "Versioned")
+    await seed.seed_doc(db_conn, "a" * 64, olu)
+    await seed.seed_doc(db_conn, "b" * 64, olu)
+    pdoc = await seed.place_doc(db_conn, pid, "a" * 64, olu)
+    await seed.add_version(db_conn, pdoc, "b" * 64, olu)
+    async with _client(db_conn, admin) as c:
+        rows = {r["name"]: r for r in (await c.get("/v1/admin/projects")).json()}
+    assert rows["Versioned"]["doc_count"] == 1
