@@ -69,6 +69,7 @@ export default function ChatView({
   // v2.4 Task E: the open document's name (null: none open) and the chat's
   // "Use this document" switch ({ enabled, setEnabled }, from useChatEngine).
   openDocName = null,
+  openDocVersion = null,
   docUse = null,
 }) {
   const copyMessage = async (text) => {
@@ -336,7 +337,7 @@ export default function ChatView({
             </div>
           )}
           {openDocName && docUse && (
-            <DocUseSwitch name={openDocName} docUse={docUse} theme={theme} darkMode={darkMode} />
+            <DocUseSwitch name={openDocName} docUse={docUse} theme={theme} darkMode={darkMode} version={openDocVersion} />
           )}
           {/* Pin row — docs/pages/selections pinned via "Ask page" or
                         "Ask AI" on a selection. Persist across sends until
@@ -999,7 +1000,7 @@ function ReplyStatus({ message, isStreamingNow, theme }) {
 // v2.4 Task E: whether this chat's messages send the open document. Off: no
 // search before the model, no document tools, no document in the rules; pins
 // and earlier citations still work.
-function DocUseSwitch({ name, docUse, theme, darkMode }) {
+function DocUseSwitch({ name, docUse, theme, darkMode, version }) {
   const on = docUse.enabled;
   return (
     <button
@@ -1013,6 +1014,7 @@ function DocUseSwitch({ name, docUse, theme, darkMode }) {
     >
       <FileText size={12} className={on ? (darkMode ? "text-purple-300" : "text-purple-600") : theme.textMuted} />
       <span className={`truncate max-w-[16rem] ${on ? theme.text : `line-through ${theme.textMuted}`}`}>{name}</span>
+      {version != null && <span className={theme.textMuted}>· v{version} (old version)</span>}
       <span className={`font-bold ${on ? "text-purple-500" : theme.textMuted}`}>{on ? "Use this document" : "Not used"}</span>
     </button>
   );

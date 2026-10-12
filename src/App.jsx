@@ -50,6 +50,8 @@ import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
 import NameMatchDialog from './components/projects/NameMatchDialog';
 import { useProjectFiling } from './hooks/useProjectFiling';
+import { useVersionStatus } from './hooks/useVersionStatus';
+import OldVersionBanner from './components/OldVersionBanner';
 import { projectsApi } from './lib/projectsApi';
 import DistractionFreeBar from './components/DistractionFreeBar';
 
@@ -265,6 +267,7 @@ export default function App() {
   const canReader = caps.includes('reader');
   const canChat = caps.includes('chat');
   const canAdmin = caps.includes('admin');
+  const versionOld = useVersionStatus({ apiHost, apiPort, docId: currentDocId, enabled: Boolean(canReader), refreshKey: projectsVersion });
 
   // Boot coercion (admin-console spec §3, generalized to all three views): a
   // persisted viewMode the user no longer (or never did) have the capability
@@ -1207,6 +1210,7 @@ export default function App() {
             setPendingAttachments={setChatPendingAttachments}
             onOpenCitation={handleOpenCitation}
             openDocName={currentDocId ? pdfFileName : null}
+            openDocVersion={currentDocId && versionOld ? versionOld.version : null}
             docUse={chatDocUse}
           />
         ) : inAdmin ? (
@@ -1289,6 +1293,8 @@ export default function App() {
             setViewMode={setCurrentDocView}
             distractionFree={distractionFree}
             openFolder={openFolder}
+            banner={<OldVersionBanner old={versionOld}
+              onOpenCurrent={(o) => openServerDoc(openDocDeps, o.current_doc_id, o.current_name)} />}
           />
           {reconnect && !workspace && (
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-2 rounded-lg shadow-lg bg-white/90 dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700">

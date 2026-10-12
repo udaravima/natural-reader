@@ -29,7 +29,11 @@ export function describeEvent(ev) {
     case 'member.removed': return `${actor} removed ${subject}`;
     case 'member.left': return `${actor} left the project`;
     case 'document.added': return `${actor} added "${doc}"`;
-    case 'document.removed': return `${actor} removed "${doc}"`;
+    case 'document.removed': return d.versions > 1 ? `${actor} removed "${doc}" and its ${d.versions} versions` : `${actor} removed "${doc}"`;
+    case 'document.version_added': return `${actor} uploaded v${d.version} of "${doc}"${d.note ? ` — "${d.note}"` : ''}`;
+    case 'document.version_restored': return `${actor} restored v${d.from_version} of "${doc}" (now v${d.version})`;
+    case 'document.merged': return `${actor} merged "${d.from_name}" into "${d.into_name}" (${d.versions} version${d.versions === 1 ? '' : 's'})`;
+    case 'document.version_deleted': return `${actor} deleted v${d.version} of "${doc}"`;
     default: return `${actor}: ${ev.kind}`;
   }
 }
