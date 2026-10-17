@@ -35,9 +35,11 @@ The line under the title says which.
 A server with sign-in on (the default) rejects reads without a token, so the
 toolbar turns red with *"not signed in"*. To connect:
 
-1. In Natural Reader, open **Settings → Account**, type a name (e.g.
+1. In Natural Reader, open **Settings → Account**. Leave **Access** at
+   **Read aloud** only (the default), pick an expiry, type a name (e.g.
    `laptop-extension`) and click **Create**. Copy the `nrp_…` token: it's
-   shown only once.
+   shown only once. A read-aloud-only token can't open your documents, chats
+   or the admin console, so it costs little if it leaks.
 2. Right-click the Read Aloud icon → **Options**, paste it into **Access
    token**, and click **Test connection**. It should say *Connected as* your
    email.

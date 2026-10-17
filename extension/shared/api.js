@@ -79,7 +79,11 @@ export async function checkConnection({ baseUrl, token, fetchImpl = globalThis.f
     if (res.status === 403) return { ok: false, reason: 'account_inactive' };
     if (!res.ok) return { ok: false, reason: 'unreachable' };
     const me = await res.json();
-    if (!(me.capabilities || []).includes('reader')) return { ok: false, reason: 'no_reader' };
+    // read_aloud is the server's own answer (2.3+), and the only right one for a
+    // token scoped to read-aloud, which carries no reader capability of its own.
+    const canRead = typeof me.read_aloud === 'boolean'
+        ? me.read_aloud : (me.capabilities || []).includes('reader');
+    if (!canRead) return { ok: false, reason: 'no_reader' };
     return { ok: true, reason: 'ok', email: me.email };
 }
 
@@ -89,5 +93,5 @@ export const CONNECTION_TEXT = {
     no_token: 'Sign-in needed: paste an access token',
     bad_token: 'Token rejected (revoked, expired or mistyped)',
     account_inactive: 'Account is not active',
-    no_reader: 'Account lacks the reader permission',
+    no_reader: "This token or account can't read aloud",
 };

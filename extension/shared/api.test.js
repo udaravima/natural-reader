@@ -142,6 +142,20 @@ describe('checkConnection', () => {
         expect((await checkConnection({ baseUrl: BASE, token: TOKEN, fetchImpl })).reason)
             .toBe('no_reader');
     });
+    it('trusts the server\'s read_aloud answer for a read-aloud-only token', async () => {
+        const fetchImpl = routes({
+            '/v1/health': healthy,
+            '/v1/auth/me': res(200, { email: 'a@example.com', capabilities: [], scopes: ['read_aloud'], read_aloud: true }),
+        });
+        expect((await checkConnection({ baseUrl: BASE, token: TOKEN, fetchImpl })).ok).toBe(true);
+    });
+    it('reports no_reader for a token scoped away from read-aloud', async () => {
+        const fetchImpl = routes({
+            '/v1/health': healthy,
+            '/v1/auth/me': res(200, { email: 'a@example.com', capabilities: ['chat'], scopes: ['chat'], read_aloud: false }),
+        });
+        expect((await checkConnection({ baseUrl: BASE, token: TOKEN, fetchImpl })).reason).toBe('no_reader');
+    });
     it('reports a disabled account (403 on /me)', async () => {
         const fetchImpl = routes({
             '/v1/health': healthy,
