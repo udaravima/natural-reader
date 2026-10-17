@@ -2,6 +2,49 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- **Admin → Defaults.** An admin sets what auto-read, the read-aloud timing,
+  thinking, the voice and the reading speed are for anyone who hasn't chosen
+  them. People keep their own choice; **Apply to everyone** replaces it the
+  next time each person opens the app. `GET /v1/settings/defaults` (any
+  signed-in user), `GET`/`PUT /v1/admin/defaults`,
+  `POST /v1/admin/defaults/{name}/apply-to-everyone`.
+- **Sessions end when unused.** `SESSION_IDLE_HOURS` (default 12; 0 = off)
+  ends a sign-in the browser hasn't used for that long. `SESSION_TTL_HOURS`
+  (168) stays the absolute cap.
+
+### Changed
+
+- **Auto-read is off by default, and replies are read once complete**
+  (were on, and while streaming). Existing browsers forget their stored value
+  for these two once, because until now every setting saved its default on
+  first load as if it had been chosen.
+- **A setting stores only a choice.** One you never touched follows the
+  current default (the admin's, else the built-in), and changing one model
+  setting no longer saves the others' defaults with it.
+
+### Fixed
+
+- **A write is committed before its response is sent.** Every route took its
+  database connection with FastAPI's default "request" scope, which commits
+  only after the response and its background tasks: an immediate re-read could
+  miss the change (measured 3 of 30; now 0 of 60), and each running index held
+  one of the 10 pool connections until it finished. Connections are now
+  `scope="function"`, and a test fails any route that forgets.
+- **Cancelling an audiobook stops the server.** Cancel aborted the browser's
+  requests, but the server synthesized every cancelled page anyway, holding
+  the one Kokoro lock: a one-word read right after Cancel waited 76.8 s (now
+  0.3 s). The server checks between sentences and before taking the lock. The
+  audiobook also shows progress while it reads the document, can be cancelled
+  then, and has a Cancel item in the narrow-screen menu, which had none.
+- **Thinking "off" turns thinking off on OpenRouter.** "Off" was sent as
+  nothing, and OpenRouter then applies the model's default, which for many is
+  on. It is now `reasoning: {"effort": "none"}` for a model OpenRouter lists
+  as reasoning (not for one whose reasoning is mandatory).
+
 ## [2.3.0] - 2026-10-17
 
 **Access tokens can be limited** to what they're for: read aloud, documents,
