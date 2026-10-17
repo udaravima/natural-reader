@@ -85,11 +85,11 @@ describe('useViewModeGuard', () => {
     expect(setViewMode).not.toHaveBeenCalled();
   });
 
-  it('leaves the ungated Settings view alone (like Library)', () => {
+  it('moves a browser still on the old Settings view (now a dialog) to the reader', () => {
     const setViewMode = vi.fn();
     renderHook(() => useViewModeGuard({
       viewMode: 'settings', setViewMode, authState: 'active', caps: ['reader'],
     }));
-    expect(setViewMode).not.toHaveBeenCalled();
+    expect(setViewMode).toHaveBeenCalledWith('reader');
   });
 });

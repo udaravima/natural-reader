@@ -48,12 +48,12 @@ export default function Header({
     // { held, docName, currentPage, numPages, pausedForChat }: the narration
     // outside the reader (NarrationMiniPlayer).
     narration = null,
+    onOpenSettings,
 }) {
     const isExportingBook = !!bookProgress;
     // Reader-only chrome (playback, downloads, overflow menu, upload) shows
     // in the reader view only — not in chat, not in the admin console.
     const inReader = viewMode === 'reader';
-    const inSettings = viewMode === 'settings';
     return (
         <header className={`h-16 ${theme.bgSecondary} border-b ${theme.border} px-4 md:px-6 flex items-center justify-between z-20 sticky top-0 shadow-sm transition-colors duration-300`}>
             <div className="flex items-center gap-2 md:gap-3">
@@ -140,13 +140,13 @@ export default function Header({
 
                 {/* Settings gear + profile menu — persistent, all widths */}
                 <button
-                    onClick={() => setViewMode('settings')}
-                    className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${inSettings ? 'text-blue-500' : `${theme.textSecondary} hover:text-blue-500`}`}
+                    onClick={() => onOpenSettings?.()}
+                    className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
                     title="Settings"
                 >
                     <SettingsIcon size={20} />
                 </button>
-                <ProfileMenu theme={theme} user={user} darkMode={darkMode} setDarkMode={setDarkMode} setViewMode={setViewMode} onLogout={onLogout} />
+                <ProfileMenu theme={theme} user={user} darkMode={darkMode} setDarkMode={setDarkMode} onOpenSettings={onOpenSettings} onLogout={onLogout} />
 
                 {/* Estimated Time */}
                 {inReader && hasDocument && calculateEstimatedTimeRemaining(playbackSpeed) && (

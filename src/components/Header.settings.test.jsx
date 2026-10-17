@@ -18,16 +18,18 @@ const baseProps = (over = {}) => ({
   calculateEstimatedTimeRemaining: () => null, playbackSpeed: 1.0,
   onGoHome: vi.fn(), onDownloadBookAudio: vi.fn(), bookProgress: null, onCancelBookDownload: vi.fn(),
   onEnterDistractionFree: vi.fn(), workspaceName: null, onCloseWorkspace: vi.fn(),
-  user: { email: 'me@x.io' }, onLogout: vi.fn(),
+  user: { email: 'me@x.io' }, onLogout: vi.fn(), onOpenSettings: vi.fn(),
   ...over,
 });
 
 describe('Header — settings + profile', () => {
-  it('the gear button switches to the settings view', () => {
+  it('the gear button opens the settings dialog and leaves the view alone', () => {
     const setViewMode = vi.fn();
-    render(<Header {...baseProps({ setViewMode })} />);
+    const onOpenSettings = vi.fn();
+    render(<Header {...baseProps({ setViewMode, onOpenSettings })} />);
     fireEvent.click(screen.getByRole('button', { name: /^settings$/i }));
-    expect(setViewMode).toHaveBeenCalledWith('settings');
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+    expect(setViewMode).not.toHaveBeenCalled();
   });
 
   it('renders a profile menu trigger', () => {

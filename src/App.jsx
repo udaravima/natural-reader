@@ -46,7 +46,7 @@ import { AdminConsole } from './components/admin/AdminConsole';
 import LibraryPage from './components/library/LibraryPage';
 import { fetchDocFile } from './lib/serverDocFile';
 import { openServerDoc, openCitation } from './lib/openDoc';
-import SettingsPage from './components/settings/SettingsPage';
+import SettingsDialog from './components/settings/SettingsDialog';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
 import NameMatchDialog from './components/projects/NameMatchDialog';
@@ -277,7 +277,15 @@ export default function App() {
   // a capability-free view, listed in useViewModeGuard's CAP_FREE_VIEWS so the
   // guard doesn't bounce it to reader for lack of a matching capability.
   const inLibrary = viewMode === 'library';
-  const inSettings = viewMode === 'settings';
+  // Settings is a dialog over the current view (it used to be a view of its
+  // own, which unmounted the reader and stopped the narration). The last tab
+  // opened is remembered; `settingsOpen` says whether the dialog is showing.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = usePersistedState('settingsTab', 'voice');
+  const openSettings = useCallback((tab) => {
+    if (tab) setSettingsTab(tab);
+    setSettingsOpen(true);
+  }, [setSettingsTab]);
 
   // Capabilities granted to the current user. The auth gate below already
   // guarantees at least one of reader/chat/admin once the app renders, but
@@ -476,15 +484,15 @@ export default function App() {
   // out at the window level so the reader's DragOverlay never appears and the
   // file isn't routed through processFile() (which expects PDF/TXT).
   const handleDragOver = (e) => {
-    if (inChat || inAdmin || inLibrary || inSettings) return;
+    if (inChat || inAdmin || inLibrary || settingsOpen) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(true);
   };
   const handleDragLeave = (e) => {
-    if (inChat || inAdmin || inLibrary || inSettings) return;
+    if (inChat || inAdmin || inLibrary || settingsOpen) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
   };
   const handleDrop = (e) => {
-    if (inChat || inAdmin || inLibrary || inSettings) return;
+    if (inChat || inAdmin || inLibrary || settingsOpen) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
     const files = e.dataTransfer.files;
     if (files.length === 0) return;
@@ -1096,7 +1104,7 @@ export default function App() {
       />
 
       <ReadSelectionButton
-        hasDocument={hasDocument}
+        hasDocument={hasDocument && !settingsOpen}
         isReadingSelection={isReadingSelection}
         darkMode={darkMode}
         onReadSelection={readSelection}
@@ -1141,10 +1149,23 @@ export default function App() {
           user={auth.user}
           onLogout={auth.logout}
           narration={{ held: narrationHeld, docName: pdfFileName, currentPage, numPages, pausedForChat }}
+          onOpenSettings={openSettings}
         />
       )}
 
       <KeyboardShortcutsModal show={showShortcuts} theme={theme} onClose={() => setShowShortcuts(false)} />
+
+      <SettingsDialog
+        theme={theme}
+        tab={settingsOpen ? settingsTab : null}
+        onTab={setSettingsTab}
+        onClose={() => setSettingsOpen(false)}
+        voiceSettings={{ selectedVoice, setSelectedVoice, playbackSpeed, setPlaybackSpeed, volume, setVolume, isLocalhost, setIsLocalhost, requestTimeout, setRequestTimeout, unlimitedBatchTimeout, setUnlimitedBatchTimeout, isPreviewingVoice, previewVoice, stopVoicePreview, clearCache }}
+        chatSettings={{ chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, inferenceByModel, setInferenceByModel, inferenceBase, availableModels, selectedModel }}
+        connectionSettings={{ apiHost, setApiHost, apiPort, setApiPort, backendAvailable }}
+        appearanceSettings={{ darkMode, setDarkMode, layoutMode, setLayoutMode, mobileBreakpoint, setMobileBreakpoint, showHeaderControlsOnMobile, setShowHeaderControlsOnMobile }}
+        accountProps={{ apiHost, apiPort, user: auth.user }}
+      />
 
       <main className="flex-1 flex overflow-hidden relative">
         {/* Mobile sidebar overlay */}
@@ -1179,7 +1200,7 @@ export default function App() {
             deleteSession={chatDeleteSession}
             renameSession={chatRenameSession}
           />
-        ) : inAdmin || inLibrary || inSettings ? null : (
+        ) : inAdmin || inLibrary ? null : (
         canReader && <Sidebar
           theme={theme}
           darkMode={darkMode}
@@ -1256,15 +1277,6 @@ export default function App() {
             currentUserId={auth.user?.id}
             isAdmin={canAdmin}
             onProjectsChanged={() => setProjectsVersion((v) => v + 1)}
-          />
-        ) : inSettings ? (
-          <SettingsPage
-            theme={theme}
-            voiceSettings={{ selectedVoice, setSelectedVoice, playbackSpeed, setPlaybackSpeed, volume, setVolume, isLocalhost, setIsLocalhost, requestTimeout, setRequestTimeout, unlimitedBatchTimeout, setUnlimitedBatchTimeout, isPreviewingVoice, previewVoice, stopVoicePreview, clearCache }}
-            chatSettings={{ chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, inferenceByModel, setInferenceByModel, inferenceBase, availableModels, selectedModel }}
-            connectionSettings={{ apiHost, setApiHost, apiPort, setApiPort, backendAvailable }}
-            appearanceSettings={{ darkMode, setDarkMode, layoutMode, setLayoutMode, mobileBreakpoint, setMobileBreakpoint, showHeaderControlsOnMobile, setShowHeaderControlsOnMobile }}
-            accountProps={{ apiHost, apiPort, user: auth.user }}
           />
         ) : (
         // Mount gate mirroring the admin console above: hiding via
@@ -1343,7 +1355,7 @@ export default function App() {
         <MobileBottomNav
           theme={theme}
           effectiveIsMobile={effectiveIsMobile}
-          hasDocument={hasDocument && !inChat && !inAdmin && !inLibrary && !inSettings}
+          hasDocument={hasDocument && !inChat && !inAdmin && !inLibrary}
           currentPage={currentPage} setCurrentPage={setCurrentPage}
           numPages={numPages}
           currentSentenceIndex={currentSentenceIndex}

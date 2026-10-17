@@ -8,7 +8,7 @@ import { UserCircle, Settings as SettingsIcon, Moon, Sun, LogOut } from 'lucide-
  * reader sidebar's account panel. Open/outside-click/Escape behaviour mirrors
  * PdfToolbarMenu / HeaderOverflowMenu.
  */
-export default function ProfileMenu({ theme, user, darkMode, setDarkMode, setViewMode, onLogout }) {
+export default function ProfileMenu({ theme, user, darkMode, setDarkMode, onOpenSettings, onLogout }) {
     const [open, setOpen] = useState(false);
     const wrapRef = useRef(null);
 
@@ -52,7 +52,7 @@ export default function ProfileMenu({ theme, user, darkMode, setDarkMode, setVie
                     </div>
                     <button
                         role="menuitem"
-                        onClick={() => { setViewMode('settings'); setOpen(false); }}
+                        onClick={() => { onOpenSettings?.(); setOpen(false); }}
                         className={`w-full flex items-center gap-3 px-4 py-2.5 text-left ${theme.hover} transition-colors`}
                     >
                         <SettingsIcon size={16} className={`shrink-0 ${theme.textSecondary}`} />

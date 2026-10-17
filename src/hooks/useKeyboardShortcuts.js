@@ -40,6 +40,9 @@ export function useKeyboardShortcuts({
             // Don't trigger shortcuts when typing in inputs
             const tag = e.target.tagName;
             if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+            // Nor inside a dialog (Settings): Space there presses its buttons,
+            // and Escape closes it rather than stopping the narration.
+            if (e.target.closest?.('[role="dialog"]')) return;
 
             const cb = callbacksRef.current;
             // Reader-only shortcuts (play/skip/page-nav) — dark-mode + zoom still
