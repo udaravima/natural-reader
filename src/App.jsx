@@ -48,6 +48,7 @@ import { fetchDocFile } from './lib/serverDocFile';
 import { openServerDoc, openCitation } from './lib/openDoc';
 import SettingsDialog from './components/settings/SettingsDialog';
 import ChatSidePanel from './components/chat/ChatSidePanel';
+import { ProfilePanel } from './components/account/ProfilePanel';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
 import NameMatchDialog from './components/projects/NameMatchDialog';
@@ -1194,6 +1195,7 @@ export default function App() {
           workspaceName={workspace?.rootName}
           onCloseWorkspace={() => { setOwnedWorkspace(null); setWorkspaceEntryPath(null); clearWorkspaceState(); }}
           user={auth.user}
+          apiHost={apiHost} apiPort={apiPort}
           onLogout={auth.logout}
           narration={{ held: narrationHeld, docName: pdfFileName, currentPage, numPages, pausedForChat }}
           onOpenSettings={openSettings}
@@ -1209,6 +1211,10 @@ export default function App() {
         tab={settingsOpen ? settingsTab : null}
         onTab={setSettingsTab}
         onClose={() => setSettingsOpen(false)}
+        profile={auth.user ? (
+          <ProfilePanel theme={theme} apiHost={apiHost} apiPort={apiPort} user={auth.user}
+            onUserChanged={auth.patchUser} showToast={showToast} />
+        ) : null}
         voiceSettings={{ selectedVoice, setSelectedVoice, playbackSpeed, setPlaybackSpeed, volume, setVolume, isLocalhost, setIsLocalhost, requestTimeout, setRequestTimeout, unlimitedBatchTimeout, setUnlimitedBatchTimeout, isPreviewingVoice, previewVoice, stopVoicePreview, clearCache }}
         chatSettings={{ chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, inferenceByModel, setInferenceByModel, inferenceBase, availableModels, selectedModel }}
         connectionSettings={{ apiHost, setApiHost, apiPort, setApiPort, backendAvailable }}

@@ -35,4 +35,11 @@ describe('ProfileMenu', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: /dark mode|light mode/i }));
     expect(setDarkMode).toHaveBeenCalled();
   });
+  it('Profile opens the settings dialog on its Profile tab', () => {
+    const onOpenSettings = vi.fn();
+    render(<ProfileMenu {...base({ onOpenSettings })} />);
+    fireEvent.click(screen.getByRole('button', { name: /account|profile/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /^profile$/i }));
+    expect(onOpenSettings).toHaveBeenCalledWith('profile');
+  });
 });

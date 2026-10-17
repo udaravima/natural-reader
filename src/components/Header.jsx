@@ -44,6 +44,7 @@ export default function Header({
     workspaceName,
     onCloseWorkspace,
     user,
+    apiHost, apiPort,
     onLogout,
     // { held, docName, currentPage, numPages, pausedForChat }: the narration
     // outside the reader (NarrationMiniPlayer).
@@ -159,7 +160,7 @@ export default function Header({
                 >
                     <SettingsIcon size={20} />
                 </button>
-                <ProfileMenu theme={theme} user={user} darkMode={darkMode} setDarkMode={setDarkMode} onOpenSettings={onOpenSettings} onLogout={onLogout} />
+                <ProfileMenu theme={theme} user={user} apiHost={apiHost} apiPort={apiPort} darkMode={darkMode} setDarkMode={setDarkMode} onOpenSettings={onOpenSettings} onLogout={onLogout} />
 
                 {/* Estimated Time */}
                 {inReader && hasDocument && calculateEstimatedTimeRemaining(playbackSpeed) && (

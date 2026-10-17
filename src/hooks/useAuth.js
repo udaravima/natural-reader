@@ -105,5 +105,11 @@ export function useAuth(apiHost, apiPort) {
     window.location.assign(buildApiUrl(apiHost, apiPort, '/v1/auth/logout'));
   }, [apiHost, apiPort]);
 
-  return { state, user, login, logout, refresh };
+  // A profile change the server already accepted (a new picture): update the
+  // signed-in user in place, without another /v1/auth/me round trip.
+  const patchUser = useCallback((fields) => {
+    setUser((u) => (u ? { ...u, ...fields } : u));
+  }, []);
+
+  return { state, user, login, logout, refresh, patchUser };
 }
