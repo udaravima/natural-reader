@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 HEARTBEAT_S = 15.0     # a running turn refreshes its claim this often (seconds)
 STALE_AFTER_S = 60     # a claim older than this belongs to a dead worker (seconds)
 FLUSH_EVERY_S = 2.0    # partial content is saved at most this often (seconds)
+KEEP = object()        # begin_turn: leave the session's project scope as it is (ruling R5)
 
 
 class NotOwner(Exception):
@@ -136,12 +137,31 @@ async def session_info(session_id: str) -> SessionInfo | None:
     return SessionInfo(str(row[0]), row[1] or []) if row else None
 
 
+async def session_scope(session_id: str, user_id: str) -> str | None:
+    """The project the user's session is scoped to (C2.1 spec §5.1), or None."""
+    async with get_pool().connection() as conn:
+        cur = await conn.execute(
+            "SELECT scope_project_id FROM chat_sessions WHERE id = %s AND user_id = %s", (session_id, user_id))
+        row = await cur.fetchone()
+    return str(row[0]) if row and row[0] is not None else None
+
+
+async def set_session_scope(session_id: str, user_id: str, project_id: str | None) -> None:
+    """Scope the user's session to a project, or (None) to none. Another
+    user's session, or a missing one, is left alone."""
+    async with get_pool().connection() as conn:
+        await conn.execute("UPDATE chat_sessions SET scope_project_id = %s WHERE id = %s AND user_id = %s",
+                           (project_id, session_id, user_id))
+
+
 async def begin_turn(*, session_id: str, user_id: str, model_id: str, text: str,
                      attachments: list[NewAttachment],
-                     new_session_pins: list[dict] | None) -> TurnClaim:
+                     new_session_pins: list[dict] | None, scope_project_id: Any = KEEP) -> TurnClaim:
     """Create the session if new, claim it, and write the user message (with
     attachment bytes) and the streaming assistant message — one transaction,
-    committed before the first byte streams (spec §7.3)."""
+    committed before the first byte streams (spec §7.3). `scope_project_id`
+    (a project id, or None to clear it) is saved with the claim; KEEP leaves
+    the session's scope as it is. The caller checked access to it."""
     user_mid, asst_mid = new_message_id("u"), new_message_id("a")
     async with get_pool().connection() as conn:
         async with conn.transaction():
@@ -155,10 +175,12 @@ async def begin_turn(*, session_id: str, user_id: str, model_id: str, text: str,
             if row is None or str(row[0]) != str(user_id):
                 raise NotOwner(session_id)
             await _recover(conn, session_id)
+            scope_sql, scope_params = ("", []) if scope_project_id is KEEP else (
+                ", scope_project_id = %s", [scope_project_id])
             cur = await conn.execute(
                 "UPDATE chat_sessions SET active_turn_id = %s, active_turn_heartbeat_at = now(), "
-                "model = %s, updated_at = now() WHERE id = %s AND active_turn_id IS NULL RETURNING id",
-                (asst_mid, model_id, session_id))
+                f"model = %s, updated_at = now(){scope_sql} WHERE id = %s AND active_turn_id IS NULL RETURNING id",
+                [asst_mid, model_id, *scope_params, session_id])
             if await cur.fetchone() is None:
                 raise TurnInProgress(session_id)
             # Monotonic timestamps: the UI sorts by them, and two fast turns can

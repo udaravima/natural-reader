@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 from ...llm.types import ToolCall, ToolSpec
 from ..config import ChatConfig
+from ..project_scope import ProjectScope
 from ...services.doc_search import ReadableDoc
 
 logger = logging.getLogger(__name__)
@@ -19,17 +20,21 @@ logger = logging.getLogger(__name__)
 class ToolContext:
     """One per turn: what the tools may read, and what this turn has seen."""
     user_id: str
-    doc: ReadableDoc | None   # the open document, already checked readable
+    doc: ReadableDoc | None   # the open document, already checked readable (document scope only)
     cfg: ChatConfig = field(default_factory=ChatConfig, hash=False, compare=False)
+    # A project chat (C2.1): the project's current documents, access checked
+    # this turn. The document tools read these instead of the open document.
+    project: ProjectScope | None = None
+    question: str = ""   # the turn's user text
     # Chunk ids whose text the model already has this turn (the prefetch
     # block, earlier searches): shown again only as a page reference.
     shown: set[int] = field(default_factory=set, hash=False, compare=False)
     # Every piece of document text the model has this turn (prefetch, pins,
     # tool results, cut pages too): web_search refuses to send it out.
     seen_text: list[str] = field(default_factory=list, hash=False, compare=False)
-    # (page, text) of every passage or page of the open document the model has
-    # this turn: which pages the answer drew on (v2.4 Task D, chat/sources.py).
-    evidence: list[tuple[int | None, str]] = field(default_factory=list, hash=False, compare=False)
+    # (doc_id, page, text) of every passage or page of a document the model
+    # has this turn: which pages the answer drew on (v2.4 Task D, chat/sources.py).
+    evidence: list[tuple[str, int | None, str]] = field(default_factory=list, hash=False, compare=False)
 
 
 class Tool(Protocol):

@@ -269,12 +269,12 @@ async def test_an_old_version_carries_a_version_note_into_the_listing(indexed):
     await seed.add_version(conn, pdoc, newer, alice.user_id)
     doc = await doc_search.readable_doc(conn, DOC, alice.user_id)
     assert doc.version_note["project"]["name"] == "Thesis group"
-    [item] = scope.documents_listing([doc])
+    [item] = scope.documents_listing(scope.scope_docs(ToolContext(alice.user_id, doc)))
     assert item["version_note"] == ('version 1 in project "Thesis group"; '
                                     "not the current version, which is version 2")
     current = await doc_search.readable_doc(conn, newer, alice.user_id)
     assert current.version_note is None
-    assert "version_note" not in scope.documents_listing([current])[0]
+    assert "version_note" not in scope.documents_listing(scope.scope_docs(ToolContext(alice.user_id, current)))[0]
 
 
 async def test_a_project_only_reader_sees_the_name_as_filed_not_the_canonical_one(indexed):

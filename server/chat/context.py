@@ -35,6 +35,7 @@ from ..services.doc_search import ReadableDoc, search_chunks
 from ..services.embeddings import embed_query
 from . import store
 from .config import ChatConfig
+from .project_scope import ScopeDoc
 from .prompt import PASSAGES_TAG, PIN_TAG, display_name, fence, system_rules
 from .store import StoredMessage
 from .tools import result_text
@@ -222,7 +223,7 @@ class BuiltContext:
     prefetch_hit: bool
     shown_chunk_ids: tuple[int, ...] = ()   # the prefetched chunks: search_documents won't repeat them
     shown_texts: tuple[str, ...] = ()       # their text: web_search won't send it out
-    evidence: tuple[tuple[int | None, str], ...] = ()   # (page, text): for the source chips (v2.4 Task D)
+    evidence: tuple[tuple[str, int | None, str], ...] = ()   # (doc_id, page, text): for the source chips (v2.4 Task D)
 
 
 async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
@@ -242,8 +243,8 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     volatile = ""
     if as_tool:
         args = {"query": turn.text, "k": cfg.prefetch_k}
-        result = passages_result(turn.text, [turn.doc], [{"ref": 1, "page": p["page"], "text": p["text"]}
-                                                         for p in pre.passages])
+        result = passages_result(turn.text, [ScopeDoc(1, turn.doc, display_name(turn.doc.name), True)],
+                                 [{"ref": 1, "page": p["page"], "text": p["text"]} for p in pre.passages])
         exchange = [Message("assistant", "", tool_calls=(ToolCall(PREFETCH_CALL_ID, "search_documents", args),)),
                     Message("tool", result_text(result), tool_call_id=PREFETCH_CALL_ID, name="search_documents")]
     elif pre.passages:
@@ -290,4 +291,4 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     return BuiltContext([system, *history_messages, current, *exchange], notes, bool(pre.passages),
                         tuple(p["id"] for p in pre.passages if p.get("id") is not None),
                         tuple(p["text"] for p in pre.passages),
-                        tuple((p["page"], p["text"]) for p in pre.passages))
+                        tuple((pre.note["docId"], p["page"], p["text"]) for p in pre.passages))

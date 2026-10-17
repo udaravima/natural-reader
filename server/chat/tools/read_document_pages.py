@@ -1,6 +1,7 @@
-"""read_document_pages: the exact text of whole pages of the open document
-(v2.3 Task C). A search finds where something is; this reads it whole: a
-table, a section, "what's on page 12" (plan journeys J3, J4, J9)."""
+"""read_document_pages: the exact text of whole pages of a document in scope
+(v2.3 Task C): the open document, or one of a project chat's documents, named
+by `document` (C2.1). A search finds where something is; this reads it whole:
+a table, a section, "what's on page 12" (plan journeys J3, J4, J9)."""
 from __future__ import annotations
 
 from typing import Any
@@ -8,7 +9,9 @@ from typing import Any
 from ...db import get_pool
 from ...llm.types import ToolSpec
 from ...services.extract import CHUNK_OVERLAP_CHARS, CONTINUATION_SUFFIX
-from .scope import document_scope, documents_listing
+from ..project_scope import ScopeDoc
+from ..prompt import display_name
+from .scope import choices_text, documents_listing, resolve_document, scope_docs
 
 PAGES_PER_CALL = 3
 CUT_MARKER = " [cut: the rest is not shown]"
@@ -23,6 +26,9 @@ _SPEC = ToolSpec(
     parameters={
         "type": "object",
         "properties": {
+            "document": {"type": ["integer", "string"], "description": (
+                "Which document: its ref number or its name, as results list them. Needed when there are "
+                "several documents; leave it out for the open document.")},
             "first_page": {"type": "integer", "minimum": 1, "description": "The first page to read."},
             "last_page": {"type": "integer", "minimum": 1, "description": (
                 "The last page to read (at most first_page + 2). Leave it out to read one page.")},
@@ -80,13 +86,16 @@ class _ReadDocumentPages:
     source = "document"
 
     def available(self, ctx) -> bool:
-        return bool(document_scope(ctx))
+        return bool(scope_docs(ctx))
 
     async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
-        scope = document_scope(ctx)
+        scope = scope_docs(ctx)
         if not scope:
             return {"error": "No indexed document is open."}
-        doc = scope[0]
+        chosen = _chosen(scope, args.get("document"), ctx)
+        if isinstance(chosen, dict):
+            return chosen
+        doc, ref = chosen.doc, chosen.ref
         first = _page_number(args.get("first_page"))
         if first is None:
             return {"error": "first_page is required: a page number."}
@@ -110,7 +119,6 @@ class _ReadDocumentPages:
                 (doc.doc_id, first, last))
             rows = await cur.fetchall()
 
-        ref = 1   # the scope's first document; C2 passes a ref argument
         cap = ctx.cfg.read_pages_max_chars
         room = cap
         pages: list[dict[str, Any]] = []
@@ -146,20 +154,44 @@ class _ReadDocumentPages:
             span = f"page {resume}" if resume == wanted_last else f"pages {resume}-{wanted_last}"
             messages.append(f"Not read: {span}. Read from page {resume} next.")
         ctx.seen_text.extend(p["text"] for p in pages)   # cut pages too: the model has that text
-        ctx.evidence.extend((p["page"], p["text"]) for p in pages)
-        result: dict[str, Any] = {"documents": documents_listing(scope), "pages": pages}
+        ctx.evidence.extend((doc.doc_id, p["page"], p["text"]) for p in pages)
+        # The document these pages are from (in a project, not all of them).
+        result: dict[str, Any] = {"documents": documents_listing([chosen]), "pages": pages}
         if messages:
             result["message"] = " ".join(messages)
         result["_pages"] = [p["page"] for p in pages]   # for summarize() only
+        result["_doc"] = {"docId": doc.doc_id, "docName": doc.name}
         return result
 
     def summarize(self, args: dict[str, Any], result: dict[str, Any], ctx) -> dict[str, Any]:
         read = result.get("_pages", [])
         what = (f"page {read[0]}" if len(read) == 1
                 else f"pages {read[0]}-{read[-1]}" if read else "no pages")
-        # docId lets the reply's "(page N)" citations open this document.
-        return {"ok": True, "chunk_count": None, "query": None, "summary_text": f"Read {what}.",
-                "docId": ctx.doc.doc_id, "docName": ctx.doc.name, "pages": read}
+        summary = {"ok": True, "chunk_count": None, "query": None, "summary_text": f"Read {what}."}
+        # docId lets the reply's "(page N)" citations open this document. A
+        # project reply names no single document (its other citations may be
+        # to other documents): the document read is saved under its own key.
+        if ctx.project is None:
+            return {**summary, **result["_doc"], "pages": read}
+        return {**summary, "document": result["_doc"], "pages": read}
+
+
+def _chosen(scope: list[ScopeDoc], value: Any, ctx) -> ScopeDoc | dict[str, str]:
+    """The ScopeDoc `document` names, or the error the model reads. Leaving it
+    out means the open document, in document scope only."""
+    if value is None or value == "":
+        if ctx.project is None:
+            return scope[0]
+        return {"error": f"document is required: use a number or name from the list: {choices_text(scope)}."}
+    found = resolve_document(scope, value)
+    if found is not None:
+        return found
+    if ctx.project is not None:
+        listed = resolve_document(list(ctx.project.docs), value)
+        if listed is not None:   # in the project, but not indexed (or reindexing)
+            return {"error": f'Document {listed.ref} ("{listed.name}") isn\'t searchable yet.'}
+    return {"error": f"Unknown document: {display_name(value)}. "
+                     f"Use a number or name from the list: {choices_text(scope)}."}
 
 
 TOOL = _ReadDocumentPages()

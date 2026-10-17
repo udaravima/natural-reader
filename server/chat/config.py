@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ChatConfig:
     max_tool_rounds: int = 3               # tool rounds before the final tools-off step (RAG spec §9)
+    project_max_tool_rounds: int = 5       # the same, for a chat scoped to a project (C2.1 spec §5.11)
     tool_result_budget_chars: int = 24000  # tool results one answer may add to the prompt
     prefetch: str = "auto"                 # search the open document before the model runs: "auto" only for
                                             # a model offered no document tools (its only way to see the
@@ -65,6 +66,7 @@ def load_chat_config(env: Mapping[str, str]) -> ChatConfig:
     return ChatConfig(
         prefetch=choice("CHAT_PREFETCH", d.prefetch, ("auto", "on", "off")),
         max_tool_rounds=num("CHAT_MAX_TOOL_ROUNDS", d.max_tool_rounds, int, 0, 20),
+        project_max_tool_rounds=num("CHAT_PROJECT_MAX_TOOL_ROUNDS", d.project_max_tool_rounds, int, 0, 20),
         tool_result_budget_chars=num("CHAT_TOOL_RESULT_BUDGET_CHARS", d.tool_result_budget_chars,
                                      int, 1000, 1_000_000),
         prefetch_min_score=num("CHAT_PREFETCH_MIN_SCORE", d.prefetch_min_score, float, 0.0, 1.0),

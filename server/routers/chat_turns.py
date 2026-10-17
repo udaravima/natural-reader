@@ -3,8 +3,9 @@
 Everything that can refuse does so BEFORE the first byte, as an ordinary HTTP
 refusal (§7.2): 503 no_providers, 413 too_large, 422 invalid_request /
 invalid_attachment / empty_message / model_not_allowed / attachment_unsupported,
-404 not_found, 429 budget_exhausted, 409 turn_in_progress. After the first
-byte, failures arrive as an `error` event.
+404 not_found (the chat, or a project chat's project: C2.1 spec §5.1),
+429 budget_exhausted, 409 turn_in_progress. After the first byte, failures
+arrive as an `error` event.
 """
 from __future__ import annotations
 
@@ -15,12 +16,14 @@ import inspect
 import json
 import logging
 from typing import Annotated, Any, AsyncGenerator, AsyncIterator, Awaitable, Callable, Literal
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, Path as PathParam, Request
+from fastapi import APIRouter, Depends, HTTPException, Path as PathParam, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from starlette.types import Receive, Scope, Send
 
+from ..auth.authz import require_project_role
 from ..auth.deps import Principal, require_capability
 from ..chat import store
 from ..chat.config import get_chat_config
@@ -81,7 +84,16 @@ def call_settings(s: SettingsIn) -> CallSettings:
 class ContextIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     doc_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    # C2.1 (ruling R5): a project scopes the chat; null clears its scope;
+    # left out, the chat keeps the scope it has.
+    project_id: UUID | None = None
     timezone: str | None = Field(default=None, max_length=64)
+
+    def requested_scope(self) -> Any:
+        """The scope this turn asks for: a project id, None, or store.KEEP."""
+        if "project_id" not in self.model_fields_set:
+            return store.KEEP
+        return str(self.project_id) if self.project_id is not None else None
 
 
 class NewSessionIn(BaseModel):
@@ -124,6 +136,19 @@ async def _budget_state_if_over(user_id: str, budget: int | None) -> dict | None
         # Fail open — chat must survive a Postgres hiccup here (today's gateway rule).
         logger.warning("Budget pre-check failed (fail-open)", exc_info=True)
     return None
+
+
+async def _check_project(session_id: str, principal: Principal, project_id: str, session_exists: bool) -> None:
+    """Spec §5.1, every project turn: the same check as the project document
+    routes (a non-member admin is refused too). Refused, the chat falls back
+    to general chat: its stored scope is cleared, and the 404 is raised."""
+    try:
+        async with get_pool().connection() as conn:
+            await require_project_role(conn, principal, project_id, None, admin_ok=False)
+    except HTTPException as e:
+        if e.status_code == 404 and session_exists:
+            await store.set_session_scope(session_id, principal.user_id, None)
+        raise
 
 
 async def _capabilities(llm: Any, model_id: str) -> Capabilities:
@@ -286,11 +311,17 @@ async def post_turn(session_id: SessionId, request: Request,
     state = await _budget_state_if_over(principal.user_id, budget)
     if state is not None:
         raise refusal(429, "budget_exhausted", "Daily inference budget exhausted.", **state)
+    # The project scope, checked before anything is written (spec §5.1, §5.10).
+    requested = body.context.requested_scope()
+    project_id = requested if requested is not store.KEEP else (
+        await store.session_scope(session_id, principal.user_id) if info is not None else None)
+    if project_id is not None:
+        await _check_project(session_id, principal, project_id, session_exists=info is not None)
     try:
         claim = await store.begin_turn(
             session_id=session_id, user_id=principal.user_id, model_id=model_id,
             text=body.message.content, attachments=attachments,
-            new_session_pins=body.session.pins if body.session else None)
+            new_session_pins=body.session.pins if body.session else None, scope_project_id=requested)
     except store.NotOwner:
         raise refusal(404, "not_found", NOT_FOUND)
     except store.TurnInProgress:
@@ -301,7 +332,7 @@ async def post_turn(session_id: SessionId, request: Request,
         attachments=tuple(Attachment(a.kind, a.mime, base64.b64encode(a.data).decode("ascii"), a.name)
                           for a in attachments),
         settings=call_settings(body.settings),
-        doc_id=body.context.doc_id, timezone=body.context.timezone)
+        doc_id=body.context.doc_id, timezone=body.context.timezone, project_id=project_id)
     events = run_turn(req, claim, router=llm, cfg=cfg, deployment_budget=budget)
     return _EagerCloseStreamingResponse(_sse(events), turn=events, abandon=lambda: abandon_turn(req, claim),
                                         media_type="text/event-stream",

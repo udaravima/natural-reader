@@ -324,8 +324,9 @@ async def test_the_rules_say_how_a_prefetched_search_appears_when_prefetch_runs(
 
 
 def test_the_tool_result_shape_is_shared_with_execute():
+    from server.chat.project_scope import ScopeDoc
     from server.chat.tools.search_documents import passages_result
-    out = passages_result("q", [DOC], [{"ref": 1, "page": 2, "text": "t"}])
+    out = passages_result("q", [ScopeDoc(1, DOC, "Thesis.pdf", True)], [{"ref": 1, "page": 2, "text": "t"}])
     assert out == {"query": "q", "documents": [{"ref": 1, "name": "Thesis.pdf"}],
                    "passages": [{"ref": 1, "page": 2, "text": "t"}]}
 

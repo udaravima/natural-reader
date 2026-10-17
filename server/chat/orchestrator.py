@@ -2,12 +2,13 @@
 
 run_turn is an async generator of event dicts (spec §6); routers/chat_turns.py
 frames them as SSE. Per step: stream one model call; if it asked for tools, run
-them and go again; after CHAT_MAX_TOOL_ROUNDS rounds, one last step with tools
-OFF, so the turn always ends in an answer (the OpenAI Agents SDK max_turns
-idea). Provider and tool failures become an `error` event or a tool error the
-model sees; they never escape. A disconnect (the Stop button, a closed tab)
-arrives as cancellation: the partial reply is saved `aborted` and the claim is
-released, even though the task is being torn down (spec §5.4).
+them and go again; after CHAT_MAX_TOOL_ROUNDS rounds (CHAT_PROJECT_MAX_TOOL_ROUNDS
+in a project chat), one last step with tools OFF, so the turn always ends in
+an answer (the OpenAI Agents SDK max_turns idea). Provider and tool failures
+become an `error` event or a tool error the model sees; they never escape. A
+disconnect (the Stop button, a closed tab) arrives as cancellation: the
+partial reply is saved `aborted` and the claim is released, even though the
+task is being torn down (spec §5.4).
 """
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ from ..services.doc_search import ReadableDoc, readable_doc
 from . import store
 from .config import ChatConfig
 from .context import TurnInput, build_context
+from .project_scope import ProjectScope, load_project_scope
 from .sources import answer_sources
 from .store import TurnClaim, title_from_prompt
 from .tools import ToolContext, TurnTools, available_tools, result_text
@@ -96,6 +98,9 @@ class TurnRequest:
     settings: CallSettings
     doc_id: str | None
     timezone: str | None
+    # A project chat (C2.1 spec §5.1): access checked by the route this turn.
+    # The document tools then read the project's documents, not the open one.
+    project_id: str | None = None
 
 
 @dataclass
@@ -224,7 +229,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                  userMessageId=claim.user_message_id, messageId=claim.assistant_message_id)
         await _log_sent(claim, req)
         caps = await _capabilities(router, req.model_id)
-        doc = await _open_doc(req)
+        project = await _project_scope(req) if req.project_id else None
+        doc = None if req.project_id else await _open_doc(req)
         pins, history = await store.load_turn_context(
             claim.session_id, exclude=(claim.user_message_id, claim.assistant_message_id))
         # One primary-key read per turn: right across several workers, and an
@@ -233,13 +239,14 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             profile = await assistant_profile.load_profile(conn)
         # Tools first: the system rules describe exactly the tools this turn
         # offers (server/chat/prompt.py), so none is ever named in vain.
-        tool_ctx = ToolContext(req.user_id, doc, cfg=cfg)
+        tool_ctx = ToolContext(req.user_id, doc, cfg=cfg, project=project, question=req.text)
         offered = [] if caps.tools is False else available_tools(tool_ctx)
+        max_rounds = cfg.project_max_tool_rounds if req.project_id else cfg.max_tool_rounds
         built = await build_context(TurnInput(
             user_id=req.user_id, text=req.text, attachments=req.attachments, doc=doc,
             timezone=req.timezone, pins=pins, history=history,
             window=_window(router, req, caps), now=datetime.now(timezone.utc),
-            tools=tuple(offered if cfg.max_tool_rounds > 0 else ()), tool_ctx=tool_ctx,
+            tools=tuple(offered if max_rounds > 0 else ()), tool_ctx=tool_ctx,
             profile=profile.text), cfg)
         tool_ctx.shown.update(built.shown_chunk_ids)
         # Document text the model already has: the web search guard's reference.
@@ -285,7 +292,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                 return
             state.steps += 1
             step = state.steps
-            tools_now = offered if rounds < cfg.max_tool_rounds else []
+            tools_now = offered if rounds < max_rounds else []
             # rounds > 0: "max-steps" means a tool round actually ran and got
             # capped, not merely that CHAT_MAX_TOOL_ROUNDS=0 kept tools off
             # from the first step (fix round 1, item 3).
@@ -378,7 +385,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                              f"{len(calls)} tool call{'s' if len(calls) > 1 else ''}")
             # The last round says so in its results: the next step offers no
             # tools, and the rules (stable for the turn) can't say that.
-            last_round = rounds >= cfg.max_tool_rounds
+            last_round = rounds >= max_rounds
             for call in calls:
                 yield ev("tool-input-available", toolCallId=call.id, toolName=call.name, input=call.arguments,
                          round=rounds)
@@ -394,9 +401,12 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             await _save(claim, state)
         # v2.4 Task D: the pages the answer drew on, as source chips, even when
         # the model wrote no "(page N)". Pins aren't evidence here: a pin may
-        # come from another document than the open one these chips open.
-        if doc is not None and tool_ctx.evidence:
-            pages, kind = answer_sources(state.content, tool_ctx.evidence)
+        # come from another document than the open one these chips open. The
+        # chips open ONE document, so a project turn has none yet (ruling R3).
+        evidence = ([(page, text) for doc_id, page, text in tool_ctx.evidence if doc_id == doc.doc_id]
+                    if req.project_id is None and doc is not None else [])
+        if evidence:
+            pages, kind = answer_sources(state.content, evidence)
             if pages:
                 note = {"kind": "sources", "docId": doc.doc_id, "docName": doc.name, "pages": pages,
                         "used": kind == "used"}
@@ -572,6 +582,13 @@ def _window(router: Any, req: TurnRequest, caps: Capabilities) -> int | None:
     if req.settings.num_ctx and router.provider_kind(req.model_id) == "ollama":
         return req.settings.num_ctx
     return caps.context_window
+
+
+async def _project_scope(req: TurnRequest) -> ProjectScope:
+    """The project's documents. Not caught: a project turn without them would
+    answer as if the project were empty."""
+    async with get_pool().connection() as conn:
+        return await load_project_scope(conn, req.user_id, req.project_id, open_doc_id=req.doc_id)
 
 
 async def _open_doc(req: TurnRequest) -> ReadableDoc | None:

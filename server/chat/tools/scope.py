@@ -1,23 +1,57 @@
-"""The documents the document tools may read this turn, in `ref` order
-(ref = position + 1). This slice: the one open, indexed document. C2 widens
-it (a project, the library) here, for every document tool at once."""
+"""The documents the document tools may read this turn, in `ref` order: a
+project chat's searchable documents (C2.1), else the one open, indexed
+document as ref 1. Widening the scope happens here, for every document tool
+at once."""
 from __future__ import annotations
 
-from ...services.doc_search import ReadableDoc
+from typing import Any
+
+from ..project_scope import ScopeDoc
 from ..prompt import display_name, version_note_text
 
 
-def document_scope(ctx) -> list[ReadableDoc]:
-    return [ctx.doc] if ctx is not None and ctx.doc is not None and ctx.doc.state == "indexed" else []
+def scope_docs(ctx) -> list[ScopeDoc]:
+    if ctx is None:
+        return []
+    if ctx.project is not None:
+        return list(ctx.project.searchable)
+    if ctx.doc is not None and ctx.doc.state == "indexed":
+        return [ScopeDoc(1, ctx.doc, display_name(ctx.doc.name), True)]
+    return []
 
 
-def documents_listing(scope: list[ReadableDoc]) -> list[dict]:
+def resolve_document(scope: list[ScopeDoc], value: Any) -> ScopeDoc | None:
+    """The document a tool argument names: its ref (2, "2"; 2.0 from small
+    models), or its exact name, compared case-insensitively."""
+    ref = None
+    if isinstance(value, int) and not isinstance(value, bool):
+        ref = value
+    elif isinstance(value, float) and value.is_integer():
+        ref = int(value)
+    elif isinstance(value, str) and value.strip().isdigit():
+        ref = int(value.strip())
+    if ref is not None:
+        found = next((d for d in scope if d.ref == ref), None)
+        if found is not None or not isinstance(value, str):
+            return found
+    if isinstance(value, str):   # also a name that is all digits ("2024")
+        key = value.strip().casefold()
+        return next((d for d in scope if d.name.casefold() == key), None)
+    return None
+
+
+def documents_listing(scope: list[ScopeDoc]) -> list[dict]:
     """How a result names its documents: a short ref plus the reader's name,
     and a version note when the document is an old version (V1 spec §7)."""
     items = []
-    for ref, d in enumerate(scope, start=1):
-        item = {"ref": ref, "name": display_name(d.name)}
-        if d.version_note:
-            item["version_note"] = version_note_text(d.version_note)
+    for d in scope:
+        item = {"ref": d.ref, "name": d.name}
+        if d.doc.version_note:
+            item["version_note"] = version_note_text(d.doc.version_note)
         items.append(item)
     return items
+
+
+def choices_text(scope: list[ScopeDoc]) -> str:
+    """The valid documents, for an error the model can recover from."""
+    return ", ".join(f"{d.ref} {d.name}" for d in scope)
