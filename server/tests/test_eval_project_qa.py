@@ -4,11 +4,12 @@ parts here are pure."""
 from __future__ import annotations
 
 import re
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import pytest
 
 from server.evals import project_qa as pq
+from server.evals import doc_qa
 from server.evals.doc_qa import has_term
 from server.services import extract
 
@@ -247,6 +248,28 @@ def test_named_doc_passes_when_only_that_document_is_cited():
     assert not both.passed and both.wrong_docs == {"README.md"}
 
 
+@pytest.mark.parametrize("name,other", [("user-guide-pins", "ARCHITECTURE.md"),
+                                        ("deployment-uploads", "IDENTITY_AND_ROLES.md")])
+def test_a_named_doc_case_cites_only_that_document(name, other):
+    """Spec section 9: "cites only that document" - any other document is wrong, listed as forbidden or not."""
+    case = next(c for c in pq.CASES if c.name == name)
+    assert other not in case.forbid_docs
+    own = case.docs[0]
+    fact = "pins go with each message and the nginx setting client_max_body_size 100m"
+    ok = _score(case, f"{fact} ({own}, page 3) ({own}, page 4).")
+    assert ok.passed and not ok.wrong_docs
+    mixed = _score(case, f"{fact} ({own}, page 3) ({other}, page 1).")
+    assert not mixed.passed and mixed.wrong_docs == {other}
+    assert mixed.fact and mixed.cited
+
+
+def test_other_kinds_still_allow_an_unlisted_document():
+    """Only a named-doc case reads "cites only that document"; elsewhere extra documents are fine."""
+    case = next(c for c in pq.CASES if c.name == "session-lifetimes")
+    r = _score(case, "168 and 12 (ARCHITECTURE.md, page 3) (USER_GUIDE.md, page 1).")
+    assert r.passed and not r.wrong_docs
+
+
 def test_balance_needs_the_short_document_cited():
     case = _case("balance")
     assert case.docs == ("DOCS_INDEX.md",)
@@ -396,3 +419,68 @@ def test_the_report_tallies_repeats_by_kind():
     code = _case("code")
     runs = [[_score(code, "./startup.sh start (README.md, page 3)")], [_score(code, "nope")]]
     assert "code 1/2" in pq.format_report(runs, model="m", variant="9")
+
+
+# ---- the fields of doc_qa.Result, and the cases that can't be asked ----
+
+def test_result_keeps_every_field_of_the_single_document_result_with_its_default():
+    single, project = {f.name: f for f in fields(doc_qa.Result)}, {f.name: f for f in fields(pq.Result)}
+    assert single.keys() <= project.keys()
+    for name in single.keys() - {"case", "answer"}:
+        assert project[name].default == single[name].default, name
+        assert (project[name].default_factory is single[name].default_factory) or (
+            project[name].default_factory() == single[name].default_factory()), name
+    assert {"cited_docs", "wrong_docs", "web_calls", "offered"} <= project.keys()
+
+
+def test_live_and_gap_cases_are_skipped_when_web_search_is_not_offered():
+    for kind in ("live", "gap-general"):
+        case = _case(kind)
+        r = _score(case, "The documents don't cover RHEL.", web_offered=False)
+        assert r.skipped == "web search not offered" and not r.passed and r.error is None
+    # Nothing else needs the web.
+    r = _score(_case("code"), "./startup.sh start (README.md, page 3).", web_offered=False)
+    assert r.skipped is None and r.passed
+
+
+def test_a_skipped_case_is_reported_as_skipped_and_left_out_of_the_totals():
+    skipped = _score(_case("live"), "", web_offered=False)
+    passed = _score(_case("code"), "./startup.sh start (README.md, page 3).")
+    report = pq.format_report([[skipped, passed]], model="m", variant="9")
+    lines = report.splitlines()
+    assert any(l.startswith("SKIP") and "skipped: web search not offered" in l for l in lines)
+    assert lines[-1] == "1/1 passed (1 skipped)"
+    report = pq.format_report([[skipped], [skipped]], model="m", variant="9")
+    assert "tally:" in report and "live" not in report.split("tally:")[1].splitlines()[0]
+    assert report.splitlines()[-1] == "0/0 passed (2 skipped)"
+
+
+def test_an_error_beats_a_skip():
+    r = _score(_case("live"), "", error="provider_error", web_offered=False)
+    assert r.error == "provider_error" and r.skipped is None
+
+
+def test_a_right_answer_without_a_trail_is_marked():
+    case = _case("code")
+    answer = "./startup.sh start (README.md, page 3)."
+    bare = _score(case, answer)
+    assert bare.passed and bare.trail is False
+    assert "PASS (no trail)" in pq.format_report([[bare]], model="m", variant="9")
+    for r in (_score(case, answer, [{"toolName": "search_documents", "round": 1}]),
+              _score(case, answer, [{"toolName": "extract_from_documents", "round": 1}]),
+              _score(case, answer, prefetched=True)):
+        assert r.trail is True
+        assert "PASS (no trail)" not in pq.format_report([[r]], model="m", variant="9")
+    # Looking only at the map is not a trail through the documents; neither does a case without documents have one.
+    assert _score(case, answer, [{"toolName": "document_outline", "round": 1}]).trail is False
+    assert _score(_case("live"), "I can search.", offered=True).trail is None
+
+
+def test_inline_citations_chips_and_gap_pages_are_recorded():
+    case = next(c for c in pq.CASES if c.name == "session-lifetimes")
+    inline = _score(case, "168 and 12 (ARCHITECTURE.md, page 3).", chip_pages=[4, 3, 3])
+    assert inline.cited_inline and inline.chip_pages == [3, 3, 4]
+    assert not _score(case, "168 and 12 (ARCHITECTURE.md, page 4).").cited_inline
+    gap = _score(_case("gap-general"), "On RHEL 9 use dnf (README.md, page 5) (DEPLOYMENT.md, page 2).", offered=True)
+    assert gap.invented_pages == {2, 5} and gap.paged_gap
+    assert _score(_case("gap-general"), "The documents don't cover RHEL.", offered=True).invented_pages == set()

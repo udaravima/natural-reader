@@ -31,6 +31,7 @@ from .doc_qa import has_term, is_refusal
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "project_docs"
 
 WEB_TOOLS = {"web_search", "read_web_pages"}   # any of these ran: a web request left the server
+DOC_TOOLS = {"search_documents", "read_document_pages", "extract_from_documents"}   # a trail through the documents
 OVERVIEW_MIN_DOCS = 3          # an overview cites at least this many distinct documents (spec section 9)
 OVERVIEW_TERM_SHARE = 2 / 3    # ... and mentions at least this share of its listed features
 
@@ -46,6 +47,7 @@ class Case:
                                # (gap-general: expect[0] is the outside term)
     docs: tuple[str, ...]      # documents a right answer cites, each at least once
     forbid_docs: tuple[str, ...] = ()   # documents a right answer never cites
+                                        # (a named-doc case: every document but its own, whatever is listed here)
     setup: tuple[str, ...] = ()         # earlier user turns, asked first in the same chat
     web: str = "ask"                    # the chat's web-search mode for this case
     pages: tuple[tuple[str, int], ...] = ()   # (document, page) citations a right answer includes
@@ -204,9 +206,9 @@ def cited_docs(answer: str, names: list[str]) -> dict[str, set[int]]:
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+|\n+")
 
 
-def _cites_in_a_sentence_with(answer: str, names: list[str], term: str) -> bool:
-    """A document cited inside a sentence that mentions `term`. A citation never splits a sentence,
-    even when a name holds a full stop and a space."""
+def _pages_cited_in_sentences_with(answer: str, names: list[str], term: str) -> set[int]:
+    """The pages cited, as `(Name, page N)`, inside sentences that mention `term`. A citation never splits a
+    sentence, even when a name holds a full stop and a space."""
     pattern = _citation_pattern(names)
     cites = list(pattern.finditer(answer)) if pattern else []
     masked = list(answer)
@@ -217,44 +219,66 @@ def _cites_in_a_sentence_with(answer: str, names: list[str], term: str) -> bool:
         spans.append((start, b.start()))
         start = b.end()
     spans.append((start, len(answer)))
-    return any(has_term(answer[a:b], term) and any(a <= m.start() < b for m in cites) for a, b in spans)
+    return {int(m.group(2)) for a, b in spans if has_term(answer[a:b], term)
+            for m in cites if a <= m.start() < b and int(m.group(2)) >= 1}
 
 
 @dataclass
 class Result:
+    """The fields of doc_qa.Result, with their meaning, then this evaluation's own."""
     case: Case
     answer: str
     tools: list[str] = field(default_factory=list)
     rounds: int = 0
-    fact: bool | None = None          # every expected term is in the answer
+    fact: bool | None = None          # every expected term is in the answer (an overview: enough of them)
     cited: bool | None = None         # every document the case names is cited (an overview: enough documents)
-    pages_ok: bool | None = None      # every (document, page) the case lists is cited
+    cited_inline: bool | None = None  # ... and every listed page, by the model itself, as "(Name, page N)"
+    chip_pages: list[int] = field(default_factory=list)   # the source chips the app showed: recorded, not scored
     refused: bool | None = None       # gap-general: says the documents don't cover it
-    paged_gap: bool = False           # gap-general: a document cited in a sentence about the outside term
-    cited_docs: set[str] = field(default_factory=set)
-    wrong_docs: set[str] = field(default_factory=set)   # cited, and forbidden (or padding)
-    web_calls: int = 0
-    offered: bool = False             # the turn ended with the offer to search the web
+    invented_pages: set[int] = field(default_factory=set)   # gap-general: pages cited for the part they don't cover
+    invented_figure: bool = False     # not scored here: a gap answer rightly gives the documents' own version numbers
     error: str | None = None          # the turn ended in an error event: not the model's answer
     passed: bool = False
     seconds: float = 0.0              # the case question's turn, wall clock
+    trail: bool | None = None         # a document tool ran, or prefetch supplied passages
+    skipped: str | None = None        # why the case couldn't be asked on this deployment
+    pages_ok: bool | None = None      # every (document, page) the case lists is cited
+    cited_docs: set[str] = field(default_factory=set)
+    wrong_docs: set[str] = field(default_factory=set)   # cited, and not the right one (see score)
+    web_calls: int = 0
+    offered: bool = False             # the turn ended with the offer to search the web
+
+    @property
+    def paged_gap(self) -> bool:
+        """gap-general: a document was cited in a sentence about the part they don't cover."""
+        return bool(self.invented_pages)
 
 
 def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], names: list[str], *,
-          offered: bool, error: str | None = None) -> Result:
+          offered: bool, error: str | None = None, prefetched: bool = False, web_offered: bool = True,
+          chip_pages: list[int] | None = None) -> Result:
     """`tool_calls`: the turn's tool-input-available events ({toolName, round}); {"name": ...} is read too.
     `names`: every document of the project, so the citations can be read. `offered`: the turn
-    ended with an offer to search the web (the data-web-offer event)."""
+    ended with an offer to search the web (the data-web-offer event). `prefetched`: the app searched the
+    documents before the model ran. `web_offered`: web search is configured here; without it the live and
+    gap-general cases can't be asked (no offer is possible), and are skipped."""
     tools = [c.get("toolName") or c.get("name") for c in tool_calls]
     result = Result(case, answer, tools, max((c.get("round") or 0 for c in tool_calls), default=0),
                     web_calls=sum(t in WEB_TOOLS for t in tools), offered=offered, error=error)
+    result.chip_pages = sorted(chip_pages or [])
     if error:
+        return result
+    if case.kind in ("live", "gap-general") and not web_offered:
+        result.skipped = "web search not offered"
         return result
     # A padding document is never the right one to cite, and a case may name documents the runner left out.
     known = list(dict.fromkeys([*names, *case.docs, *case.forbid_docs, *sorted(_padding_names())]))
     pages = cited_docs(answer, known)
     result.cited_docs = set(pages)
-    result.wrong_docs = result.cited_docs & (set(case.forbid_docs) | _padding_names())
+    if _scoring_kind(case) == "named-doc":
+        result.wrong_docs = result.cited_docs - set(case.docs)      # "cites only that document"
+    else:
+        result.wrong_docs = result.cited_docs & (set(case.forbid_docs) | _padding_names())
     result.fact = sum(has_term(answer, term) for term in case.expect) >= _terms_needed(case)
     result.cited = set(case.docs) <= result.cited_docs and (
         _scoring_kind(case) != "overview" or len(result.cited_docs) >= OVERVIEW_MIN_DOCS)
@@ -263,17 +287,21 @@ def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], names: list
         result.passed = offered and result.web_calls == 0
     elif case.kind == "gap-general":
         result.refused = is_refusal(answer)
-        result.paged_gap = _cites_in_a_sentence_with(answer, known, case.expect[0])
-        result.passed = (result.fact and result.refused and not result.paged_gap and not result.wrong_docs
+        result.invented_pages = _pages_cited_in_sentences_with(answer, known, case.expect[0])
+        result.passed = (result.fact and result.refused and not result.invented_pages and not result.wrong_docs
                          and offered)
     else:
+        result.cited_inline = result.cited and result.pages_ok
         result.passed = result.fact and result.cited and result.pages_ok and not result.wrong_docs
+        result.trail = bool(DOC_TOOLS & set(tools)) or prefetched
     return result
 
 
 def _detail(r: Result) -> str:
     if r.error:
         return f"the turn failed ({r.error}): fix the setup, this says nothing about the model"
+    if r.skipped:
+        return f"skipped: {r.skipped}"
     case = r.case
     if case.kind == "live":
         return ("offered the search" if r.offered else "no offer") + f"; {r.web_calls} web calls"
@@ -289,7 +317,7 @@ def _detail(r: Result) -> str:
     if case.kind == "gap-general":
         parts.append("said the documents don't cover it" if r.refused else "didn't say the documents don't cover it")
         if r.paged_gap:
-            parts.append("cited a page for the part they don't cover")
+            parts.append(f"cited pages {sorted(r.invented_pages)} for the part they don't cover")
         parts.append("offered the search" if r.offered else "no offer")
     if _scoring_kind(case) == "overview":
         parts.append(f"{len(r.cited_docs)} documents cited (need {OVERVIEW_MIN_DOCS})")
@@ -305,7 +333,14 @@ def _detail(r: Result) -> str:
 
 
 def _verdict(r: Result) -> str:
-    return "ERROR" if r.error else "PASS" if r.passed else "FAIL"
+    if r.error:
+        return "ERROR"
+    if r.skipped:
+        return "SKIP"
+    if not r.passed:
+        return "FAIL"
+    # Right, but without the journey: the model got there from memory or luck.
+    return "PASS (no trail)" if r.trail is False else "PASS"
 
 
 def format_report(runs: list[list[Result]], *, model: str, variant: str) -> str:
@@ -319,17 +354,19 @@ def format_report(runs: list[list[Result]], *, model: str, variant: str) -> str:
             lines.append(f"{_verdict(r):<5} {r.case.kind:<14} {r.case.name:<22} {r.seconds:.1f}s rounds={r.rounds} "
                          f"tools={tools}  {_detail(r)}")
     every = [r for results in runs for r in results]
+    asked = [r for r in every if not r.skipped]
     if len(runs) > 1:
         tally: dict[str, tuple[int, int]] = {}
-        for r in every:
+        for r in asked:
             n, p = tally.get(r.case.kind, (0, 0))
             tally[r.case.kind] = (n + 1, p + r.passed)
         lines.append("tally: " + ", ".join(f"{k} {p}/{n}" for k, (n, p) in tally.items()))
-    answered = [r for r in every if not r.error
+    answered = [r for r in asked if not r.error
                 and (r.case.docs or r.case.forbid_docs or _scoring_kind(r.case) == "overview")]
     if answered:
         right = sum(bool(r.cited) and not r.wrong_docs for r in answered)
         lines.append(f"right-document citations {right}/{len(answered)}")
     lines.append(f"web calls {sum(r.web_calls for r in every)}")
-    lines.append(f"{sum(r.passed for r in every)}/{len(every)} passed")
+    skipped = len(every) - len(asked)
+    lines.append(f"{sum(r.passed for r in asked)}/{len(asked)} passed" + (f" ({skipped} skipped)" if skipped else ""))
     return "\n".join(lines)
