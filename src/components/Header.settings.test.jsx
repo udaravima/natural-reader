@@ -34,4 +34,33 @@ describe('Header — settings + profile', () => {
     render(<Header {...baseProps()} />);
     expect(screen.getByRole('button', { name: /account/i })).toBeInTheDocument();
   });
+
+  // The narration keeps playing outside the reader, so it needs controls there.
+  const held = { held: true, docName: 'book.pdf', currentPage: 3, numPages: 9, pausedForChat: false };
+
+  it('outside the reader, a held narration shows its own pause, stop and way back', () => {
+    const on = { handlePlayPause: vi.fn(), stopPlayback: vi.fn(), setViewMode: vi.fn() };
+    render(<Header {...baseProps({ viewMode: 'chat', hasDocument: true, isPlaying: true, narration: held, ...on })} />);
+    const group = screen.getByRole('group', { name: 'Narration' });
+    expect(group).toHaveTextContent('book.pdf · p. 3/9');
+    fireEvent.click(screen.getByRole('button', { name: 'Pause the narration' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop the narration' }));
+    fireEvent.click(screen.getByTitle('Back to the page being read'));
+    expect(on.handlePlayPause).toHaveBeenCalledTimes(1);
+    expect(on.stopPlayback).toHaveBeenCalledTimes(1);
+    expect(on.setViewMode).toHaveBeenCalledWith('reader');
+  });
+
+  it('says when the narration is paused for a chat reply', () => {
+    render(<Header {...baseProps({ viewMode: 'library', hasDocument: true, narration: { ...held, pausedForChat: true } })} />);
+    expect(screen.getByRole('group', { name: 'Narration' })).toHaveTextContent('Paused for the reply');
+    expect(screen.getByRole('button', { name: 'Resume the narration' })).toBeInTheDocument();
+  });
+
+  it('shows no narration control in the reader (its own controls are there) or with none held', () => {
+    const { rerender } = render(<Header {...baseProps({ viewMode: 'reader', hasDocument: true, narration: held })} />);
+    expect(screen.queryByRole('group', { name: 'Narration' })).toBeNull();
+    rerender(<Header {...baseProps({ viewMode: 'chat', hasDocument: true, narration: { ...held, held: false } })} />);
+    expect(screen.queryByRole('group', { name: 'Narration' })).toBeNull();
+  });
 });

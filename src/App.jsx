@@ -324,13 +324,12 @@ export default function App() {
     apiHost, apiPort, requestTimeout, unlimitedBatchTimeout,
     backendAvailable, pdfFileName,
     setStatus, showToast,
-    enabled: !inChat && !inAdmin && !inLibrary && !inSettings,
   });
 
   const {
     isPlaying, isDownloading, isReadingSelection, isPreviewingVoice,
-    downloadingMessageId, bookProgress,
-    handlePlayPause, stopPlayback, skipToNextSentence,
+    downloadingMessageId, bookProgress, pausedForChat, narrationHeld,
+    handlePlayPause, pauseNarration, stopPlayback, skipToNextSentence,
     readSelection, stopSelectionRead,
     previewVoice, stopVoicePreview, downloadPageAudio, downloadTextAudio,
     downloadBookAudio, cancelBookDownload, clearCache,
@@ -385,22 +384,33 @@ export default function App() {
     setSelectedModel(next);
   }, [availableModels, selectedModel, setSelectedModel, setInferenceByModel]);
 
+  // A reply keeps streaming, and keeps being read aloud, whichever view is
+  // open: the chat engine lives here, not in ChatView. One voice at a time:
+  // a reply read aloud pauses the narration (useTtsEngine), and starting the
+  // narration stops the reply's read-aloud.
+  const narrationPlayPause = () => {
+    if (!isPlaying) stopSpeaking();
+    handlePlayPause();
+  };
+
+  // Opening another document pauses the narration. It used to stop on its
+  // own, because the Library (where most opens start) switched it off; now
+  // that it plays in every view, it would carry on into the new document.
+  const narratedLoadRef = useRef(docLoadId);
+  useEffect(() => {
+    if (narratedLoadRef.current === docLoadId) return;
+    narratedLoadRef.current = docLoadId;
+    pauseNarration();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docLoadId]);
+
   useKeyboardShortcuts({
-    handlePlayPause, stopPlayback, skipToNextSentence,
+    handlePlayPause: narrationPlayPause, stopPlayback, skipToNextSentence,
     setCurrentSentenceIndex, setCurrentPage, setScale, setDarkMode,
     setDistractionFree,
     numPages,
     viewMode,
   });
-
-  // Stop chat audio + abort any in-flight stream when leaving chat mode.
-  useEffect(() => {
-    if (!inChat) {
-      chatStopStream();
-      stopChatPlayback();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inChat]);
 
   // True when any document (PDF, .txt, or .md) is loaded — used as a gate by UI
   // bits that don't care about file type. pdfDoc stays the source of truth for
@@ -513,6 +523,7 @@ export default function App() {
 
   const handleMobileSentenceClick = (index) => {
     setCurrentSentenceIndex(index - 1);
+    stopSpeaking();
     ttsEngine.setIsPlaying(true);
     if (effectiveIsMobile) setSidebarOpen(false);
   };
@@ -525,6 +536,7 @@ export default function App() {
   const continueFromHere = (sentenceIndex) => {
     setCurrentSentenceIndex(sentenceIndex - 1);
     playbackIndexRef.current = sentenceIndex - 1;
+    stopSpeaking();
     ttsEngine.setIsPlaying(true);
     setContextMenu(null);
     setStatus(`Starting from sentence ${sentenceIndex + 1}`);
@@ -1110,7 +1122,7 @@ export default function App() {
           sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen}
           showShortcuts={showShortcuts} setShowShortcuts={setShowShortcuts}
           fileInputRef={fileInputRef}
-          handlePlayPause={handlePlayPause}
+          handlePlayPause={narrationPlayPause}
           stopPlayback={stopPlayback}
           skipToNextSentence={skipToNextSentence}
           skipToPrevSentence={skipToPrevSentence}
@@ -1128,6 +1140,7 @@ export default function App() {
           onCloseWorkspace={() => { setOwnedWorkspace(null); setWorkspaceEntryPath(null); clearWorkspaceState(); }}
           user={auth.user}
           onLogout={auth.logout}
+          narration={{ held: narrationHeld, docName: pdfFileName, currentPage, numPages, pausedForChat }}
         />
       )}
 
@@ -1336,7 +1349,7 @@ export default function App() {
           currentSentenceIndex={currentSentenceIndex}
           textItems={textItems}
           isPlaying={isPlaying}
-          handlePlayPause={handlePlayPause}
+          handlePlayPause={narrationPlayPause}
           skipToNextSentence={skipToNextSentence}
           skipToPrevSentence={skipToPrevSentence}
           goToNextPage={goToNextPage}
@@ -1353,7 +1366,7 @@ export default function App() {
           hasDocument={hasDocument}
           inChat={inChat}
           isPlaying={isPlaying}
-          handlePlayPause={handlePlayPause}
+          handlePlayPause={narrationPlayPause}
           skipToNextSentence={skipToNextSentence}
           skipToPrevSentence={skipToPrevSentence}
           currentPage={currentPage}

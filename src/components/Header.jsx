@@ -6,6 +6,7 @@ import {
 import HeaderOverflowMenu from './HeaderOverflowMenu';
 import ProfileMenu from './ProfileMenu';
 import ViewSwitcher from './ViewSwitcher';
+import NarrationMiniPlayer from './NarrationMiniPlayer';
 
 export default function Header({
     theme,
@@ -44,6 +45,9 @@ export default function Header({
     onCloseWorkspace,
     user,
     onLogout,
+    // { held, docName, currentPage, numPages, pausedForChat }: the narration
+    // outside the reader (NarrationMiniPlayer).
+    narration = null,
 }) {
     const isExportingBook = !!bookProgress;
     // Reader-only chrome (playback, downloads, overflow menu, upload) shows
@@ -112,6 +116,21 @@ export default function Header({
                     <Square size={16} fill="currentColor" />
                 </button>
             </div>
+            )}
+
+            {/* NARRATION — outside the reader, while it has a place in the document */}
+            {!inReader && hasDocument && narration?.held && (
+                <NarrationMiniPlayer
+                    theme={theme}
+                    docName={narration.docName}
+                    currentPage={narration.currentPage}
+                    numPages={narration.numPages}
+                    isPlaying={isPlaying}
+                    pausedForChat={narration.pausedForChat}
+                    onPlayPause={handlePlayPause}
+                    onStop={stopPlayback}
+                    onShowReader={() => setViewMode('reader')}
+                />
             )}
 
             {/* RIGHT CONTROLS */}

@@ -36,7 +36,7 @@ describe('reader audio blob URLs', () => {
         playbackIndexRef: { current: -1 }, currentPage: 1, setCurrentPage: vi.fn(), numPages: 1,
         selectedVoice: 'v', playbackSpeed: 1, isLocalhost: true, volume: 1, apiHost: '', apiPort: '',
         requestTimeout: 30, unlimitedBatchTimeout: false, backendAvailable: true, pdfFileName: 'a.pdf',
-        setStatus: vi.fn(), showToast: vi.fn(), enabled: true,
+        setStatus: vi.fn(), showToast: vi.fn(),
     });
 
     it('keeps the loaded URL through its end and a page/document change; revokes it when replaced or on unmount', async () => {

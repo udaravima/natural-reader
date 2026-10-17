@@ -7,6 +7,11 @@ import { concatWavs } from '../utils/wavConcat';
 /**
  * Manages TTS playback engine: audio caching, buffering, playback loop,
  * voice preview, selection reading, and audio download.
+ *
+ * Narration keeps playing in every view (chat, library, admin): the page text
+ * comes from the document, not the on-screen canvas, so the loop turns pages
+ * with the reader unmounted. One voice at a time: a chat reply read aloud
+ * pauses the narration (pausedForChat says so; Read resumes it).
  */
 export function useTtsEngine({
     textItems,
@@ -25,9 +30,15 @@ export function useTtsEngine({
     backendAvailable,
     pdfFileName,
     setStatus, showToast,
-    enabled = true,
 }) {
     const [isPlaying, setIsPlaying] = useState(false);
+    // True while the narration is paused because a chat reply is being read.
+    const [pausedForChat, setPausedForChat] = useState(false);
+    // True after the user paused the narration with Pause (not Stop): it
+    // still has a place in the document, so its controls stay in view.
+    const [userPaused, setUserPaused] = useState(false);
+    const isPlayingRef = useRef(false);
+    useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
     const [isDownloading, setIsDownloading] = useState(false);
     const [isReadingSelection, setIsReadingSelection] = useState(false);
     const [isPreviewingVoice, setIsPreviewingVoice] = useState(false);
@@ -131,6 +142,18 @@ export function useTtsEngine({
         });
     }, [isLocalhost, selectedVoice, playbackSpeed, volume, requestTimeout, synthesizeText]);
 
+    // One voice at a time: a chat reply about to be read aloud pauses the
+    // narration. Resuming is the reader's own Read button.
+    const pauseReaderForChat = useCallback(() => {
+        if (!isPlayingRef.current) return;
+        isPlayingRef.current = false;
+        setIsPlaying(false);
+        audioRef.current.pause();
+        window.speechSynthesis.cancel();
+        setPausedForChat(true);
+        setStatus('Paused for the chat reply');
+    }, [setStatus]);
+
     const stopChatPlayback = useCallback(() => {
         chatAudioRef.current.pause();
         chatAudioRef.current.currentTime = 0;
@@ -142,18 +165,20 @@ export function useTtsEngine({
     const playChatUrl = useCallback((url) => {
         return new Promise((resolve) => {
             if (!url) { resolve(); return; }
+            pauseReaderForChat();
             chatAudioRef.current.volume = volume;
             chatAudioRef.current.src = url;
             chatAudioRef.current.onended = () => resolve();
             chatAudioRef.current.onerror = () => resolve();
             chatAudioRef.current.play().catch(() => resolve());
         });
-    }, [volume]);
+    }, [volume, pauseReaderForChat]);
 
     // Play a fallback (Web Speech API) utterance; resolves on end/error.
     const playChatSpeech = useCallback((text) => {
         return new Promise((resolve) => {
             if (!text || !text.trim()) { resolve(); return; }
+            pauseReaderForChat();
             const ut = new SpeechSynthesisUtterance(text);
             ut.rate = playbackSpeed;
             ut.volume = volume;
@@ -161,7 +186,7 @@ export function useTtsEngine({
             ut.onerror = () => resolve();
             window.speechSynthesis.speak(ut);
         });
-    }, [playbackSpeed, volume]);
+    }, [playbackSpeed, volume, pauseReaderForChat]);
 
     // --- VOLUME CONTROL ---
     useEffect(() => {
@@ -238,6 +263,8 @@ export function useTtsEngine({
 
     // --- PLAYBACK CONTROLS ---
     const handlePlayPause = () => {
+        setPausedForChat(false);
+        setUserPaused(isPlaying);
         if (isPlaying) {
             setIsPlaying(false);
             audioRef.current.pause();
@@ -248,7 +275,20 @@ export function useTtsEngine({
         }
     };
 
+    // Pause without keeping the narration's controls in view (another
+    // document was opened): unlike Stop, the place in the document stays.
+    const pauseNarration = () => {
+        setPausedForChat(false);
+        setUserPaused(false);
+        if (!isPlaying) return;
+        setIsPlaying(false);
+        audioRef.current.pause();
+        window.speechSynthesis.cancel();
+    };
+
     const stopPlayback = () => {
+        setPausedForChat(false);
+        setUserPaused(false);
         setIsPlaying(false);
         playbackIndexRef.current = -1;
         setCurrentSentenceIndex(-1);
@@ -265,18 +305,9 @@ export function useTtsEngine({
         }
     };
 
-    // Stop reader playback when the engine is disabled (e.g. switching to chat view)
-    useEffect(() => {
-        if (!enabled && isPlaying) {
-            setIsPlaying(false);
-            audioRef.current.pause();
-            window.speechSynthesis.cancel();
-        }
-    }, [enabled, isPlaying]);
-
     // --- MAIN PLAYBACK LOOP ---
     useEffect(() => {
-        if (!enabled || !isPlaying) return;
+        if (!isPlaying) return;
 
         let active = true;
 
@@ -362,7 +393,7 @@ export function useTtsEngine({
 
         return () => { active = false; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isPlaying, textItems, enabled]);
+    }, [isPlaying, textItems]);
 
     // --- SELECTION READING ---
     const readSelection = async () => {
@@ -819,6 +850,10 @@ export function useTtsEngine({
     return {
         // State
         isPlaying, setIsPlaying,
+        pausedForChat,
+        // The narration has a place in the document: playing, or paused by
+        // the user or for a chat reply (not stopped, not finished).
+        narrationHeld: isPlaying || pausedForChat || userPaused,
         isDownloading,
         downloadingMessageId,
         bookProgress,
@@ -827,6 +862,7 @@ export function useTtsEngine({
 
         // Actions
         handlePlayPause,
+        pauseNarration,
         stopPlayback,
         skipToNextSentence,
         readSelection,
