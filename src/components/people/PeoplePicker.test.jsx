@@ -6,9 +6,9 @@ const theme = { bg: '', border: '', text: '', textSecondary: '', textMuted: '', 
 const ann = { id: 'u1', name: 'Ann Lee', username: 'annl', status: 'active' };
 const pen = { id: 'u2', name: 'Pen Pal', username: null, status: 'pending' };
 
-function mount({ lookup = vi.fn(async () => [ann, pen]), excludeIds = [], excludedLabel } = {}) {
+function mount({ lookup = vi.fn(async () => [ann, pen]), excludeIds = [], excludedLabel, searchEveryone } = {}) {
   const onPick = vi.fn();
-  render(<PeoplePicker theme={theme} lookup={lookup} onPick={onPick} excludeIds={excludeIds} excludedLabel={excludedLabel} label="Find a person" />);
+  render(<PeoplePicker theme={theme} lookup={lookup} onPick={onPick} excludeIds={excludeIds} excludedLabel={excludedLabel} searchEveryone={searchEveryone} label="Find a person" />);
   return { lookup, onPick, box: screen.getByLabelText('Find a person') };
 }
 
@@ -84,5 +84,15 @@ describe('PeoplePicker', () => {
     releaseOld();
     await new Promise((r) => setTimeout(r, 20));
     expect(screen.queryByText('Pen Pal')).toBeNull();
+  });
+
+  // An admin's search covers everyone by any part of a name, so the
+  // "type their full email" advice would be wrong for them.
+  it('for an admin, asks for any part of a name and never for a full email', async () => {
+    const { box } = mount({ lookup: vi.fn(async () => []), searchEveryone: true });
+    expect(box.getAttribute('placeholder')).toBe('Name, username or email');
+    fireEvent.change(box, { target: { value: 'an' } });
+    expect(await screen.findByText('Nobody found.')).toBeTruthy();
+    expect(screen.queryByText(/full email/)).toBeNull();
   });
 });

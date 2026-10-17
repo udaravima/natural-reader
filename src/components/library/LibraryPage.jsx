@@ -214,7 +214,7 @@ function NewProjectForm({ theme, busy, onCreate, onCancel }) {
  * The Projects tab lists my projects; a project page manages its documents, members and activity (A0).
  * A project shows only its current version; a row of mine that a project has moved past says so (V1 §6).
  */
-export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProjectsChanged, onOpen, currentUserId }) {
+export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProjectsChanged, onOpen, currentUserId, isAdmin = false }) {
   const [docs, setDocs] = useState(null);
   const [projects, setProjects] = useState(null);
   const [search, setSearch] = useState('');
@@ -420,7 +420,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
         {openProjectId ? (
           <ProjectPage
             theme={theme} apiHost={apiHost} apiPort={apiPort} projectId={openProjectId}
-            currentUserId={currentUserId} showToast={showToast}
+            currentUserId={currentUserId} showToast={showToast} isAdmin={isAdmin}
             onBack={() => setOpenProjectId(null)}
             onChanged={projectsChanged}
             onOpenDoc={onOpen ? openDoc : undefined}
@@ -570,7 +570,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
                   ))}
 
                   {shareDocId === doc.doc_id && (
-                    <ShareDialog theme={theme} api={api} doc={doc} showToast={showToast} onClose={() => setShareDocId(null)} />
+                    <ShareDialog theme={theme} api={api} doc={doc} showToast={showToast} isAdmin={isAdmin} onClose={() => setShareDocId(null)} />
                   )}
 
                   {doc.in_library ? (

@@ -15,7 +15,7 @@ const TABS = [['documents', 'Documents'], ['members', 'Members'], ['activity', '
  * refusal reloads the project, so controls the server no longer allows
  * disappear; a project I can no longer see sends me back with the notice.
  */
-export default function ProjectPage({ theme, apiHost, apiPort, projectId, currentUserId, showToast, onBack, onChanged, onOpenDoc }) {
+export default function ProjectPage({ theme, apiHost, apiPort, projectId, currentUserId, showToast, onBack, onChanged, onOpenDoc, isAdmin = false }) {
   const api = useMemo(() => projectsApi(apiHost, apiPort), [apiHost, apiPort]);
   const [project, setProject] = useState(null);
   const [tab, setTab] = useState('documents');
@@ -158,7 +158,7 @@ export default function ProjectPage({ theme, apiHost, apiPort, projectId, curren
       )}
       {tab === 'members' && (
         <MembersTab theme={theme} api={api} project={project} currentUserId={currentUserId} showToast={showToast}
-          onRefused={reload} onChanged={changed} />
+          onRefused={reload} onChanged={changed} isAdmin={isAdmin} />
       )}
       {tab === 'activity' && <ActivityTab theme={theme} api={api} project={project} />}
     </div>

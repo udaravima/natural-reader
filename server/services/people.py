@@ -6,6 +6,9 @@ USER_DIRECTORY_MODE: `exact` (full email only, the default), `domain`
 USER_DIRECTORY_DOMAINS), `open` (type-ahead over everyone). An exact email
 works in every mode and finds active and pending (awaiting approval)
 accounts; type-ahead lists only active ones; disabled accounts never appear.
+A site admin (the `admin` capability) always gets type-ahead over everyone,
+emails shown and accounts awaiting approval included: the admin console
+already lists all of them, so the directory mode hides nothing from an admin.
 Lookup text is never logged at INFO or above (it is personal data)."""
 from __future__ import annotations
 
@@ -102,10 +105,13 @@ def _result(r, show_email: bool) -> dict:
 
 
 async def lookup(conn, cfg: DirectoryConfig, caller_id: str, caller_email: str,
-                 q: str) -> list[dict]:
+                 q: str, *, everyone: bool = False) -> list[dict]:
+    """`everyone`: the caller is a site admin (see the module docstring)."""
     q = q.strip()
     if len(q) < TYPE_AHEAD_MIN:
         return []
+    if everyone:
+        cfg = DirectoryConfig(mode="open", domains=cfg.domains, show_email=True)
     cols = f"{person_cols('u')}, u.status"
     if "@" in q:
         cur = await conn.execute(
@@ -123,14 +129,17 @@ async def lookup(conn, cfg: DirectoryConfig, caller_id: str, caller_email: str,
         logger.debug("directory lookup: mode=exact, no type-ahead")
         return []
     pattern = _like_prefix(q.lower())
+    # "First Last" typed as one string matches the full name too.
     matches = ["lower(u.first_name) LIKE %s", "lower(u.last_name) LIKE %s",
+               "lower(concat_ws(' ', u.first_name, u.last_name)) LIKE %s",
                "lower(u.display_name) LIKE %s",
                "(lower(u.username) LIKE %s AND (%s OR position('@' in u.username) = 0))"]
-    params: list = [pattern, pattern, pattern, pattern, cfg.show_email]
+    params: list = [pattern, pattern, pattern, pattern, pattern, cfg.show_email]
     if cfg.show_email:
         matches.append("lower(u.email) LIKE %s")
         params.append(pattern)
-    where = f"u.status = 'active' AND u.id <> %s AND ({' OR '.join(matches)})"
+    statuses = "('active', 'pending')" if everyone else "('active')"
+    where = f"u.status IN {statuses} AND u.id <> %s AND ({' OR '.join(matches)})"
     params = [caller_id, *params]
     if mode == "domain":
         where += " AND lower(split_part(u.email, '@', 2)) = %s"

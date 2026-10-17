@@ -1241,6 +1241,7 @@ export default function App() {
             showToast={showToast}
             onOpen={handleOpenLibraryDoc}
             currentUserId={auth.user?.id}
+            isAdmin={canAdmin}
             onProjectsChanged={() => setProjectsVersion((v) => v + 1)}
           />
         ) : inSettings ? (

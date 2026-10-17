@@ -14,4 +14,4 @@ async def lookup_people(q: str = Query("", max_length=200),
                         principal: deps.Principal = Depends(deps.require_capability("reader")),
                         conn=Depends(deps.get_conn, scope="function")):
     return await people.lookup(conn, people.load_directory_config(), principal.user_id,
-                               principal.email, q)
+                               principal.email, q, everyone="admin" in principal.capabilities)

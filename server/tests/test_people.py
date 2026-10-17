@@ -148,3 +148,48 @@ async def test_lookup_route_needs_reader_and_logs_no_query(db_conn, caplog, monk
     # logging_config.DropQueryString filter. This checks this app's own loggers.
     assert not any("secret" in rec.getMessage().lower()
                    for rec in caplog.records if rec.name.startswith("server"))
+
+
+@pytest.mark.asyncio
+async def test_first_and_last_name_typed_together_match(db_conn):
+    me = await _person(db_conn, "me", "me@example.com")
+    await _person(db_conn, "a", "ann@example.com", first="Ann", last="Lee")
+    found = await people.lookup(db_conn, _cfg(mode="open"), me, "me@example.com", "ann l")
+    assert [r["name"] for r in found] == ["Ann Lee"]
+
+
+@pytest.mark.asyncio
+async def test_an_admin_searches_everyone_by_part_of_a_name_whatever_the_mode(db_conn):
+    """The share and add-member pickers: with USER_DIRECTORY_MODE=exact (the
+    default) only a full email finds someone, unless the caller is an admin."""
+    me = await _person(db_conn, "me", "me@example.com")
+    await _person(db_conn, "a", "ann@partner.org", first="Ann", last="Lee")
+    await _person(db_conn, "p", "anna@example.com", first="Anna", status="pending")
+    await _person(db_conn, "d", "andy@example.com", first="Andy", status="disabled")
+    cfg = _cfg(mode="exact")
+    assert await people.lookup(db_conn, cfg, me, "me@example.com", "an") == []
+    found = await people.lookup(db_conn, cfg, me, "me@example.com", "an", everyone=True)
+    assert [(r["name"], r["email"], r["status"]) for r in found] == [
+        ("Ann Lee", "ann@partner.org", "active"), ("Anna", "anna@example.com", "pending")]
+    by_email = await people.lookup(db_conn, cfg, me, "me@example.com", "ann@p", everyone=True)
+    assert [r["name"] for r in by_email] == ["Ann Lee"]
+
+
+@pytest.mark.asyncio
+async def test_the_lookup_route_gives_admins_the_everyone_search(db_conn, monkeypatch):
+    me = await _person(db_conn, "me", "me@example.com")
+    await _person(db_conn, "a", "ann@example.com", first="Ann")
+    monkeypatch.delenv("USER_DIRECTORY_MODE", raising=False)
+    app = FastAPI()
+
+    async def _conn():
+        yield db_conn
+    app.dependency_overrides[deps.get_conn] = _conn
+    app.include_router(people_router.router)
+    got = {}
+    for caps in (frozenset({"reader"}), frozenset({"reader", "admin"})):
+        app.dependency_overrides[deps.get_current_user] = lambda caps=caps: deps.Principal(
+            user_id=me, email="me@example.com", role="member", capabilities=caps)
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            got["admin" in caps] = [p["name"] for p in (await c.get("/v1/users/lookup", params={"q": "an"})).json()]
+    assert got == {False: [], True: ["Ann"]}
