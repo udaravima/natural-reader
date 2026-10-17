@@ -26,7 +26,11 @@ async def create_session(
     return raw
 
 
-async def resolve_session(conn, raw_token: str) -> dict | None:
+async def resolve_session(conn, raw_token: str, *, idle_hours: int = 0) -> dict | None:
+    """The session's user, or None when it is unknown, past its absolute
+    expiry, or unused for more than `idle_hours` (0 = no idle limit;
+    SESSION_IDLE_HOURS). last_seen_at is stamped at most once a minute
+    (touch.TOUCH_EVERY), so idleness is measured to about a minute."""
     # Imported lazily to avoid a users<->sessions import cycle at module load.
     from . import users
 
@@ -40,7 +44,11 @@ async def resolve_session(conn, raw_token: str) -> dict | None:
     if row is None:
         return None
     user_id, expires_at, last_seen_at = row
-    if expires_at <= datetime.now(timezone.utc):
+    now = datetime.now(timezone.utc)
+    if expires_at <= now:
+        return None
+    if idle_hours and last_seen_at is not None and last_seen_at <= now - timedelta(hours=idle_hours):
+        await touch.stamp("DELETE FROM sessions WHERE id = %s", (token_hash,))
         return None
     if touch.due(last_seen_at):
         await touch.stamp(

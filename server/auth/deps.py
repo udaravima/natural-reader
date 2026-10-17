@@ -72,7 +72,7 @@ async def get_current_user(request: Request, conn=Depends(get_conn, scope="funct
     if row is None:
         cookie = request.cookies.get(COOKIE_NAME)
         if cookie:
-            row = await sessions.resolve_session(conn, cookie)
+            row = await sessions.resolve_session(conn, cookie, idle_hours=cfg.session_idle_hours)
     if row is None:
         raise HTTPException(status_code=401, detail="Authentication required")
     if row["status"] != "active":

@@ -100,3 +100,14 @@ async def test_require_capability_403s_without():
         r = await c.get("/needs-chat")
         assert r.status_code == 403
         assert r.json()["detail"] == {"error": "missing_capability", "capability": "chat"}
+
+
+async def test_an_idle_session_cookie_is_401(db_conn, monkeypatch):
+    from server.auth.sessions import create_session
+    monkeypatch.setenv("SESSION_IDLE_HOURS", "1")
+    monkeypatch.setenv("AUTH_ENABLED", "true")
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="s", email="a@x.io")
+    tok = await create_session(db_conn, u["id"])
+    await db_conn.execute("UPDATE sessions SET last_seen_at = now() - interval '2 hours'")
+    r = await _get(_app(db_conn), "/whoami", {"Cookie": f"{deps.COOKIE_NAME}={tok}"})
+    assert r.status_code == 401
