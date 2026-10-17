@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Loader2 } from 'lucide-react';
 
 // Hooks
-import { usePersistedState, migratePersisted } from './hooks/usePersistedState';
+import { usePersistedState, migratePersisted, resetPersisted, runOnce } from './hooks/usePersistedState';
 import { useMobileDetect } from './hooks/useMobileDetect';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useTheme } from './hooks/useTheme';
@@ -16,7 +16,8 @@ import { makePin } from './hooks/pins';
 import { migrateModelId } from './lib/modelIds';
 
 // Constants
-import { resolveForModel, patchForModel, migrateLegacyThinking } from './hooks/inference';
+import { INFERENCE_DEFAULTS, resolveForModel, patchForModel, migrateLegacyThinking, forgetKnob } from './hooks/inference';
+import { useDeploymentDefaults } from './hooks/useDeploymentDefaults';
 
 // Utils
 import { apiFetch } from './utils/apiFetch';
@@ -73,18 +74,34 @@ export default function App() {
   // Same trap, different spelling: '127.0.0.1' is also a cross-origin host for
   // the cookie (localhost ≠ 127.0.0.1), so it needs the same rewrite.
   migratePersisted('apiHost', '127.0.0.1', '');
+  // Until 2.3.x every setting saved its default on first load as if chosen, so
+  // the new defaults (auto-read off, read once the reply is complete) would
+  // never reach an existing browser. Those two forget their stored value once.
+  runOnce('2.4-chat-tts-defaults', () => {
+    resetPersisted('chatAutoTts');
+    resetPersisted('chatTtsMode');
+  });
 
   // --- PERSISTED SETTINGS ---
   const [darkMode, setDarkMode] = usePersistedState('darkMode', false);
   const [volume, setVolume] = usePersistedState('volume', 1.0);
   const [scale, setScale] = usePersistedState('scale', 1.2);
-  const [playbackSpeed, setPlaybackSpeed] = usePersistedState('playbackSpeed', 1.0);
-  const [selectedVoice, setSelectedVoice] = usePersistedState('selectedVoice', 'af_heart');
   const [isLocalhost, setIsLocalhost] = usePersistedState('isLocalhost', true);
   const [apiHost, setApiHost] = usePersistedState('apiHost', '');
   const [apiPort, setApiPort] = usePersistedState('apiPort', '8000');
   const auth = useAuth(apiHost, apiPort);
   const signedInUserId = auth.state === 'active' ? auth.user?.id : null;
+  // Per-model Ollama inference settings (context window, keep-alive, thinking
+  // level, max reply tokens). Keyed by model name because a 9.7B and a 3B want
+  // different context sizes on the same machine.
+  const [inferenceByModel, setInferenceByModel] = usePersistedState('inferenceByModel', {});
+  // Admin → Defaults: what a setting the user hasn't chosen follows.
+  const deploymentDefaults = useDeploymentDefaults({
+    active: auth.state === 'active', apiHost, apiPort,
+    onResetThink: () => setInferenceByModel((m) => forgetKnob(m, 'think')),
+  });
+  const [playbackSpeed, setPlaybackSpeed] = usePersistedState('playbackSpeed', deploymentDefaults.playbackSpeed);
+  const [selectedVoice, setSelectedVoice] = usePersistedState('selectedVoice', deploymentDefaults.selectedVoice);
   const [requestTimeout, setRequestTimeout] = usePersistedState('requestTimeout', 15);
   const [unlimitedBatchTimeout, setUnlimitedBatchTimeout] = usePersistedState('unlimitedBatchTimeout', true);
   const [mobileBreakpoint, setMobileBreakpoint] = usePersistedState('mobileBreakpoint', 768);
@@ -93,8 +110,8 @@ export default function App() {
   // Reader / Chat top-level view
   const [viewMode, setViewMode] = usePersistedState('viewMode', 'reader');
   const [selectedModel, setSelectedModel] = usePersistedState('selectedModel', '');
-  const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', 'streaming');
-  const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', true);
+  const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', deploymentDefaults.chatTtsMode);
+  const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', deploymentDefaults.chatAutoTts);
   // Composer in-progress state lives here (not in ChatView) so switching tabs —
   // which unmounts ChatView — doesn't discard a half-typed message. The text
   // draft is persisted (survives a reload too); pending image attachments are
@@ -102,10 +119,6 @@ export default function App() {
   // Per signed-in user: the next user on this browser never sees it.
   const [chatDraft, setChatDraft] = useUserDraft(signedInUserId);
   const [chatPendingAttachments, setChatPendingAttachments] = useState([]);
-  // Per-model Ollama inference settings (context window, keep-alive, thinking
-  // level, max reply tokens). Keyed by model name because a 9.7B and a 3B want
-  // different context sizes on the same machine.
-  const [inferenceByModel, setInferenceByModel] = usePersistedState('inferenceByModel', {});
   // Distraction-free reading: hides Header, sidebars, mobile bottom nav, and
   // the PdfViewer toolbar so only the page content + a small floating exit
   // pill remain. Persisted across reloads (some users prefer the immersive
@@ -116,7 +129,9 @@ export default function App() {
   // model's `think` setting the first time we see the model, so upgrading
   // users keep the thinking behaviour they had. Read straight from
   // localStorage rather than from React state — the `enableThinking` state is
-  // deleted in Task 4 and this effect must keep working after that.
+  // deleted in Task 4 and this effect must keep working after that. Only an
+  // old "on" is a choice worth carrying: seeding "off" stored it for every
+  // model ever selected, so a deployment thinking default could never apply.
   useEffect(() => {
     if (!selectedModel) return;
     setInferenceByModel(prev => {
@@ -125,13 +140,17 @@ export default function App() {
       try {
         legacy = JSON.parse(localStorage.getItem('neural-pdf-enableThinking') || 'false');
       } catch { legacy = false; }
-      return patchForModel(prev, selectedModel, { think: migrateLegacyThinking(legacy) });
+      return legacy ? patchForModel(prev, selectedModel, { think: migrateLegacyThinking(legacy) }) : prev;
     });
   }, [selectedModel, setInferenceByModel]);
 
+  const inferenceBase = useMemo(
+    () => ({ ...INFERENCE_DEFAULTS, think: deploymentDefaults.think }),
+    [deploymentDefaults.think]
+  );
   const inference = useMemo(
-    () => resolveForModel(inferenceByModel, selectedModel),
-    [inferenceByModel, selectedModel]
+    () => resolveForModel(inferenceByModel, selectedModel, inferenceBase),
+    [inferenceByModel, selectedModel, inferenceBase]
   );
 
   // --- TRANSIENT UI STATE ---
@@ -1228,7 +1247,7 @@ export default function App() {
           <SettingsPage
             theme={theme}
             voiceSettings={{ selectedVoice, setSelectedVoice, playbackSpeed, setPlaybackSpeed, volume, setVolume, isLocalhost, setIsLocalhost, requestTimeout, setRequestTimeout, unlimitedBatchTimeout, setUnlimitedBatchTimeout, isPreviewingVoice, previewVoice, stopVoicePreview, clearCache }}
-            chatSettings={{ chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, inferenceByModel, setInferenceByModel, availableModels, selectedModel }}
+            chatSettings={{ chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, inferenceByModel, setInferenceByModel, inferenceBase, availableModels, selectedModel }}
             connectionSettings={{ apiHost, setApiHost, apiPort, setApiPort, backendAvailable }}
             appearanceSettings={{ darkMode, setDarkMode, layoutMode, setLayoutMode, mobileBreakpoint, setMobileBreakpoint, showHeaderControlsOnMobile, setShowHeaderControlsOnMobile }}
             accountProps={{ apiHost, apiPort, user: auth.user }}

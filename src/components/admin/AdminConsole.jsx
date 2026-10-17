@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, Shield, Loader2 } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
 import { AssistantProfileSection } from './AssistantProfileSection';
+import { DefaultsSection } from './DefaultsSection';
 import { AdminProjectsSection } from './AdminProjectsSection';
 import ProjectPage from '../projects/ProjectPage';
 
@@ -527,6 +528,9 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
 
         {/* ---------- ASSISTANT (v2.4 Task A2) ---------- */}
         <AssistantProfileSection theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast} />
+
+        {/* ---------- DEFAULTS (preferences nobody chose) ---------- */}
+        <DefaultsSection theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast} />
       </div>
     </div>
   );

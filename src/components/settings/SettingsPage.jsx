@@ -49,7 +49,7 @@ export default function SettingsPage({ theme, voiceSettings, chatSettings, conne
     // Opened before the model list arrived, the pick can still be a pre-C1 bare
     // name ("qwen2.5:7b"); edit its `provider:name` id instead, never the bare key.
     const configModel = migrateModelId(pickedModel, ch.availableModels);
-    const inf = resolveForModel(ch.inferenceByModel, configModel);
+    const inf = resolveForModel(ch.inferenceByModel, configModel, ch.inferenceBase);
     const setInf = (patch) => ch.setInferenceByModel((prev) => patchForModel(prev, configModel, patch));
     const configEntry = ch.availableModels.find((m) => m.id === configModel);
     const knobs = supportedKnobs(configEntry);

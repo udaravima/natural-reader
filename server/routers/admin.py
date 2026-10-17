@@ -5,6 +5,7 @@ import logging
 import os
 import secrets
 import uuid
+from typing import Any
 from urllib.parse import urlsplit
 
 from datetime import datetime, timezone
@@ -17,7 +18,8 @@ from ..auth.capabilities import KNOWN_CAPABILITIES
 from ..auth.config import load_auth_config
 from ..auth.kc_admin import KCAdminError
 from ..llm.router import get_router
-from ..services import assistant_profile, doc_content, inference_budget, model_router, people
+from ..services import (assistant_profile, doc_content, inference_budget, model_router, people,
+                        user_defaults)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -346,6 +348,49 @@ async def inference_usage(
 ):
     days = max(1, min(90, days))
     return await inference_budget.admin_usage(conn, days=days)
+
+
+# ---------- deployment defaults for user preferences ----------
+
+class UserDefaultsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    values: dict[str, Any]
+
+
+@router.get("/defaults")
+async def get_user_defaults(
+    _: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    return await user_defaults.admin_view(conn)
+
+
+@router.put("/defaults")
+async def put_user_defaults(
+    body: UserDefaultsIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    try:
+        await user_defaults.save(conn, body.values, updated_by=str(principal.user_id))
+    except user_defaults.DefaultsError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return await user_defaults.admin_view(conn)
+
+
+@router.post("/defaults/{name}/apply-to-everyone")
+async def apply_user_default_to_everyone(
+    name: str,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Every browser drops its user's own choice for this setting the next
+    time it loads the defaults."""
+    try:
+        await user_defaults.apply_to_everyone(conn, name, updated_by=str(principal.user_id))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown setting")
+    return await user_defaults.admin_view(conn)
 
 
 # ---------- the assistant profile (v2.4 Task A2) ----------

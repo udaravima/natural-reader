@@ -13,15 +13,27 @@ export const INFERENCE_DEFAULTS = {
     numPredict: null,  // null = -1 (infinite generation)
 };
 
-export const resolveForModel = (map, model) => ({
-    ...INFERENCE_DEFAULTS,
+// `base`: the defaults for knobs this model's entry doesn't set (the
+// deployment's think default over INFERENCE_DEFAULTS, from Admin → Defaults).
+export const resolveForModel = (map, model, base = INFERENCE_DEFAULTS) => ({
+    ...base,
     ...((map && map[model]) || {}),
 });
 
+// Stores only what was changed: a default merged in here would be frozen as
+// if the user had chosen it.
 export const patchForModel = (map, model, patch) => ({
     ...map,
-    [model]: { ...resolveForModel(map, model), ...patch },
+    [model]: { ...((map && map[model]) || {}), ...patch },
 });
+
+// Drop one knob from every model, so each follows the default again (an
+// admin's "Apply to everyone").
+export const forgetKnob = (map, knob) => Object.fromEntries(
+    Object.entries(map || {}).map(([m, entry]) => {
+        const { [knob]: _drop, ...rest } = entry || {};
+        return [m, rest];
+    }));
 
 // The turn body's `settings` (C1 spec §7.1). An unset value is null and the
 // server leaves it out of the provider request, so a model's own tuned
