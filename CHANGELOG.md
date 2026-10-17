@@ -6,6 +6,31 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Settings is a window, not a page.** It opens over whatever you have open
+  (tabs: Profile, Voice & reading, Chat, Appearance, Connection, Access
+  tokens), so changing the voice or turning thinking off no longer stops the
+  narration or a reply. A browser left on the old Settings view opens the
+  reader.
+- **The narration plays in every view.** Chat, Library and Admin show a small
+  header control (pause, stop, back to the page). Opening another document
+  pauses it. One voice at a time: reading a reply aloud pauses the narration.
+- **Chat beside the page.** In the reader on a wide screen, the chat opens in
+  a column next to the page; **Ask page** and **Ask AI** on a selection land
+  there instead of switching views.
+- **Profile.** A profile picture (cropped and shrunk to 256 px in the browser,
+  stored in the new `user_avatars` table, migration 020), a **Manage your
+  account** link to the sign-in provider's account page (Keycloak's account
+  console by default; `OIDC_ACCOUNT_URL` overrides or hides it), and the list
+  of signed-in browsers with **Sign out** and **Sign out everywhere else**.
+  `PUT`/`DELETE /v1/auth/me/avatar`, `GET /v1/users/{id}/avatar`,
+  `GET /v1/auth/sessions`, `DELETE /v1/auth/sessions/{id}`,
+  `POST /v1/auth/sessions/sign-out-others`; `/v1/auth/me` adds `name`,
+  `first_name`, `last_name`, `username`, `avatar_url` and `account_url`.
+- **Admins find people by part of a name.** Adding a project member or
+  sharing a document, a site admin gets type-ahead over every account (emails
+  shown, accounts awaiting approval included) whatever `USER_DIRECTORY_MODE`
+  says; with the default `exact` mode they used to need a full email address.
+  In every mode, "First Last" typed together matches the full name.
 - **Admin → Defaults.** An admin sets what auto-read, the read-aloud timing,
   thinking, the voice and the reading speed are for anyone who hasn't chosen
   them. People keep their own choice; **Apply to everyone** replaces it the
@@ -28,6 +53,13 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Leaving Chat no longer stops the reply.** A deliberate effect aborted the
+  stream and its read-aloud whenever you left the Chat view (and the narration
+  stopped on leaving the reader); both now carry on.
+- **A text page fits beside the chat.** Text and Markdown pages were sized
+  to the window (80 vw), and a page wider than its column was cut off on the
+  left, out of reach of the scrollbar; they now size to their column, and an
+  oversized page scrolls from its left edge.
 - **A write is committed before its response is sent.** Every route took its
   database connection with FastAPI's default "request" scope, which commits
   only after the response and its background tasks: an immediate re-read could

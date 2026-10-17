@@ -8,7 +8,9 @@ the [README](../README.md).)
 
 - [Signing in](#signing-in)
 - [Where things live: Settings, profile menu, Admin](#where-things-live-settings-profile-menu-admin)
-- [Account: your profile and personal access tokens](#account-your-profile-and-personal-access-tokens)
+- [Listening while you do something else](#listening-while-you-do-something-else)
+- [Profile: your picture, password and signed-in browsers](#profile-your-picture-password-and-signed-in-browsers)
+- [Access tokens](#access-tokens)
 - [Admin console (admins only)](#admin-console-admins-only)
 - [Chat: models and streaming](#chat-models-and-streaming)
 - [The daily token budget](#the-daily-token-budget)
@@ -30,8 +32,10 @@ Depending on your account state you may see one of these screens instead:
 | **Account disabled** | An admin disabled your account | Contact an admin |
 | **Backend error / not responding** | The server is down or unreachable | Check with whoever runs the deployment |
 
-You stay signed in on that browser (a cookie, valid ~7 days by default) until
-you click **Log out** in the **profile menu** (top-right of the header).
+You stay signed in on that browser until you click **Log out** in the
+**profile menu** (top-right of the header), until you haven't used it for 12
+hours, or for at most 7 days (both are your deployment's defaults:
+`SESSION_IDLE_HOURS`, `SESSION_TTL_HOURS`).
 
 ## Where things live: Settings, profile menu, Admin
 
@@ -39,20 +43,63 @@ Accounts, tokens, and settings are **not in the sidebar** — the sidebars hold
 navigation (reader) and the model picker + sessions (chat). Everything about
 *you* lives at the top of the window:
 
-- **Profile menu** — the person icon at the top-right of the header. Your
-  identity, a **Settings** shortcut, the dark-mode toggle, and **Log out**.
-- **Settings** page — open it from the header **gear**, or from the profile
-  menu. One page with sections for Voice & reading, Chat & inference,
-  Connection, Appearance, and **Account** (your email + role and **personal
-  access tokens** — the only place tokens are created).
+- **Profile menu** — your picture (or a person icon) at the top-right of the
+  header. Your name, **Profile**, **Settings**, the dark-mode toggle, and
+  **Log out**.
+- **Settings** — a window over whatever you have open, from the header
+  **gear** or the profile menu, so the narration, a reply being written and
+  your place in the document all carry on underneath. Tabs: **Profile**,
+  **Voice & reading**, **Chat**, **Appearance**, **Connection** and **Access
+  tokens** (the only place tokens are created). **Esc**, the **×** or a click
+  outside closes it; it opens on the tab you used last.
 - **Admin** console — a separate view opened from the **shield** button in the
   top view switcher (Reader / Chat / Library / Admin). Only admins see it. User
   management only; **no token creation happens here.**
 
-## Account: your profile and personal access tokens
+## Listening while you do something else
 
-Open **Settings** (header gear, or the profile menu) and go to the **Account**
-section. The first line shows `your@email · role` (role is `admin` or `member`).
+The narration keeps reading whichever view you open: Chat, Library, Admin or
+Settings. Outside the reader, a small control in the header shows the
+document and page with **pause**, **stop**, and the name, which takes you back
+to the page being read. Pause keeps the control there; Stop removes it.
+Opening a different document pauses the narration.
+
+A reply you asked for keeps being written when you leave Chat, and is there
+when you come back.
+
+**Chat beside the page.** In the reader, the **speech-bubbles button** in the
+header opens the chat in a column beside the page: the same chats as the Chat
+view, with its own model picker, **New chat**, and **Open in the Chat view**.
+With it open, **Ask page** and **Ask AI** on a selection add the page or text
+to it and keep you in the reader. It needs a wide screen; on a phone those
+open the Chat view instead (the narration carries on there too).
+
+**One voice at a time.** Reading a reply aloud pauses the narration, and the
+header says **Paused for the chat reply**. Press **Read** (or the play button)
+to carry on; that also stops the reply's read-aloud.
+
+## Profile: your picture, password and signed-in browsers
+
+Open **Profile** from the profile menu (or the Profile tab in Settings).
+
+- **Picture:** **Add a picture** takes any image; it is cropped to a square
+  and shrunk to 256 px in your browser before upload. It shows in the header.
+  **Remove** takes it away.
+- **Name, email, password and two-step sign-in** belong to the account you
+  sign in with (Keycloak), and your name and email here follow it each time
+  you sign in. **Manage your account** opens that account's own page, where
+  you change them.
+- **Signed-in browsers** lists each browser signed in to your account (marked
+  **this browser** for the one you're using), when it was last used, and a
+  **Sign out** for each other one, or **Sign out everywhere else**. That ends
+  the browser's session here. A browser still signed in to your sign-in
+  account can come back without a password until that ends too: end it under
+  **Manage your account**.
+
+## Access tokens
+
+Open **Settings → Access tokens**. Your email and role (`admin` or `member`)
+are on the first line.
 
 Below that is the **token manager**: what the token may do (**Access**), when
 it expires, a name box, a **Create** button, and your list of tokens. Each
@@ -83,7 +130,7 @@ purely optional.
 
 ### Creating one
 
-1. Open **Settings** and go to the **Account** section.
+1. Open **Settings** and go to the **Access tokens** tab.
 2. Under **Access**, tick only what the token is for. **Read aloud** is ticked
    by default, and that's all the extension needs.
 3. Pick when it **Expires**: 30 days, 90 days, 1 year (the default) or Never.
@@ -222,7 +269,9 @@ Maintainer, for roles up to Maintainer) can change it for you.
 **Adding people.** On a project page, open **Members → + Add people**, type a
 name or their full email address, pick the person, choose a role and press
 **Add**. Whether typing a name finds people depends on your organisation's
-setting; a full email address always works. "Awaiting approval" means the
+setting; a full email address always works. An admin always finds people by
+two letters of a first name, last name, username or email (or "First Last"),
+and sees their email addresses. "Awaiting approval" means the
 account exists but an admin hasn't activated it yet. A person whose account an
 admin has disabled shows "disabled": their role can't be changed, but a
 Maintainer or Owner can still remove them.
@@ -298,15 +347,14 @@ reply doesn't cite them itself. When nothing in the reply matches a page
 ("page 4", "(page 4)") are links. Clicking one opens that document in the
 reader at that page, opening it from the server first if it isn't the one
 you have open. If you can no longer read the document, a notice says so
-and you stay in chat. Like any switch to the reader, clicking a citation
-while a reply is still streaming stops that reply (it's kept, marked
-**Stopped**).
+and you stay in chat. A reply still streaming when you click a citation
+keeps going, and is there when you come back to Chat.
 
 **Picking a model:** the model picker in the chat sidebar is grouped by
 **provider**, each group labelled with the provider's name as your deployment
 configured it (for example `ollama` or `local`, plus any other server your
 deployment has) and shows what each model can do — whether it supports thinking,
-tools, images, and so on. On the **Settings** page (Chat & inference section),
+tools, images, and so on. In **Settings → Chat**,
 the per-model controls (context window, keep-alive, thinking level, max reply
 tokens) only show the knobs the selected model's provider actually supports.
 
@@ -349,8 +397,8 @@ legitimately need more, ask yours.
 ## FAQ
 
 **Where do I create a personal access token?**
-On the **Settings** page, in the **Account** section (open Settings from the
-header gear or the profile menu). The Admin console has no token features at all.
+In **Settings → Access tokens** (open Settings from the header gear or the
+profile menu). The Admin console has no token features at all.
 
 **Do I need a personal access token to use the app or the extension?**
 App: no. Extension: yes — it's the only way it can authenticate.
@@ -386,4 +434,4 @@ in the toast and the sidebar.
 
 ---
 
-*UI references: `src/components/settings/SettingsPage.jsx`, `src/components/ProfileMenu.jsx`, `src/components/account/AccountPanel.jsx`, `src/components/admin/AdminConsole.jsx`, `src/components/Header.jsx`, `src/components/ViewSwitcher.jsx`, `src/components/chat/InferenceRow.jsx`, `src/components/ChatSidebar.jsx`.*
+*UI references: `src/components/settings/SettingsDialog.jsx`, `src/components/ProfileMenu.jsx`, `src/components/account/ProfilePanel.jsx`, `src/components/account/AccountPanel.jsx`, `src/components/chat/ChatSidePanel.jsx`, `src/components/NarrationMiniPlayer.jsx`, `src/components/admin/AdminConsole.jsx`, `src/components/Header.jsx`, `src/components/ViewSwitcher.jsx`, `src/components/chat/InferenceRow.jsx`, `src/components/ChatSidebar.jsx`.*
