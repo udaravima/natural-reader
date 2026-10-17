@@ -113,7 +113,7 @@ export default function MarkdownReader({
             ref={containerRef}
             className={`${panelBg} ${theme.text}`}
             style={{
-                width: effectiveIsMobile ? '100%' : 'min(1200px, 95vw)',
+                width: effectiveIsMobile ? '100%' : 'min(1200px, 100cqw)',
             }}
         >
             {loading && (

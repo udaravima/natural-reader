@@ -282,10 +282,14 @@ export default function PdfViewer({
                 </div>
             )}
 
-            {/* DOCUMENT CONTAINER (PDF canvas or text page) */}
+            {/* DOCUMENT CONTAINER (PDF canvas or text page). A query container,
+                so a text page sizes to this column (100cqw), not the window:
+                the chat beside the page narrows it. Safe centering: a page
+                wider than the column starts at its left edge, scrollable,
+                instead of being cut off on the left. */}
             <div
                 ref={pdfContainerRef}
-                className={`flex-1 overflow-auto p-2 md:p-6 flex justify-center custom-scrollbar ${darkMode ? 'bg-slate-900/50' : 'bg-slate-300/30'} ${effectiveIsMobile && hasDoc ? 'pb-28' : ''}`}
+                className={`@container flex-1 overflow-auto p-2 md:p-6 flex justify-center-safe custom-scrollbar ${darkMode ? 'bg-slate-900/50' : 'bg-slate-300/30'} ${effectiveIsMobile && hasDoc ? 'pb-28' : ''}`}
             >
                 <div
                     className={`relative ${theme.canvasBg} shadow-2xl rounded-sm border ${theme.border}`}

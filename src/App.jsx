@@ -47,6 +47,7 @@ import LibraryPage from './components/library/LibraryPage';
 import { fetchDocFile } from './lib/serverDocFile';
 import { openServerDoc, openCitation } from './lib/openDoc';
 import SettingsDialog from './components/settings/SettingsDialog';
+import ChatSidePanel from './components/chat/ChatSidePanel';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
 import NameMatchDialog from './components/projects/NameMatchDialog';
@@ -294,6 +295,19 @@ export default function App() {
   const canReader = caps.includes('reader');
   const canChat = caps.includes('chat');
   const canAdmin = caps.includes('admin');
+
+  // Chat beside the page (ChatSidePanel): the reader on a wide screen only;
+  // a phone has no room for both, so its Chat button opens the Chat view
+  // (where the narration keeps playing anyway). Open/closed is remembered.
+  const [chatPanelOpen, setChatPanelOpen] = usePersistedState('chatPanelOpen', false);
+  const chatPanelAvailable = canChat && !effectiveIsMobile;
+  const showChatPanel = viewMode === 'reader' && chatPanelAvailable && chatPanelOpen && !distractionFree;
+  // Where "Ask about this page / selection" lands: beside the page when it
+  // can, else the Chat view.
+  const showChat = useCallback(() => {
+    if (viewMode === 'reader' && chatPanelAvailable) setChatPanelOpen(true);
+    else setViewMode('chat');
+  }, [viewMode, chatPanelAvailable, setChatPanelOpen, setViewMode]);
   const versionOld = useVersionStatus({ apiHost, apiPort, docId: currentDocId, enabled: Boolean(canReader), refreshKey: projectsVersion });
 
   // Boot coercion (admin-console spec §3, generalized to all three views): a
@@ -373,6 +387,7 @@ export default function App() {
     docUse: chatDocUse,
     events: chatEvents,
     newSession: chatNewSession,
+    activeSession: chatActiveSession,
     switchToSession: chatSwitchToSession,
     deleteSession: chatDeleteSession,
     renameSession: chatRenameSession,
@@ -586,8 +601,8 @@ export default function App() {
       : fullText;
     const docId = await ensureDocHash();
     chatAddPin(makePin({ doc_id: docId, fileName: pdfFileName, page, kind: 'page', text }));
-    setViewMode('chat');
-  }, [pdfFileName, textItems, ensureDocHash, setViewMode, showToast, chatAddPin]);
+    showChat();
+  }, [pdfFileName, textItems, ensureDocHash, showChat, showToast, chatAddPin]);
 
   const handleAskAboutSelection = useCallback(async () => {
     const sel = (typeof window !== 'undefined') ? window.getSelection() : null;
@@ -602,8 +617,8 @@ export default function App() {
       : selectedText;
     const docId = await ensureDocHash();
     chatAddPin(makePin({ doc_id: docId, fileName: pdfFileName, page: currentPage, kind: 'selection', text }));
-    setViewMode('chat');
-  }, [pdfFileName, currentPage, ensureDocHash, setViewMode, showToast, chatAddPin]);
+    showChat();
+  }, [pdfFileName, currentPage, ensureDocHash, showChat, showToast, chatAddPin]);
 
   // Synthesize the WHOLE document as a single audiobook .wav.
   // Pulls per-page text via the existing extractAllChunks helper (works for
@@ -1073,6 +1088,37 @@ export default function App() {
   }
 
   // --- RENDER ---
+  // The chat, as the Chat view and as the column beside the page.
+  const chatViewProps = {
+    theme,
+    darkMode,
+    effectiveIsMobile,
+    messages: chatMessages,
+    isStreaming: chatIsStreaming,
+    selectedModel,
+    inferenceBudget: chatInferenceBudget,
+    reachable: ollamaReachable,
+    sendMessage: chatSendMessage,
+    stopStream: chatStopStream,
+    speakingMessageId,
+    speakMessage,
+    stopSpeaking,
+    downloadingMessageId,
+    downloadMessageAudio: isLocalhost ? handleDownloadMessageAudio : null,
+    showToast,
+    pins: chatPins,
+    onRemovePin: chatRemovePin,
+    numCtx: inference.numCtx,
+    draft: chatDraft,
+    setDraft: setChatDraft,
+    pendingAttachments: chatPendingAttachments,
+    setPendingAttachments: setChatPendingAttachments,
+    onOpenCitation: handleOpenCitation,
+    openDocName: currentDocId ? pdfFileName : null,
+    openDocVersion: currentDocId && versionOld ? versionOld.version : null,
+    docUse: chatDocUse,
+  };
+
   return (
     <div
       className={`flex flex-col h-screen ${theme.bg} ${theme.text} font-sans ${theme.selection} transition-colors duration-300`}
@@ -1110,6 +1156,7 @@ export default function App() {
         onReadSelection={readSelection}
         onStopSelectionRead={stopSelectionRead}
         onAskAboutSelection={inChat ? null : handleAskAboutSelection}
+        besideChatPanel={showChatPanel}
       />
 
       {!distractionFree && (
@@ -1150,6 +1197,8 @@ export default function App() {
           onLogout={auth.logout}
           narration={{ held: narrationHeld, docName: pdfFileName, currentPage, numPages, pausedForChat }}
           onOpenSettings={openSettings}
+          chatPanelOpen={showChatPanel}
+          onToggleChatPanel={chatPanelAvailable && canReader ? () => setChatPanelOpen((v) => !v) : null}
         />
       )}
 
@@ -1224,35 +1273,7 @@ export default function App() {
           // Mount gate mirroring the admin console below: hiding via
           // ViewSwitcher is cosmetic, this is the render-time boundary that
           // covers the brief window before useViewModeGuard's effect fires.
-          canChat && <ChatView
-            theme={theme}
-            darkMode={darkMode}
-            effectiveIsMobile={effectiveIsMobile}
-            messages={chatMessages}
-            isStreaming={chatIsStreaming}
-            selectedModel={selectedModel}
-            inferenceBudget={chatInferenceBudget}
-            reachable={ollamaReachable}
-            sendMessage={chatSendMessage}
-            stopStream={chatStopStream}
-            speakingMessageId={speakingMessageId}
-            speakMessage={speakMessage}
-            stopSpeaking={stopSpeaking}
-            downloadingMessageId={downloadingMessageId}
-            downloadMessageAudio={isLocalhost ? handleDownloadMessageAudio : null}
-            showToast={showToast}
-            pins={chatPins}
-            onRemovePin={chatRemovePin}
-            numCtx={inference.numCtx}
-            draft={chatDraft}
-            setDraft={setChatDraft}
-            pendingAttachments={chatPendingAttachments}
-            setPendingAttachments={setChatPendingAttachments}
-            onOpenCitation={handleOpenCitation}
-            openDocName={currentDocId ? pdfFileName : null}
-            openDocVersion={currentDocId && versionOld ? versionOld.version : null}
-            docUse={chatDocUse}
-          />
+          canChat && <ChatView {...chatViewProps} />
         ) : inAdmin ? (
           // Mount gate: the console renders nothing when the current user
           // isn't an admin — hiding is cosmetic, server rails are the
@@ -1337,6 +1358,19 @@ export default function App() {
           )}
         </WorkspaceProvider>
         )
+        )}
+        {showChatPanel && (
+          <ChatSidePanel
+            theme={theme}
+            title={chatActiveSession?.title || 'New chat'}
+            selectedModel={selectedModel} setSelectedModel={setSelectedModel}
+            availableModels={availableModels}
+            onNewChat={chatNewSession}
+            onExpand={() => setViewMode('chat')}
+            onClose={() => setChatPanelOpen(false)}
+          >
+            <ChatView {...chatViewProps} compact effectiveIsMobile={false} />
+          </ChatSidePanel>
         )}
       </main>
 

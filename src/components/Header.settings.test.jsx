@@ -65,4 +65,15 @@ describe('Header — settings + profile', () => {
     rerender(<Header {...baseProps({ viewMode: 'chat', hasDocument: true, narration: { ...held, held: false } })} />);
     expect(screen.queryByRole('group', { name: 'Narration' })).toBeNull();
   });
+
+  it('the chat-beside-the-page toggle shows in the reader only when offered', () => {
+    const onToggleChatPanel = vi.fn();
+    const { rerender } = render(<Header {...baseProps({ onToggleChatPanel })} />);
+    fireEvent.click(screen.getByTitle('Chat beside the page'));
+    expect(onToggleChatPanel).toHaveBeenCalledTimes(1);
+    rerender(<Header {...baseProps({ onToggleChatPanel: null })} />);
+    expect(screen.queryByTitle('Chat beside the page')).toBeNull();
+    rerender(<Header {...baseProps({ viewMode: 'chat', onToggleChatPanel })} />);
+    expect(screen.queryByTitle('Chat beside the page')).toBeNull();
+  });
 });

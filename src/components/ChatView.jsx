@@ -71,6 +71,9 @@ export default function ChatView({
   openDocName = null,
   openDocVersion = null,
   docUse = null,
+  // A narrow column (ChatSidePanel, beside the page): tighter padding, and
+  // the model picker is above it rather than in the sidebar.
+  compact = false,
 }) {
   const copyMessage = async (text) => {
     if (!text) return;
@@ -276,7 +279,7 @@ export default function ChatView({
       <div
         ref={listRef}
         onScroll={handleListScroll}
-        className={`flex-1 overflow-y-auto custom-scrollbar px-4 md:px-8 py-4 md:py-6 ${effectiveIsMobile ? "pb-28" : ""}`}
+        className={`flex-1 overflow-y-auto custom-scrollbar ${compact ? "px-3 py-3" : "px-4 md:px-8 py-4 md:py-6"} ${effectiveIsMobile ? "pb-28" : ""}`}
       >
         {messages.length === 0 ? (
           <EmptyState
@@ -324,7 +327,7 @@ export default function ChatView({
 
       {/* INPUT BAR */}
       <div
-        className={`border-t ${theme.border} ${theme.bgSecondary} px-4 py-3 ${effectiveIsMobile ? "pb-20" : ""}`}
+        className={`border-t ${theme.border} ${theme.bgSecondary} ${compact ? "px-3 py-2" : "px-4 py-3"} ${effectiveIsMobile ? "pb-20" : ""}`}
       >
         <div className="max-w-3xl mx-auto flex flex-col gap-2">
           {ctxTokens > 0 && (
@@ -400,7 +403,7 @@ export default function ChatView({
                 reachable === false
                   ? "Can't reach the model server."
                   : !selectedModel
-                    ? "Pick a model in the sidebar to start."
+                    ? (compact ? "Pick a model above to start." : "Pick a model in the sidebar to start.")
                     : "Ask the model, drop / paste / attach an image…  (Enter to send)"
               }
               rows={1}

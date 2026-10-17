@@ -1,7 +1,7 @@
 import {
     Play, Pause, Square, Upload, Volume2, SkipForward, SkipBack,
     Loader2, Download, Keyboard, Clock,
-    PanelLeftClose, Menu, Home, Library, X, Maximize2, Settings as SettingsIcon
+    PanelLeftClose, Menu, Home, Library, X, Maximize2, Settings as SettingsIcon, MessagesSquare
 } from 'lucide-react';
 import HeaderOverflowMenu from './HeaderOverflowMenu';
 import ProfileMenu from './ProfileMenu';
@@ -49,6 +49,9 @@ export default function Header({
     // outside the reader (NarrationMiniPlayer).
     narration = null,
     onOpenSettings,
+    // Chat beside the page (reader, wide screens): null hides the toggle.
+    chatPanelOpen = false,
+    onToggleChatPanel = null,
 }) {
     const isExportingBook = !!bookProgress;
     // Reader-only chrome (playback, downloads, overflow menu, upload) shows
@@ -135,6 +138,16 @@ export default function Header({
 
             {/* RIGHT CONTROLS */}
             <div className="flex items-center gap-1 md:gap-3">
+                {inReader && onToggleChatPanel && (
+                    <button
+                        onClick={onToggleChatPanel}
+                        aria-pressed={chatPanelOpen}
+                        className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${chatPanelOpen ? 'text-blue-500' : `${theme.textSecondary} hover:text-blue-500`}`}
+                        title={chatPanelOpen ? 'Close the chat beside the page' : 'Chat beside the page'}
+                    >
+                        <MessagesSquare size={20} />
+                    </button>
+                )}
                 {/* Reader / Chat / Admin toggle */}
                 <ViewSwitcher theme={theme} viewMode={viewMode} setViewMode={setViewMode} isAdmin={isAdmin} canReader={canReader} canChat={canChat} />
 
