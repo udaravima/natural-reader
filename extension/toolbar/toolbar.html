@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="toolbar.css" />
+</head>
+<body>
+  <div class="bar" role="toolbar" aria-label="Read aloud">
+    <span class="handle" title="Drag" aria-hidden="true">⠿</span>
+    <button data-act="toggle" aria-label="Pause">⏸</button>
+    <button data-act="stop" aria-label="Stop">⏹</button>
+    <input class="progress" type="range" min="0" max="100" value="0" aria-label="Position in this part" />
+    <select data-act="voice" aria-label="Voice"></select>
+    <label>Speed <input data-act="speed" type="range" min="0.5" max="2" step="0.1" aria-label="Speed" /></label>
+    <span class="status" role="status"></span>
+    <button data-act="close" aria-label="Close">✕</button>
+  </div>
+  <script type="module" src="toolbar.js"></script>
+</body>
+</html>

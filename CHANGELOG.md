@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+
+- **The read-aloud extension works with sign-in on** (extension 0.2.0). Before,
+  it sent no credentials, so every read on a server with sign-in on failed
+  with 401, while the popup's dot still showed green. Its options page now
+  takes an access token (create one under Settings → Account), kept in
+  `chrome.storage.local` on that computer only. Synthesis runs in the
+  extension's service worker: a request carrying a token from an ordinary web
+  page would fail the server's CORS check, and the worker's host permission
+  skips it. The token never enters the page. **Test connection** and the popup
+  check the token through `/v1/auth/me`: green means a read will work, amber
+  means the server refused you, and the line under the title says why. A
+  server that isn't on `localhost` gets a site-access prompt from Test
+  connection.
+- **Read-aloud plays on strict-CSP sites** such as GitHub and `claude.ai`. The
+  toolbar played its audio from the page, whose `media-src` policy refused the
+  `blob:` audio without an error: the toolbar said "reading" and stayed
+  silent. The toolbar is now an extension page in an iframe, which plays under
+  the extension's own policy, and no extension code is loaded into the page.
+  Dragging follows the pointer even when it outruns the bar.
+
+### Changed
+
+- **CORS: unset `FRONTEND_ORIGIN` now allows no cross-origin browser caller**
+  (was `*`). The wildcard existed for the read-aloud extension, and it let any
+  website drive your Kokoro endpoint from JavaScript. The SPA is same-origin
+  and the extension now calls from its service worker, so neither needs it.
+  **Upgrade note:** a page on another origin that calls the API from a browser
+  stops working until its origin is listed in `FRONTEND_ORIGIN`, or `*` is set
+  to keep the old behavior. Read-aloud extension 0.1.0 is among them; reload
+  the extension to get 0.2.0.
+
 ## [2.2.0] - 2026-10-12
 
 Projects become **team spaces with roles** (Reader, Contributor, Maintainer,

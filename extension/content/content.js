@@ -1,170 +1,98 @@
+// Places the read-aloud toolbar on the page. The toolbar is an extension page
+// in an iframe (toolbar/toolbar.html): nothing here loads code or audio into
+// the page, so a strict page CSP can't block it. Text extraction and chunking
+// happen in the service worker, which hands over a session id.
 if (!window.__readAloudInjected) {
     window.__readAloudInjected = true;
 
-    const RA = {};
-    let activeCleanup = null;
+    let frame = null;
+    let sid = null;
 
-    async function loadShared() {
-        const base = chrome.runtime.getURL('shared/');
-        const [text, api, settings, voices] = await Promise.all([
-            import(base + 'text.js'),
-            import(base + 'api.js'),
-            import(base + 'settings.js'),
-            import(base + 'voices.js'),
-        ]);
-        return { ...text, ...api, ...settings, VOICES: voices.VOICES };
+    // A drag: where it started on screen and where the frame was then. Every
+    // position is computed from this, so a late or repeated event can't add up.
+    let drag = null;
+    let layer = null;
+
+    function moveTo(sx, sy) {
+        if (!drag || !frame) return;
+        const r = frame.getBoundingClientRect();
+        const left = Math.min(Math.max(drag.left + (sx - drag.sx), 40 - r.width), innerWidth - 40);
+        const top = Math.min(Math.max(drag.top + (sy - drag.sy), 0), innerHeight - 24);
+        frame.style.left = `${left}px`;
+        frame.style.top = `${top}px`;
     }
 
-    // ---- Toolbar (Shadow DOM) -------------------------------------------
-    async function buildToolbar(mods, state) {
-        const host = document.createElement('div');
-        host.id = '__read_aloud_host';
-        document.documentElement.appendChild(host);
-        const root = host.attachShadow({ mode: 'open' });
+    function endDrag() {
+        drag = null;
+        if (layer) layer.remove();
+        layer = null;
+    }
 
-        const style = document.createElement('style');
-        const cssUrl = chrome.runtime.getURL('content/toolbar.css');
-        style.textContent = await (await fetch(cssUrl)).text();
-        root.appendChild(style);
+    function startDrag(sx, sy) {
+        const r = frame.getBoundingClientRect();
+        drag = { sx, sy, left: r.left, top: r.top };
+        frame.style.left = `${r.left}px`;
+        frame.style.top = `${r.top}px`;
+        frame.style.bottom = 'auto';
+        frame.style.transform = 'none';
+        // Just under the frame: catches the pointer when it outruns the frame.
+        layer = document.createElement('div');
+        layer.style.cssText = 'all: initial; position: fixed; inset: 0; z-index: 2147483646; cursor: grabbing;';
+        layer.addEventListener('pointermove', (e) => moveTo(e.screenX, e.screenY));
+        layer.addEventListener('pointerup', endDrag);
+        layer.addEventListener('pointercancel', endDrag);
+        document.documentElement.appendChild(layer);
+    }
 
-        const bar = document.createElement('div');
-        bar.className = 'bar';
-        bar.innerHTML = `
-            <span class="handle" title="Drag">⠿</span>
-            <button data-act="toggle">⏸</button>
-            <button data-act="stop">⏹</button>
-            <input class="progress" type="range" min="0" max="100" value="0" />
-            <select data-act="voice"></select>
-            <label>Speed <input data-act="speed" type="range" min="0.5" max="2" step="0.1" /></label>
-            <span class="status"></span>
-            <button data-act="close">✕</button>
-        `;
-        root.appendChild(bar);
+    function close() {
+        endDrag();
+        if (frame) frame.remove();
+        frame = null;
+        sid = null;
+    }
 
-        const voiceSel = bar.querySelector('[data-act="voice"]');
-        for (const v of mods.VOICES) {
-            const opt = document.createElement('option');
-            opt.value = v.id;
-            opt.textContent = v.name; // textContent — never innerHTML
-            if (v.id === state.voice) opt.selected = true;
-            voiceSel.appendChild(opt);
+    function open(newSid) {
+        close();
+        sid = newSid;
+        frame = document.createElement('iframe');
+        frame.src = `${chrome.runtime.getURL('toolbar/toolbar.html')}#${sid}`;
+        frame.title = 'Read aloud';
+        frame.allow = 'autoplay';
+        frame.style.cssText = 'all: initial; position: fixed; z-index: 2147483647; bottom: 12px; left: 50%;'
+            + ' transform: translateX(-50%); width: 660px; height: 60px; max-width: 100vw;'
+            + ' border: 0; background: transparent; color-scheme: normal;';
+        document.documentElement.appendChild(frame);
+    }
+
+    // Only the toolbar frame itself may steer the frame: event.source can't be
+    // forged by the page, and the session id must match too.
+    window.addEventListener('message', (e) => {
+        if (!frame || e.source !== frame.contentWindow) return;
+        const m = e.data || {};
+        if (m.nr !== sid) return;
+        if (m.type === 'close') close();
+        else if (m.type === 'size') {
+            frame.style.width = `${m.w}px`;
+            frame.style.height = `${m.h}px`;
+        } else if (m.type === 'drag') {
+            if (m.phase === 'start') startDrag(m.sx, m.sy);
+            else if (m.phase === 'move') moveTo(m.sx, m.sy);
+            else endDrag();
         }
-        bar.querySelector('[data-act="speed"]').value = String(state.speed);
+    });
 
-        makeDraggable(bar, bar.querySelector('.handle'));
-        return { host, root, bar };
-    }
-
-    function makeDraggable(bar, handle) {
-        let sx = 0; let sy = 0; let ox = 0; let oy = 0; let dragging = false;
-        handle.addEventListener('pointerdown', (e) => {
-            dragging = true; sx = e.clientX; sy = e.clientY;
-            const r = bar.getBoundingClientRect(); ox = r.left; oy = r.top;
-            handle.setPointerCapture(e.pointerId);
-        });
-        handle.addEventListener('pointermove', (e) => {
-            if (!dragging) return;
-            bar.style.left = `${ox + (e.clientX - sx)}px`;
-            bar.style.top = `${oy + (e.clientY - sy)}px`;
-            bar.style.bottom = 'auto'; bar.style.transform = 'none';
-        });
-        handle.addEventListener('pointerup', (e) => { dragging = false; handle.releasePointerCapture(e.pointerId); });
-    }
-
-    // ---- Reading session ------------------------------------------------
-    async function startReading(mode) {
-        if (activeCleanup) { activeCleanup(); }
-        try {
-            const mods = RA.mods || (RA.mods = await loadShared());
-            const state = await mods.getSettings();
-
-            const raw = mods.extractSelectionOrPage(document, mode);
-            const sentences = mods.splitSentences(raw);
-            if (sentences.length === 0) { flashNotice(); return; }
-
-            const chunks = mode === 'selection' ? [sentences] : mods.chunkSentences(sentences, 30);
-            const ui = await buildToolbar(mods, state);
-            const audio = new Audio();
-            const urls = [];
-            let stopped = false;
-
-            const statusEl = ui.bar.querySelector('.status');
-            const toggleBtn = ui.bar.querySelector('[data-act="toggle"]');
-            const progress = ui.bar.querySelector('.progress');
-
-            const cleanup = () => {
-                stopped = true;
-                audio.pause();
-                urls.forEach((u) => URL.revokeObjectURL(u));
-                ui.host.remove();
-                activeCleanup = null;
-            };
-            activeCleanup = cleanup;
-
-            ui.bar.querySelector('[data-act="close"]').addEventListener('click', cleanup);
-            ui.bar.querySelector('[data-act="stop"]').addEventListener('click', cleanup);
-            toggleBtn.addEventListener('click', () => {
-                if (audio.paused) { audio.play(); toggleBtn.textContent = '⏸'; }
-                else { audio.pause(); toggleBtn.textContent = '▶'; }
-            });
-            ui.bar.querySelector('[data-act="voice"]').addEventListener('change', (e) => { state.voice = e.target.value; });
-            ui.bar.querySelector('[data-act="speed"]').addEventListener('input', (e) => {
-                state.speed = parseFloat(e.target.value); audio.playbackRate = 1; // speed applies at synth time
-            });
-            audio.addEventListener('timeupdate', () => {
-                if (audio.duration) progress.value = String((audio.currentTime / audio.duration) * 100);
-            });
-            progress.addEventListener('input', () => {
-                if (audio.duration) audio.currentTime = (Number(progress.value) / 100) * audio.duration;
-            });
-
-            // Prefetch-one-ahead queue.
-            const cache = new Map(); // index -> Promise<Blob>
-            const fetchChunk = (i) => {
-                if (i >= chunks.length) return null;
-                if (!cache.has(i)) {
-                    cache.set(i, mods.synthesize({
-                        sentences: chunks[i], voice: state.voice, speed: state.speed, baseUrl: state.baseUrl,
-                    }));
-                }
-                return cache.get(i);
-            };
-
-            async function playIndex(i) {
-                if (stopped || i >= chunks.length) { if (!stopped && i >= chunks.length) cleanup(); return; }
-                statusEl.textContent = chunks.length > 1 ? `chunk ${i + 1} / ${chunks.length}` : 'reading';
-                let blob;
-                try { blob = await fetchChunk(i); } catch (err) { showError(ui, statusEl, err); return; }
-                if (stopped) return;
-                const url = URL.createObjectURL(blob);
-                urls.push(url);
-                audio.src = url;
-                const prefetch = fetchChunk(i + 1); // prefetch next while this plays
-                if (prefetch) prefetch.catch(() => {});
-                audio.onended = () => playIndex(i + 1);
-                try { await audio.play(); } catch { /* autoplay/user-gesture edge — ignore */ }
-            }
-
-            playIndex(0);
-        } catch (err) {
-            flashNotice('Read Aloud: ' + (err && err.message ? err.message : 'could not start on this page'));
-        }
-    }
-
-    function showError(ui, statusEl, err) {
-        ui.bar.classList.add('error');
-        statusEl.textContent = String(err && err.message ? err.message : err);
-    }
-
-    function flashNotice(message = 'Read Aloud: nothing to read') {
+    function flashNotice(message) {
         const n = document.createElement('div');
         n.textContent = message;
-        n.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#1f2430;color:#fff;padding:8px 12px;border-radius:10px;font:13px system-ui;';
+        n.style.cssText = 'all: initial; position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);'
+            + ' z-index: 2147483647; background: #1f2430; color: #fff; padding: 8px 12px; border-radius: 10px;'
+            + ' font: 13px system-ui, sans-serif;';
         document.documentElement.appendChild(n);
         setTimeout(() => n.remove(), 2000);
     }
 
     chrome.runtime.onMessage.addListener((msg) => {
-        if (msg && msg.type === 'read-aloud:start') startReading(msg.mode);
+        if (msg && msg.type === 'read-aloud:open') open(msg.sid);
+        else if (msg && msg.type === 'read-aloud:notice') flashNotice(msg.text);
     });
 }

@@ -47,4 +47,9 @@ describe('extractSelectionOrPage', () => {
         document.body.innerHTML = 'Just body text.';
         expect(extractSelectionOrPage(document, 'page')).toBe('Just body text.');
     });
+    it('runs from its source alone, as chrome.scripting injects it', () => {
+        document.body.innerHTML = '<main>Injected read.</main>';
+        const injected = new Function(`return (${extractSelectionOrPage.toString()})`)();
+        expect(injected(null, 'page')).toBe('Injected read.');
+    });
 });

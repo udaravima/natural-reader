@@ -41,7 +41,7 @@ Everything else in this document is detail on those two codebases.
 
 ## The one rule: same-origin `/v1`
 
-If you remember one design constraint, remember this one. Every `/v1` fetch the SPA makes goes out with `credentials: 'include'` (`src/utils/apiFetch.js`) so the OIDC session cookie rides along. The browser refuses `credentials: 'include'` responses when the server answers with the wildcard `Access-Control-Allow-Origin: *` — and the backend's default CORS *is* the wildcard (on purpose, for the browser extension, which calls `/v1/synthesize` from arbitrary page origins using a Bearer token instead of cookies).
+If you remember one design constraint, remember this one. Every `/v1` fetch the SPA makes goes out with `credentials: 'include'` (`src/utils/apiFetch.js`) so the OIDC session cookie rides along. The browser refuses `credentials: 'include'` responses when the server answers with the wildcard `Access-Control-Allow-Origin: *` — and the backend's default CORS used to be the wildcard, for the browser extension, which called `/v1/synthesize` from arbitrary page origins. Since extension 0.2.0 it calls from its service worker with a Bearer token, which its host permission exempts from CORS, so the default is now no cross-origin caller at all).
 
 The consequences chain out from there:
 
@@ -123,7 +123,7 @@ Pure companions: `inference.js` (per-model overrides, sent as the turn's `settin
 `server/app.py: create_app()` wires in this order — order is load-bearing:
 
 1. **Logging** (rotating file + console, `logging_config.py`) — plus a second rotating file for the **audit trail** (`server.audit` logger, `LOG_AUDIT_FILE`, default `<LOG_DIR>/audit.log`): one line per change to who holds what (entry added/removed, share created/revoked, placement added/removed, content GC'd), IDs only, never file names or search text.
-2. **CORS** — `FRONTEND_ORIGIN` unset → `["*"]`, credentials **off**; pinned → exact origins, credentials **on** (`appconfig.py`).
+2. **CORS** — `FRONTEND_ORIGIN` unset → no cross-origin caller; pinned → exact origins, credentials **on**; `*` → any origin, credentials **off** (`appconfig.py`).
 3. **SessionMiddleware** (starlette signed cookie) — holds *transient OIDC flow state only* (state/nonce/PKCE). This is deliberately separate from the app session, which is a DB row. `SESSION_SECRET` missing → ephemeral per-process secret, which is why `WORKERS>1` without a shared secret silently breaks OIDC (each worker signs with a different key).
 4. **Routers**: TTS, chat sessions (`chat_sessions.py`) + chat turns (`chat_turns.py`, the streaming orchestrator endpoint), docs, tools, auth, admin, **inference** (`GET /v1/inference/models` only, listing every configured provider). The **LLM router** (`server/llm/router.py`, `start_router()`/`stop_router()`) is started/stopped with the app lifecycle and owns one shared httpx client used by every configured provider adapter, not one client per provider.
 5. **Startup**: `startup_guard()` (fail fast on auth-bypass or weak secret with a non-loopback bind), `init_db()` (retrying; **failure does not kill the app** — TTS keeps serving, DB-backed routes return 503), embeddings/web-search httpx clients, the document storage dir (`DOC_STORAGE_DIR`, falling back to the pre-A1 `PDF_STORAGE_DIR`, then `./data/pdfs`).

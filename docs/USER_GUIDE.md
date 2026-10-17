@@ -88,6 +88,13 @@ purely optional.
    stores only a hash, so it can never be shown again. If you lose it, revoke
    and create a new one.
 
+To use it in the extension: right-click the Read Aloud icon → **Options**,
+paste the token into **Access token**, and click **Test connection**. It
+should say *Connected as* your email. The token stays on that computer: the
+extension keeps it in local storage, not in Chrome sync. If your server is not
+on `localhost`, Test connection also asks Chrome to let the extension reach
+it; allow it, or every read fails.
+
 Treat a token like a password: anyone holding it can act as you (chat, read
 your documents) until it's revoked or your account is disabled. Give each
 device/purpose its own token so you can revoke them independently.

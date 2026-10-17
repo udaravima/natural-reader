@@ -78,13 +78,21 @@ def test_cors_origins_parsed_and_stripped():
     ]
 
 
-def test_cors_origins_blank_falls_back_to_wildcard_default():
-    # Default stays permissive so the content-script extension (arbitrary page
-    # origins) keeps working until it's decoupled via the background worker.
+def test_cors_origins_blank_allows_no_cross_origin_callers():
+    # The wildcard default existed only for the content-script extension. Since
+    # extension 0.2.0 it calls from its service worker, which CORS doesn't
+    # gate, so unset now means no other website may drive the API.
     from server.appconfig import parse_cors_origins
 
-    assert parse_cors_origins(None) == ["*"]
-    assert parse_cors_origins("   ") == ["*"]
+    assert parse_cors_origins(None) == []
+    assert parse_cors_origins("   ") == []
+
+
+def test_cors_wildcard_is_an_explicit_opt_in():
+    from server.appconfig import cors_allow_credentials, parse_cors_origins
+
+    assert parse_cors_origins("*") == ["*"]
+    assert cors_allow_credentials(["*"]) is False
 
 
 def test_cors_credentials_disabled_for_wildcard():

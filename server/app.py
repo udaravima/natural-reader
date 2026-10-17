@@ -42,9 +42,9 @@ def create_app() -> FastAPI:
     app = FastAPI()
     install_handlers(app)
 
-    # CORS origins come from FRONTEND_ORIGIN (comma-separated). Default stays
-    # permissive so the content-script extension keeps working; credentials are
-    # enabled only when origins are pinned, avoiding the SEC-3 wildcard footgun.
+    # CORS origins come from FRONTEND_ORIGIN (comma-separated); unset allows no
+    # cross-origin caller. Credentials are enabled only for pinned origins,
+    # avoiding the SEC-3 wildcard footgun.
     cors_origins = parse_cors_origins(os.environ.get("FRONTEND_ORIGIN"))
     app.add_middleware(
         CORSMiddleware,
