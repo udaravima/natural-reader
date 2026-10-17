@@ -2,9 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [2.3.0] - 2026-10-17
+
+**Access tokens can be limited** to what they're for: read aloud, documents,
+chat or admin, with an expiry. **The read-aloud extension works again** on a
+server with sign-in on, and on strict-CSP sites such as GitHub. One behavior
+change: with `FRONTEND_ORIGIN` unset, **no other website may call the API from
+a browser** (it was `*`). One migration (`019`, additive). Release notes:
+[docs/Release_notes/RELEASE_NOTES_v2.3.0.md](docs/Release_notes/RELEASE_NOTES_v2.3.0.md).
+
+### Added
+
+- **Scoped access tokens.** Settings → Account asks what a new token may do:
+  **Read aloud** (the default; the TTS routes only), **Documents & projects**
+  (everything `reader` covers, read aloud included), **Chat**, **Admin**. Only
+  the kinds the account holds are offered. A token's scopes narrow its
+  owner's current capabilities in `get_current_user`, so every route honours
+  them, and they never add to the account. Scoped tokens can't create, list or
+  revoke tokens (403 `token_scope`), so a leaked one can't mint a
+  replacement. Tokens made before 2.3.0 keep full access and are listed as
+  **Full access (old)**.
+- **Token expiry in the app:** 30 days, 90 days, 1 year (default) or Never.
+  The list shows each token's access, last use and expiry.
+- API: `POST /v1/auth/tokens` takes `scopes` (omitted = full access, as
+  before) and rejects a scope the account lacks or an expiry in the past
+  (422). `GET /v1/auth/tokens` returns `scopes`. `GET /v1/auth/me` adds
+  `scopes` and `read_aloud`.
 
 ### Fixed
+
+- **The token list shows a token as soon as it's created**, and drops it as
+  soon as it's revoked. It re-read the list right after each change, and the
+  server can answer a write before committing it (see Known issues in the
+  release notes), so the new token was sometimes missing until a reload.
 
 - **The read-aloud extension works with sign-in on** (extension 0.2.0). Before,
   it sent no credentials, so every read on a server with sign-in on failed
