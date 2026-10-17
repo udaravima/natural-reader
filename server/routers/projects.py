@@ -96,7 +96,7 @@ async def _load_project(conn, principal, project_id) -> dict:
 
 @router.post("", status_code=201)
 async def create_project(body: ProjectIn, principal: deps.Principal = Depends(_reader),
-                         conn=Depends(deps.get_conn)):
+                         conn=Depends(deps.get_conn, scope="function")):
     if body.owner_user_id is not None and principal.role != "admin":
         raise refusal(403, "insufficient_role",
                       "Only admins can create a project for someone else.", required="admin")
@@ -120,7 +120,7 @@ async def create_project(body: ProjectIn, principal: deps.Principal = Depends(_r
 
 @router.get("")
 async def list_projects(principal: deps.Principal = Depends(_reader),
-                        conn=Depends(deps.get_conn)):
+                        conn=Depends(deps.get_conn, scope="function")):
     """Projects the caller is a member of, newest first. Admins too: every
     project is listed under /v1/admin/projects."""
     cur = await conn.execute(
@@ -133,7 +133,7 @@ async def list_projects(principal: deps.Principal = Depends(_reader),
 
 @router.get("/{project_id}")
 async def get_project(project_id: uuid.UUID, principal: deps.Principal = Depends(_reader),
-                      conn=Depends(deps.get_conn)):
+                      conn=Depends(deps.get_conn, scope="function")):
     await require_project_role(conn, principal, project_id, None)
     return await _load_project(conn, principal, project_id)
 
@@ -141,7 +141,7 @@ async def get_project(project_id: uuid.UUID, principal: deps.Principal = Depends
 @router.patch("/{project_id}")
 async def patch_project(project_id: uuid.UUID, body: ProjectPatch,
                         principal: deps.Principal = Depends(_reader),
-                        conn=Depends(deps.get_conn)):
+                        conn=Depends(deps.get_conn, scope="function")):
     await require_project_role(conn, principal, project_id, "maintainer")
     data = body.model_dump(exclude_unset=True)
     cur = await conn.execute("SELECT name, description FROM projects WHERE id = %s", (project_id,))
@@ -159,7 +159,7 @@ async def patch_project(project_id: uuid.UUID, body: ProjectPatch,
 
 @router.delete("/{project_id}", status_code=204)
 async def delete_project(project_id: uuid.UUID, principal: deps.Principal = Depends(_reader),
-                         conn=Depends(deps.get_conn)):
+                         conn=Depends(deps.get_conn, scope="function")):
     await require_project_role(conn, principal, project_id, "owner", lock=True)
     # Sorted, like admin delete_user's GC: row locks in one order can't deadlock.
     cur = await conn.execute(  # HISTORY, verified or not: everything the cascade drops
@@ -180,14 +180,14 @@ class MemberIn(BaseModel):
 
 @router.get("/{project_id}/members")
 async def get_members(project_id: uuid.UUID, principal: deps.Principal = Depends(_reader),
-                      conn=Depends(deps.get_conn)):
+                      conn=Depends(deps.get_conn, scope="function")):
     await require_project_role(conn, principal, project_id, None)
     return await project_members.list_members(conn, project_id, show_email=_show_email())
 
 
 @router.put("/{project_id}/members/{user_id}")
 async def put_member(project_id: uuid.UUID, user_id: str, body: MemberIn,
-                     principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
+                     principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn, scope="function")):
     """Add a person or change their role (A0 §9.2). The body is required: a
     body-less PUT (accepted before A0) is a 422."""
     return await project_members.put_member(conn, principal, project_id, user_id, body.role,
@@ -196,7 +196,7 @@ async def put_member(project_id: uuid.UUID, user_id: str, body: MemberIn,
 
 @router.delete("/{project_id}/members/{user_id}", status_code=204)
 async def delete_member(project_id: uuid.UUID, user_id: str,
-                        principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
+                        principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn, scope="function")):
     """Remove a member, or leave when `user_id` is the caller's own."""
     await project_members.remove_member(conn, principal, project_id, user_id)
     return Response(status_code=204)
@@ -206,7 +206,7 @@ async def delete_member(project_id: uuid.UUID, user_id: str,
 async def link_doc(project_id: uuid.UUID, doc_id: DocId, response: Response,
                    as_version_of: uuid.UUID | None = Query(None),
                    keep_both: bool = Query(False),
-                   principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
+                   principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn, scope="function")):
     """File a doc from my library into a project (V1 spec §4.2): a
     Contributor or above (admins only through a member role, A0 §5) who holds
     a VERIFIED upload entry for it (A1 §5). The project is checked first, so
@@ -227,7 +227,7 @@ async def link_doc(project_id: uuid.UUID, doc_id: DocId, response: Response,
 @router.get("/{project_id}/events")
 async def get_events(project_id: uuid.UUID, before: int | None = Query(None, ge=1),
                      limit: int = Query(50, ge=1, le=100),
-                     principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
+                     principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn, scope="function")):
     await require_project_role(conn, principal, project_id, None)
     return await project_events.page(conn, project_id, before=before, limit=limit,
                                      show_email=_show_email())

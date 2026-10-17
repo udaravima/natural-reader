@@ -43,14 +43,14 @@ async def _state(conn, doc_id: str) -> str:
 
 @router.get("")
 async def list_documents(project_id: uuid.UUID, principal: deps.Principal = Depends(_reader),
-                         conn=Depends(deps.get_conn)):
+                         conn=Depends(deps.get_conn, scope="function")):
     await require_project_role(conn, principal, project_id, None, admin_ok=False)
     return await doc_versions.list_project_documents(conn, project_id, show_email=_show_email())
 
 
 @router.get("/{document_id}/versions")
 async def list_versions(project_id: uuid.UUID, document_id: uuid.UUID,
-                        principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
+                        principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn, scope="function")):
     await require_project_role(conn, principal, project_id, None, admin_ok=False)
     return await doc_versions.list_versions(conn, project_id, document_id,
                                             show_email=_show_email())
@@ -95,7 +95,7 @@ async def upload_version(project_id: uuid.UUID, document_id: uuid.UUID,
 @router.post("/{document_id}/versions/from-library", status_code=201)
 async def version_from_library(project_id: uuid.UUID, document_id: uuid.UUID,
                                body: FromLibraryIn, principal: deps.Principal = Depends(_reader),
-                               conn=Depends(deps.get_conn)):
+                               conn=Depends(deps.get_conn, scope="function")):
     """A file the caller uploaded to their library becomes the new version
     (proof of possession: a verified upload entry, A1 §4)."""
     await require_project_role(conn, principal, project_id, "contributor", admin_ok=False)
@@ -110,7 +110,7 @@ async def version_from_library(project_id: uuid.UUID, document_id: uuid.UUID,
 @router.post("/{document_id}/versions/{version}/restore", status_code=201)
 async def restore_version(project_id: uuid.UUID, document_id: uuid.UUID, version: int,
                           principal: deps.Principal = Depends(_reader),
-                          conn=Depends(deps.get_conn)):
+                          conn=Depends(deps.get_conn, scope="function")):
     await require_project_role(conn, principal, project_id, "contributor", admin_ok=False)
     out = await doc_versions.restore_version(conn, principal.user_id, project_id, document_id,
                                              version)
@@ -120,7 +120,7 @@ async def restore_version(project_id: uuid.UUID, document_id: uuid.UUID, version
 @router.delete("/{document_id}/versions/{version}", status_code=204)
 async def delete_version(project_id: uuid.UUID, document_id: uuid.UUID, version: int,
                          principal: deps.Principal = Depends(_reader),
-                         conn=Depends(deps.get_conn)):
+                         conn=Depends(deps.get_conn, scope="function")):
     await require_project_role(conn, principal, project_id, "maintainer", admin_ok=False)
     await doc_versions.delete_version(conn, principal.user_id, project_id, document_id, version)
     return Response(status_code=204)
@@ -128,7 +128,7 @@ async def delete_version(project_id: uuid.UUID, document_id: uuid.UUID, version:
 
 @router.post("/{document_id}/merge")
 async def merge(project_id: uuid.UUID, document_id: uuid.UUID, body: MergeIn,
-                principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn)):
+                principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn, scope="function")):
     """`document_id` stays; `from` is absorbed into its history (one-way)."""
     await require_project_role(conn, principal, project_id, "maintainer", admin_ok=False)
     await doc_versions.merge_documents(conn, principal.user_id, project_id, document_id,
@@ -140,7 +140,7 @@ async def merge(project_id: uuid.UUID, document_id: uuid.UUID, body: MergeIn,
 @router.delete("/{document_id}", status_code=204)
 async def remove_document(project_id: uuid.UUID, document_id: uuid.UUID,
                           principal: deps.Principal = Depends(_reader),
-                          conn=Depends(deps.get_conn)):
+                          conn=Depends(deps.get_conn, scope="function")):
     await require_project_role(conn, principal, project_id, "maintainer", admin_ok=False)
     await doc_versions.remove_document(conn, principal.user_id, project_id, document_id)
     return Response(status_code=204)

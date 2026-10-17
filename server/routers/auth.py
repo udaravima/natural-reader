@@ -75,7 +75,7 @@ async def login(request: Request, next: str = "/"):
 
 
 @router.get("/callback")
-async def callback(request: Request, conn=Depends(deps.get_conn),
+async def callback(request: Request, conn=Depends(deps.get_conn, scope="function"),
                    kc=Depends(deps.get_kc_admin)):
     # Keycloak can redirect back with an error instead of a code — an expired
     # auth flow (temporarily_unavailable / authentication_expired), a cancelled
@@ -139,7 +139,7 @@ async def callback(request: Request, conn=Depends(deps.get_conn),
 
 
 @router.post("/logout")
-async def logout(request: Request, conn=Depends(deps.get_conn)):
+async def logout(request: Request, conn=Depends(deps.get_conn, scope="function")):
     cookie = request.cookies.get(deps.COOKIE_NAME)
     if cookie:
         await sessions.revoke_session(conn, cookie)
@@ -180,7 +180,7 @@ async def _post_logout_url(request: Request) -> str:
 
 
 @router.get("/logout")
-async def logout_redirect(request: Request, conn=Depends(deps.get_conn)):
+async def logout_redirect(request: Request, conn=Depends(deps.get_conn, scope="function")):
     # Navigation form of POST /logout: the browser must actually visit the
     # IdP so the IdP can clear its own cookie on its own origin. A fetch would
     # follow the redirect server-side, where cross-origin Set-Cookie never
@@ -249,7 +249,7 @@ class TokenCreateIn(BaseModel):
 async def create_pat(
     body: TokenCreateIn,
     principal: deps.Principal = Depends(deps.require_full_credential),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
 ):
     # Narrowing can't add, but a scope the account lacks would be a token that
     # silently does nothing: refuse it here instead.
@@ -269,7 +269,7 @@ async def create_pat(
 @router.get("/tokens")
 async def list_pats(
     principal: deps.Principal = Depends(deps.require_full_credential),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
 ):
     return await pat.list_tokens(conn, principal.user_id)
 
@@ -278,7 +278,7 @@ async def list_pats(
 async def revoke_pat(
     token_id: str,
     principal: deps.Principal = Depends(deps.require_full_credential),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
 ):
     if not await pat.revoke_token(conn, principal.user_id, token_id):
         raise HTTPException(status_code=404, detail="Token not found")

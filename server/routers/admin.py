@@ -66,7 +66,7 @@ async def _other_active_admins(conn, user_id: str) -> int:
 
 @router.get("/users")
 async def list_all(
-    _: deps.Principal = Depends(deps.require_admin), conn=Depends(deps.get_conn)
+    _: deps.Principal = Depends(deps.require_admin), conn=Depends(deps.get_conn, scope="function")
 ):
     return await users.list_users(conn)
 
@@ -76,7 +76,7 @@ async def patch_user(
     user_id: str,
     body: UserPatchIn,
     _: deps.Principal = Depends(deps.require_admin),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
     kc=Depends(deps.get_kc_admin),
 ):
     # exclude_unset distinguishes "field absent" (untouched) from "explicit
@@ -157,7 +157,7 @@ async def patch_user(
 @router.get("/projects")
 async def list_projects(ownerless: bool = False,
                         _: deps.Principal = Depends(deps.require_admin),
-                        conn=Depends(deps.get_conn)):
+                        conn=Depends(deps.get_conn, scope="function")):
     """Every project (A0 §9.5): owners, member and document counts, and
     whether it is ownerless (its last Owner was deleted) — the recovery list.
     Admins see owners' emails as labels' last resort, like the Users list."""
@@ -189,7 +189,7 @@ async def list_projects(ownerless: bool = False,
 async def enroll_user(
     body: UserEnrollIn,
     _: deps.Principal = Depends(deps.require_admin),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
     kc=Depends(deps.get_kc_admin),
 ):
     """Pre-provision an account. When a Keycloak admin client is configured,
@@ -263,7 +263,7 @@ async def enroll_user(
 async def delete_user(
     user_id: str,
     principal: deps.Principal = Depends(deps.require_admin),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
     kc=Depends(deps.get_kc_admin),
 ):
     """Hard delete (admin-console spec §4): sessions, PATs, usage, library
@@ -342,7 +342,7 @@ async def inference_config(
 async def inference_usage(
     days: int = 7,
     _: deps.Principal = Depends(deps.require_admin),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
 ):
     days = max(1, min(90, days))
     return await inference_budget.admin_usage(conn, days=days)
@@ -380,7 +380,7 @@ async def _assistant_view(conn) -> dict:
 @router.get("/assistant")
 async def get_assistant_profile(
     _: deps.Principal = Depends(deps.require_admin),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
 ):
     return await _assistant_view(conn)
 
@@ -389,7 +389,7 @@ async def get_assistant_profile(
 async def put_assistant_profile(
     body: AssistantProfileIn,
     principal: deps.Principal = Depends(deps.require_admin),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
 ):
     """Save the profile; empty text clears it (the file, or none, applies)."""
     await assistant_profile.save_profile(conn, body.text, updated_by=str(principal.user_id))
