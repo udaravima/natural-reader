@@ -3,10 +3,14 @@ live run (Task 4) needs Postgres, the embedding model and a chat model; the
 parts here are pure."""
 from __future__ import annotations
 
+import re
+from dataclasses import replace
+
 import pytest
 
 from server.evals import project_qa as pq
 from server.evals.doc_qa import has_term
+from server.services import extract
 
 
 def _case(kind):
@@ -35,7 +39,7 @@ def test_fixture_is_the_nine_documents_of_the_worked_example():
 
 def test_padding_docs_are_deterministic_and_distinct():
     a, b = pq.padding_docs(), pq.padding_docs()
-    assert a == b and len(a) == 30 and len({n for n, _ in a}) == 30
+    assert a == b and len(a) == 41 and len({n for n, _ in a}) == 41
 
 
 def test_padding_docs_are_small_markdown_unrelated_to_the_fixture():
@@ -49,6 +53,10 @@ def test_padding_docs_are_small_markdown_unrelated_to_the_fixture():
     for case in pq.CASES:
         if case.expect:
             assert not any(all(has_term(t, term) for term in case.expect) for _, t in docs), case.name
+
+
+def test_the_fixture_plus_padding_is_the_fifty_document_variant():
+    assert len(pq.fixture_files()) + len(pq.padding_docs()) == 50
 
 
 def test_padding_docs_differ_with_the_seed_and_honour_n():
@@ -72,6 +80,10 @@ def test_cases_are_well_formed():
         assert not set(c.docs) & set(c.forbid_docs), c.name
     assert all(c.forbid_docs for c in pq.CASES if c.kind == "named-doc")
     assert all(c.docs for c in pq.CASES if c.kind in {"procedure", "named-doc", "balance"})
+    for c in pq.CASES:
+        assert {d for d, _ in c.pages} <= set(c.docs), c.name
+        assert all(page >= 1 for _, page in c.pages), c.name
+    assert all(c.pages for c in pq.CASES if c.kind in {"code", "exact-label"})
 
 
 def test_expected_terms_are_copied_from_the_frozen_fixture():
@@ -94,6 +106,49 @@ def test_the_code_cases_expect_exact_commands_from_the_fixture():
     assert "python -m pytest server/tests" in tests.expect
 
 
+def _words(text):
+    return " ".join(re.findall(r"\w+", text.lower()))
+
+
+def _page_of(doc, anchor):
+    """The reader page of `anchor` in a fixture document, as the extractor paginates it: the page of the
+    chunk that holds it. Text only inside a fenced code block has no chunk yet (extraction skips fences until
+    code chunks exist), and a fence never starts a page (it has no sentences, so the packing keeps it on the page
+    of the block before it): then it is the page of the chunk holding the line before the fence."""
+    path = pq.FIXTURE_DIR / doc
+    chunks = extract.extract_file(path, "markdown").chunks
+    pages = {c.page for c in chunks if anchor in c.text}
+    if not pages:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        inside = next(i for i, line in enumerate(lines) if anchor in line)
+        opening = max(i for i in range(inside) if lines[i].lstrip().startswith("```"))
+        before = _words(next(line for line in reversed(lines[:opening]) if line.strip()))
+        assert before, (doc, anchor)
+        pages = {c.page for c in chunks if before in _words(c.text)}
+    assert len(pages) == 1, (doc, anchor, pages)     # an anchor on several pages can't name "the" page
+    return pages.pop()
+
+
+# The text of each answer that the page is read from: unique in its document.
+_PAGE_ANCHORS = {
+    "start-command": "./startup.sh start",
+    "quickstart-command": "./startup.sh quickstart",
+    "test-command": "python -m pytest server/tests",
+    "session-lifetimes": "SESSION_TTL_HOURS=168",
+    "oidc-issuer": "OIDC_ISSUER",
+}
+
+
+def test_expected_pages_are_where_the_extractor_puts_them():
+    """Not hard-coded in the test: a drift in the fixture or in the extractor's pagination fails here."""
+    with_pages = {c.name for c in pq.CASES if c.pages and c.kind != "map-shortened"}
+    assert with_pages == set(_PAGE_ANCHORS)
+    for c in pq.CASES:
+        if c.name in _PAGE_ANCHORS:
+            want = tuple((doc, _page_of(doc, _PAGE_ANCHORS[c.name])) for doc in c.docs)
+            assert c.pages == want, c.name
+
+
 def test_map_shortened_cases_repeat_an_overview_and_a_code_question():
     shortened = [c for c in pq.CASES if c.kind == "map-shortened"]
     others = {c.question: c for c in pq.CASES if c.kind != "map-shortened"}
@@ -101,7 +156,7 @@ def test_map_shortened_cases_repeat_an_overview_and_a_code_question():
     assert {others[c.question].kind for c in shortened} == {"overview", "code"}
     for c in shortened:
         twin = others[c.question]
-        assert (c.expect, c.docs, c.forbid_docs) == (twin.expect, twin.docs, twin.forbid_docs)
+        assert (c.expect, c.docs, c.forbid_docs, c.pages) == (twin.expect, twin.docs, twin.forbid_docs, twin.pages)
 
 
 def test_cited_docs_reads_names_with_commas_and_parentheses():
@@ -222,11 +277,91 @@ def test_a_citation_with_a_dot_inside_the_name_does_not_split_the_rhel_sentence(
     assert pq.score(case, answer, [], names, offered=True).paged_gap
 
 
+def test_the_gap_case_fails_without_the_offer_of_a_web_search():
+    case = _case("gap-general")
+    answer = "The documents don't cover RHEL. They need Python 3.12 (README.md, page 5)."
+    assert _score(case, answer, offered=True).passed
+    r = _score(case, answer, offered=False)
+    assert not r.passed and not r.offered
+    assert "no offer" in pq.format_report([[r]], model="m", variant="9")
+
+
 def test_the_offer_is_recorded_for_the_gap_case_and_reported():
     case = _case("gap-general")
     answer = "The documents don't cover RHEL. Shall I search the web?"
     r = _score(case, answer, offered=True)
     assert r.offered and "offered" in pq.format_report([[r]], model="m", variant="9")
+
+
+# ---- overview: breadth, not named documents ----
+
+_ALL_FEATURES = ("Text-to-speech reading (README.md, page 1), chat with your documents (USER_GUIDE.md, page 2), "
+                 "a library of PDF and Markdown files (CHAT_WITH_PDF.md, page 3), accounts through Keycloak, "
+                 "and an admin console.")
+
+
+def test_an_overview_needs_three_distinct_documents_and_enough_features():
+    for name in ("features", "features-50"):          # the map-shortened twin is scored the same way
+        case = next(c for c in pq.CASES if c.name == name)
+        assert len(case.expect) >= 6 and not case.docs
+        r = _score(case, _ALL_FEATURES)
+        assert r.passed and r.fact and r.cited and r.cited_docs == {"README.md", "USER_GUIDE.md", "CHAT_WITH_PDF.md"}
+        # Any three will do: not the three the author had in mind.
+        other = (_ALL_FEATURES.replace("CHAT_WITH_PDF.md", "LIBRARY.md")
+                 .replace("USER_GUIDE.md", "IDENTITY_AND_ROLES.md"))
+        assert _score(case, other).passed
+        two = _ALL_FEATURES.replace("CHAT_WITH_PDF.md", "README.md")
+        r = _score(case, two)
+        assert not r.passed and r.fact and not r.cited and len(r.cited_docs) == 2
+        # The same document twice, or on two pages, is one document.
+        assert not _score(case, _ALL_FEATURES.replace("USER_GUIDE.md", "README.md")
+                          .replace("CHAT_WITH_PDF.md", "README.md")).passed
+
+
+def test_an_overview_needs_two_thirds_of_its_listed_features():
+    case = _case("overview")
+    need = -(-2 * len(case.expect) // 3)               # ceil(2/3 x terms)
+    assert need == 4
+    cited = "(README.md, page 1) (USER_GUIDE.md, page 2) (CHAT_WITH_PDF.md, page 3)"
+    four = f"Text-to-speech, chat, a library and admin projects {cited}."
+    assert _score(case, four).passed
+    three = f"Text-to-speech, chat and a library {cited}."
+    r = _score(case, three)
+    assert not r.passed and not r.fact and r.cited
+    assert "3/6 terms (need 4)" in pq.format_report([[r]], model="m", variant="9")
+
+
+def test_an_overview_fails_on_a_wrong_document_however_broad():
+    case = replace(_case("overview"), forbid_docs=("LIBRARY.md",))
+    r = _score(case, _ALL_FEATURES + " (LIBRARY.md, page 1)")
+    assert not r.passed and r.wrong_docs == {"LIBRARY.md"}
+    # A padding document is wrong for every case, the overview included.
+    pad = pq.padding_docs()[0][0]
+    r = pq.score(_case("overview"), _ALL_FEATURES + f" ({pad}, page 1)", [], [*NAMES, pad], offered=False)
+    assert not r.passed and r.wrong_docs == {pad}
+
+
+# ---- right document and page ----
+
+def test_a_listed_page_must_be_cited_with_its_document():
+    case = next(c for c in pq.CASES if c.name == "session-lifetimes")
+    assert case.pages == (("ARCHITECTURE.md", 3),)
+    ok = _score(case, "TTL 168 hours, idle 12 hours (ARCHITECTURE.md, page 3).")
+    assert ok.passed and ok.pages_ok
+    wrong_page = _score(case, "TTL 168 hours, idle 12 hours (ARCHITECTURE.md, page 4).")
+    assert not wrong_page.passed and wrong_page.cited and wrong_page.pages_ok is False
+    wrong_doc = _score(case, "TTL 168 hours, idle 12 hours (DEPLOYMENT.md, page 3).")
+    assert not wrong_doc.passed and not wrong_doc.cited
+    bare = _score(case, "TTL 168 hours, idle 12 hours (page 3).")
+    assert not bare.passed
+    assert "page missing (want ARCHITECTURE.md p. 3)" in pq.format_report([[wrong_page]], model="m", variant="9")
+
+
+def test_one_right_page_among_several_cited_is_enough():
+    case = next(c for c in pq.CASES if c.name == "test-command")
+    answer = ("With Postgres up: .venv/bin/python -m pytest server/tests/ -q "
+              "(TESTING.md, page 2) (TESTING.md, page 1).")
+    assert _score(case, answer).passed
 
 
 def test_live_fails_with_an_offer_but_a_web_call_and_counts_the_calls():
@@ -246,7 +381,7 @@ def test_a_turn_that_errored_is_an_error_not_a_model_failure():
 
 def test_the_report_has_a_line_per_case_a_citation_rate_and_a_total():
     code = _case("code")
-    ok = _score(code, "./startup.sh start (DEPLOYMENT.md, page 1).")
+    ok = _score(code, "./startup.sh start (README.md, page 3).")
     bad = _score(code, "Use docker.")
     ok.seconds = 2.5
     report = pq.format_report([[ok, bad]], model="ollama:gemma4:31b-cloud", variant="50")
@@ -259,5 +394,5 @@ def test_the_report_has_a_line_per_case_a_citation_rate_and_a_total():
 
 def test_the_report_tallies_repeats_by_kind():
     code = _case("code")
-    runs = [[_score(code, "./startup.sh start")], [_score(code, "nope")]]
+    runs = [[_score(code, "./startup.sh start (README.md, page 3)")], [_score(code, "nope")]]
     assert "code 1/2" in pq.format_report(runs, model="m", variant="9")

@@ -4,9 +4,9 @@ A project is a folder of documents, and the chat is asked about all of them.
 The documents are a frozen copy of this repository's own docs
 (fixtures/project_docs, see SOURCE.txt for the commit), the worked example in
 the design: a newcomer asks what the features are, how to deploy and test,
-and what to install on a system the docs never mention. A variant adds 30
-generated padding documents, so the project is big enough that the map is
-shortened.
+and what to install on a system the docs never mention. A variant adds 41
+generated padding documents (9 + 41 = 50), so the project is big enough that
+the map is shortened.
 
 Everything here is pure (server/tests/test_eval_project_qa.py): the fixture,
 the cases and the scoring. The live run, which needs Postgres, the embedding
@@ -18,6 +18,7 @@ the score fails any answer that cites one a case forbids.
 """
 from __future__ import annotations
 
+import math
 import random
 import re
 from dataclasses import dataclass, field, replace
@@ -30,6 +31,8 @@ from .doc_qa import has_term, is_refusal
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "project_docs"
 
 WEB_TOOLS = {"web_search", "read_web_pages"}   # any of these ran: a web request left the server
+OVERVIEW_MIN_DOCS = 3          # an overview cites at least this many distinct documents (spec section 9)
+OVERVIEW_TERM_SHARE = 2 / 3    # ... and mentions at least this share of its listed features
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,7 @@ class Case:
     forbid_docs: tuple[str, ...] = ()   # documents a right answer never cites
     setup: tuple[str, ...] = ()         # earlier user turns, asked first in the same chat
     web: str = "ask"                    # the chat's web-search mode for this case
+    pages: tuple[tuple[str, int], ...] = ()   # (document, page) citations a right answer includes
 
 
 # ---------- the fixture ----------
@@ -80,10 +84,10 @@ _PAD_SENTENCES = (
 _PAD_NUMBERS = ("two", "three", "four", "five", "seven")   # words, so no digit can match an expected figure
 
 
-def padding_docs(n: int = 30, seed: int = 7) -> list[tuple[str, str]]:
+def padding_docs(n: int = 41, seed: int = 7) -> list[tuple[str, str]]:
     """`n` small generated Markdown documents, (file name, text): the same ones for the same seed.
     Hobby notes, about nothing in the fixture, so they add names and outlines to the map
-    without adding an answer to any case."""
+    without adding an answer to any case. The default 41 plus the fixture's 9 make the 50-document variant."""
     rnd = random.Random(seed)
     topics = list(_PAD_TOPICS.items())
     docs = []
@@ -109,16 +113,19 @@ def _padding_names() -> frozenset[str]:
 
 
 # ---------- the cases ----------
-# Every expected term below is a string of the frozen fixture (a test greps for it).
+# Every expected term below is a string of the frozen fixture, and every expected page is where the reader's
+# extraction puts it (tests check both).
 
+# Overview: no document is named; it passes on breadth (OVERVIEW_MIN_DOCS cited, OVERVIEW_TERM_SHARE of the terms).
 _FEATURES = Case(
     "features", "overview", "What are the features?",
     ("text-to-speech|read aloud|reads aloud|kokoro", "chat", "library",
-     "accounts|sign in|sign-in|login|log in|keycloak|oidc"),
-    ("README.md", "USER_GUIDE.md", "CHAT_WITH_PDF.md"))
+     "accounts|sign in|sign-in|login|log in|keycloak|oidc", "pdf|markdown", "admin|project|projects"),
+    ())
+# README says it once, in the Quickstart section's table (page 3); DEPLOYMENT says it on two pages.
 _START = Case(
-    "start-command", "code", "Which command starts all the containers in the background?",
-    ("./startup.sh start",), ())
+    "start-command", "code", "Which command does the README give for starting all the containers in the background?",
+    ("./startup.sh start",), ("README.md",), pages=(("README.md", 3),))
 
 CASES: tuple[Case, ...] = (
     _FEATURES,
@@ -127,15 +134,15 @@ CASES: tuple[Case, ...] = (
     _START,
     # In a fenced code block of README.md, which extraction skips today (spec F4).
     Case("quickstart-command", "code", "Which command does the Linux quickstart run to set everything up?",
-         ("./startup.sh quickstart",), ("README.md",)),
+         ("./startup.sh quickstart",), ("README.md",), pages=(("README.md", 3),)),
     # `.venv/bin/python -m pytest server/tests/ -q` is in TESTING.md's fence; README's variant has no "python -m".
     Case("test-command", "code", "What exact command runs the backend test suite, and what must be running first?",
-         ("python -m pytest server/tests", "postgres"), ("TESTING.md",)),
+         ("python -m pytest server/tests", "postgres"), ("TESTING.md",), pages=(("TESTING.md", 1),)),
     Case("session-lifetimes", "exact-label", "What are the default values of SESSION_TTL_HOURS and SESSION_IDLE_HOURS?",
-         ("168", "12"), ("ARCHITECTURE.md",)),
+         ("168", "12"), ("ARCHITECTURE.md",), pages=(("ARCHITECTURE.md", 3),)),
     Case("oidc-issuer", "exact-label", "What should OIDC_ISSUER be set to in production, and what is it in local dev?",
          ("https://auth.example.com/realms/natural-reader", "http://localhost:18080/realms/natural-reader"),
-         ("DEPLOYMENT.md",)),
+         ("DEPLOYMENT.md",), pages=(("DEPLOYMENT.md", 2),)),
     # README and CHAT_WITH_PDF say a great deal more about pins than the user guide does.
     Case("user-guide-pins", "named-doc", "What does the user guide say about pins?",
          ("each message|every message",), ("USER_GUIDE.md",), ("README.md", "CHAT_WITH_PDF.md")),
@@ -153,6 +160,20 @@ CASES: tuple[Case, ...] = (
     replace(_FEATURES, name="features-50", kind="map-shortened"),
     replace(_START, name="start-command-50", kind="map-shortened"),
 )
+
+
+def _scoring_kind(case: Case) -> str:
+    """A map-shortened case is scored as the case it repeats."""
+    if case.kind != "map-shortened":
+        return case.kind
+    return next((c.kind for c in CASES if c.kind != "map-shortened" and c.question == case.question), case.kind)
+
+
+def _terms_needed(case: Case) -> int:
+    """How many expected terms a right answer contains: all, except an overview, which lists features."""
+    if _scoring_kind(case) == "overview":
+        return math.ceil(OVERVIEW_TERM_SHARE * len(case.expect))
+    return len(case.expect)
 
 
 # ---------- scoring ----------
@@ -206,7 +227,8 @@ class Result:
     tools: list[str] = field(default_factory=list)
     rounds: int = 0
     fact: bool | None = None          # every expected term is in the answer
-    cited: bool | None = None         # every document the case names is cited
+    cited: bool | None = None         # every document the case names is cited (an overview: enough documents)
+    pages_ok: bool | None = None      # every (document, page) the case lists is cited
     refused: bool | None = None       # gap-general: says the documents don't cover it
     paged_gap: bool = False           # gap-general: a document cited in a sentence about the outside term
     cited_docs: set[str] = field(default_factory=set)
@@ -230,18 +252,22 @@ def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], names: list
         return result
     # A padding document is never the right one to cite, and a case may name documents the runner left out.
     known = list(dict.fromkeys([*names, *case.docs, *case.forbid_docs, *sorted(_padding_names())]))
-    result.cited_docs = set(cited_docs(answer, known))
+    pages = cited_docs(answer, known)
+    result.cited_docs = set(pages)
     result.wrong_docs = result.cited_docs & (set(case.forbid_docs) | _padding_names())
-    result.fact = all(has_term(answer, term) for term in case.expect)
-    result.cited = set(case.docs) <= result.cited_docs
+    result.fact = sum(has_term(answer, term) for term in case.expect) >= _terms_needed(case)
+    result.cited = set(case.docs) <= result.cited_docs and (
+        _scoring_kind(case) != "overview" or len(result.cited_docs) >= OVERVIEW_MIN_DOCS)
+    result.pages_ok = all(page in pages.get(doc, ()) for doc, page in case.pages)
     if case.kind == "live":
         result.passed = offered and result.web_calls == 0
     elif case.kind == "gap-general":
         result.refused = is_refusal(answer)
         result.paged_gap = _cites_in_a_sentence_with(answer, known, case.expect[0])
-        result.passed = result.fact and result.refused and not result.paged_gap and not result.wrong_docs
+        result.passed = (result.fact and result.refused and not result.paged_gap and not result.wrong_docs
+                         and offered)
     else:
-        result.passed = result.fact and result.cited and not result.wrong_docs
+        result.passed = result.fact and result.cited and result.pages_ok and not result.wrong_docs
     return result
 
 
@@ -253,15 +279,26 @@ def _detail(r: Result) -> str:
         return ("offered the search" if r.offered else "no offer") + f"; {r.web_calls} web calls"
     parts = []
     if case.expect:
-        parts.append("fact ok" if r.fact else f"fact missing ({', '.join(case.expect)})")
+        need = _terms_needed(case)
+        if need < len(case.expect):
+            hits = sum(has_term(r.answer, term) for term in case.expect)
+            missing = "" if r.fact else f": {', '.join(case.expect)}"
+            parts.append(f"{hits}/{len(case.expect)} terms (need {need}){missing}")
+        else:
+            parts.append("fact ok" if r.fact else f"fact missing ({', '.join(case.expect)})")
     if case.kind == "gap-general":
         parts.append("said the documents don't cover it" if r.refused else "didn't say the documents don't cover it")
         if r.paged_gap:
             parts.append("cited a page for the part they don't cover")
         parts.append("offered the search" if r.offered else "no offer")
+    if _scoring_kind(case) == "overview":
+        parts.append(f"{len(r.cited_docs)} documents cited (need {OVERVIEW_MIN_DOCS})")
     if case.docs:
-        missing = [d for d in case.docs if d not in r.cited_docs]
-        parts.append("documents ok" if not missing else f"not cited ({', '.join(missing)})")
+        not_cited = [d for d in case.docs if d not in r.cited_docs]
+        parts.append("documents ok" if not not_cited else f"not cited ({', '.join(not_cited)})")
+    if case.pages:
+        want = ", ".join(f"{d} p. {p}" for d, p in case.pages)
+        parts.append("pages ok" if r.pages_ok else f"page missing (want {want})")
     if r.wrong_docs:
         parts.append(f"cited the wrong document ({', '.join(sorted(r.wrong_docs))})")
     return "; ".join(parts)
@@ -288,7 +325,8 @@ def format_report(runs: list[list[Result]], *, model: str, variant: str) -> str:
             n, p = tally.get(r.case.kind, (0, 0))
             tally[r.case.kind] = (n + 1, p + r.passed)
         lines.append("tally: " + ", ".join(f"{k} {p}/{n}" for k, (n, p) in tally.items()))
-    answered = [r for r in every if not r.error and (r.case.docs or r.case.forbid_docs)]
+    answered = [r for r in every if not r.error
+                and (r.case.docs or r.case.forbid_docs or _scoring_kind(r.case) == "overview")]
     if answered:
         right = sum(bool(r.cited) and not r.wrong_docs for r in answered)
         lines.append(f"right-document citations {right}/{len(answered)}")
