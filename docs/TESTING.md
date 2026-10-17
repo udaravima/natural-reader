@@ -38,10 +38,10 @@ spot a feature that shipped without coverage.
 # Backend — REQUIRES Postgres up (conftest migrates natural_reader_test on a
 # real connection; without the DB every test errors, not skips).
 podman-compose up -d postgres          # or: env -u XDG_DATA_HOME .venv/bin/podman-compose ...
-.venv/bin/python -m pytest server/tests/ -q          # 1235 passed, 16 skipped, 2 deselected @ 2026-10-12
+.venv/bin/python -m pytest server/tests/ -q          # 1254 passed, 16 skipped, 2 deselected @ 2026-10-17
 
 # Frontend (vitest, jsdom — no services needed)
-npx vitest run                                       # 574 passed (83 files) @ 2026-10-12
+npx vitest run                                       # 601 passed (83 files) @ 2026-10-17
 
 # Lint
 npm run lint

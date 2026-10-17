@@ -6,7 +6,8 @@
     body { width: 240px; margin: 0; padding: 12px; font: 13px system-ui, sans-serif; background: #1f2430; color: #f5f7fa; }
     h1 { font-size: 14px; margin: 0 0 10px; display: flex; align-items: center; gap: 6px; }
     .dot { width: 9px; height: 9px; border-radius: 50%; background: #888; display: inline-block; }
-    .dot.ok { background: #35c46a; } .dot.bad { background: #e0526a; }
+    .dot.ok { background: #35c46a; } .dot.warn { background: #e0a43a; } .dot.bad { background: #e0526a; }
+    #conn { margin: 0 0 8px; font-size: 12px; opacity: .85; }
     button.read { width: 100%; margin: 4px 0; padding: 8px; border: 0; border-radius: 8px; background: #3a4256; color: #fff; cursor: pointer; }
     label { display: block; margin: 8px 0 2px; opacity: .8; }
     select, input { width: 100%; box-sizing: border-box; }
@@ -15,6 +16,7 @@
 </head>
 <body>
   <h1><span class="dot" id="dot"></span> Read Aloud</h1>
+  <p id="conn">Checking…</p>
   <button class="read" data-mode="selection">Read selection</button>
   <button class="read" data-mode="page">Read whole page</button>
   <label>Voice</label>

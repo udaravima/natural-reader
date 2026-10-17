@@ -1,13 +1,11 @@
-:host { all: initial; }
+html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
 .bar {
-    position: fixed; z-index: 2147483647; bottom: 20px; left: 50%;
-    transform: translateX(-50%);
-    display: flex; align-items: center; gap: 10px;
+    display: inline-flex; align-items: center; gap: 10px;
     padding: 8px 12px; border-radius: 12px;
     background: #1f2430; color: #f5f7fa;
     font: 13px/1.4 system-ui, sans-serif;
-    box-shadow: 0 6px 24px rgba(0,0,0,.35);
-    user-select: none;
+    box-shadow: 0 4px 14px rgba(0,0,0,.35);
+    user-select: none; white-space: nowrap;
 }
 .bar button {
     background: #2d3444; color: inherit; border: 0; border-radius: 8px;
@@ -16,7 +14,8 @@
 .bar button:hover { background: #3a4256; }
 .bar button:disabled { opacity: .5; cursor: default; }
 .bar select, .bar input[type="range"] { font: inherit; }
-.handle { cursor: grab; padding: 0 4px; opacity: .6; }
-.status { min-width: 70px; opacity: .8; }
+.handle { cursor: grab; padding: 0 4px; opacity: .6; touch-action: none; }
+.status { min-width: 70px; max-width: 360px; overflow: hidden; text-overflow: ellipsis; opacity: .8; }
 .progress { width: 120px; }
 .bar.error { background: #5b2330; }
+.bar.error .status { white-space: normal; min-width: 320px; max-width: 420px; opacity: 1; }

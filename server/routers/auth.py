@@ -3,14 +3,16 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from urllib.parse import urlencode, urlsplit
 
 from authlib.integrations.starlette_client import OAuthError
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..auth import deps, sessions, tokens as pat, users
+from ..auth.scopes import REQUIRES, SCOPES
 from ..auth.capabilities import caps_from_claims
 from ..auth.config import load_auth_config
 from ..auth.oidc import build_oauth
@@ -199,32 +201,74 @@ async def logout_redirect(request: Request, conn=Depends(deps.get_conn)):
 
 @router.get("/me")
 async def me(principal: deps.Principal = Depends(deps.get_current_user)):
+    """Who the credential acts as. For a scoped token, role and capabilities
+    are already narrowed to its scopes; read_aloud says whether the TTS routes
+    will accept it (the extension's Test connection asks this)."""
     return {"id": principal.user_id, "email": principal.email,
-            "role": principal.role, "capabilities": sorted(principal.capabilities)}
+            "role": principal.role, "capabilities": sorted(principal.capabilities),
+            "scopes": sorted(principal.scopes) if principal.scopes is not None else None,
+            "read_aloud": principal.can_read_aloud}
 
 
 # ---------- Personal access tokens ----------
 
 class TokenCreateIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    expires_at: str | None = None  # ISO-8601; None = no expiry
+    expires_at: datetime | None = None  # ISO-8601, in the future; None = no expiry
+    # None = full access (the API's behavior before scopes existed); the app's
+    # Settings → Account always sends a list.
+    scopes: list[str] | None = None
+
+    @field_validator("expires_at")
+    @classmethod
+    def _future(cls, v):
+        if v is None:
+            return v
+        if v.tzinfo is None:
+            v = v.replace(tzinfo=timezone.utc)
+        if v <= datetime.now(timezone.utc):
+            raise ValueError("expires_at must be in the future")
+        return v
+
+    @field_validator("scopes")
+    @classmethod
+    def _known(cls, v):
+        if v is None:
+            return v
+        if not v:
+            raise ValueError("pick at least one scope, or omit scopes for full access")
+        if len(set(v)) != len(v):
+            raise ValueError("scopes must not repeat")
+        unknown = [s for s in v if s not in SCOPES]
+        if unknown:
+            raise ValueError(f"unknown scopes {unknown}; known: {list(SCOPES)}")
+        return v
 
 
 @router.post("/tokens")
 async def create_pat(
     body: TokenCreateIn,
-    principal: deps.Principal = Depends(deps.get_current_user),
+    principal: deps.Principal = Depends(deps.require_full_credential),
     conn=Depends(deps.get_conn),
 ):
+    # Narrowing can't add, but a scope the account lacks would be a token that
+    # silently does nothing: refuse it here instead.
+    lacking = [s for s in (body.scopes or []) if REQUIRES[s] not in principal.capabilities]
+    if lacking:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "scope_not_held", "scopes": lacking,
+                    "message": f"Your account can't grant {', '.join(lacking)}."},
+        )
     tid, raw = await pat.create_token(
-        conn, principal.user_id, body.name, expires_at=body.expires_at
+        conn, principal.user_id, body.name, expires_at=body.expires_at, scopes=body.scopes
     )
     return {"id": tid, "token": raw}
 
 
 @router.get("/tokens")
 async def list_pats(
-    principal: deps.Principal = Depends(deps.get_current_user),
+    principal: deps.Principal = Depends(deps.require_full_credential),
     conn=Depends(deps.get_conn),
 ):
     return await pat.list_tokens(conn, principal.user_id)
@@ -233,7 +277,7 @@ async def list_pats(
 @router.delete("/tokens/{token_id}", status_code=204)
 async def revoke_pat(
     token_id: str,
-    principal: deps.Principal = Depends(deps.get_current_user),
+    principal: deps.Principal = Depends(deps.require_full_credential),
     conn=Depends(deps.get_conn),
 ):
     if not await pat.revoke_token(conn, principal.user_id, token_id):

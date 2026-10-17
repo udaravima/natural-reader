@@ -1,11 +1,12 @@
-import { getSettings, setSettings } from '../shared/settings.js';
+import { getSettings, setSettings, getToken } from '../shared/settings.js';
 import { VOICES } from '../shared/voices.js';
-import { health } from '../shared/api.js';
+import { checkConnection, CONNECTION_TEXT } from '../shared/api.js';
 
 const voiceSel = document.getElementById('voice');
 const speed = document.getElementById('speed');
 const speedVal = document.getElementById('speedVal');
 const dot = document.getElementById('dot');
+const conn = document.getElementById('conn');
 
 async function init() {
     const s = await getSettings();
@@ -18,8 +19,11 @@ async function init() {
     speed.value = String(s.speed);
     speedVal.textContent = `${s.speed}×`;
 
-    const ok = await health({ baseUrl: s.baseUrl });
-    dot.classList.add(ok ? 'ok' : 'bad');
+    // Green only if a read would succeed: a healthy server that refuses the
+    // token is amber, since every read there would fail.
+    const r = await checkConnection({ baseUrl: s.baseUrl, token: await getToken() });
+    dot.classList.add(r.ok ? 'ok' : r.reason === 'unreachable' ? 'bad' : 'warn');
+    conn.textContent = r.ok && r.email ? `Signed in as ${r.email}` : CONNECTION_TEXT[r.reason];
 }
 
 voiceSel.addEventListener('change', () => setSettings({ voice: voiceSel.value }));

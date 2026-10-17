@@ -9,6 +9,7 @@
     .row { display: flex; gap: 8px; align-items: center; }
     button { padding: 8px 14px; margin-top: 8px; cursor: pointer; }
     #testResult { margin-left: 10px; font-size: 13px; }
+    .hint { margin: 4px 0 0; font-size: 12px; color: #666; }
   </style>
 </head>
 <body>
@@ -19,6 +20,11 @@
   <input id="speed" type="range" min="0.5" max="2" step="0.1" />
   <label>Backend URL</label>
   <input id="baseUrl" type="text" />
+  <label>Access token</label>
+  <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="nrp_…" />
+  <p class="hint">Needed when your server has sign-in on. Create one in Natural Reader under
+    Settings → Account with <b>Read aloud</b> access only, then paste it here. It's kept on
+    this device only.</p>
   <div class="row">
     <button id="test">Test connection</button>
     <span id="testResult"></span>

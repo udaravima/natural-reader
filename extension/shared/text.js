@@ -20,18 +20,19 @@ export function chunkSentences(sentences, size = 30) {
     return out;
 }
 
-function readableText(el) {
-    if (!el) return '';
-    // innerText respects rendering in a real browser; jsdom leaves it undefined,
-    // so fall back to textContent for tests.
-    return (el.innerText != null ? el.innerText : el.textContent) || '';
-}
-
+// The service worker runs this in the page with chrome.scripting, which sends
+// only the function's source: it must not reference anything else in this
+// module. doc is null there, so it reads the page's document.
 export function extractSelectionOrPage(doc, mode) {
+    const d = doc || document;
     if (mode === 'selection') {
-        const sel = doc.getSelection && doc.getSelection();
+        const sel = d.getSelection && d.getSelection();
         return ((sel && sel.toString()) || '').trim();
     }
-    const main = doc.querySelector('article, main') || doc.body;
-    return readableText(main).replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+    const main = d.querySelector('article, main') || d.body;
+    if (!main) return '';
+    // innerText respects rendering in a real browser; jsdom leaves it undefined,
+    // so fall back to textContent for tests.
+    const text = (main.innerText != null ? main.innerText : main.textContent) || '';
+    return text.replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
 }

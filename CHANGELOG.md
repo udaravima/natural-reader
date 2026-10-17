@@ -2,6 +2,70 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.0] - 2026-10-17
+
+**Access tokens can be limited** to what they're for: read aloud, documents,
+chat or admin, with an expiry. **The read-aloud extension works again** on a
+server with sign-in on, and on strict-CSP sites such as GitHub. One behavior
+change: with `FRONTEND_ORIGIN` unset, **no other website may call the API from
+a browser** (it was `*`). One migration (`019`, additive). Release notes:
+[docs/Release_notes/RELEASE_NOTES_v2.3.0.md](docs/Release_notes/RELEASE_NOTES_v2.3.0.md).
+
+### Added
+
+- **Scoped access tokens.** Settings → Account asks what a new token may do:
+  **Read aloud** (the default; the TTS routes only), **Documents & projects**
+  (everything `reader` covers, read aloud included), **Chat**, **Admin**. Only
+  the kinds the account holds are offered. A token's scopes narrow its
+  owner's current capabilities in `get_current_user`, so every route honours
+  them, and they never add to the account. Scoped tokens can't create, list or
+  revoke tokens (403 `token_scope`), so a leaked one can't mint a
+  replacement. Tokens made before 2.3.0 keep full access and are listed as
+  **Full access (old)**.
+- **Token expiry in the app:** 30 days, 90 days, 1 year (default) or Never.
+  The list shows each token's access, last use and expiry.
+- API: `POST /v1/auth/tokens` takes `scopes` (omitted = full access, as
+  before) and rejects a scope the account lacks or an expiry in the past
+  (422). `GET /v1/auth/tokens` returns `scopes`. `GET /v1/auth/me` adds
+  `scopes` and `read_aloud`.
+
+### Fixed
+
+- **The token list shows a token as soon as it's created**, and drops it as
+  soon as it's revoked. It re-read the list right after each change, and the
+  server can answer a write before committing it (see Known issues in the
+  release notes), so the new token was sometimes missing until a reload.
+
+- **The read-aloud extension works with sign-in on** (extension 0.2.0). Before,
+  it sent no credentials, so every read on a server with sign-in on failed
+  with 401, while the popup's dot still showed green. Its options page now
+  takes an access token (create one under Settings → Account), kept in
+  `chrome.storage.local` on that computer only. Synthesis runs in the
+  extension's service worker: a request carrying a token from an ordinary web
+  page would fail the server's CORS check, and the worker's host permission
+  skips it. The token never enters the page. **Test connection** and the popup
+  check the token through `/v1/auth/me`: green means a read will work, amber
+  means the server refused you, and the line under the title says why. A
+  server that isn't on `localhost` gets a site-access prompt from Test
+  connection.
+- **Read-aloud plays on strict-CSP sites** such as GitHub and `claude.ai`. The
+  toolbar played its audio from the page, whose `media-src` policy refused the
+  `blob:` audio without an error: the toolbar said "reading" and stayed
+  silent. The toolbar is now an extension page in an iframe, which plays under
+  the extension's own policy, and no extension code is loaded into the page.
+  Dragging follows the pointer even when it outruns the bar.
+
+### Changed
+
+- **CORS: unset `FRONTEND_ORIGIN` now allows no cross-origin browser caller**
+  (was `*`). The wildcard existed for the read-aloud extension, and it let any
+  website drive your Kokoro endpoint from JavaScript. The SPA is same-origin
+  and the extension now calls from its service worker, so neither needs it.
+  **Upgrade note:** a page on another origin that calls the API from a browser
+  stops working until its origin is listed in `FRONTEND_ORIGIN`, or `*` is set
+  to keep the old behavior. Read-aloud extension 0.1.0 is among them; reload
+  the extension to get 0.2.0.
+
 ## [2.2.0] - 2026-10-12
 
 Projects become **team spaces with roles** (Reader, Contributor, Maintainer,

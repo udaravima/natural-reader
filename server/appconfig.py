@@ -12,13 +12,15 @@ def parse_cors_origins(raw: str | None) -> list[str]:
     """
     Turn a comma-separated FRONTEND_ORIGIN env value into a CORS allowlist.
 
-    Blank/unset stays permissive (`["*"]`) on purpose: the read-aloud extension
-    fetches TTS from a content script, so its requests carry an arbitrary page
-    origin that can't be allowlisted. Deployments pin origins by setting
-    FRONTEND_ORIGIN, which also flips on credentials — see cors_allow_credentials.
+    Blank/unset allows no cross-origin browser caller: the SPA is same-origin,
+    and the read-aloud extension calls from its service worker, which CORS
+    doesn't gate. (Until extension 0.2.0 it called from the page, which is why
+    this used to default to "*" and let any website drive Kokoro.) Set
+    FRONTEND_ORIGIN to allow other origins, which also flips on credentials —
+    see cors_allow_credentials; "*" is still accepted as an explicit opt-in.
     """
     if not raw or not raw.strip():
-        return ["*"]
+        return []
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 

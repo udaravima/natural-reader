@@ -172,12 +172,15 @@ Keycloak is the **source of truth**; the app keeps a **mirror**:
   effectively `require_capability("admin")` for `/v1/admin/*`. A 403 carries
   `{"error": "missing_capability", "capability": "<name>"}` so the SPA can
   render a specific message instead of a generic "forbidden".
-- **The browser-extension / script PAT path needs `reader`.** A personal
-  access token authenticates as its owning user and is subject to the exact
-  same capability check as the session cookie — if that user's account has no
-  `reader` capability, the extension's TTS calls 403 just like the web app's
-  would. There is no separate "extension scope"; grant the human `reader` and
-  every credential they hold inherits it.
+- **A personal access token narrows its owner; it never widens them.** A
+  token has scopes (`read_aloud`, `documents`, `chat`, `admin`; none = full
+  access, as every pre-2.3.0 token has). `get_current_user` intersects the
+  owner's current capabilities with the token's scopes, so `require_capability`
+  and `require_admin` see the narrowed set with no per-route code, and an
+  owner who loses `reader` loses it on every token at once. The TTS routes use
+  `require_read_aloud`, which accepts `read_aloud` or `documents` on an account
+  holding `reader`. Scoped tokens can't reach `/v1/auth/tokens`
+  (`require_full_credential`). See `server/auth/scopes.py`.
 
 ### The service account that makes admin-console edits real
 
@@ -239,15 +242,16 @@ truth for the running session.
 |---|---|---|
 | Transport | `nr_session` httponly cookie | `Authorization: Bearer nrp_...` |
 | Stored | `sessions` table — **sha256(cookie)** only | `personal_access_tokens` — **sha256(token)** only |
-| Scope | one per browser login | user-managed, named, optional expiry, revocable (`/v1/auth/tokens`) |
-| Works on `/v1/inference/*` (needs `chat` capability) | yes | yes — this is how the browser extension would chat, if it ever grows chat |
-| Works on `/v1/synthesize*` (needs `reader` capability) | yes | yes — **this is how the browser extension reads pages aloud today**; its PAT's owner must hold `reader` or every TTS call 403s |
+| Scope | one per browser login, full account | user-managed, named, scoped (`read_aloud` / `documents` / `chat` / `admin`), optional expiry, revocable |
+| Works on `/v1/inference/*` (needs `chat` capability) | yes | only with the `chat` scope (or a full-access token) |
+| Works on `/v1/synthesize*` (needs `reader` capability) | yes | with `read_aloud` or `documents` (or full access): **this is how the browser extension reads pages aloud**; the owner must hold `reader` |
+| Manages tokens (`/v1/auth/tokens`) | yes | only a full-access (pre-2.3.0) token; scoped tokens get 403 `token_scope` |
 
 A DB leak yields no usable credentials (hashes only). Resolution order in
 `get_current_user`: Bearer first, then cookie — a PAT and a session can
 coexist. Either way the capability check (`require_capability`, previous
-section) runs the same regardless of which credential resolved it — a PAT
-carries no scope narrower than its owning user's current capabilities.
+section) runs the same regardless of which credential resolved it, on the
+capabilities narrowed by the token's scopes.
 
 ## Special identities
 

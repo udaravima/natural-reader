@@ -54,8 +54,10 @@ navigation (reader) and the model picker + sessions (chat). Everything about
 Open **Settings** (header gear, or the profile menu) and go to the **Account**
 section. The first line shows `your@email · role` (role is `admin` or `member`).
 
-Below that is the **token manager**: a name box, a **Create** button, your list
-of tokens, and a **Revoke** button next to each.
+Below that is the **token manager**: what the token may do (**Access**), when
+it expires, a name box, a **Create** button, and your list of tokens. Each
+line in the list says what that token can do, when it was last used and when
+it expires, with a **Revoke** button.
 
 ### Why do these tokens exist?
 
@@ -70,10 +72,9 @@ Authorization: Bearer nrp_your_token_here
 
 Things that need one:
 
-- **The Chrome read-aloud extension.** It talks to the server from arbitrary
-  web pages — it cannot do the interactive login dance, and it can't borrow
-  your cookie. You paste a token into it once and it authenticates from then
-  on.
+- **The Chrome read-aloud extension.** It can't do the interactive login, and
+  it can't borrow your cookie. You paste a token into it once and it
+  authenticates from then on.
 - **Scripts, cron jobs, curl, notebooks** — anything calling the server's API
   outside a browser.
 
@@ -83,14 +84,39 @@ purely optional.
 ### Creating one
 
 1. Open **Settings** and go to the **Account** section.
-2. Type a name (e.g. `my-laptop-extension`) and click **Create**.
-3. The token appears once, with a **Copy** button. **Copy it now** — the server
+2. Under **Access**, tick only what the token is for. **Read aloud** is ticked
+   by default, and that's all the extension needs.
+3. Pick when it **Expires**: 30 days, 90 days, 1 year (the default) or Never.
+4. Type a name (e.g. `my-laptop-extension`) and click **Create**.
+5. The token appears once, with a **Copy** button. **Copy it now** — the server
    stores only a hash, so it can never be shown again. If you lose it, revoke
    and create a new one.
 
-Treat a token like a password: anyone holding it can act as you (chat, read
-your documents) until it's revoked or your account is disabled. Give each
-device/purpose its own token so you can revoke them independently.
+| Access | The token can | Your account needs |
+|---|---|---|
+| Read aloud | turn text into speech (the extension) | `reader` |
+| Documents & projects | everything in the library and projects, people search, and read aloud | `reader` |
+| Chat | chats and models | `chat` |
+| Admin | the admin console's API | `admin` |
+
+Only the kinds your account has are offered. A token never gets more than your
+account: if an admin takes `reader` away from you, your read-aloud tokens stop
+working too. **No token can create, list or revoke tokens**; only the signed-in
+app can, so a leaked token can't make itself a replacement. Tokens made before
+2.3.0 show as **Full access (old)**: they can do everything you can,
+including managing tokens. Replace them with narrower ones and revoke them.
+
+To use it in the extension: right-click the Read Aloud icon → **Options**,
+paste the token into **Access token**, and click **Test connection**. It
+should say *Connected as* your email. The token stays on that computer: the
+extension keeps it in local storage, not in Chrome sync. If your server is not
+on `localhost`, Test connection also asks Chrome to let the extension reach
+it; allow it, or every read fails.
+
+Treat a token like a password: anyone holding it can do whatever its access
+allows, as you, until it expires, is revoked, or your account is disabled. Give
+each device/purpose its own token with only the access it needs, so a leak
+costs little and you can revoke them independently.
 
 ### Revoking
 
