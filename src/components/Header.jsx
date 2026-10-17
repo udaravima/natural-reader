@@ -157,9 +157,11 @@ export default function Header({
                         <div className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.textSecondary}`}>
                             <Loader2 size={14} className="animate-spin text-green-500" />
                             <div className="text-[10px] leading-tight">
-                                <div className="font-bold">
-                                    {bookProgress.current}/{bookProgress.total}
-                                </div>
+                                {bookProgress.total ? (
+                                    <div className="font-bold">
+                                        {bookProgress.current}/{bookProgress.total}
+                                    </div>
+                                ) : null}
                                 <div className={`${theme.textMuted}`}>{bookProgress.label}</div>
                             </div>
                             <button
@@ -235,6 +237,7 @@ export default function Header({
                         onEnterDistractionFree={onEnterDistractionFree}
                         onGoHome={onGoHome}
                         onDownloadBookAudio={onDownloadBookAudio}
+                        onCancelBookDownload={onCancelBookDownload}
                         bookProgress={bookProgress}
                         hasDocument={hasDocument}
                     />

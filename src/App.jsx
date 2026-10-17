@@ -572,38 +572,25 @@ export default function App() {
   // synthesizes one batch per page and concatenates the WAVs client-side.
   const handleDownloadBookAudio = useCallback(async () => {
     if (!pdfFileName) return;
-    if (!isLocalhost) {
-      showToast('Audiobook export requires the Kokoro backend.', 5000);
-      return;
-    }
-    let chunks;
-    try {
-      chunks = await extractAllChunks();
-    } catch (e) {
-      console.error('Chunk extraction failed:', e);
-      showToast(`Could not extract text: ${e.message}`, 5000);
-      return;
-    }
-    if (!chunks || chunks.length === 0) {
-      showToast('No extractable text in this document.', 4000);
-      return;
-    }
     // extractAllChunks returns one chunk per page for PDF/TXT and one per
     // block for MD. Group by page so each `downloadBookAudio` iteration is a
-    // page-sized batch — a single MD page can have many blocks.
-    const byPage = new Map();
-    for (const c of chunks) {
-      const p = c.page ?? 0;
-      const prev = byPage.get(p) || '';
-      byPage.set(p, prev ? `${prev}\n\n${c.text}` : c.text);
-    }
-    const pages = Array.from(byPage.entries())
-      .sort((a, b) => a[0] - b[0])
-      .map(([page, text]) => ({ page, text }));
-
+    // page-sized batch — a single MD page can have many blocks. Passed as a
+    // loader so reading a long book shows progress and can be cancelled.
+    const loadPages = async () => {
+      const chunks = await extractAllChunks();
+      const byPage = new Map();
+      for (const c of chunks || []) {
+        const p = c.page ?? 0;
+        const prev = byPage.get(p) || '';
+        byPage.set(p, prev ? `${prev}\n\n${c.text}` : c.text);
+      }
+      return Array.from(byPage.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([page, text]) => ({ page, text }));
+    };
     const base = pdfFileName.replace(/\.(pdf|txt|md|markdown)$/i, '');
-    await downloadBookAudio(pages, `${base}_audiobook`);
-  }, [pdfFileName, isLocalhost, extractAllChunks, downloadBookAudio, showToast]);
+    await downloadBookAudio(loadPages, `${base}_audiobook`);
+  }, [pdfFileName, extractAllChunks, downloadBookAudio]);
 
   // Synthesize a single chat message into a downloadable .wav. Filename is
   // derived from the active session title and message position so multiple

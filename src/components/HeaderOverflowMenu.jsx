@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
     MoreHorizontal, Zap, Moon, Sun, Download, Keyboard, Maximize2,
-    Home, Library, Loader2,
+    Home, Library, Loader2, X,
 } from 'lucide-react';
 
 /**
@@ -31,7 +31,7 @@ export default function HeaderOverflowMenu({
     onShowShortcuts,
     onEnterDistractionFree,
     onGoHome,
-    onDownloadBookAudio, bookProgress,
+    onDownloadBookAudio, onCancelBookDownload, bookProgress,
     hasDocument,
 }) {
     const [open, setOpen] = useState(false);
@@ -95,12 +95,18 @@ export default function HeaderOverflowMenu({
         onDownloadBookAudio && hasDocument && {
             key: 'download-book',
             label: bookProgress
-                ? `Audiobook ${bookProgress.current}/${bookProgress.total}`
+                ? (bookProgress.total ? `Audiobook ${bookProgress.current}/${bookProgress.total}` : 'Making audiobook')
                 : 'Download audiobook',
             sublabel: bookProgress?.label,
             Icon: bookProgress ? Loader2 : Library,
             disabled: !!bookProgress,
             onClick: () => { close(); onDownloadBookAudio(); },
+        },
+        bookProgress && onCancelBookDownload && {
+            key: 'cancel-book',
+            label: 'Cancel audiobook',
+            Icon: X,
+            onClick: () => { close(); onCancelBookDownload(); },
         },
         onShowShortcuts && {
             key: 'shortcuts',

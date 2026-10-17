@@ -640,15 +640,14 @@ export function useTtsEngine({
     // bad page can't tank the whole job — failed pages are skipped with a
     // toast warning rather than aborting.
     //
-    // `pages` shape: [{ page: number, text: string }, ...]  (one entry per page)
+    // `source`: the pages, [{ page: number, text: string }, ...] (one entry per
+    // page), or an async function returning them. Pass the function: reading a
+    // long book's text takes a while, and it then runs inside the export, with
+    // its progress shown, Cancel live, and a second click refused.
     // `filenameBase`: name of the output file (extension is added).
-    const downloadBookAudio = useCallback(async (pages, filenameBase = 'audiobook') => {
+    const downloadBookAudio = useCallback(async (source, filenameBase = 'audiobook') => {
         if (!isLocalhost) {
             showToast?.('Audiobook export requires the Kokoro backend.', 5000);
-            return false;
-        }
-        if (!Array.isArray(pages) || pages.length === 0) {
-            showToast?.('Nothing to synthesize.', 3000);
             return false;
         }
 
@@ -661,6 +660,31 @@ export function useTtsEngine({
 
         const controller = new AbortController();
         bookAbortRef.current = controller;
+        let pages = Array.isArray(source) ? source : null;
+        if (!pages) {
+            setBookProgress({ current: 0, total: null, label: 'Reading the document…' });
+            try {
+                pages = await source();
+            } catch (e) {
+                console.error('Chunk extraction failed:', e);
+                showToast?.(`Could not extract text: ${e.message}`, 5000);
+                bookAbortRef.current = null;
+                setBookProgress(null);
+                return false;
+            }
+        }
+        if (controller.signal.aborted) {
+            setStatus?.('Audiobook export cancelled');
+            bookAbortRef.current = null;
+            setBookProgress(null);
+            return false;
+        }
+        if (!Array.isArray(pages) || pages.length === 0) {
+            showToast?.('No extractable text in this document.', 4000);
+            bookAbortRef.current = null;
+            setBookProgress(null);
+            return false;
+        }
         setBookProgress({ current: 0, total: pages.length, label: 'Preparing…' });
 
         // Run up to AUDIOBOOK_CONCURRENCY page-synth requests in parallel.

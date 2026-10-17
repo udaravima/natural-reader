@@ -8,22 +8,36 @@ Bug fixes applied:
 - Proper HTTPException re-raising so 400s don't become 500s
 """
 import asyncio
+import logging
 import base64
 import io
 
 import numpy as np
 import soundfile as sf
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .auth.deps import Principal, require_read_aloud
 from .model import kokoro
 from .schemas import TTSRequest, BatchTTSRequest
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 # Kokoro is not thread-safe — concurrent calls corrupt voice files and phonemizer.
 # This lock serializes all inference calls.
 inference_lock = asyncio.Lock()
+
+# 499: the client closed the request (nginx's code); nobody reads this reply.
+CLIENT_GONE = 499
+
+
+async def _client_gone(http_request: Request) -> bool:
+    """A browser that aborts (the audiobook's Cancel, a closed tab) doesn't stop
+    a running handler: without these checks the server synthesized every
+    cancelled page, and other reads queued behind the lock (measured: a
+    one-word read waited 76.8 s after Cancel). Checked before taking the lock
+    and between sentences; a sentence already in Kokoro still finishes."""
+    return await http_request.is_disconnected()
 
 
 @router.get("/v1/health")
@@ -43,7 +57,8 @@ async def health_check():
 
 
 @router.post("/v1/synthesize")
-async def synthesize(request: TTSRequest, _: Principal = Depends(require_read_aloud)):
+async def synthesize(request: TTSRequest, http_request: Request,
+                     _: Principal = Depends(require_read_aloud)):
     """
     Accepts text, returns Base64 encoded WAV audio.
     """
@@ -51,6 +66,9 @@ async def synthesize(request: TTSRequest, _: Principal = Depends(require_read_al
     # print(f"[TTS] Text: \"{request.text[:200]}{'...' if len(request.text) > 200 else ''}\"")
     try:
         async with inference_lock:
+            if await _client_gone(http_request):
+                logger.info("tts: client left before synthesis; skipped")
+                raise HTTPException(status_code=CLIENT_GONE, detail="Client closed the request")
             loop = asyncio.get_event_loop()
             audio, sample_rate = await loop.run_in_executor(
                 None,
@@ -89,7 +107,7 @@ async def synthesize(request: TTSRequest, _: Principal = Depends(require_read_al
 
 @router.post("/v1/batch_synthesize")
 async def batch_synthesize(
-    request: BatchTTSRequest, _: Principal = Depends(require_read_aloud)
+    request: BatchTTSRequest, http_request: Request, _: Principal = Depends(require_read_aloud)
 ):
     """
     Accepts a list of sentences, returns a single merged WAV audio as Base64.
@@ -106,6 +124,9 @@ async def batch_synthesize(
 
         async with inference_lock:
             for i, sentence in enumerate(request.sentences):
+                if await _client_gone(http_request):
+                    logger.info("tts: client left after %d of %d sentences; stopped", i, len(request.sentences))
+                    raise HTTPException(status_code=CLIENT_GONE, detail="Client closed the request")
                 if not sentence.strip():
                     continue
 
