@@ -1,0 +1,13 @@
+Frozen copy of this repository's own documentation, the project the project-chat
+evaluation (server/evals/project_qa.py) asks questions about.
+
+Commit: 04e96338879c5ae213437bfaf8df6a25aa98be33 (04e9633)
+
+Files: README.md from the repository root, and every top-level docs/*.md.
+Names are kept, except docs/README.md, which is DOCS_INDEX.md here: it would
+otherwise collide with the root README.md in one project.
+
+Never edit these files and never point the evaluation at docs/ directly: the
+point of a frozen copy is that editing the live docs doesn't move the numbers.
+To refresh the fixture, copy again from a new commit, update this file, and
+re-baseline the evaluation.

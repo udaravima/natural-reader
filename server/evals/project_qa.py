@@ -1,0 +1,297 @@
+"""Project question-answering evaluation (C2.1 Task 1).
+
+A project is a folder of documents, and the chat is asked about all of them.
+The documents are a frozen copy of this repository's own docs
+(fixtures/project_docs, see SOURCE.txt for the commit), the worked example in
+the design: a newcomer asks what the features are, how to deploy and test,
+and what to install on a system the docs never mention. A variant adds 30
+generated padding documents, so the project is big enough that the map is
+shortened.
+
+Everything here is pure (server/tests/test_eval_project_qa.py): the fixture,
+the cases and the scoring. The live run, which needs Postgres, the embedding
+model and a chat model, is added in C2.1 Task 4.
+
+Citations in project scope are "(Name, page N)", the form the app links
+(spec section 5.7). A citation of the wrong document is worse than none, so
+the score fails any answer that cites one a case forbids.
+"""
+from __future__ import annotations
+
+import random
+import re
+from dataclasses import dataclass, field, replace
+from functools import cache
+from pathlib import Path
+from typing import Any
+
+from .doc_qa import has_term, is_refusal
+
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "project_docs"
+
+WEB_TOOLS = {"web_search", "read_web_pages"}   # any of these ran: a web request left the server
+
+
+@dataclass(frozen=True)
+class Case:
+    name: str
+    kind: str                  # overview | procedure | code | exact-label | named-doc | balance | gap-general | live
+                               # | map-shortened (an overview or code question again; run only in the 50-document
+                               # variant)
+    question: str
+    expect: tuple[str, ...]    # terms a right answer contains, "a|b" = either
+                               # (gap-general: expect[0] is the outside term)
+    docs: tuple[str, ...]      # documents a right answer cites, each at least once
+    forbid_docs: tuple[str, ...] = ()   # documents a right answer never cites
+    setup: tuple[str, ...] = ()         # earlier user turns, asked first in the same chat
+    web: str = "ask"                    # the chat's web-search mode for this case
+
+
+# ---------- the fixture ----------
+
+def fixture_files() -> list[Path]:
+    """The frozen documents, by name. The eval reads these, never docs/."""
+    return sorted(FIXTURE_DIR.glob("*.md"))
+
+
+_PAD_TOPICS = {
+    "Beekeeping": ("hive", "brood box", "queen", "frame", "smoker", "swarm"),
+    "Sourdough baking": ("starter", "loaf", "crumb", "proofing basket", "oven", "dough"),
+    "Ceramic glazing": ("kiln", "glaze", "bisque", "slip", "trimming tool", "wheel"),
+    "Orchard pruning": ("pear tree", "graft", "shear", "scion", "rootstock", "canopy"),
+    "Railway timetables": ("platform", "signal", "branch line", "carriage", "depot", "junction"),
+    "Amateur astronomy": ("telescope", "eyepiece", "nebula", "tripod", "mount", "finder scope"),
+    "Cheese ageing": ("rind", "cellar", "cheese wheel", "brine", "culture", "rack"),
+    "Bicycle repair": ("chain", "spoke", "brake pad", "hub", "tyre", "derailleur"),
+    "Wool dyeing": ("fleece", "mordant", "skein", "vat", "indigo", "madder"),
+    "Mushroom foraging": ("woodland", "spore print", "cap", "gill", "basket", "clearing"),
+}
+_PAD_HEADINGS = ("Preparing the {a}", "Common mistakes with the {a}", "Seasonal notes", "Tools and storage",
+                 "Looking after the {a}", "A beginner's checklist", "When the {a} goes wrong")
+_PAD_SENTENCES = (
+    "Check the {a} and the {b} before every session with the {c}.",
+    "A worn {a} can spoil the {b}, so keep a spare {a} nearby.",
+    "Most beginners forget the {a} until the {b} is already spoiled.",
+    "The {a} needs {n} careful passes with the {b}.",
+    "Wipe the {c} dry afterwards and store the {a} away from the damp.",
+    "An old hand will tell you the {b} matters more than the {a}.",
+    "Allow {n} days between one {c} and the next.",
+)
+_PAD_NUMBERS = ("two", "three", "four", "five", "seven")   # words, so no digit can match an expected figure
+
+
+def padding_docs(n: int = 30, seed: int = 7) -> list[tuple[str, str]]:
+    """`n` small generated Markdown documents, (file name, text): the same ones for the same seed.
+    Hobby notes, about nothing in the fixture, so they add names and outlines to the map
+    without adding an answer to any case."""
+    rnd = random.Random(seed)
+    topics = list(_PAD_TOPICS.items())
+    docs = []
+    for i in range(n):
+        topic, nouns = topics[i % len(topics)]
+        name = f"{topic} notes {i + 1:02d}"
+        lines = [f"# {name}", ""]
+        for heading in rnd.sample(_PAD_HEADINGS, 3):
+            lines += [f"## {heading.format(a=rnd.choice(nouns))}", ""]
+            for _ in range(2):
+                sentences = []
+                for _ in range(3):
+                    a, b, c = rnd.sample(nouns, 3)
+                    sentences.append(rnd.choice(_PAD_SENTENCES).format(a=a, b=b, c=c, n=rnd.choice(_PAD_NUMBERS)))
+                lines += [" ".join(sentences), ""]
+        docs.append((f"{name}.md", "\n".join(lines)))
+    return docs
+
+
+@cache
+def _padding_names() -> frozenset[str]:
+    return frozenset(name for name, _ in padding_docs())
+
+
+# ---------- the cases ----------
+# Every expected term below is a string of the frozen fixture (a test greps for it).
+
+_FEATURES = Case(
+    "features", "overview", "What are the features?",
+    ("text-to-speech|read aloud|reads aloud|kokoro", "chat", "library",
+     "accounts|sign in|sign-in|login|log in|keycloak|oidc"),
+    ("README.md", "USER_GUIDE.md", "CHAT_WITH_PDF.md"))
+_START = Case(
+    "start-command", "code", "Which command starts all the containers in the background?",
+    ("./startup.sh start",), ())
+
+CASES: tuple[Case, ...] = (
+    _FEATURES,
+    Case("deploy-and-test", "procedure", "How do I deploy and test it, step by step?",
+         ("./startup.sh start", "pytest server/tests"), ("DEPLOYMENT.md", "TESTING.md")),
+    _START,
+    # In a fenced code block of README.md, which extraction skips today (spec F4).
+    Case("quickstart-command", "code", "Which command does the Linux quickstart run to set everything up?",
+         ("./startup.sh quickstart",), ("README.md",)),
+    # `.venv/bin/python -m pytest server/tests/ -q` is in TESTING.md's fence; README's variant has no "python -m".
+    Case("test-command", "code", "What exact command runs the backend test suite, and what must be running first?",
+         ("python -m pytest server/tests", "postgres"), ("TESTING.md",)),
+    Case("session-lifetimes", "exact-label", "What are the default values of SESSION_TTL_HOURS and SESSION_IDLE_HOURS?",
+         ("168", "12"), ("ARCHITECTURE.md",)),
+    Case("oidc-issuer", "exact-label", "What should OIDC_ISSUER be set to in production, and what is it in local dev?",
+         ("https://auth.example.com/realms/natural-reader", "http://localhost:18080/realms/natural-reader"),
+         ("DEPLOYMENT.md",)),
+    # README and CHAT_WITH_PDF say a great deal more about pins than the user guide does.
+    Case("user-guide-pins", "named-doc", "What does the user guide say about pins?",
+         ("each message|every message",), ("USER_GUIDE.md",), ("README.md", "CHAT_WITH_PDF.md")),
+    # README's nginx example has the same setting.
+    Case("deployment-uploads", "named-doc", "In DEPLOYMENT.md, why do larger PDF uploads fail, and what fixes it?",
+         ("client_max_body_size", "100m|100 mb|100mb"), ("DEPLOYMENT.md",), ("README.md",)),
+    # The answer is in the 4 KB docs index; the long documents have many near-matches for "next" and "work".
+    Case("next-work", "balance", "Where do I look to find out what the next piece of work is?",
+         ("HANDOVER",), ("DOCS_INDEX.md",)),
+    Case("changelog-unreleased", "balance", "What does the [Unreleased] section of the changelog cover?",
+         ("v1.9.0|1.9.0",), ("DOCS_INDEX.md",)),
+    # RHEL is in none of the documents. The documents' own requirements may be cited, but not for RHEL.
+    Case("rhel-packages", "gap-general", "I'm on RHEL 9, which packages do I need?", ("RHEL",), ()),
+    Case("ollama-release", "live", "What's the latest Ollama release?", (), ()),
+    replace(_FEATURES, name="features-50", kind="map-shortened"),
+    replace(_START, name="start-command-50", kind="map-shortened"),
+)
+
+
+# ---------- scoring ----------
+
+def _citation_pattern(names: list[str]) -> re.Pattern[str] | None:
+    """`(Name, page N)`, with any of `names`: longest first, so a name that ends like another isn't
+    mistaken for it, and a name may hold commas and parentheses."""
+    if not names:
+        return None
+    alternatives = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    return re.compile(rf"\(\s*({alternatives})\s*,\s*page\s+(\d+)\s*\)", re.IGNORECASE)
+
+
+def cited_docs(answer: str, names: list[str]) -> dict[str, set[int]]:
+    """The documents (by their names in `names`) and pages the app would link in this answer."""
+    pattern = _citation_pattern(names)
+    if pattern is None:
+        return {}
+    by_lower = {n.lower(): n for n in names}
+    found: dict[str, set[int]] = {}
+    for match in pattern.finditer(answer):
+        page = int(match.group(2))
+        if page >= 1:     # page 0 is no page
+            found.setdefault(by_lower[match.group(1).lower()], set()).add(page)
+    return found
+
+
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
+def _cites_in_a_sentence_with(answer: str, names: list[str], term: str) -> bool:
+    """A document cited inside a sentence that mentions `term`. A citation never splits a sentence,
+    even when a name holds a full stop and a space."""
+    pattern = _citation_pattern(names)
+    cites = list(pattern.finditer(answer)) if pattern else []
+    masked = list(answer)
+    for m in cites:
+        masked[m.start():m.end()] = "\0" * (m.end() - m.start())
+    spans, start = [], 0
+    for b in _SENTENCE_BREAK.finditer("".join(masked)):
+        spans.append((start, b.start()))
+        start = b.end()
+    spans.append((start, len(answer)))
+    return any(has_term(answer[a:b], term) and any(a <= m.start() < b for m in cites) for a, b in spans)
+
+
+@dataclass
+class Result:
+    case: Case
+    answer: str
+    tools: list[str] = field(default_factory=list)
+    rounds: int = 0
+    fact: bool | None = None          # every expected term is in the answer
+    cited: bool | None = None         # every document the case names is cited
+    refused: bool | None = None       # gap-general: says the documents don't cover it
+    paged_gap: bool = False           # gap-general: a document cited in a sentence about the outside term
+    cited_docs: set[str] = field(default_factory=set)
+    wrong_docs: set[str] = field(default_factory=set)   # cited, and forbidden (or padding)
+    web_calls: int = 0
+    offered: bool = False             # the turn ended with the offer to search the web
+    error: str | None = None          # the turn ended in an error event: not the model's answer
+    passed: bool = False
+    seconds: float = 0.0              # the case question's turn, wall clock
+
+
+def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], names: list[str], *,
+          offered: bool, error: str | None = None) -> Result:
+    """`tool_calls`: the turn's tool-input-available events ({toolName, round}); {"name": ...} is read too.
+    `names`: every document of the project, so the citations can be read. `offered`: the turn
+    ended with an offer to search the web (the data-web-offer event)."""
+    tools = [c.get("toolName") or c.get("name") for c in tool_calls]
+    result = Result(case, answer, tools, max((c.get("round") or 0 for c in tool_calls), default=0),
+                    web_calls=sum(t in WEB_TOOLS for t in tools), offered=offered, error=error)
+    if error:
+        return result
+    # A padding document is never the right one to cite, and a case may name documents the runner left out.
+    known = list(dict.fromkeys([*names, *case.docs, *case.forbid_docs, *sorted(_padding_names())]))
+    result.cited_docs = set(cited_docs(answer, known))
+    result.wrong_docs = result.cited_docs & (set(case.forbid_docs) | _padding_names())
+    result.fact = all(has_term(answer, term) for term in case.expect)
+    result.cited = set(case.docs) <= result.cited_docs
+    if case.kind == "live":
+        result.passed = offered and result.web_calls == 0
+    elif case.kind == "gap-general":
+        result.refused = is_refusal(answer)
+        result.paged_gap = _cites_in_a_sentence_with(answer, known, case.expect[0])
+        result.passed = result.fact and result.refused and not result.paged_gap and not result.wrong_docs
+    else:
+        result.passed = result.fact and result.cited and not result.wrong_docs
+    return result
+
+
+def _detail(r: Result) -> str:
+    if r.error:
+        return f"the turn failed ({r.error}): fix the setup, this says nothing about the model"
+    case = r.case
+    if case.kind == "live":
+        return ("offered the search" if r.offered else "no offer") + f"; {r.web_calls} web calls"
+    parts = []
+    if case.expect:
+        parts.append("fact ok" if r.fact else f"fact missing ({', '.join(case.expect)})")
+    if case.kind == "gap-general":
+        parts.append("said the documents don't cover it" if r.refused else "didn't say the documents don't cover it")
+        if r.paged_gap:
+            parts.append("cited a page for the part they don't cover")
+        parts.append("offered the search" if r.offered else "no offer")
+    if case.docs:
+        missing = [d for d in case.docs if d not in r.cited_docs]
+        parts.append("documents ok" if not missing else f"not cited ({', '.join(missing)})")
+    if r.wrong_docs:
+        parts.append(f"cited the wrong document ({', '.join(sorted(r.wrong_docs))})")
+    return "; ".join(parts)
+
+
+def _verdict(r: Result) -> str:
+    return "ERROR" if r.error else "PASS" if r.passed else "FAIL"
+
+
+def format_report(runs: list[list[Result]], *, model: str, variant: str) -> str:
+    """One line per case per run; with several runs, a per-kind tally; the right-document citation rate."""
+    lines = [f"Project QA eval: {model} (variant {variant})"]
+    for i, results in enumerate(runs, start=1):
+        if len(runs) > 1:
+            lines.append(f"-- run {i}")
+        for r in results:
+            tools = ",".join(r.tools) or "-"
+            lines.append(f"{_verdict(r):<5} {r.case.kind:<14} {r.case.name:<22} {r.seconds:.1f}s rounds={r.rounds} "
+                         f"tools={tools}  {_detail(r)}")
+    every = [r for results in runs for r in results]
+    if len(runs) > 1:
+        tally: dict[str, tuple[int, int]] = {}
+        for r in every:
+            n, p = tally.get(r.case.kind, (0, 0))
+            tally[r.case.kind] = (n + 1, p + r.passed)
+        lines.append("tally: " + ", ".join(f"{k} {p}/{n}" for k, (n, p) in tally.items()))
+    answered = [r for r in every if not r.error and (r.case.docs or r.case.forbid_docs)]
+    if answered:
+        right = sum(bool(r.cited) and not r.wrong_docs for r in answered)
+        lines.append(f"right-document citations {right}/{len(answered)}")
+    lines.append(f"web calls {sum(r.web_calls for r in every)}")
+    lines.append(f"{sum(r.passed for r in every)}/{len(every)} passed")
+    return "\n".join(lines)

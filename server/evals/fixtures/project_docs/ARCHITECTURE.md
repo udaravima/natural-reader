@@ -1,0 +1,257 @@
+# Architecture — Developer Guide
+
+This document explains how Neural Reader is put together: every component, what it controls, and — most importantly — why the pieces are shaped the way they are. Read it top-down; each section builds on the previous one.
+
+- [The mental model](#the-mental-model)
+- [The one rule: same-origin `/v1`](#the-one-rule-same-origin-v1)
+- [Frontend](#frontend)
+  - [App.jsx — the hub](#appjsx--the-hub)
+  - [Hooks](#hooks)
+  - [Persistence layer (lib/)](#persistence-layer-lib)
+  - [Utils](#utils)
+  - [Components by group](#components-by-group)
+- [Backend](#backend)
+  - [App wiring](#app-wiring)
+  - [Auth subsystem](#auth-subsystem)
+  - [Routers](#routers)
+  - [Services](#services)
+  - [TTS pipeline](#tts-pipeline)
+  - [Database & migrations](#database--migrations)
+- [End-to-end flows](#end-to-end-flows)
+- [Local development](#local-development)
+- [Invariants & traps](#invariants--traps)
+
+---
+
+## The mental model
+
+Neural Reader is a PDF/e-book reader with TTS read-aloud and an RAG-capable chat side. At runtime there are up to **five moving parts**:
+
+| Process / container | Port (dev) | Role |
+|---|---|---|
+| Vite dev server (SPA) | 5173 | React frontend + **reverse proxy** for `/v1` and `/api` |
+| FastAPI backend (`run.py`) | 8000 | TTS synthesis, doc RAG, chat-session storage, auth, tools |
+| Postgres + pgvector | 127.0.0.1:5433 | users, sessions, documents/chunks+embeddings, chat sessions |
+| Ollama | 11434 | chat model + `nomic-embed-text` embeddings + web-search summarizer |
+| SearXNG / Keycloak | 127.0.0.1:18043 / 18080 | web-search backend / local OIDC provider (dev rig) |
+
+The frontend is a **single-page app with no router** (`src/App.jsx` is ~1300 lines, one component, a `viewMode` state toggling reader vs chat). The backend is **API-only** — it serves no static files. In dev, Vite proxies; in production, nginx does (see `deploy/nginx`). Either way the browser only ever talks to one origin.
+
+Everything else in this document is detail on those two codebases.
+
+## The one rule: same-origin `/v1`
+
+If you remember one design constraint, remember this one. Every `/v1` fetch the SPA makes goes out with `credentials: 'include'` (`src/utils/apiFetch.js`) so the OIDC session cookie rides along. The browser refuses `credentials: 'include'` responses when the server answers with the wildcard `Access-Control-Allow-Origin: *` — and the backend's default CORS used to be the wildcard, for the browser extension, which called `/v1/synthesize` from arbitrary page origins. Since extension 0.2.0 it calls from its service worker with a Bearer token, which its host permission exempts from CORS, so the default is now no cross-origin caller at all).
+
+The consequences chain out from there:
+
+- A blank `apiHost` in the SPA (`buildApiUrl` in `src/utils/url.js`) produces a **relative URL** — same-origin. This is the only supported configuration for cookie auth.
+- `vite.config.js` proxies `/v1` → `http://localhost:8000` and `/api` → `http://localhost:11434` so dev on :5173 is same-origin with everything.
+- `localhost:5173 → localhost:8000` is **cross-origin** (different port = different origin), so any persisted `apiHost: 'localhost'` was silently broken by the auth work. `App.jsx` migrates the stale localStorage value to blank on mount (`migratePersisted('apiHost', 'localhost', '')`).
+- Pinning `FRONTEND_ORIGIN` on the backend switches CORS to an exact-origin list and enables `allow_credentials` — for deployments where the SPA is hosted on a different origin than the API.
+
+If the SPA ever shows the "backend isn't responding" gate while `curl localhost:8000/v1/health` works fine, check the browser console for a CORS complaint before blaming the backend — the request may be succeeding at the network layer and being discarded by the browser.
+
+---
+
+## Frontend
+
+### App.jsx — the hub
+
+`src/App.jsx` owns all global state and wires the engines. The order of things matters:
+
+1. **Migration first.** `migratePersisted(...)` runs at the very top of the component body, before the hooks read localStorage, because the old default `apiHost='localhost'` predates cookie auth and is always CORS-dead now.
+2. **Persisted settings** (`usePersistedState`, localStorage key prefix `neural-pdf-`): `darkMode`, `volume`, `scale`, `playbackSpeed`, `selectedVoice`, `isLocalhost` (see [traps](#invariants--traps) — despite the name it means "use Kokoro TTS, not Web Speech"), `apiHost`/`apiPort`, `requestTimeout` (seconds), `unlimitedBatchTimeout`, `viewMode` (`'reader'|'chat'`), `selectedModel` (a `provider:model` id; a pre-C1 bare model name is read as `ollama:<name>`), `chatTtsMode`, `chatAutoTts`, per-model inference overrides (`inferenceByModel`), `distractionFree`, layout knobs. **Removed in C1** (no longer read or written): `inferenceSource`, `ollamaHost`, `ollamaPort` — chat has no client-side provider selection any more.
+3. **Engines**: `useAuth`, `useTheme`, `useMobileDetect`, `usePdfEngine`, `useTtsEngine`, `useChatEngine`, `useKeyboardShortcuts`.
+4. **Per-document state maps keyed by sha256** (`docIndexByDocId`, `docConvertByDocId`, `docViewByDocId`) — switching documents never collides.
+5. **The auth gate** renders *after all hooks* (rules-of-hooks safe) and short-circuits every render: `auth.state !== 'active'` → `<AuthGate>` alone. Note the subtlety: the gate blocks what's **displayed**, but App's hooks and effects still run — that's why you can see CORS errors in the console while staring at a login screen.
+
+Big effects in App: the health probe (`GET /v1/health` once on mount → decides Kokoro vs Web-Speech fallback), the document hash + status fetch (sha256 of file bytes → `GET /v1/docs/{id}` to restore pipeline state), the **index pipeline** and **docling pipeline** handlers (both: register → upload → kick off → poll every 2s), and workspace restore from IndexedDB.
+
+### Hooks
+
+| Hook | Controls | Backend endpoints |
+|---|---|---|
+| `useAuth` | Auth state machine: `loading→active/anonymous/pending/disabled/error`. Any 401 anywhere (via apiFetch's global handler) resets to `anonymous`. | `/v1/auth/me`, `login` (full-page redirect), `logout` |
+| `usePdfEngine` | Document load/render/extract. Pure client + IndexedDB; no backend. Sentence segmentation, mdast-based markdown pipeline, 5-book-per-user LRU library (scoped to whoever `setLibraryOwner` names — see `db.js`), 7-day reading progress. Browser-only chats (`chat_sessions`), the last workspace folder (`workspaces`, one record per user) and reading positions are scoped to the same owner; a pre-release browser's are claimed by its first sign-in. | — |
+| `useTtsEngine` | Reader + chat + preview audio channels. The narration plays in every view (page text comes from the document, not the canvas, so it turns pages with the reader unmounted); one voice at a time: chat read-aloud pauses it (`pausedForChat`). Sentence queue with 2-ahead prefetch, in-flight dedup, cache eviction, 3-failure circuit breaker. Downloads: page / message / whole-book (3-worker parallel pool, client-side WAV stitch via `wavConcat`). | `POST /v1/synthesize`, `POST /v1/batch_synthesize` |
+| `useChatEngine` | Chat driver. Every turn runs server-side: `postTurn` (`src/lib/chatStream.js`) POSTs `/v1/chat/sessions/{id}/turns` and reads the SSE response; `applyEvent` (`src/lib/chatEvents.js`) is a pure reducer turning each event into message state (text, thinking, tool panel, `data-context`/`data-notice` toasts, status). Session persistence, pins, event log, 429 interception (budget-exhausted toast), budget state for the meter, model list from `GET /v1/inference/models` (`src/lib/chatTransport.js`). No client-side tool execution, think-level retry chain, or NDJSON parsing — that all moved to `server/chat/` and `server/llm/`. | `POST /v1/chat/sessions/{id}/turns` (SSE); `GET /v1/inference/models`; sessions via sessionStore |
+| `usePersistedState` | `useState` + JSON in localStorage; `migratePersisted` helper; reading-progress save/load with expiry — per user (`neural-pdf-progress@<userId>/<file>`, nothing while no user is known). | — |
+| Others | `useKeyboardShortcuts` (Space/Esc/arrows/F for distraction-free), `useMobileDetect`, `useTheme` (Tailwind class maps). | — |
+
+One design detail worth knowing before touching chat code:
+
+- **Chat TTS prefetch is bounded to +2**: Kokoro serializes synthesis server-side under a global lock; queuing everything at once would just pile up. `speakMessage` (manual per-bubble read) fires all sentences immediately — the server serializes anyway.
+
+The feature-rejection retry (a model 4xx's on tools or a thinking level, so the server retries once without it) now lives server-side in the provider adapters (`server/llm/providers/base.py`'s `FeatureMemory`/`settle_dropped`), reported to the browser as a `data-notice` event rendered as a toast — there's no client-side fallback chain to get backwards any more.
+
+Pure companions: `inference.js` (per-model overrides, sent as the turn's `settings`; **unset means omitted from the request** — sending `null` would clobber Modelfile tuning), `pins.js` (max 6 pins, 12k char budget, dedup). `chatHistory.js` (the old client-side history/pin-preamble builder) is gone — the server assembles history now (`server/chat/context.py`).
+
+### Persistence layer (lib/)
+
+- **`sessionStore.js`** — chat sessions live in **two places**: legacy IndexedDB (pre-multi-user) and Postgres. Reads merge both, newest-first, tagged `source:'pg'|'local'`. Writes always target Postgres; the first message you send on a legacy-sourced session **copies it** onto Postgres via `POST /v1/chat/sessions/import` (create-only) so the original IndexedDB copy stays untouched. Chat needs the backend and Postgres both — there's no direct-to-Ollama fallback if either is down; a turn fails with a normal error toast instead.
+- **`workspace.js` / `WorkspaceContext.jsx`** — folder-as-workspace support with two interchangeable backends (File System Access handle vs `webkitdirectory` snapshot) and a reducer-driven back/forward history for navigating markdown between files.
+- **`docMeta.js`** — `registerDocument` uploads a file's bytes multipart to `POST /v1/docs` (tags travel with it; an optional project link is a fail-soft follow-up request) and returns the server's authoritative `{docId, dedup, state}`. The single place both the index path and the convert path register a document, so the sequencing can't drift between the two call sites. The old client-side chunk upload (`uploadPdf.js`) is gone — the server derives chunks itself from the verified bytes.
+- **`apiErrors.js`** — the one central refusal-to-notice mapper (`describeRefusal`/`noticeFor`): reads the `{error, message, reason?}` body FastAPI wraps refusals in and turns it into toast text, keyed mostly by HTTP status — 409 `content_shared` picks `other_holders`/`in_project` wording, 413/415/422(`empty_file`)/404 get fixed copy, 5xx is the only case that blames the server, and anything else falls back to the body's own `message`.
+- **Tool calling is entirely server-side now (C1).** `src/lib/chatTools/` is gone from the browser; the registry lives in `server/chat/tools/` (`search_documents`, `read_document_pages`, `web_search` — see [Backend](#backend) below). The `current_time_date` tool is also gone: the current time is written into every prompt instead of costing a tool round.
+
+### Utils
+
+- **`apiFetch.js` / `url.js`** — see [the one rule](#the-one-rule-same-origin-v1). `buildApiUrl(host, port, path)`: blank host → relative path; bare host gets `http://`; port appended only if not already embedded.
+- **`wavConcat.js`** — stitches WAVs by reusing the first header and concatenating data payloads; **assumes identical PCM format** (callers guarantee same voice+speed). Audiobook export depends on this.
+- **`markdownToSpeech.js`** — strips fences/links/markers; headings get a trailing `:` so TTS pauses.
+- **`docHash.js`** — WebCrypto sha256 of file bytes, memoized per name+size. Used to key IndexedDB and the per-document state maps, and sent as `client_doc_id` on upload — but it's only a **hint**: the server computes its own hash from the bytes it receives, and that value is the authoritative `doc_id` if the two ever disagree (a stale or lying client).
+- **`attachment.js`** — 10 MB image / 25 MB audio caps; `stripAttachmentData` before persisting sessions (base64 payloads never reach Postgres).
+- **`resolvePath.js`** — href classification for workspace links: external / anchor / unsafe (`javascript:` etc. rendered inert) / relative path with `..` normalization.
+
+### Components by group
+
+- **Auth**: `auth/AuthGate.jsx` — full-page screens for the six auth states (sign-in, pending, disabled, error, loading).
+- **App shell**: `Header` (view switcher + playback cluster, a **gear** → Settings, the reader's chat-beside-the-page toggle, `NarrationMiniPlayer` outside the reader, and `ProfileMenu`), `SettingsDialog` (a modal over the current view, so nothing underneath unmounts; tabs Profile, Voice & reading, Chat *with a per-model selector*, Appearance, Connection, Access tokens; the last tab is remembered in `settingsTab`), `ProfileMenu` (picture, name, Profile, Settings, dark-mode toggle, log out). `ProfilePanel` (picture, sign-in account link, signed-in browsers) and `AccountPanel` (personal-access-token management) render **inside** `SettingsDialog`; `AdminConsole` is a **top-level view** (`viewMode:'admin'`, admins only): user list, enroll (invite/temp-password), capability editor, activate/disable/delete, last-active-admin guarded.
+- **Library**: `LibraryPage` (`viewMode:'library'`, any authenticated active user): list/search documents with project + tag filters, a **New project** form (name + optional description; the reader's project picker refreshes after it), a "shared by …" badge on rows shared with you and a "via project" badge (no remove control) on rows you only reach through a project, **Remove from my library** (removes only your entry) with a confirmation that others/projects keep theirs, and a project-chip selector (add: any project you can see, on docs you hold an upload entry for; remove ×: that project's owner only). A project/tags picker on upload/register; single-document **sharing and adding project members are API-only** until A0's people picker ships (see [LIBRARY.md](LIBRARY.md#sharing)).
+- **Chat**: the chat engine (`useChatEngine`) lives in `App`, so a reply keeps streaming whichever view is open; `ChatView` renders it as the Chat view and, `compact`, inside `ChatSidePanel` beside the page in the reader (wide screens; both take one `chatViewProps` bag). `ChatSidebar` (model picker grouped by provider with capability badges, sessions, event log, and the "N tokens left today" budget meter), `ChatView` (message list with thinking disclosure, markdown rendering, context meter, streaming stop, tool-call and stats disclosures, per-message read-aloud/download; **send disabled at zero budget**; a `status:'streaming'` message re-fetched after a reload shows "Still generating…", `'aborted'` shows "Stopped"), `InferenceRow` (one labelled dropdown; `SettingsDialog`'s Chat tab decides which knobs to render at all — via `modelIds.js`'s `supportedKnobs()` — think, context size, keep-alive). There is no provider-selection control anywhere in the SPA; `InferenceSourceSelect` and the Ollama host/port inputs are gone (C1) — providers are an operator `.env` setting (`INFERENCE_PROVIDERS`, see [DEPLOYMENT.md](DEPLOYMENT.md)). `AttachmentPreview`; `VoiceRecorder` exists but is intentionally unwired pending Whisper transcription.
+- **Reader**: `PdfViewer` (hub: toolbar + four-way content switch: docling MD → local MD → text pseudo-pages → pdf.js canvas), `MarkdownReader` (docling output, page markers, scroll-sync via IntersectionObserver), `MarkdownPageRenderer` (local MD with block-level TTS highlight), `TextPageRenderer`, `WelcomeScreen` (drop zone + recent library), `IndexButton` / `ConvertButton` / `DoclingConvertDialog` (index and convert pipeline UIs), `WorkspaceLink` (markdown links that navigate the workspace).
+- **Chrome**: `Header` (playback cluster, view switcher, audiobook export with progress, gear → Settings, `ProfileMenu`), `HeaderOverflowMenu` (mobile), `ViewSwitcher` (Reader / Chat / Library / Admin), `Sidebar` (**navigation only** now — sentence list, chapters; voice/settings/account/admin moved out), `MobileBottomNav`, `DistractionFreeBar`.
+- **Overlays**: `DragOverlay`, `ToastNotification`, `ContextMenu` (right-click a sentence → "continue from here"), `KeyboardShortcutsModal`, `ReadSelectionButton` (+ "Ask AI" pins the selection for chat).
+
+---
+
+## Backend
+
+### App wiring
+
+`server/app.py: create_app()` wires in this order — order is load-bearing:
+
+1. **Logging** (rotating file + console, `logging_config.py`) — plus a second rotating file for the **audit trail** (`server.audit` logger, `LOG_AUDIT_FILE`, default `<LOG_DIR>/audit.log`): one line per change to who holds what (entry added/removed, share created/revoked, placement added/removed, content GC'd), IDs only, never file names or search text.
+2. **CORS** — `FRONTEND_ORIGIN` unset → no cross-origin caller; pinned → exact origins, credentials **on**; `*` → any origin, credentials **off** (`appconfig.py`).
+3. **SessionMiddleware** (starlette signed cookie) — holds *transient OIDC flow state only* (state/nonce/PKCE). This is deliberately separate from the app session, which is a DB row. `SESSION_SECRET` missing → ephemeral per-process secret, which is why `WORKERS>1` without a shared secret silently breaks OIDC (each worker signs with a different key).
+4. **Routers**: TTS, chat sessions (`chat_sessions.py`) + chat turns (`chat_turns.py`, the streaming orchestrator endpoint), docs, tools, auth, admin, **inference** (`GET /v1/inference/models` only, listing every configured provider). The **LLM router** (`server/llm/router.py`, `start_router()`/`stop_router()`) is started/stopped with the app lifecycle and owns one shared httpx client used by every configured provider adapter, not one client per provider.
+5. **Startup**: `startup_guard()` (fail fast on auth-bypass or weak secret with a non-loopback bind), `init_db()` (retrying; **failure does not kill the app** — TTS keeps serving, DB-backed routes return 503), embeddings/web-search httpx clients, the document storage dir (`DOC_STORAGE_DIR`, falling back to the pre-A1 `PDF_STORAGE_DIR`, then `./data/pdfs`).
+
+The design theme is **"TTS never dies"**: Postgres down → 503s on chat/doc routes only; SearXNG down → search results degrade to snippets; Keycloak down → login 503s. The only boot-time refusals are the two security guards.
+
+### Auth subsystem
+
+`server/auth/` — all of it is worth reading, but the shape is:
+
+- **`config.py`** — `AUTH_ENABLED` (default **true**), OIDC vars, `SESSION_TTL_HOURS=168` (absolute), `SESSION_IDLE_HOURS=12` (unused this long ends it; 0 = off), `COOKIE_SECURE=true`. Loopback detection resolves the *bind address* through `ipaddress` (never a client Host header — spoofable). `startup_guard()` refuses to boot if auth is off or the secret is short on a non-loopback bind.
+- **`oidc.py`** — Authlib client, discovery-based, **PKCE S256**.
+- **`sessions.py`** — DB-backed app sessions. Cookie holds a random token; only its **sha256** is stored, so a DB leak yields no usable cookies.
+- **`users.py`** — JIT provisioning on login. Three branches: known identity → refresh email; matching **verified** email → link; brand-new → **first-user-admin**: an atomic conditional `UPDATE ... WHERE oidc_sub IS NULL` claims the seed admin row (the row lock serializes concurrent first logins); everyone else lands as `pending` member. An unverified email can never claim the pre-provisioned admin row. **Only the first-user-admin branch force-grants `{admin,reader,chat}`** — the known-identity and email-claim branches mirror exactly the token's realm roles, so a founder pinned via `BOOTSTRAP_ADMIN_EMAIL` with no realm roles is left at zero capabilities (founder-lockout trap — see [IDENTITY_AND_ROLES.md](IDENTITY_AND_ROLES.md)).
+- **`tokens.py`** — personal access tokens (`nrp_...`, sha256-stored, shown once). These are how the browser extension and scripts authenticate.
+- **`deps.py`** — `get_current_user`: Bearer PAT first, then the `nr_session` cookie, else 401. Non-active status → 403 with the status in the detail (the SPA distinguishes `pending` from `disabled` on this). **Dev bypass**: `AUTH_ENABLED=false` + loopback bind → every request is the seed admin.
+- **`authz.py`** — ownership checks raise **404** (not 403) on other people's rows so callers can't enumerate.
+
+**The login round-trip** (`server/routers/auth.py`): `GET /v1/auth/login?next=...` stashes the post-login path in the signed cookie (validated same-site path only — no open redirects) and 302s to the IdP → `GET /v1/auth/callback` exchanges the code (Authlib verifies state + PKCE), provisions the user, creates the session row, and 303s back to `next` with the `nr_session` httponly cookie. The SPA has **no callback route** — it just re-probes `/v1/auth/me` after the reload.
+
+For the full identity map — how Keycloak's `keycloak` schema and the app's `users` table relate (and don't), why `sub` UUID persistence matters, and where roles live — see [IDENTITY_AND_ROLES.md](IDENTITY_AND_ROLES.md).
+
+### Routers
+
+- **`docs.py`** — the RAG pipeline plus the **Library** surface, built on the A1 content/entries model (spec: [superpowers/specs/2026-09-25-document-content-entries-design.md](superpowers/specs/2026-09-25-document-content-entries-design.md)): content (`documents`, keyed by `doc_id` = SHA-256 **computed by the server** from the uploaded bytes, regex-gated `^[0-9a-f]{64}$` because it's interpolated into filesystem paths) belongs to nobody; a `library_entries` row ("I have this") belongs to one user, a `project_documents` row belongs to a project. State machine: `stored → extracting → extracted → indexing → indexed | failed` (`registered` is legacy-only, pre-A1 rows with neither bytes nor chunks). `POST /v1/docs` is multipart — the server hashes the bytes itself, a `client_doc_id` is only a hint — and returns 200 (known bytes: instant entry, no rework) or 202 (new bytes: background extract-then-embed job). Extraction (`services/extract.py`) replicates the reader's own page/section-splitting rules exactly, so a chat citation's page number always matches; indexing embeds in batches of 16 under a per-doc lock; search is pgvector cosine distance. Docling conversion (PDF → per-page markdown) lives here too. Read routes honor **`can_read`** (entry holder or member/owner of a project the content is placed in — a **404**, never a 403, for non-readers), resolved by the single predicate in `server/auth/authz.py` (`readable_docs_where` + `readable_docs_params`); content-changing ops (convert, delete converted markdown, re-index an already-`indexed` doc) are refused **409 `content_shared`** unless the caller is the sole holder or an admin. `GET /v1/docs` lists entries plus placements (`q`/project/tag filters); `PATCH /v1/docs/{id}` sets the caller's own `file_name`/tags only — there's no owner to reassign any more; filing a document into a project is `projects.py`'s `PUT /v1/projects/{id}/docs/{doc_id}` (it can answer `409 name_exists` / `older_version`; the caller retries with `as_version_of` or `keep_both`), and removing a document and every version operation (list, history, upload, restore, delete a version, merge) live in `project_documents.py` under `/v1/projects/{id}/documents` (rules in `services/doc_versions.py`, see [LIBRARY.md](LIBRARY.md) "Versions (V1)"). `PUT`/`DELETE /v1/docs/{id}/shares/{user_id}` replace the old per-doc grants. `GET /v1/docs/{id}/file` serves the stored bytes to anyone `can_read` allows (never cached), which is how the Library's **Open** button and a chat citation open a document the browser doesn't have. **`POST /v1/docs/{id}/chunks` and `POST`/`DELETE /v1/docs/{id}/pdf` are removed** — bytes arrive once, at registration, and chunks are always server-derived, never client-supplied.
+- **`projects.py`** — owner-only project CRUD and membership, plus project↔document links: an **upload**-entry holder files a document in; only the project (A1: its owner; A0: Maintainer+) removes it, so the person who filed it has no special standing over the placement. Backs the Library's sharing model (migrations `009`, `010`, `011`).
+- **`chat_sessions.py`** — session CRUD as plain relational + JSONB: `GET`/list, `PATCH` (rename), `DELETE`, and `POST /sessions/import` (create-only; copies a legacy IndexedDB-only session's messages onto Postgres the first time you send on it — replaces the old whole-record `PUT` upsert, which is gone). **No pgvector here.** Ownership 404s; messages ordered by timestamp with a role tiebreaker.
+- **`chat_turns.py`** — `POST /v1/chat/sessions/{id}/turns`: validates the request (413 over `CHAT_MAX_REQUEST_MB`, 404 not-yours, 429 budget, 409 `turn_in_progress`, 503 `no_providers`/`db_unavailable`), then hands off to the orchestrator and frames its event dicts as SSE (one `data: {...}` line per event, always ending `data: [DONE]`; an unhandled exception still gets a generic terminal `error` frame, never a bare disconnect).
+- **`tools.py`** — `POST /v1/tools/web_search`, kept for any external caller; the chat orchestrator's own `web_search` tool calls the same service function directly, not this endpoint.
+- **`admin.py`** — list/patch users; disabling hard-revokes their sessions. Also the inference governance endpoints: `GET /v1/admin/inference/usage` (per-day per-user token rows, `days` clamped 1..90), the per-user `inference_daily_token_budget` field on the PATCH (`exclude_unset` semantics: absent = untouched, explicit null = clear), and the Deployment config view (every provider's name/kind/host/model-count-or-"unreachable", the embeddings `OLLAMA_URL`, allowlist, summarize/embed model — never a key).
+- **`inference.py`** — `GET /v1/inference/models` only: every configured provider's models as `{id, provider, kind, name, capabilities}` (`id` is `<provider>:<model>`) plus the caller's budget state. Chat itself no longer has an endpoint here — see `chat_turns.py`.
+- **`endpoints.py`** — TTS + `/v1/health` (see [TTS pipeline](#tts-pipeline)).
+
+### The chat orchestrator (`server/chat/`) and provider layer (`server/llm/`) — C1
+
+Chat turns run entirely server-side now; the browser has no chat transport logic beyond reading an SSE stream.
+
+- **`chat/orchestrator.py`** — `run_turn(ctx)`: an async generator of event dicts. One **step** = one model call; text/reasoning stream out as deltas (a step's opening text is held back only while it could still be a tool call the model wrote as JSON text — up to `TEXT_TOOLCALL_PROBE_CHARS`, 2,000 characters — and, if it is one for an offered tool with no native call on the step, it runs as that call and is never shown); a complete tool call runs immediately and its result is appended before the next step. After `CHAT_MAX_TOOL_ROUNDS` rounds (default `3`; the last round's results say so, repeated calls aren't run again, and tool results share a per-answer budget, `CHAT_TOOL_RESULT_BUDGET_CHARS`) it forces one last step with tools off, so a turn always ends in an answer. A provider error or the daily budget running out mid-turn ends the turn in a terminal `error` event with the partial reply saved; a disconnect (Stop button, closed tab) is cancellation — the partial reply is saved `aborted` and the session's turn-claim is released, even though the generator is being torn down.
+- **`chat/context.py`** — Stage 0, the cheap work before the model runs: prefetch matching passages from the open document (`CHAT_PREFETCH=auto|on|off`, default `auto`: only for a model without document tools; `CHAT_PREFETCH_MIN_SCORE`, `CHAT_PREFETCH_K`; v2.4: with `on` and tools offered, delivered as a `search_documents` tool exchange, else a fenced block in the user message), today's date for the rules from the browser's IANA timezone (falls back to UTC on a garbage value), and history trimming to `context_window − CHAT_REPLY_RESERVE_TOKENS` (old image/audio attachments are replaced by a text marker before any whole turn is dropped). One leading system message (ruling R9 revised in v2.3): the deployment's assistant profile (v2.4), then the rules from `chat/prompt.py`, then the pins. Prompt order is that system message → history → the new message (→ the prefetch tool exchange) — pins moved out of "right before your message" so providers can reuse the unchanged prefix across turns. The shape fits strict chat templates (vLLM with Gemma or Mistral reject any system message but the first, and two same-role messages in a row): all pins are one leading system message, for a model without tools the prefetched passages lead the new user message's content (then a blank line, then the question), and consecutive same-role history messages are merged, so roles strictly alternate. Only the model input is built this way; the stored user message is what the user typed.
+- **`chat/store.py`** — turn claims (`active_turn_id`, one turn per session; a second send gets `409`), a 15-second heartbeat, and stale-claim recovery (a claim older than 60 seconds is a dead worker's; the next thing that touches that session — opening it, or a startup sweep — marks it `aborted` and frees the claim). Also where messages/events are actually written as a turn streams.
+- **`chat/tools/`** — `search_documents`, `read_document_pages`, `web_search`, one file per tool (`name`, `spec`, `source`, `available(ctx)`, `execute`, `summarize`). This is the only tool registry in the codebase; the old frontend one is gone.
+  - v2.4: the strategy the model follows (which source, in what order) is one procedure in `chat/prompt.py`, assembled from the tools offered and pinned by a golden test; a tool's `spec.description` says what it does and how to use it, and never names another tool. `chat/sources.py` works out the pages an answer drew on (the source chips).
+  - A key of `execute`'s result that starts with `_` reaches `summarize` but not the model.
+  - `ToolContext` is per turn: `shown` holds the chunk ids the model already has.
+- **`llm/router.py`** — loads `INFERENCE_PROVIDERS` (unset → one `ollama` provider from `model_router`'s legacy config) and resolves a model id's `<provider>:` prefix to a provider instance, falling back to the first `ollama`-kind provider for a prefix-less (pre-C1) id.
+- **`llm/providers/`** — `ollama.py` and `openai_compat.py` adapters share `base.py`: HTTP error mapping, tool-argument JSON parsing (invalid JSON becomes `{}`, reported to the model as a recoverable error), a per-model memory of features a provider has rejected (tools, thinking, a thinking level — remembered only after the retry *without* the feature succeeds), and `safe_error_message` (redacts `sk-…`/`Bearer …`/URL `user:pass@` patterns, then trims to 300 chars) so a provider's raw error text can reach an `error` event without leaking a key.
+
+### Services
+
+- **`doc_content.py`** — who holds content (spec §3, §5): the only module that writes `library_entries`/`project_documents` changes and the only one allowed to `DELETE FROM documents` — routes never do that directly. Owns the sole-holder check for content-changing ops (`content_ops_refusal`: an admin, or exactly one entry, theirs, and no project placement — otherwise `other_holders`/`in_project`) and `gc_content_if_orphaned`, called after every path that removes an entry or placement, because a SQL `ON DELETE CASCADE` never runs Python. A startup sweep (`db.py`) catches anything a caller forgot to GC.
+- **`doc_storage.py`** — resolves `DOC_STORAGE_DIR` (falls back to the pre-A1 `PDF_STORAGE_DIR`, then `./data/pdfs`), enforces `PDF_UPLOAD_MAX_MB`/`TEXT_UPLOAD_MAX_MB` (413), and type-checks by extension + magic bytes (`%PDF-` for PDF, valid UTF-8 for text/markdown; anything else or a NUL byte in text → 415; 0 bytes → 422). Bytes are written to a temp file and moved into place only after the row insert commits, so a concurrent GC can never delete a file a newer upload just wrote.
+- **`extract.py`** — server-side text extraction that **replicates the reader's own page/section-splitting rules** (`src/utils/segmentation.js`) exactly, not approximately: PDF via `pypdfium2` (one chunk per non-empty page), text via sentence-splitting grouped 40-per-page, Markdown via a CommonMark+GFM→mdast-equivalent parse (loose lists and tables are one node, never split on blank lines). Pinned by committed parity fixtures (`server/tests/fixtures/segmentation/`) so a citation's page number always matches what the reader jumps to.
+  - After extraction, `split_chunks` cuts chunks longer than `CHUNK_MAX_CHARS` into overlapping parts. Each part keeps its page; later parts are typed `…+cont` so a page can be joined back exactly (v2.3). This step is separate from the reader-matching extraction, whose fixtures are unchanged.
+- **`embeddings.py`** — Ollama `nomic-embed-text`, **dimension 768 hard-coded** in the SQL column too; swapping to a model of another dimension requires dropping the column; a same-dimension model swap rebuilds each document on first use (v2.3 embedding profile). Semaphore(4); failed texts return `None` rather than aborting the batch. URL + model come from `model_router` config, not env reads.
+  - `embed_query` and `embed_documents` add the model's prefixes (`search_query: `, `search_document: ` for nomic).
+  - `doc_search.search_chunks(…, text=)` fuses the meaning ranking with an exact-word ranking (`doc_chunks.text_search`, a `'simple'` tsvector with a GIN index, migration 015) by reciprocal-rank fusion. Each row carries its cosine `score` and `by_words`.
+  - `current_profile()` is `model|prefixes|chunker`. `documents.embedding_profile` records it.
+  - `doc_pipeline.ensure_current(doc)` starts one background `run_rebuild` for a document made under another profile. The old chunks answer until one transaction swaps the new set in; a document embedded by another model reads as `reindexing` until then.
+- **`model_router.py`** — the legacy single-Ollama config: `INFERENCE_MODELS` allowlist (unset = all, dev), `SUMMARIZE_MODEL` (falls back to `WEB_SEARCH_SUMMARY_MODEL`, then `llama3.2:3b`; resolved through `llm/router.py`, so a bare name goes to the first `ollama` provider), `EMBEDDING_MODEL`, `INFERENCE_TIMEOUT_S`, `INFERENCE_DAILY_TOKEN_BUDGET` (0/unset = unlimited). Pure env parsing; `get_config()` re-reads the environment on every call. **C1:** chat model *choice* moved to `llm/router.py` (`INFERENCE_PROVIDERS`); this module still supplies the no-config default `ollama` provider and the non-chat model settings above.
+- **`inference_budget.py`** — per-user daily token accounting. Day is computed in **Python, UTC** (`reset_at` = next UTC midnight) — never a SQL default; PK `(user_id, day)` upserts. Per-user column NULL = deployment default, 0 = unlimited. Callers **fail open**: budget errors never block chat.
+- **`web_search.py`** — SearXNG query → parallel fetch of results (**SSRF guard**: DNS must resolve to public addresses only, and redirects are followed manually with the check re-applied at every hop, max 4) → trafilatura extraction → small-model summary, `SUMMARIZE_MODEL` (from `model_router`) run through the `llm/` provider router (C1) rather than a direct Ollama call. Degrades to the snippet on any failure. Each fetch is capped three ways: the final hop is streamed and cut off at `WEB_SEARCH_MAX_RESPONSE_BYTES` rather than buffered whole, the whole walk (redirects included) runs under one `WEB_SEARCH_FETCH_TOTAL_S` deadline, and a non-text `Content-Type` is skipped before any body is read.
+- **`docling_convert.py`** — PDF→Markdown, disabled by default (`DOCLING_ENABLED=false`), lazy imports so the server boots without docling installed. Presets fast/standard/accurate; heavy sync work in `asyncio.to_thread`.
+
+### Projects, roles and activity (A0)
+
+- `project_members.role` (reader < contributor < maintainer < owner) is the
+  only source of project access; `projects.created_by` is history. Every
+  project route starts with `authz.require_project_role` (404 non-member,
+  403 `insufficient_role`); responses carry `can` from `authz.can_for`, and
+  the UI renders from it.
+- Membership writes take `SELECT … FROM projects … FOR UPDATE` first and read
+  the caller's role after it, so concurrent changes on one project serialize
+  and the last-Owner rule can't be raced (`services/project_members.py`).
+- `project_events` gets one row per change in the same transaction
+  (`services/project_events.py`); `audit.log` stays the operators' trail.
+- The people directory (`services/people.py`) owns the person-label rule and
+  the `USER_DIRECTORY_*` modes.
+
+### TTS pipeline
+
+`server/model.py` loads Kokoro (~325 MB) **at import time** — missing model files are a hard `exit(1)`. Execution provider priority: CUDA → OpenVINO GPU → NPU → CPU, with fallback at session creation — but only the providers of the *installed* ONNX Runtime build exist. `requirements.txt` and the container install the CPU build, so out of the box this is CPU; an accelerated build is a manual swap (README, Hardware Acceleration).
+
+The critical invariant: **Kokoro is not thread-safe**, so all inference runs in an executor under a **global `asyncio.Lock`** (`server/endpoints.py`). Concurrent requests queue rather than corrupt the voice files. This is why the frontend's bounded prefetch matters, why `batch_synthesize` holds the lock for one whole batch instead of per-sentence, and why the request-size caps (`TTS_MAX_*` in `schemas.py`) exist — one oversized request under a global lock stalls TTS for everyone.
+
+### Database & migrations
+
+Single `psycopg AsyncConnectionPool`, pgvector codec registered per connection. Pool connections run with `jit=off` (`POOL_CONN_KWARGS`) because the planner overestimates the `GET /v1/docs` row count and Postgres JIT would otherwise compile the query, adding up to ~340 ms per request at scale for a workload that never benefits from it. Migrations are plain `.sql` files in `server/sql/`, applied in numeric order, one transaction each, versioned in `schema_migrations` — no external tooling. The interesting ones: `001` (documents, chunks with `vector(768)` + HNSW cosine index, chat tables), `005` (users + ownership columns + the seed admin row), `006` (sessions + PATs, hashes only), `007` (`inference_usage` PK (user_id, day) — **day computed in Python/UTC, no SQL default** — plus `users.inference_daily_token_budget`), `008` (`users.capabilities` + backfill — the `reader`/`chat`/`admin` realm-role mirror), `009` (`projects`, `project_members`, `doc_grants`, `documents.project_id`/`tags` — the Library access model), `010` (`project_documents` join table — many-to-many projects↔documents, backfilled from and replacing `documents.project_id`), `011` (content vs. entries — drops `doc_grants`/`documents.user_id`/`documents.tags`, renames `pdf_path`→`bytes_path`, adds `documents.extracted_by` and the new `library_entries` table; owners backfill to `upload` entries, grants to `shared` entries; see [LIBRARY.md](LIBRARY.md#upgrade-notes-migration-011)). Restart crash-recovery (`doc_content.recover_states`) rewinds stale `extracting`→`stored` and `indexing`→`extracted` rows and clears a stale `conversion_state='converting'`, then a sweep GCs any content nothing references any more.
+
+---
+
+## End-to-end flows
+
+**Index a document (reader RAG).** Open a PDF → `usePdfEngine` saves bytes to IndexedDB (for the local library/resume list) → `registerDocument` (`src/lib/docMeta.js`) uploads the raw bytes multipart to `POST /v1/docs`, with the client's own sha256 riding along only as a `client_doc_id` hint → the **server** computes the authoritative hash. Known bytes → `200 {dedup: true, state}`, already indexed, nothing more to do. New bytes → `202 {state: "extracting"}`, a background job extracts (server-side, page-parity with the reader) then embeds → poll `GET /v1/docs/{id}` every 2s through `extracting → extracted → indexing → indexed`. Only once `indexed` does `search_documents` advertise itself to the chat model.
+
+**Convert with docling.** `registerDocument` first (the server already has the bytes — there is no separate PDF-upload step) → `POST /v1/docs/{id}/convert` with options → backend chains convert → seed chunks from `doc_pages` → embed → poll until `converted` + `indexed` → the reader switches to the markdown view (`MarkdownReader`), fetched via `GET /v1/docs/{id}/markdown` with `<!-- page N -->` markers. Convert, delete-converted-markdown, and re-index (on an already-`indexed` doc) are refused **409 `content_shared`** unless the caller is the document's sole holder (one entry, theirs, no project placement) or an admin — converting changes what every other holder reads.
+
+**One chat turn (C1, entirely server-side).** The browser POSTs `/v1/chat/sessions/{id}/turns` (`postTurn` in `chatStream.js`) with the message, attachments and settings; a session that doesn't exist yet is created on this first turn, titled from the prompt. The server (`server/routers/chat_turns.py` → `server/chat/orchestrator.py`) checks the daily budget, claims the session (409 if another turn is already streaming), then runs Stage 0 (document prefetch, time-in-prompt, history trim — `chat/context.py`) and enters the step loop: one model call, text/reasoning stream out as SSE deltas → if the model asked for tools, they run **in the order given** (not in parallel), each result streamed as `tool-output-available`/`tool-output-error` and appended to history → next step, up to `CHAT_MAX_TOOL_ROUNDS` rounds, then one final tools-off step so the turn always ends in an answer. The reply is written to Postgres as it streams (flushed at most every 2 seconds), so a reload mid-reply **in another tab or device** can show "Still generating…" via `applyEvent`/re-fetch; a same-tab reload or close instead drops the connection, so the turn ends in `aborted` and the reply is saved "Stopped". Meanwhile `chatTtsMode='streaming'` flushes complete sentences to the TTS queue as they form. Any feature a provider rejected (tools, a thinking level) arrives as a `data-notice` event → toast. The turn ends in exactly one of: `finish` (usage + stats), a terminal `error` (provider failure, budget exhausted mid-turn), or cancellation (`aborted`, partial reply kept) — every one of these also charges the daily budget for whatever was generated, using the provider's own token count if it reported one, else a chars/4 estimate.
+
+**A page of read-aloud.** `textItems` (sentences) → synthesis for current + next 2, in-flight deduped → `onended` recursion commits position and revokes the played blob URL → end of page bumps `currentPage` (which clears the cache); end of document stops → 3 consecutive failures abort with a toast.
+
+## Local development
+
+`./startup.sh` (see `CONTRIBUTING.md` for the full quick-start):
+
+- `init` — venv, deps, Kokoro model download, frontend build.
+- `up` — Postgres + SearXNG + backend with **`AUTH_ENABLED=false`** (loopback bypass: you are the seed admin, no cookie needed).
+- `up-with-dev-auth` — adds Keycloak, creates `.env` on first run (rig values + generated `SESSION_SECRET`, `COOKIE_SECURE=false`), waits for the realm import, runs with auth on. Login at :5173 with `admin-user` / `password`.
+- `down` — backend + containers down. `up` is foreground; Ctrl-C traps and tears everything down.
+
+The SPA is `npm run dev` on :5173. The Vite proxy makes it same-origin with backend and Ollama; Keycloak at :18080 is deliberately a different origin (the backend, not the browser, talks to it). Backend env vars are read from the environment or `.env` (sourced by `startup.sh` — there is no `python-dotenv`). See `deploy/README.md` for production auth wiring.
+
+## Invariants & traps
+
+- **Blank `apiHost` = same-origin is the only cookie-auth-compatible setup.** Never default it to `localhost`; the migration in `App.jsx` exists precisely because that was once the default and every login-then-fetch silently died to CORS.
+- **`isLocalhost` is misnamed** — it really means "use Kokoro TTS" (`true`) vs "browser Web Speech" (`false`). Blank host + `backendAvailable` is what matters at runtime.
+- **Kokoro is serialized by a global lock** — any new server-side synthesis path must respect it, and any new client-side path should bound its prefetch (the +2 rule).
+- **`WORKERS>1`** means N copies of the 325 MB model *and* — without a shared `SESSION_SECRET` — N different OIDC flow-cookie signing keys.
+- **`embedding vector(768)` is hard-coded** — swapping embedding models is a migration, not a config change.
+- **Unset inference settings must be omitted, not `null`** (`inference.js`) — `null` clobbers Modelfile tuning.
+- **The auth gate blocks rendering, not effects** — App's fetches fire behind the login screen. Don't be surprised by network noise while unauthenticated.
+- **Audio attachments ride in Ollama's `images` field** — the message struct has no audio slot; audio-capable models interpret those bytes as audio.
+- **Vite watch ignores `.venv`/`data`/`logs`** (`vite.config.js`) — without this, chokidar exhausts `fs.inotify.max_user_watches` on this repo and the dev server dies with ENOSPC.
+- **Ownership misses return 404, not 403** (`authz.py`) — leaking existence is an enumeration bug.
+- **A document's own hash is not its `doc_id`, the server's is** (`doc_content.py`, `docs.py` `register_document`) — the browser's sha256 (`docHash.js`) only ever travels as `client_doc_id`, an advisory hint logged at WARNING on mismatch. Never key a lookup off the client's computed hash without also handling "the server disagreed."
+- **Your own project placement still blocks convert/re-index/delete-markdown** (`content_ops_refusal`) — filing a document into any project you can see (owner or member) counts as another reader of the content, even though you put it there yourself. "Am I the only holder" always checks placements too, not just other people's entries.
+- **A cascade never garbage-collects** — every code path that `DELETE`s a `library_entries` or `project_documents` row must call `gc_content_if_orphaned` itself afterward; an SQL `ON DELETE CASCADE` (project delete, user delete) skips it silently unless the caller collected the affected `doc_id`s first. The startup sweep is the safety net, not a substitute for wiring this into a new path.
+- Every `server/sql/NNN_*.sql` must end with
+  `INSERT INTO schema_migrations(version) VALUES (NNN) ON CONFLICT DO NOTHING;`
+  — the runner doesn't record versions, and a non-idempotent migration that
+  re-runs stops startup. `test_every_migration_records_its_version` checks it.
+- **Stale docstrings**: `webSearch.js`/`currentTimeDate.js` claim to be unregistered stubs, but both are in the registry — trust the registry line. `VoiceRecorder` is intentionally dead until Whisper lands.
