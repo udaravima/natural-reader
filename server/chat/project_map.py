@@ -27,7 +27,7 @@ is over budget it is shortened in steps (STEPS: drop level 3, cap each outline
 at its first 8 entries, drop level 2, then names and pages only), stopping at
 the first that fits; once anything is cut it says so, and the `document_outline`
 tool is offered for the turn (tools/document_outline.py) so the full outline is
-one call away. The one thing it never cuts is a document: with hundreds, the
+one call away (on a turn that offers no tools, the note names no tool). The one thing it never cuts is a document: with hundreds, the
 last step can still be over budget, and a document the model isn't told about
 is one it can't search.
 """
@@ -41,6 +41,8 @@ from .project_scope import ProjectScope, ScopeDoc
 from .prompt import PROJECT_TAG, display_name
 
 SHORTENED_LINE = "Outlines are shortened: call document_outline for a document's full outline."
+# The same fact without the tool, for a turn that offers no tools: a tool is named only when it is offered.
+SHORTENED_LINE_NO_TOOL = "Outlines are shortened."
 FAILED = "failed"
 INDEXED = "indexed"
 
@@ -117,9 +119,13 @@ def _body(scope: ProjectScope, outlines: dict[str, Outline], step: _Step) -> lis
     return lines or ["The project has no documents yet."]
 
 
-def build_map(scope: ProjectScope, outlines: dict[str, Outline], budget_chars: int) -> ProjectMap:
+def build_map(scope: ProjectScope, outlines: dict[str, Outline], budget_chars: int, *,
+              tool_offered: bool = True) -> ProjectMap:
     """The map of `scope`, within `budget_chars` characters (tags and the note about shortening
-    included) if any step of the ladder fits, else the last step. `outlines` is keyed by doc_id."""
+    included) if any step of the ladder fits, else the last step. `outlines` is keyed by doc_id.
+    `tool_offered`: this turn offers document_outline. When the turn offers no tools at all (a model without
+    tool support, or no tool rounds), the note says only that outlines are shortened, and names no tool."""
+    note = SHORTENED_LINE if tool_offered else SHORTENED_LINE_NO_TOOL
     head = f'<{PROJECT_TAG} project="{display_name(scope.name)}">'
     tail = f"</{PROJECT_TAG}>"
     first: list[str] | None = None
@@ -127,7 +133,7 @@ def build_map(scope: ProjectScope, outlines: dict[str, Outline], budget_chars: i
         body = _body(scope, outlines, step)
         first = body if first is None else first
         shortened = body != first
-        text = "\n".join([head, *body, *([SHORTENED_LINE] if shortened else []), tail])
+        text = "\n".join([head, *body, *([note] if shortened else []), tail])
         if len(text) <= budget_chars:
             break
     return ProjectMap(text, shortened)

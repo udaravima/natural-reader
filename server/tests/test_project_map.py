@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from server.chat import context as ctx_mod
 from server.chat import orchestrator, store
 from server.chat.config import ChatConfig, load_chat_config
@@ -18,7 +20,7 @@ from server.chat.prompt import PROJECT_TAG, fence
 from server.chat.tools import ToolContext, available_tools, run_tool
 from server.chat.tools import search_documents as sd_tool
 from server.chat.tools import web_search as web_search_tool
-from server.llm.types import CallSettings, Finish, ToolCall, ToolCallReady, Usage
+from server.llm.types import CallSettings, Capabilities, Finish, ToolCall, ToolCallReady, Usage
 from server.services import web_search as web_search_service
 from server.services.doc_outlines import Outline, save_outline
 from server.services.doc_search import ReadableDoc
@@ -325,6 +327,31 @@ async def test_document_outline_errors_name_the_valid_documents():
     assert not_ready.result == {"error": 'Document 3 ("Scan.pdf") isn\'t searchable yet.'}
 
 
+async def test_document_outline_never_returns_an_outline_from_outside_the_scope():
+    """ctx.outlines is keyed by doc_id and may hold more than the scope: another project's document, or the
+    superseded version of a document the scope lists under its current id. Neither is ever reachable."""
+    scope, outlines = _ladder_scope()
+    foreign = _outline((1, "Foreign heading", 1), opening="Foreign opening.")
+    old_version = _outline((1, "Old version heading", 1))
+    ctx = ToolContext("u", None, project=scope, map_shortened=True,
+                      outlines={**outlines, _id(99): foreign, "f" * 64: old_version})
+    # By name, by a ref past the end of the scope, as a number in a string.
+    for value in ("Foreign.md", 99, "99", 4):
+        run = await _call(ctx, {"document": value})
+        assert not run.ok and run.result["error"].startswith("Unknown document:"), value
+        assert "Foreign heading" not in json.dumps(run.result) and "Foreign opening" not in json.dumps(run.result)
+    # The scope's document answers with ITS outline, even though another outline sits in the same dict.
+    mine = await _call(ctx, {"document": "Guide.md"})
+    assert mine.ok and mine.result["outline"][0] == {"level": 1, "text": "Part 1", "page": 1}
+    assert "Old version heading" not in json.dumps(mine.result) and "Foreign heading" not in json.dumps(mine.result)
+    assert "Foreign heading" not in ctx.seen_text
+    # A scope document with no outline of its own is not handed someone else's.
+    bare = ToolContext("u", None, project=scope, map_shortened=True, outlines={_id(99): foreign})
+    nothing = await _call(bare, {"document": "Guide.md"})
+    assert nothing.result == {"document": {"ref": 1, "name": "Guide.md"}, "outline": [],
+                              "message": "This document has no outline."}
+
+
 async def test_document_outline_is_inert_too():
     scope = _scope(_doc(1, "A.md"))
     ctx = ToolContext("u", None, project=scope, map_shortened=True,
@@ -346,9 +373,11 @@ def test_project_map_chars_config():
 
 # ---- the turn ----
 
-async def _project_turn(conn, monkeypatch, router, *, headings=2, cfg=None, pins=None, alpha_state=None):
+async def _project_turn(conn, monkeypatch, router, *, headings=2, cfg=None, pins=None, alpha_state=None,
+                        document_scope=False):
     """A project turn over Alpha (A2) and Beta (B, the open one), after giving each an outline: Alpha
-    `headings` of them (levels 1-3 in turn), Beta two. `alpha_state` changes Alpha's state, leaving its outline."""
+    `headings` of them (levels 1-3 in turn), Beta two. `alpha_state` changes Alpha's state, leaving its outline.
+    `document_scope`: the same user and documents, but a chat about the open document Beta, not the project."""
     shim_pool(monkeypatch, conn, store, orchestrator, ctx_mod, sd_tool)
 
     async def fake_embed(text):
@@ -365,10 +394,11 @@ async def _project_turn(conn, monkeypatch, router, *, headings=2, cfg=None, pins
     if alpha_state:
         await conn.execute("UPDATE documents SET state = %s WHERE doc_id = %s", (alpha_state, A2))
     claim = await store.begin_turn(session_id="s-1", user_id=alice.user_id, model_id="ollama:m", text="q",
-                                   attachments=[], new_session_pins=pins, scope_project_id=pid)
+                                   attachments=[], new_session_pins=pins,
+                                   scope_project_id=None if document_scope else pid)
     req = orchestrator.TurnRequest(user_id=alice.user_id, session_id="s-1", model_id="ollama:m", text="q",
                                    attachments=(), settings=CallSettings(), doc_id=B, timezone="UTC",
-                                   project_id=pid)
+                                   project_id=None if document_scope else pid)
     return [e async for e in orchestrator.run_turn(req, claim, router=router, cfg=cfg or ChatConfig(),
                                                    deployment_budget=None)]
 
@@ -425,6 +455,48 @@ async def test_text_copied_from_the_map_cannot_be_sent_to_a_web_search(db_conn, 
     assert json.loads(router.calls[1]["messages"][-1].content) == {"error": web_search_tool.COPIED}
 
 
-async def test_a_document_chat_has_no_map():
-    from server.chat.context import TurnInput
-    assert TurnInput.__dataclass_fields__["project_map"].default == ""
+async def test_a_document_chat_has_no_map(db_conn, monkeypatch):
+    """A chat about the open document is not a project chat: no map block in its system message, and no
+    document_outline. (The data rule names the tag as `<project_documents>`, so the block is looked for by its
+    opening line `<project_documents project=` and its closing tag.)"""
+    router = FakeRouter()
+    await _project_turn(db_conn, monkeypatch, router, headings=120, cfg=ChatConfig(project_map_chars=500),
+                        document_scope=True)
+    system = router.calls[0]["messages"][0].content
+    assert "Beta.md" in system                                    # it IS a turn about the open document
+    assert "<project_documents project=" not in system and "</project_documents>" not in system
+    assert "Outlines are shortened" not in system and "document_outline" not in system
+    assert "document_outline" not in router.calls[0]["tools"] and "search_documents" in router.calls[0]["tools"]
+
+
+# ---- a map that names a tool only when the tool is offered ----
+
+def test_without_the_tool_the_shortened_map_does_not_name_it():
+    scope, outlines = _ladder_scope()
+    full = build_map(scope, outlines, 100_000, tool_offered=False)
+    assert full.shortened is False and "Outlines are shortened" not in full.text      # nothing cut, no note
+    budget = len(full.text) - 1
+    with_tool = build_map(scope, outlines, budget)
+    without = build_map(scope, outlines, budget, tool_offered=False)
+    assert with_tool.shortened and without.shortened          # something was cut either way
+    assert SHORTENED_LINE in with_tool.text
+    assert "document_outline" not in without.text and "Outlines are shortened." in without.text
+    assert without.text.count("Outlines are shortened") == 1 and len(without.text) <= budget
+
+
+@pytest.mark.parametrize("how", ["model without tool support", "no tool rounds"])
+async def test_a_map_shortened_on_a_turn_without_tools_does_not_name_document_outline(db_conn, monkeypatch, how):
+    router = FakeRouter()
+    cfg = ChatConfig(project_map_chars=500)
+    if how == "model without tool support":
+        router.caps = Capabilities(tools=False, thinking=True, vision=True, audio=None, context_window=None)
+    else:
+        cfg = ChatConfig(project_map_chars=500, project_max_tool_rounds=0)   # CHAT_PROJECT_MAX_TOOL_ROUNDS=0
+    await _project_turn(db_conn, monkeypatch, router, headings=120, cfg=cfg)
+    call = router.calls[0]
+    system = call["messages"][0].content
+    assert call["tools"] == []                                  # nothing is offered...
+    assert "<project_documents project=" in system and "Outlines are shortened." in system   # ...the map was cut
+    assert "document_outline" not in system                     # ...and does not name a tool the model can't call
+
+

@@ -243,12 +243,14 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         # Tools first: the system rules describe exactly the tools this turn
         # offers (server/chat/prompt.py), so none is ever named in vain.
         # A project chat gets a map of the project in the system message; if it had to be shortened,
-        # document_outline is offered for the turn (chat/project_map.py).
-        project_map, outlines = await _project_map(project, cfg) if project else (None, {})
+        # document_outline is offered for the turn (chat/project_map.py), and the map says to call it only
+        # when this turn offers tools at all.
+        max_rounds = cfg.project_max_tool_rounds if req.project_id else cfg.max_tool_rounds
+        tools_on = caps.tools is not False and max_rounds > 0
+        project_map, outlines = await _project_map(project, cfg, tools_on) if project else (None, {})
         tool_ctx = ToolContext(req.user_id, doc, cfg=cfg, project=project, question=req.text,
                                map_shortened=bool(project_map and project_map.shortened), outlines=outlines)
         offered = [] if caps.tools is False else available_tools(tool_ctx)
-        max_rounds = cfg.project_max_tool_rounds if req.project_id else cfg.max_tool_rounds
         built = await build_context(TurnInput(
             user_id=req.user_id, text=req.text, attachments=req.attachments, doc=doc,
             timezone=req.timezone, pins=pins, history=history,
@@ -601,13 +603,14 @@ async def _project_scope(req: TurnRequest) -> ProjectScope:
         return await load_project_scope(conn, req.user_id, req.project_id, open_doc_id=req.doc_id)
 
 
-async def _project_map(project: ProjectScope, cfg: ChatConfig) -> tuple[ProjectMap, dict[str, Outline]]:
+async def _project_map(project: ProjectScope, cfg: ChatConfig,
+                       tools_on: bool) -> tuple[ProjectMap, dict[str, Outline]]:
     """The map of the project, and the outlines it was built from (for document_outline). Only indexed
     documents' outlines are loaded: the map shows no other (a revert leaves a stale row behind). Not
     caught, like the scope: the database is there or the turn can't run."""
     async with get_pool().connection() as conn:
         outlines = await load_outlines(conn, [d.doc.doc_id for d in project.searchable])
-    return build_map(project, outlines, cfg.project_map_chars), outlines
+    return build_map(project, outlines, cfg.project_map_chars, tool_offered=tools_on), outlines
 
 
 async def _open_doc(req: TurnRequest) -> ReadableDoc | None:
