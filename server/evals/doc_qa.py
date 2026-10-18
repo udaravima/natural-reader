@@ -270,13 +270,14 @@ class EvalSetupError(RuntimeError):
     """The harness couldn't run (database, models): not a verdict on the model."""
 
 
-async def eval_user(conn) -> str:
+async def eval_user(conn, *, sub: str = EVAL_SUB, email: str = "doc-qa-eval@example.com",
+                    display_name: str = "Document QA eval") -> str:
     """The eval's own user: a row of its own, never via the OIDC resolver,
     which binds a new identity to an unclaimed seed admin (on a dev-bypass
-    machine, the person's own account)."""
+    machine, the person's own account). Another evaluation names its own."""
     from ..auth.users import enroll_linked_user
     cur = await conn.execute("SELECT id, capabilities FROM users WHERE oidc_iss = %s AND oidc_sub = %s",
-                             (EVAL_ISS, EVAL_SUB))
+                             (EVAL_ISS, sub))
     row = await cur.fetchone()
     if row:
         if "admin" in (row[1] or []):
@@ -285,10 +286,10 @@ async def eval_user(conn) -> str:
                                  f"(users where oidc_iss = '{EVAL_ISS}').")
         return str(row[0])
     try:
-        user = await enroll_linked_user(conn, iss=EVAL_ISS, sub=EVAL_SUB, email="doc-qa-eval@example.com",
-                                       display_name="Document QA eval", capabilities=["chat", "reader"])
+        user = await enroll_linked_user(conn, iss=EVAL_ISS, sub=sub, email=email,
+                                       display_name=display_name, capabilities=["chat", "reader"])
     except ValueError as e:
-        raise EvalSetupError("Another user already has doc-qa-eval@example.com.") from e
+        raise EvalSetupError(f"Another user already has {email}.") from e
     return str(user["id"])
 
 

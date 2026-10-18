@@ -8,9 +8,9 @@ and what to install on a system the docs never mention. A variant adds 41
 generated padding documents (9 + 41 = 50), so the project is big enough that
 the map is shortened.
 
-Everything here is pure (server/tests/test_eval_project_qa.py): the fixture,
-the cases and the scoring. The live run, which needs Postgres, the embedding
-model and a chat model, is added in C2.1 Task 4.
+The fixture, the cases and the scoring are pure (server/tests/test_eval_project_qa.py).
+`run_eval` (C2.1 Task 4) needs Postgres, the embedding model and a chat model, so it runs on
+the local machine, on a scratch database: `scripts/eval_project_qa.py --model ... --variant 9`.
 
 Citations in project scope are "(Name, page N)", the form the app links
 (spec section 5.7). A citation of the wrong document is worse than none, so
@@ -21,12 +21,13 @@ from __future__ import annotations
 import math
 import random
 import re
+import sys
 from dataclasses import dataclass, field, replace
 from functools import cache
 from pathlib import Path
 from typing import Any
 
-from .doc_qa import has_term, is_refusal
+from .doc_qa import EvalSetupError, has_term, is_refusal   # EvalSetupError: the script catches it from here
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "project_docs"
 
@@ -370,3 +371,197 @@ def format_report(runs: list[list[Result]], *, model: str, variant: str) -> str:
     skipped = len(every) - len(asked)
     lines.append(f"{sum(r.passed for r in asked)}/{len(asked)} passed" + (f" ({skipped} skipped)" if skipped else ""))
     return "\n".join(lines)
+
+
+# ---------- the live run ----------
+
+EVAL_SUB = "project-qa"
+PROJECT_NAME = "Eval project"
+VARIANTS = ("9", "50")
+TURN_TIMEOUT_S = 300           # one chat turn; a hung provider ends as an error, not a hung eval
+
+
+def cases_for(variant: str) -> tuple[Case, ...]:
+    """The cases this variant asks: the map-shortened ones only where the project is big enough for that."""
+    return tuple(c for c in CASES if variant == "50" or c.kind != "map-shortened")
+
+
+def project_documents(variant: str) -> list[tuple[str, bytes]]:
+    """(name, bytes) of every document of the project: the fixture, plus the padding in variant "50"."""
+    docs = [(p.name, p.read_bytes()) for p in fixture_files()]
+    if variant == "50":
+        docs += [(name, text.encode("utf-8")) for name, text in padding_docs()]
+    return docs
+
+
+async def seed_project(conn, user_id: str, documents: list[tuple[str, bytes]], *, name: str) -> tuple[str, list[str]]:
+    """A fresh project for the eval user, owned by them, with `documents` filed as it files a
+    library document (doc_versions.file_from_library). The content stays indexed between runs
+    (its bytes are written to the storage folder again, the script's temporary one); only the
+    project is made anew, so no earlier run's documents linger in it.
+    Returns (project id, the content doc ids, in project order)."""
+    import hashlib
+
+    from ..services import doc_storage, doc_versions
+
+    await conn.execute("DELETE FROM projects WHERE created_by = %s AND name = %s", (user_id, name))
+    cur = await conn.execute("INSERT INTO projects (created_by, name) VALUES (%s, %s) RETURNING id", (user_id, name))
+    project_id = str((await cur.fetchone())[0])
+    await conn.execute("INSERT INTO project_members (project_id, user_id, role, added_by, added_via) "
+                       "VALUES (%s, %s, 'owner', %s, 'member')", (project_id, user_id, user_id))
+    base = doc_storage.storage_dir()
+    base.mkdir(parents=True, exist_ok=True)
+    doc_ids = []
+    for file_name, data in documents:
+        doc_id = hashlib.sha256(data).hexdigest()
+        file_type = doc_storage.type_from_name(file_name)
+        path = base / f"{doc_id}.{doc_storage._EXT[file_type]}"
+        path.write_bytes(data)
+        await conn.execute(
+            "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, state, bytes_path, extracted_by) "
+            "VALUES (%s, %s, %s, %s, 'stored', %s, 'server') "
+            # An earlier run kept its files in a storage folder that is gone by now: point at this run's.
+            "ON CONFLICT (doc_id) DO UPDATE SET bytes_path = EXCLUDED.bytes_path",
+            (doc_id, file_name, file_type, len(data), str(path)))
+        await conn.execute(
+            "INSERT INTO library_entries (user_id, doc_id, added_via, verified, file_name) "
+            "VALUES (%s, %s, 'upload', true, %s) ON CONFLICT DO NOTHING", (user_id, doc_id, file_name))
+        await doc_versions.file_from_library(conn, user_id, project_id, doc_id, file_name=file_name, keep_both=True)
+        doc_ids.append(doc_id)
+    return project_id, doc_ids
+
+
+async def _turn(text: str, *, session_id: str, user_id: str, project_id: str, model: str, think: str,
+                router, cfg, budget) -> tuple[str, list[dict[str, Any]], str | None, bool, list[int], bool]:
+    """One chat turn through the real path, scoped to the project: (answer, tool calls with
+    their arguments, error, prefetched, source chip pages, offered the web search)."""
+    import asyncio
+    from contextlib import aclosing
+
+    from ..chat import store
+    from ..chat.orchestrator import TurnRequest, run_turn
+    from ..llm.types import CallSettings
+
+    answer, calls, error, prefetched, chips, offered = "", [], None, False, [], False
+    claim = await store.begin_turn(session_id=session_id, user_id=user_id, model_id=model, text=text,
+                                   attachments=[], new_session_pins=None, scope_project_id=project_id)
+    req = TurnRequest(user_id=user_id, session_id=session_id, model_id=model, text=text, attachments=(),
+                      settings=CallSettings(think=think), doc_id=None, timezone="UTC", project_id=project_id)
+    try:
+        async with asyncio.timeout(TURN_TIMEOUT_S):
+            async with aclosing(run_turn(req, claim, router=router, cfg=cfg, deployment_budget=budget)) as events:
+                async for ev in events:
+                    if ev["type"] == "text-delta":
+                        answer += ev["delta"]
+                    elif ev["type"] == "tool-input-available":
+                        calls.append(ev)
+                        offered = offered or ev.get("toolName") == "offer_web_search"
+                    elif ev["type"] == "data-web-offer":
+                        offered = True
+                    elif ev["type"] == "data-sources":
+                        chips += [p for p in ev.get("pages") or [] if isinstance(p, int)]
+                    elif ev["type"] == "data-context":
+                        prefetched = prefetched or any(i.get("kind") == "prefetch" for i in ev.get("items") or [])
+                    elif ev["type"] == "error":
+                        error = ev.get("code") or "error"
+    except TimeoutError:
+        error = "timeout"
+    return answer, calls, error, prefetched, chips, offered
+
+
+async def _ask(case: Case, *, names: list[str], web_offered: bool, **turn) -> Result:
+    """Ask the case's setup turns, then its question, in one chat; score and time the question's
+    turn only. (`case.web`, the chat's web-search mode, has no request field yet: Task 13.)"""
+    import time
+    import uuid
+
+    from ..db import get_pool
+
+    session_id = f"eval-{uuid.uuid4()}"
+    try:
+        for text in case.setup:
+            _, _, error, _, _, _ = await _turn(text, session_id=session_id, **turn)
+            if error:
+                return score(case, "", [], names, offered=False, error=error)
+        started = time.monotonic()
+        answer, calls, error, prefetched, chips, offered = await _turn(case.question, session_id=session_id, **turn)
+        seconds = time.monotonic() - started
+    finally:
+        # Even on an error or Ctrl-C: the eval leaves no chats behind.
+        async with get_pool().connection() as conn:
+            await conn.execute("DELETE FROM chat_sessions WHERE id = %s", (session_id,))
+    result = score(case, answer, calls, names, offered=offered, error=error, prefetched=prefetched,
+                   web_offered=web_offered, chip_pages=chips)
+    result.seconds = seconds
+    return result
+
+
+async def run_eval(model: str, *, variant: str = "9", think: str = "off", repeat: int = 1,
+                   show_answers: bool = False) -> list[list[Result]]:
+    """Index the project's documents for the eval user and ask every case through run_turn,
+    scoped to the project, started and stopped as the app does. Needs DATABASE_URL (a scratch
+    database: the script refuses the real one), the embedding model and `model` reachable;
+    raises EvalSetupError otherwise. The documents' files go to DOC_STORAGE_DIR, which the
+    script points at a temporary folder of its own: a caller other than the script must do the same. Documents stay indexed, so a second run doesn't re-embed them."""
+    from ..chat import orchestrator
+    from ..chat.config import get_chat_config
+    from ..db import close_db, get_pool, init_db
+    from ..llm.router import UnknownModel, get_router, start_router, stop_router
+    from ..services import doc_pipeline, embeddings, model_router, web_search
+    from .doc_qa import eval_user
+
+    if variant not in VARIANTS:
+        raise EvalSetupError(f"variant must be one of {', '.join(VARIANTS)}.")
+    documents = project_documents(variant)
+    names = [name for name, _ in documents]
+    if not await init_db():
+        raise EvalSetupError("The database isn't reachable (DATABASE_URL).")
+    try:
+        await embeddings.start_client()
+        await web_search.start_client()
+        await start_router()
+        router = get_router()
+        if not router.is_allowed(model):     # the turn route's order: allowed first, then resolved
+            raise EvalSetupError(f"{model} isn't allowed on this deployment (INFERENCE_MODELS).")
+        try:
+            canonical = router.canonical_id(model)
+        except UnknownModel as e:
+            raise EvalSetupError(f"No provider serves {model!r}: {e}") from e
+        async with get_pool().connection() as conn:
+            user_id = await eval_user(conn, sub=EVAL_SUB, email="project-qa-eval@example.com",
+                                      display_name="Project QA eval")
+            project_name = PROJECT_NAME if variant == "9" else f"{PROJECT_NAME} ({variant} documents)"
+            project_id, doc_ids = await seed_project(conn, user_id, documents, name=project_name)
+        for doc_id in dict.fromkeys(doc_ids):
+            await doc_pipeline.run_pipeline(doc_id)     # a no-op once indexed
+            await doc_pipeline.run_rebuild(doc_id)      # a no-op under the current profile
+        async with get_pool().connection() as conn:
+            cur = await conn.execute(
+                "SELECT file_name, state, error_message FROM documents WHERE doc_id = ANY(%s) AND state <> 'indexed'",
+                (doc_ids,))
+            unindexed = await cur.fetchall()
+        if unindexed:
+            first = ", ".join(f"{n} ({s}: {m})" for n, s, m in unindexed[:3])
+            raise EvalSetupError(f"{len(unindexed)} documents didn't index: {first}. Is the embedding model up?")
+
+        from ..chat.tools import web_search as web_search_tool
+        web_offered = bool(web_search_tool.TOOL.available(None))   # Task 13 adds the offer tool to this
+        runs = []
+        for _ in range(repeat):
+            results = []
+            for case in cases_for(variant):
+                result = await _ask(case, names=names, web_offered=web_offered, user_id=user_id,
+                                    project_id=project_id, model=canonical, think=think, router=router,
+                                    cfg=get_chat_config(), budget=model_router.get_config().daily_token_budget)
+                results.append(result)
+                print(f"{_verdict(result):<5} {case.name} {result.seconds:.1f}s", file=sys.stderr, flush=True)
+                if show_answers:
+                    print(f"--- {case.kind} {case.name}: {case.question}\n{result.answer}\n")
+            runs.append(results)
+        return runs
+    finally:
+        await stop_router()
+        await web_search.stop_client()
+        await embeddings.stop_client()
+        await orchestrator.drain_background(timeout=5)
+        await close_db()

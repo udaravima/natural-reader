@@ -484,3 +484,207 @@ def test_inline_citations_chips_and_gap_pages_are_recorded():
     gap = _score(_case("gap-general"), "On RHEL 9 use dnf (README.md, page 5) (DEPLOYMENT.md, page 2).", offered=True)
     assert gap.invented_pages == {2, 5} and gap.paged_gap
     assert _score(_case("gap-general"), "The documents don't cover RHEL.", offered=True).invented_pages == set()
+
+
+# ---- Task 4: the runner and its script ----
+
+def _script():
+    """scripts/eval_project_qa.py as a module (it is not on the import path)."""
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[2] / "scripts" / "eval_project_qa.py"
+    spec = importlib.util.spec_from_file_location("eval_project_qa_script", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_runner_refuses_the_real_database():
+    script = _script()
+    with pytest.raises(SystemExit):
+        script.check_database_url("postgresql://u:p@localhost:5433/natural_reader")
+    script.check_database_url("postgresql://u:p@localhost:5433/natural_reader_eval")
+
+
+@pytest.mark.parametrize("url", [
+    None, "",                                                   # unset: the server would use its default, the real one
+    "postgresql://u:p@localhost:5433/natural_reader",
+    "postgresql://u:p@localhost:5433/natural_reader?sslmode=disable",
+    "postgresql://u:p@localhost:5433/",                         # no database named
+    "dbname=natural_reader user=u host=localhost",              # the keyword form of the same
+    "not a connection string at all ::",
+])
+def test_the_script_refuses_anything_but_a_named_scratch_database(url, capsys):
+    with pytest.raises(SystemExit) as stopped:
+        _script().check_database_url(url)
+    assert stopped.value.code == 2
+    assert "u:p" not in capsys.readouterr().err      # the URL holds a password: never echoed
+
+
+@pytest.mark.parametrize("url", ["postgresql://u:p@localhost:5434/natural_reader_eval",
+                                 "dbname=natural_reader_eval host=localhost"])
+def test_the_script_accepts_a_scratch_database(url):
+    _script().check_database_url(url)
+
+
+def test_the_eval_script_loads_dotenv_before_any_server_module():
+    """As doc_qa's: server modules read settings when imported; and check_database_url needs none."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    probe = ("import importlib.util, sys\n"
+             f"spec = importlib.util.spec_from_file_location('ev', {str(root / 'scripts' / 'eval_project_qa.py')!r})\n"
+             "spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+             "print(sorted(m for m in sys.modules if m == 'server' or m.startswith('server.')))\n")
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd=root, check=True)
+    assert out.stdout.strip() == "[]"
+
+
+def test_an_exported_database_url_wins_over_dotenv(tmp_path):
+    """The baseline must never fall to .env's database: dotenv fills only what the environment lacks."""
+    import os
+    import subprocess
+    import sys
+    (tmp_path / ".env").write_text("DATABASE_URL=postgresql://u:p@h:5433/natural_reader\nOTHER_FROM_DOTENV=1\n")
+    probe = ("from dotenv import load_dotenv; import os\n"
+             "load_dotenv(override=False)\n"
+             "print(os.environ['DATABASE_URL'], os.environ['OTHER_FROM_DOTENV'])\n")
+    env = {**os.environ, "DATABASE_URL": "postgresql://u:p@h:5434/natural_reader_eval"}
+    env.pop("OTHER_FROM_DOTENV", None)
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd=tmp_path, env=env, check=True)
+    assert out.stdout.split() == ["postgresql://u:p@h:5434/natural_reader_eval", "1"]
+
+
+def test_the_nine_document_variant_skips_the_map_shortened_cases():
+    nine, fifty = pq.cases_for("9"), pq.cases_for("50")
+    assert not [c for c in nine if c.kind == "map-shortened"]
+    assert [c for c in fifty if c.kind == "map-shortened"] and len(fifty) == len(pq.CASES)
+    assert len(nine) == len(pq.CASES) - 2
+
+
+def test_the_variants_hold_nine_and_fifty_documents():
+    nine, fifty = pq.project_documents("9"), pq.project_documents("50")
+    assert [n for n, _ in nine] == [p.name for p in pq.fixture_files()] and len(nine) == 9
+    assert len(fifty) == 50 and fifty[:9] == nine
+    assert len({n for n, _ in fifty}) == 50 and len({d for _, d in fifty}) == 50
+
+
+async def test_the_eval_project_files_every_document_for_its_user(db_conn, tmp_path, monkeypatch):
+    from server.chat.project_scope import load_project_scope
+    monkeypatch.setenv("DOC_STORAGE_DIR", str(tmp_path))
+    user = await doc_qa.eval_user(db_conn, sub="project-qa-test", email="pq-test@example.com")
+    docs = pq.project_documents("9")
+    pid, doc_ids = await pq.seed_project(db_conn, user, docs, name="Eval project")
+    scope = await load_project_scope(db_conn, user, pid, open_doc_id=None)
+    assert sorted(d.name for d in scope.docs) == sorted(n for n, _ in docs)
+    assert sorted(d.doc.doc_id for d in scope.docs) == sorted(doc_ids)
+    assert all((tmp_path / f"{i}.md").is_file() for i in doc_ids)
+    # A second run (its own storage folder: the first one is gone) makes the project anew: still nine
+    # documents, not eighteen, and their content points at the new folder.
+    second = tmp_path / "second"
+    monkeypatch.setenv("DOC_STORAGE_DIR", str(second))
+    pid2, _ = await pq.seed_project(db_conn, user, docs, name="Eval project")
+    cur = await db_conn.execute("SELECT bytes_path FROM documents WHERE doc_id = ANY(%s)", (doc_ids,))
+    assert {r[0] for r in await cur.fetchall()} == {str(second / f"{i}.md") for i in doc_ids}
+    scope = await load_project_scope(db_conn, user, pid2, open_doc_id=None)
+    assert len(scope.docs) == 9 and pid2 != pid
+    assert (await (await db_conn.execute("SELECT count(*) FROM projects WHERE created_by = %s", (user,))).fetchone())[0] == 1
+
+
+# ---- the script's own storage folder ----
+
+def test_the_eval_gets_a_fresh_temp_storage_folder_whatever_is_exported(monkeypatch):
+    import tempfile
+    from pathlib import Path
+    from server.services import doc_storage
+    monkeypatch.setenv("DOC_STORAGE_DIR", "/the/apps/real/storage")
+    monkeypatch.setenv("PDF_STORAGE_DIR", "/the/apps/old/storage")
+    with _script().eval_storage(None) as folder:
+        assert folder.is_dir() and folder.name.startswith("nr-eval-storage-")
+        assert folder.parent == Path(tempfile.gettempdir())
+        assert doc_storage.storage_dir() == folder.resolve()      # what the pipeline will really use
+        (folder / "x.md").write_text("kept until the block ends")
+    assert not folder.exists()
+    import os
+    assert os.environ["DOC_STORAGE_DIR"] == "/the/apps/real/storage"   # the exported value is put back
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, KeyboardInterrupt])
+def test_the_temp_storage_folder_is_removed_on_an_error_or_ctrl_c(failure, monkeypatch):
+    monkeypatch.delenv("DOC_STORAGE_DIR", raising=False)
+    seen = []
+    with pytest.raises(failure):
+        with _script().eval_storage(None) as folder:
+            seen.append(folder)
+            (folder / "doc.md").write_text("x")
+            raise failure()
+    assert seen and not seen[0].exists()
+
+
+def test_an_explicit_storage_dir_is_used_created_and_kept(tmp_path, monkeypatch):
+    import os
+    monkeypatch.setenv("DOC_STORAGE_DIR", "/the/apps/real/storage")
+    wanted = tmp_path / "mine" / "docs"
+    with _script().eval_storage(str(wanted)) as folder:
+        assert folder == wanted.resolve() and wanted.is_dir()
+        assert os.environ["DOC_STORAGE_DIR"] == str(wanted.resolve())
+        (wanted / "x.md").write_text("mine")
+    assert (wanted / "x.md").read_text() == "mine"           # the caller's folder is never removed
+
+
+_MAIN_PROBE = """
+import asyncio, dotenv, importlib.util, json, os, sys
+from pathlib import Path
+real = dotenv.load_dotenv
+dotenv.load_dotenv = lambda *a, **k: real(Path(os.environ["PROBE_DOTENV"]), **k)    # a .env of the test's own
+spec = importlib.util.spec_from_file_location("ev", os.environ["PROBE_SCRIPT"])
+script = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(script)
+import server.evals.project_qa as pq
+from server.services import doc_storage
+seen = {}
+async def fake_run_eval(model, **kw):
+    seen["dir"] = str(doc_storage.storage_dir())
+    seen["exists"] = doc_storage.storage_dir().is_dir()
+    return []
+pq.run_eval = fake_run_eval
+sys.argv = ["eval_project_qa.py", "--model", "m", *sys.argv[1:]]
+rc = script.main()
+print(json.dumps({"rc": rc, **seen, "after": os.path.isdir(seen["dir"])}))
+"""
+
+
+def _run_main(tmp_path, *argv):
+    """The script's real main(), with a fake run_eval that records where storage points, in a subprocess
+    (main loads a .env into os.environ). The test's .env and the environment both name another folder."""
+    import json
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    (tmp_path / ".env").write_text("DOC_STORAGE_DIR=/from/dotenv\nPDF_STORAGE_DIR=/from/dotenv/pdfs\n")
+    env = {**os.environ, "PROBE_DOTENV": str(tmp_path / ".env"), "PROBE_SCRIPT": str(root / "scripts" / "eval_project_qa.py"),
+           "DATABASE_URL": "postgresql://u:p@localhost:5434/natural_reader_eval",
+           "DOC_STORAGE_DIR": "/exported/by/the/caller", "PYTHONPATH": str(root)}
+    out = subprocess.run([sys.executable, "-c", _MAIN_PROBE, *argv], capture_output=True, text=True, cwd=root, env=env)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_main_runs_the_eval_in_a_temp_storage_folder_and_removes_it(tmp_path):
+    import tempfile
+    from pathlib import Path
+    seen = _run_main(tmp_path)
+    assert seen["rc"] == 0 and seen["exists"]
+    assert Path(seen["dir"]).parent == Path(tempfile.gettempdir()).resolve()
+    assert Path(seen["dir"]).name.startswith("nr-eval-storage-")
+    assert not seen["after"]
+    assert seen["dir"] not in ("/exported/by/the/caller", "/from/dotenv")
+
+
+def test_main_honours_storage_dir_and_keeps_it(tmp_path):
+    mine = tmp_path / "kept"
+    seen = _run_main(tmp_path, "--storage-dir", str(mine))
+    assert seen["dir"] == str(mine.resolve()) and seen["exists"] and seen["after"]
