@@ -39,6 +39,11 @@ class ChatConfig:
     project_map_chars: int = 6000          # characters the project map may take in the system message (C2.1
                                             # spec 5.2; about 1,500 tokens). Over it, the outlines are
                                             # shortened in steps and document_outline is offered.
+    extract_max_pages: int = 12            # pages one extract_from_documents call hands to the reader (C2.1 spec 5.4.1;
+                                            # about three or four reader batches). Over it, the pages closest to the
+                                            # need are read and the rest are listed as not read.
+    extract_output_chars: int = 4000       # characters one extract_from_documents result may take; over it, the last
+                                            # facts are dropped and "more" says how many
     reply_reserve_tokens: int = 2048       # kept free for the reply when trimming history
     attachment_token_estimate: int = 1500  # tokens counted per image/audio when trimming (a guess)
     max_request_mb: int = 25               # turn request body cap, in MB
@@ -83,6 +88,8 @@ def load_chat_config(env: Mapping[str, str]) -> ChatConfig:
         project_fusion_depth=num("CHAT_PROJECT_FUSION_DEPTH", d.project_fusion_depth, int, 1, 500),
         search_per_doc=num("CHAT_SEARCH_PER_DOC", d.search_per_doc, int, 1, 10),
         project_map_chars=num("CHAT_PROJECT_MAP_CHARS", d.project_map_chars, int, 500, 100_000),
+        extract_max_pages=num("CHAT_EXTRACT_MAX_PAGES", d.extract_max_pages, int, 1, 200),
+        extract_output_chars=num("CHAT_EXTRACT_OUTPUT_CHARS", d.extract_output_chars, int, 500, 50_000),
         reply_reserve_tokens=num("CHAT_REPLY_RESERVE_TOKENS", d.reply_reserve_tokens, int, 0, 1_000_000),
         attachment_token_estimate=num("CHAT_ATTACHMENT_TOKEN_ESTIMATE", d.attachment_token_estimate,
                                       int, 0, 100_000),

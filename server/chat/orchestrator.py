@@ -249,7 +249,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         tools_on = caps.tools is not False and max_rounds > 0
         project_map, outlines = await _project_map(project, cfg, tools_on) if project else (None, {})
         tool_ctx = ToolContext(req.user_id, doc, cfg=cfg, project=project, question=req.text,
-                               map_shortened=bool(project_map and project_map.shortened), outlines=outlines)
+                               map_shortened=bool(project_map and project_map.shortened), outlines=outlines,
+                               model=req.model_id)
         offered = [] if caps.tools is False else available_tools(tool_ctx)
         built = await build_context(TurnInput(
             user_id=req.user_id, text=req.text, attachments=req.attachments, doc=doc,

@@ -49,7 +49,7 @@ async def _read(ctx, args, call_id="c1"):
 
 async def test_offered_with_the_document_search_and_only_for_an_indexed_document(book):
     ctx, _ = book
-    assert [t.name for t in available_tools(ctx)] == ["search_documents", "read_document_pages", "web_search"]
+    assert [t.name for t in available_tools(ctx)] == ["search_documents", "read_document_pages", "extract_from_documents", "web_search"]
     assert "read_document_pages" not in [t.name for t in available_tools(ToolContext("u", None))]
     extracting = doc_search.ReadableDoc(DOC, "x", "extracting", 5)
     assert "read_document_pages" not in [t.name for t in available_tools(ToolContext("u", extracting))]

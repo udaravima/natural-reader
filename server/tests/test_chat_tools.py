@@ -57,7 +57,7 @@ async def test_readable_doc_uses_the_readers_name_and_hides_others_docs(indexed)
 async def test_search_documents_is_offered_only_for_an_indexed_readable_doc(indexed):
     conn, alice = indexed
     doc = await doc_search.readable_doc(conn, DOC, alice.user_id)
-    assert [t.name for t in available_tools(ToolContext(alice.user_id, doc))] == ["search_documents", "read_document_pages", "web_search"]
+    assert [t.name for t in available_tools(ToolContext(alice.user_id, doc))] == ["search_documents", "read_document_pages", "extract_from_documents", "web_search"]
     assert [t.name for t in available_tools(ToolContext(alice.user_id, None))] == ["web_search"]
     extracting = doc_search.ReadableDoc(DOC, "x", "extracting")
     assert "search_documents" not in [t.name for t in available_tools(ToolContext(alice.user_id, extracting))]
@@ -205,8 +205,8 @@ async def test_web_search_validates_count_and_summarizes(monkeypatch):
 
 
 def test_registry_order_is_stable():
-    assert [t.name for t in chat_tools.REGISTRY] == ["search_documents", "read_document_pages", "document_outline",
-                                                     "web_search"]
+    assert [t.name for t in chat_tools.REGISTRY] == ["search_documents", "read_document_pages",
+                                                     "extract_from_documents", "document_outline", "web_search"]
 
 
 class _NullPool:

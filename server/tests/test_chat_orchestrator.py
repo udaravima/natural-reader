@@ -576,7 +576,7 @@ async def test_the_last_round_says_so_in_its_results_and_the_rules_never_change(
         reply("The result is X (page 3).")])
     events, claim = await _run(conn, router, cfg=ChatConfig(max_tool_rounds=1), text="what is the result?")
     first, final = router.calls
-    assert first["tools"] == ["search_documents", "read_document_pages", "web_search"] and final["tools"] == []
+    assert first["tools"] == ["search_documents", "read_document_pages", "extract_from_documents", "web_search"] and final["tools"] == []
     assert first["messages"][0].role == "system"
     assert final["messages"][0].content == first["messages"][0].content    # same rules on every step
     tool_msg = final["messages"][-1]
@@ -603,13 +603,27 @@ async def test_no_tool_is_named_when_the_turn_offers_none(conn, open_doc, why):
         assert name not in system
 
 
+async def test_the_tool_context_carries_the_turns_model(conn, monkeypatch):
+    """C2.1 Task 11: the reader sub-agent reads with the turn's own model when READER_MODEL=chat."""
+    seen = []
+
+    class Spy(orchestrator.TurnTools):
+        def __init__(self, ctx):
+            seen.append(ctx.model)
+            super().__init__(ctx)
+
+    monkeypatch.setattr(orchestrator, "TurnTools", Spy)
+    await _run(conn, FakeRouter(steps=[reply("Hi there.")]))
+    assert seen == ["ollama:m"]
+
+
 async def test_no_note_while_rounds_remain(conn, open_doc):
     router = FakeRouter(steps=[
         [ToolCallReady(ToolCall("c1", "search_documents", {"query": "a"})), Usage(5, 5), Finish("tool_calls")],
         reply("Done (page 1).")])
     await _run(conn, router, cfg=ChatConfig(max_tool_rounds=2), text="q")
     assert "note" not in json.loads(router.calls[1]["messages"][-1].content)
-    assert router.calls[1]["tools"] == ["search_documents", "read_document_pages", "web_search"]
+    assert router.calls[1]["tools"] == ["search_documents", "read_document_pages", "extract_from_documents", "web_search"]
 
 
 async def test_a_tool_call_written_as_text_is_run_not_saved(conn, open_doc, caplog):

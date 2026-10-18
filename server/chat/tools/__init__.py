@@ -40,6 +40,9 @@ class ToolContext:
     # stored outlines of the project's indexed documents, by doc_id, that the map was built from.
     map_shortened: bool = False
     outlines: dict[str, Outline] = field(default_factory=dict, hash=False, compare=False)
+    # The turn's chat model, canonical "provider:name": a tool that makes a model call of its own (the reader,
+    # chat/reader.py) can read with it when READER_MODEL=chat.
+    model: str = ""
 
 
 class Tool(Protocol):
@@ -69,9 +72,10 @@ class ToolRun:
         return "error" not in self.result
 
 
-from . import document_outline, read_document_pages, search_documents, web_search  # noqa: E402 — after the shared types, by convention
+from . import document_outline, extract_from_documents, read_document_pages, search_documents, web_search  # noqa: E402 — after the shared types, by convention
 
-REGISTRY: list[Tool] = [search_documents.TOOL, read_document_pages.TOOL, document_outline.TOOL, web_search.TOOL]
+REGISTRY: list[Tool] = [search_documents.TOOL, read_document_pages.TOOL, extract_from_documents.TOOL,
+                        document_outline.TOOL, web_search.TOOL]
 
 
 def available_tools(ctx: ToolContext) -> list[Tool]:
