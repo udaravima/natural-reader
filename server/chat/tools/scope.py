@@ -70,3 +70,18 @@ def documents_listing(scope: list[ScopeDoc]) -> list[dict]:
 def choices_text(scope: list[ScopeDoc]) -> str:
     """The valid documents, for an error the model can recover from."""
     return ", ".join(f"{d.ref} {d.name}" for d in scope)
+
+
+def named_in_project(scope: list[ScopeDoc], value: Any, ctx) -> ScopeDoc | dict[str, str]:
+    """The document `value` names in a project chat, or the error the model reads: required, in the
+    project but not searchable yet, or unknown. `scope` is the searchable documents (scope_docs)."""
+    if value is None or value == "":
+        return {"error": f"document is required: use a number or name from the list: {choices_text(scope)}."}
+    found = resolve_document(scope, value)
+    if found is not None:
+        return found
+    listed = resolve_document(list(ctx.project.docs), value)
+    if listed is not None:   # in the project, but not indexed (or reindexing)
+        return {"error": f'Document {listed.ref} ("{listed.name}") isn\'t searchable yet.'}
+    return {"error": f"Unknown document: {display_name(value)}. "
+                     f"Use a number or name from the list: {choices_text(scope)}."}

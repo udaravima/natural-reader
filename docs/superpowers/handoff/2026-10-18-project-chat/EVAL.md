@@ -578,3 +578,203 @@ web calls 6
   outside this task.
 - Everything else is the same within the noise seen in earlier layers (`features` 3-4 of 6 terms; the
   `rhel-packages` rounds jump between 0 and 3; `user-guide-pins` is 0/3 on the fact in every layer).
+
+## Layer: map
+
+- Date: 2026-10-18
+- Commit: the uncommitted Task 9 work on top of `f5cf7a2`: `server/chat/project_map.py` (`build_map`), the map in the
+  system message between the rules and the pins, `document_outline` (offered only when the map was shortened),
+  `CHAT_PROJECT_MAP_CHARS` (6000), and the data rule naming `<project_documents>`. The rules' procedure is
+  unchanged (it still says "the open document"; Task 14), so the citation form is unchanged too.
+- Model: `ollama:gemma4:31b-cloud`, thinking off, `--repeat 3` for variant 9 and `--repeat 1` for variant 50, the same
+  scratch database. The 41 padding documents were upgraded to the current chunker by the run's own `run_rebuild`
+  (their first use since the code-chunks layer); every one of the 50 has a stored outline.
+- Web: SearXNG still isn't running; the `live` calls failed with a connection error, as before.
+- Two sets of variant 9: set 1 is the plain run (the reference below); set 2 was run afterwards through a scratch
+  wrapper that prints each case's tool calls WITH their arguments (nothing else differs). The variant 50 run was also
+  made with the wrapper.
+- Headline: variant 9 **4/39 passed in both sets** (table cells layer: 1/39), right-document citations **4/33 in both**
+  (1/33); variant 50 passed 1/15 (right-document citations 1/13; baseline 1/15, 1/13). Exit status 1. As in every
+  layer the pass count is decided by the citation form (Task 15), so read the facts table.
+
+### What the map looked like
+
+Measured on the eval database with `build_map` at the default budget (6000 characters; sizes are the whole block,
+tags and note included):
+
+| variant | documents | full map | step the budget landed on | shortened map | `document_outline` offered |
+|---|---|---|---|---|---|
+| 9 | 9 | 6998 | drop level 3 (levels 1-2 kept) | 3119 | yes |
+| 50 | 50 | 13805 | drop level 2 (level 1 only) | 4190 | yes |
+
+So the 50-document map **was shortened, and so was the 9-document one** (its full outlines are 1000 characters over
+the budget). In variant 50 the shortening went as far as level 1: the nine fixture documents show only their title
+("Neural Reader p1", "Docs index — read in this order p1"), because each is one `#` title with its sections at level
+2; the 41 padding documents each show their title. The other steps, for variant 50, come to about 9,900 characters for levels 1-2 (over
+budget), about 4,190 for level 1, the same again for "first 8 entries" (nothing to cut when a document has one
+level-1 heading), and about 2,150 for names and pages only.
+
+**`document_outline` was never called**: not in any of the six variant-9 runs (78 turns), nor in the variant 50 run
+(15 turns), although it was offered in all of them (the maps were shortened).
+
+### Facts found per case (the answer's fact, apart from citation form)
+
+Over the three runs of a set; rounds per run in brackets. Fact = the strings the case looks for (for `features`, how
+many of its 6 term groups appear, 4 needed). `ollama-release` has no fact (it checks the web offer). The columns
+before "map" are the earlier sections' numbers.
+
+| case | baseline | code chunks | one ranking + balance | table cells | **map, set 1** | **map, set 2** |
+|---|---|---|---|---|---|---|
+| features | 6,6,6 of 6 terms [3,3,3] | 5,6,6 of 6 terms [3,3,3] | 3,4,3 of 6 terms [2,2,2] | 3,4,4 of 6 terms [2,2,2] | **3,3,4 of 6 terms [2,2,2]** | **4,3,4 of 6 terms [2,2,2]** |
+| deploy-and-test | 3/3 [2,3,2] | 3/3 [3,3,3] | 3/3 [2,2,2] | 3/3 [2,2,2] | **3/3 [2,2,2]** | **3/3 [2,2,2]** |
+| start-command | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | **3/3 [1,1,1]** | **3/3 [1,1,1]** |
+| quickstart-command | 0/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [2,2,2] | 3/3 [2,2,2] | **3/3 [2,2,2]** | **3/3 [2,2,2]** |
+| test-command | 0/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | **3/3 [1,1,1]** | **3/3 [1,1,1]** |
+| session-lifetimes | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | **3/3 [1,1,1]** | **3/3 [1,1,1]** |
+| oidc-issuer | 3/3 [2,2,2] | 3/3 [2,2,2] | 0/3 [2,2,2] | 3/3 [1,1,1] | **3/3 [1,1,1]** | **3/3 [1,1,1]** |
+| user-guide-pins | 0/3 [5,3,3] | 0/3 [1,1,1] | 0/3 [1,1,1] | 0/3 [1,1,1] | **3/3 [1,1,1]** | **3/3 [1,1,1]** |
+| deployment-uploads | 2/3 [3,3,2] | 3/3 [3,3,3] | 3/3 [4,3,3] | 3/3 [3,3,3] | **3/3 [1,1,1]** | **3/3 [1,1,1]** |
+| next-work | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | 0/3 [2,2,2] | **1/3 [1,1,1]** | **3/3 [1,1,1]** |
+| changelog-unreleased | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | **3/3 [1,1,1]** | **3/3 [1,1,1]** |
+| rhel-packages | 3/3 [3,3,3] | 3/3 [3,4,3] | 3/3 [0,2,2] | 3/3 [2,3,0] | **3/3 [3,2,3]** | **3/3 [1,2,1]** |
+| ollama-release | no fact to check | no fact to check | no fact to check | no fact to check | **no fact to check** | **no fact to check** |
+
+Variant 50, one run (facts): every case's fact found except `next-work` (missing) and `features` (3 of 6 terms, 4 needed;
+5 of 6 in its `features-50` repeat); `user-guide-pins` and `deployment-uploads` found in one round each. The baseline's
+variant 50 run missed the fact in five cases (deploy-and-test, quickstart-command, test-command,
+user-guide-pins, deployment-uploads).
+
+```text
+Project QA eval: ollama:gemma4:31b-cloud (variant 9)
+-- run 1
+FAIL  overview       features               17.7s rounds=2 tools=search_documents,read_document_pages  3/6 terms (need 4): text-to-speech|read aloud|reads aloud|kokoro, chat, library, accounts|sign in|sign-in|login|log in|keycloak|oidc, pdf|markdown, admin|project|projects; 0 documents cited (need 3)
+FAIL  procedure      deploy-and-test        7.6s rounds=2 tools=search_documents,search_documents,read_document_pages,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md, TESTING.md)
+FAIL  code           start-command          2.2s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           quickstart-command     4.3s rounds=2 tools=search_documents,read_document_pages  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           test-command           4.3s rounds=1 tools=search_documents  fact ok; not cited (TESTING.md); page missing (want TESTING.md p. 1)
+FAIL  exact-label    session-lifetimes      4.3s rounds=1 tools=search_documents  fact ok; not cited (ARCHITECTURE.md); page missing (want ARCHITECTURE.md p. 3)
+FAIL  exact-label    oidc-issuer            3.0s rounds=1 tools=search_documents  fact ok; not cited (DEPLOYMENT.md); page missing (want DEPLOYMENT.md p. 2)
+FAIL  named-doc      user-guide-pins        2.2s rounds=1 tools=search_documents  fact ok; not cited (USER_GUIDE.md)
+FAIL  named-doc      deployment-uploads     2.8s rounds=1 tools=search_documents  fact ok; not cited (DEPLOYMENT.md)
+FAIL  balance        next-work              3.2s rounds=1 tools=search_documents  fact missing (HANDOVER); not cited (DOCS_INDEX.md)
+PASS  balance        changelog-unreleased   2.4s rounds=1 tools=search_documents  fact ok; documents ok
+FAIL  gap-general    rhel-packages          8.6s rounds=3 tools=search_documents,search_documents,read_document_pages  fact ok; didn't say the documents don't cover it; no offer
+FAIL  live           ollama-release         2.2s rounds=2 tools=web_search,web_search  no offer; 2 web calls
+-- run 2
+FAIL  overview       features               4.4s rounds=2 tools=search_documents,read_document_pages  3/6 terms (need 4): text-to-speech|read aloud|reads aloud|kokoro, chat, library, accounts|sign in|sign-in|login|log in|keycloak|oidc, pdf|markdown, admin|project|projects; 0 documents cited (need 3)
+FAIL  procedure      deploy-and-test        6.6s rounds=2 tools=search_documents,search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md, TESTING.md)
+FAIL  code           start-command          3.3s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           quickstart-command     3.2s rounds=2 tools=search_documents,read_document_pages  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           test-command           2.4s rounds=1 tools=search_documents  fact ok; not cited (TESTING.md); page missing (want TESTING.md p. 1)
+FAIL  exact-label    session-lifetimes      2.1s rounds=1 tools=search_documents  fact ok; not cited (ARCHITECTURE.md); page missing (want ARCHITECTURE.md p. 3)
+FAIL  exact-label    oidc-issuer            4.3s rounds=1 tools=search_documents  fact ok; not cited (DEPLOYMENT.md); page missing (want DEPLOYMENT.md p. 2)
+FAIL  named-doc      user-guide-pins        1.9s rounds=1 tools=search_documents  fact ok; not cited (USER_GUIDE.md)
+FAIL  named-doc      deployment-uploads     2.3s rounds=1 tools=search_documents  fact ok; not cited (DEPLOYMENT.md)
+FAIL  balance        next-work              3.3s rounds=1 tools=search_documents  fact missing (HANDOVER); not cited (DOCS_INDEX.md)
+PASS  balance        changelog-unreleased   1.5s rounds=1 tools=search_documents  fact ok; documents ok
+FAIL  gap-general    rhel-packages          4.0s rounds=2 tools=search_documents,search_documents  fact ok; didn't say the documents don't cover it; no offer
+FAIL  live           ollama-release         2.5s rounds=2 tools=web_search,web_search  no offer; 2 web calls
+-- run 3
+FAIL  overview       features               4.4s rounds=2 tools=search_documents,read_document_pages  4/6 terms (need 4); 0 documents cited (need 3)
+FAIL  procedure      deploy-and-test        5.7s rounds=2 tools=search_documents,search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md, TESTING.md)
+FAIL  code           start-command          1.7s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           quickstart-command     2.6s rounds=2 tools=search_documents,read_document_pages  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           test-command           2.1s rounds=1 tools=search_documents  fact ok; not cited (TESTING.md); page missing (want TESTING.md p. 1)
+FAIL  exact-label    session-lifetimes      2.0s rounds=1 tools=search_documents  fact ok; not cited (ARCHITECTURE.md); page missing (want ARCHITECTURE.md p. 3)
+FAIL  exact-label    oidc-issuer            1.9s rounds=1 tools=search_documents  fact ok; not cited (DEPLOYMENT.md); page missing (want DEPLOYMENT.md p. 2)
+FAIL  named-doc      user-guide-pins        1.8s rounds=1 tools=search_documents  fact ok; not cited (USER_GUIDE.md)
+FAIL  named-doc      deployment-uploads     1.7s rounds=1 tools=search_documents  fact ok; not cited (DEPLOYMENT.md)
+PASS  balance        next-work              2.1s rounds=1 tools=search_documents,search_documents  fact ok; documents ok
+PASS  balance        changelog-unreleased   1.7s rounds=1 tools=search_documents  fact ok; documents ok
+FAIL  gap-general    rhel-packages          6.4s rounds=3 tools=search_documents,search_documents,read_document_pages  fact ok; didn't say the documents don't cover it; no offer
+FAIL  live           ollama-release         1.5s rounds=1 tools=web_search  no offer; 1 web calls
+tally: overview 0/3, procedure 0/3, code 0/9, exact-label 0/6, named-doc 0/6, balance 4/6, gap-general 0/3, live 0/3
+right-document citations 4/33
+web calls 5
+4/39 passed
+```
+
+```text
+Project QA eval: ollama:gemma4:31b-cloud (variant 50)
+FAIL  overview       features               4.7s rounds=2 tools=search_documents,read_document_pages  3/6 terms (need 4): text-to-speech|read aloud|reads aloud|kokoro, chat, library, accounts|sign in|sign-in|login|log in|keycloak|oidc, pdf|markdown, admin|project|projects; 1 documents cited (need 3)
+FAIL  procedure      deploy-and-test        6.2s rounds=2 tools=search_documents,search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md, TESTING.md)
+FAIL  code           start-command          2.2s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           quickstart-command     3.7s rounds=2 tools=search_documents,read_document_pages  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           test-command           2.0s rounds=1 tools=search_documents  fact ok; not cited (TESTING.md); page missing (want TESTING.md p. 1)
+FAIL  exact-label    session-lifetimes      2.1s rounds=1 tools=search_documents  fact ok; not cited (ARCHITECTURE.md); page missing (want ARCHITECTURE.md p. 3)
+FAIL  exact-label    oidc-issuer            2.3s rounds=1 tools=search_documents  fact ok; not cited (DEPLOYMENT.md); page missing (want DEPLOYMENT.md p. 2)
+FAIL  named-doc      user-guide-pins        1.9s rounds=1 tools=search_documents  fact ok; not cited (USER_GUIDE.md)
+FAIL  named-doc      deployment-uploads     2.3s rounds=1 tools=search_documents  fact ok; not cited (DEPLOYMENT.md)
+FAIL  balance        next-work              2.9s rounds=2 tools=search_documents,read_document_pages  fact missing (HANDOVER); not cited (DOCS_INDEX.md)
+PASS  balance        changelog-unreleased   1.8s rounds=1 tools=search_documents  fact ok; documents ok
+FAIL  gap-general    rhel-packages          4.6s rounds=3 tools=search_documents,read_document_pages,read_document_pages  fact ok; didn't say the documents don't cover it; no offer
+FAIL  live           ollama-release         2.6s rounds=2 tools=web_search,web_search  no offer; 2 web calls
+FAIL  map-shortened  features-50            4.7s rounds=2 tools=search_documents,read_document_pages  5/6 terms (need 4); 0 documents cited (need 3)
+FAIL  map-shortened  start-command-50       1.9s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+right-document citations 1/13
+web calls 2
+1/15 passed
+```
+
+Tool calls with their arguments (set 2, then the variant 50 run), for the cases the map is meant to move. `document`
+numbers are the map's refs; in variant 9 they are 3 DEPLOYMENT.md, 4 DOCS_INDEX.md, 7 README.md, 8 TESTING.md,
+9 USER_GUIDE.md; in variant 50 the padding notes are interleaved by name, so README.md is 40, DEPLOYMENT.md 24,
+DOCS_INDEX.md 25, USER_GUIDE.md 46, CHAT_WITH_PDF.md 19.
+
+```text
+-- variant 9, set 2
+features: search_documents({"query": "features"}) | read_document_pages({"document": 7, "first_page": 1})
+user-guide-pins: search_documents({"documents": [9], "query": "pins"})
+deployment-uploads: search_documents({"documents": [3], "query": "larger PDF uploads fail"})
+next-work: search_documents({"query": "next piece of work"}) | search_documents({"query": "what's next"})
+features: search_documents({"query": "features"}) | read_document_pages({"document": 7, "first_page": 1})
+user-guide-pins: search_documents({"documents": [9], "query": "pins"})
+deployment-uploads: search_documents({"documents": [3], "query": "larger PDF uploads fail"})
+next-work: search_documents({"query": "next piece of work"}) | search_documents({"query": "what's next"})
+features: search_documents({"query": "features"}) | read_document_pages({"document": 7, "first_page": 1})
+user-guide-pins: search_documents({"documents": [9], "query": "pins"})
+deployment-uploads: search_documents({"documents": [3], "query": "larger PDF uploads fail"})
+next-work: search_documents({"query": "next piece of work"}) | search_documents({"query": "What's next"})
+-- variant 50
+features: search_documents({"query": "features"}) | read_document_pages({"document": 40, "first_page": 1})
+user-guide-pins: search_documents({"documents": [46], "query": "pins"})
+deployment-uploads: search_documents({"documents": [24], "query": "larger PDF uploads fail"})
+next-work: search_documents({"query": "next piece of work"}) | read_document_pages({"document": 19, "first_page": 8})
+features-50: search_documents({"query": "features"}) | read_document_pages({"document": 40, "first_page": 1})
+```
+
+### What changed against the previous layer (table cells)
+
+- **`user-guide-pins` found, for the first time**: 3/3 in both sets, in ONE round (0/3 in every earlier layer). The
+  model reads "USER_GUIDE.md" off the map and searches only that document: `search_documents({"documents": [9],
+  "query": "pins"})`. Before, the long README and CHAT_WITH_PDF crowded it out of a project-wide search. The same in
+  variant 50 (`documents: [46]`). This is what the map is for: choosing the document by name before searching.
+- **`deployment-uploads`** went from 3 rounds to 1 for the same reason (`documents: [3]`, "larger PDF uploads fail").
+- **`next-work` came back only partly**: fact found 1/3 in set 1 and 3/3 in set 2 (it was 0/3 in the previous layer
+  and 3/3 before it), and not in variant 50 (the model read CHAT_WITH_PDF p8 instead). It did **not** reach DOCS_INDEX
+  by its outline: DOCS_INDEX's whole outline is one heading ("Docs index — read in this order"), and no logged
+  run ever restricted a search to it (`documents: [4]`). What happened in set 2 (all three runs, queries logged) is a
+  retry: the model searched "next piece of work", then "what's next" (or "What's next"). Probing `search_scope` on this
+  database with those two queries (project-wide, k=5, 2 per document): "next piece of work" puts a DOCS_INDEX
+  chunk 5th, but not the one with the HANDOVER row; "what's next" puts the row that holds HANDOVER 3rd (an exact-word
+  match, `word_match` 'all'). The retry phrase is the heading text the map shows for CHAT_WITH_PDF ("11. What's
+  next p8") and LIBRARY ("What's next (out of scope here) p6"), which is the likely source of the words (inferred; the
+  model's reasoning isn't captured). In set 1 the two runs that failed made ONE search (tools column) and the run
+  that passed made two; its queries weren't logged. So the map helped by giving the model words to retry with, and the
+  retry's exact-word match did the rest. The case remains noise-sensitive (4 of 6 runs), and its citation still
+  fails more often than not ("not cited (DOCS_INDEX.md)": the answer names the file in prose or says "(page 1)").
+- **`oidc-issuer`, `session-lifetimes`, the `code` cases, `changelog-unreleased`**: unchanged (3/3, one or two
+  rounds). `rhel-packages` still finds its fact (the documents' requirements) while failing "didn't say the documents
+  don't cover it" in most runs; that is the rules (Task 14) and the web offer (Task 13). `features` still lands on 3-4
+  of 6 term groups in two rounds, as in the last three layers.
+- **The pass count moved from 1/39 to 4/39** in both sets: `changelog-unreleased` passes 3/3 and `next-work` once.
+  `changelog-unreleased` went 3/3, 3/3, 3/3, 1/3 over the earlier layers on the citation form alone, so I do not
+  credit the map for it; `next-work`'s pass is the fact being found AND the answer naming DOCS_INDEX. Every other case that
+  now finds its fact still fails on "not cited (Name.md)" or the page, which Tasks 14-15 address.
+- **A weakness the 50-document run shows**: when the budget forces the shortening to level 1, the map tells the model
+  nothing about sections, because Markdown documents typically have ONE level-1 heading (their title). The ladder's
+  "first 8 entries" step comes after "level 1 only", so it has nothing left to cut on such documents. The model
+  still did well because document NAMES carry most of the routing in this fixture; a project whose documents are
+  named alike would not. `document_outline` is the way back to the sections, and the model did not use it here.
+  Whether to put "first 8 entries" before "drop level 2" is a decision for the spec (5.2 fixes the order as built); not
+  changed here.

@@ -1,7 +1,7 @@
 """Stage 0 (spec §5.2): build the model input with the cheap, bounded work
 first, so a document question can be answered in ONE model call.
 
-Prompt order is fixed for prefix-cache reuse: system rules + pins -> history
+Prompt order is fixed for prefix-cache reuse: system rules + project map + pins -> history
 -> volatile context (passages) -> the new message. The date is in the rules
 only to the day (v2.4: the minute clock that used to lead the user's message
 was mistaken for what "that" referred to), so the prefix changes once a day,
@@ -241,6 +241,7 @@ class TurnInput:
     tool_ctx: Any = None
     profile: str = ""             # the deployment's assistant profile: leads the system message
     scope: tuple[ScopeDoc, ...] = ()   # the documents the tools read (tools.scope.scope_docs); prefetch searches them
+    project_map: str = ""              # a project chat's map of its documents (chat/project_map.py): after the rules
 
 
 @dataclass
@@ -278,8 +279,9 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
         volatile = _passages_block(pre.passages, list(turn.scope))
     rules = system_rules(turn.doc, turn.tools, has_pins=bool(turn.pins),
                          prefetch=cfg.prefetch == "on" and cfg.prefetch_min_score < 1.0,
-                         today=today_line(turn.now, turn.timezone), profile=turn.profile)
-    system = Message("system", "\n\n".join(c for c in (rules, pin_text(turn.pins)) if c))
+                         today=today_line(turn.now, turn.timezone), profile=turn.profile,
+                         has_map=bool(turn.project_map))
+    system = Message("system", "\n\n".join(c for c in (rules, turn.project_map, pin_text(turn.pins)) if c))
     fixed_chars = len(system.content) + len(volatile) + 2 + len(turn.text) + sum(len(m.content) for m in exchange)
     items, n_messages, n_attachments = _fit_history(turn.history, fixed_chars, len(turn.attachments),
                                                     turn.window, cfg)

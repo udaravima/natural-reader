@@ -129,6 +129,31 @@ async def test_message_order_pins_history_then_volatile_and_question_in_one_user
     assert built.prefetch_hit and built.notes[0]["kind"] == "prefetch"
 
 
+async def test_system_message_order_is_rules_map_pins(search):
+    """C2.1 Task 9: one leading system message, in this order, joined by blank lines: the rules, then the
+    project map, then the user's pins (later, more specific text wins a conflict)."""
+    project_map = '<project_documents project="P">\n1. "A.md" — 2 pages. No outline.\n</project_documents>'
+    built = await build_context(_turn(doc=DOC, pins=[{"text": "pinned"}], project_map=project_map), ChatConfig())
+    system = built.messages[0]
+    assert [m.role for m in built.messages] == ["system", "user"]       # still ONE system message
+    rules, rest = system.content.split("\n\n" + project_map + "\n\n")
+    assert rules.startswith("You are the assistant in Natural Reader") and "<project_documents>" in rules
+    assert rest.startswith("The user pinned this excerpt") and rest.endswith("</pinned_excerpt>")
+    # Without pins the map ends the system message; without a map it is the old shape.
+    only_map = (await build_context(_turn(doc=DOC, project_map=project_map), ChatConfig())).messages[0].content
+    assert only_map.endswith("\n\n" + project_map)
+    assert project_map not in (await build_context(_turn(doc=DOC, pins=[{"text": "pinned"}]), ChatConfig())).messages[0].content
+
+
+async def test_the_map_counts_against_the_history_window(search):
+    project_map = "<project_documents>" + "x" * 9000 + "</project_documents>"
+    history = [StoredMessage("u1", "user", "earlier q", []), StoredMessage("a1", "assistant", "earlier a", [])]
+    window = 4000   # tokens, less the 2048 kept for the reply: about 7,800 characters of prompt
+    assert len((await build_context(_turn(history=history, window=window), ChatConfig())).messages) == 4
+    squeezed = await build_context(_turn(history=history, window=window, project_map=project_map), ChatConfig())
+    assert [m.role for m in squeezed.messages] == ["system", "user"]     # the history made way for the map
+
+
 async def test_a_prefetch_miss_still_tells_the_model_which_document_is_open(search):
     # Walk: with nothing retrieved, the prompt never named the document, so a
     # small model sent "Zephyr station" questions to web_search every time.

@@ -10,8 +10,7 @@ from ...db import get_pool
 from ...llm.types import ToolSpec
 from ...services.extract import CHUNK_OVERLAP_CHARS, CONTINUATION_SUFFIX
 from ..project_scope import ScopeDoc
-from ..prompt import display_name
-from .scope import choices_text, documents_listing, resolve_document, scope_docs
+from .scope import documents_listing, named_in_project, scope_docs
 
 PAGES_PER_CALL = 3
 CUT_MARKER = " [cut: the rest is not shown]"
@@ -183,16 +182,7 @@ def _chosen(scope: list[ScopeDoc], value: Any, ctx) -> ScopeDoc | dict[str, str]
     it a round. In a project, leaving it out is an error."""
     if ctx.project is None:
         return scope[0]
-    if value is None or value == "":
-        return {"error": f"document is required: use a number or name from the list: {choices_text(scope)}."}
-    found = resolve_document(scope, value)
-    if found is not None:
-        return found
-    listed = resolve_document(list(ctx.project.docs), value)
-    if listed is not None:   # in the project, but not indexed (or reindexing)
-        return {"error": f'Document {listed.ref} ("{listed.name}") isn\'t searchable yet.'}
-    return {"error": f"Unknown document: {display_name(value)}. "
-                     f"Use a number or name from the list: {choices_text(scope)}."}
+    return named_in_project(scope, value, ctx)
 
 
 TOOL = _ReadDocumentPages()

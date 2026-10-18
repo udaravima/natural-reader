@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from ...llm.types import ToolCall, ToolSpec
 from ..config import ChatConfig
 from ..project_scope import ProjectScope
+from ...services.doc_outlines import Outline
 from ...services.doc_search import ReadableDoc
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,10 @@ class ToolContext:
     # (doc_id, page, text) of every passage or page of a document the model
     # has this turn: which pages the answer drew on (v2.4 Task D, chat/sources.py).
     evidence: list[tuple[str, int | None, str]] = field(default_factory=list, hash=False, compare=False)
+    # The project map (chat/project_map.py) had to leave outlines out: document_outline is offered. And the
+    # stored outlines of the project's indexed documents, by doc_id, that the map was built from.
+    map_shortened: bool = False
+    outlines: dict[str, Outline] = field(default_factory=dict, hash=False, compare=False)
 
 
 class Tool(Protocol):
@@ -64,9 +69,9 @@ class ToolRun:
         return "error" not in self.result
 
 
-from . import read_document_pages, search_documents, web_search  # noqa: E402 — after the shared types, by convention
+from . import document_outline, read_document_pages, search_documents, web_search  # noqa: E402 — after the shared types, by convention
 
-REGISTRY: list[Tool] = [search_documents.TOOL, read_document_pages.TOOL, web_search.TOOL]
+REGISTRY: list[Tool] = [search_documents.TOOL, read_document_pages.TOOL, document_outline.TOOL, web_search.TOOL]
 
 
 def available_tools(ctx: ToolContext) -> list[Tool]:

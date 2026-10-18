@@ -30,10 +30,12 @@ from ..llm.types import (Attachment, CallSettings, Capabilities, FeatureDropped,
                          TextDelta, ToolCall, ToolCallReady, Usage)
 from ..services import assistant_profile, inference_budget
 from ..services import doc_pipeline
+from ..services.doc_outlines import Outline, load_outlines
 from ..services.doc_search import ReadableDoc, readable_doc
 from . import store
 from .config import ChatConfig
 from .context import TurnInput, build_context
+from .project_map import ProjectMap, build_map
 from .project_scope import ProjectScope, load_project_scope
 from .sources import answer_sources
 from .store import TurnClaim, title_from_prompt
@@ -240,7 +242,11 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             profile = await assistant_profile.load_profile(conn)
         # Tools first: the system rules describe exactly the tools this turn
         # offers (server/chat/prompt.py), so none is ever named in vain.
-        tool_ctx = ToolContext(req.user_id, doc, cfg=cfg, project=project, question=req.text)
+        # A project chat gets a map of the project in the system message; if it had to be shortened,
+        # document_outline is offered for the turn (chat/project_map.py).
+        project_map, outlines = await _project_map(project, cfg) if project else (None, {})
+        tool_ctx = ToolContext(req.user_id, doc, cfg=cfg, project=project, question=req.text,
+                               map_shortened=bool(project_map and project_map.shortened), outlines=outlines)
         offered = [] if caps.tools is False else available_tools(tool_ctx)
         max_rounds = cfg.project_max_tool_rounds if req.project_id else cfg.max_tool_rounds
         built = await build_context(TurnInput(
@@ -248,12 +254,15 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             timezone=req.timezone, pins=pins, history=history,
             window=_window(router, req, caps), now=datetime.now(timezone.utc),
             tools=tuple(offered if max_rounds > 0 else ()), tool_ctx=tool_ctx,
-            profile=profile.text, scope=tuple(scope_docs(tool_ctx))), cfg)
+            profile=profile.text, scope=tuple(scope_docs(tool_ctx)),
+            project_map=project_map.text if project_map else ""), cfg)
         tool_ctx.shown.update(built.shown_chunk_ids)
         # Document text the model already has: the web search guard's reference.
         tool_ctx.seen_text.extend(built.shown_texts)
         tool_ctx.evidence.extend(built.evidence)
         tool_ctx.seen_text.extend(str(p.get("text") or "") for p in pins if isinstance(p, dict))
+        if project_map:   # its openings and headings are document text too
+            tool_ctx.seen_text.append(project_map.text)
         # The model's earlier answers in this chat often quote the document.
         # (The user's own messages are theirs to search with.)
         tool_ctx.seen_text.extend(m.content for m in history if m.role == "assistant")
@@ -590,6 +599,15 @@ async def _project_scope(req: TurnRequest) -> ProjectScope:
     answer as if the project were empty."""
     async with get_pool().connection() as conn:
         return await load_project_scope(conn, req.user_id, req.project_id, open_doc_id=req.doc_id)
+
+
+async def _project_map(project: ProjectScope, cfg: ChatConfig) -> tuple[ProjectMap, dict[str, Outline]]:
+    """The map of the project, and the outlines it was built from (for document_outline). Only indexed
+    documents' outlines are loaded: the map shows no other (a revert leaves a stale row behind). Not
+    caught, like the scope: the database is there or the turn can't run."""
+    async with get_pool().connection() as conn:
+        outlines = await load_outlines(conn, [d.doc.doc_id for d in project.searchable])
+    return build_map(project, outlines, cfg.project_map_chars), outlines
 
 
 async def _open_doc(req: TurnRequest) -> ReadableDoc | None:

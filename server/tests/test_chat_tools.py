@@ -205,7 +205,8 @@ async def test_web_search_validates_count_and_summarizes(monkeypatch):
 
 
 def test_registry_order_is_stable():
-    assert [t.name for t in chat_tools.REGISTRY] == ["search_documents", "read_document_pages", "web_search"]
+    assert [t.name for t in chat_tools.REGISTRY] == ["search_documents", "read_document_pages", "document_outline",
+                                                     "web_search"]
 
 
 class _NullPool:
