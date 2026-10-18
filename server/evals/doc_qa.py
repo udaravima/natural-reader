@@ -16,6 +16,7 @@ import hashlib
 import os
 import random
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -352,8 +353,31 @@ async def _ask(case: Case, *, web_offered: bool, **turn) -> Result:
     return result
 
 
+@contextmanager
+def web_mode(mode: str):
+    """The deployment's web search mode for a run: CHAT_WEB_SEARCH, which every turn reads (an admin's choice
+    would win over it, and the scratch database has none). Put back as it was afterwards."""
+    before = os.environ.get("CHAT_WEB_SEARCH")
+    os.environ["CHAT_WEB_SEARCH"] = mode
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop("CHAT_WEB_SEARCH", None)
+        else:
+            os.environ["CHAT_WEB_SEARCH"] = before
+
+
 async def run_eval(model: str, *, show_answers: bool = False, think: str = "off",
                    repeat: int = 1) -> list[list[Result]]:
+    """This evaluation measures the web tools: its "live" question is answered by a search the model runs. The
+    app asks first by default (C2.1 Task 13), which would turn that into an offer, so the run is in "auto" mode
+    unless CHAT_WEB_SEARCH says otherwise; the environment is put back afterwards."""
+    with web_mode(os.environ.get("CHAT_WEB_SEARCH") or "auto"):
+        return await _run_eval(model, show_answers=show_answers, think=think, repeat=repeat)
+
+
+async def _run_eval(model: str, *, show_answers: bool, think: str, repeat: int) -> list[list[Result]]:
     """Index the fixture for the eval user and ask every question through
     run_turn, started and stopped as the app does. Needs DATABASE_URL, the
     embedding model and `model` reachable; raises EvalSetupError otherwise.
@@ -366,9 +390,6 @@ async def run_eval(model: str, *, show_answers: bool = False, think: str = "off"
     from ..llm.router import UnknownModel, get_router, start_router, stop_router
     from ..services import doc_pipeline, doc_storage, embeddings, model_router, web_search
 
-    # This evaluation measures the web tools: its "live" question is answered by a search the model runs. The
-    # app asks first by default (C2.1 Task 13), which would turn that into an offer. An explicit setting wins.
-    os.environ.setdefault("CHAT_WEB_SEARCH", "auto")
     fixture = build_fixture()
     if not await init_db():
         raise EvalSetupError("The database isn't reachable (DATABASE_URL).")

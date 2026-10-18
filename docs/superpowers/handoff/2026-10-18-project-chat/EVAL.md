@@ -854,8 +854,11 @@ web calls 2
 - Date: 2026-10-18
 - Change (C2.1 Task 13, uncommitted at the time of the run): web search asks first. The default mode is `ask`: the model's
   only web tool is `offer_web_search`, and a call ends the turn with an offer. The user's yes comes back as the next turn's
-  `context.web`, and the app runs that search itself before the model's first step (`web_search` and `read_web_pages` are
-  offered for that turn only). `auto` offers the web tools directly and `off` offers none. The rules text in `prompt.py` is
+  `context.web`, and the app runs that search itself before the model's first step. (As run here, `web_search` and
+  `read_web_pages` were offered to the model for that turn. Fix round 1 narrowed it: in an approved turn the model gets
+  `read_web_pages` and `offer_web_search` only, never `web_search`, because the yes was for the one search the user saw.
+  The run below was not repeated; the model's calls in it were the app's search and one `read_web_pages`, which the
+  narrowed set still allows.) `auto` offers `web_search` and `read_web_pages` directly and `off` offers none. The rules text in `prompt.py` is
   unchanged (Task 14 writes the offer sentences), so in `ask` mode the model is still told "say you can't look it up here"
   for live questions: read the offer numbers below with that in mind.
 - Model: `ollama:gemma4:31b-cloud`, thinking off, variant 9, `--repeat 1`, the scratch database `natural_reader_eval`.

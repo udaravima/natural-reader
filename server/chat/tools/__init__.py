@@ -48,8 +48,9 @@ class ToolContext:
     # that found it, and `read` once read_web_pages returned facts from it (Task 15 builds the web sources
     # from that). Kept apart from seen_text and evidence, which are document text only.
     web_results: dict[int, dict] = field(default_factory=dict, hash=False, compare=False)
-    # How web search asks (services/chat_options.py): "ask" (the model may only offer a search), "auto" (the web
-    # tools are offered) or "off" (none). `web_approved`: the user said yes to a search this turn (context.web).
+    # How web search asks (services/chat_options.py): "ask" (the model may only offer a search), "auto" (web_search
+    # and read_web_pages are offered) or "off" (none). `web_approved`: the user said yes to one search this turn
+    # (context.web); the app ran it, and the model may read its results (read_web_pages) but not search again.
     # The default is the safe one: nothing leaves the server until a person approves it.
     web_mode: str = "ask"
     web_approved: bool = False
@@ -124,7 +125,9 @@ class TurnTools:
     identical to an earlier successful one isn't run again, and the tool
     payloads the turn adds to the prompt stay within
     CHAT_TOOL_RESULT_BUDGET_CHARS (the short notes, this class's and the last
-    round's, are not counted)."""
+    round's, are not counted). A tool marked `unmetered` is neither held to
+    the budget nor stopped as a repeat: its result is small and must always
+    reach the turn (offer_web_search, whose result ends it)."""
     REPEATED = "Already searched: see the results above."
     BUDGET_USED = "Search budget for this answer used up: answer from what you have."
 
@@ -152,6 +155,8 @@ class TurnTools:
                 results[n]["read"] = was_read
 
     async def run(self, call: ToolCall, offered: list[Tool]) -> ToolRun:
+        if any(t.name == call.name and getattr(t, "unmetered", False) for t in offered):
+            return await run_tool(call, self.ctx, offered)
         key = (call.name, json.dumps(call.arguments, sort_keys=True, default=str))
         if key in self._done:
             return self._note(call, self.REPEATED)

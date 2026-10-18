@@ -41,7 +41,7 @@ from .sources import answer_sources
 from .store import TurnClaim, title_from_prompt
 from .tools import ToolContext, ToolRun, TurnTools, available_tools, result_text
 from .tools.scope import scope_docs
-from .web_consent import APP_WEB_CALL_ID, app_web_exchange, app_web_search, web_offer
+from .web_consent import APP_WEB_CALL_ID, app_web_exchange, app_web_search, search_possible, web_offer
 
 logger = logging.getLogger(__name__)
 
@@ -269,7 +269,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                                model=req.model_id, web_mode=options.web_search, web_approved=bool(web_query))
         offered = [] if caps.tools is False else available_tools(tool_ctx)
         app_exchange = ()
-        if web_query and tools_on and any(t.name == "web_search" for t in offered):
+        if web_query and tools_on and search_possible():
             # The user's yes: search before the model's first step and hand it the result as a tool exchange.
             yield ev("tool-input-available", toolCallId=APP_WEB_CALL_ID, toolName="web_search",
                      input={"query": web_query}, round=0)
@@ -278,7 +278,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             yield tool_result(web_run)
             app_exchange = app_web_exchange(web_run)
         elif web_query:
-            logger.info("An approved web search was not run: no web tool is offered this turn")
+            logger.info("An approved web search was not run: the model has no tools this turn, or no search engine is set up")
         built = await build_context(TurnInput(
             user_id=req.user_id, text=req.text, attachments=req.attachments, doc=doc,
             timezone=req.timezone, pins=pins, history=history,
@@ -441,6 +441,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             offer = web_offer(runs)
             if offer:
                 state.add_note(offer)
+                state.last_finish = "stop"   # stats.doneReason agrees with finish_reason: the turn ended here
                 yield ev("data-web-offer", query=offer["query"], reason=offer["reason"])
             await _save(claim, state)
             if offer:

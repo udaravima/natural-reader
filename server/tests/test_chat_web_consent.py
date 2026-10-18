@@ -19,12 +19,13 @@ from server.chat import context as ctx_mod
 from server.chat import orchestrator, store
 from server.chat.config import ChatConfig
 from server.chat.orchestrator import TurnRequest, run_turn
-from server.chat.tools import ToolContext, run_tool
+from server.chat.tools import ToolContext, ToolRun, TurnTools, available_tools, result_text, run_tool
 from server.chat.tools import search_documents as sd_tool
 from server.chat.tools import web_search as ws_tool
-from server.chat.web_consent import app_web_search
+from server.chat.web_consent import app_web_search, web_offer
 from server.llm.types import CallSettings, Finish, TextDelta, ToolCall, ToolCallReady, Usage
 from server.services import chat_options
+from server.services.doc_search import ReadableDoc
 from server.services import web_search as ws
 from server.tests.chat_harness import FakeRouter, member, reply, shim_pool
 from server.tests.test_chat_orchestrator import _msg, open_doc  # noqa: F401 — open_doc is a fixture
@@ -33,7 +34,8 @@ from server.tests.test_chat_project_scope import _two_doc_project
 from server.tests.test_chat_turns import BODY, _frames, _post, app  # noqa: F401 — app is a fixture
 
 OFFER = {"query": "RHEL 9 python 3.13 packages", "reason": "The documents don't cover RHEL."}
-WEB_TOOLS = ["web_search", "read_web_pages"]
+WEB_TOOLS = ["web_search", "read_web_pages"]                  # auto mode
+APPROVED_TOOLS = ["read_web_pages", "offer_web_search"]       # ask mode, after the user's yes: read, or offer again
 DOC_TOOLS = ["search_documents", "read_document_pages", "extract_from_documents"]
 
 
@@ -171,10 +173,11 @@ async def test_an_offer_the_guard_refuses_does_not_end_the_turn(conn, engine, op
 # ---- the yes: context.web ----
 
 async def test_approved_turn_runs_the_users_query_first_and_offers_web_tools(conn, engine):
-    router = FakeRouter(steps=[[ToolCallReady(ToolCall("c1", "web_search", {"query": "second look"})),
-                                Usage(5, 5), Finish("tool_calls")], reply("Here you go.")])
+    """The user approved ONE search, the one they saw: the model gets to read its results (read_web_pages) or to
+    offer another search, never to run one (no web_search in an approved ask-mode turn)."""
+    router = FakeRouter()
     events, claim = await turn(conn, router, text="Search the web for: RHEL 9 packages", web="RHEL 9 packages")
-    assert engine.queries == ["RHEL 9 packages", "second look"]    # the app's search came first
+    assert engine.queries == ["RHEL 9 packages"]                   # the app's search, and no other
     assert types(events)[:4] == ["start", "tool-input-available", "tool-output-available", "start-step"]
     app_in, app_out = events[1], events[2]
     assert (app_in["toolCallId"], app_in["toolName"], app_in["input"]) == ("app-web-1", "web_search",
@@ -183,19 +186,35 @@ async def test_approved_turn_runs_the_users_query_first_and_offers_web_tools(con
     assert app_out["output"]["summary_text"] == 'Web search for "RHEL 9 packages" returned 1 result(s).'
     # The model's first step already has the exchange: a call, then its result.
     first = router.calls[0]
-    assert first["tools"] == WEB_TOOLS                             # web tools for this turn; no offer
+    assert first["tools"] == APPROVED_TOOLS and "web_search" not in first["tools"]
     call_msg, result_msg = first["messages"][-2:]
     assert call_msg.role == "assistant" and call_msg.tool_calls[0].id == "app-web-1"
     assert call_msg.tool_calls[0].name == "web_search" and call_msg.tool_calls[0].arguments == {"query": "RHEL 9 packages"}
     assert result_msg.role == "tool" and result_msg.tool_call_id == "app-web-1" and result_msg.name == "web_search"
     result = json.loads(result_msg.content)
     assert [r["n"] for r in result["results"]] == [1] and result["results"][0]["url"].startswith("https://site1.test/")
-    # Its results are numbered into the turn's: the model's own search carries on from 2.
-    second = json.loads(router.calls[1]["messages"][-1].content)
-    assert [r["n"] for r in second["results"]] == [2]
-    # Saved like any tool call, the app's first.
+    # Saved like any tool call.
     saved = (await _msg(conn, claim.turn_id))[4]
-    assert [c["name"] for c in saved] == ["web_search", "web_search"] and saved[0]["arguments"] == {"query": "RHEL 9 packages"}
+    assert [c["name"] for c in saved] == ["web_search"] and saved[0]["arguments"] == {"query": "RHEL 9 packages"}
+
+
+async def test_in_an_approved_turn_the_model_cannot_search_by_name(conn, engine):
+    """One yes is one search. A model that calls web_search anyway gets "Unknown tool", and the engine never
+    hears the query the user didn't see."""
+    router = FakeRouter(steps=[[ToolCallReady(ToolCall("c1", "web_search", {"query": "second look"})),
+                                Usage(5, 5), Finish("tool_calls")], reply("Done.")])
+    events, _ = await turn(conn, router, web="RHEL 9 packages")
+    assert json.loads(router.calls[1]["messages"][-1].content) == {"error": "Unknown tool: web_search"}
+    assert engine.queries == ["RHEL 9 packages"]
+
+
+async def test_in_an_approved_turn_a_different_search_needs_a_new_offer(conn, engine):
+    router = FakeRouter(steps=[offer_call(query="second look", reason="The first search missed it."),
+                               reply("SHOULD NEVER BE SENT")])
+    events, claim = await turn(conn, router, web="RHEL 9 packages")
+    assert len(router.calls) == 1 and types(events)[-2:] == ["data-web-offer", "finish"]
+    assert engine.queries == ["RHEL 9 packages"]
+    assert (await _msg(conn, claim.turn_id))[5]["notes"][-1]["query"] == "second look"
 
 
 async def test_the_exchange_follows_the_users_message(conn, engine):
@@ -209,16 +228,21 @@ async def test_approval_lasts_one_turn(conn, engine):
     router = FakeRouter()
     await turn(conn, router, web="RHEL 9 packages")
     await turn(conn, router, text="And another thing")
-    assert router.calls[0]["tools"] == WEB_TOOLS
+    assert router.calls[0]["tools"] == APPROVED_TOOLS
     assert router.calls[1]["tools"] == ["offer_web_search"]        # asks again
     assert engine.queries == ["RHEL 9 packages"]
 
 
-async def test_approved_query_skips_the_copy_guard_but_model_queries_keep_it(conn, engine):
+@pytest.mark.parametrize("mode,tool,args", [
+    ("ask", "offer_web_search", {"query": "COPIED", "reason": "Because."}),   # the model's way to ask for a search
+    ("auto", "web_search", {"query": "COPIED"})])                              # ... and to run one itself
+async def test_approved_query_skips_the_copy_guard_but_model_queries_keep_it(conn, engine, mode, tool, args):
     copied = "the quick brown fox jumps over the lazy dog near the old river bank"
+    args = {k: copied if v == "COPIED" else v for k, v in args.items()}
     pins = [{"kind": "selection", "text": copied, "page": 1, "fileName": "a.pdf"}]
-    router = FakeRouter(steps=[[ToolCallReady(ToolCall("c1", "web_search", {"query": copied})),
-                                Usage(5, 5), Finish("tool_calls")], reply("Done.")])
+    await set_mode(conn, mode, await member(conn, "alice"))
+    router = FakeRouter(steps=[[ToolCallReady(ToolCall("c1", tool, args)), Usage(5, 5), Finish("tool_calls")],
+                               reply("Done.")])
     events, _ = await turn(conn, router, web=copied, pins=pins)
     assert engine.queries == [copied]                              # the user's query went out
     assert not any(e["type"] == "tool-output-error" and e["toolCallId"] == "app-web-1" for e in events)
@@ -247,7 +271,7 @@ async def test_a_failing_search_engine_leaves_an_error_exchange_and_the_turn_goe
     out = next(e for e in events if e["type"] == "tool-output-error")
     assert out["toolCallId"] == "app-web-1" and out["errorText"] == "web_search failed: ConnectError"
     assert json.loads(router.calls[0]["messages"][-1].content) == {"error": "web_search failed: ConnectError"}
-    assert router.calls[0]["tools"] == WEB_TOOLS                   # the model may try again
+    assert router.calls[0]["tools"] == APPROVED_TOOLS              # a retry is a new offer, not a new search
     assert types(events)[-1] == "finish" and "error" not in types(events)
     assert (await _msg(conn, claim.turn_id))[0] == "complete"
     assert "RHEL 9 packages" not in " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.INFO)
@@ -273,9 +297,13 @@ async def test_auto_mode_offers_web_tools_without_offer(conn, engine):
 
 async def test_auto_mode_still_runs_an_approved_query_itself(conn, engine):
     await set_mode(conn, "auto", await member(conn, "alice"))
-    router = FakeRouter()
+    router = FakeRouter(steps=[[ToolCallReady(ToolCall("c1", "web_search", {"query": "second look"})),
+                                Usage(5, 5), Finish("tool_calls")], reply("Done.")])
     await turn(conn, router, web="typed by the user")
-    assert engine.queries == ["typed by the user"] and len(app_exchange(router.calls[0])) == 2
+    assert engine.queries == ["typed by the user", "second look"] and len(app_exchange(router.calls[0])) == 2
+    assert router.calls[0]["tools"] == WEB_TOOLS
+    # The app's results are numbered into the turn's: the model's own search carries on from 2.
+    assert [r["n"] for r in json.loads(router.calls[1]["messages"][-1].content)["results"]] == [2]
 
 
 async def test_off_mode_offers_no_web_tool_even_with_context_web(conn, engine, caplog):
@@ -352,7 +380,7 @@ async def test_a_project_chat_asks_and_runs_an_approved_search(db_conn, monkeypa
     asked, approved = router.calls
     assert "offer_web_search" in asked["tools"] and "web_search" not in asked["tools"]
     assert "search_documents" in asked["tools"]
-    assert "web_search" in approved["tools"] and "offer_web_search" not in approved["tools"]
+    assert approved["tools"] == [*DOC_TOOLS, *APPROVED_TOOLS]
     assert engine.queries == ["RHEL 9 packages"] and len(app_exchange(approved)) == 2
 
 
@@ -382,10 +410,95 @@ async def test_context_web_reaches_the_turn_and_the_app_searches_first(db_conn, 
     assert r.status_code == 200 and seen["web_query"] == "RHEL 9 packages"      # trimmed
     assert [f["type"] for f in frames[1:3]] == ["tool-input-available", "tool-output-available"]
     assert engine.queries == ["RHEL 9 packages"]
-    assert app[1].calls[0]["tools"] == WEB_TOOLS
+    assert app[1].calls[0]["tools"] == APPROVED_TOOLS
 
 
 async def test_without_context_web_the_turn_has_no_query(db_conn, app, engine, monkeypatch):
     monkeypatch.delenv("CHAT_WEB_SEARCH", raising=False)
     r = await _post(app, await member(db_conn, "alice"))
     assert r.status_code == 200 and engine.queries == [] and app[1].calls[0]["tools"] == ["offer_web_search"]
+
+
+# ---- one yes is one search: who may call what (user ruling: "every web search asks first") ----
+
+@pytest.mark.parametrize("mode,approved,expect", [
+    ("ask", False, {"offer_web_search"}),
+    ("ask", True, {"read_web_pages", "offer_web_search"}),     # read the approved search's results, or ask again
+    ("auto", False, {"web_search", "read_web_pages"}),
+    ("auto", True, {"web_search", "read_web_pages"}),
+    ("off", False, set()),
+    ("off", True, set())])
+def test_which_web_tools_each_mode_offers(monkeypatch, mode, approved, expect):
+    monkeypatch.setattr(ws, "SEARXNG_URL", "http://searx.test")
+    ctx = ToolContext("u", None, web_mode=mode, web_approved=approved)
+    assert {t.name for t in available_tools(ctx)} == expect
+    monkeypatch.setattr(ws, "SEARXNG_URL", "")                  # no search engine: no web tool in any mode
+    assert available_tools(ctx) == []
+
+
+@pytest.mark.parametrize("name,args", [("web_search", {"query": "anything"}),
+                                       ("read_web_pages", {"results": [1], "need": "anything"})])
+async def test_in_ask_mode_a_web_tool_called_by_name_is_unknown_and_the_engine_is_never_asked(conn, engine, name, args):
+    router = FakeRouter(steps=[[ToolCallReady(ToolCall("c1", name, args)), Usage(5, 5), Finish("tool_calls")],
+                               reply("Done.")])
+    events, _ = await turn(conn, router)
+    assert json.loads(router.calls[1]["messages"][-1].content) == {"error": f"Unknown tool: {name}"}
+    assert engine.queries == [] and "data-web-offer" not in types(events)
+
+
+async def test_in_ask_mode_a_tool_call_written_as_text_is_shown_as_text_and_runs_no_search(conn, engine):
+    """A small model sometimes writes its call as reply text; that is recovered only for a tool this step offers."""
+    written = '{"name": "web_search", "parameters": {"query": "anything"}}'
+    router = FakeRouter(steps=[[TextDelta(written), Usage(5, 5), Finish("stop")]])
+    events, claim = await turn(conn, router)
+    assert "".join(e["delta"] for e in events if e["type"] == "text-delta") == written
+    assert "tool-input-available" not in types(events) and engine.queries == [] and len(router.calls) == 1
+    assert (await _msg(conn, claim.turn_id))[2] == written
+
+
+# ---- an offer always reaches the user ----
+
+async def test_an_offer_after_the_result_budget_is_spent_still_ends_the_turn_with_the_offer(conn, engine, open_doc):
+    """The tool-result budget answers a call with a note, {"message": ...} and no "error": an offer so answered was
+    taken for a real one and crashed the turn (a KeyError, then internal_error). The offer is exempt."""
+    doc = ReadableDoc("d" * 64, "Thesis.pdf", "indexed")
+    ctx = ToolContext("u", doc)
+    searched = await run_tool(ToolCall("c0", "search_documents", {"query": "rhel"}), ctx, available_tools(ctx))
+    used = len(result_text(searched.result))
+    offered = len(result_text({"offered": True, **OFFER}))
+    budget = used + 20
+    assert offered > 20                                             # the offer does not fit in what is left
+    router = FakeRouter(steps=[[ToolCallReady(ToolCall("c1", "search_documents", {"query": "rhel"})),
+                                Usage(5, 5), Finish("tool_calls")], offer_call(), reply("SHOULD NEVER BE SENT")])
+    events, claim = await turn(conn, router, doc_id="d" * 64, cfg=ChatConfig(tool_result_budget_chars=budget))
+    assert "error" not in types(events) and types(events)[-2:] == ["data-web-offer", "finish"]
+    assert len(router.calls) == 2 and events[-1]["finishReason"] == "stop"
+    status, reason, _, _, tool_calls, doc_context, stats = await _msg(conn, claim.turn_id)
+    assert (status, reason) == ("complete", "stop")
+    assert doc_context == {"notes": [{"kind": "web_offer", **OFFER}]}
+    assert tool_calls[-1]["result_summary"]["summary_text"] == "Offered to the user; they decide."
+    assert stats["doneReason"] == "stop"                            # agrees with finish_reason (not "tool_calls")
+
+
+async def test_the_offer_is_exempt_from_the_result_budget_and_from_the_repeat_note():
+    ctx = ToolContext("u", None)
+    tools = TurnTools(ctx)
+    offer = ToolCall("o1", "offer_web_search", OFFER)
+    tools.used = ctx.cfg.tool_result_budget_chars + 1               # the budget is spent
+    first = await tools.run(offer, available_tools(ctx))
+    again = await tools.run(ToolCall("o2", "offer_web_search", OFFER), available_tools(ctx))   # an identical call
+    for run in (first, again):
+        assert run.ok and run.result == {"offered": True, **OFFER}
+    assert tools.used == ctx.cfg.tool_result_budget_chars + 1       # and it does not count against the budget
+
+
+def test_only_a_real_offer_is_an_offer():
+    """A note from the guard-rails ({"message": ...}) or a failure is not an offer, whatever the tool's name."""
+    def run(result):
+        return ToolRun("o1", "offer_web_search", OFFER, result, {})
+
+    assert web_offer([run({"message": TurnTools.BUDGET_USED})]) is None
+    assert web_offer([run({"message": TurnTools.REPEATED})]) is None
+    assert web_offer([run({"error": "query is required and must be non-empty."})]) is None
+    assert web_offer([run({"offered": False, **OFFER})]) is None
+    assert web_offer([run({"message": "x"}), run({"offered": True, **OFFER})]) == {"kind": "web_offer", **OFFER}

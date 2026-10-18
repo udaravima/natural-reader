@@ -1,8 +1,8 @@
 """The deployment's chat options (C2.1 Task 13): so far one, how web search asks.
 
 `web_search` has three modes. "ask" (the default): the model may only offer a search, and the user says yes
-each time. "auto": the web tools are offered to the model directly. "off": no web tool at all. All of them
-still need SEARXNG_URL.
+each time. "auto": web_search and read_web_pages are offered to the model directly. "off": no web tool at
+all. All of them still need SEARXNG_URL.
 
 Where the mode comes from, first match wins (the same order as the assistant profile,
 services/assistant_profile.py):

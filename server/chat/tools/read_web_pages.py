@@ -20,11 +20,11 @@ import logging
 from typing import Any, Iterable
 
 from ...llm.types import ToolSpec
+from ...services import web_search as web_search_service
 from ...services.web_search import PASSAGE_JOIN, fetch_page_text, page_passages
 from ..prompt import display_name, fence
 from ..reader import Passage, ReaderResult, get_reader_config, read_many
 from .read_document_pages import page_number
-from .web_search import web_tools_available
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +131,13 @@ class _ReadWebPages:
     reads_documents = False   # a web page is not document text: the data rule is not brought by this tool
 
     def available(self, ctx) -> bool:
-        return web_tools_available(ctx)
+        """In "auto" mode, and in "ask" mode once the user approved a search this turn: it reads the results of that
+        search (they are in ctx.web_results because the app ran it). Reading is not searching: it sends nothing
+        the user didn't see. With no turn at all (`ctx` None) only the engine counts."""
+        if ctx is None:
+            return bool(web_search_service.SEARXNG_URL)
+        return bool(web_search_service.SEARXNG_URL) and (
+            ctx.web_mode == "auto" or (ctx.web_mode == "ask" and ctx.web_approved))
 
     async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
         try:

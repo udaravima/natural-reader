@@ -286,3 +286,28 @@ def test_the_report_gives_the_inline_citation_rate():
     a = doc_qa.score(case, "BLUE HERON (page 2).", calls, chip_pages=[2])
     b = doc_qa.score(case, "BLUE HERON.", calls, chip_pages=[2])
     assert "inline citations 1/2" in doc_qa.format_report([[a, b]], model="m")
+
+
+# ---- C2.1 Task 13: the run is in the web mode this evaluation measures, and puts the environment back ----
+
+async def test_run_eval_uses_auto_mode_unless_the_environment_says_otherwise_and_puts_it_back(monkeypatch):
+    import os
+    seen = []
+
+    async def fake_inner(model, *, show_answers, think, repeat):
+        seen.append(os.environ.get("CHAT_WEB_SEARCH"))
+        if model == "boom":
+            raise doc_qa.EvalSetupError("no database")
+        return []
+
+    monkeypatch.setattr(doc_qa, "_run_eval", fake_inner)
+    monkeypatch.delenv("CHAT_WEB_SEARCH", raising=False)
+    await doc_qa.run_eval("m")
+    assert seen == ["auto"] and "CHAT_WEB_SEARCH" not in os.environ            # not left behind
+    monkeypatch.setenv("CHAT_WEB_SEARCH", "ask")                               # an explicit setting wins
+    await doc_qa.run_eval("m")
+    assert seen == ["auto", "ask"] and os.environ["CHAT_WEB_SEARCH"] == "ask"
+    monkeypatch.delenv("CHAT_WEB_SEARCH")
+    with pytest.raises(doc_qa.EvalSetupError):                                 # ... and after a failed run too
+        await doc_qa.run_eval("boom")
+    assert seen[-1] == "auto" and "CHAT_WEB_SEARCH" not in os.environ

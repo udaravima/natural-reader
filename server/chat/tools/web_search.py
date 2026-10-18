@@ -49,17 +49,6 @@ def copies_document(query: str, texts: list[str]) -> bool:
     return bool(runs) and any(runs & _runs(t) for t in texts)
 
 
-def web_tools_available(ctx) -> bool:
-    """web_search and read_web_pages are offered when the engine is set up and the user's yes is not still owed:
-    the deployment searches without asking ("auto"), or the user approved a search this turn. "off" never.
-    The enforcement of "ask first" is this: the tools simply aren't there (offer_web_search is, instead).
-    With no turn at all (`ctx` None: the evals ask whether web search is set up here) only the engine counts."""
-    if ctx is None:
-        return bool(web_search_service.SEARXNG_URL)
-    return (bool(web_search_service.SEARXNG_URL) and ctx.web_mode != "off"
-            and (ctx.web_mode == "auto" or ctx.web_approved))
-
-
 _SPEC = ToolSpec(
     name="web_search",
     # v2.4: the old text invited it for "a factual question requiring ...
@@ -116,7 +105,13 @@ class _WebSearch:
     source = "web"
 
     def available(self, ctx) -> bool:
-        return web_tools_available(ctx)
+        """Only where the deployment searches without asking ("auto"). In "ask" mode every search is a yes the user
+        gave to a query they saw, and the app runs that one itself (chat/web_consent.py): the model is never
+        handed a way to run another. That is the enforcement of "ask first": the tool simply isn't there.
+        With no turn at all (`ctx` None: the evals ask whether web search is set up here) only the engine counts."""
+        if ctx is None:
+            return bool(web_search_service.SEARXNG_URL)
+        return bool(web_search_service.SEARXNG_URL) and ctx.web_mode == "auto"
 
     async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
         query = str(args.get("query") or "").strip()

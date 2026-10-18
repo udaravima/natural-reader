@@ -22,17 +22,15 @@ the score fails any answer that cites one a case forbids.
 from __future__ import annotations
 
 import math
-import os
 import random
 import re
 import sys
-from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from functools import cache
 from pathlib import Path
 from typing import Any
 
-from .doc_qa import EvalSetupError, has_term, is_refusal   # EvalSetupError: the script catches it from here
+from .doc_qa import EvalSetupError, has_term, is_refusal, web_mode   # EvalSetupError: the script catches it from here
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "project_docs"
 
@@ -508,21 +506,6 @@ async def _turn(text: str, *, session_id: str, user_id: str, project_id: str, mo
     except TimeoutError:
         out.error = "timeout"
     return out
-
-
-@contextmanager
-def web_mode(mode: str):
-    """The deployment's web search mode for a case: CHAT_WEB_SEARCH, which every turn reads (an admin's choice
-    would win over it, and the scratch database has none)."""
-    before = os.environ.get("CHAT_WEB_SEARCH")
-    os.environ["CHAT_WEB_SEARCH"] = mode
-    try:
-        yield
-    finally:
-        if before is None:
-            os.environ.pop("CHAT_WEB_SEARCH", None)
-        else:
-            os.environ["CHAT_WEB_SEARCH"] = before
 
 
 async def _ask(case: Case, *, names: list[str], web_offered: bool, **turn) -> Result:

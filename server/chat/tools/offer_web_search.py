@@ -1,7 +1,9 @@
 """offer_web_search: the model asks the user's leave to search the web (C2.1 spec 5.8).
 
-In "ask" mode (the default) this is the only web tool the model has: web_search and read_web_pages are not
-offered until the user says yes. Calling it changes nothing outside the server. The orchestrator ends the turn
+In "ask" mode (the default) this is the only way the model gets a search: web_search is never offered to it, and
+read_web_pages (which reads the results of a search the user approved) only after a yes. Every search the model
+wants is an offer, even after a yes, because a yes is for the one search the user saw. Calling it changes nothing
+outside the server. The orchestrator ends the turn
 with an offer card (the reason, the query in an editable field, "Search the web" / "Not now"), and a yes
 comes back as the next turn's `context.web`, on which the app runs that search itself.
 
@@ -47,9 +49,11 @@ class _OfferWebSearch:
     spec = _SPEC
     source = "web"
     reads_documents = False   # nothing here is document text
+    unmetered = True          # its result (about 150 characters) must always reach the turn: see TurnTools
 
     def available(self, ctx) -> bool:
-        return bool(web_search_service.SEARXNG_URL) and ctx.web_mode == "ask" and not ctx.web_approved
+        # Also after a yes (ctx.web_approved): that yes was for one search, and a different one needs its own offer.
+        return bool(web_search_service.SEARXNG_URL) and ctx.web_mode == "ask"
 
     async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
         query = str(args.get("query") or "").strip()

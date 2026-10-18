@@ -160,3 +160,18 @@ async def test_view_reports_searxng_missing(db_conn, monkeypatch):
         # The setting itself is still kept: the control is shown disabled, not removed.
         put = await client.put("/v1/admin/chat-options", json={"web_search": "auto"})
         assert put.json() == {"web_search": "auto", "source": "admin", "searxng": False}
+
+
+async def test_an_anonymous_request_gets_401_on_get_and_put(db_conn):
+    """No principal at all (not a member without the admin role: that is the 403 above)."""
+    app = FastAPI()
+
+    async def _conn_override():
+        yield db_conn
+
+    app.dependency_overrides[deps.get_conn] = _conn_override
+    app.include_router(admin_router.router)
+    async with _client(app) as client:
+        assert (await client.get("/v1/admin/chat-options")).status_code == 401
+        assert (await client.put("/v1/admin/chat-options", json={"web_search": "off"})).status_code == 401
+    assert await load_chat_options(db_conn, {}) == ChatOptions("ask", "default")

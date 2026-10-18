@@ -1,6 +1,6 @@
 """The two ends of "web search asks first" that the orchestrator calls (C2.1 spec 5.8).
 
-The offer: when a round's calls include a successful offer_web_search, the turn ends there with the offer
+The offer: when a round's calls include a real offer_web_search (its own result, `offered: true`), the turn ends there with the offer
 (`web_offer`, below) and the model takes no further step.
 
 The yes: the next turn carries `context.web = {query}`. The app runs that search itself before the model's first
@@ -9,6 +9,10 @@ finds the document prefetch (context.py). The query is the user's: they typed it
 and approved it. So it skips the guard that keeps document text off the web, which applies to queries the
 model writes. Its results are numbered into the turn's web results like any search, so read_web_pages can read
 them.
+
+A yes is for that one search. In the same turn the model may read its results (read_web_pages) or offer a different
+search (offer_web_search, which ends the turn again); it is never offered web_search, so no query the user didn't
+see leaves the server.
 """
 from __future__ import annotations
 
@@ -16,11 +20,18 @@ import dataclasses
 from typing import Any
 
 from ..llm.types import Message, ToolCall
+from ..services import web_search as web_search_service
 from .tools import ToolContext, ToolRun, result_text, run_tool
 from .tools import web_search as web_search_tool
 
 APP_WEB_CALL_ID = "app-web-1"
 OFFER_TOOL = "offer_web_search"
+
+
+def search_possible() -> bool:
+    """The app can run an approved search: the search engine is set up. (In an approved turn the model is not
+    offered web_search, so this can't be read off the turn's tools.)"""
+    return bool(web_search_service.SEARXNG_URL)
 
 
 async def app_web_search(ctx: ToolContext, query: str) -> ToolRun:
@@ -40,8 +51,9 @@ def app_web_exchange(run: ToolRun) -> tuple[Message, Message]:
 
 
 def web_offer(runs: list[ToolRun]) -> dict[str, Any] | None:
-    """The note for the first successful offer in a round's runs: {kind: "web_offer", query, reason}."""
+    """The note for the first real offer in a round's runs: {kind: "web_offer", query, reason}. Real means the
+    tool's own result: a guard-rail's note ({"message": ...}) has no "error" key either, but offers nothing."""
     for run in runs:
-        if run.name == OFFER_TOOL and run.ok:
+        if run.name == OFFER_TOOL and run.result.get("offered") is True:
             return {"kind": "web_offer", "query": run.result["query"], "reason": run.result["reason"]}
     return None
