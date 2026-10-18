@@ -87,6 +87,24 @@ describe('citationDocs', () => {
         expect(citationDocs(message).single).toEqual({ docId: B, docName: 'Notes.txt' });
     });
 
+    it('a bare page links only when the reply has one document', () => {
+        const linked = (message, text) => {
+            const { names, single } = citationDocs(message);
+            const tree = treeOf(text);
+            remarkCitations({ names })(tree);
+            // The reader links a bare page to `single`, so with no `single` it is text.
+            return tree.children[0].children.filter((n) => n.type === 'link' && single).map(() => single.docId);
+        };
+        const two = { docContext: { notes: [scope(['Guide.md', A], ['Notes.txt', B]),
+            { kind: 'sources', documents: [{ docId: A, docName: 'Guide.md', pages: [1], used: true }, { docId: B, docName: 'Notes.txt', pages: [2], used: true }] }] } };
+        const one = { docContext: { notes: [scope(['Guide.md', A], ['Notes.txt', B]),
+            { kind: 'sources', documents: [{ docId: B, docName: 'Notes.txt', pages: [2], used: true }] }] } };
+        expect(citationDocs(two).single).toBeNull();
+        expect(linked(two, 'Also (page 4).')).toEqual([]);
+        expect(citationDocs(one).single).toEqual({ docId: B, docName: 'Notes.txt' });
+        expect(linked(one, 'Also (page 4).')).toEqual([B]);
+    });
+
     it('has no single document for a project reply that read nothing', () => {
         expect(citationDocs({ docContext: { notes: [scope(['Guide.md', A])] } }).single).toBeNull();
     });
@@ -142,7 +160,20 @@ describe('remarkCitations — named citations', () => {
 
     it('still links a bare "page N" after prose that merely has a comma', () => {
         expect(linksIn(run('As the figure shows, page 7 has it.', NAMES))).toEqual([{ text: 'page 7', page: 7, doc: undefined }]);
-        expect(linksIn(run('Per Guide.md, page 7 has it.', NAMES))).toEqual([{ text: 'page 7', page: 7, doc: undefined }]);
+    });
+
+    it('leaves "page N" as text right after a known name and a comma, in running prose', () => {
+        // The reply names Guide.md; a bare page would open whichever document the reply read, maybe another one.
+        expect(linksIn(run('Per Guide.md, page 7 has it.', NAMES))).toEqual([]);
+        expect(linksIn(run('Per guide.MD,   pages 4 and 6 have it.', NAMES))).toEqual([]);
+        expect(linksIn(run('See Notes.txt, p. 2.', NAMES))).toEqual([]);
+        // Within the look-back, a name with commas and parentheses too.
+        expect(linksIn(run('In Report, final (v2).pdf, page 12.', [{ name: 'Report, final (v2).pdf', docId: A }]))).toEqual([]);
+        // A name that is not in the scope is not this rule's business, and a name later in the sentence is no bar.
+        expect(linksIn(run('Per Other.md, page 7 has it.', NAMES))).toEqual([{ text: 'page 7', page: 7, doc: undefined }]);
+        expect(linksIn(run('Guide.md is long, page 7 has it.', NAMES))).toEqual([{ text: 'page 7', page: 7, doc: undefined }]);
+        // Without scope names (a document-scope reply) nothing changes.
+        expect(linksIn(run('Per Guide.md, page 7 has it.'))).toEqual([{ text: 'page 7', page: 7, doc: undefined }]);
     });
 
     it('keeps linking "(Figure 3, page 7)" in a reply that has no scope note (one document)', () => {
@@ -166,8 +197,8 @@ describe('remarkCitations — named citations', () => {
 
     it('does not take a name in running prose for a citation', () => {
         // "(Guide.md, page 7 and more)" has no ")" right after the page; "Guide.md, page 7" has no "(".
-        expect(linksIn(run('Per Guide.md, page 7 has it.', NAMES)).every((l) => l.doc === undefined)).toBe(true);
-        expect(linksIn(run('(Guide.md, page 7 and more)', NAMES)).every((l) => l.doc === undefined)).toBe(true);
+        expect(linksIn(run('Per Guide.md, page 7 has it.', NAMES))).toEqual([]);
+        expect(linksIn(run('(Guide.md, page 7 and more)', NAMES))).toEqual([]);
     });
 
     it('does not link a name that two documents share', () => {

@@ -1015,14 +1015,20 @@ function SourceChips({ notes, theme, onOpenCitation }) {
     );
   }
   if (web?.pages.length) {
+    // Several pages of one site would all read as the site's name: those get their result number.
+    const links = web.pages.map((page) => webLink(page?.url));
+    const perHost = new Map();
+    for (const link of links) if (link?.host) perHost.set(link.host, (perHost.get(link.host) || 0) + 1);
     rows.push(
       <div key="web" className="flex flex-wrap items-center gap-1.5 text-[11px]">
         <span className={`font-bold ${theme.textSecondary}`}>Web sources</span>
         {web.pages.map((page, i) => {
-          const link = webLink(page?.url);
+          const link = links[i];
           // Titles are text from the web: shown as text, never as markup.
           const title = typeof page?.title === "string" ? page.title : "";
           const key = `${page?.n}-${i}`;
+          const shared = link?.host && perHost.get(link.host) > 1;
+          const label = shared ? `${link.host} · ${Number.isFinite(page?.n) ? page.n : i + 1}` : link?.host || title || "web page";
           return link ? (
             <a
               key={key}
@@ -1030,9 +1036,10 @@ function SourceChips({ notes, theme, onOpenCitation }) {
               target="_blank"
               rel="noopener noreferrer"
               title={title || undefined}
+              aria-label={shared && title ? `${label}: ${title}` : undefined}
               className={`px-2 py-0.5 rounded-full border ${theme.border} text-blue-500 hover:underline`}
             >
-              {link.host || title || "web page"}
+              {label}
             </a>
           ) : (
             <span key={key} className={`px-2 py-0.5 rounded-full border ${theme.border} ${theme.textMuted}`}>

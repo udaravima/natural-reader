@@ -125,7 +125,12 @@ function matchers(names) {
     // so "Guide.md, page 7" in running prose is not one; a joined citation is
     // several of them, and a part with another name is just left alone.
     const named = String.raw`(?<lead>[(;]\s*)(?<name>${alternatives})(?<comma>\s*,\s*)(?<keyword>${KEYWORD})(?<list>${LIST})(?=\s*[;)])`;
-    return { docIds, named: true, any: new RegExp(`${named}|${bare}`, 'gi') };
+    return {
+        docIds,
+        any: new RegExp(`${named}|${bare}`, 'gi'),
+        // "Per Guide.md, " right before a bare page: the reply names a document, so the page isn't the reader's.
+        afterName: new RegExp(String.raw`(?:${alternatives})\s*,\s*$`, 'i'),
+    };
 }
 
 const textNode = (value) => ({ type: 'text', value });
@@ -157,8 +162,11 @@ function hitNodes(value, hit, m) {
         }
         return { nodes: [textNode(lead), ...nodes], end: at };
     }
-    if (m.named && !text.startsWith('(') && OPEN_NAMED.test(value.slice(Math.max(0, hit.index - LOOKBACK), hit.index))) {
-        return null; // "(Other.md, page 7)": a name that isn't in the scope
+    if (m.afterName && !text.startsWith('(')) {
+        const before = value.slice(Math.max(0, hit.index - LOOKBACK), hit.index);
+        // "(Other.md, page 7)", a name that isn't in the scope; or "Per Guide.md, page 7", a name that is, but
+        // not written as a citation. Either way the page is that document's, not the one the reply read.
+        if (OPEN_NAMED.test(before) || m.afterName.test(before)) return null;
     }
     const parenthesized = text.startsWith('(');
     const bare = BARE_PART.exec(parenthesized ? text.slice(1, -1) : text);

@@ -189,6 +189,14 @@ describe('ChatView — project citations (C2.1)', () => {
         expect(onOpen).toHaveBeenLastCalledWith(B, 9, 'Guide.md');
     });
 
+    it('does not open the one document it read for a different name in running prose', () => {
+        // The evidence is Notes.txt only; the text says Guide.md. A bare "page 7" here would open Notes.txt.
+        renderReply(reply('Per Guide.md, page 7 has it.', project(
+            { kind: 'sources', documents: [{ docId: B, docName: 'Notes.txt', pages: [7], used: true }] })));
+        expect(screen.queryByRole('button', { name: /at page/ })).toBeNull();
+        expect(screen.getByText('Per Guide.md, page 7 has it.')).toBeInTheDocument();
+    });
+
     it('does not link names when the reply has no scope note', () => {
         renderReply(reply('See (Guide.md, page 7).'));
         expect(screen.queryByRole('button', { name: /at page/ })).toBeNull();
@@ -271,11 +279,61 @@ describe('ChatView — web sources (C2.1)', () => {
         expect(screen.getByText('Not a url')).toBeInTheDocument();
     });
 
-    it('shows a title as text only, never as markup', () => {
+    it.each([
+        ['JAVASCRIPT:alert(1)'],
+        ['  javascript:alert(1)'],
+        ['java\tscript:alert(1)'],
+        ['java\nscript:alert(1)'],
+        ['//evil.com/x'],
+        ['/relative/path'],
+        ['vbscript:msgbox(1)'],
+        ['file:///etc/passwd'],
+        [''],
+    ])('renders the url %j as text, never as a link', (url) => {
+        renderReply(reply('Answer.', web({ n: 1, title: 'Trap', url })));
+        expect(screen.queryByRole('link')).toBeNull();
+        expect(screen.getByText('Trap').closest('a')).toBeNull();
+    });
+
+    it('accepts HTTPS and HTTP in any case', () => {
+        renderReply(reply('Answer.', web({ n: 1, title: 'T', url: 'HTTPS://Example.COM/a' })));
+        expect(screen.getByRole('link', { name: 'example.com' })).toHaveAttribute('href', 'https://example.com/a');
+    });
+
+    it('shows a title as literal text, never parsed as markup', () => {
+        const markup = '<img src=x onerror=alert(1)>';
         const { container } = render(<ChatView {...baseProps({ messages: [q, reply('x', web(
-            { n: 1, title: '<img src=x onerror=alert(1)>', url: 'https://example.com/' }))], onOpenCitation: vi.fn() })} />);
+            { n: 1, title: markup, url: 'https://example.com/' },
+            { n: 2, title: markup, url: 'javascript:alert(1)' }))], onOpenCitation: vi.fn() })} />);
         expect(container.querySelector('img')).toBeNull();
-        expect(screen.getByRole('link', { name: 'example.com' })).toHaveAttribute('title', '<img src=x onerror=alert(1)>');
+        // A link's title arrives unparsed in its attribute; a link-less one shows it as text.
+        expect(screen.getByRole('link', { name: 'example.com' })).toHaveAttribute('title', markup);
+        expect(screen.getByText(markup)).toBeInTheDocument();
+        expect(container.innerHTML).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    });
+
+    it('tells apart pages of one site by their result number, and keeps a lone site plain', () => {
+        renderReply(reply('Answer.', web(
+            { n: 1, title: 'Install', url: 'https://docs.example.org/install' },
+            { n: 2, title: 'Configure <b>it</b>', url: 'https://docs.example.org/config' },
+            { n: 4, title: 'Blog', url: 'https://www.docs.example.org/blog' },
+            { n: 3, title: 'Elsewhere', url: 'https://other.example.com/x' })));
+        const one = screen.getByRole('link', { name: 'docs.example.org · 1: Install' });
+        expect(one).toHaveTextContent('docs.example.org · 1');
+        expect(one).toHaveAttribute('href', 'https://docs.example.org/install');
+        const two = screen.getByRole('link', { name: 'docs.example.org · 2: Configure <b>it</b>' });
+        expect(two).toHaveTextContent('docs.example.org · 2');
+        expect(two).toHaveAttribute('title', 'Configure <b>it</b>');
+        expect(screen.getByRole('link', { name: 'docs.example.org · 4: Blog' })).toHaveTextContent('docs.example.org · 4'); // "www." is dropped before comparing
+        const lone = screen.getByRole('link', { name: 'other.example.com' });
+        expect(lone).toHaveTextContent(/^other\.example\.com$/);
+    });
+
+    it('does not number two pages that share no host', () => {
+        renderReply(reply('Answer.', web(
+            { n: 1, title: 'A', url: 'https://a.example.com/' }, { n: 2, title: 'B', url: 'https://b.example.com/' })));
+        expect(screen.getByRole('link', { name: 'a.example.com' })).toBeInTheDocument();
+        expect(screen.getByRole('link', { name: 'b.example.com' })).toBeInTheDocument();
     });
 
     it('shows document sources and web sources together', () => {
