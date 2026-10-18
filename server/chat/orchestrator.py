@@ -38,6 +38,7 @@ from .project_scope import ProjectScope, load_project_scope
 from .sources import answer_sources
 from .store import TurnClaim, title_from_prompt
 from .tools import ToolContext, TurnTools, available_tools, result_text
+from .tools.scope import scope_docs
 
 logger = logging.getLogger(__name__)
 
@@ -247,7 +248,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             timezone=req.timezone, pins=pins, history=history,
             window=_window(router, req, caps), now=datetime.now(timezone.utc),
             tools=tuple(offered if max_rounds > 0 else ()), tool_ctx=tool_ctx,
-            profile=profile.text), cfg)
+            profile=profile.text, scope=tuple(scope_docs(tool_ctx))), cfg)
         tool_ctx.shown.update(built.shown_chunk_ids)
         # Document text the model already has: the web search guard's reference.
         tool_ctx.seen_text.extend(built.shown_texts)

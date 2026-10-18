@@ -298,6 +298,97 @@ async def test_word_match_says_which_word_list_found_a_row(doc, install_doc):
     assert all("by_words" not in r and "word_match" not in r for r in rows)   # meaning-only keeps its shape
 
 
+async def test_only_a_match_of_every_word_skips_the_floor_and_a_partial_one_is_labelled(two_docs, monkeypatch):
+    """C2.1 Task 8, through the real search (no stand-in): the cosine floor (0.45) may be skipped by the best
+    matches of EVERY word of the query, not by a partial match. A partial match that passes the floor says
+    "some words"; a weak one is dropped like any other weak row."""
+    conn = two_docs
+    alice = await member(conn, "alice")
+    await _chunk_in(conn, DOC_A, 0, 1, "To install podman rootless, enable user namespaces first.", _vec(1, 0.5))   # cosine 0.89
+    await _chunk_in(conn, DOC_A, 1, 2, "Install it with the rhel installer.", _vec(0.1, 1))                       # 0.10
+    await _chunk_in(conn, DOC_A, 2, 3, "Only RHEL is mentioned in this paragraph.", _vec(0.2, 1))
+    await _chunk_in(conn, DOC_A, 3, 4, "Install podman on a machine of any kind.", _vec(0.1, 1))                  # 0.10
+    for i in range(7):
+        await _chunk_in(conn, DOC_A, 4 + i, 5 + i, f"Cats sleep most of the day, entry {i}.", _vec(1, 0.1))
+    shim_pool(monkeypatch, conn, sd_tool)
+
+    async def fake_embed(text):
+        return QUERY_VEC
+
+    monkeypatch.setattr(sd_tool, "embed_query", fake_embed)
+
+    async def search(query):
+        ctx = ToolContext(alice.user_id, await doc_search.readable_doc(conn, DOC_A, alice.user_id))
+        run = await run_tool(ToolCall("c1", "search_documents", {"query": query, "k": 10}), ctx, available_tools(ctx))
+        return {p["page"]: p.get("match") for p in run.result["passages"]}
+
+    # Pages 1 and 4 have both words: the weak one (page 4) keeps its place, labelled "words".
+    by_page = await search("install podman")
+    assert by_page[1] == "both" and by_page[4] == "words"
+    # No chunk has all four words: pages 1 (3 words), 2 and 4 (2 words each) match partly. Page 1 passes the
+    # floor; pages 2 and 4 are word ranks 2 and 3, which used to skip it, and are dropped now.
+    by_page = await search("install podman rootless rhel")
+    assert by_page[1] == "some words"
+    assert 2 not in by_page and 4 not in by_page and 3 not in by_page
+    assert {page for page, match in by_page.items() if match is None} == {5, 6, 7, 8, 9, 10, 11}   # meaning only
+
+
+async def _sentence_like_project(conn):
+    """Three chunks the meaning ranking likes best (pages 1-3, nothing in them for the query's words), 25 fillers
+    in between, and three chunks (pages 10-12, filed FIRST so their ids are the lower ones) that are far in
+    meaning but hold two of the query's rare words, so they are partial word matches."""
+    for i in range(3):
+        await _chunk_in(conn, DOC_A, i, 10 + i, f"Rotating the signing schedule for staff, item {i}.", _vec(0.1, 1))
+    for i in range(3):
+        await _chunk_in(conn, DOC_B, i, 1 + i, f"Notes on cryptographic hygiene, part {i}.", _vec(1, 0.05 * (i + 1)))
+    for i in range(25):
+        await _chunk_in(conn, DOC_B, 10 + i, 20 + i, f"What is the plan for item {i} of the list?", _vec(1, 0.3 + 0.02 * i))
+
+
+SENTENCE = "what is the procedure for rotating signing keys"
+
+
+async def test_partial_word_matches_weigh_little_against_meaning(two_docs):
+    """C2.1 Task 8, from the eval ("next piece of work": the right chunk was 3rd by meaning and fell out of the
+    top 5 behind chunks that held only some of the words). A partial match is weak evidence for a sentence-like
+    query, so it counts a tenth in the fusion (PARTIAL_WEIGHT): the best by meaning lead and a words-only
+    partial match comes after them. At full weight a partial match at word rank 1 tied the meaning-best chunk
+    and, being older (lower id), won the top slot."""
+    conn = two_docs
+    await _sentence_like_project(conn)
+    rows = await doc_search.search_scope(conn, [DOC_A, DOC_B], QUERY_VEC, 5, text=SENTENCE)
+    assert [r["page"] for r in rows[:3]] == [1, 2, 3]
+    assert not any(r["by_words"] for r in rows)
+    assert doc_search.PARTIAL_WEIGHT == 0.1
+
+
+async def test_a_partial_row_also_in_the_meaning_list_does_not_outrank_a_much_better_meaning_row(
+        two_docs, monkeypatch):
+    """The eval's real failure: chunks with SOME of the words that were also in the meaning list (about 10th)
+    took the first places from the chunk that is best by meaning, because their word-list term (0.5/61 about
+    0.008) was worth more than the whole gap between meaning ranks 1 and 20. At a tenth, a partial row at word
+    rank 1 needs to be within about the 8 best by meaning to lead; the 10th best no longer does."""
+    conn = two_docs
+    await _sentence_like_project(conn)
+    # Meaning rank 10 (between fillers 6 and 7, y = 0.42); three of the rare words, so word rank 1.
+    await _chunk_in(conn, DOC_A, 20, 30, "Rotating the signing keys is covered in the key custody chapter.", _vec(1, 0.42))
+    rows = await doc_search.search_scope(conn, [DOC_A, DOC_B], QUERY_VEC, 5, text=SENTENCE)
+    assert rows[0]["page"] == 1 and not rows[0]["by_words"]                   # the meaning-best chunk
+    assert 30 in [r["page"] for r in rows]                                     # the partial row is not lost: 3rd or so
+    monkeypatch.setattr(doc_search, "PARTIAL_WEIGHT", 0.5)
+    at_half = await doc_search.search_scope(conn, [DOC_A, DOC_B], QUERY_VEC, 5, text=SENTENCE)
+    assert at_half[0]["page"] == 30                                            # what the half weight did
+
+
+async def test_a_partial_match_that_is_also_close_in_meaning_still_leads(two_docs):
+    """Found by both lists is strong evidence: close in meaning (3rd) AND a partial match leads even at a tenth."""
+    conn = two_docs
+    await _sentence_like_project(conn)
+    await _chunk_in(conn, DOC_A, 20, 30, "Rotating the signing keys is covered in the key custody chapter.", _vec(1, 0.12))
+    rows = await doc_search.search_scope(conn, [DOC_A, DOC_B], QUERY_VEC, 3, text=SENTENCE)
+    assert (rows[0]["page"], rows[0]["word_match"]) == (30, "partial")      # meaning rank 3 and word rank 1
+
+
 async def test_only_the_rarest_words_count_and_a_long_query_still_works(two_docs):
     """14 informative words: the 12 rarest (a01..a12, equally rare, so by name) count, and half of 12 is 6."""
     conn = two_docs
@@ -325,6 +416,44 @@ async def test_partial_words_with_equal_counts_are_ordered_by_text_rank(two_docs
         await _chunk_in(conn, DOC_A, 2 + i, 3 + i, f"unrelated filler {i}", _vec(1, 0.3 + i))
     rows = await doc_search.search_scope(conn, [DOC_A], QUERY_VEC, 6, text="alpha beta gamma delta")
     assert {r["page"]: r["word_rank"] for r in rows if r["by_words"]} == {2: 1, 1: 2}
+
+
+async def test_partial_word_ties_do_not_favour_the_oldest_documents(two_docs):
+    """C2.1 Task 8: 100 identical chunks in each of two documents all match 3 of 4 words equally, and the word
+    list takes 60 of them. Taking ties in id order gave every place to the document indexed first (its ids are
+    the lower ones); a hash of the id mixes them. At a tenth of the weight a words-only partial row sits
+    behind about 550 meaning rows, so the chunks here are also close in meaning: the 60 best by meaning (30
+    from each document, their vectors interleaved) are returned, and which of THEM the word list picked is
+    what shows (by_words)."""
+    conn = two_docs
+    for n, doc_id in enumerate((DOC_A, DOC_B)):
+        for i in range(100):
+            await _chunk_in(conn, doc_id, i, 1 + i, "alpha beta gamma", _vec(1, 0.002 * i + 0.001 * n))
+    for i in range(220):
+        await _chunk_in(conn, DOC_A, 1000 + i, 1 + i % 50, f"unrelated filler {i}", _vec(0.1, 1))
+    rows = await doc_search.search_scope(conn, [DOC_A, DOC_B], QUERY_VEC, 60, text="alpha beta gamma delta")
+    assert {r["doc_id"] for r in rows} == {DOC_A, DOC_B}
+    by_words = [r for r in rows if r["by_words"]]
+    assert len(by_words) >= 8 and all(r["word_match"] == "partial" for r in by_words)
+    assert {r["doc_id"] for r in by_words} == {DOC_A, DOC_B}
+
+
+async def test_a_query_counts_at_most_64_distinct_words(two_docs):
+    """C2.1 Task 8: every distinct word costs a frequency lookup (200 words took over 300 ms), so only the first
+    64 count. 63 words nobody has, then alpha (64th: counts) and beta (65th: cut)."""
+    conn = two_docs
+    await _chunk_in(conn, DOC_A, 0, 1, "alpha only here", _vec(1, 0.1))
+    await _chunk_in(conn, DOC_A, 1, 2, "beta only here", _vec(1, 0.2))
+    for i in range(4):
+        await _chunk_in(conn, DOC_A, 2 + i, 3 + i, f"plain filler {i}", _vec(1, 0.3 + i))
+    nobody = " ".join(f"zz{i:02d}" for i in range(63))
+    rows = await doc_search.search_scope(conn, [DOC_A], QUERY_VEC, 6, text=f"{nobody} alpha beta")
+    assert {r["page"]: r["word_match"] for r in rows}[1] == "partial"      # alpha was the 64th word
+    assert {r["page"]: r["word_match"] for r in rows}[2] is None            # beta was the 65th: never counted
+    # one word earlier and neither counts: 64 words nobody has, then alpha
+    nobody = " ".join(f"zz{i:02d}" for i in range(64))
+    rows = await doc_search.search_scope(conn, [DOC_A], QUERY_VEC, 6, text=f"{nobody} alpha beta")
+    assert not any(r["by_words"] for r in rows)
 
 
 async def test_common_words_are_spotted_the_same_way_in_a_large_scope(two_docs):

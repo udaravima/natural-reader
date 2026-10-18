@@ -5,13 +5,14 @@ import pytest
 
 from server.chat import tools as chat_tools
 from server.chat.config import ChatConfig
+from server.chat.project_scope import ScopeDoc, load_project_scope
 from server.chat.tools import ToolContext, available_tools, run_tool
 from server.chat.tools import scope
 from server.chat.tools import search_documents as sd_tool
 from server.chat.tools import web_search as ws_tool
 from server.llm.types import ToolCall
 from server.services import doc_search
-from server.services.embeddings import EMBEDDING_DIM
+from server.services.embeddings import EMBEDDING_DIM, current_profile
 from server.tests import seed
 from server.tests.chat_harness import member, shim_pool
 
@@ -207,20 +208,7 @@ def test_registry_order_is_stable():
     assert [t.name for t in chat_tools.REGISTRY] == ["search_documents", "read_document_pages", "web_search"]
 
 
-@pytest.mark.parametrize("shown,want", [(0, 5), (15, 20), (60, 65), (200, 100)])
-async def test_a_search_asks_for_enough_rows_to_skip_everything_already_shown(monkeypatch, shown, want):
-    """Review I1: over three rounds a turn can have shown 20+ passages. The
-    search must look past all of them (up to MAX_ROWS, a cost bound),
-    or it reports "nothing new" while new evidence ranks lower."""
-    asked = {}
-
-    async def fake_search_chunks(conn, doc_id, qvec, k, text=None):
-        asked["k"] = k
-        return []
-
-    async def fake_embed(text):
-        return [0.0]
-
+class _NullPool:
     class _Conn:
         async def __aenter__(self):
             return None
@@ -228,16 +216,31 @@ async def test_a_search_asks_for_enough_rows_to_skip_everything_already_shown(mo
         async def __aexit__(self, *a):
             return False
 
-    class _Pool:
-        def connection(self):
-            return _Conn()
+    def connection(self):
+        return self._Conn()
 
-    monkeypatch.setattr(sd_tool, "search_chunks", fake_search_chunks)
+
+@pytest.mark.parametrize("shown,want", [(0, 5), (15, 20), (60, 65), (200, 100)])
+async def test_a_search_asks_for_enough_rows_to_skip_everything_already_shown(monkeypatch, shown, want):
+    """Review I1: over three rounds a turn can have shown 20+ passages. The
+    search must look past all of them (up to MAX_ROWS, a cost bound),
+    or it reports "nothing new" while new evidence ranks lower."""
+    asked = {}
+
+    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0):
+        asked.update(k=k, per_doc=per_doc, doc_ids=doc_ids)
+        return []
+
+    async def fake_embed(text):
+        return [0.0]
+
+    monkeypatch.setattr(sd_tool, "search_scope", fake_search_scope)
     monkeypatch.setattr(sd_tool, "embed_query", fake_embed)
-    monkeypatch.setattr(sd_tool, "get_pool", lambda: _Pool())
+    monkeypatch.setattr(sd_tool, "get_pool", lambda: _NullPool())
     ctx = ToolContext("u", doc_search.ReadableDoc(DOC, "T.pdf", "indexed"), shown=set(range(shown)))
     await sd_tool.TOOL.execute({"query": "q", "k": 5}, ctx)
     assert asked["k"] == want
+    assert asked["doc_ids"] == [DOC] and asked["per_doc"] is None     # one document: nothing to balance
 
 
 async def test_a_search_finds_the_documents_own_passages_when_other_documents_are_closer(indexed):
@@ -284,3 +287,157 @@ async def test_a_project_only_reader_sees_the_name_as_filed_not_the_canonical_on
     await seed.place_doc(conn, pid, DOC, alice.user_id, file_name="Group thesis.pdf")
     doc = await doc_search.readable_doc(conn, DOC, bob.user_id)
     assert doc.name == "Group thesis.pdf"
+
+
+# ---- C2.1 Task 8: the search tool over a project ----
+
+PA, PB, PC = "a" * 64, "b" * 64, "c" * 64
+
+
+@pytest.fixture
+async def project(db_conn, monkeypatch):
+    """Alice's project: Alpha.md (ref 1), Beta.md (2), Gamma.md (3), all indexed. Every query embeds to (1, 0, ...)."""
+    shim_pool(monkeypatch, db_conn, sd_tool)
+
+    async def fake_embed(text):
+        return [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+
+    monkeypatch.setattr(sd_tool, "embed_query", fake_embed)
+    alice = await member(db_conn, "alice")
+    pid = await seed.make_project(db_conn, alice.user_id, "Handbook")
+    for doc_id, name in ((PA, "Alpha.md"), (PB, "Beta.md"), (PC, "Gamma.md")):
+        await seed.seed_doc(db_conn, doc_id, alice.user_id, file_name=name, state="indexed")
+        await db_conn.execute("UPDATE documents SET page_count = 9, embedding_profile = %s WHERE doc_id = %s",
+                              (current_profile(), doc_id))
+        await seed.place_doc(db_conn, pid, doc_id, alice.user_id, file_name=name)
+    scope_ = await load_project_scope(db_conn, alice.user_id, pid, open_doc_id=None)
+    assert [d.name for d in scope_.searchable] == ["Alpha.md", "Beta.md", "Gamma.md"]
+    return db_conn, alice, scope_
+
+
+async def _pchunk(conn, doc_id, ord_, page, text, *vec):
+    await conn.execute(
+        "INSERT INTO doc_chunks (doc_id, ord, page, chunk_type, text, text_hash, embedding, embedding_model) "
+        "VALUES (%s, %s, %s, 'page', %s, %s, %s::vector, 'm')", (doc_id, ord_, page, text, f"h{doc_id[:2]}{ord_}", _vec(*vec)))
+
+
+def _project_ctx(project, **kw):
+    _, alice, scope_ = project
+    return ToolContext(alice.user_id, None, project=scope_, question="q", **kw)
+
+
+async def test_search_documents_filters_to_named_documents(project):
+    conn, _, _ = project
+    await _pchunk(conn, PA, 0, 1, "Alpha overview.", 1, 0.1)
+    await _pchunk(conn, PB, 0, 2, "Beta overview.", 1, 0.2)
+    await _pchunk(conn, PC, 0, 3, "Gamma overview.", 1, 0.3)
+    ctx = _project_ctx(project)
+    run = await _search(ctx, {"query": "overview", "k": 10, "documents": [2, "gamma.md"]})
+    assert run.ok
+    assert sorted((p["ref"], p["page"]) for p in run.result["passages"]) == [(2, 2), (3, 3)]
+    assert {e[0] for e in ctx.evidence} == {PB, PC}
+    assert [d["ref"] for d in run.result["documents"]] == [2, 3]
+    # a lone value (small models do that) names one document; an empty list names none: the whole project
+    one = await _search(_project_ctx(project), {"query": "overview", "documents": "1"}, "c2")
+    assert [(p["ref"], p["page"]) for p in one.result["passages"]] == [(1, 1)]
+    everything = await _search(_project_ctx(project), {"query": "overview", "k": 10, "documents": []}, "c3")
+    assert sorted(p["ref"] for p in everything.result["passages"]) == [1, 2, 3]
+
+
+async def test_search_documents_unknown_document_lists_valid_ones(project):
+    ctx = _project_ctx(project)
+    run = await _search(ctx, {"query": "overview", "documents": [1, "Nope.md"]})
+    assert not run.ok
+    assert run.result["error"].startswith("Unknown document: Nope.md. Use a number or name from the list: ")
+    assert run.result["error"].endswith("1 Alpha.md, 2 Beta.md, 3 Gamma.md.")
+    assert ctx.shown == set() and ctx.evidence == []                     # nothing was searched
+    two = await _search(ctx, {"query": "overview", "documents": [7, "x\ny"]}, "c2")
+    assert two.result["error"].startswith("Unknown document: 7, x y. ")
+
+
+async def test_search_documents_balances_in_project_scope(project):
+    """One ranking, but a document that dominates it gives only CHAT_SEARCH_PER_DOC (2) passages until k are
+    chosen; the unbalanced list would have been Alpha four times."""
+    conn, _, _ = project
+    for i in range(5):
+        await _pchunk(conn, PA, i, 1 + i, f"Alpha overview {i}.", 1, 0.1 * (i + 1))
+    await _pchunk(conn, PB, 0, 1, "Beta overview.", 1, 1)
+    await _pchunk(conn, PC, 0, 1, "Gamma overview.", 1, 1.2)
+    ctx = _project_ctx(project)
+    run = await _search(ctx, {"query": "overview", "k": 4})
+    assert [(p["ref"], p["page"]) for p in run.result["passages"]] == [(1, 1), (1, 2), (2, 1), (3, 1)]
+    assert [d["ref"] for d in run.result["documents"]] == [1, 2, 3]
+    assert [p["docId"] for p in run.summary["result_summary"]["passages"]] == [PA, PA, PB, PC]
+    # with the cap off, the same search fills from Alpha: the cap is what moved Beta and Gamma up
+    wide = _project_ctx(project, cfg=ChatConfig(search_per_doc=10))
+    unbalanced = await _search(wide, {"query": "overview", "k": 4}, "c2")
+    assert [p["ref"] for p in unbalanced.result["passages"]] == [1, 1, 1, 1]
+
+
+async def test_project_search_hands_the_fusion_depth_and_the_cap_to_the_search(monkeypatch):
+    asked = {}
+
+    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0):
+        asked.update(per_doc=per_doc, depth=depth, text=text, doc_ids=doc_ids)
+        return []
+
+    async def fake_embed(text):
+        return [0.0]
+
+    monkeypatch.setattr(sd_tool, "search_scope", fake_search_scope)
+    monkeypatch.setattr(sd_tool, "embed_query", fake_embed)
+    monkeypatch.setattr(sd_tool, "get_pool", lambda: _NullPool())
+    docs = tuple(ScopeDoc(i, doc_search.ReadableDoc(str(i) * 64, f"D{i}.md", "indexed"), f"D{i}.md", False)
+                 for i in (1, 2))
+    from server.chat.project_scope import ProjectScope
+    ctx = ToolContext("u", None, project=ProjectScope("p", "P", docs), cfg=ChatConfig(search_per_doc=3, project_fusion_depth=77))
+    await sd_tool.TOOL.execute({"query": "q words", "k": 5}, ctx)
+    assert (asked["per_doc"], asked["depth"], asked["text"]) == (3, 77, "q words")
+    assert asked["doc_ids"] == ["1" * 64, "2" * 64]
+
+
+async def test_a_result_lists_only_the_documents_it_refers_to(project):
+    """The map (a later task) names every document; a result names the ones its passages, or its "already
+    shown" notes, are about."""
+    conn, _, _ = project
+    await _pchunk(conn, PA, 0, 1, "Alpha overview.", 1, 0.1)
+    await _pchunk(conn, PB, 0, 2, "Beta overview.", 1, 0.5)
+    await _pchunk(conn, PC, 0, 3, "Gamma overview.", 1, 0.9)
+    ctx = _project_ctx(project, cfg=ChatConfig(search_min_score=0.0))
+    first = await _search(ctx, {"query": "overview", "k": 1})
+    assert [d["ref"] for d in first.result["documents"]] == [1] and first.result["passages"][0]["ref"] == 1
+    second = await _search(ctx, {"query": "overview", "k": 1}, "c2")
+    assert [p["ref"] for p in second.result["passages"]] == [2]
+    assert second.result["already_shown"] == [{"ref": 1, "pages": [1]}]
+    assert [d["ref"] for d in second.result["documents"]] == [1, 2]       # Alpha because of the note
+    # all of it already shown: no passages, but the notes still name their documents
+    done = await _search(_project_ctx(project, cfg=ChatConfig(search_min_score=0.0), shown=set(ctx.shown)),
+                         {"query": "overview", "documents": [1, 2], "k": 5}, "c3")
+    assert done.result["passages"] == [] and [d["ref"] for d in done.result["documents"]] == [1, 2]
+    assert done.result["message"].startswith("Nothing new")
+    # nothing found at all: no document is named
+    none = await _search(_project_ctx(project, cfg=ChatConfig(search_min_score=1.01)), {"query": "qqqq"}, "c4")
+    assert none.result["passages"] == [] and none.result["documents"] == []
+
+
+def test_resolve_documents_returns_found_and_unknown_in_the_order_given():
+    docs = [ScopeDoc(i, doc_search.ReadableDoc(str(i) * 64, n, "indexed"), n, False)
+            for i, n in ((1, "Alpha.md"), (2, "Beta.md"), (3, "2024"))]
+    found, unknown = scope.resolve_documents(docs, [2, "alpha.MD", "2", 2.0, "2024", 9, "x\ny", True])
+    assert [d.ref for d in found] == [2, 1, 3]            # "2" and 2.0 name Beta again: once; "2024" is a name
+    assert unknown == ["9", "x y", "True"]
+    assert scope.resolve_documents(docs, []) == ([], [])
+
+
+async def test_search_documents_ignores_documents_in_document_scope(indexed):
+    """One open document: a near-name a small model fills in must not cost it a round."""
+    ctx = await _ctx(indexed)
+    run = await _search(ctx, {"query": "m", "documents": ["the thesis", 7]})
+    assert run.ok and [p["page"] for p in run.result["passages"]] == [3, 7]
+
+
+def test_the_search_tool_takes_an_optional_documents_list():
+    spec = sd_tool.TOOL.spec.parameters
+    assert spec["properties"]["documents"]["type"] == "array"
+    assert spec["properties"]["documents"]["items"] == {"type": ["integer", "string"]}
+    assert spec["required"] == ["query"]

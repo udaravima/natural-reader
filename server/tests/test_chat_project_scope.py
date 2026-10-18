@@ -319,7 +319,8 @@ async def test_search_documents_covers_the_project_sorted_by_cosine(db_conn, mon
     run = await _call(ctx, "search_documents", {"query": "page", "k": 3})
     assert run.ok
     assert run.result["documents"] == [{"ref": 1, "name": "Alpha.md"}, {"ref": 2, "name": "Beta.md"}]
-    # The baseline: one cosine order across documents (Alpha's two at 1.0, then Beta's 0.71).
+    # One ranking across documents (Task 8): every passage has the word "page", so here it is also the cosine
+    # order: Alpha's two at 1.0, then Beta's 0.71.
     assert [(p["ref"], p["page"]) for p in run.result["passages"]] == [(1, 1), (1, 2), (2, 1)]
     assert ctx.evidence[-1] == (B, 1, "Beta page one.")
     summary = run.summary["result_summary"]
@@ -340,6 +341,19 @@ async def test_a_document_scope_turn_keeps_its_single_document_tools(db_conn, mo
     assert ctx.evidence == [(B, 1, "Beta page one.")]
 
 
+async def test_read_document_pages_ignores_document_in_document_scope(db_conn, monkeypatch):
+    """A small model fills `document` in with a near-name; with one open document that must not cost a round."""
+    shim_pool(monkeypatch, db_conn, rp_tool)
+    alice, _ = await _two_doc_project(db_conn)
+    await _chunk(db_conn, B, 0, 1, "Beta page one.")
+    from server.services.doc_search import readable_doc
+    ctx = ToolContext(alice.user_id, await readable_doc(db_conn, B, alice.user_id))
+    for value in ("the beta document", "Alpha.md", 7, "2"):
+        run = await _call(ctx, "read_document_pages", {"document": value, "first_page": 1})
+        assert run.ok, value
+        assert run.result["pages"] == [{"ref": 1, "page": 1, "text": "Beta page one."}]
+
+
 # ---- the turn ----
 
 def test_project_tool_rounds_config():
@@ -349,13 +363,14 @@ def test_project_tool_rounds_config():
     assert load_chat_config({"CHAT_PROJECT_MAX_TOOL_ROUNDS": "0"}).project_max_tool_rounds == 0
 
 
-async def _project_turn(conn, monkeypatch, router, text="q"):
+async def _project_turn(conn, monkeypatch, router, text="q", cfg=None):
     shim_pool(monkeypatch, conn, store, orchestrator, ctx_mod, sd_tool)
 
     async def fake_embed(text):
         return [1.0] + [0.0] * (EMBEDDING_DIM - 1)
 
     monkeypatch.setattr(sd_tool, "embed_query", fake_embed)
+    monkeypatch.setattr(ctx_mod, "embed_query", fake_embed)
     alice, pid = await _two_doc_project(conn)
     await _chunk(conn, A2, 0, 1, "The Alpha deployment uses ZEPHYR-9 nodes.")
     await _chunk(conn, B, 0, 4, "Beta covers the ZEPHYR-9 rollout schedule.")
@@ -363,7 +378,7 @@ async def _project_turn(conn, monkeypatch, router, text="q"):
                                    attachments=[], new_session_pins=None, scope_project_id=pid)
     req = TurnRequest(user_id=alice.user_id, session_id="s-1", model_id="ollama:m", text=text, attachments=(),
                       settings=CallSettings(), doc_id=B, timezone="UTC", project_id=pid)
-    events = [e async for e in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)]
+    events = [e async for e in run_turn(req, claim, router=router, cfg=cfg or ChatConfig(), deployment_budget=None)]
     return events, claim
 
 
@@ -393,3 +408,22 @@ async def test_a_project_turn_emits_no_source_chips_yet(db_conn, monkeypatch):
     status, doc_context = await cur.fetchone()
     assert status == "complete"
     assert not any(n.get("kind") == "sources" for n in (doc_context or {}).get("notes", []))
+
+
+async def test_a_project_turn_prefetches_across_the_whole_project(db_conn, monkeypatch):
+    """Task 8 end to end: the orchestrator hands the project's documents to the prefetch, the note names each
+    document that gave passages, and the model reads them as a search_documents result before its turn."""
+    router = FakeRouter(steps=[reply("Both cover ZEPHYR-9 (Alpha.md, page 1; Beta.md, page 4).")])
+    events, claim = await _project_turn(db_conn, monkeypatch, router, text="zephyr nodes",
+                                        cfg=ChatConfig(prefetch="on"))
+    [note] = next(e for e in events if e["type"] == "data-context")["items"]
+    assert note["kind"] == "prefetch" and "docId" not in note and note["count"] == 2
+    assert note["documents"] == [{"docId": A2, "docName": "Alpha.md", "count": 1, "pages": [1]},
+                                 {"docId": B, "docName": "Beta.md", "count": 1, "pages": [4]}]
+    sent = router.calls[0]["messages"]
+    assert [m.role for m in sent] == ["system", "user", "assistant", "tool"]
+    result = json.loads(sent[-1].content)
+    assert sorted((p["ref"], p["page"]) for p in result["passages"]) == [(1, 1), (2, 4)]
+    assert [d["name"] for d in result["documents"]] == ["Alpha.md", "Beta.md"]
+    cur = await db_conn.execute("SELECT doc_context FROM chat_messages WHERE id = %s", (claim.turn_id,))
+    assert (await cur.fetchone())[0] == {"notes": [note]}

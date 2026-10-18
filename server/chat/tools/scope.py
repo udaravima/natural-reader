@@ -40,6 +40,21 @@ def resolve_document(scope: list[ScopeDoc], value: Any) -> ScopeDoc | None:
     return None
 
 
+def resolve_documents(scope: list[ScopeDoc], values: Any) -> tuple[list[ScopeDoc], list[str]]:
+    """`resolve_document` for a list: (found, unknown). `found` has each document once, in the order the
+    values name them; `unknown` holds what matched nothing, as one inert line each (it goes into an error
+    the model reads, and a name is someone else's text)."""
+    found: list[ScopeDoc] = []
+    unknown: list[str] = []
+    for value in values:
+        doc = resolve_document(scope, value)
+        if doc is None:
+            unknown.append(display_name(value))
+        elif doc not in found:
+            found.append(doc)
+    return found, unknown
+
+
 def documents_listing(scope: list[ScopeDoc]) -> list[dict]:
     """How a result names its documents: a short ref plus the reader's name,
     and a version note when the document is an old version (V1 spec §7)."""

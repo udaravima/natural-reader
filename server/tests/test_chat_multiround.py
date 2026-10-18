@@ -40,12 +40,12 @@ def corpus(open_doc, monkeypatch):
     async def fake_embed_one(text):
         return [text]
 
-    async def fake_search_chunks(conn, doc_id, qvec, k, text=None):
+    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0):
         runs.append(qvec[0])
-        return [dict(r) for r in CORPUS.get(qvec[0], [])]
+        return [{"doc_id": doc_ids[0], **r} for r in CORPUS.get(qvec[0], [])]
 
     monkeypatch.setattr(sd_tool, "embed_query", fake_embed_one)
-    monkeypatch.setattr(sd_tool, "search_chunks", fake_search_chunks)
+    monkeypatch.setattr(sd_tool, "search_scope", fake_search_scope)
     monkeypatch.setattr(ws_tool, "web_search", _fake_web())
     return runs
 
@@ -193,8 +193,9 @@ async def test_every_kind_of_document_text_is_guarded(conn, open_doc, monkeypatc
     document text the model has; none may reach the web."""
     pinned = "Pinned: the quarterly revenue of the northern division fell by twelve percent overall."
 
-    async def fake_prefetch(doc, question, cfg):
-        return Prefetch([{"id": 1, "page": 2, "score": 0.9, "text": PASSAGE}], 0.9,
+    async def fake_prefetch(scope, question, cfg):
+        doc = scope[0].doc
+        return Prefetch([{"id": 1, "ref": 1, "doc_id": doc.doc_id, "page": 2, "score": 0.9, "text": PASSAGE}], 0.9,
                         {"kind": "prefetch", "docId": doc.doc_id, "docName": doc.name, "count": 1,
                          "topScore": 0.9, "pages": [2]})
 

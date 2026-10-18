@@ -46,6 +46,8 @@ async def readable_doc(conn, doc_id: str, user_id: str) -> ReadableDoc | None:
 RRF_K = 60           # reciprocal-rank fusion's constant (Cormack et al., 2009)
 FUSION_DEPTH = 20    # candidates taken from each list before fusing
 PARTIAL_WORDS = 12   # at most this many (the rarest) of a query's words count in partial word matching
+QUERY_LEXEMES = 64   # a query's first this-many distinct words are looked at: each costs a frequency lookup
+PARTIAL_WEIGHT = 0.1   # a partial word match counts this much in the fusion (spec 5.5 point 3); meaning and all-words count 1
 PARTIAL_POOL = 4     # ts_rank_cd breaks ties among this many x depth candidates (it is costly)
 COMMON_SAMPLE = 1000   # chunks sampled to spot words in over 60% of the scope without a lookup each
 
@@ -84,8 +86,16 @@ async def search_scope(conn, doc_ids: list[str], qvec: list[float], k: int, text
     is about "clause" and "4.2", not about the words every sentence has (nor
     about a word nobody has); at most the PARTIAL_WORDS rarest count. No
     informative word, no partial list. A row found by meaning only has
-    `word_match` None; `by_words` is true for both kinds. A text with no words
-    leaves the meaning ranking.
+    `word_match` None; `by_words` is true for both kinds. A partial match is
+    weaker evidence than meaning for a sentence-like query (a few common-ish
+    words together in unrelated chunks), so its words-list term counts
+    PARTIAL_WEIGHT (a tenth) in the fusion. Measured on the project eval: at
+    a half, partial rows that were also in the meaning list still took the
+    first places from the best chunk by meaning (the term, about 0.008, was
+    worth more than the gap between meaning ranks 1 and 20); at a tenth a
+    partial row must be within about the 8 best by meaning to lead, and one
+    found by both lists near the top of meaning still does.
+    A text with no words leaves the meaning ranking.
     `depth` is how many candidates each list gives to the fusion (at least k).
 
     `per_doc` balances the fused ranking in Python (`_balance`): a document
@@ -108,7 +118,9 @@ async def search_scope(conn, doc_ids: list[str], qvec: list[float], k: int, text
     is worked out once per candidate chunk. ts_rank_cd is NOT cheap: 462 ms for
     31 terms over 10,000 chunks, against 15 ms for matching them. So it only
     breaks ties among the first PARTIAL_POOL x depth candidates by matched
-    count (ties beyond that pool fall to id order)."""
+    count (ties beyond that pool fall to a hash of the id: id order would give every place to the document
+    indexed first). A query's first QUERY_LEXEMES (64) distinct words are looked at, because each word is
+    one such lookup (200 words took over 300 ms)."""
     # prepare=False below: psycopg would prepare this text after 5 runs, and PostgreSQL would then switch to a
     # generic plan that cannot see how many documents are in scope or how common the query words are.
     # Measured on 10,000 chunks: the generic plan was 40-100% slower; planning afresh costs about 1 ms.
@@ -142,6 +154,8 @@ async def search_scope(conn, doc_ids: list[str], qvec: list[float], k: int, text
                 SELECT lexeme, chr(39) || replace(replace(lexeme, chr(92), chr(92) || chr(92)),
                                                   chr(39), chr(39) || chr(39)) || chr(39) AS quoted
                 FROM unnest(to_tsvector('simple', %(text)s))
+                ORDER BY positions[1], lexeme    -- the words as the query has them, the first QUERY_LEXEMES
+                LIMIT %(lexemes)s
             ), total AS (
                 SELECT count(*) AS n FROM scope
             ), sample AS MATERIALIZED (
@@ -189,19 +203,21 @@ async def search_scope(conn, doc_ids: list[str], qvec: list[float], k: int, text
                   AND c.doc_id = ANY(%(docs)s::text[]) AND c.embedding IS NOT NULL
                   AND c.text_search @@ i.any_q
                   AND hit.matched * 2 >= i.m            -- at least ceil(m / 2) of the m words
-                ORDER BY hit.matched DESC, c.id
+                ORDER BY hit.matched DESC, hashint8(c.id)   -- not id: it would favour the oldest documents
                 LIMIT %(pool)s
             ), partial AS (
-                SELECT pool.id, pool.matched, ts_rank_cd(c.text_search, i.any_q) AS rk
+                SELECT pool.id, pool.matched, ts_rank_cd(c.text_search, i.any_q) AS rk,
+                       hashint8(pool.id)::bigint AS tie
                 FROM pool JOIN doc_chunks c ON c.id = pool.id, informative i
-                ORDER BY pool.matched DESC, rk DESC, pool.id
+                ORDER BY pool.matched DESC, rk DESC, tie
                 LIMIT %(depth)s
             ), words AS (
-                SELECT id, kind, row_number() OVER (ORDER BY matched DESC, rk DESC, id) AS r
-                FROM (SELECT id, 0 AS matched, rk, 'all' AS kind FROM exact
-                      UNION ALL SELECT id, matched, rk, 'partial' FROM partial) AS found
+                SELECT id, kind, row_number() OVER (ORDER BY matched DESC, rk DESC, tie, id) AS r
+                FROM (SELECT id, 0 AS matched, rk, id AS tie, 'all' AS kind FROM exact
+                      UNION ALL SELECT id, matched, rk, tie, 'partial' FROM partial) AS found
             ), fused AS (
-                SELECT id, sum(1.0 / (%(rrf)s + r)) AS rrf,
+                SELECT id, sum(CASE WHEN kind = 'partial' THEN %(pweight)s::numeric ELSE 1.0 END
+                               / (%(rrf)s + r)) AS rrf,
                        min(r) FILTER (WHERE src = 'w') AS word_rank,
                        min(kind) FILTER (WHERE src = 'w') AS word_match
                 FROM (SELECT id, r, 'm' AS src, NULL::text AS kind FROM meaning
@@ -216,7 +232,7 @@ async def search_scope(conn, doc_ids: list[str], qvec: list[float], k: int, text
             LIMIT %(limit)s
             """,
             {"docs": list(doc_ids), "q": qvec, "depth": depth, "rrf": RRF_K, "text": text,
-             "rare": PARTIAL_WORDS, "pool": PARTIAL_POOL * depth, "sample": COMMON_SAMPLE,
+             "rare": PARTIAL_WORDS, "lexemes": QUERY_LEXEMES, "pweight": PARTIAL_WEIGHT, "pool": PARTIAL_POOL * depth, "sample": COMMON_SAMPLE,
              "limit": k if per_doc is None else None},   # balancing needs the whole fused list
             prepare=False,   # see the comment above
         )

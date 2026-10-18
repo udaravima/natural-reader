@@ -177,19 +177,20 @@ class _ReadDocumentPages:
 
 
 def _chosen(scope: list[ScopeDoc], value: Any, ctx) -> ScopeDoc | dict[str, str]:
-    """The ScopeDoc `document` names, or the error the model reads. Leaving it
-    out means the open document, in document scope only."""
+    """The ScopeDoc `document` names, or the error the model reads. In document
+    scope it is the open document whatever `document` says: a small model
+    fills the argument in with a near-name, and one wrong guess must not cost
+    it a round. In a project, leaving it out is an error."""
+    if ctx.project is None:
+        return scope[0]
     if value is None or value == "":
-        if ctx.project is None:
-            return scope[0]
         return {"error": f"document is required: use a number or name from the list: {choices_text(scope)}."}
     found = resolve_document(scope, value)
     if found is not None:
         return found
-    if ctx.project is not None:
-        listed = resolve_document(list(ctx.project.docs), value)
-        if listed is not None:   # in the project, but not indexed (or reindexing)
-            return {"error": f'Document {listed.ref} ("{listed.name}") isn\'t searchable yet.'}
+    listed = resolve_document(list(ctx.project.docs), value)
+    if listed is not None:   # in the project, but not indexed (or reindexing)
+        return {"error": f'Document {listed.ref} ("{listed.name}") isn\'t searchable yet.'}
     return {"error": f"Unknown document: {display_name(value)}. "
                      f"Use a number or name from the list: {choices_text(scope)}."}
 

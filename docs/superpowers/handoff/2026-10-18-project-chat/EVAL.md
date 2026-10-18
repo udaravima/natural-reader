@@ -7,6 +7,8 @@ chat turn path scoped to that project, and scores each answer on the fact, the r
 web-search rules. Every later layer (map, balance, code chunks, rules, web offer) is compared
 with the numbers below, so the baseline section is never edited: later runs are appended as
 new sections.
+Each layer section also carries a table of FACTS FOUND per case (the fact check on its own, apart from the
+citation form that decides the pass rate until the citation layer, Task 15).
 
 The code is `server/evals/project_qa.py` (cases, scoring, `run_eval`); the script is
 `scripts/eval_project_qa.py`; `server/tests/test_eval_project_qa.py` tests the pure parts, the
@@ -337,3 +339,118 @@ of size:
    see how many documents are in scope; that plan was 40-100% slower on this statement, in this
    benchmark and so in the app. The search now runs unprepared (`prepare=False`, about 1 ms of
    planning), which also speeds up the single-document and short-query paths (exact: 47 to 26 ms).
+
+## Layer: one ranking + balance
+
+- Date: 2026-10-18
+- Commit: `87eaa93` (C2.1 Task 7) plus the uncommitted Task 8 work on top: `search_documents` and the
+  prefetch call `search_scope` (one ranking over the project, 2 passages per document, partial word
+  matches counting a tenth in the fusion (`PARTIAL_WEIGHT = 0.1`), a `documents` filter); the cosine
+  floor is skipped only by all-words matches; a result's `documents` listing names only the documents
+  its passages refer to. No map; the rules are unchanged.
+- Model: `ollama:gemma4:31b-cloud`, thinking off, variant 9, `--repeat 3`, the same scratch database
+  as the earlier layers.
+- Web: SearXNG still isn't running; both `live` calls failed with a connection error, as before.
+- Earlier runs of this layer: partial matches at full weight passed 3/39 (right-document citations 3/33),
+  with `next-work` 0/3; at weight 0.5, 2/39 (4/33), `next-work` still 0/3 (the displacing rows were also
+  in the meaning list, where a half weight is still worth more than the whole gap between meaning ranks
+  1 and 20). This section is the run at 0.1.
+- Headline: **2/39 passed** (code chunks layer: 6/39), right-document citations **3/33** (6/33), exit
+  status 1. The pass count is decided by the citation form, which flips between runs and is not fixed
+  until Task 15; read the facts table instead.
+
+### Facts found per case (the answer's fact, apart from citation form)
+
+Over the three runs; rounds per run in brackets. Fact = the strings the case looks for (for `features`,
+how many of its 6 term groups appear, 4 needed). `ollama-release` has no fact (it checks the web offer).
+
+| case | baseline | code chunks | **this run** |
+|---|---|---|---|
+| features | 6,6,6 of 6 terms [3,3,3] | 5,6,6 of 6 terms [3,3,3] | **3,4,3 of 6 terms [2,2,2]** |
+| deploy-and-test | 3/3 [2,3,2] | 3/3 [3,3,3] | **3/3 [2,2,2]** |
+| start-command | 3/3 [1,1,1] | 3/3 [1,1,1] | **3/3 [1,1,1]** |
+| quickstart-command | 0/3 [1,1,1] | 3/3 [1,1,1] | **3/3 [2,2,2]** |
+| test-command | 0/3 [1,1,1] | 3/3 [1,1,1] | **3/3 [1,1,1]** |
+| session-lifetimes | 3/3 [1,1,1] | 3/3 [1,1,1] | **3/3 [1,1,1]** |
+| oidc-issuer | 3/3 [2,2,2] | 3/3 [2,2,2] | **0/3 [2,2,2]** |
+| user-guide-pins | 0/3 [5,3,3] | 0/3 [1,1,1] | **0/3 [1,1,1]** |
+| deployment-uploads | 2/3 [3,3,2] | 3/3 [3,3,3] | **3/3 [4,3,3]** |
+| next-work | 3/3 [1,1,1] | 3/3 [1,1,1] | **3/3 [1,1,1]** |
+| changelog-unreleased | 3/3 [1,1,1] | 3/3 [1,1,1] | **3/3 [1,1,1]** |
+| rhel-packages | 3/3 [3,3,3] | 3/3 [3,4,3] | **3/3 [0,2,2]** |
+| ollama-release | no fact to check | no fact to check | **no fact to check** |
+
+```text
+Project QA eval: ollama:gemma4:31b-cloud (variant 9)
+-- run 1
+FAIL  overview       features               5.4s rounds=2 tools=search_documents,read_document_pages  3/6 terms (need 4): text-to-speech|read aloud|reads aloud|kokoro, chat, library, accounts|sign in|sign-in|login|log in|keycloak|oidc, pdf|markdown, admin|project|projects; 0 documents cited (need 3)
+FAIL  procedure      deploy-and-test        5.3s rounds=2 tools=search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md, TESTING.md)
+FAIL  code           start-command          2.3s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           quickstart-command     2.7s rounds=2 tools=search_documents,read_document_pages  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           test-command           2.0s rounds=1 tools=search_documents  fact ok; not cited (TESTING.md); page missing (want TESTING.md p. 1)
+FAIL  exact-label    session-lifetimes      1.8s rounds=1 tools=search_documents  fact ok; not cited (ARCHITECTURE.md); page missing (want ARCHITECTURE.md p. 3)
+FAIL  exact-label    oidc-issuer            3.2s rounds=2 tools=search_documents,search_documents  fact missing (https://auth.example.com/realms/natural-reader, http://localhost:18080/realms/natural-reader); not cited (DEPLOYMENT.md); page missing (want DEPLOYMENT.md p. 2)
+FAIL  named-doc      user-guide-pins        2.3s rounds=1 tools=search_documents  fact missing (each message|every message); not cited (USER_GUIDE.md)
+FAIL  named-doc      deployment-uploads     6.0s rounds=4 tools=search_documents,read_document_pages,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md)
+FAIL  balance        next-work              1.7s rounds=1 tools=search_documents  fact ok; not cited (DOCS_INDEX.md)
+PASS  balance        changelog-unreleased   1.9s rounds=1 tools=search_documents  fact ok; documents ok
+FAIL  gap-general    rhel-packages          0.9s rounds=0 tools=-  fact ok; didn't say the documents don't cover it; no offer
+FAIL  live           ollama-release         3.2s rounds=2 tools=web_search,web_search  no offer; 2 web calls
+-- run 2
+FAIL  overview       features               5.4s rounds=2 tools=search_documents,read_document_pages  4/6 terms (need 4); 0 documents cited (need 3)
+FAIL  procedure      deploy-and-test        5.8s rounds=2 tools=search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md, TESTING.md)
+FAIL  code           start-command          2.5s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           quickstart-command     3.7s rounds=2 tools=search_documents,read_document_pages  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           test-command           1.9s rounds=1 tools=search_documents  fact ok; not cited (TESTING.md); page missing (want TESTING.md p. 1)
+FAIL  exact-label    session-lifetimes      3.5s rounds=1 tools=search_documents  fact ok; not cited (ARCHITECTURE.md); page missing (want ARCHITECTURE.md p. 3)
+FAIL  exact-label    oidc-issuer            3.7s rounds=2 tools=search_documents,search_documents  fact missing (https://auth.example.com/realms/natural-reader, http://localhost:18080/realms/natural-reader); documents ok; pages ok
+FAIL  named-doc      user-guide-pins        3.0s rounds=1 tools=search_documents  fact missing (each message|every message); not cited (USER_GUIDE.md)
+FAIL  named-doc      deployment-uploads     3.8s rounds=3 tools=search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md)
+FAIL  balance        next-work              1.6s rounds=1 tools=search_documents  fact ok; not cited (DOCS_INDEX.md)
+PASS  balance        changelog-unreleased   1.4s rounds=1 tools=search_documents  fact ok; documents ok
+FAIL  gap-general    rhel-packages          3.9s rounds=2 tools=search_documents,read_document_pages  fact ok; didn't say the documents don't cover it; no offer
+FAIL  live           ollama-release         2.1s rounds=2 tools=web_search,web_search  no offer; 2 web calls
+-- run 3
+FAIL  overview       features               6.8s rounds=2 tools=search_documents,read_document_pages  3/6 terms (need 4): text-to-speech|read aloud|reads aloud|kokoro, chat, library, accounts|sign in|sign-in|login|log in|keycloak|oidc, pdf|markdown, admin|project|projects; 0 documents cited (need 3)
+FAIL  procedure      deploy-and-test        5.4s rounds=2 tools=search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md, TESTING.md)
+FAIL  code           start-command          1.8s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           quickstart-command     9.0s rounds=2 tools=search_documents,read_document_pages  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           test-command           2.2s rounds=1 tools=search_documents  fact ok; not cited (TESTING.md); page missing (want TESTING.md p. 1)
+FAIL  exact-label    session-lifetimes      2.0s rounds=1 tools=search_documents  fact ok; not cited (ARCHITECTURE.md); page missing (want ARCHITECTURE.md p. 3)
+FAIL  exact-label    oidc-issuer            3.2s rounds=2 tools=search_documents,search_documents  fact missing (https://auth.example.com/realms/natural-reader, http://localhost:18080/realms/natural-reader); not cited (DEPLOYMENT.md); page missing (want DEPLOYMENT.md p. 2)
+FAIL  named-doc      user-guide-pins        5.7s rounds=1 tools=search_documents  fact missing (each message|every message); not cited (USER_GUIDE.md)
+FAIL  named-doc      deployment-uploads     4.2s rounds=3 tools=search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md)
+FAIL  balance        next-work              1.7s rounds=1 tools=search_documents  fact ok; not cited (DOCS_INDEX.md)
+FAIL  balance        changelog-unreleased   1.7s rounds=1 tools=search_documents  fact ok; not cited (DOCS_INDEX.md)
+FAIL  gap-general    rhel-packages          3.4s rounds=2 tools=search_documents,read_document_pages  fact ok; didn't say the documents don't cover it; no offer
+FAIL  live           ollama-release         2.4s rounds=2 tools=web_search,web_search  no offer; 2 web calls
+tally: overview 0/3, procedure 0/3, code 0/9, exact-label 0/6, named-doc 0/6, balance 2/6, gap-general 0/3, live 0/3
+right-document citations 3/33
+web calls 6
+2/39 passed
+```
+
+### What changed against the previous layer (code chunks)
+
+- **`next-work` recovered**: 3/3 on the fact in one search round, as before this layer (0/3 at full weight and
+  at 0.5). Probing `search_scope` on this database, DOCS_INDEX is back at 4th for "next piece of work"
+  and "what is the next piece of work"; for "where to find the next piece of work" it is still missing
+  at every weight, so this is a gain on the phrasings tried, not on every phrasing. (The model's own
+  queries were not captured.)
+- **`oidc-issuer` did not recover**: 0/3 on the fact (3/3 before this layer; 2/3 at full weight, 0/3 at 0.5
+  and at 0.1). The model searches twice and answers without the two URLs. Probing `search_scope` with
+  plausible queries: the question as written finds the right chunk (DEPLOYMENT p2, the table holding both
+  values) first, but short queries such as "OIDC_ISSUER" and "OIDC_ISSUER production" do not put it in
+  the top 5, with or without the 2-per-document cap, so the balance is not the cause. One contributing
+  fact: extraction joins the table's cells without a separator ("OIDC_ISSUERhttp://localhost:18080/..."),
+  and the chunk's text index has no `oidc_issuer` word (checked in the database), so an exact-word
+  search for `OIDC_ISSUER` cannot reach it and only meaning can. I did not capture the model's own two
+  queries, so the cause of the 0/3 is not established. Follow-up, not done here: keep table cells apart
+  in extraction.
+- `deploy-and-test` stays recovered (3/3, 2 rounds). `features` is unchanged from the first run of this
+  layer: 3-4 of 6 terms with 2 rounds instead of 3 (cause not found). `user-guide-pins` is 0/3 on the fact
+  as in every layer (USER_GUIDE mentions pins in one line).
+- Also from this layer: `doc_search.search_scope` looks at a query's first 64 distinct words only: on
+  the 50 x 200 chunk benchmark data (vacuumed) a 200-word query took 129.6 ms p50 before and 65.5 ms
+  after; 32- and 64-word queries are unchanged. Timed before the fusion weight, which changes only a
+  constant in the fusion's sum.

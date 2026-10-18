@@ -268,8 +268,8 @@ async def test_dropped_feature_becomes_a_notice_and_a_log_line(conn):
 async def test_prefetch_note_comes_before_the_first_step_and_is_saved(conn, monkeypatch):
     note = {"kind": "prefetch", "docId": "d" * 64, "docName": "Thesis.pdf", "count": 1, "topScore": 0.9, "pages": [3]}
 
-    async def fake_prefetch(doc, question, cfg):
-        return Prefetch([{"page": 3, "score": 0.9, "text": "passage"}], 0.9, note)
+    async def fake_prefetch(scope, question, cfg):
+        return Prefetch([{"ref": 1, "doc_id": "d" * 64, "page": 3, "score": 0.9, "text": "passage"}], 0.9, note)
 
     monkeypatch.setattr(ctx_mod, "prefetch", fake_prefetch)
     events, claim = await _run(conn, FakeRouter())
@@ -498,8 +498,8 @@ async def test_a_silent_step_adds_no_separator(conn, monkeypatch):
 async def test_the_prefetch_metric_is_logged_at_debug_per_turn(conn, monkeypatch, caplog, hit, calls, want):
     """M1 (spec §5.2.1): whether search_documents still ran after a prefetch,
     so a deployer can tune CHAT_PREFETCH_MIN_SCORE. No user text in it."""
-    async def fake_prefetch(doc, question, cfg):
-        return Prefetch([{"page": 1, "score": 0.9, "text": "p"}], 0.9,
+    async def fake_prefetch(scope, question, cfg):
+        return Prefetch([{"ref": 1, "doc_id": "d", "page": 1, "score": 0.9, "text": "p"}], 0.9,
                         {"kind": "prefetch", "docId": "d", "docName": "D", "count": 1, "topScore": 0.9, "pages": [1]}
                         ) if hit else Prefetch()
 
@@ -545,19 +545,19 @@ def open_doc(monkeypatch):
     async def fake_open_doc(req):
         return OPEN_DOC
 
-    async def fake_prefetch(doc, question, cfg):
+    async def fake_prefetch(scope, question, cfg):
         return Prefetch()
 
     async def fake_embed_one(text):
         return [0.0]
 
-    async def fake_search_chunks(conn, doc_id, qvec, k, text=None):
+    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0):
         return []
 
     monkeypatch.setattr(orchestrator, "_open_doc", fake_open_doc)
     monkeypatch.setattr(ctx_mod, "prefetch", fake_prefetch)
     monkeypatch.setattr(sd_tool, "embed_query", fake_embed_one)
-    monkeypatch.setattr(sd_tool, "search_chunks", fake_search_chunks)
+    monkeypatch.setattr(sd_tool, "search_scope", fake_search_scope)
 
 
 TEXT_CALL = '{"name": "search_documents", "parameters": {"query": "the main finding"}}'
@@ -770,18 +770,20 @@ async def test_prefetched_passages_are_not_repeated_by_a_search_and_the_floor_co
         conn, open_doc, monkeypatch):
     """The prefetch block already holds chunk 11; a search that finds it again
     returns only its page. CHAT_SEARCH_MIN_SCORE reaches the tool."""
-    async def fake_prefetch(doc, question, cfg):
-        return Prefetch([{"id": 11, "page": 3, "score": 0.8, "text": "prefetched"}], 0.8,
+    async def fake_prefetch(scope, question, cfg):
+        doc = scope[0].doc
+        return Prefetch([{"id": 11, "ref": 1, "doc_id": doc.doc_id, "page": 3, "score": 0.8, "text": "prefetched"}], 0.8,
                         {"kind": "prefetch", "docId": doc.doc_id, "docName": doc.name, "count": 1,
                          "topScore": 0.8, "pages": [3]})
 
-    async def fake_search_chunks(conn, doc_id, qvec, k, text=None):
-        return [{"id": 11, "page": 3, "score": 0.8, "text": "prefetched"},
-                {"id": 12, "page": 5, "score": 0.6, "text": "new"},
-                {"id": 13, "page": 8, "score": 0.5, "text": "below this config's floor"}]
+    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0):
+        return [{"doc_id": doc_ids[0], **r} for r in (
+            {"id": 11, "page": 3, "score": 0.8, "text": "prefetched"},
+            {"id": 12, "page": 5, "score": 0.6, "text": "new"},
+            {"id": 13, "page": 8, "score": 0.5, "text": "below this config's floor"})]
 
     monkeypatch.setattr(ctx_mod, "prefetch", fake_prefetch)
-    monkeypatch.setattr(sd_tool, "search_chunks", fake_search_chunks)
+    monkeypatch.setattr(sd_tool, "search_scope", fake_search_scope)
     router = FakeRouter(steps=[
         [ToolCallReady(ToolCall("c1", "search_documents", {"query": "more"})), Usage(5, 5), Finish("tool_calls")],
         reply("Done (page 5).")])

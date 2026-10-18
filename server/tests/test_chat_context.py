@@ -6,13 +6,16 @@ import pytest
 from server.chat import context as ctx_mod
 from server.chat.config import ChatConfig, load_chat_config
 from server.chat.context import TurnInput, build_context, pin_text, prefetch, today_line
-from server.chat.tools import search_documents
+from server.chat.project_scope import ScopeDoc
+from server.chat.tools import ToolContext, search_documents
+from server.chat.tools.scope import scope_docs
 from server.chat.store import StoredMessage
 from server.llm.types import Attachment, Message
 from server.services.doc_search import ReadableDoc
 
 NOW = datetime(2026, 9, 26, 19, 24, tzinfo=timezone.utc)
 DOC = ReadableDoc("d" * 64, "Thesis.pdf", "indexed")
+ONE = [ScopeDoc(1, DOC, "Thesis.pdf", True)]   # the open document as the scope of a document chat
 
 
 class _NullPool:
@@ -38,12 +41,12 @@ def search(monkeypatch):
             raise state["raise"]
         return [1.0]
 
-    async def fake_search(conn, doc_id, qvec, k):
-        state["k"] = k
-        return state["rows"]
+    async def fake_search(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0):
+        state.update(k=k, doc_ids=doc_ids, per_doc=per_doc, text=text)
+        return [{"doc_id": DOC.doc_id, **r} for r in state["rows"]]   # a row names its document unless it says otherwise
 
     monkeypatch.setattr(ctx_mod, "embed_query", fake_embed)
-    monkeypatch.setattr(ctx_mod, "search_chunks", fake_search)
+    monkeypatch.setattr(ctx_mod, "search_scope", fake_search)
     monkeypatch.setattr(ctx_mod, "get_pool", lambda: _NullPool())
     return state
 
@@ -52,6 +55,8 @@ def _turn(**over):
     base = dict(user_id="u", text="What does chapter 2 say?", attachments=(), doc=None,
                 timezone="Asia/Colombo", pins=[], history=[], window=None, now=NOW)
     base.update(over)
+    if "scope" not in over:   # what the orchestrator hands over: the open, indexed document as the scope
+        base["scope"] = tuple(scope_docs(ToolContext("u", base["doc"])))
     return TurnInput(**base)
 
 
@@ -85,22 +90,24 @@ def test_a_pin_is_a_fenced_excerpt():
 async def test_prefetch_keeps_only_passages_above_the_threshold(search):
     search["rows"] = [{"page": 3, "score": 0.91, "text": "a"}, {"page": 5, "score": 0.80, "text": "b"},
                       {"page": 8, "score": 0.40, "text": "c"}]
-    got = await prefetch(DOC, "q", ChatConfig())
+    got = await prefetch(ONE, "q", ChatConfig())
     assert [p["page"] for p in got.passages] == [3, 5] and search["k"] == 4
     assert got.note == {"kind": "prefetch", "docId": DOC.doc_id, "docName": "Thesis.pdf",
                         "count": 2, "topScore": 0.91, "pages": [3, 5]}
+    assert [(p["ref"], p["doc_id"]) for p in got.passages] == [(1, DOC.doc_id)] * 2
+    assert search["doc_ids"] == [DOC.doc_id] and search["per_doc"] is None and search["text"] is None   # meaning only
 
 
 async def test_prefetch_miss_disabled_unreadable_and_failure_cost_nothing_visible(search):
     search["rows"] = [{"page": 1, "score": 0.5, "text": "weak"}]
-    miss = await prefetch(DOC, "q", ChatConfig())
+    miss = await prefetch(ONE, "q", ChatConfig())
     assert miss.passages == [] and miss.note is None and miss.top_score == 0.5
-    assert (await prefetch(DOC, "q", ChatConfig(prefetch_min_score=1.0))).passages == []
-    assert (await prefetch(None, "q", ChatConfig())).passages == []
-    assert (await prefetch(ReadableDoc("x", "n", "extracting"), "q", ChatConfig())).passages == []
+    assert (await prefetch(ONE, "q", ChatConfig(prefetch_min_score=1.0))).passages == []
+    assert (await prefetch([], "q", ChatConfig())).passages == []
+    assert (await prefetch([ScopeDoc(1, ReadableDoc("x", "n", "extracting"), "n", True)], "q", ChatConfig())).passages == []
     assert search["embeds"] == 1            # disabled / no doc / not indexed never embed
     search["raise"] = RuntimeError("embedding service down")
-    assert (await prefetch(DOC, "q", ChatConfig())).passages == []
+    assert (await prefetch(ONE, "q", ChatConfig())).passages == []
 
 
 async def test_message_order_pins_history_then_volatile_and_question_in_one_user_message(search, monkeypatch):
@@ -356,7 +363,67 @@ async def test_auto_prefetches_only_for_a_model_without_document_tools(search):
 async def test_prefetch_off_costs_no_embedding_and_no_rules_sentence(search):
     search["rows"] = [{"id": 1, "page": 3, "score": 0.9, "text": "x"}]
     off = ChatConfig(prefetch="off")
-    assert (await prefetch(DOC, "q", off)).passages == [] and search["embeds"] == 0
+    assert (await prefetch(ONE, "q", off)).passages == [] and search["embeds"] == 0
     built = await build_context(_turn(doc=DOC, tools=DOC_TOOLS), off)
     assert [m.role for m in built.messages] == ["system", "user"]
     assert "just before your turn" not in built.messages[0].content
+
+
+# ---- C2.1 Task 8: prefetch over a project ----
+
+DOC_A, DOC_B = "a" * 64, "b" * 64
+PROJECT_SCOPE = [ScopeDoc(1, ReadableDoc(DOC_A, "Alpha.md", "indexed"), "Alpha.md", False),
+                 ScopeDoc(2, ReadableDoc(DOC_B, "Beta.md", "indexed"), "Beta.md", False),
+                 ScopeDoc(3, ReadableDoc("c" * 64, "Gamma.md", "indexed"), "Gamma.md", False)]
+PROJECT_ROWS = [{"id": 1, "doc_id": DOC_A, "page": 3, "score": 0.91, "text": "alpha three"},
+                {"id": 2, "doc_id": DOC_B, "page": 4, "score": 0.85, "text": "beta four"},
+                {"id": 3, "doc_id": DOC_A, "page": 5, "score": 0.80, "text": "alpha five"},
+                {"id": 4, "doc_id": DOC_B, "page": 2, "score": 0.40, "text": "beta weak"}]
+
+
+async def test_prefetch_in_project_scope_names_each_document(search):
+    search["rows"] = PROJECT_ROWS
+    got = await prefetch(PROJECT_SCOPE, "q", ChatConfig())
+    assert [(p["ref"], p["doc_id"], p["page"]) for p in got.passages] == [
+        (1, DOC_A, 3), (2, DOC_B, 4), (1, DOC_A, 5)]
+    # No docId at the top: a project note names its documents (the SPA reads `documents`).
+    assert got.note == {"kind": "prefetch", "count": 3, "topScore": 0.91, "documents": [
+        {"docId": DOC_A, "docName": "Alpha.md", "count": 2, "pages": [3, 5]},
+        {"docId": DOC_B, "docName": "Beta.md", "count": 1, "pages": [4]}]}
+    # the whole project, meaning only, balanced as the tool balances
+    assert search["doc_ids"] == [DOC_A, DOC_B, "c" * 64] and search["text"] is None
+    assert search["per_doc"] == ChatConfig().search_per_doc and search["k"] == ChatConfig().prefetch_k
+
+
+async def test_prefetch_in_project_scope_searches_only_what_is_searchable(search):
+    search["rows"] = PROJECT_ROWS
+    scope_ = [*PROJECT_SCOPE, ScopeDoc(4, ReadableDoc("e" * 64, "Scan.pdf", "failed"), "Scan.pdf", False)]
+    await prefetch(scope_, "q", ChatConfig())
+    assert "e" * 64 not in search["doc_ids"]
+
+
+async def test_a_project_prefetch_arrives_as_a_tool_exchange_naming_only_the_documents_found(search):
+    search["rows"] = [PROJECT_ROWS[1], PROJECT_ROWS[3]]          # Beta only (one passage passes the threshold)
+    built = await build_context(_turn(scope=tuple(PROJECT_SCOPE), tools=DOC_TOOLS), ChatConfig(prefetch="on"))
+    assert [m.role for m in built.messages] == ["system", "user", "assistant", "tool"]
+    result = json.loads(built.messages[-1].content)
+    assert result["passages"] == [{"ref": 2, "page": 4, "text": "beta four"}]
+    assert result["documents"] == [{"ref": 2, "name": "Beta.md"}]      # not Alpha or Gamma: nothing came from them
+    assert built.shown_chunk_ids == (2,)
+
+
+async def test_the_sources_of_a_project_prefetch_each_carry_their_own_document(search):
+    """The project note has no top-level docId, so evidence must not read one from it."""
+    search["rows"] = PROJECT_ROWS
+    built = await build_context(_turn(scope=tuple(PROJECT_SCOPE), tools=DOC_TOOLS), ChatConfig(prefetch="on"))
+    assert built.notes[0]["kind"] == "prefetch" and "docId" not in built.notes[0]
+    assert built.evidence == ((DOC_A, 3, "alpha three"), (DOC_B, 4, "beta four"), (DOC_A, 5, "alpha five"))
+
+
+async def test_a_project_prefetch_without_tools_is_a_fenced_block_that_names_each_document(search):
+    search["rows"] = PROJECT_ROWS
+    built = await build_context(_turn(scope=tuple(PROJECT_SCOPE)), ChatConfig(prefetch="on"))
+    user = built.messages[-1].content
+    assert user.count("<document_passages") == 1 and user.count("</document_passages>") == 1
+    assert "[1] (Alpha.md, page 3)" in user and "[2] (Beta.md, page 4)" in user and "[3] (Alpha.md, page 5)" in user
+    assert built.prefetch_hit and len(built.evidence) == 3
