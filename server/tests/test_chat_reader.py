@@ -15,7 +15,7 @@ from server.chat import reader
 from server.chat.prompt import fence
 from server.chat.reader import (Fact, Passage, ReaderConfig, ReaderResult, batches, load_reader_config,
                                 normalise, read_batch, read_many, reader_messages, resolve_model, verify)
-from server.llm.types import CallSettings
+from server.llm.types import CallSettings, ProviderError
 from server.services.inference_limits import InferenceLimits
 
 CFG = ReaderConfig(model="reader-model")
@@ -28,9 +28,10 @@ def _raw(quote, frm, fact="a fact"):
 # ---- normalise -------------------------------------------------------------------------------------------
 
 def test_normalise_folds_typography():
-    assert normalise("  “Hello”, it’s  \n\tTHE—end – ok  ") == "\"hello\", it's the-end - ok"
-    assert normalise("co­op") == "coop"                      # soft hyphen
-    assert normalise("ﬁne") == "fine"                             # NFKC: the ligature
+    text = "  \u201cHello\u201d,\u00a0it\u2019s  \n\tTHE\u2014end \u2013 ok  "
+    assert normalise(text) == "\"hello\", it's the-end - ok"
+    assert normalise("co\u00adop") == "coop"                    # soft hyphen
+    assert normalise("\ufb01ne") == "fine"                        # NFKC: the ligature
 
 
 def test_normalise_joins_a_hyphen_broken_across_lines_only_before_a_letter():
@@ -38,13 +39,13 @@ def test_normalise_joins_a_hyphen_broken_across_lines_only_before_a_letter():
     assert normalise("instal-  \r\n   lation") == "installation"
     assert normalise("see 2020-\n10") == "see 2020- 10"           # a digit follows: not a split word
     assert normalise("end-\n\nStart") == "end- start"             # a blank line is a paragraph break
-    assert normalise("left—\nthen") == "left- then"          # an em dash is not a hyphen
+    assert normalise("left\u2014\nthen") == "left- then"        # an em dash is not a hyphen
 
 
 # ---- verify ----------------------------------------------------------------------------------------------
 
 def test_verify_accepts_typographic_differences():
-    batch = [Passage("[1, page 2]", "Run “dnf install python3.13” — then instal-\nlation ends.", 1, 2)]
+    batch = [Passage("[1, page 2]", "Run \u201cdnf install python3.13\u201d \u2014 then instal-\nlation ends.", 1, 2)]
     facts, dropped = verify([{"fact": "f", "quote": '"dnf install python3.13" - then installation',
                               "from": "[1, page 2]"}], batch)
     assert dropped == 0 and facts[0].page == 2
@@ -79,7 +80,7 @@ def test_verify_handles_unspaced_scripts():
 
 
 def test_verify_keeps_the_models_strings_stripped_but_not_normalised():
-    batch = [Passage("[1]", "It’s HERE.", 1, None)]
+    batch = [Passage("[1]", "It\u2019s HERE.", 1, None)]
     facts, _ = verify([_raw("  it's here  ", "[1]", fact="  It is here  ")], batch)
     assert facts[0].fact == "It is here" and facts[0].quote == "it's here"
     assert facts[0].page is None
@@ -94,7 +95,7 @@ def test_verify_keeps_the_models_strings_stripped_but_not_normalised():
     {"fact": "f", "quote": "text", "from": None},
     {"fact": "f", "quote": "", "from": "[1]"},             # an empty quote is "found" everywhere
     {"fact": "f", "quote": "  \n ", "from": "[1]"},
-    {"fact": "f", "quote": "­", "from": "[1]"},       # empty once normalised
+    {"fact": "f", "quote": "\u00ad", "from": "[1]"},      # empty once normalised
     {"fact": "  ", "quote": "text", "from": "[1]"},
     {"fact": "x" * 601, "quote": "text", "from": "[1]"},
     "text",
@@ -110,6 +111,81 @@ def test_verify_keeps_a_fact_of_exactly_600_characters_and_counts_each_drop():
     facts, dropped = verify([_raw("some text", "[1]", fact="x" * 600), _raw("nope", "[1]"),
                              _raw("here", "[1]")], batch)
     assert len(facts) == 2 and dropped == 1
+
+
+def test_verify_a_quote_may_keep_or_drop_the_hyphen_of_a_line_end_break():
+    # "well-\nknown" is a compound broken at the line end; "instal-\nlation" is a word broken at it. The reader
+    # can't tell which, so a quote with or without the hyphen verifies; a single-line hyphen stays as written.
+    batch = [Passage("[1]", "The well-\nknown tool, its instal-\nlation, and a double-checked step.", 1, 4)]
+    raw = [_raw("well-known tool", "[1]"), _raw("wellknown tool", "[1]"), _raw("its installation", "[1]"),
+           _raw("double-checked", "[1]"), _raw("doublechecked", "[1]")]
+    facts, dropped = verify(raw, batch)
+    assert [f.quote for f in facts] == ["well-known tool", "wellknown tool", "its installation", "double-checked"]
+    assert dropped == 1
+    assert normalise("well-\nknown") == "wellknown"    # normalise itself still joins
+
+
+def test_verify_ignores_whitespace_between_han_and_kana_but_not_hangul_or_latin():
+    batch = [Passage("[1]", "対応形式は日本\n語の文書です。", 1, 1)]          # a line break inside 日本語
+    facts, dropped = verify([_raw("日本語の文書", "[1]"),                       # the quote has no break
+                             _raw("日本 語の文書", "[1]")], batch)              # the quote has a space of its own
+    assert len(facts) == 2 and dropped == 0
+
+    hangul = [Passage("[1]", "안녕 하세요 세계", 1, 1)]                          # Korean keeps its word spaces
+    facts, dropped = verify([_raw("안녕하세요", "[1]"), _raw("안녕 하세요", "[1]")], hangul)
+    assert [f.quote for f in facts] == ["안녕 하세요"] and dropped == 1
+
+    mixed = [Passage("[1]", "PDF 形式の文書", 1, 1)]                             # Latin next to Han keeps its space
+    facts, dropped = verify([_raw("PDF形式の文書", "[1]")], mixed)
+    assert facts == [] and dropped == 1
+
+
+def test_verify_a_quote_of_fenced_text_verifies_in_either_form():
+    # The model reads fence(text): "<document_passages>" reaches it as "\u2039document_passages>".
+    batch = [Passage("[1, page 3]", "Wrap the output in a <document_passages> tag, then close it.", 1, 3)]
+    as_written = "wrap the output in a <document_passages> tag"
+    as_seen = "wrap the output in a \u2039document_passages> tag"
+    facts, dropped = verify([_raw(as_written, "[1, page 3]"), _raw(as_seen, "[1, page 3]")], batch)
+    assert dropped == 0 and [f.quote for f in facts] == [as_written, as_seen]
+    assert all(f.page == 3 for f in facts)
+
+
+def test_verify_a_very_short_quote_must_be_the_whole_passage():
+    batch = [Passage("[1]", "Yes, it works.", 1, 1), Passage("[2]", "e is a letter; the port is 8080.", 2, 1),
+             Passage("[3]", "  Go  ", 3, 1), Passage("[4]", "OK", 4, 1)]
+    facts, dropped = verify([_raw("e", "[2]"),                 # in every passage, says nothing
+                             _raw("the", "[2]"),               # 3 characters
+                             _raw("yes", "[1]"),               # 3 characters, and not all of the passage
+                             _raw("port", "[2]"),              # 4 characters: enough
+                             _raw("go", "[3]"),                # short, but it is the whole passage
+                             _raw("ok", "[4]")], batch)        # likewise, found by its label
+    assert [f.quote for f in facts] == ["port", "go", "ok"] and dropped == 3
+
+
+def test_verify_a_short_quote_with_han_or_kana_needs_only_two_characters():
+    # one Han character is about a word of meaning, so 日本語 is a real three-character quote
+    batch = [Passage("[1]", "このツールは日本語の文書を読み上げます。", 1, 1)]
+    facts, dropped = verify([_raw("日本語", "[1]"), _raw("文書", "[1]"), _raw("ツール", "[1]"),
+                             _raw("日", "[1]"),            # one character: not enough
+                             _raw("語", "[1]"),
+                             _raw("the", "[1]")], batch)    # no Han or kana: still 4
+    assert [f.quote for f in facts] == ["日本語", "文書", "ツール"] and dropped == 3
+    # ...unless it is the whole passage
+    assert len(verify([_raw("日", "[1]")], [Passage("[1]", "日", 1, 1)])[0]) == 1
+    # punctuation alone does not make a quote CJK
+    assert verify([_raw("。。", "[1]")], [Passage("[1]", "です。。ます", 1, 1)]) == ([], 1)
+
+
+def test_verify_ignores_a_line_break_after_cjk_punctuation():
+    batch = [Passage("[1]", "「対応形式はPDFです。\n次の手順に進みます、\n終わり」", 1, 1)]
+    facts, dropped = verify([_raw("対応形式はPDFです。次の手順に進みます、終わり", "[1]"),
+                             _raw("です。 次の手順", "[1]"),               # a space of its own
+                             _raw("です。\n次の手順", "[1]")], batch)      # the break itself
+    assert len(facts) == 3 and dropped == 0
+    # only between two CJK characters: before Latin text the break stays a space
+    latin = [Passage("[1]", "です。\nPDF形式です", 1, 1)]
+    assert verify([_raw("です。PDF形式", "[1]")], latin) == ([], 1)
+    assert len(verify([_raw("です。 PDF形式", "[1]")], latin)[0]) == 1
 
 
 # ---- batches ---------------------------------------------------------------------------------------------
@@ -227,19 +303,35 @@ async def test_read_batch_clamps_num_ctx_to_the_deployment_limit(use_router, mon
     assert router.calls[0][2].num_ctx == 2048
 
 
-async def test_read_batch_invalid_json_is_an_error(use_router):
-    for bad in ("no json here", '{"found": true, "facts": [', "[1, 2, 3]", '{"found": true, "facts": "none"}',
-                '{"found": true, "facts": {"fact": "x"}}', ""):
-        use_router(FakeRouter(bad))
-        assert await read_batch("q", "n", [PAGE], chat_model="m", cfg=CFG) == ReaderResult(False, (), 0, "invalid_json")
+@pytest.mark.parametrize("bad", [
+    "no json here", '{"found": true, "facts": [', "[1, 2, 3]", "",
+    '{"found": true, "facts": "none"}', '{"found": true, "facts": {"fact": "x"}}',
+    '{"answer": "It is not in the text."}', "{}",         # an object that has neither found nor facts
+    '{"facts": ' + "[" * 100_000,                         # deeper than the JSON parser will go
+], ids=["prose", "truncated", "array", "empty", "facts-string", "facts-object", "other-keys", "empty-object",
+        "too-deep"])
+async def test_read_batch_invalid_json_is_an_error(use_router, bad):
+    use_router(FakeRouter(bad))
+    assert await read_batch("q", "n", [PAGE], chat_model="m", cfg=CFG) == ReaderResult(False, (), 0, "invalid_json")
 
 
 async def test_read_batch_a_router_failure_is_a_provider_error(use_router, caplog):
-    use_router(FakeRouter(RuntimeError("connection refused")))
+    use_router(FakeRouter(RuntimeError("connection refused: the prompt said dnf install python3.13")))
     with caplog.at_level(logging.INFO, logger="server.chat.reader"):
         result = await read_batch("q", "n", [PAGE], chat_model="m", cfg=CFG)
     assert result == ReaderResult(False, (), 0, "provider_error")
     assert "RuntimeError" in caplog.text
+    # a provider's message may echo the prompt, which is source text: it must not reach the log
+    assert "connection refused" not in caplog.text and "dnf install" not in caplog.text
+
+
+async def test_read_batch_logs_a_provider_errors_status_but_not_its_text(use_router, caplog):
+    use_router(FakeRouter(ProviderError(502, "bad gateway echoing dnf install python3.13")))
+    with caplog.at_level(logging.INFO, logger="server.chat.reader"):
+        result = await read_batch("q", "n", [PAGE], chat_model="m", cfg=CFG)
+    assert result.error == "provider_error"
+    assert "ProviderError" in caplog.text and "502" in caplog.text
+    assert "bad gateway" not in caplog.text and "dnf install" not in caplog.text
 
 
 async def test_read_batch_found_false_ignores_listed_facts(use_router):
@@ -256,7 +348,7 @@ async def test_read_batch_all_quotes_failing_is_not_found_and_counts_the_drops(u
     with caplog.at_level(logging.INFO, logger="server.chat.reader"):
         result = await read_batch("q", "n", [PAGE], chat_model="m", cfg=CFG)
     assert result == ReaderResult(False, (), 2, None)
-    assert "2" in caplog.text
+    assert "dropped 2 of 2" in caplog.text
     assert "SECRET-QUOTE-TEXT" not in caplog.text and "Python 3.12" not in caplog.text    # no quotes in logs
 
 
@@ -303,6 +395,18 @@ async def test_read_many_the_timeout_does_not_count_time_spent_waiting_for_a_slo
     cfg = ReaderConfig(model="m", max_concurrency=1, timeout_s=0.35)      # the second batch ends at ~0.4 s
     results = await read_many("q", "n", _batches(2), chat_model="m", cfg=cfg)
     assert [r.error for r in results] == [None, None]
+
+
+async def test_read_many_a_router_failure_in_one_batch_leaves_the_others_alone(use_router):
+    def reply(messages):
+        if "[1]\n" in messages[1].content:
+            raise RuntimeError("provider went away")
+        return _echo_label(messages)
+    use_router(FakeRouter(reply))
+    results = await read_many("q", "n", _batches(3), chat_model="m", cfg=ReaderConfig(model="m", timeout_s=5))
+    assert [r.error for r in results] == [None, "provider_error", None]
+    assert results[1] == ReaderResult(False, (), 0, "provider_error")
+    assert [r.facts[0].label for r in (results[0], results[2])] == ["[0]", "[2]"]
 
 
 async def test_read_many_with_nothing_to_read(use_router):

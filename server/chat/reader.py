@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "llama3.2:3b"
 FACT_MAX_CHARS = 600      # a "fact" longer than this is a paragraph copied out, not a fact
+MIN_QUOTE_CHARS = 4       # a shorter quote must be the whole passage (see _occurs)
+MIN_QUOTE_CHARS_CJK = 2   # ...and 2 when it has a Han, Hiragana or Katakana character: about a word each
 NUM_CTX_MARGIN = 512      # tokens of slack on top of the estimate
 CHARS_PER_TOKEN = 3       # a pessimistic estimate, so the window is not cut short
 CHARS_PER_OUTPUT_TOKEN = 2   # the reply cap: JSON with quotes tokenises badly
@@ -173,14 +175,26 @@ def batches(passages: list[Passage], max_chars: int) -> list[list[Passage]]:
 # ---- verification ----------------------------------------------------------------------------------------
 
 _QUOTES_AND_DASHES = str.maketrans({
-    "‘": "'", "’": "'", "‚": "'", "‛": "'", "ʼ": "'",
-    "“": '"', "”": '"', "„": '"', "‟": '"',
-    **{c: "-" for c in "‐‑‒–—―"},   # hyphens, figure/en/em dashes, bar
+    "\u2018": "'", "\u2019": "'", "\u201a": "'", "\u201b": "'", "\u02bc": "'",   # curly single quotes, apostrophe
+    "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u201f": '"',                 # curly double quotes
+    **{c: "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015"},   # hyphens, figure/en/em dashes, bar
 })
 # A word split across lines: a hyphen, the line break (spaces around it allowed), then a letter. Only a
 # hyphen counts: an en or em dash at a line end is punctuation, and joining across it would glue two words.
-_HYPHEN_BREAK = re.compile(r"[-‐‑][^\S\r\n]*(?:\r\n|\n|\r)[^\S\r\n]*(?=[^\W\d_])")
+_HYPHEN_BREAK = re.compile(r"([-\u2010\u2011])[^\S\r\n]*(?:\r\n|\n|\r)[^\S\r\n]*(?=[^\W\d_])")
 _WHITESPACE = re.compile(r"\s+")
+# Han, Hiragana and Katakana are written without spaces, so a space between two of them is a line break
+# (or a PDF's guess), not a word boundary. Hangul is not here: Korean puts spaces between words.
+_CJK_SCRIPT = "\u3005\u3006\u3040-\u30ff\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U0003134f"
+_CJK_PUNCTUATION = "\u3001-\u303f"    # CJK Symbols and Punctuation: a break after the full stop 。 is no boundary either
+_CJK_CHAR = re.compile(f"[{_CJK_SCRIPT}]")
+_CJK_GAP = re.compile(f"(?<=[{_CJK_SCRIPT}{_CJK_PUNCTUATION}]) (?=[{_CJK_SCRIPT}{_CJK_PUNCTUATION}])")
+
+
+def _fold(text: str, keep_hyphen: bool) -> str:
+    text = unicodedata.normalize("NFKC", text).casefold().replace("\u00ad", "")    # soft hyphens
+    text = _HYPHEN_BREAK.sub(r"\1" if keep_hyphen else "", text)
+    return _WHITESPACE.sub(" ", text.translate(_QUOTES_AND_DASHES)).strip()
 
 
 def normalise(text: str) -> str:
@@ -188,9 +202,25 @@ def normalise(text: str) -> str:
     (case, curly quotes, dash kinds, a word hyphenated at a line end, non-breaking spaces) is folded away.
     Both the quote and the passage go through this, so what matters is that they agree, not what it produces.
     The hyphen join runs before whitespace is collapsed, because it needs the line break."""
-    text = unicodedata.normalize("NFKC", text).casefold().replace("­", "")
-    text = _HYPHEN_BREAK.sub("", text)
-    return _WHITESPACE.sub(" ", text.translate(_QUOTES_AND_DASHES)).strip()
+    return _fold(text, keep_hyphen=False)
+
+
+def _forms(text: str) -> set[str]:
+    """The forms of a passage a quote may be found in.
+    - A word broken at a line end ("well-" then "known"): the source may mean a compound (keep the hyphen) or
+      a split word (join), and the reader can't tell which, so both forms are kept.
+    - The model reads the fenced text (a tag like document_passages reaches it with its "<" turned into a
+      look-alike), so a quote of either the real or the fenced text counts.
+    - Spaces between Han/Kana characters (and CJK punctuation) are ignored."""
+    return {_CJK_GAP.sub("", _fold(t, keep)) for t in {text, fence(text)} for keep in (False, True)}
+
+
+def _occurs(needle: str, forms: set[str]) -> bool:
+    """`needle` is in one of the forms. A very short one must be the whole form: "e" is in every passage and
+    shows nothing, while a one-word passage ("OK") can still be quoted. "Very short" is under 4 characters,
+    or under 2 when the needle has a Han or kana character, since one of those carries about a word."""
+    shortest = MIN_QUOTE_CHARS_CJK if _CJK_CHAR.search(needle) else MIN_QUOTE_CHARS
+    return any(needle in form and (len(needle) >= shortest or needle == form) for form in forms)
 
 
 def _text(value: Any) -> str | None:
@@ -202,13 +232,14 @@ def verify(raw_facts: list[dict], batch: list[Passage]) -> tuple[list[Fact], int
 
     A quote must be in the passage its `from` label names; if it isn't but is in another passage of the batch
     (a small model often mislabels), the fact is relabelled. Otherwise it is dropped, as is a fact with a
-    missing or non-text field, an empty quote, or a fact over 600 characters. A Fact keeps the model's own
-    strings (stripped), and takes label, doc_ref and page from the passage where the quote was found."""
-    normalised = [normalise(p.text) for p in batch]
+    missing or non-text field, an empty or very short quote (see `_occurs`, unless it is the whole
+    passage), or a fact over 600 characters. A Fact keeps the model's own strings (stripped), and takes label,
+    doc_ref and page from the passage where the quote was found."""
+    forms = [_forms(p.text) for p in batch]
     facts: list[Fact] = []
     dropped = 0
     for raw in raw_facts:
-        found = _verified(raw, batch, normalised)
+        found = _verified(raw, batch, forms)
         if found is None:
             dropped += 1
         else:
@@ -216,19 +247,19 @@ def verify(raw_facts: list[dict], batch: list[Passage]) -> tuple[list[Fact], int
     return facts, dropped
 
 
-def _verified(raw: Any, batch: list[Passage], normalised: list[str]) -> Fact | None:
+def _verified(raw: Any, batch: list[Passage], forms: list[set[str]]) -> Fact | None:
     if not isinstance(raw, dict):
         return None
     fact, quote, label = _text(raw.get("fact")), _text(raw.get("quote")), _text(raw.get("from"))
     if not fact or not quote or label is None or len(fact) > FACT_MAX_CHARS:
         return None
-    needle = normalise(quote)
+    needle = _CJK_GAP.sub("", normalise(quote))
     if not needle:    # an empty string is a substring of everything
         return None
     named = [i for i, p in enumerate(batch) if p.label == label]
     others = [i for i in range(len(batch)) if i not in named]
     for i in named + others:
-        if needle in normalised[i]:
+        if _occurs(needle, forms[i]):
             p = batch[i]
             return Fact(fact, quote, p.label, p.doc_ref, p.page)
     return None
@@ -249,7 +280,7 @@ def _first_object(reply: str) -> dict | None:
         return None
     try:
         obj, _ = json.JSONDecoder().raw_decode(reply, start)
-    except ValueError:
+    except (ValueError, RecursionError):    # malformed, or nested deeper than the parser goes
         return None
     return obj if isinstance(obj, dict) else None
 
@@ -279,6 +310,9 @@ async def read_batch(question: str, need: str, batch: list[Passage], *, chat_mod
     parsed = _first_object(reply)
     if parsed is None:
         logger.warning("reader reply had no JSON object")
+        return _error("invalid_json")
+    if "found" not in parsed and "facts" not in parsed:    # JSON, but not an answer in our format
+        logger.warning("reader reply was an object with neither found nor facts")
         return _error("invalid_json")
     if parsed.get("found") is False:
         return ReaderResult(False, (), 0, None)    # whatever it listed anyway is ignored
