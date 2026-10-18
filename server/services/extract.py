@@ -408,8 +408,14 @@ def chunk_settings(env) -> tuple[int, int]:
 # read_document_pages joins a page's parts dropping at most the CURRENT
 # overlap, so old parts made with a longer one show their extra overlap twice.
 # Harmless (the text is right, only repeated) and gone after the swap.
+#
+# The trailing "code1" marks the extraction that indexes code blocks and saves
+# outlines (C2.1): bump it when what extraction produces changes, so existing
+# documents are re-chunked on their next use. The rebuild embeds only text that
+# has no vector yet (doc_pipeline._reusable_vectors), so such a bump costs the
+# new chunks, not the whole library.
 CHUNK_MAX_CHARS, CHUNK_OVERLAP_CHARS = chunk_settings(os.environ)
-CHUNKER_VERSION = f"split1:{CHUNK_MAX_CHARS}:{CHUNK_OVERLAP_CHARS}"
+CHUNKER_VERSION = f"split1:{CHUNK_MAX_CHARS}:{CHUNK_OVERLAP_CHARS}:code1"
 
 
 def _cut(text: str, start: int, limit: int) -> int:

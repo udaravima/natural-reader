@@ -173,3 +173,89 @@ inferred from the answers; the search results themselves weren't inspected.
 The web rules fail as expected: there is no `offer_web_search` tool before Task 13, so
 `rhel-packages` answers with no tool call and no offer, and `ollama-release` calls
 `web_search` itself instead of offering it.
+
+## Layer: code chunks
+
+- Date: 2026-10-18
+- Commit: `ddd9fc4` (C2.1 Task 5, code chunks in extraction) plus the uncommitted Task 6 work on top
+  (outlines saved, `CHUNKER_VERSION` ending `:code1`, embeddings reused on rebuild), committed with
+  this section. No map, no balance; the rules are unchanged.
+- Model: `ollama:gemma4:31b-cloud`, thinking off, variant 9, `--repeat 3`, the same scratch database
+  as the baseline.
+- Web: SearXNG still isn't running; both `live` calls failed with a connection error, as in the baseline.
+- Upgrade exercised: the scratch database held the 50 documents indexed under `split1:1200:200`.
+  The run's own `run_rebuild` upgraded the nine fixture documents to `split1:1200:200:code1`;
+  afterwards the database held 52 code chunks (42 `code`, 10 `code+cont`) and nine `doc_outlines`
+  rows, all `headings`. The 41 padding documents (variant 50 only) were not touched. How long the
+  upgrade took and how many texts it embedded were not measured here (the unit test
+  `test_rebuild_after_chunker_change_embeds_only_new_text` pins "only the new code text").
+- Headline: 6/39 passed over three runs, the same as the baseline (6/39); right-document citations
+  6/33, the same. What moved is the facts: the three `code` cases, whose commands sit in fenced
+  blocks, now find their fact in 9/9 answers (baseline 3/9: `start-command` only), including
+  `./startup.sh quickstart` and `python -m pytest server/tests, postgres`, which were unfindable
+  before. They still fail on "not cited" (a bare "page 3" instead of "(README.md, page 3)"), which
+  this layer doesn't touch.
+
+```text
+Project QA eval: ollama:gemma4:31b-cloud (variant 9)
+-- run 1
+FAIL  overview       features               13.1s rounds=3 tools=search_documents,read_document_pages,read_document_pages  5/6 terms (need 4); 0 documents cited (need 3)
+FAIL  procedure      deploy-and-test        7.0s rounds=3 tools=search_documents,read_document_pages,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md, TESTING.md)
+FAIL  code           start-command          2.2s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           quickstart-command     3.0s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           test-command           2.8s rounds=1 tools=search_documents  fact ok; not cited (TESTING.md); page missing (want TESTING.md p. 1)
+PASS  exact-label    session-lifetimes      3.4s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+FAIL  exact-label    oidc-issuer            2.8s rounds=2 tools=search_documents,search_documents  fact ok; not cited (DEPLOYMENT.md); page missing (want DEPLOYMENT.md p. 2)
+FAIL  named-doc      user-guide-pins        4.7s rounds=1 tools=search_documents  fact missing (each message|every message); not cited (USER_GUIDE.md); cited the wrong document (CHAT_WITH_PDF.md, README.md)
+FAIL  named-doc      deployment-uploads     6.6s rounds=3 tools=search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md)
+FAIL  balance        next-work              3.2s rounds=1 tools=search_documents  fact ok; not cited (DOCS_INDEX.md)
+PASS  balance        changelog-unreleased   5.0s rounds=1 tools=search_documents  fact ok; documents ok
+FAIL  gap-general    rhel-packages          6.3s rounds=3 tools=search_documents,read_document_pages,read_document_pages  fact ok; didn't say the documents don't cover it; no offer
+FAIL  live           ollama-release         2.7s rounds=2 tools=web_search,web_search  no offer; 2 web calls
+-- run 2
+FAIL  overview       features               6.0s rounds=3 tools=search_documents,read_document_pages,read_document_pages  6/6 terms (need 4); 0 documents cited (need 3)
+PASS  procedure      deploy-and-test        5.6s rounds=3 tools=search_documents,read_document_pages,read_document_pages,read_document_pages,read_document_pages  fact ok; documents ok
+FAIL  code           start-command          1.5s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           quickstart-command     3.2s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           test-command           1.7s rounds=1 tools=search_documents  fact ok; not cited (TESTING.md); page missing (want TESTING.md p. 1)
+FAIL  exact-label    session-lifetimes      1.9s rounds=1 tools=search_documents  fact ok; not cited (ARCHITECTURE.md); page missing (want ARCHITECTURE.md p. 3)
+FAIL  exact-label    oidc-issuer            2.6s rounds=2 tools=search_documents,search_documents  fact ok; not cited (DEPLOYMENT.md); page missing (want DEPLOYMENT.md p. 2)
+FAIL  named-doc      user-guide-pins        2.9s rounds=1 tools=search_documents  fact missing (each message|every message); not cited (USER_GUIDE.md); cited the wrong document (CHAT_WITH_PDF.md, README.md)
+FAIL  named-doc      deployment-uploads     3.9s rounds=3 tools=search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md)
+FAIL  balance        next-work              1.7s rounds=1 tools=search_documents  fact ok; not cited (DOCS_INDEX.md)
+PASS  balance        changelog-unreleased   1.5s rounds=1 tools=search_documents  fact ok; documents ok
+FAIL  gap-general    rhel-packages          5.8s rounds=4 tools=search_documents,search_documents,read_document_pages,read_document_pages  fact ok; didn't say the documents don't cover it; no offer
+FAIL  live           ollama-release         3.2s rounds=2 tools=web_search,web_search  no offer; 2 web calls
+-- run 3
+FAIL  overview       features               5.3s rounds=3 tools=search_documents,read_document_pages,read_document_pages  6/6 terms (need 4); 0 documents cited (need 3)
+FAIL  procedure      deploy-and-test        6.3s rounds=3 tools=search_documents,read_document_pages,read_document_pages,read_document_pages,read_document_pages,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md, TESTING.md)
+FAIL  code           start-command          1.5s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           quickstart-command     2.1s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           test-command           2.2s rounds=1 tools=search_documents  fact ok; not cited (TESTING.md); page missing (want TESTING.md p. 1)
+PASS  exact-label    session-lifetimes      1.8s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+FAIL  exact-label    oidc-issuer            2.7s rounds=2 tools=search_documents,search_documents  fact ok; not cited (DEPLOYMENT.md); page missing (want DEPLOYMENT.md p. 2)
+FAIL  named-doc      user-guide-pins        2.5s rounds=1 tools=search_documents  fact missing (each message|every message); not cited (USER_GUIDE.md)
+FAIL  named-doc      deployment-uploads     4.0s rounds=3 tools=search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md)
+FAIL  balance        next-work              2.0s rounds=1 tools=search_documents  fact ok; not cited (DOCS_INDEX.md)
+PASS  balance        changelog-unreleased   1.5s rounds=1 tools=search_documents  fact ok; documents ok
+FAIL  gap-general    rhel-packages          3.8s rounds=3 tools=search_documents,read_document_pages,read_document_pages  fact ok; didn't say the documents don't cover it; no offer
+FAIL  live           ollama-release         3.4s rounds=2 tools=web_search,web_search  no offer; 2 web calls
+tally: overview 0/3, procedure 1/3, code 0/9, exact-label 2/6, named-doc 0/6, balance 3/6, gap-general 0/3, live 0/3
+right-document citations 6/33
+web calls 6
+6/39 passed
+```
+
+### What changed against the baseline
+
+Indexing code blocks fixed the findability half of F4: the model now quotes the real commands from
+the code chunks instead of guessing from nearby prose, so `quickstart-command` and `test-command`
+went from "fact missing" to "fact ok" on every run. The pass count didn't move because those cases,
+and most of the others, are decided by the citation form (spec 5.7, a later layer). Per-kind tallies
+moved both ways against the baseline's three runs: `procedure` 1/3 (was 0/3), `exact-label` 2/6
+(was 0/6), `balance` 3/6 (was 6/6; `next-work` now fails 3/3 on "not cited (DOCS_INDEX.md)" where it
+passed 3/3 before). The baseline section shows the same questions flipping on the model's citation
+form alone, so I read these as noise rather than an effect of this layer, but I did not inspect the
+`next-work` answers or search results to rule out a ranking change from the new code chunks.
+`user-guide-pins` still fails on search ranking (the long README and CHAT_WITH_PDF outrank
+USER_GUIDE), which the balance layer addresses.
