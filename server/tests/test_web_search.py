@@ -269,11 +269,17 @@ def test_the_summary_machinery_is_gone():
 
 
 def _no_fetch_no_model(monkeypatch):
-    """Anything that fetches a page or calls a model fails the test."""
+    """Anything that fetches a page or calls a model fails the test. Patched where a call would land, whichever
+    way the service reaches it: the HTTP client every page fetch uses; the router, both as a module attribute
+    (an import made at call time) and as a name the service imported at the top (the old summary code did, so
+    it is patched here if it is there again); and the router's two ways to a model."""
     from server.llm import router as llm_router
 
     async def no_fetch(*a, **k):
         raise AssertionError("web_search must not fetch a page")
+
+    def no_client():
+        raise AssertionError("web_search must not use the HTTP client for a page")
 
     def no_model(*a, **k):
         raise AssertionError("web_search must not call a model")
@@ -281,7 +287,11 @@ def _no_fetch_no_model(monkeypatch):
     monkeypatch.setattr(ws, "fetch_page_text", no_fetch)
     monkeypatch.setattr(ws, "_safe_get", no_fetch)
     monkeypatch.setattr(ws, "_fetch_capped", no_fetch)
+    monkeypatch.setattr(ws, "_get_client", no_client)
     monkeypatch.setattr(llm_router, "get_router", no_model)
+    monkeypatch.setattr(ws, "get_router", no_model, raising=False)
+    monkeypatch.setattr(llm_router.Router, "complete", no_model)
+    monkeypatch.setattr(llm_router.Router, "stream_chat", no_model)
 
 
 async def test_web_search_makes_no_page_fetch_and_no_model_call(monkeypatch):
@@ -328,57 +338,103 @@ async def test_web_search_clamps_the_count(monkeypatch):
 
 
 # ---- page_passages: the part of a page worth reading ----
+#
+# trafilatura.extract puts one paragraph, heading or list item per line, separated by a single "\n" and never a
+# blank line, so these pages do too.
 
-def _para(i: int, words: str = "") -> str:
-    return f"Section {i} of the manual. {words} " + "Plain filler sentence about nothing in particular. " * 12
+def _line(head: str, size: int = 600) -> str:
+    """One line of exactly `size` characters that starts with `head`. Two never fit one passage (the packing
+    limit is 1,000), so each is a passage of its own."""
+    return (head + " " + "filler " * 200)[:size - 1] + "."
+
+
+def _para(i: int) -> str:
+    return f"Section {i} of the manual. " + "Plain filler sentence about nothing in particular. " * 12
 
 
 def test_page_passages_find_text_past_six_thousand_characters():
     """The old fetch kept the first 6,000 characters, so an answer on page two of a long article was never
     seen. The passages are chosen from the whole page."""
     answer = "To change the listening port, edit server.toml and set port = 8080 under [network]."
-    page = "\n\n".join([_para(i) for i in range(30)] + [answer] + [_para(i) for i in range(30, 40)])
+    page = "\n".join([_para(i) for i in range(30)] + [answer] + [_para(i) for i in range(30, 40)])
     assert page.index(answer) > 6000
     picked = ws.page_passages(page, "change listening port", "the config setting for the port", 3000)
-    assert answer in picked
+    assert sum(answer in p for p in picked) == 1             # whole, in one passage
     assert sum(len(p) for p in picked) + 2 * (len(picked) - 1) <= 3000
 
 
 def test_page_passages_come_back_in_page_order():
-    page = "\n\n".join(["intro words", "alpha beta gamma", "nothing here", "beta gamma delta epsilon"])
-    picked = ws.page_passages(page, "", "alpha beta gamma delta epsilon", 10_000)
-    assert picked == ["intro words", "alpha beta gamma", "nothing here", "beta gamma delta epsilon"]
-    only_best = ws.page_passages(page, "", "alpha beta gamma delta epsilon", 45)
-    assert only_best == ["alpha beta gamma", "beta gamma delta epsilon"]    # best two, in page order
+    lines = [_line("intro words"), _line("alpha beta gamma"), _line("nothing here"), _line("beta gamma delta epsilon")]
+    page = "\n".join(lines)
+    need = "alpha beta gamma delta epsilon"
+    assert ws.page_passages(page, "", need, 10_000) == lines
+    assert ws.page_passages(page, "", need, 1300) == [lines[1], lines[3]]      # the best two, in page order
 
 
 def test_page_passages_score_distinct_casefolded_words_of_need_and_query():
-    page = "\n\n".join(["Port PORT port", "install the Port", "unrelated"])
+    lines = [_line("Port PORT port"), _line("install the Port"), _line("unrelated")]
     # Room for one. "port" three times counts once (1 point); "install" + "port" count twice, and the query's
     # words are added to the need's.
-    assert ws.page_passages(page, "install", "port", 16) == ["install the Port"]
+    assert ws.page_passages("\n".join(lines), "install", "port", 650) == [lines[1]]
 
 
 def test_page_passages_break_ties_by_earlier_position():
-    page = "\n\n".join(["one needle here", "two needle here", "six needle here"])
-    assert ws.page_passages(page, "needle", "", 15) == ["one needle here"]
-    assert ws.page_passages(page, "needle", "", 32) == ["one needle here", "two needle here"]
-    assert len(ws.page_passages(page, "needle", "", 49)) == 3     # 15 + 2 + 15 + 2 + 15
+    lines = [_line("one needle here"), _line("two needle here"), _line("six needle here")]
+    page = "\n".join(lines)
+    assert ws.page_passages(page, "needle", "", 600) == [lines[0]]
+    assert ws.page_passages(page, "needle", "", 1202) == lines[:2]
+    assert ws.page_passages(page, "needle", "", 1804) == lines
 
 
 def test_page_passages_take_the_top_of_the_page_when_nothing_matches():
-    page = "\n\n".join(["first block", "second block", "third block", "fourth block"])
-    assert ws.page_passages(page, "zzz", "yyy", 27) == ["first block", "second block"]
-    assert ws.page_passages(page, "", "", 10_000) == ["first block", "second block", "third block", "fourth block"]
+    lines = [_line("first block"), _line("second block"), _line("third block"), _line("fourth block")]
+    page = "\n".join(lines)
+    assert ws.page_passages(page, "zzz", "yyy", 1300) == lines[:2]
+    assert ws.page_passages(page, "", "", 10_000) == lines
+
+
+def test_the_top_of_the_page_fallback_stops_at_the_first_passage_that_does_not_fit():
+    """No gaps: a short passage further down must not jump the one that didn't fit. (When passages do match,
+    a smaller one may fill the room a bigger one left: that is ranking, not reading from the top.)"""
+    big, wide, short = _line("first", 600), _line("second", 900), _line("third", 100)
+    page = "\n".join([big, wide, short])
+    assert ws.page_passages(page, "zzz", "yyy", 1300) == [big]
+    a, b, c = _line("alpha beta", 600), _line("alpha", 900), _line("beta", 100)
+    assert ws.page_passages("\n".join([a, b, c]), "", "alpha beta", 1300) == [a, c]
 
 
 def test_page_passages_count_the_joins_in_the_budget():
-    page = "\n\n".join(["aaaa needle", "bbbb needle"])    # 11 + 2 + 11 = 24
-    assert len(ws.page_passages(page, "needle", "", 24)) == 2
-    assert len(ws.page_passages(page, "needle", "", 23)) == 1
+    page = "\n".join([_line("aaaa needle"), _line("bbbb needle")])    # 600 + 2 + 600
+    assert len(ws.page_passages(page, "needle", "", 1202)) == 2
+    assert len(ws.page_passages(page, "needle", "", 1201)) == 1
 
 
-def test_page_passages_split_a_long_paragraph_at_sentence_ends():
+def test_page_passages_pack_adjacent_lines_up_to_about_a_thousand_characters():
+    lines = [f"{i:02d} " + "x" * 96 for i in range(30)]               # 99 characters each
+    page = "\n".join(lines)
+    picked = ws.page_passages(page, "", "", 100_000)
+    assert [p.count("\n") + 1 for p in picked] == [10, 10, 10]         # 10 * 99 + 9 = 999
+    assert all(len(p) <= 1000 for p in picked)
+    assert "\n".join(picked) == page                                   # nothing lost, nothing repeated, in order
+
+
+def test_page_passages_ignore_blank_lines_and_surrounding_space():
+    assert ws.page_passages("  one \n\n   \n two\r\n\n three  ", "", "", 1000) == ["one\ntwo\nthree"]
+
+
+def test_a_passage_never_starts_or_ends_mid_line_unless_the_line_is_over_a_thousand():
+    short = [f"Row {i}: " + "data " * (i % 40) + "end" for i in range(90)]      # 8 to 203 characters
+    long_line = "A long statement about the row. " * 80                       # 2,560 characters, in sentences
+    lines = short[:45] + [long_line.strip()] + short[45:]
+    picked = ws.page_passages("\n".join(lines), "", "", 1_000_000)
+    seen = [part for p in picked for part in p.split("\n")]
+    cut = [part for part in seen if part not in short]
+    assert set(short) <= set(seen)                                           # every short line, whole
+    assert cut and all(part in long_line and len(part) <= 1000 for part in cut)
+    assert " ".join(cut) == long_line.strip()                                # the long line, cut at sentence ends
+
+
+def test_page_passages_split_a_long_line_at_sentence_ends():
     sentences = [f"Sentence number {i:02d} says something of about this length. " for i in range(40)]
     page = "".join(sentences).strip()
     assert len(page) > 2000 and "\n" not in page
@@ -389,7 +445,7 @@ def test_page_passages_split_a_long_paragraph_at_sentence_ends():
     assert " ".join(picked) == page                                    # nothing lost, nothing repeated
 
 
-def test_page_passages_hard_split_a_sentence_over_a_thousand_characters():
+def test_page_passages_split_a_long_line_with_no_sentence_end_at_spaces_then_anywhere():
     page = "word " * 600                                              # 3,000 characters, no sentence end
     picked = ws.page_passages(page, "", "word", 100_000)
     assert len(picked) >= 3 and all(0 < len(p) <= 1000 for p in picked)
@@ -406,3 +462,35 @@ def test_page_passages_never_return_a_passage_longer_than_the_budget():
 def test_page_passages_of_no_text_are_none():
     assert ws.page_passages("", "q", "n", 1000) == []
     assert ws.page_passages(" \n\n \n ", "q", "n", 1000) == []
+
+
+async def test_a_list_page_as_trafilatura_gives_it_keeps_the_answers_row_whole(monkeypatch, resolve_pub_test):
+    """The page shape that matters: trafilatura output has no blank lines, and a 120-row list is one run of
+    lines. The row with the answer (97) must come back whole, inside one passage, so a quote of it verifies."""
+    rows = "".join(f"<li>Item {i}: key{i} is set to value{i} (default: unset)</li>" for i in range(120))
+    html = ("<html><head><title>Guide</title></head><body><nav>home about</nav><article>"
+            "<h1>Configuration guide</h1>"
+            "<p>This guide explains every setting of the product in detail. Read it before changing anything.</p>"
+            f"<h2>Settings</h2><ul>{rows}</ul>"
+            "<p>That is all there is to know about the settings, thank you for reading.</p></article></body></html>")
+
+    async def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/html; charset=utf-8"}, content=html.encode())
+
+    client = _mock_transport_client(handler)
+    monkeypatch.setattr(ws, "_client", client)
+    try:
+        text = await ws.fetch_page_text("http://pub.test/guide")
+    finally:
+        await client.aclose()
+    assert text is not None and "\n\n" not in text and text.count("\n") > 100     # the real shape
+    lines = text.split("\n")
+    row = next(line for line in lines if "key97 " in line)
+    assert len(text) > 6000 and text.index(row) > 4000
+
+    picked = ws.page_passages(text, "config", "the value that key97 is set to", 3000)
+    holding = [p for p in picked if row in p]
+    assert len(holding) == 1                                   # the row, whole, in one passage
+    assert all(part in lines for p in picked for part in p.split("\n"))       # no row cut anywhere
+    assert sum(len(p) for p in picked) + 2 * (len(picked) - 1) <= 3000
+    assert picked == sorted(picked, key=text.index)             # page order

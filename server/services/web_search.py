@@ -188,10 +188,12 @@ async def fetch_page_text(url: str) -> str | None:
 
 
 # ---- the part of a page worth reading --------------------------------------------------------------------
+#
+# trafilatura.extract puts each paragraph, heading and list item on a line of its own, separated by a single
+# "\n" and never a blank line, so a page is a run of lines: a 120-item list is 120 lines, not one paragraph.
 
 PASSAGE_CHARS = 1000        # about: the size a page is cut into before the best are picked
 PASSAGE_JOIN = "\n\n"       # what passages are joined with, and so what each join costs in a budget
-_PARAGRAPHS = re.compile(r"\n\s*\n")
 # A zero-width cut after a sentence end that whitespace follows, or after a CJK full stop (no space is written).
 _SENTENCE_ENDS = re.compile(r"(?<=[.!?])(?=\s)|(?<=[\u3002\uff01\uff1f])")
 _WORDS = re.compile(r"\w+")
@@ -209,31 +211,49 @@ def _pieces(text: str, limit: int) -> list[str]:
     return [p for p in out if p]
 
 
-def _split(text: str, limit: int) -> list[str]:
-    """Paragraphs (blank-line breaks); a paragraph over `limit` is packed from its sentences, each passage as
-    many whole sentences as fit; a sentence over `limit` is cut by `_pieces`."""
+def _cut_line(line: str, limit: int) -> list[str]:
+    """A line over `limit` characters in passages of at most that: as many whole sentences as fit; a sentence
+    over `limit` is cut by `_pieces`."""
     out: list[str] = []
-    for para in _PARAGRAPHS.split(text):
-        para = para.strip()
-        if len(para) <= limit:
-            if para:
-                out.append(para)
+    current = ""
+    for sentence in _SENTENCE_ENDS.split(line):
+        if len(sentence.strip()) > limit:
+            if current.strip():
+                out.append(current.strip())
+            current = ""
+            out.extend(_pieces(sentence.strip(), limit))
+        elif len(current) + len(sentence) > limit:
+            if current.strip():
+                out.append(current.strip())
+            current = sentence
+        else:
+            current += sentence
+    if current.strip():
+        out.append(current.strip())
+    return out
+
+
+def _split(text: str, limit: int) -> list[str]:
+    """The text's lines (blank ones dropped) packed in order into passages of at most `limit` characters, joined
+    by "\n". A line that fits is never cut, so a quote of one row of a list or table stays in one passage; only
+    a line over `limit` is cut (`_cut_line`), and it stands alone."""
+    out: list[str] = []
+    current = ""
+    for line in (ln.strip() for ln in text.split("\n")):
+        if not line:
             continue
-        current = ""
-        for sentence in _SENTENCE_ENDS.split(para):
-            if len(sentence.strip()) > limit:
-                if current.strip():
-                    out.append(current.strip())
+        if len(line) > limit:
+            if current:
+                out.append(current)
                 current = ""
-                out.extend(_pieces(sentence.strip(), limit))
-            elif len(current) + len(sentence) > limit:
-                if current.strip():
-                    out.append(current.strip())
-                current = sentence
-            else:
-                current += sentence
-        if current.strip():
-            out.append(current.strip())
+            out.extend(_cut_line(line, limit))
+        elif current and len(current) + 1 + len(line) > limit:
+            out.append(current)
+            current = line
+        else:
+            current = f"{current}\n{line}" if current else line
+    if current:
+        out.append(current)
     return out
 
 
@@ -241,12 +261,14 @@ def page_passages(text: str, query: str, need: str, max_chars: int) -> list[str]
     """The passages of a page that best serve `need` (and `query`, the search that found it), in page order, in
     at most `max_chars` characters counting the joins between them.
 
-    The page is cut into passages of about PASSAGE_CHARS (paragraphs, then sentences, then anywhere), each is
-    scored by how many distinct words (`\\w+`, case-folded) it shares with need + query, and the best are kept
-    while they fit, ties going to the earlier one. A page that shares no word with them is taken from the top."""
+    The page is cut into passages of about PASSAGE_CHARS (whole lines, `_split`), each is scored by how many
+    distinct words (`\\w+`, case-folded) it shares with need + query, and the best are kept while they fit, ties
+    going to the earlier one (a smaller passage may fill what a bigger one left). A page that shares no word with
+    them is read from the top, passage after passage, up to the first one that doesn't fit: no gaps."""
     passages = _split(text, max(1, min(PASSAGE_CHARS, max_chars)))
     wanted = set(_WORDS.findall(f"{need} {query}".casefold()))
     scores = [len(wanted & set(_WORDS.findall(p.casefold()))) for p in passages]
+    from_the_top = not any(scores)
     chosen: list[int] = []
     used = 0
     for i in sorted(range(len(passages)), key=lambda i: (-scores[i], i)):
@@ -254,6 +276,8 @@ def page_passages(text: str, query: str, need: str, max_chars: int) -> list[str]
         if used + cost <= max_chars:
             chosen.append(i)
             used += cost
+        elif from_the_top:
+            break
     return [passages[i] for i in sorted(chosen)]
 
 
