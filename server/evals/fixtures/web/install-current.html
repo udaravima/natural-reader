@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Installing Marrowdeck 4.18</title>
+</head>
+<body>
+<header><nav><a href="/">Home</a> <a href="/docs">Docs</a> <a href="/blog">Blog</a></nav></header>
+<main>
+<article>
+<h1>Installing Marrowdeck 4.18</h1>
+<h2>What this guide covers</h2>
+<p>Marrowdeck is a self-hosted status board for small teams. It collects a few numbers from the services a team runs, draws them as tiles on a shared screen, and keeps a short history so a tile can show whether a number is rising or falling. This guide covers installing the server of the 4.18 line on a Linux machine, from choosing the machine to the first start.</p>
+<p>The guide is written for the current release line. Earlier lines are archived and are not described here. If a page you found mentions a different line in its title, it describes that line, and its instructions may no longer apply to the release you are installing.</p>
+<p>Read the sections in order the first time. Each one ends with a short check you can run before moving on, so a mistake is found in the section that caused it and not three sections later. Nothing in the early sections changes the machine.</p>
+<h2>How a Marrowdeck site is laid out</h2>
+<p>A site has one server and any number of collectors. The server stores tiles and their history, serves the board to browsers and accepts readings from collectors. A collector is a small program that runs next to the thing it measures and posts a reading to the server every few seconds. Collectors are optional on a first day: the server ships with a demo collector that posts made-up numbers.</p>
+<p>The server keeps its history in a single embedded store under its data directory. There is no separate database to install. The store is compacted once a night, and a compaction never blocks a reading: readings that arrive meanwhile wait in a small queue and are written as soon as the compaction ends. A busy site rarely has more than a few hundred readings waiting.</p>
+<ul><li><strong>Server</strong>: one process, one data directory, one configuration file.</li><li><strong>Collectors</strong>: one per measured service, each with its own access key.</li><li><strong>Board</strong>: the page browsers open; it needs no plug-in and works on a wall display.</li><li><strong>Tiles</strong>: a name, a number, a unit and an optional threshold that turns the tile amber or red.</li></ul>
+<h2>Planning capacity</h2>
+<p>A server with two CPU cores and two gigabytes of memory serves a board of a hundred tiles to a dozen browsers without strain. Memory use grows with the number of tiles that are visible at once, not with the number kept in history, because the history is read from disk when a tile is opened. Disk use grows by about forty kilobytes per tile per day at the default reading interval.</p>
+<p>Plan the data directory on storage that survives a reboot and is backed up. The store can be copied while the server runs, because a copy taken mid-write is repaired the next time the server starts, but a copy taken after a clean stop is simpler to restore and is the one to keep for the long term. Do not place the data directory on a network share: the store relies on the file system's locking.</p>
+<p>If the board will be shown on a wall display, give the display its own browser profile and let it reload itself. The board reconnects after a network interruption on its own, and a display that has been disconnected for more than a day asks for a fresh sign-in, which a wall display cannot give.</p>
+<h2>The configuration file</h2>
+<p>The server reads one configuration file at start. The file is plain text with sections in square brackets and one setting per line. Every setting has a default, so an empty file is a valid file. The settings most sites change are the listen address, the data directory and the address the board is reached at, which is used to build links in notifications.</p>
+<pre><code>[server]
+listen = 0.0.0.0:8420
+data_dir = /var/lib/marrowdeck
+public_url = https://board.example.com
+
+[history]
+keep_days = 90
+compact_at = 03:30
+</code></pre>
+<p>A change to the file takes effect at the next start. The server checks the file when it starts and refuses to run if a setting is misspelled, naming the line, so a typo is found at once and not months later. The schema of the file is itself numbered, currently schema 3, and a file written for an older schema is converted when the server first reads it; the converted copy is kept beside the original with the suffix .old.</p>
+<h2>Upgrading from an earlier line</h2>
+<p>Sites running an earlier line upgrade in place. Stop the server, copy the data directory, install the new packages over the old ones and start the server again. The first start converts the store, which takes about a minute per gigabyte of history, and the board is unavailable meanwhile. A converted store cannot be read by an earlier line, which is the reason for the copy.</p>
+<p>Collectors need no change when the server is upgraded within the same major line. When the server is upgraded to a new major line, collectors keep working but stop receiving new features until they are upgraded in their turn. Upgrade the collectors one at a time, starting with the least important.</p>
+<h2>Access keys and sign-in</h2>
+<p>Every collector posts its readings with an access key, and every person signs in with an account. Keys and accounts are separate on purpose: a key can only post readings and read the tiles it posts to, so a key that leaks from a measured machine cannot be used to open the board or to change a tile. Create one key per collector, name it after the machine, and revoke it when the machine is retired.</p>
+<p>Accounts have one of three roles. A viewer sees the board. An editor also adds, renames and removes tiles and sets their thresholds. An owner also manages accounts and keys. The account created during installation is an owner. Create a second owner early, so that losing one password does not lock the site.</p>
+<h2>Notifications</h2>
+<p>A tile whose threshold is crossed can send a notification to a chat room, an e-mail address or a web hook. Notifications are sent once when a tile turns amber, once when it turns red and once when it recovers, never repeatedly while it stays in one state. A tile that flaps between two states within five minutes is reported once, with the number of changes.</p>
+<p>Notification settings live in the same configuration file as everything else, one section per destination. A destination that cannot be reached is retried for an hour with growing pauses and is then reported on the board itself, on a tile of its own, so a broken web hook is not mistaken for a quiet night.</p>
+<h2>Backups</h2>
+<p>Back up the data directory and the configuration file. Nothing else on the machine matters to the site. The simplest backup is a nightly copy of the data directory taken after the nightly compaction, which is why the compaction time in the configuration above is early in the morning. Keep at least one copy off the machine.</p>
+<p>To restore, install the same line on a new machine, stop the server, put the copy in the data directory and start the server. The first start checks the store and repairs anything left half-written. A restore onto a newer line is supported; a restore onto an older line is not.</p>
+<h2>Checking the machine first</h2>
+<ul><li>The machine has a fixed address or a name that resolves to it from the browsers that will show the board.</li><li>The listen port, 8420 by default, is open to those browsers and closed to everyone else.</li><li>The clock is kept by a time service: tiles are plotted by the time the server receives a reading.</li><li>At least five gigabytes are free where the data directory will be.</li></ul>
+<p>If any of these is not true, fix it before installing. A board on a machine whose clock drifts shows history that looks wrong, and the cause is hard to see afterwards.</p>
+<h2>Installing on RHEL-family systems</h2>
+<p>This section applies to Rocky Linux, AlmaLinux and Red Hat Enterprise Linux, release 9. Add the Marrowdeck repository, then install the server package <code>marrowdeck-srv</code>. The server needs version 4.18.3 or newer of <code>marrowdeck-srv</code>: earlier builds of the 4.18 line do not support the compaction schedule used in the configuration above, and the server stops at its first start with a message about an unknown setting.</p>
+<pre><code>sudo dnf config-manager --add-repo https://pkg.marrowdeck.example/rpm/marrowdeck.repo
+sudo dnf install marrowdeck-srv
+sudo systemctl enable --now marrowdeck</code></pre>
+<p>The package creates a marrowdeck user and a data directory at /var/lib/marrowdeck, and installs the unit file. SELinux runs in enforcing mode on these systems; the package ships its own policy module, so no change to SELinux is needed.</p>
+<h2>Installing on Debian-family systems</h2>
+<p>On Debian and Ubuntu the server package is named <code>marrowdeck-server</code>, and it needs version 4.18.1 or newer. Add the repository and install it with apt. The unit file and the data directory are the same as on the RHEL family.</p>
+<h2>First start</h2>
+<p>Open the board at the public address and sign in with the account the package prints at the end of its installation. The demo collector starts at once and the first tiles appear within a few seconds. Replace the demo collector with your own as soon as the board is up.</p>
+</article>
+</main>
+<footer><p>Marrowdeck is a made-up product used to test an assistant's web reading. Copyright the Marrowdeck authors.</p></footer>
+</body>
+</html>

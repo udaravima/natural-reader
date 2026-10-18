@@ -13,6 +13,7 @@ the local machine: `python scripts/eval_doc_qa.py --model ollama:llama3.2:3b`.
 from __future__ import annotations
 
 import hashlib
+import os
 import random
 import re
 from dataclasses import dataclass, field
@@ -365,6 +366,9 @@ async def run_eval(model: str, *, show_answers: bool = False, think: str = "off"
     from ..llm.router import UnknownModel, get_router, start_router, stop_router
     from ..services import doc_pipeline, doc_storage, embeddings, model_router, web_search
 
+    # This evaluation measures the web tools: its "live" question is answered by a search the model runs. The
+    # app asks first by default (C2.1 Task 13), which would turn that into an offer. An explicit setting wins.
+    os.environ.setdefault("CHAT_WEB_SEARCH", "auto")
     fixture = build_fixture()
     if not await init_db():
         raise EvalSetupError("The database isn't reachable (DATABASE_URL).")

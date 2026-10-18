@@ -448,6 +448,7 @@ async def test_the_map_reads_outlines_only_for_indexed_documents(db_conn, monkey
 async def test_text_copied_from_the_map_cannot_be_sent_to_a_web_search(db_conn, monkeypatch):
     """The map's openings and headings are document text the model has: web_search refuses to send them out."""
     monkeypatch.setattr(web_search_service, "SEARXNG_URL", "http://searx.invalid")
+    monkeypatch.setenv("CHAT_WEB_SEARCH", "auto")      # the model searches itself; "ask" would offer instead
     query = "Outline: Heading number 0 of Alpha p1 · Heading number 1 of Alpha p1"
     router = FakeRouter(steps=[[ToolCallReady(ToolCall("c1", "web_search", {"query": query})),
                                 Usage(5, 5), Finish("tool_calls")]])

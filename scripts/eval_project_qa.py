@@ -14,6 +14,8 @@ app's real one; --storage-dir PATH names another folder instead, which is kept.
     DATABASE_URL=postgresql://u:p@127.0.0.1:5434/natural_reader_eval \\
         python scripts/eval_project_qa.py --model ollama:gemma4:31b-cloud --variant 9
 
+--web-fixture adds the web-read case and serves the web from files (server/evals/fixtures/web), in this process.
+
 Exit status: 0 when every case passed, 1 when the model failed a case, 2 when the
 harness couldn't run (database, embedding model, provider). See server/evals/project_qa.py.
 """
@@ -87,6 +89,9 @@ def main() -> int:
     parser.add_argument("--think", choices=("off", "on"), default="off",
                         help="the model's thinking (default off, as the chat sends it unless a user turns it on)")
     parser.add_argument("--show-answers", action="store_true", help="print each answer as well as its score")
+    parser.add_argument("--web-fixture", action="store_true",
+                        help="serve web search and page fetches from server/evals/fixtures/web (no network) and "
+                             "also ask the web-read case: the offer, the user's yes, the answer from a long page")
     parser.add_argument("--storage-dir", metavar="PATH",
                         help="keep the documents' files in PATH (default: a temporary folder, removed afterwards)")
     args = parser.parse_args()
@@ -101,7 +106,7 @@ def main() -> int:
     try:
         with eval_storage(args.storage_dir):
             runs = asyncio.run(run_eval(args.model, variant=args.variant, think=args.think, repeat=args.repeat,
-                                        show_answers=args.show_answers))
+                                        show_answers=args.show_answers, web_fixture=args.web_fixture))
     except EvalSetupError as e:
         print(f"Could not run the eval: {e}", file=sys.stderr)
         return 2

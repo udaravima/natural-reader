@@ -48,6 +48,11 @@ class ToolContext:
     # that found it, and `read` once read_web_pages returned facts from it (Task 15 builds the web sources
     # from that). Kept apart from seen_text and evidence, which are document text only.
     web_results: dict[int, dict] = field(default_factory=dict, hash=False, compare=False)
+    # How web search asks (services/chat_options.py): "ask" (the model may only offer a search), "auto" (the web
+    # tools are offered) or "off" (none). `web_approved`: the user said yes to a search this turn (context.web).
+    # The default is the safe one: nothing leaves the server until a person approves it.
+    web_mode: str = "ask"
+    web_approved: bool = False
 
 
 class Tool(Protocol):
@@ -77,10 +82,11 @@ class ToolRun:
         return "error" not in self.result
 
 
-from . import document_outline, extract_from_documents, read_document_pages, read_web_pages, search_documents, web_search  # noqa: E402 — after the shared types, by convention
+from . import (document_outline, extract_from_documents, offer_web_search, read_document_pages,  # noqa: E402 — after the shared types, by convention
+               read_web_pages, search_documents, web_search)
 
 REGISTRY: list[Tool] = [search_documents.TOOL, read_document_pages.TOOL, extract_from_documents.TOOL,
-                        document_outline.TOOL, web_search.TOOL, read_web_pages.TOOL]
+                        document_outline.TOOL, web_search.TOOL, read_web_pages.TOOL, offer_web_search.TOOL]
 
 
 def available_tools(ctx: ToolContext) -> list[Tool]:

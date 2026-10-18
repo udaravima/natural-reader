@@ -17,7 +17,7 @@ from server.chat.tools import web_search as ws_tool
 from server.llm.types import Finish, ToolCall, ToolCallReady, Usage
 from server.services.doc_search import ReadableDoc
 from server.tests.chat_harness import FakeRouter, member, reply
-from server.tests.test_chat_orchestrator import _msg, _run, conn, open_doc  # noqa: F401 — fixtures
+from server.tests.test_chat_orchestrator import _msg, _run, conn, open_doc, web_auto  # noqa: F401 — fixtures
 
 DOC = ReadableDoc("d" * 64, "Thesis.pdf", "indexed", 40)
 CORPUS = {   # query -> the passages a search for it finds
@@ -188,7 +188,7 @@ async def test_web_search_refuses_document_text_and_allows_the_topic(query, refu
         assert "error" not in result
 
 
-async def test_every_kind_of_document_text_is_guarded(conn, open_doc, monkeypatch):
+async def test_every_kind_of_document_text_is_guarded(conn, open_doc, monkeypatch, web_auto):
     """The prefetch block, pins and passages from an earlier round are all
     document text the model has; none may reach the web."""
     pinned = "Pinned: the quarterly revenue of the northern division fell by twelve percent overall."
@@ -222,7 +222,7 @@ async def test_every_kind_of_document_text_is_guarded(conn, open_doc, monkeypatc
 
 
 async def test_passages_from_an_earlier_round_are_guarded(conn, corpus):
-    ctx = ToolContext("u", DOC)
+    ctx = ToolContext("u", DOC, web_mode="auto")
     tools = TurnTools(ctx)
     offered = available_tools(ctx)
     await tools.run(ToolCall("c1", "search_documents", {"query": "MIMIC-IV collected by"}), offered)
@@ -251,7 +251,7 @@ async def test_the_guard_works_for_scripts_written_without_spaces(query, refused
     assert ("error" in result) == refused
 
 
-async def test_quotes_in_the_models_earlier_answers_are_guarded(conn, open_doc, monkeypatch):
+async def test_quotes_in_the_models_earlier_answers_are_guarded(conn, open_doc, monkeypatch, web_auto):
     """Review I2: the model's own earlier answers in this chat often quote the
     document; their text is document text too. The user's own words are not."""
     from server.chat.store import StoredMessage
@@ -284,7 +284,7 @@ async def test_a_result_too_big_for_the_budget_is_not_run_again(conn, corpus, mo
     assert _tool_results(router.calls[2]) == [{"message": TurnTools.BUDGET_USED}] * 2
 
 
-async def test_a_call_that_failed_can_be_retried(conn, corpus, monkeypatch):
+async def test_a_call_that_failed_can_be_retried(conn, corpus, monkeypatch, web_auto):
     """Review M3: "Already searched: see the results above" is wrong when the
     result above is an error."""
     calls = []

@@ -28,7 +28,7 @@ from ..llm.router import UnknownModel
 from ..llm.types import (Attachment, CallSettings, Capabilities, FeatureDropped, Finish, Message,
                          ProviderError, ProviderTimeout, ProviderUnavailable, ReasoningDelta,
                          TextDelta, ToolCall, ToolCallReady, Usage)
-from ..services import assistant_profile, inference_budget
+from ..services import assistant_profile, chat_options, inference_budget
 from ..services import doc_pipeline
 from ..services.doc_outlines import Outline, load_outlines
 from ..services.doc_search import ReadableDoc, readable_doc
@@ -39,8 +39,9 @@ from .project_map import ProjectMap, build_map
 from .project_scope import ProjectScope, load_project_scope
 from .sources import answer_sources
 from .store import TurnClaim, title_from_prompt
-from .tools import ToolContext, TurnTools, available_tools, result_text
+from .tools import ToolContext, ToolRun, TurnTools, available_tools, result_text
 from .tools.scope import scope_docs
+from .web_consent import APP_WEB_CALL_ID, app_web_exchange, app_web_search, web_offer
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,8 @@ class TurnRequest:
     # A project chat (C2.1 spec §5.1): access checked by the route this turn.
     # The document tools then read the project's documents, not the open one.
     project_id: str | None = None
+    # The user said yes to this web search (context.web, C2.1 spec 5.8): the app runs it before the first step.
+    web_query: str | None = None
 
 
 @dataclass
@@ -128,6 +131,9 @@ class _State:
     pending_output: str = ""
     pending_usage: Usage | None = None
     step_recorded: bool = True
+
+    def add_note(self, note: dict[str, Any]) -> None:
+        self.doc_context = {"notes": [*((self.doc_context or {}).get("notes") or []), note]}
 
     def add(self, usage: Usage, finish: str) -> None:
         self.prompt_tokens += usage.prompt_tokens
@@ -222,6 +228,11 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         seq += 1
         return {"type": kind, "seq": seq, **fields}
 
+    def tool_result(run: ToolRun) -> dict[str, Any]:
+        if run.ok:
+            return ev("tool-output-available", toolCallId=run.call_id, output=run.summary["result_summary"])
+        return ev("tool-output-error", toolCallId=run.call_id, errorText=run.result["error"])
+
     state = _State()
     started = time.monotonic()
     outcome = "error"   # complete | aborted | error
@@ -240,6 +251,11 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         # admin's edit applies from the next message, with no cache to clear.
         async with get_pool().connection() as conn:
             profile = await assistant_profile.load_profile(conn)
+        options = await _chat_options()
+        web_query = req.web_query
+        if web_query and options.web_search == "off":
+            logger.info("An approved web search was ignored: web search is off")   # never the query itself
+            web_query = None
         # Tools first: the system rules describe exactly the tools this turn
         # offers (server/chat/prompt.py), so none is ever named in vain.
         # A project chat gets a map of the project in the system message; if it had to be shortened,
@@ -250,15 +266,26 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         project_map, outlines = await _project_map(project, cfg, tools_on) if project else (None, {})
         tool_ctx = ToolContext(req.user_id, doc, cfg=cfg, project=project, question=req.text,
                                map_shortened=bool(project_map and project_map.shortened), outlines=outlines,
-                               model=req.model_id)
+                               model=req.model_id, web_mode=options.web_search, web_approved=bool(web_query))
         offered = [] if caps.tools is False else available_tools(tool_ctx)
+        app_exchange = ()
+        if web_query and tools_on and any(t.name == "web_search" for t in offered):
+            # The user's yes: search before the model's first step and hand it the result as a tool exchange.
+            yield ev("tool-input-available", toolCallId=APP_WEB_CALL_ID, toolName="web_search",
+                     input={"query": web_query}, round=0)
+            web_run = await app_web_search(tool_ctx, web_query)
+            state.tool_calls.append(web_run.summary)
+            yield tool_result(web_run)
+            app_exchange = app_web_exchange(web_run)
+        elif web_query:
+            logger.info("An approved web search was not run: no web tool is offered this turn")
         built = await build_context(TurnInput(
             user_id=req.user_id, text=req.text, attachments=req.attachments, doc=doc,
             timezone=req.timezone, pins=pins, history=history,
             window=_window(router, req, caps), now=datetime.now(timezone.utc),
             tools=tuple(offered if max_rounds > 0 else ()), tool_ctx=tool_ctx,
             profile=profile.text, scope=tuple(scope_docs(tool_ctx)),
-            project_map=project_map.text if project_map else ""), cfg)
+            project_map=project_map.text if project_map else "", app_exchange=app_exchange), cfg)
         tool_ctx.shown.update(built.shown_chunk_ids)
         # Document text the model already has: the web search guard's reference.
         tool_ctx.seen_text.extend(built.shown_texts)
@@ -399,19 +426,26 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             # The last round says so in its results: the next step offers no
             # tools, and the rules (stable for the turn) can't say that.
             last_round = rounds >= max_rounds
+            runs = []
             for call in calls:
                 yield ev("tool-input-available", toolCallId=call.id, toolName=call.name, input=call.arguments,
                          round=rounds)
                 run = await turn_tools.run(call, tools_now)
+                runs.append(run)
                 state.tool_calls.append(run.summary)
-                if run.ok:
-                    yield ev("tool-output-available", toolCallId=call.id, output=run.summary["result_summary"])
-                else:
-                    yield ev("tool-output-error", toolCallId=call.id, errorText=run.result["error"])
+                yield tool_result(run)
                 result = {**run.result, "note": LAST_ROUND_NOTE} if last_round else run.result
                 messages.append(Message("tool", result_text(result),
                                         tool_call_id=call.id, name=call.name))
+            # An offer to search the web ends the turn: the user answers it, and their yes is the next turn.
+            offer = web_offer(runs)
+            if offer:
+                state.add_note(offer)
+                yield ev("data-web-offer", query=offer["query"], reason=offer["reason"])
             await _save(claim, state)
+            if offer:
+                state.finish_reason = "stop"
+                break
         # v2.4 Task D: the pages the answer drew on, as source chips, even when
         # the model wrote no "(page N)". Pins aren't evidence here: a pin may
         # come from another document than the open one these chips open. The
@@ -423,7 +457,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             if pages:
                 note = {"kind": "sources", "docId": doc.doc_id, "docName": doc.name, "pages": pages,
                         "used": kind == "used"}
-                state.doc_context = {"notes": [*((state.doc_context or {}).get("notes") or []), note]}
+                state.add_note(note)
                 yield ev("data-sources", docId=doc.doc_id, docName=doc.name, pages=pages, used=kind == "used")
         # Spec §5.2.1: did the model still search after a prefetch hit? Lets a
         # deployer tune CHAT_PREFETCH_MIN_SCORE. DEBUG, and no user text.
@@ -625,6 +659,17 @@ async def _open_doc(req: TurnRequest) -> ReadableDoc | None:
     except Exception:  # noqa: BLE001 — no document context is a safe fallback
         logger.warning("Open-document lookup failed for %s", req.doc_id, exc_info=True)
         return None
+
+
+async def _chat_options() -> chat_options.ChatOptions:
+    """The deployment's chat options, read once per turn. A turn never fails because of them: if the row can't
+    be read, the environment's value applies, then the default."""
+    try:
+        async with get_pool().connection() as conn:
+            return await chat_options.load_chat_options(conn)
+    except Exception:  # noqa: BLE001 — see above
+        logger.warning("Chat options couldn't be read: using CHAT_WEB_SEARCH, else the default", exc_info=True)
+        return chat_options.from_env()
 
 
 async def _over_budget(user_id: str, deployment_budget: int | None) -> bool:

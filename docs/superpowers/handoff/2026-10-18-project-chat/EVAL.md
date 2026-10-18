@@ -848,3 +848,103 @@ web calls 2
   (1/3, 3/3, 1/1). The map it saw is the same as before, so this is noise around the earlier result, not an effect of the
   new order.
 - `user-guide-pins` again 1 round with `documents: [9]`; every other fact as in the earlier sets.
+
+## Layer: web
+
+- Date: 2026-10-18
+- Change (C2.1 Task 13, uncommitted at the time of the run): web search asks first. The default mode is `ask`: the model's
+  only web tool is `offer_web_search`, and a call ends the turn with an offer. The user's yes comes back as the next turn's
+  `context.web`, and the app runs that search itself before the model's first step (`web_search` and `read_web_pages` are
+  offered for that turn only). `auto` offers the web tools directly and `off` offers none. The rules text in `prompt.py` is
+  unchanged (Task 14 writes the offer sentences), so in `ask` mode the model is still told "say you can't look it up here"
+  for live questions: read the offer numbers below with that in mind.
+- Model: `ollama:gemma4:31b-cloud`, thinking off, variant 9, `--repeat 1`, the scratch database `natural_reader_eval`.
+  Command: `--variant 9 --repeat 1 --web-fixture` (plus `--show-answers`). The reader used the default `llama3.2:3b` (no
+  `READER_MODEL` or `SUMMARIZE_MODEL` is set here); the fake web served the pages in this process, no network.
+- New: `--web-fixture`. It replaces `searxng_search` and the page fetch in the eval's own process with files from
+  `server/evals/fixtures/web/` (HTML that trafilatura extracts, like a fetched page), and asks the `web-read` case too.
+  Nothing is served over HTTP and the product code has no bypass of the SSRF guard. The fixture is a made-up product
+  (Marrowdeck): the answer, package `marrowdeck-srv` at minimum version `4.18.3`, is on the current guide's page at
+  character 7,545 of 8,738 extracted (past the 6,000 where the old fetch cut a page). The archived 4.17 guide is listed
+  first in every search and gives `4.17.3` in its snippet as well: the near-miss.
+- `web-read` runs as a user would: turn 1 is the question (an offer is expected, and recorded); turn 2 is "Search the web
+  for: <the offered query>" with `context.web` set to it (the question itself when no offer came); turn 2 is scored on the
+  facts alone (`marrowdeck-srv` and `4.18.3` found, `4.17.3` not given).
+- Headline: 3/14 passed in this one run (the previous layer passed 1/13 in its one run), right-document citations 2/11.
+  The citation form still decides most of the failures (see the table). The new case passed.
+
+```text
+Project QA eval: ollama:gemma4:31b-cloud (variant 9)
+FAIL  overview       features               5.9s rounds=2 tools=search_documents,read_document_pages  4/6 terms (need 4); 0 documents cited (need 3)
+FAIL  procedure      deploy-and-test        7.3s rounds=2 tools=search_documents,search_documents,read_document_pages,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md, TESTING.md)
+FAIL  code           start-command          1.9s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+PASS  code           quickstart-command     4.9s rounds=2 tools=search_documents,read_document_pages  fact ok; documents ok; pages ok
+FAIL  code           test-command           2.4s rounds=1 tools=search_documents  fact ok; not cited (TESTING.md); page missing (want TESTING.md p. 1)
+FAIL  exact-label    session-lifetimes      2.3s rounds=1 tools=search_documents  fact ok; not cited (ARCHITECTURE.md); page missing (want ARCHITECTURE.md p. 3)
+FAIL  exact-label    oidc-issuer            2.1s rounds=1 tools=search_documents  fact ok; not cited (DEPLOYMENT.md); page missing (want DEPLOYMENT.md p. 2)
+FAIL  named-doc      user-guide-pins        2.3s rounds=1 tools=search_documents  fact ok; not cited (USER_GUIDE.md)
+FAIL  named-doc      deployment-uploads     1.8s rounds=1 tools=search_documents  fact ok; not cited (DEPLOYMENT.md)
+FAIL  balance        next-work              2.1s rounds=1 tools=search_documents,search_documents  fact ok; not cited (DOCS_INDEX.md)
+PASS  balance        changelog-unreleased   2.1s rounds=1 tools=search_documents  fact ok; documents ok
+FAIL  gap-general    rhel-packages          1.7s rounds=2 tools=search_documents,offer_web_search  fact missing (RHEL); didn't say the documents don't cover it; offered the search
+FAIL  live           ollama-release         0.7s rounds=0 tools=-  no offer; 0 web calls
+PASS  web-read       web-read               29.8s rounds=1 tools=web_search,read_web_pages  no offer; fact ok; near-miss avoided; 2 web calls
+right-document citations 2/11
+web calls 2
+3/14 passed
+```
+
+### The web-read case
+
+- **Offered: no.** Turn 1 (the question as typed) ended without an offer, so the `context.web` of turn 2 carried the
+  question itself, as the eval is built to do. Turn 1's text isn't captured (only the scored turn's answer is kept), so the
+  cause is inferred: the rules still tell a model with no `web_search` to "say you can't look it up here" (see Change),
+  and that is what it said for `ollama-release`.
+- **Facts found: yes.** The app ran the search first (the fake web was asked once, with the question), the model then
+  called `read_web_pages` once, on the current guide only (it fetched `/4.18/install` and not the archived page that was
+  listed first), and answered `marrowdeck-srv` at minimum version `4.18.3`.
+- **Near-miss avoided: yes.** `4.17.3`, which the first result's snippet gave, was not in the answer.
+- Whether the reader returned facts or fell back to its excerpt isn't captured by the eval (the answer carries the figure
+  from past the 6,000th character either way): unverified.
+- Time 29.8 s for turn 2, which includes the reader call (the default `llama3.2:3b`, on this CPU-only machine); turn 1's
+  time isn't counted.
+
+### The question the documents don't answer (`rhel-packages`)
+
+It now **ends with an offer**: tools `search_documents`, `offer_web_search`, and the report's "offered the search". It still
+fails the case: the model wrote no text at all in that turn (the answer is empty), so the fact (`RHEL`) and "didn't say the
+documents don't cover it" are both missing. That is the rules' job (Task 14): nothing in the prompt yet tells the model to
+say what the documents lack before it offers. `ollama-release` (live) did not offer, for the reason in the Change line.
+
+### Facts found per case (the answer's fact, apart from citation form)
+
+One run. "Previous" is the last section's single run (map, shortening order); rounds in brackets.
+
+| case | previous layer | **this run (web)** |
+|---|---|---|
+| features | 4 of 6 terms [2] | **4 of 6 terms [2]** |
+| deploy-and-test | 1/1 [2] | **1/1 [2]** |
+| start-command | 1/1 [1] | **1/1 [1]** |
+| quickstart-command | 1/1 [2] | **1/1 [2]** |
+| test-command | 1/1 [1] | **1/1 [1]** |
+| session-lifetimes | 1/1 [1] | **1/1 [1]** |
+| oidc-issuer | 1/1 [1] | **1/1 [1]** |
+| user-guide-pins | 1/1 [1] | **1/1 [1]** |
+| deployment-uploads | 1/1 [1] | **1/1 [1]** |
+| next-work | 1/1 [1] | **1/1 [1]** |
+| changelog-unreleased | 1/1 [1] | **1/1 [1]** |
+| rhel-packages | 1/1 [3] | **0/1 [2] (empty answer, then the offer)** |
+| ollama-release | no fact to check | **no fact to check [0] (declined, no offer)** |
+| web-read (new) | not asked | **1/1 [1] (offered: no; near-miss avoided)** |
+
+### What changed against the previous layer
+
+- The document cases are unchanged in kind: the same facts found in the same rounds, and the same citation failures.
+  `quickstart-command` passed this time (its page is cited), which is noise on one run; nothing in this layer touches it.
+- `rhel-packages` lost its fact because the turn now ends in an offer with no text (it found RHEL in the documents'
+  requirements before, by answering in prose). That is the cost of the offer ending the turn, until Task 14 tells the
+  model to write the gap first.
+- `ollama-release` took 0.7 s and zero rounds: with no web tool offered the model declines in one step. The case scores
+  "offered and no web call", so it fails until Task 14's rules tell the model to call the offer for live questions.
+- The default-mode behaviour itself (the offer ends the turn, the yes runs the app's search, the tools appear for that turn
+  only, `auto` and `off`) is covered by `server/tests/test_chat_web_consent.py`, not by this model run.

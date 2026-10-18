@@ -78,6 +78,9 @@ def use_router(monkeypatch):
 
 
 def make_ctx(**kw) -> ToolContext:
+    # These tests are about the web tools themselves, so the deployment searches without asking (Task 13: the
+    # default mode is "ask", which offers only offer_web_search; test_chat_web_consent.py covers that).
+    kw.setdefault("web_mode", "auto")
     return ToolContext("u", None, question="Which port does it use?", model=CHAT_MODEL, **kw)
 
 

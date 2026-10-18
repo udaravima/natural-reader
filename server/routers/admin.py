@@ -5,7 +5,7 @@ import logging
 import os
 import secrets
 import uuid
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from datetime import datetime, timezone
@@ -18,8 +18,8 @@ from ..auth.capabilities import KNOWN_CAPABILITIES
 from ..auth.config import load_auth_config
 from ..auth.kc_admin import KCAdminError
 from ..llm.router import get_router
-from ..services import (assistant_profile, doc_content, inference_budget, model_router, people,
-                        user_defaults)
+from ..services import (assistant_profile, chat_options, doc_content, inference_budget, model_router, people,
+                        user_defaults, web_search as web_search_service)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -439,3 +439,37 @@ async def put_assistant_profile(
     """Save the profile; empty text clears it (the file, or none, applies)."""
     await assistant_profile.save_profile(conn, body.text, updated_by=str(principal.user_id))
     return await _assistant_view(conn)
+
+
+# ---------- chat options (C2.1 Task 13) ----------
+
+class ChatOptionsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # Required: null resets the setting (the environment, or "ask", applies again), so a body without the
+    # field must not do it by accident.
+    web_search: Literal["ask", "auto", "off"] | None
+
+
+def _chat_options_view(options: chat_options.ChatOptions) -> dict:
+    # `searxng`: false only when a deployer set SEARXNG_URL empty; the console then shows the control disabled.
+    return {"web_search": options.web_search, "source": options.source,
+            "searxng": bool(web_search_service.SEARXNG_URL)}
+
+
+@router.get("/chat-options")
+async def get_chat_options(
+    _: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    return _chat_options_view(await chat_options.load_chat_options(conn))
+
+
+@router.put("/chat-options")
+async def put_chat_options(
+    body: ChatOptionsIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Save how web search asks; null resets it. Applies from the next chat message."""
+    saved = await chat_options.save_chat_options(conn, body.web_search, updated_by=str(principal.user_id))
+    return _chat_options_view(saved)

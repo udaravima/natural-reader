@@ -242,6 +242,7 @@ class TurnInput:
     profile: str = ""             # the deployment's assistant profile: leads the system message
     scope: tuple[ScopeDoc, ...] = ()   # the documents the tools read (tools.scope.scope_docs); prefetch searches them
     project_map: str = ""              # a project chat's map of its documents (chat/project_map.py): after the rules
+    app_exchange: tuple[Message, ...] = ()   # a tool exchange the app ran (the approved web search), after the prefetch's
 
 
 @dataclass
@@ -277,6 +278,7 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
                     Message("tool", result_text(result), tool_call_id=PREFETCH_CALL_ID, name="search_documents")]
     elif pre.passages:
         volatile = _passages_block(pre.passages, list(turn.scope))
+    exchange += turn.app_exchange
     rules = system_rules(turn.doc, turn.tools, has_pins=bool(turn.pins),
                          prefetch=cfg.prefetch == "on" and cfg.prefetch_min_score < 1.0,
                          today=today_line(turn.now, turn.timezone), profile=turn.profile,

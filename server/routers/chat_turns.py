@@ -20,7 +20,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Path as PathParam, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 from starlette.types import Receive, Scope, Send
 
 from ..auth.authz import require_project_role
@@ -81,6 +81,13 @@ def call_settings(s: SettingsIn) -> CallSettings:
     return CallSettings(think=s.think, num_ctx=num_ctx, keep_alive=keep_alive, num_predict=s.num_predict)
 
 
+class WebIn(BaseModel):
+    """The user's yes to a web search (C2.1 spec 5.8), for this turn only: the query they typed, or read on the
+    offer card. The app runs it before the model's first step."""
+    model_config = ConfigDict(extra="forbid")
+    query: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=300)]
+
+
 class ContextIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     doc_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -88,6 +95,7 @@ class ContextIn(BaseModel):
     # left out, the chat keeps the scope it has.
     project_id: UUID | None = None
     timezone: str | None = Field(default=None, max_length=64)
+    web: WebIn | None = None
 
     def requested_scope(self) -> Any:
         """The scope this turn asks for: a project id, None, or store.KEEP."""
@@ -332,7 +340,8 @@ async def post_turn(session_id: SessionId, request: Request,
         attachments=tuple(Attachment(a.kind, a.mime, base64.b64encode(a.data).decode("ascii"), a.name)
                           for a in attachments),
         settings=call_settings(body.settings),
-        doc_id=body.context.doc_id, timezone=body.context.timezone, project_id=project_id)
+        doc_id=body.context.doc_id, timezone=body.context.timezone, project_id=project_id,
+        web_query=body.context.web.query if body.context.web else None)
     events = run_turn(req, claim, router=llm, cfg=cfg, deployment_budget=budget)
     return _EagerCloseStreamingResponse(_sse(events), turn=events, abandon=lambda: abandon_turn(req, claim),
                                         media_type="text/event-stream",

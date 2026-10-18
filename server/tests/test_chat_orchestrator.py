@@ -25,6 +25,13 @@ def conn(db_conn, monkeypatch):
     return db_conn
 
 
+@pytest.fixture
+def web_auto(monkeypatch):
+    """The deployment searches without asking (CHAT_WEB_SEARCH=auto): for the tests of the web tools' turn
+    mechanics. The default, "ask", is covered by test_chat_web_consent.py."""
+    monkeypatch.setenv("CHAT_WEB_SEARCH", "auto")
+
+
 async def fake_web_search(query, count):
     return {"query": query, "results": [{"title": "t", "url": "https://example.com", "summary": "s"}]}
 
@@ -68,7 +75,7 @@ def types(events):
     return [e["type"] for e in events]
 
 
-async def test_plain_reply_streams_saves_and_releases(conn):
+async def test_plain_reply_streams_saves_and_releases(conn, web_auto):
     router = FakeRouter(steps=[[TextDelta("Hello "), TextDelta("there."), Usage(10, 3), Finish("stop")]])
     alice = await member(conn, "alice")
     events, claim = await _run(conn, router, user=alice)
@@ -104,7 +111,7 @@ async def test_reasoning_closes_before_text(conn):
     assert (await _msg(conn, claim.turn_id))[3] == "think"
 
 
-async def test_one_tool_round_then_answer(conn, monkeypatch):
+async def test_one_tool_round_then_answer(conn, monkeypatch, web_auto):
     monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
     router = FakeRouter(steps=[
         [TextDelta("Let me search."), ToolCallReady(ToolCall("c1", "web_search", {"query": "news"})),
@@ -141,7 +148,7 @@ async def test_silent_final_step_after_the_cap_is_max_steps(conn, monkeypatch):
     assert events[-1]["type"] == "finish" and events[-1]["finishReason"] == "max-steps"
 
 
-async def test_two_rounds_when_the_cap_allows_it(conn, monkeypatch):
+async def test_two_rounds_when_the_cap_allows_it(conn, monkeypatch, web_auto):
     monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
     call = lambda i: [ToolCallReady(ToolCall(f"c{i}", "web_search", {"query": "a"})), Usage(1, 1), Finish("tool_calls")]
     router = FakeRouter(steps=[call(1), call(2), reply("done")])
@@ -150,7 +157,7 @@ async def test_two_rounds_when_the_cap_allows_it(conn, monkeypatch):
     assert events[-1]["finishReason"] == "stop"
 
 
-async def test_tool_error_is_reported_and_turn_continues(conn):
+async def test_tool_error_is_reported_and_turn_continues(conn, web_auto):
     router = FakeRouter(steps=[
         [ToolCallReady(ToolCall("c1", "made_up", {})), ToolCallReady(ToolCall("c2", "web_search", {})),
          Usage(1, 1), Finish("tool_calls")],
@@ -217,7 +224,7 @@ async def test_disconnect_mid_step_saves_aborted(conn):
     assert "aborted" in await _log(conn)
 
 
-async def test_cancel_during_tool_saves_aborted_and_releases_claim(conn, monkeypatch):
+async def test_cancel_during_tool_saves_aborted_and_releases_claim(conn, monkeypatch, web_auto):
     started = asyncio.Event()
 
     async def slow_web_search(query, count):
@@ -378,7 +385,7 @@ async def test_provider_error_mid_text_still_records_usage(conn):
     assert row is not None and row[0] > 0 and row[1] > 0
 
 
-async def test_completed_step_before_cancellation_is_not_double_recorded(conn, monkeypatch):
+async def test_completed_step_before_cancellation_is_not_double_recorded(conn, monkeypatch, web_auto):
     """Item 2's guard: a step whose usage was already recorded normally (here,
     the tool round) must not be charged again just because the turn is later
     cancelled mid-tool-call."""
@@ -567,7 +574,7 @@ def _in_pieces(text: str, size: int = 7) -> list:
     return [TextDelta(text[i:i + size]) for i in range(0, len(text), size)]
 
 
-async def test_the_last_round_says_so_in_its_results_and_the_rules_never_change(conn, open_doc):
+async def test_the_last_round_says_so_in_its_results_and_the_rules_never_change(conn, open_doc, web_auto):
     """v2.3 Task A: the final step offers no tools, and the rules (stable for
     the turn, for the prefix cache) can't say that, so the last round's tool
     results do. Nothing ever tells the model to call a tool it doesn't have."""
@@ -617,7 +624,7 @@ async def test_the_tool_context_carries_the_turns_model(conn, monkeypatch):
     assert seen == ["ollama:m"]
 
 
-async def test_no_note_while_rounds_remain(conn, open_doc):
+async def test_no_note_while_rounds_remain(conn, open_doc, web_auto):
     router = FakeRouter(steps=[
         [ToolCallReady(ToolCall("c1", "search_documents", {"query": "a"})), Usage(5, 5), Finish("tool_calls")],
         reply("Done (page 1).")])

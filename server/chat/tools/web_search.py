@@ -49,6 +49,17 @@ def copies_document(query: str, texts: list[str]) -> bool:
     return bool(runs) and any(runs & _runs(t) for t in texts)
 
 
+def web_tools_available(ctx) -> bool:
+    """web_search and read_web_pages are offered when the engine is set up and the user's yes is not still owed:
+    the deployment searches without asking ("auto"), or the user approved a search this turn. "off" never.
+    The enforcement of "ask first" is this: the tools simply aren't there (offer_web_search is, instead).
+    With no turn at all (`ctx` None: the evals ask whether web search is set up here) only the engine counts."""
+    if ctx is None:
+        return bool(web_search_service.SEARXNG_URL)
+    return (bool(web_search_service.SEARXNG_URL) and ctx.web_mode != "off"
+            and (ctx.web_mode == "auto" or ctx.web_approved))
+
+
 _SPEC = ToolSpec(
     name="web_search",
     # v2.4: the old text invited it for "a factual question requiring ...
@@ -105,7 +116,7 @@ class _WebSearch:
     source = "web"
 
     def available(self, ctx) -> bool:
-        return bool(web_search_service.SEARXNG_URL)
+        return web_tools_available(ctx)
 
     async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
         query = str(args.get("query") or "").strip()

@@ -10,6 +10,7 @@ import pytest
 
 from server.evals import project_qa as pq
 from server.evals import doc_qa
+from server.evals import web_fixture as wf
 from server.evals.doc_qa import has_term
 from server.services import extract
 
@@ -645,6 +646,7 @@ import server.evals.project_qa as pq
 from server.services import doc_storage
 seen = {}
 async def fake_run_eval(model, **kw):
+    seen["web_fixture"] = kw.get("web_fixture")
     seen["dir"] = str(doc_storage.storage_dir())
     seen["exists"] = doc_storage.storage_dir().is_dir()
     return []
@@ -688,3 +690,166 @@ def test_main_honours_storage_dir_and_keeps_it(tmp_path):
     mine = tmp_path / "kept"
     seen = _run_main(tmp_path, "--storage-dir", str(mine))
     assert seen["dir"] == str(mine.resolve()) and seen["exists"] and seen["after"]
+
+
+def test_main_passes_the_web_fixture_flag_on(tmp_path):
+    assert _run_main(tmp_path)["web_fixture"] is False
+    assert _run_main(tmp_path, "--web-fixture")["web_fixture"] is True
+
+
+# ---- Task 13: the web-read case and its fake web ----
+
+WEB = pq.WEB_CASES[0]
+
+
+def test_the_web_read_case_is_asked_only_with_the_fake_web():
+    assert WEB not in pq.CASES and WEB.kind == "web-read" and WEB.web == "ask"
+    assert WEB not in pq.cases_for("9") and WEB not in pq.cases_for("50")
+    assert pq.cases_for("9", web_fixture=True)[-1] is WEB
+    assert len(pq.cases_for("50", web_fixture=True)) == len(pq.cases_for("50")) + 1
+
+
+def test_the_web_read_question_is_one_no_model_or_project_document_can_answer():
+    """The answer terms and the near-miss are made up: nothing in the project's documents (or its padding) has
+    them, so the answer can only come from the web."""
+    assert WEB.expect == ("marrowdeck-srv", "4.18.3") and WEB.forbid_terms == ("4.17.3",)
+    texts = [p.read_text(encoding="utf-8") for p in pq.fixture_files()] + [t for _, t in pq.padding_docs()]
+    for term in (*WEB.expect, *WEB.forbid_terms, "marrowdeck"):
+        assert not any(has_term(t, term) for t in texts), term
+    assert not any(has_term(WEB.question, t) for t in (*WEB.expect, *WEB.forbid_terms))   # the question gives neither
+
+
+def test_the_fake_web_lists_the_archived_page_first_and_hides_the_answer_from_the_snippets():
+    pages = wf.pages()
+    assert [p.url for p in pages][:2] == ["https://docs.marrowdeck.example/4.17/install",
+                                          "https://docs.marrowdeck.example/4.18/install"]
+    snippets = " ".join(p.snippet for p in pages)
+    assert "4.17.3" in snippets                       # the near-miss is tempting: it is in a snippet
+    assert not has_term(snippets, "4.18.3")            # the answer is not: the page has to be read
+
+
+def test_the_answer_is_on_the_current_page_past_6000_characters_and_the_near_miss_on_the_other():
+    current = wf.page_text("https://docs.marrowdeck.example/4.18/install")
+    archived = wf.page_text("https://docs.marrowdeck.example/4.17/install")
+    assert len(current) > 7000
+    assert current.index("marrowdeck-srv") > 6000 and current.index("4.18.3") > 6000
+    assert "4.17.3" not in current and "4.18.3" not in archived
+    assert has_term(archived, "4.17.3") and has_term(archived, "marrowdeck-srv")
+    # Every page is HTML the extractor reads (a page that extracts to nothing would be an unreadable fetch).
+    assert all(wf.page_text(p.url) for p in wf.pages())
+    assert wf.page_text("https://elsewhere.example/") is None
+
+
+async def test_the_fake_web_replaces_the_search_and_the_fetch_in_this_process_only_while_served():
+    from server.chat.tools import read_web_pages
+    from server.services import web_search
+    real = web_search.searxng_search, read_web_pages.fetch_page_text
+    with wf.served() as log:
+        found = await web_search.web_search("anything at all", 2)
+        text = await read_web_pages.fetch_page_text("https://docs.marrowdeck.example/4.18/install")
+        assert await read_web_pages.fetch_page_text("https://nowhere.example/") is None
+    assert [r["url"] for r in found["results"]] == [p.url for p in wf.pages()[:2]]
+    assert found["results"][0]["site"] == "docs.marrowdeck.example" and "4.18.3" in text
+    assert log.queries == ["anything at all"]
+    assert log.fetched == ["https://docs.marrowdeck.example/4.18/install", "https://nowhere.example/"]
+    assert (web_search.searxng_search, read_web_pages.fetch_page_text) == real           # put back
+
+
+def test_web_read_passes_on_the_facts_and_a_near_miss_fails_it():
+    right = "Install marrowdeck-srv; the minimum version is 4.18.3."
+    assert _score(WEB, right, offered=True).passed
+    assert _score(WEB, right, offered=False).passed                 # the offer is recorded, not scored
+    assert not _score(WEB, "Install marrowdeck-srv, version 4.17.3 or newer.", offered=True).passed
+    assert _score(WEB, "Install marrowdeck-srv, version 4.17.3 or newer.", offered=True).near_miss
+    both = _score(WEB, right + " (The archived guide says 4.17.3.)", offered=True)
+    assert both.fact and both.near_miss and not both.passed
+    assert not _score(WEB, "Install marrowdeck-srv.", offered=True).passed
+    assert not _score(WEB, "I could not find it.", offered=True).fact
+
+
+def test_web_read_is_skipped_without_web_search_and_reported_with_its_offer():
+    assert _score(WEB, "", web_offered=False).skipped == "web search not offered"
+    ok = _score(WEB, "marrowdeck-srv 4.18.3", [{"toolName": "web_search", "round": 0},
+                                              {"toolName": "read_web_pages", "round": 1}], offered=True)
+    miss = _score(WEB, "marrowdeck-srv 4.17.3", offered=False)
+    line = pq.format_report([[ok, miss]], model="m", variant="9").splitlines()
+    assert "offered the search; fact ok; near-miss avoided; 2 web calls" in line[1]
+    assert line[1].startswith("PASS") and line[2].startswith("FAIL")
+    assert "no offer; fact missing (marrowdeck-srv, 4.18.3); gave the near-miss (4.17.3)" in line[2]
+
+
+class _Pool:
+    """get_pool() for _ask, which deletes its chat afterwards."""
+    def connection(self):
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def conn():
+            class C:
+                async def execute(self, *a, **k):
+                    return None
+            yield C()
+        return conn()
+
+
+def _fake_turns(monkeypatch, script):
+    """_turn replaced by a script of Turn results; the calls it was given are returned."""
+    import server.db
+    seen = []
+
+    async def fake(text, **kw):
+        seen.append({"text": text, **kw})
+        return script.pop(0)
+
+    monkeypatch.setattr(pq, "_turn", fake)
+    monkeypatch.setattr(server.db, "get_pool", lambda: _Pool())
+    return seen
+
+
+async def test_web_read_asks_the_question_then_sends_the_offered_query_as_the_users_yes(monkeypatch):
+    seen = _fake_turns(monkeypatch, [
+        pq.Turn(answer="Not in the documents.", offered=True, offer_query="marrowdeck rocky 9 package"),
+        pq.Turn(answer="Install marrowdeck-srv, minimum 4.18.3.",
+                calls=[{"toolName": "web_search", "round": 0}, {"toolName": "read_web_pages", "round": 1}])])
+    r = await pq._ask(WEB, names=NAMES, web_offered=True, user_id="u", project_id="p", model="m", think="off",
+                      router=None, cfg=None, budget=None)
+    assert [t["text"] for t in seen] == [WEB.question, "Search the web for: marrowdeck rocky 9 package"]
+    assert "web_query" not in seen[0] and seen[1]["web_query"] == "marrowdeck rocky 9 package"
+    assert r.passed and r.offered and r.web_calls == 2 and r.answer.startswith("Install")
+
+
+async def test_web_read_without_an_offer_sends_the_question_itself_and_records_no_offer(monkeypatch):
+    seen = _fake_turns(monkeypatch, [pq.Turn(answer="Probably 4.17.3."),
+                                     pq.Turn(answer="marrowdeck-srv 4.18.3")])
+    r = await pq._ask(WEB, names=NAMES, web_offered=True, user_id="u", project_id="p", model="m", think="off",
+                      router=None, cfg=None, budget=None)
+    assert seen[1]["web_query"] == WEB.question and not r.offered
+    assert r.passed                                        # scored on the second turn's answer alone
+
+
+async def test_web_read_stops_when_the_first_turn_failed(monkeypatch):
+    seen = _fake_turns(monkeypatch, [pq.Turn(error="provider_error")])
+    r = await pq._ask(WEB, names=NAMES, web_offered=True, user_id="u", project_id="p", model="m", think="off",
+                      router=None, cfg=None, budget=None)
+    assert len(seen) == 1 and r.error == "provider_error" and not r.passed
+
+
+async def test_each_case_runs_in_its_own_web_mode_and_the_environment_is_put_back(monkeypatch):
+    import os
+    monkeypatch.setenv("CHAT_WEB_SEARCH", "auto")
+    modes = []
+
+    async def fake(text, **kw):
+        modes.append(os.environ["CHAT_WEB_SEARCH"])
+        return pq.Turn(answer="x")
+
+    import server.db
+    monkeypatch.setattr(pq, "_turn", fake)
+    monkeypatch.setattr(server.db, "get_pool", lambda: _Pool())
+    await pq._ask(replace(_case("code"), web="off"), names=NAMES, web_offered=True, user_id="u", project_id="p",
+                  model="m", think="off", router=None, cfg=None, budget=None)
+    assert modes == ["off"] and os.environ["CHAT_WEB_SEARCH"] == "auto"
+    monkeypatch.delenv("CHAT_WEB_SEARCH")
+    await pq._ask(_case("code"), names=NAMES, web_offered=True, user_id="u", project_id="p", model="m",
+                  think="off", router=None, cfg=None, budget=None)
+    assert modes == ["off", "ask"] and "CHAT_WEB_SEARCH" not in os.environ

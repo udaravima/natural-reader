@@ -12,6 +12,9 @@ The fixture, the cases and the scoring are pure (server/tests/test_eval_project_
 `run_eval` (C2.1 Task 4) needs Postgres, the embedding model and a chat model, so it runs on
 the local machine, on a scratch database: `scripts/eval_project_qa.py --model ... --variant 9`.
 
+The web-read case (`--web-fixture`) plays the web-consent journey as a user would: the question, the offer the
+chat ends the turn with, and the user's yes (`context.web`), answered from a fake web (web_fixture.py).
+
 Citations in project scope are "(Name, page N)", the form the app links
 (spec section 5.7). A citation of the wrong document is worse than none, so
 the score fails any answer that cites one a case forbids.
@@ -19,9 +22,11 @@ the score fails any answer that cites one a case forbids.
 from __future__ import annotations
 
 import math
+import os
 import random
 import re
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from functools import cache
 from pathlib import Path
@@ -42,7 +47,7 @@ class Case:
     name: str
     kind: str                  # overview | procedure | code | exact-label | named-doc | balance | gap-general | live
                                # | map-shortened (an overview or code question again; run only in the 50-document
-                               # variant)
+                               # variant) | web-read (the offer, the yes, then the answer; run only with --web-fixture)
     question: str
     expect: tuple[str, ...]    # terms a right answer contains, "a|b" = either
                                # (gap-general: expect[0] is the outside term)
@@ -52,6 +57,7 @@ class Case:
     setup: tuple[str, ...] = ()         # earlier user turns, asked first in the same chat
     web: str = "ask"                    # the chat's web-search mode for this case
     pages: tuple[tuple[str, int], ...] = ()   # (document, page) citations a right answer includes
+    forbid_terms: tuple[str, ...] = ()        # web-read: a near-miss a right answer never gives
 
 
 # ---------- the fixture ----------
@@ -165,6 +171,17 @@ CASES: tuple[Case, ...] = (
 )
 
 
+# The web-read case runs only with --web-fixture (web_fixture.py has the pages). Marrowdeck is made up: the
+# answer is on the current guide's page past its 6,000th character, and the archived guide a search lists first
+# gives a version one digit off (4.17.3), in its snippet too.
+WEB_CASES: tuple[Case, ...] = (
+    Case("web-read", "web-read",
+         "I'm installing the current Marrowdeck on Rocky Linux 9. Which package do I install, and what is the "
+         "minimum version it needs?",
+         ("marrowdeck-srv", "4.18.3"), (), forbid_terms=("4.17.3",)),
+)
+
+
 def _scoring_kind(case: Case) -> str:
     """A map-shortened case is scored as the case it repeats."""
     if case.kind != "map-shortened":
@@ -248,6 +265,7 @@ class Result:
     wrong_docs: set[str] = field(default_factory=set)   # cited, and not the right one (see score)
     web_calls: int = 0
     offered: bool = False             # the turn ended with the offer to search the web
+    near_miss: bool = False           # web-read: the answer gives a number the case forbids
 
     @property
     def paged_gap(self) -> bool:
@@ -269,7 +287,7 @@ def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], names: list
     result.chip_pages = sorted(chip_pages or [])
     if error:
         return result
-    if case.kind in ("live", "gap-general") and not web_offered:
+    if case.kind in ("live", "gap-general", "web-read") and not web_offered:
         result.skipped = "web search not offered"
         return result
     # A padding document is never the right one to cite, and a case may name documents the runner left out.
@@ -286,6 +304,10 @@ def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], names: list
     result.pages_ok = all(page in pages.get(doc, ()) for doc, page in case.pages)
     if case.kind == "live":
         result.passed = offered and result.web_calls == 0
+    elif case.kind == "web-read":
+        # `answer` and `tool_calls` are the turn after the user's yes; `offered` is the first turn's, recorded.
+        result.near_miss = any(has_term(answer, term) for term in case.forbid_terms)
+        result.passed = result.fact and not result.near_miss
     elif case.kind == "gap-general":
         result.refused = is_refusal(answer)
         result.invented_pages = _pages_cited_in_sentences_with(answer, known, case.expect[0])
@@ -306,6 +328,11 @@ def _detail(r: Result) -> str:
     case = r.case
     if case.kind == "live":
         return ("offered the search" if r.offered else "no offer") + f"; {r.web_calls} web calls"
+    if case.kind == "web-read":
+        found = "fact ok" if r.fact else f"fact missing ({', '.join(case.expect)})"
+        miss = (f"gave the near-miss ({', '.join(t for t in case.forbid_terms if has_term(r.answer, t))})"
+                if r.near_miss else "near-miss avoided")
+        return f"{'offered the search' if r.offered else 'no offer'}; {found}; {miss}; {r.web_calls} web calls"
     parts = []
     if case.expect:
         need = _terms_needed(case)
@@ -381,9 +408,10 @@ VARIANTS = ("9", "50")
 TURN_TIMEOUT_S = 300           # one chat turn; a hung provider ends as an error, not a hung eval
 
 
-def cases_for(variant: str) -> tuple[Case, ...]:
-    """The cases this variant asks: the map-shortened ones only where the project is big enough for that."""
-    return tuple(c for c in CASES if variant == "50" or c.kind != "map-shortened")
+def cases_for(variant: str, web_fixture: bool = False) -> tuple[Case, ...]:
+    """The cases this variant asks: the map-shortened ones only where the project is big enough for that, and
+    the web-read case only with a fake web to read."""
+    return tuple(c for c in CASES if variant == "50" or c.kind != "map-shortened") + (WEB_CASES if web_fixture else ())
 
 
 def project_documents(variant: str) -> list[tuple[str, bytes]]:
@@ -431,10 +459,22 @@ async def seed_project(conn, user_id: str, documents: list[tuple[str, bytes]], *
     return project_id, doc_ids
 
 
+@dataclass
+class Turn:
+    """What one chat turn did, read from its events."""
+    answer: str = ""
+    calls: list[dict[str, Any]] = field(default_factory=list)   # the tool-input-available events (the app's too)
+    error: str | None = None
+    prefetched: bool = False        # the app searched the documents before the model ran
+    chips: list[int] = field(default_factory=list)              # source chip pages
+    offered: bool = False           # the turn ended with the offer to search the web
+    offer_query: str | None = None  # ... and the query it offered
+
+
 async def _turn(text: str, *, session_id: str, user_id: str, project_id: str, model: str, think: str,
-                router, cfg, budget) -> tuple[str, list[dict[str, Any]], str | None, bool, list[int], bool]:
-    """One chat turn through the real path, scoped to the project: (answer, tool calls with
-    their arguments, error, prefetched, source chip pages, offered the web search)."""
+                router, cfg, budget, web_query: str | None = None) -> Turn:
+    """One chat turn through the real path, scoped to the project. `web_query`: the user's yes to a web
+    search, sent as `context.web` does."""
     import asyncio
     from contextlib import aclosing
 
@@ -442,36 +482,54 @@ async def _turn(text: str, *, session_id: str, user_id: str, project_id: str, mo
     from ..chat.orchestrator import TurnRequest, run_turn
     from ..llm.types import CallSettings
 
-    answer, calls, error, prefetched, chips, offered = "", [], None, False, [], False
+    out = Turn()
     claim = await store.begin_turn(session_id=session_id, user_id=user_id, model_id=model, text=text,
                                    attachments=[], new_session_pins=None, scope_project_id=project_id)
     req = TurnRequest(user_id=user_id, session_id=session_id, model_id=model, text=text, attachments=(),
-                      settings=CallSettings(think=think), doc_id=None, timezone="UTC", project_id=project_id)
+                      settings=CallSettings(think=think), doc_id=None, timezone="UTC", project_id=project_id,
+                      web_query=web_query)
     try:
         async with asyncio.timeout(TURN_TIMEOUT_S):
             async with aclosing(run_turn(req, claim, router=router, cfg=cfg, deployment_budget=budget)) as events:
                 async for ev in events:
                     if ev["type"] == "text-delta":
-                        answer += ev["delta"]
+                        out.answer += ev["delta"]
                     elif ev["type"] == "tool-input-available":
-                        calls.append(ev)
-                        offered = offered or ev.get("toolName") == "offer_web_search"
+                        out.calls.append(ev)
+                        out.offered = out.offered or ev.get("toolName") == "offer_web_search"
                     elif ev["type"] == "data-web-offer":
-                        offered = True
+                        out.offered, out.offer_query = True, ev.get("query")
                     elif ev["type"] == "data-sources":
-                        chips += [p for p in ev.get("pages") or [] if isinstance(p, int)]
+                        out.chips += [p for p in ev.get("pages") or [] if isinstance(p, int)]
                     elif ev["type"] == "data-context":
-                        prefetched = prefetched or any(i.get("kind") == "prefetch" for i in ev.get("items") or [])
+                        out.prefetched = out.prefetched or any(i.get("kind") == "prefetch" for i in ev.get("items") or [])
                     elif ev["type"] == "error":
-                        error = ev.get("code") or "error"
+                        out.error = ev.get("code") or "error"
     except TimeoutError:
-        error = "timeout"
-    return answer, calls, error, prefetched, chips, offered
+        out.error = "timeout"
+    return out
+
+
+@contextmanager
+def web_mode(mode: str):
+    """The deployment's web search mode for a case: CHAT_WEB_SEARCH, which every turn reads (an admin's choice
+    would win over it, and the scratch database has none)."""
+    before = os.environ.get("CHAT_WEB_SEARCH")
+    os.environ["CHAT_WEB_SEARCH"] = mode
+    try:
+        yield
+    finally:
+        if before is None:
+            os.environ.pop("CHAT_WEB_SEARCH", None)
+        else:
+            os.environ["CHAT_WEB_SEARCH"] = before
 
 
 async def _ask(case: Case, *, names: list[str], web_offered: bool, **turn) -> Result:
-    """Ask the case's setup turns, then its question, in one chat; score and time the question's
-    turn only. (`case.web`, the chat's web-search mode, has no request field yet: Task 13.)"""
+    """Ask the case's setup turns, then its question, in one chat, in the case's web mode; score and time the
+    question's turn only. A web-read case goes on to the user's yes: the query the chat offered (the question
+    itself if it offered none) sent as `context.web`. That second turn is the one scored and timed; whether
+    the first one offered is recorded."""
     import time
     import uuid
 
@@ -479,35 +537,46 @@ async def _ask(case: Case, *, names: list[str], web_offered: bool, **turn) -> Re
 
     session_id = f"eval-{uuid.uuid4()}"
     try:
-        for text in case.setup:
-            _, _, error, _, _, _ = await _turn(text, session_id=session_id, **turn)
-            if error:
-                return score(case, "", [], names, offered=False, error=error)
-        started = time.monotonic()
-        answer, calls, error, prefetched, chips, offered = await _turn(case.question, session_id=session_id, **turn)
-        seconds = time.monotonic() - started
+        with web_mode(case.web):
+            for text in case.setup:
+                setup = await _turn(text, session_id=session_id, **turn)
+                if setup.error:
+                    return score(case, "", [], names, offered=False, error=setup.error)
+            started = time.monotonic()
+            first = await _turn(case.question, session_id=session_id, **turn)
+            last, offered = first, first.offered
+            if case.kind == "web-read" and web_offered and not first.error:
+                query = first.offer_query or case.question
+                started = time.monotonic()
+                last = await _turn(f"Search the web for: {query}", session_id=session_id, web_query=query, **turn)
+            seconds = time.monotonic() - started
     finally:
         # Even on an error or Ctrl-C: the eval leaves no chats behind.
         async with get_pool().connection() as conn:
             await conn.execute("DELETE FROM chat_sessions WHERE id = %s", (session_id,))
-    result = score(case, answer, calls, names, offered=offered, error=error, prefetched=prefetched,
-                   web_offered=web_offered, chip_pages=chips)
+    result = score(case, last.answer, last.calls, names, offered=offered, error=first.error or last.error,
+                   prefetched=last.prefetched, web_offered=web_offered, chip_pages=last.chips)
     result.seconds = seconds
     return result
 
 
 async def run_eval(model: str, *, variant: str = "9", think: str = "off", repeat: int = 1,
-                   show_answers: bool = False) -> list[list[Result]]:
+                   show_answers: bool = False, web_fixture: bool = False) -> list[list[Result]]:
     """Index the project's documents for the eval user and ask every case through run_turn,
     scoped to the project, started and stopped as the app does. Needs DATABASE_URL (a scratch
     database: the script refuses the real one), the embedding model and `model` reachable;
     raises EvalSetupError otherwise. The documents' files go to DOC_STORAGE_DIR, which the
-    script points at a temporary folder of its own: a caller other than the script must do the same. Documents stay indexed, so a second run doesn't re-embed them."""
+    script points at a temporary folder of its own: a caller other than the script must do the same. Documents stay indexed, so a second run doesn't re-embed them.
+    `web_fixture`: serve web search and page fetches from fixtures/web (web_fixture.py) in this process, and
+    ask the web-read case too."""
+    from contextlib import nullcontext
+
     from ..chat import orchestrator
     from ..chat.config import get_chat_config
     from ..db import close_db, get_pool, init_db
     from ..llm.router import UnknownModel, get_router, start_router, stop_router
     from ..services import doc_pipeline, embeddings, model_router, web_search
+    from . import web_fixture as fake_web
     from .doc_qa import eval_user
 
     if variant not in VARIANTS:
@@ -545,19 +614,26 @@ async def run_eval(model: str, *, variant: str = "9", think: str = "off", repeat
             raise EvalSetupError(f"{len(unindexed)} documents didn't index: {first}. Is the embedding model up?")
 
         from ..chat.tools import web_search as web_search_tool
-        web_offered = bool(web_search_tool.TOOL.available(None))   # Task 13 adds the offer tool to this
+        # With no turn to ask about, "available" means web search is set up here: the offer (the default mode)
+        # and the web tools both need exactly that.
+        web_offered = bool(web_search_tool.TOOL.available(None))
         runs = []
-        for _ in range(repeat):
-            results = []
-            for case in cases_for(variant):
-                result = await _ask(case, names=names, web_offered=web_offered, user_id=user_id,
-                                    project_id=project_id, model=canonical, think=think, router=router,
-                                    cfg=get_chat_config(), budget=model_router.get_config().daily_token_budget)
-                results.append(result)
-                print(f"{_verdict(result):<5} {case.name} {result.seconds:.1f}s", file=sys.stderr, flush=True)
-                if show_answers:
-                    print(f"--- {case.kind} {case.name}: {case.question}\n{result.answer}\n")
-            runs.append(results)
+        with (fake_web.served() if web_fixture else nullcontext()) as web:
+            for _ in range(repeat):
+                results = []
+                for case in cases_for(variant, web_fixture):
+                    result = await _ask(case, names=names, web_offered=web_offered, user_id=user_id,
+                                        project_id=project_id, model=canonical, think=think, router=router,
+                                        cfg=get_chat_config(), budget=model_router.get_config().daily_token_budget)
+                    results.append(result)
+                    print(f"{_verdict(result):<5} {case.name} {result.seconds:.1f}s", file=sys.stderr, flush=True)
+                    if case.kind == "web-read" and web is not None:
+                        print(f"      the fake web was asked: {web.queries} and fetched {web.fetched}",
+                              file=sys.stderr, flush=True)
+                        web.queries.clear(), web.fetched.clear()
+                    if show_answers:
+                        print(f"--- {case.kind} {case.name}: {case.question}\n{result.answer}\n")
+                runs.append(results)
         return runs
     finally:
         await stop_router()
