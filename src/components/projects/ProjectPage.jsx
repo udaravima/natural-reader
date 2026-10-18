@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ArrowLeft, Pencil, Loader2 } from 'lucide-react';
+import { ArrowLeft, Pencil, Loader2, MessageSquare } from 'lucide-react';
 import { projectsApi } from '../../lib/projectsApi';
 import { roleLabel } from '../../lib/projectRoles';
 import { useLatest } from '../../hooks/useLatest';
@@ -14,8 +14,11 @@ const TABS = [['documents', 'Documents'], ['members', 'Members'], ['activity', '
  * Delete as `can` allows) and Documents | Members | Activity tabs. Any
  * refusal reloads the project, so controls the server no longer allows
  * disappear; a project I can no longer see sends me back with the notice.
+ * "Ask about this project" (any member) opens a chat about it through
+ * `onAskProject({ id, name })`; without that prop (chat isn't available to
+ * this user) the button isn't shown.
  */
-export default function ProjectPage({ theme, apiHost, apiPort, projectId, currentUserId, showToast, onBack, onChanged, onOpenDoc, isAdmin = false }) {
+export default function ProjectPage({ theme, apiHost, apiPort, projectId, currentUserId, showToast, onBack, onChanged, onOpenDoc, onAskProject, isAdmin = false }) {
   const api = useMemo(() => projectsApi(apiHost, apiPort), [apiHost, apiPort]);
   const [project, setProject] = useState(null);
   const [tab, setTab] = useState('documents');
@@ -117,6 +120,12 @@ export default function ProjectPage({ theme, apiHost, apiPort, projectId, curren
           )}
         </div>
         <div className="flex items-center gap-2 shrink-0 text-xs">
+          {onAskProject && (
+            <button onClick={() => onAskProject({ id: project.id, name: project.name })} aria-label="Ask about this project"
+              className="flex items-center gap-1 px-2 py-1 rounded bg-blue-500 text-white hover:bg-blue-600">
+              <MessageSquare size={12} /> Ask about this project
+            </button>
+          )}
           {can.edit && !editing && (
             <button onClick={startEdit} aria-label="Edit project" className="flex items-center gap-1 underline">
               <Pencil size={12} /> Edit

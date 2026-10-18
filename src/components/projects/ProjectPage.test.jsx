@@ -12,7 +12,7 @@ const can = (over = {}) => ({ edit: false, manage_members: false, manage_owners:
 const proj = (over = {}) => ({ id: 'p1', name: 'Q3 Audit', description: 'Evidence', my_role: 'contributor',
   member_count: 2, doc_count: 0, created_by: null, can: can(), ...over });
 
-function mount(routes) {
+function mount(routes, extra = {}) {
   apiFetch.mockImplementation(async (h, p, path, opts = {}) => {
     const key = `${opts.method || 'GET'} ${path}`;
     const hit = routes[key];
@@ -21,7 +21,7 @@ function mount(routes) {
     return json(404, {});
   });
   const props = { theme, apiHost: '', apiPort: '', projectId: 'p1', currentUserId: 'me',
-    showToast: vi.fn(), onBack: vi.fn(), onChanged: vi.fn(), onOpenDoc: vi.fn() };
+    showToast: vi.fn(), onBack: vi.fn(), onChanged: vi.fn(), onOpenDoc: vi.fn(), ...extra };
   render(<ProjectPage {...props} />);
   return props;
 }
@@ -80,6 +80,21 @@ describe('ProjectPage', () => {
     expect(props.onChanged).toHaveBeenCalled();
     expect(props.onChanged.mock.invocationCallOrder[0]).toBeLessThan(props.onBack.mock.invocationCallOrder[0]);
     expect(props.showToast).toHaveBeenCalledWith("This project doesn't exist or you don't have access.", 5000);
+  });
+
+  it('Ask about this project calls onAskProject with the project', async () => {
+    const onAskProject = vi.fn();
+    mount({ 'GET /v1/projects/p1': json(200, proj({ my_role: 'reader' })) }, { onAskProject });
+    const button = await screen.findByRole('button', { name: 'Ask about this project' });
+    expect(button.textContent).toContain('Ask about this project');
+    fireEvent.click(button);
+    expect(onAskProject).toHaveBeenCalledWith({ id: 'p1', name: 'Q3 Audit' });
+  });
+
+  it('offers no Ask button where chat is not available', async () => {
+    mount({ 'GET /v1/projects/p1': json(200, proj()) });
+    await screen.findByRole('heading', { name: /Q3 Audit/ });
+    expect(screen.queryByRole('button', { name: 'Ask about this project' })).toBeNull();
   });
 
   it('an Owner deletes the project after confirming', async () => {

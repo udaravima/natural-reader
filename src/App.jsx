@@ -309,7 +309,10 @@ export default function App() {
     if (viewMode === 'reader' && chatPanelAvailable) setChatPanelOpen(true);
     else setViewMode('chat');
   }, [viewMode, chatPanelAvailable, setChatPanelOpen, setViewMode]);
-  const versionOld = useVersionStatus({ apiHost, apiPort, docId: currentDocId, enabled: Boolean(canReader), refreshKey: projectsVersion });
+  // The open document's banner item, and the projects it is filed in (the chat's scope menu offers them).
+  const { old: versionOld, projects: docProjects } = useVersionStatus({
+    apiHost, apiPort, docId: currentDocId, enabled: Boolean(canReader), refreshKey: projectsVersion,
+  });
 
   // Boot coercion (admin-console spec §3, generalized to all three views): a
   // persisted viewMode the user no longer (or never did) have the capability
@@ -385,7 +388,9 @@ export default function App() {
     stopSpeaking,
     sessions: chatSessions,
     activeSessionId: chatActiveSessionId,
-    docUse: chatDocUse,
+    scope: chatScope,
+    setScope: chatSetScope,
+    startProjectChat: chatStartProjectChat,
     events: chatEvents,
     newSession: chatNewSession,
     activeSession: chatActiveSession,
@@ -396,6 +401,12 @@ export default function App() {
     addPin: chatAddPin,
     removePin: chatRemovePin,
   } = chatEngine;
+
+  // Library → a project → "Ask about this project": a new chat about it, in the Chat view.
+  const handleAskProject = useCallback((project) => {
+    chatStartProjectChat(project);
+    setViewMode('chat');
+  }, [chatStartProjectChat, setViewMode]);
 
   // Model ids became `provider:name` in C1. Carry a saved pre-C1 selection
   // ("qwen2.5:7b") and its per-model settings over to the matching id once.
@@ -1117,7 +1128,10 @@ export default function App() {
     onOpenCitation: handleOpenCitation,
     openDocName: currentDocId ? pdfFileName : null,
     openDocVersion: currentDocId && versionOld ? versionOld.version : null,
-    docUse: chatDocUse,
+    openDocProjects: docProjects,
+    scope: chatScope,
+    setScope: chatSetScope,
+    loadProjects: projectApi.list,
   };
 
   return (
@@ -1304,6 +1318,7 @@ export default function App() {
             currentUserId={auth.user?.id}
             isAdmin={canAdmin}
             onProjectsChanged={() => setProjectsVersion((v) => v + 1)}
+            onAskProject={canChat ? handleAskProject : undefined}
           />
         ) : (
         // Mount gate mirroring the admin console above: hiding via

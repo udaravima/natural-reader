@@ -41,14 +41,19 @@ export function useDocUse(userId, sessionId) {
         [userId, pendingEnabled],
     );
 
-    const setEnabled = useCallback((on) => {
-        if (!sessionId) {
+    // The choice for one named chat (null: the new chat). `setEnabled` is this
+    // for the chat on screen; the engine names the chat itself when the screen
+    // is about to change under it (a refused first send).
+    const setEnabledFor = useCallback((sid, on) => {
+        if (!sid) {
             setPending({ ownerId: userId, enabled: on });
             return;
         }
-        write(userId, sessionId, on);
+        write(userId, sid, on);
         setVersion((v) => v + 1);
-    }, [userId, sessionId]);
+    }, [userId]);
+
+    const setEnabled = useCallback((on) => setEnabledFor(sessionId, on), [setEnabledFor, sessionId]);
 
     // `enabled` defaults to the new-chat choice; pass it to carry another
     // chat's choice (a browser-only chat forked to the server gets a new id).
@@ -59,5 +64,8 @@ export function useDocUse(userId, sessionId) {
     }, [userId, pendingEnabled]);
 
     const enabled = enabledFor(sessionId);
-    return useMemo(() => ({ enabled, setEnabled, enabledFor, adopt }), [enabled, setEnabled, enabledFor, adopt]);
+    return useMemo(
+        () => ({ enabled, setEnabled, setEnabledFor, enabledFor, adopt }),
+        [enabled, setEnabled, setEnabledFor, enabledFor, adopt],
+    );
 }

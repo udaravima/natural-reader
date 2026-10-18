@@ -210,11 +210,12 @@ function NewProjectForm({ theme, busy, onCreate, onCancel }) {
  * reader (`onOpen(doc)`, which resolves once it's open or has failed with a
  * notice): anything listed here is something I can read. "New project"
  * creates a project I own; `onProjectsChanged` tells the reader to refresh
- * its project picker.
+ * its project picker. `onAskProject({ id, name })` (when chat is available)
+ * is what a project page's "Ask about this project" calls.
  * The Projects tab lists my projects; a project page manages its documents, members and activity (A0).
  * A project shows only its current version; a row of mine that a project has moved past says so (V1 §6).
  */
-export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProjectsChanged, onOpen, currentUserId, isAdmin = false }) {
+export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProjectsChanged, onOpen, onAskProject, currentUserId, isAdmin = false }) {
   const [docs, setDocs] = useState(null);
   const [projects, setProjects] = useState(null);
   const [search, setSearch] = useState('');
@@ -424,6 +425,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
             onBack={() => setOpenProjectId(null)}
             onChanged={projectsChanged}
             onOpenDoc={onOpen ? openDoc : undefined}
+            onAskProject={onAskProject}
           />
         ) : view === 'projects' ? (
           <ProjectsTab theme={theme} projects={projects} onOpenProject={setOpenProjectId} />

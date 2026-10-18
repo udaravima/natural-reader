@@ -24,6 +24,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import AttachmentPreview from "./AttachmentPreview";
+import ScopeChip from "./chat/ScopeChip";
 import { citationDocs, remarkCitations } from "../lib/citations";
 import { estimateTokens } from "../hooks/inference";
 import { buildPinPreamble } from "../hooks/pins";
@@ -66,11 +67,16 @@ export default function ChatView({
   // (docId, page, docName) → opens that document at that page in the reader.
   // Without it, page citations in replies stay plain text.
   onOpenCitation = null,
-  // v2.4 Task E: the open document's name (null: none open) and the chat's
-  // "Use this document" switch ({ enabled, setEnabled }, from useChatEngine).
+  // What the chat is about (C2.1 Task 17; v2.4 Task E's "Use this document"
+  // switch became this chip): the open document's name (null: none open) and
+  // its projects, the chat's `scope` and `setScope` (from useChatEngine), and
+  // `loadProjects` for the chip's "Choose a project…".
   openDocName = null,
   openDocVersion = null,
-  docUse = null,
+  openDocProjects = [],
+  scope = null,
+  setScope = null,
+  loadProjects = null,
   // A narrow column (ChatSidePanel, beside the page): tighter padding, and
   // the model picker is above it rather than in the sidebar.
   compact = false,
@@ -339,8 +345,16 @@ export default function ChatView({
               ~{fmtTotal(ctxTokens)}{numCtx ? ` / ${fmtWindow(numCtx)}` : ''} ctx
             </div>
           )}
-          {openDocName && docUse && (
-            <DocUseSwitch name={openDocName} docUse={docUse} theme={theme} darkMode={darkMode} version={openDocVersion} />
+          {scope && setScope && (
+            <ScopeChip
+              theme={theme}
+              scope={scope}
+              openDocName={openDocName}
+              openDocVersion={openDocVersion}
+              openDocProjects={openDocProjects}
+              onChange={setScope}
+              loadProjects={loadProjects}
+            />
           )}
           {/* Pin row — docs/pages/selections pinned via "Ask page" or
                         "Ask AI" on a selection. Persist across sends until
@@ -1121,29 +1135,6 @@ function ReplyStatus({ message, isStreamingNow, theme }) {
     );
   }
   return null;
-}
-
-// v2.4 Task E: whether this chat's messages send the open document. Off: no
-// search before the model, no document tools, no document in the rules; pins
-// and earlier citations still work.
-function DocUseSwitch({ name, docUse, theme, darkMode, version }) {
-  const on = docUse.enabled;
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={on}
-      aria-label={`Use this document: ${name}`}
-      title={on ? "The assistant can search and read this document." : "The assistant won't read this document in this chat."}
-      onClick={() => docUse.setEnabled(!on)}
-      className={`self-start flex items-center gap-2 px-3 py-1.5 rounded-full border text-[11px] ${theme.border} ${on ? (darkMode ? "bg-purple-500/10" : "bg-purple-50") : theme.bgTertiary}`}
-    >
-      <FileText size={12} className={on ? (darkMode ? "text-purple-300" : "text-purple-600") : theme.textMuted} />
-      <span className={`truncate max-w-[16rem] ${on ? theme.text : `line-through ${theme.textMuted}`}`}>{name}</span>
-      {version != null && <span className={theme.textMuted}>· v{version} (old version)</span>}
-      <span className={`font-bold ${on ? "text-purple-500" : theme.textMuted}`}>{on ? "Use this document" : "Not used"}</span>
-    </button>
-  );
 }
 
 export function DocContextChip({
