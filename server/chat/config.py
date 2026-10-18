@@ -32,6 +32,10 @@ class ChatConfig:
     search_min_score: float = 0.45         # search_documents drops passages below this: plain
                                             # noise only. Every message measured 2026-10-05 had a
                                             # passage above 0.47, so it rarely drops anything.
+    project_fusion_depth: int = 50         # candidates from each list (meaning, words) before they are
+                                            # fused, in a project search (C2.1 spec 5.5); a document uses 20
+    search_per_doc: int = 2                # passages one document gives a project search before
+                                            # others get a turn (spec 5.5); short lists fill from the rest
     reply_reserve_tokens: int = 2048       # kept free for the reply when trimming history
     attachment_token_estimate: int = 1500  # tokens counted per image/audio when trimming (a guess)
     max_request_mb: int = 25               # turn request body cap, in MB
@@ -73,6 +77,8 @@ def load_chat_config(env: Mapping[str, str]) -> ChatConfig:
         prefetch_k=num("CHAT_PREFETCH_K", d.prefetch_k, int, 1, 20),
         read_pages_max_chars=num("CHAT_READ_PAGES_MAX_CHARS", d.read_pages_max_chars, int, 1000, 200_000),
         search_min_score=num("CHAT_SEARCH_MIN_SCORE", d.search_min_score, float, 0.0, 1.0),
+        project_fusion_depth=num("CHAT_PROJECT_FUSION_DEPTH", d.project_fusion_depth, int, 1, 500),
+        search_per_doc=num("CHAT_SEARCH_PER_DOC", d.search_per_doc, int, 1, 10),
         reply_reserve_tokens=num("CHAT_REPLY_RESERVE_TOKENS", d.reply_reserve_tokens, int, 0, 1_000_000),
         attachment_token_estimate=num("CHAT_ATTACHMENT_TOKEN_ESTIMATE", d.attachment_token_estimate,
                                       int, 0, 100_000),

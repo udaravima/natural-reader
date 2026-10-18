@@ -259,3 +259,51 @@ form alone, so I read these as noise rather than an effect of this layer, but I 
 `next-work` answers or search results to rule out a ranking change from the new code chunks.
 `user-guide-pins` still fails on search ranking (the long README and CHAT_WITH_PDF outrank
 USER_GUIDE), which the balance layer addresses.
+
+## Project search timing (Task 7: one balanced ranking)
+
+What was measured: `doc_search.search_scope` (one SQL statement over the whole project: exact
+meaning scan + word list, fused once, then the per-document balance in Python), 50 searches
+after 4 untimed warm-up searches. Only the database work is timed: the query embedding is random
+and made locally, so the embedding model's own time is **not** in these numbers. Spec 5.5 target:
+p95 under 300 ms.
+
+- Date: 2026-10-18. Code: uncommitted Task 7 work on top of `87e079e`.
+- Machine: the CPU dev machine (i9-13980HX, 32 threads) with Postgres 16.15 + pgvector in the
+  throwaway container on port 5434 (shared_buffers 128MB, work_mem 4MB, defaults), a scratch
+  database, `ANALYZE` run after seeding.
+- Data: 50 documents x 200 chunks = 10,000 chunks, random 768-d vectors, 90 Zipf-distributed
+  pseudo-words per chunk. Search: `k=10`, `per_doc=2` (`CHAT_SEARCH_PER_DOC`), `depth=50`
+  (`CHAT_PROJECT_FUSION_DEPTH`).
+
+```sh
+.venv/bin/python scripts/bench_project_search.py \
+  --database-url postgresql://natural_reader:natural_reader@127.0.0.1:5434/natural_reader_bench \
+  --docs 50 --chunks 200
+```
+
+Result (milliseconds; "all" is the headline, the rest is by query shape, 12-13 searches each, so
+a shape's p95 is close to its maximum):
+
+| query shape | n | p50 | p95 | what it exercises |
+|---|---|---|---|---|
+| **all** | 50 | **48.1** | **106.8** | the four shapes below, in turn |
+| exact | 13 | 47.0 | 51.9 | three words one chunk has: the all-words list finds it |
+| partial | 13 | 50.4 | 54.1 | the same plus one word nobody has: the half-the-words list runs |
+| partial-common | 12 | 106.1 | 107.3 | two of the commonest words plus an absent one: nearly every chunk is a candidate (worst case) |
+| meaning | 12 | 23.8 | 44.5 | no text: the meaning list alone |
+
+p95 106.8 ms against the 300 ms target: **met**, with about 2.8x headroom.
+
+Where the time goes (EXPLAIN ANALYZE, partial-common, 98 ms): the exact meaning scan is about 30
+ms (10,000 vectors read from the MATERIALIZED CTE and sorted by distance); the partial word list
+is about 65 ms, almost all of it counting matched words for the ~10,000 candidate chunks and
+ranking them with `ts_rank_cd`. A normal query touches far fewer candidates (partial: 50 ms
+total).
+
+A second run with the same project inside a larger library (250 documents, 50,000 chunks, the
+search scoped to 50 of them) gave the same picture (p50 / p95: exact 25.5 / 46.1, partial 49.7 /
+54.1, partial-common 105.0 / 107.3, meaning 22.7 / 47.7), so the doc-id filter keeps the cost on
+the project's chunks, not the library's. Not measured: libraries much larger than 50,000 chunks,
+or a query of many common words (the partial list's per-chunk work grows with the number of
+distinct words in the query).
