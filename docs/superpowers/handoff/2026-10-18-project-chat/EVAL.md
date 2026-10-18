@@ -454,3 +454,127 @@ web calls 6
   the 50 x 200 chunk benchmark data (vacuumed) a 200-word query took 129.6 ms p50 before and 65.5 ms
   after; 32- and 64-word queries are unchanged. Timed before the fusion weight, which changes only a
   constant in the fusion's sum.
+
+## Layer: table cells
+
+- Date: 2026-10-18
+- Commit: the uncommitted Task 8b work on top of `9ff6d17`: in a Markdown table the chunk text puts a space
+  after every cell and a newline after every row (so, once collapsed, one space between any two cells), where
+  it used to glue them ("OIDC_ISSUERhttp://localhost:18080/..."). Page packing still counts sentences on
+  the glued text (the reader's), so no page moves. `CHUNKER_VERSION` is now `split1:1200:200:code1:cells1`.
+  Tables inside other blocks (a list item) are spaced the same way; the paragraph before such a table is not
+  separated from it (mdast glues a list item's paragraphs; not touched).
+- Model: `ollama:gemma4:31b-cloud`, thinking off, variant 9, `--repeat 3`, the same scratch database.
+- Web: SearXNG still isn't running; both `live` calls failed with a connection error, as before.
+- Upgrade exercised: the nine fixture documents went from `...:code1` to `...:code1:cells1` in the run's own
+  `run_rebuild`; the 41 padding documents (variant 50 only) were not touched. Embeddings of text that did not
+  change were reused; the table chunks (and the chunks next to them whose cut moved) were embedded again.
+  How many, and how long it took, were not measured.
+- Runs: three sets, each `--repeat 3`. Two with the new extraction (the second, reported below, also logged
+  the model's search queries; the two agree on every fact) and a control with the OLD extraction on the same day
+  (the nine documents were rebuilt back to `...:code1`, then forward again), to separate the layer from the
+  model's day-to-day drift.
+- Headline: **1/39 passed**, right-document citations **1/33** (control with the old extraction, same day:
+  4/39 and 4/33; previous layer's section: 2/39 and 3/33). As in every layer the pass count is decided by
+  the citation form and flips between runs; read the facts table. Exit status 1.
+
+### Facts found per case (the answer's fact, apart from citation form)
+
+Over the three runs; rounds per run in brackets. Fact = the strings the case looks for (for `features`, how
+many of its 6 term groups appear, 4 needed). `ollama-release` has no fact (it checks the web offer).
+"control" = the old extraction (cells glued), re-run today; the other columns are earlier sections.
+
+| case | baseline | code chunks | one ranking + balance | control, today | **this run** |
+|---|---|---|---|---|---|
+| features | 6,6,6 of 6 terms [3,3,3] | 5,6,6 of 6 terms [3,3,3] | 3,4,3 of 6 terms [2,2,2] | 4,3,3 of 6 terms [2,2,2] | **3,4,4 of 6 terms [2,2,2]** |
+| deploy-and-test | 3/3 [2,3,2] | 3/3 [3,3,3] | 3/3 [2,2,2] | 3/3 [2,2,2] | **3/3 [2,2,2]** |
+| start-command | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | **3/3 [1,1,1]** |
+| quickstart-command | 0/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [2,2,2] | 3/3 [2,2,2] | **3/3 [2,2,2]** |
+| test-command | 0/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | **3/3 [1,1,1]** |
+| session-lifetimes | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | **3/3 [1,1,1]** |
+| oidc-issuer | 3/3 [2,2,2] | 3/3 [2,2,2] | 0/3 [2,2,2] | 1/3 [2,2,3] | **3/3 [1,1,1]** |
+| user-guide-pins | 0/3 [5,3,3] | 0/3 [1,1,1] | 0/3 [1,1,1] | 0/3 [1,1,1] | **0/3 [1,1,1]** |
+| deployment-uploads | 2/3 [3,3,2] | 3/3 [3,3,3] | 3/3 [4,3,3] | 3/3 [3,3,3] | **3/3 [3,3,3]** |
+| next-work | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | **0/3 [2,2,2]** |
+| changelog-unreleased | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | 3/3 [1,1,1] | **3/3 [1,1,1]** |
+| rhel-packages | 3/3 [3,3,3] | 3/3 [3,4,3] | 3/3 [0,2,2] | 3/3 [3,0,0] | **3/3 [2,3,0]** |
+| ollama-release | no fact to check | no fact to check | no fact to check | no fact to check | **no fact to check** |
+
+```text
+Project QA eval: ollama:gemma4:31b-cloud (variant 9)
+-- run 1
+FAIL  overview       features               4.0s rounds=2 tools=search_documents,read_document_pages  3/6 terms (need 4): text-to-speech|read aloud|reads aloud|kokoro, chat, library, accounts|sign in|sign-in|login|log in|keycloak|oidc, pdf|markdown, admin|project|projects; 0 documents cited (need 3)
+FAIL  procedure      deploy-and-test        4.8s rounds=2 tools=search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md, TESTING.md)
+FAIL  code           start-command          1.6s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           quickstart-command     3.0s rounds=2 tools=search_documents,read_document_pages  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           test-command           1.6s rounds=1 tools=search_documents  fact ok; not cited (TESTING.md); page missing (want TESTING.md p. 1)
+FAIL  exact-label    session-lifetimes      1.6s rounds=1 tools=search_documents  fact ok; not cited (ARCHITECTURE.md); page missing (want ARCHITECTURE.md p. 3)
+FAIL  exact-label    oidc-issuer            9.7s rounds=1 tools=search_documents  fact ok; not cited (DEPLOYMENT.md); page missing (want DEPLOYMENT.md p. 2)
+FAIL  named-doc      user-guide-pins        2.9s rounds=1 tools=search_documents  fact missing (each message|every message); not cited (USER_GUIDE.md)
+FAIL  named-doc      deployment-uploads     3.8s rounds=3 tools=search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md)
+FAIL  balance        next-work              2.6s rounds=2 tools=search_documents,read_document_pages  fact missing (HANDOVER); not cited (DOCS_INDEX.md)
+PASS  balance        changelog-unreleased   1.8s rounds=1 tools=search_documents  fact ok; documents ok
+FAIL  gap-general    rhel-packages          3.2s rounds=2 tools=search_documents,read_document_pages  fact ok; didn't say the documents don't cover it; no offer
+FAIL  live           ollama-release         2.8s rounds=2 tools=web_search,web_search  no offer; 2 web calls
+-- run 2
+FAIL  overview       features               5.7s rounds=2 tools=search_documents,read_document_pages  4/6 terms (need 4); 0 documents cited (need 3)
+FAIL  procedure      deploy-and-test        7.3s rounds=2 tools=search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md, TESTING.md)
+FAIL  code           start-command          1.7s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           quickstart-command     3.5s rounds=2 tools=search_documents,read_document_pages  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           test-command           3.0s rounds=1 tools=search_documents  fact ok; not cited (TESTING.md); page missing (want TESTING.md p. 1)
+FAIL  exact-label    session-lifetimes      2.0s rounds=1 tools=search_documents  fact ok; not cited (ARCHITECTURE.md); page missing (want ARCHITECTURE.md p. 3)
+FAIL  exact-label    oidc-issuer            1.8s rounds=1 tools=search_documents  fact ok; not cited (DEPLOYMENT.md); page missing (want DEPLOYMENT.md p. 2)
+FAIL  named-doc      user-guide-pins        3.1s rounds=1 tools=search_documents  fact missing (each message|every message); not cited (USER_GUIDE.md)
+FAIL  named-doc      deployment-uploads     4.5s rounds=3 tools=search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md)
+FAIL  balance        next-work              3.9s rounds=2 tools=search_documents,read_document_pages  fact missing (HANDOVER); not cited (DOCS_INDEX.md)
+FAIL  balance        changelog-unreleased   1.7s rounds=1 tools=search_documents  fact ok; not cited (DOCS_INDEX.md)
+FAIL  gap-general    rhel-packages          4.6s rounds=3 tools=search_documents,read_document_pages,read_document_pages  fact ok; didn't say the documents don't cover it; no offer
+FAIL  live           ollama-release         3.1s rounds=2 tools=web_search,web_search  no offer; 2 web calls
+-- run 3
+FAIL  overview       features               5.8s rounds=2 tools=search_documents,read_document_pages  4/6 terms (need 4); 0 documents cited (need 3)
+FAIL  procedure      deploy-and-test        6.0s rounds=2 tools=search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md, TESTING.md)
+FAIL  code           start-command          2.4s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           quickstart-command     3.7s rounds=2 tools=search_documents,read_document_pages  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           test-command           3.2s rounds=1 tools=search_documents  fact ok; not cited (TESTING.md); page missing (want TESTING.md p. 1)
+FAIL  exact-label    session-lifetimes      2.5s rounds=1 tools=search_documents  fact ok; not cited (ARCHITECTURE.md); page missing (want ARCHITECTURE.md p. 3)
+FAIL  exact-label    oidc-issuer            2.4s rounds=1 tools=search_documents  fact ok; not cited (DEPLOYMENT.md); page missing (want DEPLOYMENT.md p. 2)
+FAIL  named-doc      user-guide-pins        3.5s rounds=1 tools=search_documents  fact missing (each message|every message); not cited (USER_GUIDE.md); cited the wrong document (CHAT_WITH_PDF.md, README.md)
+FAIL  named-doc      deployment-uploads     3.9s rounds=3 tools=search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md)
+FAIL  balance        next-work              3.9s rounds=2 tools=search_documents,read_document_pages  fact missing (HANDOVER); not cited (DOCS_INDEX.md)
+FAIL  balance        changelog-unreleased   1.6s rounds=1 tools=search_documents  fact ok; not cited (DOCS_INDEX.md)
+FAIL  gap-general    rhel-packages          0.9s rounds=0 tools=-  fact ok; didn't say the documents don't cover it; no offer
+FAIL  live           ollama-release         2.3s rounds=2 tools=web_search,web_search  no offer; 2 web calls
+tally: overview 0/3, procedure 0/3, code 0/9, exact-label 0/6, named-doc 0/6, balance 1/6, gap-general 0/3, live 0/3
+right-document citations 1/33
+web calls 6
+1/39 passed
+```
+
+### What changed against the control (same day, old extraction)
+
+- **`oidc-issuer` recovered on the fact**: 3/3 in ONE search round each (control 1/3 in 2-3 rounds; the previous
+  layer's section 0/3). The model's query is the bare variable name `OIDC_ISSUER` (the control's second
+  query, when the first failed, was a variant such as `OIDC_ISSUER value`). Probing `search_scope` with that query on this database: before, the table chunk
+  (DEPLOYMENT p2) was not among the top 5 at all (two prose chunks matched the word, nothing else); now it is
+  the first result with `word_match` 'all' (the generated text index finds `oidc_issuer` in 4 DEPLOYMENT
+  chunks), and with "OIDC_ISSUER production local dev" it is first at score 0.759 instead of absent. This is
+  what the layer was for, and it did what it was meant to.
+- **`session-lifetimes` did not change**: 3/3 on the fact in one round, with and without the layer. Its
+  variables (`SESSION_TTL_HOURS`, `SESSION_IDLE_HOURS`) sit in prose in ARCHITECTURE p3, not in a table, so
+  there was nothing for this layer to fix; the case failed before and fails now only on the citation form
+  ("not cited (ARCHITECTURE.md)", 2 of 3 runs; it passed once in the control).
+- **`next-work` regressed on the fact**: 0/3 in two rounds each (search, then a page read), where the control
+  and every earlier layer had 3/3 in one. Reproduced in both new sets of runs, and the control, with the old
+  extraction, was 3/3 the same day, so it is the layer and not the model's day. The model's query is `next
+  piece of work`. The answer ("HANDOVER") is in a row of DOCS_INDEX's big table (12: `../HANDOVER.md Session
+  continuity ... what's next`) and in a "Quick routing" line; that table is chunked into a few parts, and the
+  extra spaces moved the cut points, so the part holding row 12 now starts at a different place and
+  its text differs from the glued text. Its cosine similarity to the query dropped from 0.638 to 0.595, which
+  took it from 4th (in the search result) to below 12th in the meaning ranking, out of the 5 results the model sees. The "Quick
+  routing" line (similarity 0.49) never made it either way. So the earlier 3/3 was resting on how a glued
+  table happened to embed, and the earlier layer's note ("a gain on the phrasings tried, not on every
+  phrasing") applies in the other direction now. I did not try to repair this here: it needs either a table
+  chunking that keeps a row's meaning together or a better ranking for short question-like queries, both
+  outside this task.
+- Everything else is the same within the noise seen in earlier layers (`features` 3-4 of 6 terms; the
+  `rhel-packages` rounds jump between 0 and 3; `user-guide-pins` is 0/3 on the fact in every layer).

@@ -507,7 +507,7 @@ def test_the_embedding_part_of_a_profile_leaves_out_the_chunker():
 
 
 def test_the_chunker_version_marks_code_chunks():
-    assert extract.CHUNKER_VERSION == f"split1:{extract.CHUNK_MAX_CHARS}:{extract.CHUNK_OVERLAP_CHARS}:code1"
+    assert extract.CHUNKER_VERSION == f"split1:{extract.CHUNK_MAX_CHARS}:{extract.CHUNK_OVERLAP_CHARS}:code1:cells1"
     assert embeddings.current_profile().endswith("|" + extract.CHUNKER_VERSION)
 
 

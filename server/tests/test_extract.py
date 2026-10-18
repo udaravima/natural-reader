@@ -254,3 +254,56 @@ def test_an_unreadable_outline_never_fails_the_extraction(tmp_path, monkeypatch)
     monkeypatch.setattr(extract, "_pdf_toc_items", broken)
     result = extract.extract_pdf(p)
     assert result.outline == () and result.chunks[0].text == "Only page text."
+
+
+# ---------- table cells stay apart in chunk text (C2.1 Task 8b) ----------
+
+def test_table_cells_are_separated_in_chunk_text(tmp_path):
+    md = "Settings below.\n\n| Variable | Default |\n|---|---|\n| OIDC_ISSUER | http://x |\n| SESSION_TTL | 3600 |\n"
+    chunks = _md(tmp_path, md).chunks
+    assert [c.chunk_type for c in chunks] == ["block", "block"]
+    text = chunks[1].text
+    assert "OIDC_ISSUER http://x" in text                      # cells: one space between them
+    assert text == "Variable Default OIDC_ISSUER http://x SESSION_TTL 3600"   # rows: one space too, once collapsed
+    # what the word index sees: every cell is its own token
+    assert {"Variable", "Default", "OIDC_ISSUER", "http://x", "SESSION_TTL", "3600"} <= set(text.split())
+
+
+def test_empty_and_marked_up_table_cells_still_separate(tmp_path):
+    md = "| Name | Note | Last |\n|---|---|---|\n| `FOO_BAR` | **bold** text |  |\n| [link](http://u) | a<br>b | end |\n"
+    (chunk,) = _md(tmp_path, md).chunks
+    assert chunk.text.split() == ["Name", "Note", "Last", "FOO_BAR", "bold", "text", "link", "a<br>b", "end"]
+
+
+def test_a_table_in_a_list_item_gets_spaced_cells_too(tmp_path):
+    (chunk,) = _md(tmp_path, "- Settings:\n\n  | Key | Value |\n  |---|---|\n  | A_KEY | one |\n").chunks
+    assert {"Value", "A_KEY", "one"} <= set(chunk.text.split())   # (the paragraph before the table stays glued to it: mdast)
+
+
+def test_table_spacing_does_not_move_pages(tmp_path):
+    # Every cell ends a sentence. Glued, a table is ONE sentence for the page packing (no
+    # whitespace follows a cell's full stop, so nothing splits); spaced, 2 per row. 30 rows
+    # would put 60 sentences on the page and push the closing paragraph to page 2.
+    rows = "\n".join("| Done. | Next. |" for _ in range(30))
+    md = f"Intro one is here. Intro two is here.\n\n| A | B |\n|---|---|\n{rows}\n\nClosing line is here.\n"
+    result = _md(tmp_path, md)
+    assert result.page_count == 1
+    assert [(c.page, c.chunk_type) for c in result.chunks] == [(1, "block"), (1, "block"), (1, "block")]
+    # the chunk text is the spaced one, so the counting must have used something else
+    assert len(extract._split_sentences(result.chunks[1].text)) > extract.SENTENCES_PER_PAGE
+
+
+def test_table_spacing_keeps_the_pages_the_glued_text_gives(tmp_path):
+    # Same pages as the document with each table replaced by its glued text in a paragraph.
+    rows = "\n".join(f"| Row {i}. | Cell {i}. |" for i in range(25))
+    para = " ".join(f"Sentence number {i} of the body." for i in range(1, 38))
+    md = f"{para}\n\n| A. | B. |\n|---|---|\n{rows}\n\n{para}\n"
+    glued = "A." + "B." + "".join(f"Row {i}.Cell {i}." for i in range(25))
+    plain = f"{para}\n\n{glued}\n\n{para}\n"
+    a, b = _md(tmp_path, md, "a.md"), _md(tmp_path, plain, "b.md")
+    assert a.page_count == b.page_count == 2
+    assert [(c.page, c.chunk_type) for c in a.chunks] == [(c.page, c.chunk_type) for c in b.chunks]
+
+
+def test_chunker_version_marks_spaced_table_cells():
+    assert extract.CHUNKER_VERSION == f"split1:{extract.CHUNK_MAX_CHARS}:{extract.CHUNK_OVERLAP_CHARS}:code1:cells1"

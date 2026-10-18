@@ -156,10 +156,19 @@ def _inline_text(inline, strip_task: bool) -> str:
     return "".join(parts)
 
 
-def _block_text(tokens) -> str:
+def _block_text(tokens, separate_cells: bool = False) -> str:
+    """The block's text by mdast-util-to-string's rules: runs concatenated with
+    nothing between them, so a table's cells come out glued ("OIDC_ISSUERhttp://x").
+    With `separate_cells`, a table cell ends in a space and a table row in a
+    newline: the reader's text plus whitespace, never different words. That is
+    the text to search and show; the reader's own text still decides the pages."""
     parts: list[str] = []
     for i, t in enumerate(tokens):
-        if t.type == "inline":
+        if separate_cells and t.type in ("th_close", "td_close"):
+            parts.append(" ")
+        elif separate_cells and t.type == "tr_close":
+            parts.append("\n")
+        elif t.type == "inline":
             strip_task = (i >= 2 and tokens[i - 1].type == "paragraph_open"
                           and tokens[i - 2].type == "list_item_open")
             parts.append(_inline_text(t, strip_task))
@@ -204,8 +213,8 @@ def _headings(tokens, atx_only: bool = False):
 
 
 class _Block(NamedTuple):
-    plain: str                              # mdast-util-to-string of the block ("" for code)
-    sentences: int                          # what the page packing counts
+    plain: str                              # the block's text, cells of a table apart ("" for code)
+    sentences: int                          # what the page packing counts, from the reader's own text
     code: str | None                        # the code, verbatim, when the block is a code block
     headings: tuple[tuple[int, str], ...]   # (level, text) of its h1-h3, for the outline
 
@@ -218,8 +227,12 @@ def extract_markdown(raw: str) -> Extraction:
             # lines before it): not part of the code. Nothing else is touched.
             blocks.append(_Block("", 0, first.content.rstrip("\n"), ()))
         else:
-            plain = _block_text(toks)
-            blocks.append(_Block(plain, len(_split_sentences(plain)), None, tuple(_headings(toks))))
+            # The reader's text (table cells glued) is what the pages are counted on, so a
+            # page never moves; the chunk gets the same text with the cells kept apart.
+            glued = _block_text(toks)
+            has_table = any(t.type == "table_open" for t in toks)
+            plain = _block_text(toks, separate_cells=True) if has_table else glued
+            blocks.append(_Block(plain, len(_split_sentences(glued)), None, tuple(_headings(toks))))
     # Greedy packing: close a page when the next block would push it past the
     # cap. Zero-sentence blocks (code, hr) still occupy the page they land on.
     pages: list[list[_Block]] = []
@@ -413,9 +426,11 @@ def chunk_settings(env) -> tuple[int, int]:
 # outlines (C2.1): bump it when what extraction produces changes, so existing
 # documents are re-chunked on their next use. The rebuild embeds only text that
 # has no vector yet (doc_pipeline._reusable_vectors), so such a bump costs the
-# new chunks, not the whole library.
+# new chunks, not the whole library. "cells1" marks the extraction that keeps a
+# Markdown table's cells apart in the chunk text (before it, "OIDC_ISSUER|http://x"
+# became one unsearchable word); only the table chunks get new text.
 CHUNK_MAX_CHARS, CHUNK_OVERLAP_CHARS = chunk_settings(os.environ)
-CHUNKER_VERSION = f"split1:{CHUNK_MAX_CHARS}:{CHUNK_OVERLAP_CHARS}:code1"
+CHUNKER_VERSION = f"split1:{CHUNK_MAX_CHARS}:{CHUNK_OVERLAP_CHARS}:code1:cells1"
 
 
 def _cut(text: str, start: int, limit: int) -> int:
