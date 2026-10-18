@@ -311,3 +311,212 @@ async def test_run_eval_uses_auto_mode_unless_the_environment_says_otherwise_and
     with pytest.raises(doc_qa.EvalSetupError):                                 # ... and after a failed run too
         await doc_qa.run_eval("boom")
     assert seen[-1] == "auto" and "CHAT_WEB_SEARCH" not in os.environ
+
+
+# ---- C2.1 Task 14: the strategy layer of the evaluation (ask mode, offers) ----
+
+OFFER = [{"toolName": "offer_web_search", "round": 1}]
+SEARCH_WEB = [{"toolName": "web_search", "round": 1}]
+
+
+def test_live_in_ask_mode_passes_on_an_offer_and_no_search():
+    """In ask mode the model has no web_search: asking first IS the right answer to a live question. The offer
+    ends the turn, so it may have written nothing."""
+    case = _kind("live")
+    assert doc_qa.score(case, "Shall I look that up?", OFFER, mode="ask").passed
+    assert doc_qa.score(case, "", OFFER, mode="ask").passed
+    assert not doc_qa.score(case, "It's 4°C.", SEARCH_WEB, mode="ask").passed             # searched without asking
+    assert not doc_qa.score(case, "", [*OFFER, *SEARCH_WEB], mode="ask").passed           # ... even after offering
+    assert not doc_qa.score(case, "I can't look that up here.", [], mode="ask").passed    # no offer
+    assert not doc_qa.score(case, "The trial was in Tromsø (page 5).",
+                            [{"toolName": "search_documents", "round": 1}], mode="ask").passed
+
+
+def test_live_in_auto_mode_is_scored_as_before():
+    case = _kind("live")
+    assert doc_qa.score(case, "It's 4°C.", SEARCH_WEB, mode="auto").passed
+    assert doc_qa.score(case, "It's 4°C.", SEARCH_WEB).passed                               # auto is the default
+    assert not doc_qa.score(case, "Shall I look that up?", OFFER, mode="auto").passed       # no such tool in auto mode
+
+
+def test_live_is_skipped_when_web_search_is_off():
+    skipped = doc_qa.score(_kind("live"), "", [], mode="off")
+    assert skipped.skipped == "web search is off" and not skipped.passed
+    assert doc_qa.score(_kind("small-talk"), "You're welcome!", [], mode="off").passed      # other cases are asked
+
+
+def test_live_report_says_what_the_model_did_in_ask_mode():
+    case = _kind("live")
+    offered = doc_qa.score(case, "Shall I?", OFFER, mode="ask")
+    searched = doc_qa.score(case, "4°C", SEARCH_WEB, mode="ask")
+    none = doc_qa.score(case, "no", [], mode="ask")
+    report = doc_qa.format_report([[offered, searched, none]], model="m")
+    assert "offered the search" in report and "searched without asking" in report and "didn't offer" in report
+
+
+def test_an_offer_does_not_fail_a_refusal_but_an_invented_page_still_does():
+    """Task 14: an `absent` answer passes on a refusal that invents no page; the offer next to it is fine."""
+    case = _case("absent", ["capital budget", "2030"], [])
+    ok = doc_qa.score(case, "The document doesn't seem to cover that. Shall I search the web?", OFFER, mode="ask")
+    assert ok.passed and ok.offered and "refused (offered the search)" in doc_qa.format_report([[ok]], model="m")
+    no_offer = doc_qa.score(case, "The document doesn't seem to cover that.", [], mode="ask")
+    assert no_offer.passed and not no_offer.offered
+    paged = doc_qa.score(case, "The document doesn't seem to cover it, but see (page 4). Shall I search?", OFFER)
+    assert not paged.passed and paged.invented_pages == {4}
+    figure = doc_qa.score(case, "Not covered here. It is probably 3 million. Shall I search?", OFFER)
+    assert not figure.passed and figure.invented_figure
+    # An offer with no refusal in the words is not a refusal: nothing is loosened beyond the ruling.
+    assert not doc_qa.score(case, "", OFFER).passed
+
+
+def test_the_runs_web_mode_is_the_deployments_resolution_of_the_environment(monkeypatch):
+    monkeypatch.setenv("CHAT_WEB_SEARCH", "ASK")
+    assert doc_qa.current_web_mode() == "ask"
+    monkeypatch.setenv("CHAT_WEB_SEARCH", "auto")
+    assert doc_qa.current_web_mode() == "auto"
+    monkeypatch.setenv("CHAT_WEB_SEARCH", "nonsense")      # an invalid value is ignored: the default asks first
+    assert doc_qa.current_web_mode() == "ask"
+
+
+# ---- the script's guards: a scratch database, a storage folder of its own (as eval_project_qa.py) ----
+
+def _script():
+    """scripts/eval_doc_qa.py as a module (it is not on the import path)."""
+    import importlib.util
+    from pathlib import Path
+    path = Path(__file__).resolve().parents[2] / "scripts" / "eval_doc_qa.py"
+    spec = importlib.util.spec_from_file_location("eval_doc_qa_script", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_doc_script_refuses_the_real_database():
+    script = _script()
+    with pytest.raises(SystemExit):
+        script.check_database_url("postgresql://u:p@localhost:5433/natural_reader")
+    script.check_database_url("postgresql://u:p@localhost:5433/natural_reader_eval")
+
+
+@pytest.mark.parametrize("url", [
+    None, "",                                                   # unset: the server would use its default, the real one
+    "postgresql://u:p@localhost:5433/natural_reader",
+    "postgresql://u:p@localhost:5433/natural_reader?sslmode=disable",
+    "postgresql://u:p@localhost:5433/",                         # no database named
+    "dbname=natural_reader user=u host=localhost",              # the keyword form of the same
+    "not a connection string at all ::",
+])
+def test_the_doc_script_refuses_anything_but_a_named_scratch_database(url, capsys):
+    with pytest.raises(SystemExit) as stopped:
+        _script().check_database_url(url)
+    assert stopped.value.code == 2
+    assert "u:p" not in capsys.readouterr().err      # the URL holds a password: never echoed
+
+
+@pytest.mark.parametrize("url", ["postgresql://u:p@localhost:5434/natural_reader_eval",
+                                 "dbname=natural_reader_eval host=localhost"])
+def test_the_doc_script_accepts_a_scratch_database(url):
+    _script().check_database_url(url)
+
+
+def test_the_doc_eval_gets_a_fresh_temp_storage_folder_whatever_is_exported(monkeypatch):
+    import os
+    import tempfile
+    from pathlib import Path
+    from server.services import doc_storage
+    monkeypatch.setenv("DOC_STORAGE_DIR", "/the/apps/real/storage")
+    monkeypatch.setenv("PDF_STORAGE_DIR", "/the/apps/old/storage")
+    with _script().eval_storage(None) as folder:
+        assert folder.is_dir() and folder.name.startswith("nr-eval-storage-")
+        assert folder.parent == Path(tempfile.gettempdir())
+        assert doc_storage.storage_dir() == folder.resolve()      # what the pipeline will really use
+        (folder / "x.txt").write_text("kept until the block ends")
+    assert not folder.exists()
+    assert os.environ["DOC_STORAGE_DIR"] == "/the/apps/real/storage"   # the exported value is put back
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, KeyboardInterrupt])
+def test_the_doc_temp_storage_folder_is_removed_on_an_error_or_ctrl_c(failure, monkeypatch):
+    monkeypatch.delenv("DOC_STORAGE_DIR", raising=False)
+    seen = []
+    with pytest.raises(failure):
+        with _script().eval_storage(None) as folder:
+            seen.append(folder)
+            (folder / "doc.txt").write_text("x")
+            raise failure()
+    assert seen and not seen[0].exists()
+
+
+_DOC_MAIN_PROBE = """
+import asyncio, dotenv, importlib.util, json, os, sys
+from pathlib import Path
+real = dotenv.load_dotenv
+dotenv.load_dotenv = lambda *a, **k: real(Path(os.environ["PROBE_DOTENV"]), **k)    # a .env of the test's own
+spec = importlib.util.spec_from_file_location("ev", os.environ["PROBE_SCRIPT"])
+script = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(script)
+import server.evals.doc_qa as dq
+from server.services import doc_storage
+seen = {}
+async def fake_run_eval(model, **kw):
+    seen["dir"] = str(doc_storage.storage_dir())
+    seen["exists"] = doc_storage.storage_dir().is_dir()
+    return []
+dq.run_eval = fake_run_eval
+sys.argv = ["eval_doc_qa.py", "--model", "m", *json.loads(os.environ.get("PROBE_ARGV", "[]"))]
+rc = script.main()
+print(json.dumps({"rc": rc, **seen, "after": os.path.isdir(seen["dir"])}))
+"""
+
+
+def _run_doc_main(tmp_path, database_url, *argv):
+    """The script's real main(), with a fake run_eval that records where storage points, in a subprocess
+    (main loads a .env into os.environ). The test's .env and the environment both name another folder."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    (tmp_path / ".env").write_text("DOC_STORAGE_DIR=/from/dotenv\\nPDF_STORAGE_DIR=/from/dotenv/pdfs\\n"
+                                   "DATABASE_URL=postgresql://u:p@h:5433/natural_reader\\n")
+    import json
+    env = {**os.environ, "PROBE_DOTENV": str(tmp_path / ".env"),
+           "PROBE_SCRIPT": str(root / "scripts" / "eval_doc_qa.py"), "PROBE_ARGV": json.dumps(list(argv)),
+           "DOC_STORAGE_DIR": "/exported/by/the/caller", "PYTHONPATH": str(root)}
+    env.pop("DATABASE_URL", None)
+    if database_url:
+        env["DATABASE_URL"] = database_url
+    return subprocess.run([sys.executable, "-c", _DOC_MAIN_PROBE], capture_output=True, text=True, cwd=root, env=env)
+
+
+def test_main_runs_the_doc_eval_in_a_temp_storage_folder_and_removes_it(tmp_path):
+    import json
+    import tempfile
+    from pathlib import Path
+    out = _run_doc_main(tmp_path, "postgresql://u:p@localhost:5434/natural_reader_eval")
+    assert out.returncode == 0, out.stderr
+    seen = json.loads(out.stdout.strip().splitlines()[-1])
+    assert seen["rc"] == 0 and seen["exists"]
+    assert Path(seen["dir"]).parent == Path(tempfile.gettempdir()).resolve()
+    assert Path(seen["dir"]).name.startswith("nr-eval-storage-")
+    assert not seen["after"]
+    assert seen["dir"] not in ("/exported/by/the/caller", "/from/dotenv")
+
+
+def test_main_honours_storage_dir_for_the_doc_eval_and_keeps_it(tmp_path):
+    import json
+    from pathlib import Path
+    mine = tmp_path / "kept"
+    out = _run_doc_main(tmp_path, "postgresql://u:p@localhost:5434/natural_reader_eval", "--storage-dir", str(mine))
+    assert out.returncode == 0, out.stderr
+    seen = json.loads(out.stdout.strip().splitlines()[-1])
+    assert seen["dir"] == str(Path(mine).resolve()) and seen["exists"] and seen["after"]
+
+
+def test_main_refuses_the_real_database_before_anything_runs(tmp_path):
+    """Exported or from .env (the probe's .env names natural_reader; the environment's value wins, so this
+    is the exported one), and unset: the run never starts."""
+    for url in ("postgresql://u:p@localhost:5434/natural_reader", None):
+        out = _run_doc_main(tmp_path, url)
+        assert out.returncode == 2 and "Refusing to run" in out.stderr, (url, out.stderr)
+        assert "u:p" not in out.stderr and out.stdout.strip() == ""

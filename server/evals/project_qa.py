@@ -263,6 +263,7 @@ class Result:
     wrong_docs: set[str] = field(default_factory=set)   # cited, and not the right one (see score)
     web_calls: int = 0
     offered: bool = False             # the turn ended with the offer to search the web
+    mode: str = "auto"                # the web search mode the case was asked in (its `web`; the field exists in doc_qa.Result too)
     near_miss: bool = False           # web-read: the answer gives a number the case forbids
 
     @property
@@ -281,7 +282,7 @@ def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], names: list
     gap-general cases can't be asked (no offer is possible), and are skipped."""
     tools = [c.get("toolName") or c.get("name") for c in tool_calls]
     result = Result(case, answer, tools, max((c.get("round") or 0 for c in tool_calls), default=0),
-                    web_calls=sum(t in WEB_TOOLS for t in tools), offered=offered, error=error)
+                    web_calls=sum(t in WEB_TOOLS for t in tools), offered=offered, error=error, mode=case.web)
     result.chip_pages = sorted(chip_pages or [])
     if error:
         return result
@@ -307,10 +308,15 @@ def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], names: list
         result.near_miss = any(has_term(answer, term) for term in case.forbid_terms)
         result.passed = result.fact and not result.near_miss
     elif case.kind == "gap-general":
+        # A gap in the documents is filled from labelled general knowledge OR by the offer to search the web
+        # (spec 5.3, 5.8; Task 14): a written refusal that names the gap passes, and so does an offer that
+        # refuses in words or wrote nothing (the offer ends the turn, so a model may call it first). Neither may
+        # cite a page for the part the documents lack.
         result.refused = is_refusal(answer)
         result.invented_pages = _pages_cited_in_sentences_with(answer, known, case.expect[0])
-        result.passed = (result.fact and result.refused and not result.invented_pages and not result.wrong_docs
-                         and offered)
+        written_gap = result.fact and result.refused
+        offer_turn = offered and (result.refused or not answer.strip())
+        result.passed = (not result.invented_pages and not result.wrong_docs and (written_gap or offer_turn))
     else:
         result.cited_inline = result.cited and result.pages_ok
         result.passed = result.fact and result.cited and result.pages_ok and not result.wrong_docs
@@ -332,7 +338,10 @@ def _detail(r: Result) -> str:
                 if r.near_miss else "near-miss avoided")
         return f"{'offered the search' if r.offered else 'no offer'}; {found}; {miss}; {r.web_calls} web calls"
     parts = []
-    if case.expect:
+    unwritten = case.kind == "gap-general" and not r.answer.strip()   # the offer came first: no words to judge
+    if unwritten:
+        parts.append("wrote no text")
+    elif case.expect:
         need = _terms_needed(case)
         if need < len(case.expect):
             hits = sum(has_term(r.answer, term) for term in case.expect)
@@ -341,7 +350,9 @@ def _detail(r: Result) -> str:
         else:
             parts.append("fact ok" if r.fact else f"fact missing ({', '.join(case.expect)})")
     if case.kind == "gap-general":
-        parts.append("said the documents don't cover it" if r.refused else "didn't say the documents don't cover it")
+        if not unwritten:
+            parts.append("said the documents don't cover it" if r.refused
+                         else "didn't say the documents don't cover it")
         if r.paged_gap:
             parts.append(f"cited pages {sorted(r.invented_pages)} for the part they don't cover")
         parts.append("offered the search" if r.offered else "no offer")

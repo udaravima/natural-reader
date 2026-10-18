@@ -301,13 +301,33 @@ def test_a_citation_with_a_dot_inside_the_name_does_not_split_the_rhel_sentence(
     assert pq.score(case, answer, [], names, offered=True).paged_gap
 
 
-def test_the_gap_case_fails_without_the_offer_of_a_web_search():
+def test_the_gap_case_passes_on_a_refusal_with_or_without_the_offer_of_a_web_search():
+    """Task 14 (spec 5.8): a gap is filled from labelled general knowledge OR by an offer to search the web, so
+    a written refusal passes on its own; the report still says whether it offered."""
     case = _case("gap-general")
     answer = "The documents don't cover RHEL. They need Python 3.12 (README.md, page 5)."
     assert _score(case, answer, offered=True).passed
     r = _score(case, answer, offered=False)
-    assert not r.passed and not r.offered
+    assert r.passed and not r.offered
     assert "no offer" in pq.format_report([[r]], model="m", variant="9")
+
+
+def test_the_gap_case_passes_on_an_offer_whose_turn_wrote_no_text():
+    """The offer ends the turn: a model that calls it first has said nothing yet. That is no fact to check and
+    no page to invent."""
+    case = _case("gap-general")
+    r = _score(case, "", [{"toolName": "offer_web_search", "round": 1}], offered=True)
+    assert r.passed and r.offered and not r.refused
+    assert "offered the search" in pq.format_report([[r]], model="m", variant="9")
+    assert _score(case, "   \n", offered=True).passed
+    # Nothing at all (no refusal, no offer) is no answer.
+    assert not _score(case, "", offered=False).passed
+    # An offer turn that DID write something unhedged, or invented a page, is still judged by its words.
+    assert not _score(case, "On RHEL 9, install python3.12 with dnf.", offered=True).passed
+    paged = "The documents don't cover RHEL 9 (README.md, page 5)."
+    assert not _score(case, paged, offered=True).passed
+    # An offer that refuses in words needs no RHEL in them: there is no fact to give.
+    assert _score(case, "The documents don't say. Shall I search the web?", offered=True).passed
 
 
 def test_the_offer_is_recorded_for_the_gap_case_and_reported():

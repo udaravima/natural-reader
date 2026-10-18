@@ -32,6 +32,7 @@ MAX_ROWS = 100   # the word rank of a row no word search found: past WORD_BYPASS
 # such evidence: it must pass the floor like any other row, and is labelled.
 WORD_BYPASS_RANKS = 3
 NONE_FOUND = "No passages about this in the document."
+NONE_FOUND_PROJECT = "No passages about this in the project's documents."
 # The id of the search the app runs before the model (v2.4 Task B), shown to
 # the model as its own call. Nine alphanumerics: some OpenAI-compatible
 # backends (Mistral's API, as reported) accept only that shape.
@@ -169,7 +170,8 @@ class _SearchDocuments:
             result["already_shown"] = [{"ref": ref, "pages": sorted(pages)}
                                        for ref, pages in sorted(seen_pages.items())]
         if not new:
-            result["message"] = NOTHING_NEW if seen_pages else NONE_FOUND
+            result["message"] = (NOTHING_NEW if seen_pages
+                                 else NONE_FOUND_PROJECT if ctx.project is not None else NONE_FOUND)
         # For summarize() only: stripped before the model reads the result.
         # In a project each passage says which document it came from.
         result["_saved"] = [{**({"docId": d.doc.doc_id} if ctx.project is not None else {}),

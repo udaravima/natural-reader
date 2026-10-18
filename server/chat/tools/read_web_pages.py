@@ -94,7 +94,14 @@ def _numbers(value: Any, ctx) -> list[int]:
         if n not in numbers:
             numbers.append(n)
     if any(n not in ctx.web_results for n in numbers):
-        have = f"{ranges(ctx.web_results)}." if ctx.web_results else "none yet. Search first."
+        if ctx.web_results:
+            have = f"{ranges(ctx.web_results)}."
+        elif ctx.web_approved:
+            # The model has no web_search in this turn (the user approved the app's one search): "Search first."
+            # would send it to a tool it can't call.
+            have = "the approved search found nothing to read."
+        else:
+            have = "none yet. Search first."
         raise _Refused(f"Read only results of this turn's web searches: {have}")
     return numbers
 

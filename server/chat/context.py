@@ -282,7 +282,7 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     rules = system_rules(turn.doc, turn.tools, has_pins=bool(turn.pins),
                          prefetch=cfg.prefetch == "on" and cfg.prefetch_min_score < 1.0,
                          today=today_line(turn.now, turn.timezone), profile=turn.profile,
-                         has_map=bool(turn.project_map))
+                         has_map=bool(turn.project_map), project=getattr(turn.tool_ctx, "project", None))
     system = Message("system", "\n\n".join(c for c in (rules, turn.project_map, pin_text(turn.pins)) if c))
     fixed_chars = len(system.content) + len(volatile) + 2 + len(turn.text) + sum(len(m.content) for m in exchange)
     items, n_messages, n_attachments = _fit_history(turn.history, fixed_chars, len(turn.attachments),

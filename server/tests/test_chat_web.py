@@ -241,6 +241,23 @@ async def test_read_web_pages_refuses_numbers_not_from_this_turn(web, use_router
     assert router.calls == [] and web.fetched == []        # nothing was fetched for the valid number in [1, 6]
 
 
+async def test_read_web_pages_in_an_approved_turn_with_nothing_to_read_does_not_say_to_search(web, use_router):
+    """Task 14: the approved turn's model has no web_search, so "Search first." would send it to a tool it
+    can't call. The app's search found nothing; the refusal says exactly that."""
+    router = use_router(NOTHING)
+    ctx = make_ctx(web_mode="ask", web_approved=True)
+    run = await _read(ctx, [1])
+    assert run.result == {"error": "Read only results of this turn's web searches: the approved search found "
+                                   "nothing to read."}
+    assert router.calls == [] and web.fetched == []
+    # With results, the numbers are listed as before, approved turn or not.
+    ctx = await searched(web, "abc")
+    ctx = make_ctx(web_mode="ask", web_approved=True, web_results=ctx.web_results)
+    assert (await _read(ctx, [9])).result == {"error": "Read only results of this turn's web searches: 1-3."}
+    # Auto mode keeps its own wording.
+    assert (await _read(make_ctx(), [1])).result["error"].endswith("none yet. Search first.")
+
+
 def test_result_numbers_are_listed_as_compact_ranges():
     assert rwp.ranges([1, 2, 3, 4, 5]) == "1-5"
     assert rwp.ranges([5, 1, 2, 3, 7, 8]) == "1-3, 5, 7-8"

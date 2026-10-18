@@ -328,6 +328,24 @@ async def test_search_documents_covers_the_project_sorted_by_cosine(db_conn, mon
     assert [p["docId"] for p in summary["passages"]] == [A2, A2, B]
 
 
+async def test_a_project_search_that_finds_nothing_says_the_project_has_none(db_conn, monkeypatch):
+    """Task 14: "in the document" would be false of a project; document scope keeps its own wording
+    (test_chat_tools: test_passages_below_the_floor_are_dropped_and_none_left_says_so)."""
+    from dataclasses import replace
+
+    from server.chat.config import ChatConfig
+    ctx = await _project_ctx(db_conn, monkeypatch)
+
+    async def fake_embed(text):
+        return [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+
+    monkeypatch.setattr(sd_tool, "embed_query", fake_embed)
+    strict = replace(ctx, cfg=ChatConfig(search_min_score=1.01))       # nothing reaches the floor
+    run = await _call(strict, "search_documents", {"query": "zzzqx"})
+    assert run.ok and run.result["passages"] == []
+    assert run.result["message"] == "No passages about this in the project's documents."
+
+
 async def test_a_document_scope_turn_keeps_its_single_document_tools(db_conn, monkeypatch):
     """Document scope is unchanged: no `document` needed, ref 1, the open document."""
     shim_pool(monkeypatch, db_conn, rp_tool)

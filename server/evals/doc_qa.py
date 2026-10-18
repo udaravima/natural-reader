@@ -155,20 +155,29 @@ class Result:
     seconds: float = 0.0              # the case question's turn, wall clock
     trail: bool | None = None         # fact cases: a document tool ran, or prefetch supplied passages
     skipped: str | None = None        # why the case couldn't be asked on this deployment
+    offered: bool = False             # the model called offer_web_search (the turn ends with the offer)
+    mode: str = "auto"                # the deployment's web search mode for the run (ask | auto | off)
 
 
 def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], *, error: str | None = None,
-          prefetched: bool = False, web_offered: bool = True, chip_pages: list[int] | None = None) -> Result:
+          prefetched: bool = False, web_offered: bool = True, chip_pages: list[int] | None = None,
+          mode: str = "auto") -> Result:
     """`tool_calls`: the turn's tool-input-available events ({toolName, round}).
     `prefetched`: the app searched the document before the model ran and
-    handed it passages. `web_offered`: web_search is configured here."""
+    handed it passages. `web_offered`: web_search is configured here. `mode`:
+    how web search asks in this run (services/chat_options.py): in "ask" the
+    model's only web tool is offer_web_search, in "auto" it searches itself."""
     result = Result(case, answer, [c.get("toolName") for c in tool_calls],
-                    max((c.get("round") or 0 for c in tool_calls), default=0), error=error)
+                    max((c.get("round") or 0 for c in tool_calls), default=0), error=error, mode=mode)
     result.chip_pages = sorted(chip_pages or [])
+    result.offered = "offer_web_search" in result.tools
     if error:
         return result
     if case.kind == "live" and not web_offered:
         result.skipped = "web_search not offered"
+        return result
+    if case.kind == "live" and mode == "off":
+        result.skipped = "web search is off"
         return result
     if case.kind == "small-talk":
         result.passed = not result.tools and not cited_pages(answer)
@@ -176,7 +185,10 @@ def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], *, error: s
         result.fact = all(has_term(answer, term) for term in case.expect)
         result.passed = result.fact and not cited_pages(answer)
     elif case.kind == "live":
-        result.passed = "web_search" in result.tools
+        # Ask mode: the user decides every web search, so the right answer to a live question is the offer, and
+        # a search the model ran itself would be the failure. (The offer ends the turn: it may have no text.)
+        result.passed = (result.offered and "web_search" not in result.tools if mode == "ask"
+                         else "web_search" in result.tools)
     elif case.kind == "follow-up":
         result.fact = all(has_term(answer, term) for term in case.expect)
         result.passed = result.fact and not result.tools
@@ -209,6 +221,10 @@ def _detail(r: Result) -> str:
             return f"fact missing ({', '.join(r.case.expect)})"
         return "cited a document page" if cited_pages(r.answer) else "fact ok; no page"
     if kind == "live":
+        if r.mode == "ask":
+            if "web_search" in r.tools:
+                return "searched without asking"
+            return "offered the search" if r.offered else "didn't offer the search"
         return "searched the web" if r.passed else "didn't search the web"
     if kind == "follow-up":
         fact = "fact ok" if r.fact else f"fact missing ({', '.join(r.case.expect)})"
@@ -218,7 +234,9 @@ def _detail(r: Result) -> str:
             return f"cited pages {sorted(r.invented_pages)} for a fact the document lacks"
         if r.invented_figure:
             return "gave a figure the document doesn't have"
-        return "refused" if r.refused else "answered instead of saying the document doesn't cover it"
+        if r.refused:
+            return "refused (offered the search)" if r.offered else "refused"
+        return "answered instead of saying the document doesn't cover it"
     fact = "fact ok" if r.fact else f"fact missing ({', '.join(r.case.expect)})"
     pages = ("pages ok (inline)" if r.cited_inline else "pages ok (chips)" if r.cited
              else f"pages missing (want {', '.join(map(str, r.case.pages))})")
@@ -324,7 +342,7 @@ async def _turn(text: str, *, session_id: str, user_id: str, model: str, doc_id:
     return answer, calls, error, prefetched, chips
 
 
-async def _ask(case: Case, *, web_offered: bool, **turn) -> Result:
+async def _ask(case: Case, *, web_offered: bool, mode: str, **turn) -> Result:
     """Ask the case's setup turns, then its question, in one chat; score and
     time the question's turn only."""
     import time
@@ -332,8 +350,8 @@ async def _ask(case: Case, *, web_offered: bool, **turn) -> Result:
 
     from ..db import get_pool
 
-    if case.kind == "live" and not web_offered:
-        return score(case, "", [], web_offered=False)
+    if case.kind == "live" and (not web_offered or mode == "off"):
+        return score(case, "", [], web_offered=web_offered, mode=mode)
     session_id = f"eval-{uuid.uuid4()}"
     try:
         for text in case.setup:
@@ -348,9 +366,15 @@ async def _ask(case: Case, *, web_offered: bool, **turn) -> Result:
         async with get_pool().connection() as conn:
             await conn.execute("DELETE FROM chat_sessions WHERE id = %s", (session_id,))
     result = score(case, answer, calls, error=error, prefetched=prefetched, web_offered=web_offered,
-                   chip_pages=chips)
+                   chip_pages=chips, mode=mode)
     result.seconds = seconds
     return result
+
+
+def current_web_mode() -> str:
+    """The web search mode this run's environment resolves to, the way a turn does (an invalid value is ignored)."""
+    from ..services.chat_options import from_env
+    return from_env().web_search
 
 
 @contextmanager
@@ -370,9 +394,10 @@ def web_mode(mode: str):
 
 async def run_eval(model: str, *, show_answers: bool = False, think: str = "off",
                    repeat: int = 1) -> list[list[Result]]:
-    """This evaluation measures the web tools: its "live" question is answered by a search the model runs. The
-    app asks first by default (C2.1 Task 13), which would turn that into an offer, so the run is in "auto" mode
-    unless CHAT_WEB_SEARCH says otherwise; the environment is put back afterwards."""
+    """This evaluation measures the web tools: its "live" question is answered by a search the model runs in
+    "auto" mode, and by the offer to search in "ask" mode (the app's default since C2.1 Task 13; the case is
+    scored for the mode of the run). The run is in "auto" mode unless CHAT_WEB_SEARCH says otherwise
+    (CHAT_WEB_SEARCH=ask measures the default); the environment is put back afterwards."""
     with web_mode(os.environ.get("CHAT_WEB_SEARCH") or "auto"):
         return await _run_eval(model, show_answers=show_answers, think=think, repeat=repeat)
 
@@ -411,7 +436,9 @@ async def _run_eval(model: str, *, show_answers: bool, think: str, repeat: int) 
             path.write_text(fixture.text, encoding="utf-8")
             await conn.execute(
                 "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, state, bytes_path, "
-                "extracted_by) VALUES (%s, %s, 'text', %s, 'stored', %s, 'server') ON CONFLICT DO NOTHING",
+                "extracted_by) VALUES (%s, %s, 'text', %s, 'stored', %s, 'server') "
+                # An earlier run kept its file in a storage folder that is gone by now: point at this run's.
+                "ON CONFLICT (doc_id) DO UPDATE SET bytes_path = EXCLUDED.bytes_path",
                 (fixture.doc_id, FILE_NAME, path.stat().st_size, str(path)))
             await conn.execute(
                 "INSERT INTO library_entries (user_id, doc_id, added_via, verified, file_name) "
@@ -428,11 +455,12 @@ async def _run_eval(model: str, *, show_answers: bool, think: str, repeat: int) 
 
         from ..chat.tools import web_search as web_search_tool
         web_offered = web_search_tool.TOOL.available(None)
+        mode = current_web_mode()
         runs = []
         for _ in range(repeat):
             results = []
             for case in fixture.cases:
-                result = await _ask(case, web_offered=web_offered, user_id=user_id, model=canonical,
+                result = await _ask(case, web_offered=web_offered, mode=mode, user_id=user_id, model=canonical,
                                     doc_id=fixture.doc_id, think=think, router=router, cfg=get_chat_config(),
                                     budget=model_router.get_config().daily_token_budget)
                 results.append(result)

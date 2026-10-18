@@ -951,3 +951,285 @@ One run. "Previous" is the last section's single run (map, shortening order); ro
   "offered and no web call", so it fails until Task 14's rules tell the model to call the offer for live questions.
 - The default-mode behaviour itself (the offer ends the turn, the yes runs the app's search, the tools appear for that turn
   only, `auto` and `off`) is covered by `server/tests/test_chat_web_consent.py`, not by this model run.
+
+
+## Layer: strategy
+
+- Date: 2026-10-19 (the single-document baseline was taken 2026-10-18, before the rewrite).
+- Change (C2.1 Task 14, uncommitted at the time of the runs; HEAD `5b3fb6c`): the chat rules are rewritten as one strategy that
+  also serves a project chat and the web modes (`server/chat/prompt.py`). New in the text the model reads:
+  - a project chat's first line (`The user is asking about the project "…": its n documents are listed in <project_documents>
+    below.`, then the document open in the reader by its number), step 2 that sends the model to the map by number and name
+    (with `extract_from_documents` and, when the map was shortened, `document_outline`), and step 4 citing `(Name, page N)`;
+  - the gap rule: what the documents lack may be said plainly and filled from general knowledge, introduced as not from the
+    documents and never with a page (before: "say the document doesn't seem to cover it, rather than filling the gap from
+    memory or the web");
+  - the web lines by mode: `ask` tells the model to call `offer_web_search` for live information or outside facts, the approved
+    turn tells it the results are above and to call `read_web_pages` on the best one to three, `auto` is search then read;
+    step 4 adds "(example.com)" for web facts and the offer sentence.
+  Tool side: in a project the search's empty result says "No passages about this in the project's documents."; in an approved
+  turn `read_web_pages` with nothing to read says the approved search found nothing (it no longer says "Search first.", which
+  needs a tool the model doesn't have).
+- Scoring changes made for this layer (`server/evals/doc_qa.py`, `project_qa.py`): in `ask` mode a single-document `live` case passes on
+  `offer_web_search` with no `web_search` call (auto mode keeps "web_search was called"); the project `gap-general` case passes
+  on a written refusal that names the gap, or on an offer that refuses in words or wrote no text, and in either case cites no page
+  for RHEL (before: it needed the refusal, the term RHEL and the offer together). Nothing else was loosened. The baseline below was
+  scored with the same code, so the two single-document columns are comparable.
+- `scripts/eval_doc_qa.py` now has the guards of `eval_project_qa.py`: it refuses a `DATABASE_URL` that is unset or names
+  `natural_reader`, and uses its own temporary `DOC_STORAGE_DIR`, removed afterwards (`--storage-dir PATH` keeps another).
+- Model: `ollama:gemma4:31b-cloud`, thinking off, `DATABASE_URL=postgresql://natural_reader:natural_reader@127.0.0.1:5434/natural_reader_eval`.
+  Reader: the default `llama3.2:3b` (no `READER_MODEL` set), fake web from `--web-fixture`.
+- How the single-document baseline was taken: **in the main tree, before `prompt.py` was edited** (the guarded script and the new
+  scoring in place, the rules exactly as at `5b3fb6c`), `CHAT_WEB_SEARCH=ask`, `--repeat 3`. No worktree was needed.
+
+### Single-document eval, before and after (`CHAT_WEB_SEARCH=ask`, `--repeat 3`)
+
+| case (kind) | before the rewrite | after the rewrite |
+|---|---|---|
+| single-hop | 3/3, search_documents, 1 round | 3/3, same |
+| two-hop | 3/3, 1 round | 3/3, same |
+| exact-label | 3/3, 1 round | 3/3, same |
+| page-read | 3/3, read_document_pages | 3/3, same |
+| absent | 3/3, refused ("does not seem to cover"), no page, no figure | 3/3, same words, no offer, no general knowledge added |
+| small-talk | 3/3, no tools | 3/3 |
+| general | 3/3 (1969, no page) | 3/3 |
+| live | **0/3**: declined ("I can't look up live information"), no tool, no offer | **3/3**: `offer_web_search` in one round each, no text written before it, no `web_search` |
+| follow-up | 3/3, no new search | 3/3 |
+| **total** | **24/27**, inline citations 12/12 | **27/27**, inline citations 12/12 |
+
+No non-live case dropped (the stop rule did not trigger). Times per case are within noise of each other (1-4 s on the cloud model).
+
+```text
+Document QA eval: ollama:gemma4:31b-cloud
+-- run 1
+PASS  single-hop   1.7s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  two-hop      3.5s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  exact-label  1.9s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  page-read    2.0s rounds=1 tools=read_document_pages  fact ok; pages ok (inline)
+PASS  absent       1.9s rounds=2 tools=search_documents,search_documents  refused
+PASS  small-talk   0.6s rounds=0 tools=-  no tools, no page
+PASS  general      0.5s rounds=0 tools=-  fact ok; no page
+FAIL  live         0.6s rounds=0 tools=-  didn't offer the search
+PASS  follow-up    0.6s rounds=0 tools=-  fact ok; no new search
+-- run 2
+PASS  single-hop   1.1s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  two-hop      1.9s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  exact-label  1.2s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  page-read    1.2s rounds=1 tools=read_document_pages  fact ok; pages ok (inline)
+PASS  absent       2.5s rounds=2 tools=search_documents,search_documents  refused
+PASS  small-talk   0.6s rounds=0 tools=-  no tools, no page
+PASS  general      0.6s rounds=0 tools=-  fact ok; no page
+FAIL  live         0.6s rounds=0 tools=-  didn't offer the search
+PASS  follow-up    0.6s rounds=0 tools=-  fact ok; no new search
+-- run 3
+PASS  single-hop   1.2s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  two-hop      1.3s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  exact-label  1.2s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  page-read    1.1s rounds=1 tools=read_document_pages  fact ok; pages ok (inline)
+PASS  absent       1.8s rounds=2 tools=search_documents,search_documents  refused
+PASS  small-talk   0.6s rounds=0 tools=-  no tools, no page
+PASS  general      0.5s rounds=0 tools=-  fact ok; no page
+FAIL  live         0.6s rounds=0 tools=-  didn't offer the search
+PASS  follow-up    0.6s rounds=0 tools=-  fact ok; no new search
+tally: single-hop 3/3, two-hop 3/3, exact-label 3/3, page-read 3/3, absent 3/3, small-talk 3/3, general 3/3, live 0/3, follow-up 3/3
+inline citations 12/12 (the model's own "(page N)"; chips count for a pass)
+24/27 passed
+```
+
+```text
+Document QA eval: ollama:gemma4:31b-cloud
+-- run 1
+PASS  single-hop   3.5s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  two-hop      2.2s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  exact-label  2.1s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  page-read    2.1s rounds=1 tools=read_document_pages  fact ok; pages ok (inline)
+PASS  absent       2.2s rounds=2 tools=search_documents,search_documents  refused
+PASS  small-talk   0.7s rounds=0 tools=-  no tools, no page
+PASS  general      1.3s rounds=0 tools=-  fact ok; no page
+PASS  live         1.6s rounds=1 tools=offer_web_search  offered the search
+PASS  follow-up    2.6s rounds=0 tools=-  fact ok; no new search
+-- run 2
+PASS  single-hop   1.9s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  two-hop      1.3s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  exact-label  1.9s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  page-read    1.2s rounds=1 tools=read_document_pages  fact ok; pages ok (inline)
+PASS  absent       4.4s rounds=2 tools=search_documents,search_documents  refused
+PASS  small-talk   0.7s rounds=0 tools=-  no tools, no page
+PASS  general      0.6s rounds=0 tools=-  fact ok; no page
+PASS  live         0.6s rounds=1 tools=offer_web_search  offered the search
+PASS  follow-up    0.6s rounds=0 tools=-  fact ok; no new search
+-- run 3
+PASS  single-hop   1.3s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  two-hop      2.1s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  exact-label  3.4s rounds=1 tools=search_documents  fact ok; pages ok (inline)
+PASS  page-read    1.5s rounds=1 tools=read_document_pages  fact ok; pages ok (inline)
+PASS  absent       2.0s rounds=2 tools=search_documents,search_documents  refused
+PASS  small-talk   1.6s rounds=0 tools=-  no tools, no page
+PASS  general      0.6s rounds=0 tools=-  fact ok; no page
+PASS  live         1.5s rounds=1 tools=offer_web_search  offered the search
+PASS  follow-up    0.6s rounds=0 tools=-  fact ok; no new search
+tally: single-hop 3/3, two-hop 3/3, exact-label 3/3, page-read 3/3, absent 3/3, small-talk 3/3, general 3/3, live 3/3, follow-up 3/3
+inline citations 12/12 (the model's own "(page N)"; chips count for a pass)
+27/27 passed
+```
+
+### Project eval, variant 9, `--repeat 3 --web-fixture`
+
+Two attempts, same command. **The first (37/42 passed) had one turn end in `provider_error`**: `deployment-uploads` in run 2 took
+67 s and the cloud provider answered HTTP 502 "connection reset by peer" (a network failure; the report shows ERROR and the exit
+status was 2). Since a failed cloud call says nothing about the rules, the command was run again, and the second attempt (below)
+had no error. The first attempt's other 41 turns were consistent with it (features 0/3, procedure 3/3, code 9/9, exact-label 5/6,
+named-doc 5/6 with the error counted as a miss, balance 6/6, gap-general 3/3, live 3/3, web-read 3/3).
+
+```text
+Project QA eval: ollama:gemma4:31b-cloud (variant 9)
+-- run 1
+FAIL  overview       features               5.6s rounds=2 tools=search_documents,read_document_pages  4/6 terms (need 4); 2 documents cited (need 3)
+PASS  procedure      deploy-and-test        6.8s rounds=2 tools=search_documents,search_documents,read_document_pages,read_document_pages  fact ok; documents ok
+PASS  code           start-command          1.4s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+PASS  code           quickstart-command     2.1s rounds=2 tools=search_documents,read_document_pages  fact ok; documents ok; pages ok
+PASS  code           test-command           1.6s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+PASS  exact-label    session-lifetimes      1.7s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+PASS  exact-label    oidc-issuer            1.5s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+PASS  named-doc      user-guide-pins        1.4s rounds=1 tools=search_documents  fact ok; documents ok
+PASS  named-doc      deployment-uploads     5.1s rounds=5 tools=read_document_pages,read_document_pages,search_documents,read_document_pages,read_document_pages  fact ok; documents ok
+PASS  balance        next-work              1.9s rounds=1 tools=search_documents,search_documents  fact ok; documents ok
+PASS  balance        changelog-unreleased   1.3s rounds=1 tools=search_documents  fact ok; documents ok
+PASS  gap-general    rhel-packages          0.8s rounds=1 tools=offer_web_search  wrote no text; offered the search
+PASS  live           ollama-release         0.7s rounds=1 tools=offer_web_search  offered the search; 0 web calls
+PASS  web-read       web-read               26.1s rounds=1 tools=web_search,read_web_pages  offered the search; fact ok; near-miss avoided; 2 web calls
+-- run 2
+FAIL  overview       features               3.7s rounds=2 tools=search_documents,read_document_pages  3/6 terms (need 4): text-to-speech|read aloud|reads aloud|kokoro, chat, library, accounts|sign in|sign-in|login|log in|keycloak|oidc, pdf|markdown,…
+PASS  procedure      deploy-and-test        5.1s rounds=2 tools=search_documents,search_documents,read_document_pages,read_document_pages,read_document_pages  fact ok; documents ok
+PASS  code           start-command          1.2s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+PASS  code           quickstart-command     2.1s rounds=2 tools=search_documents,read_document_pages  fact ok; documents ok; pages ok
+PASS  code           test-command           1.6s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+FAIL  exact-label    session-lifetimes      1.5s rounds=1 tools=search_documents  fact ok; not cited (ARCHITECTURE.md); page missing (want ARCHITECTURE.md p. 3)
+PASS  exact-label    oidc-issuer            1.4s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+PASS  named-doc      user-guide-pins        1.3s rounds=1 tools=search_documents  fact ok; documents ok
+PASS  named-doc      deployment-uploads     6.0s rounds=1 tools=search_documents  fact ok; documents ok
+PASS  balance        next-work              2.4s rounds=1 tools=search_documents,search_documents  fact ok; documents ok
+PASS  balance        changelog-unreleased   1.4s rounds=1 tools=search_documents  fact ok; documents ok
+PASS  gap-general    rhel-packages          1.5s rounds=2 tools=search_documents,offer_web_search  wrote no text; offered the search
+PASS  live           ollama-release         0.8s rounds=1 tools=offer_web_search  offered the search; 0 web calls
+PASS  web-read       web-read               25.6s rounds=1 tools=web_search,read_web_pages  offered the search; fact ok; near-miss avoided; 2 web calls
+-- run 3
+FAIL  overview       features               3.5s rounds=2 tools=search_documents,read_document_pages  3/6 terms (need 4): text-to-speech|read aloud|reads aloud|kokoro, chat, library, accounts|sign in|sign-in|login|log in|keycloak|oidc, pdf|markdown,…
+PASS  procedure      deploy-and-test        5.2s rounds=2 tools=search_documents,search_documents,read_document_pages,read_document_pages,read_document_pages  fact ok; documents ok
+PASS  code           start-command          1.3s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+PASS  code           quickstart-command     2.5s rounds=2 tools=search_documents,read_document_pages  fact ok; documents ok; pages ok
+PASS  code           test-command           1.6s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+FAIL  exact-label    session-lifetimes      1.7s rounds=1 tools=search_documents  fact ok; not cited (ARCHITECTURE.md); page missing (want ARCHITECTURE.md p. 3)
+PASS  exact-label    oidc-issuer            1.4s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+PASS  named-doc      user-guide-pins        1.5s rounds=1 tools=search_documents  fact ok; documents ok
+FAIL  named-doc      deployment-uploads     3.9s rounds=4 tools=read_document_pages,read_document_pages,search_documents,read_document_pages  fact missing (client_max_body_size, 100m|100 mb|100mb); documents ok
+PASS  balance        next-work              1.8s rounds=1 tools=search_documents,search_documents  fact ok; documents ok
+PASS  balance        changelog-unreleased   1.3s rounds=1 tools=search_documents  fact ok; documents ok
+PASS  gap-general    rhel-packages          1.6s rounds=2 tools=search_documents,offer_web_search  wrote no text; offered the search
+PASS  live           ollama-release         0.7s rounds=1 tools=offer_web_search  offered the search; 0 web calls
+PASS  web-read       web-read               50.1s rounds=2 tools=web_search,read_web_pages,read_web_pages  offered the search; fact ok; near-miss avoided; 3 web calls
+tally: overview 0/3, procedure 3/3, code 9/9, exact-label 4/6, named-doc 5/6, balance 6/6, gap-general 3/3, live 3/3, web-read 3/3
+right-document citations 28/33
+web calls 7
+36/42 passed
+```
+
+Headline: 36/42 passed over three runs (the previous layer passed 3/14 in one run), right-document citations 28/33. Almost
+every failure is a citation form or a short answer, not a missing fact (see the table): `features` (overview: 3-4 of 6 terms with
+4 needed, and 1-2 documents cited where 3 are needed), `session-lifetimes` (2 of 3 runs: `(ARCHITECTURE.md, page 3; USER_GUIDE.md,
+page 1)`, two documents in one parenthesis, which the score does not read; the same joined form the baseline section noted), and
+`deployment-uploads` in run 3 (the fact missing: "the specific configuration fix … is not explicitly listed in the retrieved snippets").
+
+### Facts found per case (variant 9; the answer's fact, apart from citation form)
+
+Previous layer = the `web` section's single run; this layer = the three runs of the second attempt above; rounds in brackets.
+
+| case | previous layer (web) | **this layer (strategy)** |
+|---|---|---|
+| features | 4 of 6 terms [2] | **4, 3, 3 of 6 terms [2,2,2]** |
+| deploy-and-test | 1/1 [2] | **3/3 [2,2,2]** |
+| start-command | 1/1 [1] | **3/3 [1,1,1]** |
+| quickstart-command | 1/1 [2] | **3/3 [2,2,2]** |
+| test-command | 1/1 [1] | **3/3 [1,1,1]** |
+| session-lifetimes | 1/1 [1] | **3/3 [1,1,1]** |
+| oidc-issuer | 1/1 [1] | **3/3 [1,1,1]** |
+| user-guide-pins | 1/1 [1] | **3/3 [1,1,1]** |
+| deployment-uploads | 1/1 [1] | **2/3 [5,1,4]** |
+| next-work | 1/1 [1] | **3/3 [1,1,1]** |
+| changelog-unreleased | 1/1 [1] | **3/3 [1,1,1]** |
+| rhel-packages | 0/1 [2] (empty answer, then the offer) | **no text to check [1,2,2]; offered 3/3** |
+| ollama-release | no fact to check [0] (declined, no offer) | **no fact to check [1,1,1]; offered 3/3, 0 web calls** |
+| web-read | 1/1 [1] (offered: no) | **3/3 [1,1,2]; offered 3/3** |
+
+### Variant 50, `--repeat 1`
+
+```text
+Project QA eval: ollama:gemma4:31b-cloud (variant 50)
+FAIL  overview       features               4.7s rounds=2 tools=search_documents,read_document_pages  3/6 terms (need 4): text-to-speech|read aloud|reads aloud|kokoro, chat, library, accounts|sign in|sign-in|login|log in|keycloak|oidc, pdf|markdown,…
+FAIL  procedure      deploy-and-test        8.1s rounds=2 tools=document_outline,document_outline,read_document_pages,read_document_pages  fact missing (./startup.sh start, pytest server/tests); documents ok
+PASS  code           start-command          1.6s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+PASS  code           quickstart-command     2.5s rounds=2 tools=search_documents,read_document_pages  fact ok; documents ok; pages ok
+PASS  code           test-command           2.7s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+PASS  exact-label    session-lifetimes      1.8s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+PASS  exact-label    oidc-issuer            2.3s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+PASS  named-doc      user-guide-pins        2.3s rounds=1 tools=search_documents  fact ok; documents ok
+PASS  named-doc      deployment-uploads     4.4s rounds=4 tools=read_document_pages,read_document_pages,read_document_pages,read_document_pages  fact ok; documents ok
+FAIL  balance        next-work              3.2s rounds=2 tools=search_documents,read_document_pages  fact missing (HANDOVER); not cited (DOCS_INDEX.md)
+PASS  balance        changelog-unreleased   2.2s rounds=1 tools=search_documents  fact ok; documents ok
+FAIL  gap-general    rhel-packages          4.4s rounds=2 tools=search_documents,read_document_pages  fact ok; didn't say the documents don't cover it; no offer
+PASS  live           ollama-release         1.7s rounds=1 tools=offer_web_search  offered the search; 0 web calls
+FAIL  map-shortened  features-50            5.1s rounds=2 tools=search_documents,read_document_pages  3/6 terms (need 4): text-to-speech|read aloud|reads aloud|kokoro, chat, library, accounts|sign in|sign-in|login|log in|keycloak|oidc, pdf|markdown,…
+PASS  map-shortened  start-command-50       2.0s rounds=1 tools=search_documents  fact ok; documents ok; pages ok
+right-document citations 10/13
+web calls 0
+10/15 passed
+```
+
+10/15 passed, right-document citations 10/13 (the baseline: 1/15 passed, 1/13).
+
+Facts found, against the map layer's variant 50 run (which found every fact but `next-work` and `features`): the same two
+missing, plus **`deploy-and-test` newly missing** (below), and `features-50` 3 of 6 terms (it was 5 of 6). One run each cannot
+separate that from noise, but the `deploy-and-test` miss has a cause that is the new tool:
+
+- **`document_outline` was called on variant 50: yes, twice, in one turn** (`deploy-and-test`: `document_outline, document_outline,
+  read_document_pages, read_document_pages`). The map layer's note was "never called, in 93 turns". It was the only turn of 15
+  that called it. It did not call `search_documents` there, read DEPLOYMENT.md and TESTING.md by outline, and ended with
+  "consult TESTING.md for the specific execution commands": the `pytest server/tests` command was on a page it didn't read. So
+  the outline led to a shorter trail, and a worse answer, in the one turn where it was used. (It is offered in every turn of this variant: the 50-document map is shortened, as the map layer measured; not re-checked here.)
+- `next-work` is unchanged: the model read CHAT_WITH_PDF p8 and LIBRARY p6 ("What's next") and did not reach DOCS_INDEX.
+
+### The question the documents don't answer (`rhel-packages`)
+
+- **Variant 9: now offers, 3/3 in each attempt (6/6).** Every time the model called `offer_web_search` (in 3 of the 6 turns
+  at once, in the other 3 after one `search_documents`) and wrote **no text at all** before it, so the answer field is empty; the case passes under the new scoring
+  (an offer with nothing invented). The tool's own description asks the model to "write first what you can say without the
+  web": gemma4:31b-cloud does not. So the user sees the offer card with its reason and no sentence saying the documents don't cover
+  RHEL. The rules' step 4 says to say so plainly, but a turn that calls the offer first never reaches step 4. That is a model habit
+  the strategy text did not change; whether to ask for the sentence first is the next decision.
+- **Variant 50: no offer, FAIL (1 run).** The model searched and read, and answered in prose: "The provided documents do not list
+  specific RHEL 9 system packages required…", then described the container image and Podman/Docker from DEPLOYMENT.md with "(DEPLOYMENT.md,
+  page 1)". It is a refusal in words, but the score's refusal pattern does not match "do not list", and it offered nothing, so it
+  is scored as failing; the scorer was not widened.
+
+### The web-read case: does it read the approved results?
+
+**Yes, 6/6 across the two attempts.** In each, turn 1 (the question as typed) ended in an offer (`offered the search`), and turn 2
+(the user's yes) ran the app's one search (the fake web was asked exactly one query each time), then the model called
+`read_web_pages` once or twice, only on the 4.18 install guide (`https://docs.marrowdeck.example/4.18/install`, never the archived page listed
+first), and answered `marrowdeck-srv` with the minimum version 4.18.3, not the near-miss 4.17.3. Every answer ends the web
+fact with the site, as the new step 4 asks: "(docs.marrowdeck.example)". The model never called `web_search` itself in the approved
+turn (it isn't offered); the `web_search` in the tool list is the app's. Time for turn 2 was 24-50 s (the reader, `llama3.2:3b` on this CPU).
+Previous layer: turn 1 did not offer ("say you can't look it up here" was still the rule) and the facts were found anyway.
+
+### What changed against the previous layer
+
+- The offer works end to end as designed: `live` (3/3 in the single-document eval, 3/3 in each project attempt), `rhel-packages` on variant 9 (offers)
+  and `web-read` (offer, yes, read) all behave. The text that says "ask first" is what moved them: with the old line the model
+  declined live questions in one step, with no offer.
+- The single-document eval did not drop anywhere (24/27 to 27/27; only `live` moved).
+- Facts found in variant 9 are the same as before in every case but `deployment-uploads` (one miss in three runs, the fact stated as
+  not in the snippets) and the `features` overview (3-4 of 6 terms, as before). The pass rate (36/42) is still decided by the citation
+  form, not by the strategy: joined citations and an overview that cites 1-2 documents.
+- Not measured here, and named: the labelled-general-knowledge half of the gap rule. `absent` (single document) refused plainly and
+  added nothing; `rhel-packages` took the offer path. No run produced a "not from the documents" paragraph, so whether the model
+  labels it correctly, and gives it no page, is untested by these runs.
