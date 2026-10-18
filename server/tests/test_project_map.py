@@ -144,7 +144,7 @@ def _ladder_steps():
     return [
         _map(guide(full), notes, scan, shortened=False),
         _map(guide(no_level3), notes, scan, shortened=True),
-        _map(guide(top), notes, scan, shortened=True),
+        _map(guide(no_level3[:8]), notes, scan, shortened=True),
         _map(guide(top[:8]), notes, scan, shortened=True),
         _map('1. "Guide.md" — 20 pages', '2. "Notes.txt" — 3 pages', scan, shortened=True),
     ]
@@ -165,6 +165,42 @@ def test_map_shortens_in_order_and_says_so():
     assert SHORTENED_LINE in steps[-1] and SHORTENED_LINE not in steps[0]
 
 
+def test_a_cap_comes_before_dropping_level_2():
+    """A Markdown outline has ONE level-1 heading (the title) and its sections at level 2. Dropping level 2
+    before capping would leave titles only, and the cap nothing to do: so after level 3 goes, each outline is
+    capped at its first 8 entries while level 2 is still kept, and only then is level 2 dropped."""
+    scope = _scope(_doc(1, "Alpha.md", pages=12), _doc(2, "Beta.md", pages=9))
+
+    def outline(prefix):
+        entries = [(1, f"{prefix} guide", 1)]
+        for n in range(1, 13):
+            entries += [(2, f"{prefix} section {n}", n), (3, f"{prefix} detail {n}", n)]
+        return _outline(*entries)
+
+    outlines = {_id(1): outline("Alpha"), _id(2): outline("Beta")}
+
+    def line(ref, name, pages, prefix, sections):
+        items = [f"{prefix} guide p1", *(f"{prefix} section {n} p{n}" for n in range(1, sections + 1))]
+        return f'{ref}. "{name}" — {pages} pages. Outline: {" · ".join(items)}'
+
+    def mapped(sections):
+        return _map(line(1, "Alpha.md", 12, "Alpha", sections), line(2, "Beta.md", 9, "Beta", sections),
+                    shortened=True)
+
+    all_sections = mapped(12)    # level 3 dropped, nothing else
+    first_eight = mapped(7)      # level 2 kept, capped: the title and sections 1-7 are the first 8 entries
+    assert len(build_map(scope, outlines, 100_000).text) > len(all_sections) > len(first_eight)
+    assert build_map(scope, outlines, len(all_sections)) == ProjectMap(all_sections, True)
+    # One character less than "level 3 dropped" lands on the cap, not on "level 1 only".
+    built = build_map(scope, outlines, len(all_sections) - 1)
+    assert built == ProjectMap(first_eight, True)
+    assert "Alpha section 7 p7" in built.text and "Beta section 7 p7" in built.text   # within the first 8
+    assert "Alpha section 8" not in built.text and "Beta section 8" not in built.text  # later: dropped
+    # Level 2 itself goes only when even the capped map doesn't fit.
+    level_1 = build_map(scope, outlines, len(first_eight) - 1)
+    assert level_1.shortened and "section 1" not in level_1.text and "Alpha guide p1" in level_1.text
+
+
 def test_nothing_cut_means_not_shortened_even_over_budget():
     # Documents that aren't indexed show no outline at any step, so every step is the same text. Saying
     # "outlines are shortened" would be false.
@@ -174,14 +210,18 @@ def test_nothing_cut_means_not_shortened_even_over_budget():
 
 
 def test_a_document_whose_headings_are_all_cut_claims_neither_outline_nor_none():
-    # Only level 2 headings: "drop level 2" removes them all. Saying "No outline" would be false.
+    # Only level 2 headings: "drop level 2" (the last step with outlines) removes them all. Saying "No outline"
+    # would be false.
     scope = _scope(_doc(1, "Deep.md", pages=4), _doc(2, "Other.md", pages=2))
     outlines = {_id(1): _outline((2, "Alpha heading", 1), (2, "Beta heading", 2)),
                 _id(2): _outline(*[(1, f"Chapter {n}", n) for n in range(1, 40)])}
-    full = build_map(scope, outlines, 100_000).text
-    cut = build_map(scope, outlines, len(full) - 200)
-    assert cut.shortened
-    assert '1. "Deep.md" — 4 pages\n' in cut.text      # no outline, no "No outline"
+    chapters = " · ".join(f"Chapter {n} p{n}" for n in range(1, 9))
+    level_1 = _map('1. "Deep.md" — 4 pages', f'2. "Other.md" — 2 pages. Outline: {chapters}', shortened=True)
+    cut = build_map(scope, outlines, len(level_1))
+    assert cut == ProjectMap(level_1, True)
+    # A budget a little looser still has Deep's two level 2 headings (the capped level 2 step).
+    assert "Deep.md" in build_map(scope, outlines, len(level_1) + 100).text
+    assert "Alpha heading p1 · Beta heading p2" in build_map(scope, outlines, len(level_1) + 100).text
 
 
 def test_map_is_identical_for_identical_input():

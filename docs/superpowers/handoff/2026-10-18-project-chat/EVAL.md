@@ -778,3 +778,73 @@ features-50: search_documents({"query": "features"}) | read_document_pages({"doc
   named alike would not. `document_outline` is the way back to the sections, and the model did not use it here.
   Whether to put "first 8 entries" before "drop level 2" is a decision for the spec (5.2 fixes the order as built); not
   changed here.
+
+## Layer: map (shortening order)
+
+- Date: 2026-10-18
+- Change: the map's shortening order is now: drop level 3, then cap each outline at its first 8 entries while level 2
+  is still kept, then drop level 2 as well, then names and pages only. Before: drop level 3, drop level 2, cap at 8,
+  names only. Why: a Markdown outline has ONE level-1 heading (the title) and its sections at level 2, so dropping
+  level 2 first left titles only and gave the cap nothing to cut (seen in the 50-document run of the section above).
+  `STEPS` in `server/chat/project_map.py`; regression test `test_a_cap_comes_before_dropping_level_2`.
+- Model: `ollama:gemma4:31b-cloud`, thinking off, variant 9, `--repeat 1`, the same scratch database. Made through the
+  same scratch wrapper as set 2 above (prints each case's tool arguments; changes nothing else). Variant 50 was not run.
+- **The variant 9 map did not change.** It still stops at the second step (drop level 3, levels 1-2 kept): 3119
+  characters, with the note; the full map is 6998 and the budget 6000. The new third step (levels 1-2 capped at 8)
+  would be about 2,550 and the fourth (level 1, capped) about 880, but the second already fits, so the text the model
+  saw is byte-for-byte the map of the section above. This run is therefore one more sample of the same layer, not a test of
+  the new order.
+- For variant 50 (computed on the eval database, not run): about 13,800 characters in full, about 9,900 without level
+  3, about 9,350 capped at 8 entries with level 2 kept, about 4,190 with level 1 only (capped), about 2,150 names and
+  pages only. At 6000 it still lands on level 1, so the model would still see titles only; the new order helps a
+  project only when the capped level-2 map fits, here from a budget of roughly 9,400 characters. Most of the 50
+  documents are the 41 padding notes, each of which has only 4 headings, so the cap cannot reduce them.
+- Headline: 1/13 passed (the two earlier sets of three runs passed 4/39 each), right-document citations 1/11. The citation form still
+  decides the pass count.
+
+### Facts found per case
+
+One run. The columns before this one are the previous section's two sets of three runs; rounds in brackets.
+
+| case | map, set 1 | map, set 2 | **this run (new order)** |
+|---|---|---|---|
+| features | 3,3,4 of 6 terms [2,2,2] | 4,3,4 of 6 terms [2,2,2] | **4 of 6 terms [2]** |
+| deploy-and-test | 3/3 [2,2,2] | 3/3 [2,2,2] | **1/1 [2]** |
+| start-command | 3/3 [1,1,1] | 3/3 [1,1,1] | **1/1 [1]** |
+| quickstart-command | 3/3 [2,2,2] | 3/3 [2,2,2] | **1/1 [2]** |
+| test-command | 3/3 [1,1,1] | 3/3 [1,1,1] | **1/1 [1]** |
+| session-lifetimes | 3/3 [1,1,1] | 3/3 [1,1,1] | **1/1 [1]** |
+| oidc-issuer | 3/3 [1,1,1] | 3/3 [1,1,1] | **1/1 [1]** |
+| user-guide-pins | 3/3 [1,1,1] | 3/3 [1,1,1] | **1/1 [1]** |
+| deployment-uploads | 3/3 [1,1,1] | 3/3 [1,1,1] | **1/1 [1]** |
+| next-work | 1/3 [1,1,1] | 3/3 [1,1,1] | **1/1 [1]** |
+| changelog-unreleased | 3/3 [1,1,1] | 3/3 [1,1,1] | **1/1 [1]** |
+| rhel-packages | 3/3 [3,2,3] | 3/3 [1,2,1] | **1/1 [3]** |
+| ollama-release | no fact to check | no fact to check | **no fact to check** |
+
+```text
+Project QA eval: ollama:gemma4:31b-cloud (variant 9)
+FAIL  overview       features               5.6s rounds=2 tools=search_documents,read_document_pages  4/6 terms (need 4); 0 documents cited (need 3)
+FAIL  procedure      deploy-and-test        6.3s rounds=2 tools=search_documents,search_documents,read_document_pages,read_document_pages  fact ok; not cited (DEPLOYMENT.md, TESTING.md)
+FAIL  code           start-command          2.4s rounds=1 tools=search_documents  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           quickstart-command     2.5s rounds=2 tools=search_documents,read_document_pages  fact ok; not cited (README.md); page missing (want README.md p. 3)
+FAIL  code           test-command           1.6s rounds=1 tools=search_documents  fact ok; not cited (TESTING.md); page missing (want TESTING.md p. 1)
+FAIL  exact-label    session-lifetimes      3.0s rounds=1 tools=search_documents  fact ok; not cited (ARCHITECTURE.md); page missing (want ARCHITECTURE.md p. 3)
+FAIL  exact-label    oidc-issuer            1.7s rounds=1 tools=search_documents  fact ok; not cited (DEPLOYMENT.md); page missing (want DEPLOYMENT.md p. 2)
+FAIL  named-doc      user-guide-pins        1.4s rounds=1 tools=search_documents  fact ok; not cited (USER_GUIDE.md)
+FAIL  named-doc      deployment-uploads     2.5s rounds=1 tools=search_documents  fact ok; not cited (DEPLOYMENT.md)
+FAIL  balance        next-work              2.3s rounds=1 tools=search_documents,search_documents  fact ok; not cited (DOCS_INDEX.md)
+PASS  balance        changelog-unreleased   1.6s rounds=1 tools=search_documents  fact ok; documents ok
+FAIL  gap-general    rhel-packages          5.1s rounds=3 tools=search_documents,search_documents,read_document_pages  fact ok; didn't say the documents don't cover it; no offer
+FAIL  live           ollama-release         7.6s rounds=2 tools=web_search,web_search  no offer; 2 web calls
+right-document citations 1/11
+web calls 2
+1/13 passed
+```
+
+- **`next-work` did not change in kind**: fact found, in one round, with the same two searches as in set 2
+  ("next piece of work", then "what's next"; the model's own arguments, logged), and failing on the citation ("not cited
+  (DOCS_INDEX.md)"; the answer itself wasn't printed in this run). Over all seven runs of this map it has been found 5 times
+  (1/3, 3/3, 1/1). The map it saw is the same as before, so this is noise around the earlier result, not an effect of the
+  new order.
+- `user-guide-pins` again 1 round with `documents: [9]`; every other fact as in the earlier sets.

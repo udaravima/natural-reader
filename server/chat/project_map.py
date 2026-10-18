@@ -23,12 +23,13 @@ and nothing else.
 
 The map is a pure function of the scope and the outlines: the same input gives
 the same bytes, so it stays put in the prefix cache from turn to turn. When it
-is over budget it is shortened in steps (STEPS), stopping at the first that
-fits; once anything is cut it says so, and the `document_outline` tool is
-offered for the turn (tools/document_outline.py) so the full outline is one
-call away. The one thing it never cuts is a document: with hundreds, the last
-step can still be over budget, and a document the model isn't told about is
-one it can't search.
+is over budget it is shortened in steps (STEPS: drop level 3, cap each outline
+at its first 8 entries, drop level 2, then names and pages only), stopping at
+the first that fits; once anything is cut it says so, and the `document_outline`
+tool is offered for the turn (tools/document_outline.py) so the full outline is
+one call away. The one thing it never cuts is a document: with hundreds, the
+last step can still be over budget, and a document the model isn't told about
+is one it can't search.
 """
 from __future__ import annotations
 
@@ -57,12 +58,14 @@ class _Step(NamedTuple):
 
 
 FIRST_ENTRIES = 8
-# From the most to the least: each step is cumulative (drop level 3, then level 2 as well, then at
-# most 8 of what is left, then no outline at all).
+# From the most to the least; each step is cumulative: drop level 3; cap each outline at its first 8 entries
+# while level 2 is still kept; drop level 2 as well (the cap still applies); then names and pages only.
+# The cap comes BEFORE level 2 goes because a Markdown outline has ONE level-1 heading (the title) and its
+# sections at level 2: dropping level 2 first would leave titles only, and the cap nothing to cut.
 STEPS = (
     _Step(3, None, True),
     _Step(2, None, True),
-    _Step(1, None, True),
+    _Step(2, FIRST_ENTRIES, True),
     _Step(1, FIRST_ENTRIES, True),
     _Step(0, 0, False),
 )
