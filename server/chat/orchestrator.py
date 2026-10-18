@@ -37,7 +37,7 @@ from .config import ChatConfig
 from .context import TurnInput, build_context
 from .project_map import ProjectMap, build_map
 from .project_scope import ProjectScope, load_project_scope
-from .sources import answer_sources
+from .sources import answer_sources, sources_by_document, web_sources
 from .store import TurnClaim, title_from_prompt
 from .tools import ToolContext, ToolRun, TurnTools, available_tools, result_text
 from .tools.scope import scope_docs
@@ -297,9 +297,12 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         # (The user's own messages are theirs to search with.)
         tool_ctx.seen_text.extend(m.content for m in history if m.role == "assistant")
         turn_tools = TurnTools(tool_ctx)
-        if built.notes:
-            state.doc_context = {"notes": built.notes}
-            yield ev("data-context", items=built.notes)
+        # A project reply's citations name documents: the names it was told, saved with it, are what the client
+        # links against (spec 5.7).
+        notes = [*built.notes, *([_scope_note(project)] if project is not None else [])]
+        if notes:
+            state.doc_context = {"notes": notes}
+            yield ev("data-context", items=notes)
         messages = list(built.messages)
         rounds = 0
 
@@ -447,19 +450,11 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             if offer:
                 state.finish_reason = "stop"
                 break
-        # v2.4 Task D: the pages the answer drew on, as source chips, even when
-        # the model wrote no "(page N)". Pins aren't evidence here: a pin may
-        # come from another document than the open one these chips open. The
-        # chips open ONE document, so a project turn has none yet (ruling R3).
-        evidence = ([(page, text) for doc_id, page, text in tool_ctx.evidence if doc_id == doc.doc_id]
-                    if req.project_id is None and doc is not None else [])
-        if evidence:
-            pages, kind = answer_sources(state.content, evidence)
-            if pages:
-                note = {"kind": "sources", "docId": doc.doc_id, "docName": doc.name, "pages": pages,
-                        "used": kind == "used"}
-                state.add_note(note)
-                yield ev("data-sources", docId=doc.doc_id, docName=doc.name, pages=pages, used=kind == "used")
+        # v2.4 Task D: the pages the answer drew on, as source chips, even when the model wrote no "(page N)".
+        # C2.1 Task 15: by document in a project chat, and the web pages the answer read in any chat.
+        for note in _source_notes(state.content, tool_ctx, project=project, doc=doc):
+            state.add_note(note)
+            yield ev("data-" + note["kind"].replace("_", "-"), **{k: v for k, v in note.items() if k != "kind"})
         # Spec §5.2.1: did the model still search after a prefetch hit? Lets a
         # deployer tune CHAT_PREFETCH_MIN_SCORE. DEBUG, and no user text.
         logger.debug("chat turn %s prefetch_hit=%s search_documents_called=%s", claim.turn_id,
@@ -647,6 +642,36 @@ async def _project_map(project: ProjectScope, cfg: ChatConfig,
     async with get_pool().connection() as conn:
         outlines = await load_outlines(conn, [d.doc.doc_id for d in project.searchable])
     return build_map(project, outlines, cfg.project_map_chars, tool_offered=tools_on), outlines
+
+
+def _scope_note(project: ProjectScope) -> dict[str, Any]:
+    """The documents a project reply can cite, with the names the model was given (the map's, inert)."""
+    return {"kind": "scope", "documents": [{"ref": d.ref, "docId": d.doc.doc_id, "name": d.name}
+                                           for d in project.docs]}
+
+
+def _source_notes(answer: str, ctx: ToolContext, *, project: ProjectScope | None,
+                  doc: ReadableDoc | None) -> list[dict[str, Any]]:
+    """The notes saved, and sent as data-<kind> events, at the end of the turn (chat/sources.py has the rules):
+    - "sources", for a project the pages by document ({documents}); for one open document {docId, docName, pages,
+      used}, the shape saved chats already hold. Pins aren't evidence: a pin may come from another document than
+      the one these chips open;
+    - "web_sources", in any chat: the web pages the reader returned facts from."""
+    notes: list[dict[str, Any]] = []
+    if project is not None:
+        documents = sources_by_document(answer, ctx.evidence, [(d.doc.doc_id, d.name) for d in project.docs])
+        if documents:
+            notes.append({"kind": "sources", "documents": documents})
+    elif doc is not None:
+        pages, kind = answer_sources(answer, [(page, text) for doc_id, page, text in ctx.evidence
+                                              if doc_id == doc.doc_id])
+        if pages:
+            notes.append({"kind": "sources", "docId": doc.doc_id, "docName": doc.name, "pages": pages,
+                          "used": kind == "used"})
+    web = web_sources(ctx.web_results)
+    if web:
+        notes.append({"kind": "web_sources", "pages": web})
+    return notes
 
 
 async def _open_doc(req: TurnRequest) -> ReadableDoc | None:

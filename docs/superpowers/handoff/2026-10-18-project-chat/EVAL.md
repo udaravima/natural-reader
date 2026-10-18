@@ -1233,3 +1233,142 @@ Previous layer: turn 1 did not offer ("say you can't look it up here" was still 
 - Not measured here, and named: the labelled-general-knowledge half of the gap rule. `absent` (single document) refused plainly and
   added nothing; `rhel-packages` took the offer path. No run produced a "not from the documents" paragraph, so whether the model
   labels it correctly, and gives it no page, is untested by these runs.
+
+
+## Layer: citations
+
+- Date: 2026-10-19.
+- Change (C2.1 Task 15, uncommitted at the time of the runs; HEAD `c66f648`): the server turns a project answer's citations into
+  source chips by document, and the web pages a reader returned facts from into web source chips (`server/chat/sources.py`,
+  `server/chat/orchestrator.py`). What the model reads did not change in this task (`prompt.py` is untouched), so every
+  difference in the facts below is run-to-run noise, not this change. New in what a reply is saved with:
+  - a project reply saves a `scope` note (`{ref, docId, name}` per document, the inert names the model was given) and a `sources`
+    note by document (`{documents: [{docId, docName, pages, used}]}`), sent as `data-context` and `data-sources`;
+  - any reply saves a `web_sources` note (`{pages: [{n, title, url}]}`, only `http(s)` links, only pages the reader got facts from),
+    sent as `data-web-sources`;
+  - `cited_pages` reads `(Name, page N)`, and now also joined citations (`(A.md, page 3; B.md, page 1)`), `page`/`pages`/`p.`/`pp.`,
+    ranges up to ten pages and lists (`pages 4 and 6`).
+- Scoring: **unchanged** (pass and fail as before). The report gains the citations columns, read back from what each reply was
+  *saved* with (the `sources` and `web_sources` notes in `chat_messages.doc_context`, not the stream): `chip doc` (the note names the
+  document the case expects), `chip page` (it names the expected page under that document), and for the web-read case `web chip`.
+  `(searched only)` marks a document the note lists with `used: false`, i.e. one the model was given but whose pages the answer
+  did not cite or share a run with.
+- Model: `ollama:gemma4:31b-cloud`, thinking off, `DATABASE_URL=postgresql://natural_reader:natural_reader@127.0.0.1:5434/natural_reader_eval`.
+  Reader: the default `llama3.2:3b`, fake web from `--web-fixture` (variant 9 only). One run each (`--repeat 1`), both finished with no
+  provider error (exit status 1 = the model failed cases; 2 would be a harness failure).
+
+### Variant 9, `--repeat 1 --web-fixture`
+
+```text
+Project QA eval: ollama:gemma4:31b-cloud (variant 9)
+FAIL  overview       features               6.1s rounds=2 tools=search_documents,read_document_pages  4/6 terms (need 4); 1 documents cited (need 3)
+PASS  procedure      deploy-and-test        6.7s rounds=2 tools=search_documents,search_documents,read_document_pages,read_document_pages  fact ok; documents ok; chip doc ok
+PASS  code           start-command          1.4s rounds=1 tools=search_documents  fact ok; documents ok; pages ok; chip doc ok; chip page ok
+PASS  code           quickstart-command     3.1s rounds=2 tools=search_documents,read_document_pages  fact ok; documents ok; pages ok; chip doc ok; chip page ok
+PASS  code           test-command           3.0s rounds=1 tools=search_documents  fact ok; documents ok; pages ok; chip doc ok; chip page ok
+FAIL  exact-label    session-lifetimes      1.5s rounds=1 tools=search_documents  fact ok; not cited (ARCHITECTURE.md); page missing (want ARCHITECTURE.md p. 3); chip doc ok; chip page ok
+PASS  exact-label    oidc-issuer            2.6s rounds=1 tools=search_documents  fact ok; documents ok; pages ok; chip doc ok; chip page ok
+PASS  named-doc      user-guide-pins        1.4s rounds=1 tools=search_documents  fact ok; documents ok; chip doc ok
+PASS  named-doc      deployment-uploads     98.2s rounds=5 tools=read_document_pages,read_document_pages,search_documents,read_document_pages,extract_from_documents  fact ok; documents ok; chip doc ok
+FAIL  balance        next-work              2.2s rounds=1 tools=search_documents  fact missing (HANDOVER); documents ok; chip doc ok
+PASS  balance        changelog-unreleased   1.8s rounds=1 tools=search_documents  fact ok; documents ok; chip doc ok
+PASS  gap-general    rhel-packages          1.7s rounds=1 tools=offer_web_search  wrote no text; offered the search
+PASS  live           ollama-release         1.7s rounds=1 tools=offer_web_search  offered the search; 0 web calls
+PASS  web-read       web-read               35.7s rounds=1 tools=web_search,read_web_pages  offered the search; fact ok; near-miss avoided; 2 web calls; web chip: docs.marrowdeck.example
+right-document citations 9/11
+source chips: documents 10/10, pages 5/5
+web source chips 1/1
+web calls 2
+11/14 passed
+```
+
+11/14 passed. The chip columns (new) say the saved sources note named the expected document in **10 of 10** cases that list one,
+and the expected page in **5 of 5** cases that list one; none of the 15 entries was `searched only`. The web-read case produced
+a web source chip: **yes**, one page, the 4.18 install guide, `https://docs.marrowdeck.example/4.18/install` (the archived page the
+search lists first was never read, so it is not a source).
+
+### Variant 50, `--repeat 1` (no web fixture)
+
+```text
+Project QA eval: ollama:gemma4:31b-cloud (variant 50)
+FAIL  overview       features               4.9s rounds=2 tools=search_documents,read_document_pages  4/6 terms (need 4); 2 documents cited (need 3)
+PASS  procedure      deploy-and-test        5.4s rounds=2 tools=search_documents,search_documents,read_document_pages,read_document_pages,read_document_pages  fact ok; documents ok; chip doc ok
+PASS  code           start-command          1.3s rounds=1 tools=search_documents  fact ok; documents ok; pages ok; chip doc ok; chip page ok
+PASS  code           quickstart-command     2.3s rounds=2 tools=search_documents,read_document_pages  fact ok; documents ok; pages ok; chip doc ok; chip page ok
+PASS  code           test-command           1.6s rounds=1 tools=search_documents  fact ok; documents ok; pages ok; chip doc ok; chip page ok
+PASS  exact-label    session-lifetimes      1.6s rounds=1 tools=search_documents  fact ok; documents ok; pages ok; chip doc ok; chip page ok
+PASS  exact-label    oidc-issuer            1.4s rounds=1 tools=search_documents  fact ok; documents ok; pages ok; chip doc ok; chip page ok
+PASS  named-doc      user-guide-pins        1.4s rounds=1 tools=search_documents  fact ok; documents ok; chip doc ok
+PASS  named-doc      deployment-uploads     8.9s rounds=4 tools=read_document_pages,read_document_pages,read_document_pages,read_document_pages  fact ok; documents ok; chip doc ok
+FAIL  balance        next-work              3.0s rounds=2 tools=search_documents,read_document_pages  fact missing (HANDOVER); not cited (DOCS_INDEX.md); chip doc ok (searched only)
+PASS  balance        changelog-unreleased   1.5s rounds=1 tools=search_documents  fact ok; documents ok; chip doc ok
+PASS  gap-general    rhel-packages          13.7s rounds=2 tools=search_documents,read_document_pages  fact ok; said the documents don't cover it; no offer
+PASS  live           ollama-release         0.8s rounds=1 tools=offer_web_search  offered the search; 0 web calls
+FAIL  map-shortened  features-50            7.2s rounds=2 tools=search_documents,read_document_pages  4/6 terms (need 4); 1 documents cited (need 3)
+PASS  map-shortened  start-command-50       1.4s rounds=1 tools=search_documents  fact ok; documents ok; pages ok; chip doc ok; chip page ok
+right-document citations 10/13
+source chips: documents 11/11, pages 6/6
+web calls 0
+12/15 passed
+```
+
+12/15 passed; chips named the expected document 11/11 and page 6/6, one document `searched only` (`next-work`: the model was
+given DOCS_INDEX.md and did not use it, and its answer is also the one that misses HANDOVER).
+
+### Facts found per case (the answer's fact, apart from citation form)
+
+Previous layer = the strategy section's three variant-9 runs (rounds in brackets); this layer = one variant-9 run and one
+variant-50 run. One run cannot be told from noise: the model-facing text is identical between the layers.
+
+| case | previous layer (strategy, variant 9, 3 runs) | **this layer, variant 9** | **this layer, variant 50** |
+|---|---|---|---|
+| features | 4, 3, 3 of 6 terms [2,2,2] | **4 of 6 [2]**; 1 document cited | **4 of 6 [2]**; 2 documents cited |
+| deploy-and-test | 3/3 [2,2,2] | **1/1 [2]** | **1/1 [2]** |
+| start-command | 3/3 [1,1,1] | **1/1 [1]** | **1/1 [1]** |
+| quickstart-command | 3/3 [2,2,2] | **1/1 [2]** | **1/1 [2]** |
+| test-command | 3/3 [1,1,1] | **1/1 [1]** | **1/1 [1]** |
+| session-lifetimes | 3/3 [1,1,1] | **1/1 [1]** (joined citation) | **1/1 [1]** |
+| oidc-issuer | 3/3 [1,1,1] | **1/1 [1]** | **1/1 [1]** |
+| user-guide-pins | 3/3 [1,1,1] | **1/1 [1]** | **1/1 [1]** |
+| deployment-uploads | 2/3 [5,1,4] | **1/1 [5]** (98.2 s) | **1/1 [4]** |
+| next-work | 3/3 [1,1,1] | **0/1 [1]** (HANDOVER missing) | **0/1 [2]** (HANDOVER missing) |
+| changelog-unreleased | 3/3 [1,1,1] | **1/1 [1]** | **1/1 [1]** |
+| rhel-packages | no text to check; offered 3/3 | **no text; offered** | **fact ok, said so in words; no offer tool call** |
+| ollama-release | no fact to check; offered 3/3 | **offered, 0 web calls** | **offered, 0 web calls** |
+| web-read | 3/3 [1,1,2]; offered 3/3 | **1/1 [1]; offered** | not asked |
+
+### The citation columns, case by case (variant 9)
+
+| case | expected | the eval's inline score (unchanged) | saved sources note names the document | names the page |
+|---|---|---|---|---|
+| deploy-and-test | DEPLOYMENT.md, TESTING.md | documents ok | ok | (no page listed) |
+| start-command | README.md p. 3 | documents ok, pages ok | ok | ok |
+| quickstart-command | README.md p. 3 | documents ok, pages ok | ok | ok |
+| test-command | TESTING.md p. 1 | documents ok, pages ok | ok | ok |
+| **session-lifetimes** | ARCHITECTURE.md p. 3 | **not cited, page missing** | **ok** | **ok** |
+| oidc-issuer | DEPLOYMENT.md p. 2 | documents ok, pages ok | ok | ok |
+| user-guide-pins | USER_GUIDE.md | documents ok | ok | (no page listed) |
+| deployment-uploads | DEPLOYMENT.md | documents ok | ok | (no page listed) |
+| next-work | DOCS_INDEX.md | documents ok | ok | (no page listed) |
+| changelog-unreleased | DOCS_INDEX.md | documents ok | ok | (no page listed) |
+
+### What this layer shows
+
+- **Joined citations are now read where the chips are built, not where the eval scores.** In this run `session-lifetimes` answered
+  `SESSION_IDLE_HOURS: 12 (USER_GUIDE.md, page 1; ARCHITECTURE.md, page 3)` and `SESSION_TTL_HOURS: 168 (ARCHITECTURE.md, page 3;
+  USER_GUIDE.md, page 1)`. The eval's own inline pattern reads one citation per pair of parentheses, so that case is `FAIL` (`not
+  cited (ARCHITECTURE.md)`), while the saved sources note names ARCHITECTURE.md page 3 under `used: true`. This is the case the strategy
+  layer lost in two of three runs for the same reason. The eval's scoring was left alone on purpose (rulings): the pass rate
+  still counts a joined citation as no citation, and the chip column shows what the reader of the saved chat would be offered.
+- **The chip columns do not make a weak answer pass.** `features` cites one or two documents (it needs three; the markdown list
+  ends with a single `(README.md, page 1)`), and `next-work` misses the fact HANDOVER; both fail as before. Whether the sources note of
+  an overview names three documents is not measured: an overview lists no expected document, so it has no chip column (the number of
+  documents in its note is in the saved reply, not in this report).
+- **"Named" is not "used".** A document counts as named when the note lists it at all; `used` separates the pages the answer cited or
+  shared a distinctive run with from the pages the model was only given. Every expected document was `used` in variant 9; the one
+  exception in variant 50 is marked `(searched only)`. A refusal produces a note of everything searched, labelled so (the
+  per-document form of the "Searched (not cited)" chip the single-document chat already has).
+- **Web source chips.** The web-read case's answer ends `(docs.marrowdeck.example)` and the reply was saved with one web source,
+  the page whose facts it used. A page the reader found nothing on, a page read in a call the turn's budget dropped, and a result
+  whose URL is not `http(s)` (the `javascript:` and `data:` cases) are never listed; those are unit-tested
+  (`test_chat_sources.py`, `test_chat_orchestrator.py`), not exercised by the fake web.

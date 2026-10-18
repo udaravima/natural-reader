@@ -415,17 +415,21 @@ async def test_project_scope_uses_project_tool_rounds(db_conn, monkeypatch):
     assert events[-1]["type"] == "finish" and events[-1]["finishReason"] == "max-steps"
 
 
-async def test_a_project_turn_emits_no_source_chips_yet(db_conn, monkeypatch):
-    """R3: source chips open ONE document; per-document sources come later."""
-    router = FakeRouter(steps=[_search_step(0), reply("Beta covers the ZEPHYR-9 rollout schedule (page 4).")])
+async def test_a_project_turn_gets_source_chips_by_document(db_conn, monkeypatch):
+    """Task 15 lifts ruling R3: the chips are grouped by document, so a project reply has them. The cited page is
+    Beta's own (page 4), however the search ordered the two documents."""
+    router = FakeRouter(steps=[_search_step(0), reply("Beta covers the ZEPHYR-9 rollout schedule (Beta.md, page 4).")])
     events, claim = await _project_turn(db_conn, monkeypatch, router)
     tool_out = next(e for e in events if e["type"] == "tool-output-available")
     assert tool_out["output"]["chunk_count"] == 2   # it searched both documents
-    assert "data-sources" not in [e["type"] for e in events]
+    sources = next(e for e in events if e["type"] == "data-sources")
+    assert "docId" not in sources and "pages" not in sources
+    assert sources["documents"] == [{"docId": A2, "docName": "Alpha.md", "pages": [1], "used": False},
+                                    {"docId": B, "docName": "Beta.md", "pages": [4], "used": True}]
     cur = await db_conn.execute("SELECT status, doc_context FROM chat_messages WHERE id = %s", (claim.turn_id,))
     status, doc_context = await cur.fetchone()
     assert status == "complete"
-    assert not any(n.get("kind") == "sources" for n in (doc_context or {}).get("notes", []))
+    assert {"kind": "sources", "documents": sources["documents"]} in doc_context["notes"]
 
 
 async def test_a_project_turn_prefetches_across_the_whole_project(db_conn, monkeypatch):
@@ -434,8 +438,10 @@ async def test_a_project_turn_prefetches_across_the_whole_project(db_conn, monke
     router = FakeRouter(steps=[reply("Both cover ZEPHYR-9 (Alpha.md, page 1; Beta.md, page 4).")])
     events, claim = await _project_turn(db_conn, monkeypatch, router, text="zephyr nodes",
                                         cfg=ChatConfig(prefetch="on"))
-    [note] = next(e for e in events if e["type"] == "data-context")["items"]
+    note, scope = next(e for e in events if e["type"] == "data-context")["items"]
     assert note["kind"] == "prefetch" and "docId" not in note and note["count"] == 2
+    assert scope == {"kind": "scope", "documents": [{"ref": 1, "docId": A2, "name": "Alpha.md"},
+                                                    {"ref": 2, "docId": B, "name": "Beta.md"}]}
     assert note["documents"] == [{"docId": A2, "docName": "Alpha.md", "count": 1, "pages": [1]},
                                  {"docId": B, "docName": "Beta.md", "count": 1, "pages": [4]}]
     sent = router.calls[0]["messages"]
@@ -444,4 +450,6 @@ async def test_a_project_turn_prefetches_across_the_whole_project(db_conn, monke
     assert sorted((p["ref"], p["page"]) for p in result["passages"]) == [(1, 1), (2, 4)]
     assert [d["name"] for d in result["documents"]] == ["Alpha.md", "Beta.md"]
     cur = await db_conn.execute("SELECT doc_context FROM chat_messages WHERE id = %s", (claim.turn_id,))
-    assert (await cur.fetchone())[0] == {"notes": [note]}
+    saved = (await cur.fetchone())[0]["notes"]
+    assert saved[:2] == [note, scope]                                  # then the sources note, written at the end
+    assert saved[2]["kind"] == "sources" and [d["pages"] for d in saved[2]["documents"]] == [[1], [4]]

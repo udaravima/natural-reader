@@ -875,3 +875,97 @@ async def test_each_case_runs_in_its_own_web_mode_and_the_environment_is_put_bac
     await pq._ask(_case("code"), names=NAMES, web_offered=True, user_id="u", project_id="p", model="m",
                   think="off", router=None, cfg=None, budget=None)
     assert modes == ["off", "ask"] and "CHAT_WEB_SEARCH" not in os.environ
+
+
+# ---- C2.1 Task 15: the citations layer reads the saved sources note ----
+
+START = next(c for c in pq.CASES if c.name == "start-command")          # README.md, page 3
+LIFETIMES = next(c for c in pq.CASES if c.name == "session-lifetimes")  # ARCHITECTURE.md, page 3
+START_ANSWER = "./startup.sh start (README.md, page 3)."
+READ_CHIP = {"docId": "d1", "docName": "README.md", "pages": [3, 5], "used": True}
+SEARCHED_CHIP = {"docId": "d2", "docName": "DEPLOYMENT.md", "pages": [1], "used": False}
+
+
+def test_the_chip_columns_say_whether_the_saved_note_names_the_expected_document_and_page():
+    r = _score(START, START_ANSWER, chips=[READ_CHIP, SEARCHED_CHIP])
+    assert (r.chip_doc, r.chip_page) == (True, True)
+    wrong_page = _score(START, START_ANSWER, chips=[{**READ_CHIP, "pages": [1, 5]}])
+    assert (wrong_page.chip_doc, wrong_page.chip_page) == (True, False)
+    other_doc = _score(START, START_ANSWER, chips=[SEARCHED_CHIP])
+    assert (other_doc.chip_doc, other_doc.chip_page) == (False, False)
+    none_shown = _score(START, START_ANSWER, chips=[])
+    assert (none_shown.chip_doc, none_shown.chip_page) == (False, False)
+
+
+def test_a_page_counts_only_under_its_own_document():
+    r = _score(START, START_ANSWER, chips=[{**READ_CHIP, "pages": [1]}, {**SEARCHED_CHIP, "docName": "TESTING.md",
+                                                                          "pages": [3]}])
+    assert r.chip_doc is True and r.chip_page is False
+
+
+def test_a_chip_is_not_observed_when_no_note_was_given_and_does_not_apply_without_documents_or_pages():
+    assert (_score(START, START_ANSWER).chip_doc, _score(START, START_ANSWER).chip_page) == (None, None)
+    overview = _score(_case("overview"), "x", chips=[READ_CHIP])
+    assert (overview.chip_doc, overview.chip_page) == (None, None)
+    balance = _score(_case("balance"), "HANDOVER (DOCS_INDEX.md, page 1)", chips=[])
+    assert (balance.chip_doc, balance.chip_page) == (False, None)         # a document, and no page to name
+    assert _score(_case("live"), "x", offered=True, chips=[]).chip_doc is None
+
+
+def test_the_chip_columns_never_change_pass_or_fail():
+    for chips in (None, [], [READ_CHIP], [SEARCHED_CHIP]):
+        assert _score(START, START_ANSWER, chips=chips).passed
+        assert not _score(START, "Use docker.", chips=chips).passed
+
+
+def test_the_report_has_the_chip_columns_and_a_total():
+    ok = _score(START, START_ANSWER, chips=[READ_CHIP])
+    searched = _score(LIFETIMES, "168 and 12 (ARCHITECTURE.md, page 3).",
+                      chips=[{"docId": "d", "docName": "ARCHITECTURE.md", "pages": [3], "used": False}])
+    missing = _score(LIFETIMES, "168 and 12 (ARCHITECTURE.md, page 3).", chips=[SEARCHED_CHIP])
+    blind = _score(START, START_ANSWER)
+    lines = pq.format_report([[ok, searched, missing, blind]], model="m", variant="9").splitlines()
+    assert "; chip doc ok; chip page ok" in lines[1]
+    assert "; chip doc ok (searched only); chip page ok (searched only)" in lines[2]
+    assert "; chip doc missing (ARCHITECTURE.md); chip page missing (want ARCHITECTURE.md p. 3)" in lines[3]
+    assert "chip" not in lines[4]                                         # no note was observed: no column
+    assert "source chips: documents 2/3, pages 2/3" in "\n".join(lines)
+
+
+def test_the_web_read_case_reports_whether_its_answer_produced_a_web_chip():
+    page = {"n": 2, "title": "Install guide", "url": "https://docs.marrowdeck.example/4.18/install"}
+    yes = _score(WEB, "marrowdeck-srv 4.18.3 (docs.marrowdeck.example)", offered=True, chips=[], web_chips=[page])
+    no = _score(WEB, "marrowdeck-srv 4.18.3", offered=True, chips=[], web_chips=[])
+    unseen = _score(WEB, "marrowdeck-srv 4.18.3", offered=True)
+    lines = pq.format_report([[yes, no, unseen]], model="m", variant="9").splitlines()
+    assert lines[1].endswith("; web chip: docs.marrowdeck.example")
+    assert lines[2].endswith("; web chip: none")
+    assert "web chip" not in lines[3]
+    assert "web source chips 1/2" in "\n".join(lines)
+    assert yes.passed and no.passed                                         # recorded, never scored
+
+
+def test_saved_sources_reads_both_notes_a_reply_was_saved_with():
+    pages = [{"n": 1, "title": "T", "url": "https://a.test"}]
+    notes = [{"kind": "scope", "documents": []}, {"kind": "sources", "documents": [READ_CHIP]},
+             {"kind": "web_sources", "pages": pages}]
+    assert pq.saved_sources({"notes": notes}) == ([READ_CHIP], pages)
+    assert pq.saved_sources({"notes": notes[:1]}) == ([], [])
+    assert pq.saved_sources(None) == ([], [])
+    assert pq.saved_sources({}) == ([], [])
+    # the single-document shape has no `documents`: a project eval never sees one, and reads it as no chips
+    assert pq.saved_sources({"notes": [{"kind": "sources", "docId": "d", "docName": "T", "pages": [1], "used": True}]}) == ([], [])
+
+
+async def test_ask_scores_the_chips_the_question_turn_saved(monkeypatch):
+    pages = [{"n": 1, "title": "T", "url": "https://a.test"}]
+    _fake_turns(monkeypatch, [pq.Turn(answer="./startup.sh start (README.md, page 3).", sources=[READ_CHIP],
+                                      web_sources=[], chips=[3, 5])])
+    r = await pq._ask(START, names=NAMES, web_offered=True, user_id="u", project_id="p", model="m", think="off",
+                      router=None, cfg=None, budget=None)
+    assert r.passed and (r.chip_doc, r.chip_page) == (True, True) and r.chip_pages == [3, 5]
+    _fake_turns(monkeypatch, [pq.Turn(answer="Probably 4.17.3."),
+                              pq.Turn(answer="marrowdeck-srv 4.18.3", sources=[], web_sources=pages)])
+    r = await pq._ask(WEB, names=NAMES, web_offered=True, user_id="u", project_id="p", model="m", think="off",
+                      router=None, cfg=None, budget=None)
+    assert r.web_chips == pages and r.chips == []          # the yes turn's note, not the first turn's (none)

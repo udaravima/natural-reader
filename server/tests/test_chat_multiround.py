@@ -317,6 +317,20 @@ async def test_the_pages_an_uncited_answer_drew_on_are_sent_and_saved(conn, corp
             "used": True} in doc_context["notes"]
 
 
+async def test_document_scope_keeps_its_source_shapes_byte_for_byte(conn, corpus):
+    """C2.1 Task 15 adds the by-document shape for projects; a chat about one document still sends and saves
+    {docId, docName, pages, used}, with no scope note and no `documents` list, so saved chats keep their chips."""
+    router = FakeRouter(steps=[_call("c1", "chapter 3 method"), reply("It uses MIMIC-IV (page 18).")])
+    events, claim = await _run(conn, router, text="Which dataset?")
+    src = next(e for e in events if e["type"] == "data-sources")
+    assert {k: v for k, v in src.items() if k != "seq"} == {
+        "type": "data-sources", "docId": DOC.doc_id, "docName": "Thesis.pdf", "pages": [18], "used": True}
+    assert list(src) == ["type", "seq", "docId", "docName", "pages", "used"]
+    notes = (await _msg(conn, claim.assistant_message_id))[5]["notes"]
+    assert notes == [{"kind": "sources", "docId": DOC.doc_id, "docName": "Thesis.pdf", "pages": [18], "used": True}]
+    assert "data-web-sources" not in [e["type"] for e in events]
+
+
 async def test_a_refusal_shows_the_pages_searched_as_retrieved(conn, corpus):
     router = FakeRouter(steps=[_call("c1", "chapter 3 method"),
                                reply("The document doesn't seem to cover the budget.")])

@@ -10,6 +10,7 @@ from server.chat import orchestrator, store
 from server.chat.config import ChatConfig
 from server.chat.context import Prefetch
 from server.chat.orchestrator import TurnRequest, run_turn
+from server.chat.tools import TurnTools
 from server.chat.tools import search_documents as sd_tool
 from server.chat.tools import web_search as ws_tool
 from server.services.doc_search import ReadableDoc
@@ -17,6 +18,9 @@ from server.llm.types import (CallSettings, Capabilities, FeatureDropped, Finish
                               ProviderTimeout, ProviderUnavailable, ReasoningDelta, TextDelta,
                               ToolCall, ToolCallReady, Usage)
 from server.tests.chat_harness import FakeRouter, assert_fixture, member, reply, shim_pool
+from server.tests.test_chat_extract import by_label
+from server.tests.test_chat_project_scope import A2, B, _project_turn, _search_step
+from server.tests.test_chat_web import PAGE, hit, url, use_router, web  # noqa: F401 — web and use_router are fixtures
 
 
 @pytest.fixture
@@ -832,3 +836,145 @@ async def test_the_deployment_profile_leads_the_system_message(conn):
     system = router.calls[0]["messages"][0]
     assert system.role == "system"
     assert system.content.startswith("You are Ada, the reading-room assistant.\n\nYou are working in Natural Reader")
+
+
+# ---- C2.1 Task 15: sources by document, and web sources ----
+
+SCOPE_NOTE = {"kind": "scope", "documents": [{"ref": 1, "docId": A2, "name": "Alpha.md"},
+                                             {"ref": 2, "docId": B, "name": "Beta.md"}]}
+
+
+def _event(events, kind):
+    return next(e for e in events if e["type"] == kind)
+
+
+def _notes(row):
+    return (row[5] or {}).get("notes", [])
+
+
+async def test_project_turn_saves_scope_and_sources_notes(db_conn, monkeypatch):
+    router = FakeRouter(steps=[_search_step(0), reply("Both cover ZEPHYR-9 (Alpha.md, page 1; Beta.md, page 4).")])
+    events, claim = await _project_turn(db_conn, monkeypatch, router)
+    # The scope note is the first thing the client gets, in data-context, before any model step.
+    kinds = types(events)
+    assert kinds.index("data-context") < kinds.index("start-step")
+    assert _event(events, "data-context")["items"] == [SCOPE_NOTE]
+    # The sources arrive after the answer is written, before `finish`; one entry per document.
+    sources = {"documents": [{"docId": A2, "docName": "Alpha.md", "pages": [1], "used": True},
+                             {"docId": B, "docName": "Beta.md", "pages": [4], "used": True}]}
+    event = _event(events, "data-sources")
+    assert {k: v for k, v in event.items() if k not in ("type", "seq")} == sources
+    assert kinds.index("text-end") < kinds.index("data-sources") < kinds.index("finish")
+    assert "data-web-sources" not in kinds
+    row = await _msg(db_conn, claim.turn_id)
+    assert _notes(row) == [SCOPE_NOTE, {"kind": "sources", **sources}]
+
+
+async def test_a_project_turn_without_document_text_saves_only_the_scope(db_conn, monkeypatch):
+    events, claim = await _project_turn(db_conn, monkeypatch, FakeRouter(steps=[reply("Hello!")]))
+    assert "data-sources" not in types(events)
+    assert _notes(await _msg(db_conn, claim.turn_id)) == [SCOPE_NOTE]
+
+
+async def test_a_citation_of_an_unknown_name_makes_no_chip(db_conn, monkeypatch):
+    router = FakeRouter(steps=[_search_step(0), reply("It is in (Gamma.md, page 2) and (Alpha.md (9), page 1).")])
+    events, claim = await _project_turn(db_conn, monkeypatch, router)
+    documents = _event(events, "data-sources")["documents"]
+    assert [d["docName"] for d in documents] == ["Alpha.md", "Beta.md"]          # searched, in the scope's order
+    assert not any(d["used"] for d in documents)                                  # nothing cited that it was given
+    assert [n for n in _notes(await _msg(db_conn, claim.turn_id)) if n["kind"] == "sources"][0]["documents"] == documents
+
+
+async def test_a_project_turn_with_no_documents_still_saves_an_empty_scope(db_conn, monkeypatch):
+    from server.tests import seed
+
+    shim_pool(monkeypatch, db_conn, store, orchestrator, ctx_mod, sd_tool)
+    alice = await member(db_conn, "alice")
+    pid = await seed.make_project(db_conn, alice.user_id, "Empty")
+    claim = await store.begin_turn(session_id="s-1", user_id=alice.user_id, model_id="ollama:m", text="q",
+                                   attachments=[], new_session_pins=None, scope_project_id=pid)
+    req = TurnRequest(user_id=alice.user_id, session_id="s-1", model_id="ollama:m", text="q", attachments=(),
+                      settings=CallSettings(), doc_id=None, timezone="UTC", project_id=pid)
+    events = [e async for e in run_turn(req, claim, router=FakeRouter(), cfg=ChatConfig(), deployment_budget=None)]
+    assert _event(events, "data-context")["items"] == [{"kind": "scope", "documents": []}]
+    assert "data-sources" not in types(events)
+
+
+def _web_turn_steps(answer, results=(1, 2), query="port"):
+    return [[ToolCallReady(ToolCall("w1", "web_search", {"query": query})), Usage(5, 5), Finish("tool_calls")],
+            [ToolCallReady(ToolCall("w2", "read_web_pages", {"results": list(results), "need": "the port"})),
+             Usage(5, 5), Finish("tool_calls")],
+            reply(answer)]
+
+
+async def test_web_pages_with_facts_become_web_sources(conn, web, use_router, web_auto):
+    web.searches["port"] = [hit("a"), hit("b")]
+    web.pages[url("a")] = web.pages[url("b")] = PAGE
+    use_router(by_label({"[web 2]": ("The port is 8080", "set port = 8080")}))        # page 1 holds no fact
+    events, claim = await _run(conn, FakeRouter(steps=_web_turn_steps("It is 8080 (b.test).")), text="Which port?")
+    kinds = types(events)
+    pages = [{"n": 2, "title": "Title b", "url": url("b")}]
+    event = _event(events, "data-web-sources")
+    assert {k: v for k, v in event.items() if k not in ("type", "seq")} == {"pages": pages}
+    assert kinds.index("text-end") < kinds.index("data-web-sources") < kinds.index("finish")
+    assert "data-sources" not in kinds                                                # no document in this chat
+    assert _notes(await _msg(conn, claim.turn_id)) == [{"kind": "web_sources", "pages": pages}]
+
+
+async def test_a_page_that_was_searched_but_not_read_is_no_web_source(conn, web, use_router, web_auto):
+    web.searches["port"] = [hit("a"), hit("b")]
+    steps = [_web_turn_steps("Not found.")[0], reply("The search only listed pages.")]
+    events, claim = await _run(conn, FakeRouter(steps=steps), text="Which port?")
+    assert "data-web-sources" not in types(events)
+    assert _notes(await _msg(conn, claim.turn_id)) == []
+
+
+async def test_a_javascript_url_is_never_a_web_source(conn, web, use_router, web_auto):
+    """A search engine can list anything; a link the client renders must never run script."""
+    evil = {"title": "Evil", "url": "javascript:alert(1)", "snippet": "s"}
+    web.searches["port"] = [evil, hit("b")]
+    web.pages["javascript:alert(1)"] = web.pages[url("b")] = PAGE
+    use_router(by_label({"[web 1]": ("The port is 8080", "set port = 8080"),
+                         "[web 2]": ("The port is 8080", "set port = 8080")}))
+    events, claim = await _run(conn, FakeRouter(steps=_web_turn_steps("It is 8080 (b.test).")), text="Which port?")
+    pages = [{"n": 2, "title": "Title b", "url": url("b")}]
+    assert _event(events, "data-web-sources")["pages"] == pages
+    assert "javascript" not in json.dumps(_notes(await _msg(conn, claim.turn_id)))
+
+
+async def test_only_unsafe_urls_means_no_web_sources_event_at_all(conn, web, use_router, web_auto):
+    web.searches["port"] = [{"title": "Evil", "url": "data:text/html,<b>x</b>", "snippet": "s"}]
+    web.pages["data:text/html,<b>x</b>"] = PAGE
+    use_router(by_label({"[web 1]": ("The port is 8080", "set port = 8080")}))
+    events, claim = await _run(conn, FakeRouter(steps=_web_turn_steps("It is 8080.", results=(1,))), text="Which port?")
+    assert "data-web-sources" not in types(events)
+    assert _notes(await _msg(conn, claim.turn_id)) == []
+
+
+async def test_a_result_dropped_for_the_budget_is_never_a_web_source(conn, web, use_router, web_auto):
+    """TurnTools throws a result that doesn't fit unseen and takes back the `read` mark: the model never got those
+    facts, so the answer can't have drawn on the page."""
+    fact = "The port is set in server.toml, " + "and the manual repeats it at length. " * 14
+    use_router(by_label({"[web 1]": (fact, "set port = 8080")}))
+    web.searches["port"] = [hit(n) for n in "abcde"]
+    web.pages[url("a")] = PAGE
+    events, claim = await _run(conn, FakeRouter(steps=_web_turn_steps("Unsure.", results=(1,))),
+                               cfg=ChatConfig(tool_result_budget_chars=1200), text="Which port?")
+    read = [e for e in events if e["type"] == "tool-output-available"][1]
+    assert read["output"]["summary_text"] == TurnTools.BUDGET_USED
+    assert "data-web-sources" not in types(events)
+    assert _notes(await _msg(conn, claim.turn_id)) == []
+
+
+async def test_a_project_turn_has_document_sources_then_web_sources(db_conn, monkeypatch, web, use_router):
+    monkeypatch.setenv("CHAT_WEB_SEARCH", "auto")
+    web.searches["port"] = [hit("a")]
+    web.pages[url("a")] = PAGE
+    use_router(by_label({"[web 1]": ("The port is 8080", "set port = 8080")}))
+    steps = [_search_step(0), *_web_turn_steps("Alpha says so (Alpha.md, page 1); the web says 8080 (a.test).",
+                                                results=(1,))]
+    events, claim = await _project_turn(db_conn, monkeypatch, FakeRouter(steps=steps))
+    kinds = types(events)
+    assert kinds.index("data-sources") < kinds.index("data-web-sources") < kinds.index("finish")
+    assert [n["kind"] for n in _notes(await _msg(db_conn, claim.turn_id))] == ["scope", "sources", "web_sources"]
+    assert _event(events, "data-sources")["documents"][0]["docName"] == "Alpha.md"

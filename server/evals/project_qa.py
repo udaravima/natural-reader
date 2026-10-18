@@ -18,6 +18,10 @@ chat ends the turn with, and the user's yes (`context.web`), answered from a fak
 Citations in project scope are "(Name, page N)", the form the app links
 (spec section 5.7). A citation of the wrong document is worse than none, so
 the score fails any answer that cites one a case forbids.
+
+The citations layer (C2.1 Task 15) reads back what each reply was saved with: whether the sources note names the
+document and page a case expects, and whether the web-read case's answer produced a web source. These are
+columns in the report; they never change a pass or a fail.
 """
 from __future__ import annotations
 
@@ -29,6 +33,7 @@ from dataclasses import dataclass, field, replace
 from functools import cache
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .doc_qa import EvalSetupError, has_term, is_refusal, web_mode   # EvalSetupError: the script catches it from here
 
@@ -264,6 +269,12 @@ class Result:
     web_calls: int = 0
     offered: bool = False             # the turn ended with the offer to search the web
     near_miss: bool = False           # web-read: the answer gives a number the case forbids
+    # The citations layer (C2.1 Task 15): what the reply was SAVED with, recorded and reported, never scored.
+    # None = no note was observed (a unit-test score, an errored turn); [] = the turn saved none.
+    chips: list[dict] | None = None       # the sources note's documents: {docId, docName, pages, used}
+    web_chips: list[dict] | None = None   # the web_sources note's pages: {n, title, url}
+    chip_doc: bool | None = None          # the sources note names every document the case lists
+    chip_page: bool | None = None         # ... and every (document, page) it lists
 
     @property
     def paged_gap(self) -> bool:
@@ -273,12 +284,14 @@ class Result:
 
 def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], names: list[str], *,
           offered: bool, error: str | None = None, prefetched: bool = False, web_offered: bool = True,
-          chip_pages: list[int] | None = None) -> Result:
+          chip_pages: list[int] | None = None, chips: list[dict] | None = None,
+          web_chips: list[dict] | None = None) -> Result:
     """`tool_calls`: the turn's tool-input-available events ({toolName, round}); {"name": ...} is read too.
     `names`: every document of the project, so the citations can be read. `offered`: the turn
     ended with an offer to search the web (the data-web-offer event). `prefetched`: the app searched the
     documents before the model ran. `web_offered`: web search is configured here; without it the live and
-    gap-general cases can't be asked (no offer is possible), and are skipped."""
+    gap-general cases can't be asked (no offer is possible), and are skipped. `chips`, `web_chips`: the
+    documents and web pages of the sources notes the reply was saved with (saved_sources), for the report."""
     tools = [c.get("toolName") or c.get("name") for c in tool_calls]
     result = Result(case, answer, tools, max((c.get("round") or 0 for c in tool_calls), default=0),
                     web_calls=sum(t in WEB_TOOLS for t in tools), offered=offered, error=error)
@@ -288,6 +301,12 @@ def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], names: list
     if case.kind in ("live", "gap-general", "web-read") and not web_offered:
         result.skipped = "web search not offered"
         return result
+    if chips is not None:
+        result.chips, result.web_chips = chips, web_chips
+        named = {str(c.get("docName", "")).casefold(): c for c in chips}
+        result.chip_doc = all(d.casefold() in named for d in case.docs) if case.docs else None
+        result.chip_page = (all(page in (named.get(d.casefold()) or {}).get("pages", ()) for d, page in case.pages)
+                            if case.pages else None)
     # A padding document is never the right one to cite, and a case may name documents the runner left out.
     known = list(dict.fromkeys([*names, *case.docs, *case.forbid_docs, *sorted(_padding_names())]))
     pages = cited_docs(answer, known)
@@ -323,6 +342,31 @@ def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], names: list
     return result
 
 
+def _chip_parts(r: Result) -> list[str]:
+    """The citations layer's columns: does the saved sources note name the document and page the case expects,
+    and, for the web-read case, did its answer produce a web source. Nothing when no note was observed."""
+    if r.chips is None:
+        return []
+    case = r.case
+    named = {str(c.get("docName", "")).casefold(): c for c in r.chips}
+
+    def searched(docs) -> bool:
+        return any(not named[d.casefold()].get("used") for d in docs if d.casefold() in named)
+
+    parts = []
+    if case.docs:
+        missing = [d for d in case.docs if d.casefold() not in named]
+        parts.append(f"chip doc missing ({', '.join(missing)})" if missing
+                     else "chip doc ok" + (" (searched only)" if searched(case.docs) else ""))
+    if case.pages:
+        parts.append("chip page ok" + (" (searched only)" if searched([d for d, _ in case.pages]) else "")
+                     if r.chip_page else f"chip page missing (want {', '.join(f'{d} p. {p}' for d, p in case.pages)})")
+    if case.kind == "web-read" and r.web_chips is not None:
+        hosts = list(dict.fromkeys(urlsplit(str(p.get("url"))).hostname or "?" for p in r.web_chips))
+        parts.append(f"web chip: {', '.join(hosts)}" if hosts else "web chip: none")
+    return parts
+
+
 def _detail(r: Result) -> str:
     if r.error:
         return f"the turn failed ({r.error}): fix the setup, this says nothing about the model"
@@ -335,7 +379,8 @@ def _detail(r: Result) -> str:
         found = "fact ok" if r.fact else f"fact missing ({', '.join(case.expect)})"
         miss = (f"gave the near-miss ({', '.join(t for t in case.forbid_terms if has_term(r.answer, t))})"
                 if r.near_miss else "near-miss avoided")
-        return f"{'offered the search' if r.offered else 'no offer'}; {found}; {miss}; {r.web_calls} web calls"
+        return "; ".join([f"{'offered the search' if r.offered else 'no offer'}", found, miss,
+                          f"{r.web_calls} web calls", *_chip_parts(r)])
     parts = []
     unwritten = case.kind == "gap-general" and not r.answer.strip()   # the offer came first: no words to judge
     if unwritten:
@@ -365,7 +410,7 @@ def _detail(r: Result) -> str:
         parts.append("pages ok" if r.pages_ok else f"page missing (want {want})")
     if r.wrong_docs:
         parts.append(f"cited the wrong document ({', '.join(sorted(r.wrong_docs))})")
-    return "; ".join(parts)
+    return "; ".join([*parts, *_chip_parts(r)])
 
 
 def _verdict(r: Result) -> str:
@@ -402,6 +447,14 @@ def format_report(runs: list[list[Result]], *, model: str, variant: str) -> str:
     if answered:
         right = sum(bool(r.cited) and not r.wrong_docs for r in answered)
         lines.append(f"right-document citations {right}/{len(answered)}")
+    chips = [(r.chip_doc, r.chip_page) for r in asked if not r.error and r.chips is not None]
+    docs, pages = [d for d, _ in chips if d is not None], [p for _, p in chips if p is not None]
+    if docs or pages:
+        lines.append("source chips: " + ", ".join(
+            [f"documents {sum(docs)}/{len(docs)}"] * bool(docs) + [f"pages {sum(pages)}/{len(pages)}"] * bool(pages)))
+    web = [bool(r.web_chips) for r in asked if r.case.kind == "web-read" and not r.error and r.web_chips is not None]
+    if web:
+        lines.append(f"web source chips {sum(web)}/{len(web)}")
     lines.append(f"web calls {sum(r.web_calls for r in every)}")
     skipped = len(every) - len(asked)
     lines.append(f"{sum(r.passed for r in asked)}/{len(asked)} passed" + (f" ({skipped} skipped)" if skipped else ""))
@@ -474,9 +527,31 @@ class Turn:
     calls: list[dict[str, Any]] = field(default_factory=list)   # the tool-input-available events (the app's too)
     error: str | None = None
     prefetched: bool = False        # the app searched the documents before the model ran
-    chips: list[int] = field(default_factory=list)              # source chip pages
+    chips: list[int] = field(default_factory=list)              # source chip pages, over every document
+    sources: list[dict] | None = None      # the saved sources note's documents (saved_sources); None = not read
+    web_sources: list[dict] | None = None  # ... and the saved web_sources note's pages
     offered: bool = False           # the turn ended with the offer to search the web
     offer_query: str | None = None  # ... and the query it offered
+
+
+def saved_sources(doc_context: dict | None) -> tuple[list[dict], list[dict]]:
+    """(the sources note's documents, the web_sources note's pages) of a reply's saved doc_context: what a
+    reader of the saved chat would be shown. A single-document `sources` note has no `documents`."""
+    notes = (doc_context or {}).get("notes") or []
+
+    def last(kind: str, key: str) -> list[dict]:
+        return next((n.get(key) or [] for n in reversed(notes) if n.get("kind") == kind), [])
+
+    return last("sources", "documents"), last("web_sources", "pages")
+
+
+async def _saved_context(message_id: str) -> dict | None:
+    from ..db import get_pool
+
+    async with get_pool().connection() as conn:
+        cur = await conn.execute("SELECT doc_context FROM chat_messages WHERE id = %s", (message_id,))
+        row = await cur.fetchone()
+    return row[0] if row else None
 
 
 async def _turn(text: str, *, session_id: str, user_id: str, project_id: str, model: str, think: str,
@@ -507,14 +582,16 @@ async def _turn(text: str, *, session_id: str, user_id: str, project_id: str, mo
                         out.offered = out.offered or ev.get("toolName") == "offer_web_search"
                     elif ev["type"] == "data-web-offer":
                         out.offered, out.offer_query = True, ev.get("query")
-                    elif ev["type"] == "data-sources":
-                        out.chips += [p for p in ev.get("pages") or [] if isinstance(p, int)]
                     elif ev["type"] == "data-context":
                         out.prefetched = out.prefetched or any(i.get("kind") == "prefetch" for i in ev.get("items") or [])
                     elif ev["type"] == "error":
                         out.error = ev.get("code") or "error"
     except TimeoutError:
         out.error = "timeout"
+    if out.error is None:
+        # What the reply was saved with, read back: the chips a reload would show (the events carry the same).
+        out.sources, out.web_sources = saved_sources(await _saved_context(claim.turn_id))
+        out.chips = sorted(p for d in out.sources for p in d.get("pages") or [] if isinstance(p, int))
     return out
 
 
@@ -548,7 +625,8 @@ async def _ask(case: Case, *, names: list[str], web_offered: bool, **turn) -> Re
         async with get_pool().connection() as conn:
             await conn.execute("DELETE FROM chat_sessions WHERE id = %s", (session_id,))
     result = score(case, last.answer, last.calls, names, offered=offered, error=first.error or last.error,
-                   prefetched=last.prefetched, web_offered=web_offered, chip_pages=last.chips)
+                   prefetched=last.prefetched, web_offered=web_offered, chip_pages=last.chips,
+                   chips=last.sources, web_chips=last.web_sources)
     result.seconds = seconds
     return result
 
