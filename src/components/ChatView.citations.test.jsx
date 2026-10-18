@@ -131,3 +131,189 @@ describe('ChatView — source chips (v2.4 Task D)', () => {
         expect(screen.queryByText('Sources')).toBeNull();
     });
 });
+
+// C2.1 Task 16: a project reply cites several documents by name.
+describe('ChatView — project citations (C2.1)', () => {
+    const B = 'b'.repeat(64);
+    const scope = (...docs) => ({ kind: 'scope', documents: docs.map(([name, docId], i) => ({ ref: i + 1, docId, name })) });
+    const project = (...notes) => ({ docContext: { notes: [scope(['Guide.md', DOC], ['Notes.txt', B]), ...notes] } });
+
+    it('links a named citation to its document', () => {
+        const onOpen = renderReply(reply('It is set up in (Guide.md, page 7).', project()));
+        fireEvent.click(screen.getByRole('button', { name: 'Open Guide.md at page 7' }));
+        expect(onOpen).toHaveBeenCalledWith(DOC, 7, 'Guide.md');
+        expect(screen.getByText(/It is set up in/).textContent).toBe('It is set up in (Guide.md, page 7).');
+    });
+
+    it('links each part of a joined citation to its own document', () => {
+        const onOpen = renderReply(reply('Both agree (Guide.md, page 3; Notes.txt, pages 1-2 and 5).', project()));
+        fireEvent.click(screen.getByRole('button', { name: 'Open Guide.md at page 3' }));
+        expect(onOpen).toHaveBeenLastCalledWith(DOC, 3, 'Guide.md');
+        fireEvent.click(screen.getByRole('button', { name: 'Open Notes.txt at page 1' }));
+        expect(onOpen).toHaveBeenLastCalledWith(B, 1, 'Notes.txt');
+        fireEvent.click(screen.getByRole('button', { name: 'Open Notes.txt at page 5' }));
+        expect(onOpen).toHaveBeenLastCalledWith(B, 5, 'Notes.txt');
+        expect(screen.getByText(/Both agree/).textContent).toBe('Both agree (Guide.md, page 3; Notes.txt, pages 1-2 and 5).');
+    });
+
+    it('leaves a name that is not in the scope as text', () => {
+        renderReply(reply('See (Elsewhere.md, page 7).', project()));
+        expect(screen.queryByRole('button', { name: /at page/ })).toBeNull();
+        expect(screen.getByText('See (Elsewhere.md, page 7).')).toBeInTheDocument();
+    });
+
+    it('a bare page links only when the reply has one document', () => {
+        // Evidence from two documents: "(page 4)" says nothing about which.
+        renderReply(reply('Also (page 4).', project(
+            { kind: 'sources', documents: [{ docId: DOC, docName: 'Guide.md', pages: [1], used: true }, { docId: B, docName: 'Notes.txt', pages: [2], used: true }] })));
+        expect(screen.queryByRole('button', { name: /Open .* at page 4/ })).toBeNull();
+        expect(screen.getByText('Also (page 4).')).toBeInTheDocument();
+    });
+
+    it('a bare page links to the one document a project reply read', () => {
+        const onOpen = renderReply(reply('Also (page 4).', project(
+            { kind: 'prefetch', documents: [{ docId: B, docName: 'Notes.txt', count: 1, pages: [4] }], count: 1 })));
+        fireEvent.click(screen.getByRole('button', { name: 'Open Notes.txt at page 4' }));
+        expect(onOpen).toHaveBeenCalledWith(B, 4, 'Notes.txt');
+    });
+
+    it('a citation in an earlier reply opens that reply\'s document after the scope changed', () => {
+        // The same name, two different documents: each reply carries its own scope.
+        const first = reply('First (Guide.md, page 2).', { id: 'a1', docContext: { notes: [scope(['Guide.md', DOC])] } });
+        const second = reply('Then (Guide.md, page 9).', { id: 'a2', docContext: { notes: [scope(['Guide.md', B])] } });
+        const onOpen = vi.fn();
+        render(<ChatView {...baseProps({ messages: [q, first, { ...q, id: 'u2' }, second], onOpenCitation: onOpen })} />);
+        fireEvent.click(screen.getByRole('button', { name: 'Open Guide.md at page 2' }));
+        expect(onOpen).toHaveBeenLastCalledWith(DOC, 2, 'Guide.md');
+        fireEvent.click(screen.getByRole('button', { name: 'Open Guide.md at page 9' }));
+        expect(onOpen).toHaveBeenLastCalledWith(B, 9, 'Guide.md');
+    });
+
+    it('does not link names when the reply has no scope note', () => {
+        renderReply(reply('See (Guide.md, page 7).'));
+        expect(screen.queryByRole('button', { name: /at page/ })).toBeNull();
+    });
+
+    it('keeps the rendered reply (no remount) when only the identity of the notes changes', () => {
+        const withNotes = () => reply('See (Guide.md, page 7).', project());
+        const { rerender } = render(<ChatView {...baseProps({ messages: [q, withNotes()], onOpenCitation: vi.fn() })} />);
+        const before = screen.getByRole('button', { name: 'Open Guide.md at page 7' });
+        rerender(<ChatView {...baseProps({ messages: [q, withNotes()], onOpenCitation: vi.fn() })} />);
+        expect(screen.getByRole('button', { name: 'Open Guide.md at page 7' })).toBe(before);
+    });
+});
+
+describe('ChatView — project source chips (C2.1)', () => {
+    const B = 'b'.repeat(64);
+    const docs = (used) => ({ docContext: { notes: [{ kind: 'sources', documents: [
+        { docId: DOC, docName: 'README.md', pages: [1, 3], used },
+        { docId: B, docName: 'Notes.txt', pages: [2], used }] }] } });
+
+    it('project source chips group by document', () => {
+        const onOpen = renderReply(reply('Answer.', docs(true)));
+        expect(screen.getByText('Sources')).toBeInTheDocument();
+        expect(screen.getByText('README.md').parentElement.textContent).toBe('README.md · p. 1 · p. 3');
+        expect(screen.getByText('Notes.txt').parentElement.textContent).toBe('Notes.txt · p. 2');
+        fireEvent.click(screen.getByRole('button', { name: 'Source: page 3 of README.md' }));
+        expect(onOpen).toHaveBeenCalledWith(DOC, 3, 'README.md');
+        fireEvent.click(screen.getByRole('button', { name: 'Source: page 2 of Notes.txt' }));
+        expect(onOpen).toHaveBeenLastCalledWith(B, 2, 'Notes.txt');
+    });
+
+    it('labels documents that were only searched as not cited', () => {
+        renderReply(reply('Answer.', { docContext: { notes: [{ kind: 'sources', documents: [
+            { docId: DOC, docName: 'README.md', pages: [1], used: true },
+            { docId: B, docName: 'Notes.txt', pages: [2], used: false }] }] } }));
+        expect(screen.getByText('Sources')).toBeInTheDocument();
+        expect(screen.getByText('Searched (not cited)')).toBeInTheDocument();
+    });
+
+    it('skips a document with no pages, and shows nothing when none has any', () => {
+        renderReply(reply('Answer.', { docContext: { notes: [{ kind: 'sources', documents: [{ docId: DOC, docName: 'README.md', pages: [], used: true }] }] } }));
+        expect(screen.queryByText('Sources')).toBeNull();
+    });
+
+    it('shows no document chips without an open handler', () => {
+        render(<ChatView {...baseProps({ messages: [q, reply('x', docs(true))] })} />);
+        expect(screen.queryByText('Sources')).toBeNull();
+    });
+});
+
+describe('ChatView — web sources (C2.1)', () => {
+    const web = (...pages) => ({ docContext: { notes: [{ kind: 'web_sources', pages }] } });
+
+    it('web sources render as external links', () => {
+        renderReply(reply('Answer.', web(
+            { n: 1, title: 'Zephyr 9 release notes', url: 'https://www.example.com/zephyr?x=1' },
+            { n: 2, title: 'Other', url: 'http://docs.example.org/a' })));
+        const link = screen.getByRole('link', { name: 'example.com' });
+        expect(link).toHaveAttribute('href', 'https://www.example.com/zephyr?x=1');
+        expect(link).toHaveAttribute('target', '_blank');
+        expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+        expect(link).toHaveAttribute('title', 'Zephyr 9 release notes');
+        expect(screen.getByRole('link', { name: 'docs.example.org' })).toHaveAttribute('href', 'http://docs.example.org/a');
+    });
+
+    it('shows web links without an open-citation handler', () => {
+        render(<ChatView {...baseProps({ messages: [q, reply('x', web({ n: 1, title: 'T', url: 'https://example.com/' }))] })} />);
+        expect(screen.getByRole('link', { name: 'example.com' })).toBeInTheDocument();
+    });
+
+    it('renders a url that is not http(s) as text, never as a link', () => {
+        renderReply(reply('Answer.', web(
+            { n: 1, title: 'Click me', url: 'javascript:alert(1)' },
+            { n: 2, title: 'Data', url: 'data:text/html,<b>x</b>' },
+            { n: 3, title: 'Not a url', url: 'nonsense' },
+            { n: 4, title: 'Fine', url: 'https://example.com/' })));
+        expect(screen.getAllByRole('link')).toHaveLength(1);
+        expect(screen.getByText('Click me')).toBeInTheDocument();
+        expect(screen.getByText('Click me').closest('a')).toBeNull();
+        expect(screen.getByText('Not a url')).toBeInTheDocument();
+    });
+
+    it('shows a title as text only, never as markup', () => {
+        const { container } = render(<ChatView {...baseProps({ messages: [q, reply('x', web(
+            { n: 1, title: '<img src=x onerror=alert(1)>', url: 'https://example.com/' }))], onOpenCitation: vi.fn() })} />);
+        expect(container.querySelector('img')).toBeNull();
+        expect(screen.getByRole('link', { name: 'example.com' })).toHaveAttribute('title', '<img src=x onerror=alert(1)>');
+    });
+
+    it('shows document sources and web sources together', () => {
+        renderReply(reply('Answer.', { docContext: { notes: [
+            { kind: 'sources', docId: DOC, docName: 'Thesis.pdf', pages: [3], used: true },
+            { kind: 'web_sources', pages: [{ n: 1, title: 'T', url: 'https://example.com/' }] }] } }));
+        expect(screen.getByRole('button', { name: 'Source: page 3 of Thesis.pdf' })).toBeInTheDocument();
+        expect(screen.getByRole('link', { name: 'example.com' })).toBeInTheDocument();
+    });
+
+    it('shows nothing for an offer note (the card is Task 18) and keeps the reply normal', () => {
+        renderReply(reply('Not in the files.', { docContext: { notes: [{ kind: 'web_offer', query: 'zephyr release', reason: 'files are silent' }] } }));
+        expect(screen.getByText('Not in the files.')).toBeInTheDocument();
+        expect(screen.queryByText(/zephyr release|files are silent/)).toBeNull();
+    });
+});
+
+describe('ChatView — project prefetch note (C2.1)', () => {
+    const notesReply = (notes) => reply('ok', { docContext: { notes } });
+
+    it('says how many passages came from how many documents', () => {
+        renderReply(notesReply([{ kind: 'prefetch', documents: [{ docId: DOC, docName: 'A.md', count: 2, pages: [1] }, { docId: 'b', docName: 'B.md', count: 2 }, { docId: 'c', docName: 'C.md', count: 1 }], count: 5, topScore: 0.8 }]));
+        expect(screen.getByText('Used 5 passages from 3 documents')).toBeInTheDocument();
+        expect(screen.queryByText(/undefined/)).toBeNull();
+    });
+
+    it('uses the singular for one passage from one document', () => {
+        renderReply(notesReply([{ kind: 'prefetch', documents: [{ docId: DOC, docName: 'A.md', count: 1, pages: [1] }], count: 1 }]));
+        expect(screen.getByText('Used 1 passage from 1 document')).toBeInTheDocument();
+    });
+
+    it('still names the document for a document-scope prefetch', () => {
+        renderReply(notesReply([{ kind: 'prefetch', docId: DOC, docName: 'Thesis.pdf', count: 4 }]));
+        expect(screen.getByText('Used 4 passages from Thesis.pdf')).toBeInTheDocument();
+    });
+
+    it('prints nothing for the scope note', () => {
+        renderReply(notesReply([{ kind: 'scope', documents: [{ ref: 1, docId: DOC, name: 'A.md' }] }]));
+        expect(screen.queryByText(/A\.md/)).toBeNull();
+    });
+});

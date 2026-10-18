@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   Send,
   Square,
@@ -24,7 +24,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import AttachmentPreview from "./AttachmentPreview";
-import { citationDoc, remarkCitations } from "../lib/citations";
+import { citationDocs, remarkCitations } from "../lib/citations";
 import { estimateTokens } from "../hooks/inference";
 import { buildPinPreamble } from "../hooks/pins";
 // VoiceRecorder is intentionally not imported — audio attachments are paused
@@ -465,11 +465,12 @@ function MessageBubble({
   const toolCalls =
     !isUser && Array.isArray(message.toolCalls) ? message.toolCalls : null;
   // Only a reply the server saved as having used a document gets clickable
-  // "(page N)" citations — see src/lib/citations.js.
+  // "(page N)" citations — see src/lib/citations.js. A project reply's
+  // "(Name, page N)" resolves against that reply's own scope note.
   const { docContext: savedContext, toolCalls: savedCalls } = message;
   const canCite = !isUser && !!onOpenCitation;
-  const citeDoc = useMemo(
-    () => (canCite ? citationDoc({ docContext: savedContext, toolCalls: savedCalls }) : null),
+  const cite = useMemo(
+    () => (canCite ? citationDocs({ docContext: savedContext, toolCalls: savedCalls }) : null),
     [canCite, savedContext, savedCalls],
   );
   return (
@@ -549,7 +550,8 @@ function MessageBubble({
               <AssistantMarkdown
                 content={message.content}
                 darkMode={darkMode}
-                citeDoc={citeDoc}
+                citeDoc={cite?.single}
+                citeNames={cite?.names}
                 onOpenCitation={onOpenCitation}
               />
             ) : (
@@ -605,7 +607,7 @@ function MessageBubble({
           </div>
         )}
         {!isUser && <ReplyStatus message={message} isStreamingNow={isStreamingNow} theme={theme} />}
-        {canCite && <SourceChips notes={message.docContext?.notes} theme={theme} onOpenCitation={onOpenCitation} />}
+        {!isUser && <SourceChips notes={message.docContext?.notes} theme={theme} onOpenCitation={onOpenCitation} />}
         {toolCalls && toolCalls.length > 0 && (
           <ToolCallsDisclosure
             toolCalls={toolCalls}
@@ -715,42 +717,62 @@ function MessageStatsDisclosure({ stats, theme, darkMode }) {
 // Memoize the markdown component overrides — prevents react-markdown
 // from rebuilding the renderer tree on every streaming token.
 const PLAIN_PLUGINS = [remarkGfm];
-const CITING_PLUGINS = [remarkGfm, remarkCitations];
 
-function AssistantMarkdown({ content, darkMode, citeDoc = null, onOpenCitation }) {
+const NO_NAMES = [];
+
+function AssistantMarkdown({ content, darkMode, citeDoc = null, citeNames = NO_NAMES, onOpenCitation }) {
   // The renderer set below must stay the same object across renders — a new
   // one remounts the whole reply, on every streaming token. So it depends on
-  // the cited document's id and name only; the click handler, which the
+  // the cited documents' ids and names only; the click handler, which the
   // parent may recreate each render, is read through a ref.
   const citeDocId = citeDoc?.docId;
   const citeDocName = citeDoc?.docName;
+  // The names arrive as a new array whenever the reply's notes change; what
+  // matters is what is in them.
+  const namesKey = JSON.stringify(citeNames);
+  const names = useMemo(() => JSON.parse(namesKey), [namesKey]);
   const openCitationRef = useRef(onOpenCitation);
   useEffect(() => { openCitationRef.current = onOpenCitation; }, [onOpenCitation]);
+  const plugins = useMemo(
+    () => (citeDocId || names.length ? [remarkGfm, [remarkCitations, { names }]] : PLAIN_PLUGINS),
+    [citeDocId, names],
+  );
+  const docNames = useMemo(() => new Map(names.map((n) => [n.docId, n.name])), [names]);
   const components = useMemo(
     () => ({
       p: ({ children }) => (
         <p className="my-1 text-sm leading-relaxed break-words">{children}</p>
       ),
-      a: ({ children, href, "data-cite-page": citePage }) => citePage != null && citeDocId ? (
-        <button
-          type="button"
-          onClick={() => openCitationRef.current?.(citeDocId, Number(citePage), citeDocName)}
-          aria-label={`Open ${citeDocName || "the document"} at page ${citePage}`}
-          title={`Open page ${citePage}`}
-          className="text-blue-500 underline decoration-dotted hover:decoration-solid"
-        >
-          {children}
-        </button>
-      ) : (
-        <a
-          href={href}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-blue-500 underline break-all"
-        >
-          {children}
-        </a>
-      ),
+      a: ({ children, href, "data-cite-page": citePage, "data-cite-doc": citeDocAttr }) => {
+        if (citePage == null) {
+          return (
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-blue-500 underline break-all"
+            >
+              {children}
+            </a>
+          );
+        }
+        // A citation names its document, else it means the reply's one
+        // document; with neither it is only text.
+        const docId = citeDocAttr ? (docNames.has(citeDocAttr) ? citeDocAttr : null) : citeDocId;
+        if (!docId) return <>{children}</>;
+        const docName = citeDocAttr ? docNames.get(citeDocAttr) : citeDocName;
+        return (
+          <button
+            type="button"
+            onClick={() => openCitationRef.current?.(docId, Number(citePage), docName)}
+            aria-label={`Open ${docName || "the document"} at page ${citePage}`}
+            title={`Open page ${citePage}`}
+            className="text-blue-500 underline decoration-dotted hover:decoration-solid"
+          >
+            {children}
+          </button>
+        );
+      },
       code: ({ inline, children }) =>
         inline ? (
           <code
@@ -809,13 +831,13 @@ function AssistantMarkdown({ content, darkMode, citeDoc = null, onOpenCitation }
         <td className="border border-slate-500/40 px-2 py-1">{children}</td>
       ),
     }),
-    [darkMode, citeDocId, citeDocName],
+    [darkMode, citeDocId, citeDocName, docNames],
   );
 
   return (
     <div className="text-sm leading-relaxed">
       <ReactMarkdown
-        remarkPlugins={citeDocId ? CITING_PLUGINS : PLAIN_PLUGINS}
+        remarkPlugins={plugins}
         components={components}
       >
         {content}
@@ -934,28 +956,118 @@ function ToolCallsDisclosure({ toolCalls, theme, darkMode }) {
 // Stage-0 notes the server attached to a reply (spec §5.2, §8).
 // v2.4 Task D: the pages a reply drew on (or, when none matched, the pages it
 // searched, labelled as such), each opening that page like a citation.
+// C2.1: a project reply groups them by document, and any reply can list the
+// web pages it read, as links.
 function SourceChips({ notes, theme, onOpenCitation }) {
-  const note = Array.isArray(notes) ? notes.findLast((n) => n?.kind === "sources" && n.docId) : null;
-  if (!note || !note.pages?.length) return null;
+  if (!Array.isArray(notes)) return null;
+  const sources = onOpenCitation
+    ? notes.findLast((n) => n?.kind === "sources" && (n.docId || Array.isArray(n.documents)))
+    : null;
+  const web = notes.findLast((n) => n?.kind === "web_sources" && Array.isArray(n.pages));
+  const rows = [];
+  if (Array.isArray(sources?.documents)) {
+    // One group per document, in the order the server listed them.
+    const docs = sources.documents.filter((d) => d?.docId && d.pages?.length);
+    for (const used of [true, false]) {
+      const mine = docs.filter((d) => !!d.used === used);
+      if (mine.length) {
+        rows.push(
+          <SourceRow key={used ? "used" : "searched"} used={used} theme={theme}>
+            {mine.map((d) => (
+              <span key={d.docId} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border ${theme.border}`}>
+                <span className={theme.textSecondary}>{d.docName || "Document"}</span>
+                {d.pages.map((page) => (
+                  <Fragment key={page}>
+                    <span aria-hidden="true" className={theme.textMuted}> · </span>
+                    <button
+                      type="button"
+                      onClick={() => onOpenCitation(d.docId, page, d.docName)}
+                      aria-label={`Source: page ${page} of ${d.docName || "the document"}`}
+                      title={`Open page ${page}`}
+                      className={`${used ? "text-blue-500" : theme.textMuted} hover:underline`}
+                    >
+                      p. {page}
+                    </button>
+                  </Fragment>
+                ))}
+              </span>
+            ))}
+          </SourceRow>,
+        );
+      }
+    }
+  } else if (sources?.docId && sources.pages?.length) {
+    rows.push(
+      <SourceRow key="doc" used={sources.used} theme={theme}>
+        {sources.pages.map((page) => (
+          <button
+            key={page}
+            type="button"
+            onClick={() => onOpenCitation(sources.docId, page, sources.docName)}
+            aria-label={`Source: page ${page} of ${sources.docName || "the document"}`}
+            title={`Open page ${page}`}
+            className={`px-2 py-0.5 rounded-full border ${theme.border} ${sources.used ? "text-blue-500" : theme.textMuted} hover:underline`}
+          >
+            p. {page}
+          </button>
+        ))}
+      </SourceRow>,
+    );
+  }
+  if (web?.pages.length) {
+    rows.push(
+      <div key="web" className="flex flex-wrap items-center gap-1.5 text-[11px]">
+        <span className={`font-bold ${theme.textSecondary}`}>Web sources</span>
+        {web.pages.map((page, i) => {
+          const link = webLink(page?.url);
+          // Titles are text from the web: shown as text, never as markup.
+          const title = typeof page?.title === "string" ? page.title : "";
+          const key = `${page?.n}-${i}`;
+          return link ? (
+            <a
+              key={key}
+              href={link.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={title || undefined}
+              className={`px-2 py-0.5 rounded-full border ${theme.border} text-blue-500 hover:underline`}
+            >
+              {link.host || title || "web page"}
+            </a>
+          ) : (
+            <span key={key} className={`px-2 py-0.5 rounded-full border ${theme.border} ${theme.textMuted}`}>
+              {title || "web page"}
+            </span>
+          );
+        })}
+      </div>,
+    );
+  }
+  return rows.length ? <>{rows}</> : null;
+}
+
+function SourceRow({ used, theme, children }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-      <span className={note.used ? `font-bold ${theme.textSecondary}` : `italic ${theme.textMuted}`}>
-        {note.used ? "Sources" : "Searched (not cited)"}
+      <span className={used ? `font-bold ${theme.textSecondary}` : `italic ${theme.textMuted}`}>
+        {used ? "Sources" : "Searched (not cited)"}
       </span>
-      {note.pages.map((page) => (
-        <button
-          key={page}
-          type="button"
-          onClick={() => onOpenCitation(note.docId, page, note.docName)}
-          aria-label={`Source: page ${page} of ${note.docName || "the document"}`}
-          title={`Open page ${page}`}
-          className={`px-2 py-0.5 rounded-full border ${theme.border} ${note.used ? "text-blue-500" : theme.textMuted} hover:underline`}
-        >
-          p. {page}
-        </button>
-      ))}
+      {children}
     </div>
   );
+}
+
+// A web page's link, or null when its address isn't an http(s) one: the server
+// keeps only those, and a link that runs script ("javascript:") would be worse
+// than no link, so this checks again.
+function webLink(url) {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return { href: u.href, host: u.hostname.replace(/^www\./, "") };
+  } catch {
+    return null;
+  }
 }
 
 function ContextNotes({ notes, theme }) {
@@ -963,7 +1075,11 @@ function ContextNotes({ notes, theme }) {
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
   const lines = notes
     .map((n) => {
-      if (n.kind === "prefetch") return `Used ${plural(n.count, "passage")} from ${n.docName}`;
+      if (n.kind === "prefetch") {
+        // A project reply's note counts documents; a document's names it.
+        const from = Array.isArray(n.documents) ? plural(n.documents.length, "document") : n.docName;
+        return `Used ${plural(n.count, "passage")} from ${from}`;
+      }
       if (n.kind === "trimmed") {
         const parts = [];
         if (n.messages) parts.push(`${plural(n.messages, "older message")}`);

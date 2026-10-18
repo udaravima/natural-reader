@@ -11,12 +11,19 @@ const TOOL_STATUS = {
     search_documents: 'Searching the document…',
     read_document_pages: 'Reading the document…',
     web_search: 'Searching the web…',
+    extract_from_documents: 'Reading pages…',
+    document_outline: 'Reading an outline…',
+    read_web_pages: 'Reading web pages…',
+    offer_web_search: 'Offering a web search…',
 };
 
 export function toolStatusFor(toolName, round) {
     if (round > 1) return `Still searching… (round ${round})`;
     return TOOL_STATUS[toolName] || 'Running a tool…';
 }
+
+// A note the server saved with the reply, shown with it (ContextNotes, SourceChips).
+const addNote = (msg, note) => ({ ...msg, docContext: { notes: [...(msg.docContext?.notes || []), note] } });
 
 const settle = (msg, toolCallId, summary) => ({
     ...msg,
@@ -32,10 +39,19 @@ export function applyEvent(msg, ev) {
         case 'data-sources': {
             // v2.4 Task D: the pages the answer drew on, saved with the reply
             // as the same note (orchestrator.py), so a reload shows the chips.
+            // A project reply (C2.1) sends them per document instead.
+            if (Array.isArray(ev.documents)) return addNote(msg, { kind: 'sources', documents: ev.documents });
             const { docId, docName, pages, used } = ev;
-            const note = { kind: 'sources', docId, docName, pages: pages || [], used: !!used };
-            return { ...msg, docContext: { notes: [...(msg.docContext?.notes || []), note] } };
+            return addNote(msg, { kind: 'sources', docId, docName, pages: pages || [], used: !!used });
         }
+        case 'data-web-sources':
+            // The web pages the answer read (any scope), saved as the same note.
+            return addNote(msg, { kind: 'web_sources', pages: ev.pages || [] });
+        case 'data-web-offer':
+            // The model offers a web search it wasn't allowed to run. The
+            // reply itself goes on to finish normally; the card that asks the
+            // user is drawn from this note.
+            return addNote(msg, { kind: 'web_offer', query: ev.query, reason: ev.reason });
         case 'data-notice':
             return { ...msg, notices: [...(msg.notices || []), ev.message] };
         case 'start-step':
