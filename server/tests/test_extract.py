@@ -20,12 +20,15 @@ def _cases():
 
 @pytest.mark.parametrize("src", _cases(), ids=lambda p: p.name)
 def test_layout_matches_reader(src):
+    """The reader's layout is the non-code projection: code chunks (R2) sit in document
+    order between the reader's own blocks, and ord counts all of them."""
     expected = json.loads((FIXTURES / f"{src.name}.expected.json").read_text("utf-8"))
     ftype = "text" if src.suffix == ".txt" else "markdown"
     got = extract.extract_file(src, ftype).chunks
-    assert [(c.ord, c.page, c.chunk_type) for c in got] == \
-        [(e["ord"], e["page"], e["chunk_type"]) for e in expected]
-    for c, e in zip(got, expected):
+    assert [c.ord for c in got] == list(range(len(got)))
+    prose = [c for c in got if c.chunk_type != extract.CODE]
+    assert [(c.page, c.chunk_type) for c in prose] == [(e["page"], e["chunk_type"]) for e in expected]
+    for c, e in zip(prose, expected):
         if ftype == "text":
             assert c.text == e["text"]
         else:  # markdown text may differ only in whitespace placement
@@ -58,3 +61,196 @@ def test_unknown_type_rejected(tmp_path):
     p.write_bytes(b"x")
     with pytest.raises(ValueError):
         extract.extract_file(p, "docx")
+
+
+# ---------- code chunks, outlines, opening line (C2.1 Task 5) ----------
+
+def _md(tmp_path, text, name="d.md"):
+    p = tmp_path / name
+    p.write_text(text, "utf-8")
+    return extract.extract_file(p, "markdown")
+
+
+def test_code_blocks_become_code_chunks_in_order(tmp_path):
+    p = tmp_path / "d.md"
+    p.write_text("# Setup\n\nRun this:\n\n```bash\n./startup.sh start\nnpm test\n```\n\nThen open it.\n")
+    chunks = extract.extract_file(p, "markdown").chunks
+    assert [c.chunk_type for c in chunks] == ["block", "block", "code", "block"]
+    assert chunks[2].text == "./startup.sh start\nnpm test"
+    assert chunks[2].page == chunks[1].page
+
+
+def test_code_text_is_verbatim_not_collapsed(tmp_path):
+    code = "if x:\n    run  --flag   value\n\n    done"
+    chunks = _md(tmp_path, f"Intro line here.\n\n```py\n{code}\n\n```\n").chunks
+    assert [(c.chunk_type, c.text) for c in chunks] == [("block", "Intro line here."), ("code", code)]
+
+
+def test_an_indented_code_block_is_a_code_chunk_too(tmp_path):
+    chunks = _md(tmp_path, "Run it like so:\n\n    make all\n    make test\n\nDone now.\n").chunks
+    assert [(c.chunk_type, c.text) for c in chunks] == [
+        ("block", "Run it like so:"), ("code", "make all\nmake test"), ("block", "Done now.")]
+
+
+def test_an_empty_code_block_adds_no_chunk(tmp_path):
+    chunks = _md(tmp_path, "Before the fence.\n\n```\n```\n\nAfter the fence.\n").chunks
+    assert [c.chunk_type for c in chunks] == ["block", "block"]
+    assert [c.ord for c in chunks] == [0, 1]
+
+
+def test_code_chunks_do_not_move_the_reader_pages(tmp_path):
+    prose = " ".join(f"Sentence number {i} of the body." for i in range(1, 31))   # 30 sentences, 40 per page
+    with_code = f"{prose}\n\n```sh\nls -la\n```\n\n{prose}\n\n{prose}\n"
+    without = f"{prose}\n\n{prose}\n\n{prose}\n"
+    a, b = _md(tmp_path, with_code, "a.md"), _md(tmp_path, without, "b.md")
+    assert a.page_count == b.page_count == 3
+    assert [(c.page, c.text) for c in a.chunks if c.chunk_type != "code"] == [(c.page, c.text) for c in b.chunks]
+    assert [(c.page, c.chunk_type) for c in a.chunks] == [(1, "block"), (1, "code"), (2, "block"), (3, "block")]
+
+
+def test_a_long_code_chunk_splits_into_code_and_code_cont(tmp_path):
+    code = "\n".join(f"line {i:03d} of a long script" for i in range(120))
+    chunks = _md(tmp_path, f"Intro for the script.\n\n```sh\n{code}\n```\n").chunks
+    parts = extract.split_chunks(chunks, 400, 80)
+    kinds = [c.chunk_type for c in parts]
+    assert kinds[0] == "block" and kinds[1] == "code"
+    assert set(kinds[2:]) == {"code+cont"} and len(kinds) > 3
+    assert {c.page for c in parts} == {1}
+
+
+def test_markdown_outline_has_levels_one_to_three_with_pages(tmp_path):
+    result = _md(tmp_path, "# Title\n\nIntro text.\n\n## Part  *One*\n\nBody here.\n\n"
+                           "### Detail\n\nMore body.\n\n#### Too deep\n\nEnd text.\n")
+    assert result.outline == (extract.OutlineEntry(1, "Title", 1), extract.OutlineEntry(2, "Part One", 1),
+                              extract.OutlineEntry(3, "Detail", 1))
+
+
+def test_markdown_outline_page_is_the_page_of_the_heading_block(tmp_path):
+    body = " ".join(f"Sentence number {i} of the body." for i in range(1, 40))   # page 1 is full at 40
+    result = _md(tmp_path, f"# First\n\n{body}\n\n## Second\n\nShort end.\n")
+    heading_page = {c.text: c.page for c in result.chunks}["Second"]
+    assert heading_page == 2
+    assert result.outline == (extract.OutlineEntry(1, "First", 1), extract.OutlineEntry(2, "Second", 2))
+
+
+def test_a_hash_line_inside_a_code_fence_is_not_a_heading(tmp_path):
+    result = _md(tmp_path, "# Real\n\n```bash\n# install it\nmake\n```\n")
+    assert [e.text for e in result.outline] == ["Real"]
+
+
+def test_outline_text_is_collapsed_and_cut_to_120_characters(tmp_path):
+    result = _md(tmp_path, "# " + "word " * 60 + "\n\nBody text here.\n")
+    (entry,) = result.outline
+    assert len(entry.text) == 120 and entry.text == ("word " * 60)[:120]
+
+
+def test_text_and_headingless_markdown_have_no_outline(tmp_path):
+    assert extract.extract_text("One sentence is here. Another sentence is here.").outline == ()
+    assert _md(tmp_path, "Just a paragraph of prose.\n").outline == ()
+
+
+class _Item:
+    def __init__(self, level, title, page_index):
+        self.level, self.title, self.page_index = level, title, page_index
+
+
+def test_toc_entries_map_levels_and_pages():
+    items = [_Item(0, "Chapter", 4), _Item(1, "Section", 6), _Item(2, "Sub", 6), _Item(3, "Too deep", 7),
+             _Item(0, "No page", None), _Item(0, "Negative page", -1), _Item(0, "  ", 2)]
+    assert extract.toc_entries(items) == (
+        extract.OutlineEntry(1, "Chapter", 5), extract.OutlineEntry(2, "Section", 7),
+        extract.OutlineEntry(3, "Sub", 7))
+
+
+def test_toc_entry_titles_are_collapsed_cut_and_free_of_nul():
+    (e,) = extract.toc_entries([_Item(0, "A \n  B\x00C " + "x" * 200, 0)])
+    assert e.text.startswith("A BC xxx") and len(e.text) == 120
+
+
+def test_outline_from_converted_markdown_pages():
+    pages = [(1, "# A\ntext"), (2, "## B"), (3, "#### D\n\n```\n# not a heading\n```\n\nSetext\n-------")]
+    assert extract.outline_from_markdown_pages(pages) == (
+        extract.OutlineEntry(1, "A", 1), extract.OutlineEntry(2, "B", 2))
+
+
+def test_opening_line_is_the_first_prose_120_characters():
+    chunk = extract.Chunk
+    chunks = [chunk(0, 1, "code", "make all"), chunk(1, 1, "block", "x" * 300), chunk(2, 1, "block", "later")]
+    assert extract.opening_line(chunks) == "x" * 120
+    assert extract.opening_line([chunk(0, 1, "block", "Short one.")]) == "Short one."
+    assert extract.opening_line([chunk(0, 1, "code", "make"), chunk(1, 1, "code+cont", "all")]) == ""
+    assert extract.opening_line([]) == ""
+    cjk = "漢" * 200            # no spaces anywhere: the cut is by characters
+    assert extract.opening_line([chunk(0, 1, "block", cjk)]) == "漢" * 120
+    emoji = "😀" * 200          # an astral character is one code point, never half of a pair
+    assert extract.opening_line([chunk(0, 1, "block", emoji)]) == "😀" * 120
+
+
+def test_every_extractor_fills_opening(tmp_path):
+    assert _md(tmp_path, "```sh\nmake\n```\n\nFirst prose line.\n").opening == "First prose line."
+    assert extract.extract_text("One sentence is here. Another sentence is here.").opening == \
+        "One sentence is here. Another sentence is here."
+    p = tmp_path / "x.pdf"
+    p.write_bytes(make_pdf(["", "Second page words."]))
+    assert extract.extract_pdf(p).opening == "Second page words."
+    assert _md(tmp_path, "", "empty.md").opening == ""
+
+
+def _pdf_with_outline() -> bytes:
+    """Three pages; outline: Chapter One (p1) > Section One (p2), Chapter Two (p3)."""
+    n = 3
+    page = lambda i: 4 + 2 * i
+    base = 4 + 2 * n
+    objs = [
+        f"<< /Type /Catalog /Pages 2 0 R /Outlines {base} 0 R >>".encode(),
+        f"<< /Type /Pages /Kids [{' '.join(f'{page(i)} 0 R' for i in range(n))}] /Count {n} >>".encode(),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    for i in range(n):
+        stream = f"BT /F1 12 Tf 72 720 Td (Page {i + 1} text.) Tj ET".encode()
+        objs.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> "
+                    f"/Contents {page(i) + 1} 0 R >>".encode())
+        objs.append(b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream")
+    objs += [
+        f"<< /Type /Outlines /First {base + 1} 0 R /Last {base + 3} 0 R /Count 3 >>".encode(),
+        f"<< /Title (Chapter One) /Parent {base} 0 R /Next {base + 3} 0 R /First {base + 2} 0 R "
+        f"/Last {base + 2} 0 R /Count 1 /Dest [{page(0)} 0 R /Fit] >>".encode(),
+        f"<< /Title (Section One) /Parent {base + 1} 0 R /Dest [{page(1)} 0 R /Fit] >>".encode(),
+        f"<< /Title (Chapter Two) /Parent {base} 0 R /Prev {base + 1} 0 R /Dest [{page(2)} 0 R /Fit] >>".encode(),
+    ]
+    out, offsets = bytearray(b"%PDF-1.4\n"), []
+    for num, body in enumerate(objs, start=1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % num + body + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)
+    for off in offsets:
+        out += b"%010d 00000 n \n" % off
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+    return bytes(out)
+
+
+def test_pdf_outline_comes_from_the_bookmarks(tmp_path):
+    p = tmp_path / "o.pdf"
+    p.write_bytes(_pdf_with_outline())
+    result = extract.extract_pdf(p)
+    assert result.outline == (extract.OutlineEntry(1, "Chapter One", 1), extract.OutlineEntry(2, "Section One", 2),
+                              extract.OutlineEntry(1, "Chapter Two", 3))
+    assert result.page_count == 3 and len(result.chunks) == 3
+
+
+def test_a_pdf_without_bookmarks_has_an_empty_outline(tmp_path):
+    p = tmp_path / "x.pdf"
+    p.write_bytes(make_pdf(["Only page text."]))
+    assert extract.extract_pdf(p).outline == ()
+
+
+def test_an_unreadable_outline_never_fails_the_extraction(tmp_path, monkeypatch):
+    p = tmp_path / "x.pdf"
+    p.write_bytes(make_pdf(["Only page text."]))
+
+    def broken(path):
+        raise RuntimeError("bad bookmark tree")
+    monkeypatch.setattr(extract, "_pdf_toc_items", broken)
+    result = extract.extract_pdf(p)
+    assert result.outline == () and result.chunks[0].text == "Only page text."
