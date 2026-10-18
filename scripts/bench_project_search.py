@@ -14,13 +14,18 @@ embedding model itself is NOT included, only the database work.
 The script applies the migrations to that database (they are idempotent) and refuses any database
 named natural_reader. It never echoes the URL (it holds a password).
 
-Four query shapes alternate, so the headline covers the cheap and the expensive paths:
+Six query shapes alternate, so the headline covers the cheap and the expensive paths:
   exact          three words one chunk really has: the all-words list finds it
   partial        the same three words plus one nobody has: no chunk has all four, so the
                  half-the-words list runs (spec 5.5, point 3)
-  partial-common two of the most common words plus one nobody has: the partial list's worst case,
-                 since nearly every chunk contains a word
+  partial-common two of the most common words plus one nobody has: many candidate chunks
+  long-mixed     23 words: 8 of the most common, 14 mid-frequency and rare, and one nobody has (a
+                 pasted question: no chunk has them all, so the partial list always runs)
+  long-common    32 words, the 31 most common plus one nobody has: the partial list's worst case
+                 (cost once grew with the number of words; ts_rank_cd alone took 460 ms here)
   meaning        no text: the meaning list alone
+Every shape must stay under the target at p95 (the exit status says so); with about 8 searches
+per shape in the default 50, a shape's p95 is its slowest search.
 """
 from __future__ import annotations
 
@@ -36,8 +41,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 REAL_DATABASE = "natural_reader"
 PREFIX = "bench-"          # every document this script seeds starts with it, so cleanup is exact
-SHAPES = ("exact", "partial", "partial-common", "meaning")
+SHAPES = ("exact", "partial", "partial-common", "long-mixed", "long-common", "meaning")
 ABSENT = "zzqxv"           # a word no seeded chunk contains
+TARGET_MS = 300            # spec 5.5: one search, p95
 
 
 def check_database_url(url: str | None) -> None:
@@ -80,7 +86,8 @@ def summarize(ms: list[float]) -> str:
     return f"n={len(s):3d}  p50={statistics.median(s):7.1f}  p95={percentile(s, 95):7.1f}  max={s[-1]:7.1f}"
 
 
-async def seed(conn, docs: int, chunks: int, dim: int, rng: random.Random, vocab: list[str]) -> list[list[str]]:
+async def seed(conn, docs: int, chunks: int, dim: int, rng: random.Random, vocab: list[str],
+               vacuum: bool = False) -> list[list[str]]:
     """Insert the documents and chunks; return each chunk's words (for building queries)."""
     weights = [1.0 / (i + 1) for i in range(len(vocab))]            # Zipf: a few words everywhere
     all_words: list[list[str]] = []
@@ -99,8 +106,13 @@ async def seed(conn, docs: int, chunks: int, dim: int, rng: random.Random, vocab
                     vec = "[" + ",".join(f"{rng.gauss(0, 1):.4f}" for _ in range(dim)) + "]"
                     await copy.write_row((doc_id, i, 1 + i // 4, "page", " ".join(words), f"h{i}", vec, "bench"))
     await conn.commit()
-    await conn.execute("ANALYZE doc_chunks")      # a real library has statistics; without them the plan is a guess
-    await conn.commit()
+    # A real library has statistics (without them the plan is a guess), and by the time a project is searched,
+    # usually also a vacuum. A table that was only just bulk-loaded has neither the visibility map nor a clean
+    # GIN pending list, which makes every search slower: the default here is that worst case (ANALYZE only);
+    # --vacuum measures the steady state.
+    await conn.set_autocommit(True)
+    await conn.execute("VACUUM (ANALYZE) doc_chunks" if vacuum else "ANALYZE doc_chunks")
+    await conn.set_autocommit(False)
     return all_words
 
 
@@ -110,13 +122,19 @@ def make_query(shape: str, rng: random.Random, vocab: list[str], all_words: list
         return qvec, None
     if shape == "partial-common":
         return qvec, f"{vocab[0]} {vocab[1]} {ABSENT}"
+    if shape == "long-mixed":
+        words = vocab[:8] + rng.sample(vocab[100:], 14) + [ABSENT]
+        rng.shuffle(words)
+        return qvec, " ".join(words)
+    if shape == "long-common":
+        return qvec, " ".join(vocab[:31]) + f" {ABSENT}"
     mid = [w for w in rng.choice(all_words) if w not in vocab[:30]]          # not the very common ones
     three = " ".join(dict.fromkeys(mid[:3]))
     return qvec, three if shape == "exact" else f"{three} {ABSENT}"
 
 
 async def run(url: str, docs: int, chunks: int, searches: int, k: int, per_doc: int, depth: int,
-              dim: int, seed_: int) -> int:
+              dim: int, seed_: int, vacuum: bool = False, other_docs: int = 0) -> int:
     from psycopg import AsyncConnection
     from server.services.doc_search import search_scope
     from server.tests.dbutil import apply_migrations
@@ -129,9 +147,9 @@ async def run(url: str, docs: int, chunks: int, searches: int, k: int, per_doc: 
         await conn.execute("DELETE FROM documents WHERE doc_id LIKE %s", (PREFIX + "%",))   # a crashed earlier run
         await conn.commit()
         started = time.perf_counter()
-        all_words = await seed(conn, docs, chunks, dim, rng, vocab)
-        print(f"seeded {docs} documents x {chunks} chunks = {docs * chunks} chunks "
-              f"in {time.perf_counter() - started:.1f}s", file=sys.stderr)
+        all_words = await seed(conn, docs + other_docs, chunks, dim, rng, vocab, vacuum)
+        print(f"seeded {docs + other_docs} documents x {chunks} chunks = {(docs + other_docs) * chunks} chunks "
+              f"in {time.perf_counter() - started:.1f}s ({docs} of them are the searched project)", file=sys.stderr)
         scope = [f"{PREFIX}{d:04d}" for d in range(docs)]
         for shape in SHAPES:                                                 # untimed: caches and plans warm
             qvec, text = make_query(shape, rng, vocab, all_words, dim)
@@ -149,13 +167,18 @@ async def run(url: str, docs: int, chunks: int, searches: int, k: int, per_doc: 
             assert len(rows) == k, f"{shape}: got {len(rows)} rows, wanted {k}"
         every = [ms for v in timings.values() for ms in v]
         print(f"Project search timing: {docs} documents x {chunks} chunks ({docs * chunks} chunks), "
-              f"k={k}, per_doc={per_doc}, depth={depth}, {searches} searches (milliseconds)")
+              f"k={k}, per_doc={per_doc}, depth={depth}, {searches} searches, "
+              f"{'vacuumed' if vacuum else 'freshly loaded, not vacuumed'}"
+              f"{f', {other_docs} more documents outside the project' if other_docs else ''} (milliseconds)")
         print(f"  all             {summarize(every)}")
         for shape in SHAPES:
             print(f"  {shape:<15} {summarize(timings[shape])}  searches with a word match: {found[shape]}")
+        worst = max(percentile(sorted(v), 95) for v in timings.values() if v)
         p95 = percentile(sorted(every), 95)
-        print(f"p95 {p95:.1f} ms against a target of 300 ms: {'OK' if p95 < 300 else 'OVER TARGET'}")
-        return 0 if p95 < 300 else 1
+        ok = p95 < TARGET_MS and worst < TARGET_MS
+        print(f"p95 {p95:.1f} ms overall, {worst:.1f} ms for the slowest shape, against a target of "
+              f"{TARGET_MS} ms: {'OK' if ok else 'OVER TARGET'}")
+        return 0 if ok else 1
     finally:
         await conn.rollback()
         cur = await conn.execute("DELETE FROM documents WHERE doc_id LIKE %s", (PREFIX + "%",))
@@ -169,18 +192,22 @@ def main() -> int:
     parser.add_argument("--database-url", required=True, help="a SCRATCH database (never natural_reader)")
     parser.add_argument("--docs", type=int, default=50)
     parser.add_argument("--chunks", type=int, default=200, help="chunks per document")
+    parser.add_argument("--other-docs", type=int, default=0,
+                        help="more documents in the library but outside the searched project (a bigger library)")
     parser.add_argument("--searches", type=int, default=50)
     parser.add_argument("--k", type=int, default=10, help="passages wanted (the chat tool allows up to 10)")
     parser.add_argument("--per-doc", type=int, default=2, help="CHAT_SEARCH_PER_DOC")
     parser.add_argument("--depth", type=int, default=50, help="CHAT_PROJECT_FUSION_DEPTH")
     parser.add_argument("--dim", type=int, default=768, help="vector size; the schema is 768")
+    parser.add_argument("--vacuum", action="store_true",
+                        help="VACUUM ANALYZE after loading (steady state) instead of ANALYZE only (just loaded)")
     parser.add_argument("--seed", type=int, default=7)
     args = parser.parse_args()
     check_database_url(args.database_url)
     if args.docs < 1 or args.chunks < 1 or args.searches < 1:
         parser.error("--docs, --chunks and --searches must be at least 1")
     return asyncio.run(run(args.database_url, args.docs, args.chunks, args.searches, args.k, args.per_doc,
-                           args.depth, args.dim, args.seed))
+                           args.depth, args.dim, args.seed, args.vacuum, args.other_docs))
 
 
 if __name__ == "__main__":

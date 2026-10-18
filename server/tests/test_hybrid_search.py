@@ -252,6 +252,103 @@ async def test_half_the_words_rounds_up(install_doc):
     assert by_page[1]["by_words"] and not by_page[2]["by_words"]
 
 
+async def test_stop_words_do_not_count_toward_partial_matching(two_docs):
+    """"what is the clause 4.2": unrelated "what is the ..." chunks used to tie with the real one at 3 of 5
+    words, and the tool's word-rank floor bypass could show them as word matches."""
+    conn = two_docs
+    for i in range(6):
+        await _chunk_in(conn, DOC_A, i, 10 + i, f"What is the plan for item {i} of the list?", _vec(1, 0.1 * (i + 1)))
+    await _chunk_in(conn, DOC_B, 0, 1, "What is the weather like today in the city?", _vec(1, 0.05))
+    await _chunk_in(conn, DOC_B, 1, 2, "Clause 4.2 limits the liability of both parties.", _vec(0.1, 1))
+    rows = await doc_search.search_scope(conn, [DOC_A, DOC_B], QUERY_VEC, 8, text="what is the clause 4.2")
+    assert len(rows) == 8
+    word_matched = [(r["doc_id"], r["page"], r["word_match"]) for r in rows if r["by_words"]]
+    assert word_matched == [(DOC_B, 2, "partial")]                  # only the chunk with clause AND 4.2
+    assert all(r["word_rank"] is None and r["word_match"] is None for r in rows if not r["by_words"])
+
+
+async def test_a_query_of_only_common_words_has_no_partial_rows(two_docs):
+    """Each word is in 3 of 5 chunks, no chunk has all three: nothing is informative, so no word list."""
+    conn = two_docs
+    for i, text in enumerate(["what the cats", "what dogs", "what is birds", "is the fish", "is the cows"]):
+        await _chunk_in(conn, DOC_A, i, 1 + i, f"{text} sleep.", _vec(1, 0.1 * (i + 1)))
+    rows = await doc_search.search_scope(conn, [DOC_A], QUERY_VEC, 5, text="what is the")
+    assert len(rows) == 5
+    assert not any(r["by_words"] for r in rows) and all(r["word_match"] is None for r in rows)
+
+
+async def test_common_words_still_match_when_one_chunk_has_them_all(two_docs):
+    conn = two_docs
+    for i in range(3):
+        await _chunk_in(conn, DOC_A, i, 1 + i, f"What is the plan {i}?", _vec(1, 0.1 * (i + 1)))
+    await _chunk_in(conn, DOC_A, 3, 4, "Unrelated words entirely.", _vec(1, 0.5))
+    rows = await doc_search.search_scope(conn, [DOC_A], QUERY_VEC, 4, text="what is the")
+    assert {r["page"]: r["word_match"] for r in rows} == {1: "all", 2: "all", 3: "all", 4: None}
+
+
+async def test_word_match_says_which_word_list_found_a_row(doc, install_doc):
+    conn, _ = doc
+    rows = await doc_search.search_chunks(conn, DOC, QUERY_VEC, 4, text="Table 4.2")
+    assert {r["page"]: r["word_match"] for r in rows} == {8: "all", 3: "all", 5: None, 6: None}
+    assert all(r["by_words"] == (r["word_match"] is not None) for r in rows)
+    rows = await doc_search.search_scope(conn, [DOC_A], QUERY_VEC, 5, text="install podman rootless rhel")
+    assert {r["page"]: (r["by_words"], r["word_match"]) for r in rows} == {
+        1: (True, "partial"), 2: (False, None), 3: (False, None)}
+    rows = await doc_search.search_scope(conn, [DOC_A], QUERY_VEC, 5)
+    assert all("by_words" not in r and "word_match" not in r for r in rows)   # meaning-only keeps its shape
+
+
+async def test_only_the_rarest_words_count_and_a_long_query_still_works(two_docs):
+    """14 informative words: the 12 rarest (a01..a12, equally rare, so by name) count, and half of 12 is 6."""
+    conn = two_docs
+    names = [f"a{i:02d}" for i in range(1, 15)]
+    await _chunk_in(conn, DOC_A, 0, 1, "alpha " + " ".join(names[:6]), _vec(1, 0.1))        # 6 of the 12: found
+    await _chunk_in(conn, DOC_A, 1, 2, "beta " + " ".join(names[8:14]), _vec(1, 0.2))        # only 4 of the 12
+    await _chunk_in(conn, DOC_A, 2, 3, "gamma a07 a08", _vec(1, 0.3))
+    await _chunk_in(conn, DOC_A, 3, 4, "zeta eta theta", _vec(1, 0.4))
+    rows = await doc_search.search_scope(conn, [DOC_A], QUERY_VEC, 4, text=" ".join(names))   # without the cap: 6 of 14
+    assert {r["page"]: r["word_match"] for r in rows} == {1: "partial", 2: None, 3: None, 4: None}
+    long_query = " ".join(f"w{i:02d}" for i in range(60)) + " alpha beta"
+    rows = await doc_search.search_scope(conn, [DOC_A], QUERY_VEC, 4, text=long_query)
+    assert len(rows) == 4
+    assert {r["page"]: r["word_match"] for r in rows} == {1: "partial", 2: "partial", 3: None, 4: None}
+    # the 60 words nobody has did not take the 12 places: alpha and beta (one chunk each) still counted
+
+
+async def test_partial_words_with_equal_counts_are_ordered_by_text_rank(two_docs):
+    """Three of four words in both chunks; ts_rank_cd gives more to the one that says them more often, even
+    though the other was inserted first (so id order would put it first)."""
+    conn = two_docs
+    await _chunk_in(conn, DOC_A, 0, 1, "alpha beta gamma", _vec(1, 0.1))
+    await _chunk_in(conn, DOC_A, 1, 2, "alpha beta gamma alpha beta gamma alpha beta gamma", _vec(1, 0.2))
+    for i in range(4):
+        await _chunk_in(conn, DOC_A, 2 + i, 3 + i, f"unrelated filler {i}", _vec(1, 0.3 + i))
+    rows = await doc_search.search_scope(conn, [DOC_A], QUERY_VEC, 6, text="alpha beta gamma delta")
+    assert {r["page"]: r["word_rank"] for r in rows if r["by_words"]} == {2: 1, 1: 2}
+
+
+async def test_common_words_are_spotted_the_same_way_in_a_large_scope(two_docs):
+    """Over about 2000 chunks the check for words in over half of them starts from a sample; the answer is the
+    same: "common" (all chunks) and "often" (55%, a hair above half, so only the exact count can tell) are out,
+    and only "raretoken" (one chunk) counts."""
+    conn = two_docs
+    await conn.execute(
+        "INSERT INTO doc_chunks (doc_id, ord, page, chunk_type, text, text_hash, embedding, embedding_model) "
+        "SELECT %s, i, 1 + i %% 50, 'page', 'common filler ' || CASE WHEN i %% 20 < 11 THEN 'often ' ELSE '' END "
+        "|| CASE WHEN i = 7 THEN 'raretoken' ELSE '' END, 'g' || i, %s::vector, 'm' FROM generate_series(1, 2100) AS i",
+        (DOC_A, _vec(1, 0.5)))
+    rows = await doc_search.search_scope(conn, [DOC_A], QUERY_VEC, 8, text="common often raretoken nosuchword")
+    word_matched = [r for r in rows if r["by_words"]]
+    assert len(word_matched) == 1 and "raretoken" in word_matched[0]["text"] and word_matched[0]["word_match"] == "partial"
+
+
+async def test_a_word_nobody_has_is_ignored_not_counted(install_doc):
+    """"zzqx" is in no chunk: it can't tell chunks apart, so it neither raises the bar (3 words would need 2)
+    nor takes one of the 12 places."""
+    rows = await doc_search.search_scope(install_doc, [DOC_A], QUERY_VEC, 5, text="install zzqx qqzz")
+    assert {r["page"]: r["word_match"] for r in rows} == {1: "partial", 2: None, 3: None}
+
+
 async def test_partial_words_rank_by_matched_count_then_text_rank(install_doc):
     conn = install_doc
     await _chunk_in(conn, DOC_A, 3, 4, "Install it with the rhel installer.", _vec(0.1, 1))   # 2 of 4: install, rhel
@@ -303,7 +400,9 @@ async def test_single_document_results_unchanged(doc):
     rows = await doc_search.search_chunks(conn, DOC, QUERY_VEC, 4, text="Table 4.2")
     assert [(r["page"], r["by_words"], r["word_rank"]) for r in rows] == [
         (8, True, 2), (3, True, 1), (5, False, None), (6, False, None)]
-    assert set(rows[0]) == {"id", "page", "chunk_type", "text", "score", "by_words", "word_rank"}
+    assert set(rows[0]) == {"id", "page", "chunk_type", "text", "score", "by_words", "word_rank",
+                            "word_match"}                                  # word_match is new; the rest is as before
+    assert [r["word_match"] for r in rows] == ["all", "all", None, None]
     plain = await doc_search.search_chunks(conn, DOC, QUERY_VEC, 4)
     assert [r["page"] for r in plain] == [5, 8, 6, 3]
     assert set(plain[0]) == {"id", "page", "chunk_type", "text", "score"}

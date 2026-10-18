@@ -45,6 +45,9 @@ async def readable_doc(conn, doc_id: str, user_id: str) -> ReadableDoc | None:
 
 RRF_K = 60           # reciprocal-rank fusion's constant (Cormack et al., 2009)
 FUSION_DEPTH = 20    # candidates taken from each list before fusing
+PARTIAL_WORDS = 12   # at most this many (the rarest) of a query's words count in partial word matching
+PARTIAL_POOL = 4     # ts_rank_cd breaks ties among this many x depth candidates (it is costly)
+COMMON_SAMPLE = 1000   # chunks sampled to spot words in over 60% of the scope without a lookup each
 
 
 async def search_chunks(conn, doc_id: str, qvec: list[float], k: int,
@@ -54,8 +57,9 @@ async def search_chunks(conn, doc_id: str, qvec: list[float], k: int,
 
     `score` is always the cosine similarity (higher = closer); trap: it is NOT
     a calibrated probability, a "good" value depends on the model. With `text`
-    (v2.3 Task F) each row adds `by_words` and `word_rank` (1 = best word
-    match, None = not found by words); see `search_scope`."""
+    (v2.3 Task F) each row adds `by_words`, `word_rank` (1 = best word match,
+    None = not found by words) and `word_match` ('all' words, 'partial', or
+    None); see `search_scope`."""
     rows = await search_scope(conn, [doc_id], qvec, k, text, per_doc=None)
     for r in rows:
         r.pop("doc_id", None)
@@ -68,13 +72,20 @@ async def search_scope(conn, doc_ids: list[str], qvec: list[float], k: int, text
     are `search_chunks`'s plus `doc_id`. `score` is the cosine similarity.
 
     With `text`, the meaning ranking and a word ranking are fused by
-    reciprocal-rank fusion, and each row adds `by_words` and `word_rank`. The
-    word ranking is the chunks containing every word of `text` (the 'simple'
-    full-text index: any language, labels like "4.2" kept). When NO chunk in
-    the scope has every word, it is instead the chunks with at least half of
-    the query's distinct words (rounded up), most words first, then ts_rank_cd
-    (Meilisearch's word dropping): "install podman rootless rhel" still finds
-    "install podman rootless". A text with no words leaves the meaning ranking.
+    reciprocal-rank fusion, and each row adds `by_words`, `word_rank` and
+    `word_match`. The word ranking is the chunks containing every word of `text`
+    (the 'simple' full-text index: any language, labels like "4.2" kept):
+    `word_match` 'all'. When NO chunk in the scope has every word, it is
+    instead the chunks with at least half (rounded up) of the query's
+    INFORMATIVE words, most words first, then ts_rank_cd (Meilisearch's word
+    dropping): `word_match` 'partial', and "install podman rootless rhel" still
+    finds "install podman rootless". A word is informative when some chunk of
+    the scope has it but at most half of them do, so "what is the clause 4.2"
+    is about "clause" and "4.2", not about the words every sentence has (nor
+    about a word nobody has); at most the PARTIAL_WORDS rarest count. No
+    informative word, no partial list. A row found by meaning only has
+    `word_match` None; `by_words` is true for both kinds. A text with no words
+    leaves the meaning ranking.
     `depth` is how many candidates each list gives to the fusion (at least k).
 
     `per_doc` balances the fused ranking in Python (`_balance`): a document
@@ -86,11 +97,26 @@ async def search_scope(conn, doc_ids: list[str], qvec: list[float], k: int, text
     ef_search (40) candidates library-wide, losing the scope's passages
     whenever other documents are closer. The MATERIALIZED CTE filters to the
     scope's (id, embedding) first. The word lists read doc_chunks directly, so
-    the planner can use the GIN or doc_id index."""
+    the planner can use the GIN or doc_id index.
+
+    Cost of the partial list (measured on 10,000 chunks against spec 5.5's
+    300 ms; see scripts/bench_project_search.py). It runs only when no chunk
+    has every word. Telling which words are informative takes one GIN lookup
+    per query word (about 3 ms each at 10,000 chunks), except words clearly in
+    over three fifths of a COMMON_SAMPLE-chunk sample, which are out without
+    one; a 32-word query of common words costs about 120 ms in all. `matched`
+    is worked out once per candidate chunk. ts_rank_cd is NOT cheap: 462 ms for
+    31 terms over 10,000 chunks, against 15 ms for matching them. So it only
+    breaks ties among the first PARTIAL_POOL x depth candidates by matched
+    count (ties beyond that pool fall to id order)."""
+    # prepare=False below: psycopg would prepare this text after 5 runs, and PostgreSQL would then switch to a
+    # generic plan that cannot see how many documents are in scope or how common the query words are.
+    # Measured on 10,000 chunks: the generic plan was 40-100% slower; planning afresh costs about 1 ms.
     if not doc_ids:
         return []
     if not text:
         return _balance(await _meaning_only(conn, list(doc_ids), qvec, k, per_doc, depth), k, per_doc)
+    depth = max(k, depth)
     async with conn.cursor() as cur:
         await cur.execute(
             """
@@ -103,58 +129,96 @@ async def search_scope(conn, doc_ids: list[str], qvec: list[float], k: int, text
                 FROM scope
                 ORDER BY embedding <=> %(q)s::vector, id
                 LIMIT %(depth)s
-            ), query_words AS (
-                -- the query's distinct lexemes, each quoted and cast to a one-word tsquery (a
-                -- ::tsquery cast takes the lexeme literally; to_tsquery would parse it again)
-                SELECT plainto_tsquery('simple', %(text)s) AS all_q,
-                       count(*) AS n,
-                       string_agg(quoted, ' | ')::tsquery AS any_q,
-                       array_agg(quoted::tsquery) AS each_q
-                FROM (SELECT chr(39) || replace(replace(lexeme, chr(92), chr(92) || chr(92)),
-                                                chr(39), chr(39) || chr(39)) || chr(39) AS quoted
-                      FROM unnest(to_tsvector('simple', %(text)s))) AS lexemes
             ), exact AS (
-                SELECT c.id, 0 AS matched, ts_rank_cd(c.text_search, qw.all_q) AS rk
-                FROM doc_chunks c, query_words qw
+                SELECT c.id, ts_rank_cd(c.text_search, allq.q) AS rk
+                FROM doc_chunks c, (SELECT plainto_tsquery('simple', %(text)s) AS q) AS allq
                 WHERE c.doc_id = ANY(%(docs)s::text[]) AND c.embedding IS NOT NULL
-                  AND c.text_search @@ qw.all_q
+                  AND c.text_search @@ allq.q
                 ORDER BY rk DESC, c.id
                 LIMIT %(depth)s
+            ), lex AS (
+                -- the query's distinct lexemes, quoted so a ::tsquery cast takes each literally
+                -- (to_tsquery would parse "mimic-iv" again into a phrase)
+                SELECT lexeme, chr(39) || replace(replace(lexeme, chr(92), chr(92) || chr(92)),
+                                                  chr(39), chr(39) || chr(39)) || chr(39) AS quoted
+                FROM unnest(to_tsvector('simple', %(text)s))
+            ), total AS (
+                SELECT count(*) AS n FROM scope
+            ), sample AS MATERIALIZED (
+                -- about COMMON_SAMPLE of the scope's chunks, spread by a hash of the id (the whole
+                -- scope when it is small): only to spot words that are clearly in over half of them
+                SELECT c.text_search
+                FROM scope s JOIN doc_chunks c ON c.id = s.id, total
+                WHERE NOT EXISTS (SELECT 1 FROM exact)
+                  AND mod(hashint8(s.id), greatest(1, total.n / %(sample)s)) = 0
+            ), sample_size AS (
+                SELECT count(*) AS size FROM sample
+            ), freq AS MATERIALIZED (
+                -- how many of the scope's chunks hold each word (GIN index, then the doc filter),
+                -- except a word in over three fifths of the sample, which is out whatever its exact count
+                -- (more than half) and would cost a lookup touching most of the scope. Only when no
+                -- chunk has every word. MATERIALIZED: df is read twice below; a plain CTE would count twice
+                SELECT lex.lexeme, lex.quoted,
+                       CASE WHEN seen.n * 10 > sample_size.size * 6 THEN NULL
+                            ELSE (SELECT count(*) FROM doc_chunks c
+                                  WHERE c.doc_id = ANY(%(docs)s::text[]) AND c.embedding IS NOT NULL
+                                    AND c.text_search @@ lex.quoted::tsquery) END AS df
+                FROM lex, sample_size
+                CROSS JOIN LATERAL (SELECT count(*) AS n FROM sample
+                                    WHERE sample.text_search @@ lex.quoted::tsquery) AS seen
+                WHERE NOT EXISTS (SELECT 1 FROM exact)
+            ), rare AS (
+                SELECT freq.quoted
+                FROM freq, total
+                WHERE freq.df >= 1                        -- a word no chunk has says nothing about which chunk fits
+                  AND freq.df * 2 <= total.n              -- and one in at most half of the scope's chunks
+                ORDER BY freq.df, freq.lexeme
+                LIMIT %(rare)s
+            ), informative AS (
+                SELECT count(*) AS m,
+                       string_agg(quoted, ' | ')::tsquery AS any_q,
+                       array_agg(quoted::tsquery) AS each_q
+                FROM rare
+            ), pool AS (
+                -- matched = how many informative words the chunk has, worked out once per candidate
+                SELECT c.id, hit.matched
+                FROM informative i, doc_chunks c
+                CROSS JOIN LATERAL (SELECT count(*) AS matched
+                                    FROM unnest(i.each_q) AS one(q) WHERE c.text_search @@ one.q) AS hit
+                WHERE NOT EXISTS (SELECT 1 FROM exact)
+                  AND c.doc_id = ANY(%(docs)s::text[]) AND c.embedding IS NOT NULL
+                  AND c.text_search @@ i.any_q
+                  AND hit.matched * 2 >= i.m            -- at least ceil(m / 2) of the m words
+                ORDER BY hit.matched DESC, c.id
+                LIMIT %(pool)s
             ), partial AS (
-                SELECT p.id, p.matched, p.rk
-                FROM (
-                    SELECT c.id, qw.n, ts_rank_cd(c.text_search, qw.any_q) AS rk,
-                           (SELECT count(*) FROM unnest(qw.each_q) AS one(q)
-                            WHERE c.text_search @@ one.q) AS matched
-                    FROM doc_chunks c, query_words qw
-                    WHERE NOT EXISTS (SELECT 1 FROM exact)
-                      AND qw.n >= 2
-                      AND c.doc_id = ANY(%(docs)s::text[]) AND c.embedding IS NOT NULL
-                      AND c.text_search @@ qw.any_q
-                ) AS p
-                WHERE p.matched * 2 >= p.n          -- at least ceil(n / 2) of the n words
-                ORDER BY p.matched DESC, p.rk DESC, p.id
+                SELECT pool.id, pool.matched, ts_rank_cd(c.text_search, i.any_q) AS rk
+                FROM pool JOIN doc_chunks c ON c.id = pool.id, informative i
+                ORDER BY pool.matched DESC, rk DESC, pool.id
                 LIMIT %(depth)s
             ), words AS (
-                SELECT id, row_number() OVER (ORDER BY matched DESC, rk DESC, id) AS r
-                FROM (SELECT id, matched, rk FROM exact
-                      UNION ALL SELECT id, matched, rk FROM partial) AS found
+                SELECT id, kind, row_number() OVER (ORDER BY matched DESC, rk DESC, id) AS r
+                FROM (SELECT id, 0 AS matched, rk, 'all' AS kind FROM exact
+                      UNION ALL SELECT id, matched, rk, 'partial' FROM partial) AS found
             ), fused AS (
                 SELECT id, sum(1.0 / (%(rrf)s + r)) AS rrf,
-                       min(r) FILTER (WHERE src = 'w') AS word_rank
-                FROM (SELECT id, r, 'm' AS src FROM meaning
-                      UNION ALL SELECT id, r, 'w' FROM words) AS both_lists
+                       min(r) FILTER (WHERE src = 'w') AS word_rank,
+                       min(kind) FILTER (WHERE src = 'w') AS word_match
+                FROM (SELECT id, r, 'm' AS src, NULL::text AS kind FROM meaning
+                      UNION ALL SELECT id, r, 'w', kind FROM words) AS both_lists
                 GROUP BY id
             )
             SELECT c.id, c.doc_id, c.page, c.chunk_type, c.text,
                    1 - (c.embedding <=> %(q)s::vector) AS score,
-                   f.word_rank IS NOT NULL AS by_words, f.word_rank
+                   f.word_rank IS NOT NULL AS by_words, f.word_rank, f.word_match
             FROM fused f JOIN doc_chunks c ON c.id = f.id
             ORDER BY f.rrf DESC, c.id
             LIMIT %(limit)s
             """,
-            {"docs": list(doc_ids), "q": qvec, "depth": max(k, depth), "rrf": RRF_K, "text": text,
+            {"docs": list(doc_ids), "q": qvec, "depth": depth, "rrf": RRF_K, "text": text,
+             "rare": PARTIAL_WORDS, "pool": PARTIAL_POOL * depth, "sample": COMMON_SAMPLE,
              "limit": k if per_doc is None else None},   # balancing needs the whole fused list
+            prepare=False,   # see the comment above
         )
         return _balance(_rows(cur, await cur.fetchall()), k, per_doc)
 
@@ -201,7 +265,7 @@ async def _meaning_only(conn, doc_ids: list[str], qvec: list[float], k: int,
             FROM top JOIN doc_chunks c ON c.id = top.id
             ORDER BY top.distance, c.id
             """,
-            (doc_ids, qvec, want),
+            (doc_ids, qvec, want), prepare=False,   # as in search_scope
         )
         return _rows(cur, await cur.fetchall())
 

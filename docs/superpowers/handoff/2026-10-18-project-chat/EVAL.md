@@ -264,46 +264,76 @@ USER_GUIDE), which the balance layer addresses.
 
 What was measured: `doc_search.search_scope` (one SQL statement over the whole project: exact
 meaning scan + word list, fused once, then the per-document balance in Python), 50 searches
-after 4 untimed warm-up searches. Only the database work is timed: the query embedding is random
-and made locally, so the embedding model's own time is **not** in these numbers. Spec 5.5 target:
-p95 under 300 ms.
+after one untimed warm-up search per query shape. Only the database work is timed: the query
+embedding is random and made locally, so the embedding model's own time is **not** in these
+numbers. Spec 5.5 target: p95 under 300 ms, here required **for every query shape**, not only
+overall.
 
-- Date: 2026-10-18. Code: uncommitted Task 7 work on top of `87e079e`.
+- Date: 2026-10-18. Code: Task 7 as committed in `0be9067`, plus the review fix round on top of it
+  (informative-word partial matching, `word_match`, the long-query benchmark shapes, unprepared
+  statements), uncommitted when these numbers were taken.
 - Machine: the CPU dev machine (i9-13980HX, 32 threads) with Postgres 16.15 + pgvector in the
   throwaway container on port 5434 (shared_buffers 128MB, work_mem 4MB, defaults), a scratch
-  database, `ANALYZE` run after seeding.
+  database, `ANALYZE` run after seeding. The machine was not idle (load average 2-5 from other
+  work), so treat single digits as noise.
 - Data: 50 documents x 200 chunks = 10,000 chunks, random 768-d vectors, 90 Zipf-distributed
-  pseudo-words per chunk. Search: `k=10`, `per_doc=2` (`CHAT_SEARCH_PER_DOC`), `depth=50`
-  (`CHAT_PROJECT_FUSION_DEPTH`).
+  pseudo-words per chunk (so about 14 of the 32 commonest words are in over half the chunks).
+  Search: `k=10`, `per_doc=2` (`CHAT_SEARCH_PER_DOC`), `depth=50` (`CHAT_PROJECT_FUSION_DEPTH`).
 
 ```sh
 .venv/bin/python scripts/bench_project_search.py \
   --database-url postgresql://natural_reader:natural_reader@127.0.0.1:5434/natural_reader_bench \
-  --docs 50 --chunks 200
+  --docs 50 --chunks 200            # add --vacuum for the steady state, --other-docs N for a bigger library
 ```
 
-Result (milliseconds; "all" is the headline, the rest is by query shape, 12-13 searches each, so
-a shape's p95 is close to its maximum):
+Query shapes (the script alternates them; with 8-9 searches per shape a shape's p95 is close to
+its slowest search):
 
-| query shape | n | p50 | p95 | what it exercises |
-|---|---|---|---|---|
-| **all** | 50 | **48.1** | **106.8** | the four shapes below, in turn |
-| exact | 13 | 47.0 | 51.9 | three words one chunk has: the all-words list finds it |
-| partial | 13 | 50.4 | 54.1 | the same plus one word nobody has: the half-the-words list runs |
-| partial-common | 12 | 106.1 | 107.3 | two of the commonest words plus an absent one: nearly every chunk is a candidate (worst case) |
-| meaning | 12 | 23.8 | 44.5 | no text: the meaning list alone |
+| shape | what it exercises |
+|---|---|
+| exact | three words one chunk has: the all-words list finds it |
+| partial | the same plus one word nobody has: no chunk has all four, so the partial list runs |
+| partial-common | two of the commonest words plus an absent one: both are over half the chunks, so nothing is informative and there is no partial list |
+| long-mixed | 23 words: 8 of the commonest, 14 mid-frequency and rare, one nobody has |
+| long-common | 32 words: the 31 commonest plus one nobody has. The adversarial case (about half are informative but each is in 30-50% of chunks, so every chunk is a candidate) |
+| meaning | no text: the meaning list alone |
 
-p95 106.8 ms against the 300 ms target: **met**, with about 2.8x headroom.
+Result, milliseconds, table just bulk-loaded and not yet vacuumed (the slow state, what the script
+measures by default; a plain VACUUM makes it about 15-30% faster, and the unvacuumed plan shows each
+GIN lookup costing about 1 ms instead of 0.1, consistent with the index's pending list, which
+autovacuum clears within about a minute of a bulk load; I did not verify the mechanism further):
 
-Where the time goes (EXPLAIN ANALYZE, partial-common, 98 ms): the exact meaning scan is about 30
-ms (10,000 vectors read from the MATERIALIZED CTE and sorted by distance); the partial word list
-is about 65 ms, almost all of it counting matched words for the ~10,000 candidate chunks and
-ranking them with `ts_rank_cd`. A normal query touches far fewer candidates (partial: 50 ms
-total).
+| query shape | n | p50 | p95 |
+|---|---|---|---|
+| **all** | 50 | **33.4** | **122.5** |
+| exact | 9 | 25.8 | 28.1 |
+| partial | 9 | 37.8 | 42.7 |
+| partial-common | 8 | 28.5 | 31.3 |
+| long-mixed | 8 | 58.5 | 65.8 |
+| long-common | 8 | 122.2 | 126.6 |
+| meaning | 8 | 21.8 | 23.8 |
 
-A second run with the same project inside a larger library (250 documents, 50,000 chunks, the
-search scoped to 50 of them) gave the same picture (p50 / p95: exact 25.5 / 46.1, partial 49.7 /
-54.1, partial-common 105.0 / 107.3, meaning 22.7 / 47.7), so the doc-id filter keeps the cost on
-the project's chunks, not the library's. Not measured: libraries much larger than 50,000 chunks,
-or a query of many common words (the partial list's per-chunk work grows with the number of
-distinct words in the query).
+Steady state (`--vacuum`, 50 searches): overall p50 31.2, p95 104.3; slowest shape long-common
+p50 102.1, p95 112.4. Longer runs (150 searches, 25 per shape): just loaded, three runs, overall
+p95 128 / 112 / 139 and long-common p95 135 / 120 / 147; vacuumed, overall p95 100, long-common
+p95 107. The same project inside a library of 250 documents (50,000 chunks, `--other-docs 200`,
+just loaded): overall p95 165.9, long-common p95 172.0, so the document filter keeps the cost on
+the project's chunks. **Target met for every shape (p95 under 300 ms) in every run**, with about 2x
+headroom for the worst shape. Not measured: scopes much larger than 10,000 chunks (cost grows
+about linearly with the scope), queries of more than about 32 distinct words (one lookup each).
+
+What the review round changed in the numbers. The first version of partial matching passed this
+benchmark at 4-word queries (p95 107 ms) but a 32-word query took 360-650 ms; the causes, in order
+of size:
+
+1. `ts_rank_cd` over a many-term OR query costs 462 ms for 31 terms over 10,000 chunks (15 ms to
+   match the same terms). It now only breaks ties among the first 4 x depth candidates by matched
+   count.
+2. `matched` was worked out twice per candidate chunk (filter and sort). Now once (LATERAL).
+3. Only informative words count (at most half of the scope's chunks have them; the 12 rarest), so
+   stop words neither inflate the work nor the bar. Words clearly in over three fifths of a
+   1,000-chunk sample skip their index lookup (a lookup for a stop word touches most of the scope).
+4. psycopg prepares a statement after 5 runs and PostgreSQL then uses a generic plan that cannot
+   see how many documents are in scope; that plan was 40-100% slower on this statement, in this
+   benchmark and so in the app. The search now runs unprepared (`prepare=False`, about 1 ms of
+   planning), which also speeds up the single-document and short-query paths (exact: 47 to 26 ms).
