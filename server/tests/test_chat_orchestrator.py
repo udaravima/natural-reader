@@ -85,7 +85,7 @@ async def test_plain_reply_streams_saves_and_releases(conn):
     assert await _one(conn, "SELECT prompt_tokens, eval_tokens FROM inference_usage WHERE user_id=%s",
                       (alice.user_id,)) == (10, 3)
     sent = router.calls[0]
-    assert sent["tools"] == ["web_search"]                  # no open document: no search_documents
+    assert sent["tools"] == ["web_search", "read_web_pages"]                  # no open document: no search_documents
     # v2.3: the rules are the one leading system message, and name only the
     # tool offered. v2.4: the date is in them; the user message is what they typed.
     system, only = sent["messages"]
@@ -146,7 +146,7 @@ async def test_two_rounds_when_the_cap_allows_it(conn, monkeypatch):
     call = lambda i: [ToolCallReady(ToolCall(f"c{i}", "web_search", {"query": "a"})), Usage(1, 1), Finish("tool_calls")]
     router = FakeRouter(steps=[call(1), call(2), reply("done")])
     events, _ = await _run(conn, router, cfg=ChatConfig(max_tool_rounds=2))
-    assert [c["tools"] for c in router.calls] == [["web_search"], ["web_search"], []]
+    assert [c["tools"] for c in router.calls] == [["web_search", "read_web_pages"], ["web_search", "read_web_pages"], []]
     assert events[-1]["finishReason"] == "stop"
 
 
@@ -576,7 +576,7 @@ async def test_the_last_round_says_so_in_its_results_and_the_rules_never_change(
         reply("The result is X (page 3).")])
     events, claim = await _run(conn, router, cfg=ChatConfig(max_tool_rounds=1), text="what is the result?")
     first, final = router.calls
-    assert first["tools"] == ["search_documents", "read_document_pages", "extract_from_documents", "web_search"] and final["tools"] == []
+    assert first["tools"] == ["search_documents", "read_document_pages", "extract_from_documents", "web_search", "read_web_pages"] and final["tools"] == []
     assert first["messages"][0].role == "system"
     assert final["messages"][0].content == first["messages"][0].content    # same rules on every step
     tool_msg = final["messages"][-1]
@@ -623,7 +623,7 @@ async def test_no_note_while_rounds_remain(conn, open_doc):
         reply("Done (page 1).")])
     await _run(conn, router, cfg=ChatConfig(max_tool_rounds=2), text="q")
     assert "note" not in json.loads(router.calls[1]["messages"][-1].content)
-    assert router.calls[1]["tools"] == ["search_documents", "read_document_pages", "extract_from_documents", "web_search"]
+    assert router.calls[1]["tools"] == ["search_documents", "read_document_pages", "extract_from_documents", "web_search", "read_web_pages"]
 
 
 async def test_a_tool_call_written_as_text_is_run_not_saved(conn, open_doc, caplog):

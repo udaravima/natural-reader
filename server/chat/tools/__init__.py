@@ -43,6 +43,11 @@ class ToolContext:
     # The turn's chat model, canonical "provider:name": a tool that makes a model call of its own (the reader,
     # chat/reader.py) can read with it when READER_MODEL=chat.
     model: str = ""
+    # Every web search result of this turn by its number (web_search numbers across the turn: the first search's
+    # results are 1..k, the next continue from the highest). Each: title, url, site, the query of the search
+    # that found it, and `read` once read_web_pages returned facts from it (Task 15 builds the web sources
+    # from that). Kept apart from seen_text and evidence, which are document text only.
+    web_results: dict[int, dict] = field(default_factory=dict, hash=False, compare=False)
 
 
 class Tool(Protocol):
@@ -72,10 +77,10 @@ class ToolRun:
         return "error" not in self.result
 
 
-from . import document_outline, extract_from_documents, read_document_pages, search_documents, web_search  # noqa: E402 — after the shared types, by convention
+from . import document_outline, extract_from_documents, read_document_pages, read_web_pages, search_documents, web_search  # noqa: E402 — after the shared types, by convention
 
 REGISTRY: list[Tool] = [search_documents.TOOL, read_document_pages.TOOL, extract_from_documents.TOOL,
-                        document_outline.TOOL, web_search.TOOL]
+                        document_outline.TOOL, web_search.TOOL, read_web_pages.TOOL]
 
 
 def available_tools(ctx: ToolContext) -> list[Tool]:
@@ -130,6 +135,16 @@ class TurnTools:
         return ToolRun(call.id, call.name, call.arguments, {"message": note},
                        {"name": call.name, "arguments": call.arguments, "result_summary": summary})
 
+    def _forget_web(self, before: dict[int, bool]) -> None:
+        """Web results numbered, and pages marked read, by a result that was thrown away: the model never saw
+        them, so the next search reuses the numbers and no source is built from a page it didn't get."""
+        results = self.ctx.web_results
+        for n in [n for n in results if n not in before]:
+            del results[n]
+        for n, was_read in before.items():
+            if bool(results[n].get("read")) != was_read:
+                results[n]["read"] = was_read
+
     async def run(self, call: ToolCall, offered: list[Tool]) -> ToolRun:
         key = (call.name, json.dumps(call.arguments, sort_keys=True, default=str))
         if key in self._done:
@@ -138,6 +153,7 @@ class TurnTools:
         if self.used >= budget or key in self._too_big:
             return self._note(call, self.BUDGET_USED)
         shown, seen, evidence = set(self.ctx.shown), len(self.ctx.seen_text), len(self.ctx.evidence)
+        web = {n: bool(found.get("read")) for n, found in self.ctx.web_results.items()}
         run = await run_tool(call, self.ctx, offered)
         size = len(result_text(run.result))
         if self.used + size > budget:
@@ -145,6 +161,7 @@ class TurnTools:
             self.ctx.shown.intersection_update(shown)
             del self.ctx.seen_text[seen:]
             del self.ctx.evidence[evidence:]
+            self._forget_web(web)
             self._too_big.add(key)
             return self._note(call, self.BUDGET_USED)
         self.used += size

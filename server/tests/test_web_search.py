@@ -66,7 +66,7 @@ async def test_searxng_search_parses_and_caps(monkeypatch):
 
 
 @respx.mock
-async def test_fetch_and_extract_returns_clean_text(resolve_pub_test):
+async def test_fetch_page_text_returns_clean_text(resolve_pub_test):
     html = (
         "<html><head><title>T</title></head><body><nav>home about</nav>"
         "<article><h1>Findings</h1>"
@@ -78,7 +78,7 @@ async def test_fetch_and_extract_returns_clean_text(resolve_pub_test):
     respx.get("http://pub.test/a").mock(return_value=httpx.Response(200, html=html))
     await ws.start_client()
     try:
-        text = await ws.fetch_and_extract("http://pub.test/a")
+        text = await ws.fetch_page_text("http://pub.test/a")
     finally:
         await ws.stop_client()
     assert text is not None
@@ -87,38 +87,42 @@ async def test_fetch_and_extract_returns_clean_text(resolve_pub_test):
 
 
 @respx.mock
-async def test_fetch_and_extract_truncates_to_max_page_chars(monkeypatch, resolve_pub_test):
-    monkeypatch.setattr(ws, "MAX_PAGE_CHARS", 50)
-    para = "This sentence provides ample readable content for extraction. " * 40
-    html = f"<html><body><article><h1>Doc</h1><p>{para}</p></article></body></html>"
+async def test_fetch_page_text_returns_the_whole_page_with_no_character_cut(resolve_pub_test):
+    # 40 paragraphs, 7,000+ characters: the old fetch cut at 6,000 (WEB_SEARCH_MAX_PAGE_CHARS).
+    paras = "".join(f"<p>Paragraph number {i} gives ample readable content for extraction here.</p>"
+                    for i in range(40))
+    tail = "<p>The very last paragraph says the answer is forty-two.</p>"
+    html = f"<html><body><article><h1>Doc</h1>{paras * 3}{tail}</article></body></html>"
     respx.get("http://pub.test/big").mock(return_value=httpx.Response(200, html=html))
     await ws.start_client()
     try:
-        text = await ws.fetch_and_extract("http://pub.test/big")
+        text = await ws.fetch_page_text("http://pub.test/big")
     finally:
         await ws.stop_client()
     assert text is not None
-    assert len(text) == 50
+    assert len(text) > 6000
+    assert "the answer is forty-two" in text
+    assert not hasattr(ws, "MAX_PAGE_CHARS")
 
 
 @respx.mock
-async def test_fetch_and_extract_blocks_redirect_to_private(resolve_pub_test):
+async def test_fetch_page_text_blocks_redirect_to_private(resolve_pub_test):
     respx.get("http://pub.test/redir").mock(
         return_value=httpx.Response(302, headers={"location": "http://169.254.169.254/"})
     )
     await ws.start_client()
     try:
-        text = await ws.fetch_and_extract("http://pub.test/redir")
+        text = await ws.fetch_page_text("http://pub.test/redir")
     finally:
         await ws.stop_client()
     assert text is None
 
 
-async def test_fetch_and_extract_blocks_private_url_without_request():
+async def test_fetch_page_text_blocks_private_url_without_request():
     # No respx route registered — if it tried to fetch, respx would raise.
     await ws.start_client()
     try:
-        text = await ws.fetch_and_extract("http://127.0.0.1/secret")
+        text = await ws.fetch_page_text("http://127.0.0.1/secret")
     finally:
         await ws.stop_client()
     assert text is None
@@ -131,7 +135,7 @@ def _mock_transport_client(handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-async def test_fetch_and_extract_streams_and_stops_at_the_cap(monkeypatch, resolve_pub_test):
+async def test_fetch_page_text_streams_and_stops_at_the_cap(monkeypatch, resolve_pub_test):
     """An endless body must not be buffered in full — the fix streams the
     final hop and stops once MAX_RESPONSE_BYTES is reached. Pre-fix, this
     calls resp.content on a fully-buffered response, which never returns for
@@ -154,7 +158,7 @@ async def test_fetch_and_extract_streams_and_stops_at_the_cap(monkeypatch, resol
     client = _mock_transport_client(handler)
     monkeypatch.setattr(ws, "_client", client)
     try:
-        text = await asyncio.wait_for(ws.fetch_and_extract("http://pub.test/endless"), timeout=2)
+        text = await asyncio.wait_for(ws.fetch_page_text("http://pub.test/endless"), timeout=2)
     finally:
         await client.aclose()
     assert text is not None
@@ -164,7 +168,7 @@ async def test_fetch_and_extract_streams_and_stops_at_the_cap(monkeypatch, resol
     assert chunks_yielded < 20
 
 
-async def test_fetch_and_extract_body_trickling_past_deadline_returns_none(monkeypatch, resolve_pub_test):
+async def test_fetch_page_text_body_trickling_past_deadline_returns_none(monkeypatch, resolve_pub_test):
     """A body that trickles in slowly — each chunk arriving well inside the
     per-request timeout — must still be cut off by the total fetch deadline
     (WEB_SEARCH_FETCH_TOTAL_S), not allowed to run indefinitely."""
@@ -182,7 +186,7 @@ async def test_fetch_and_extract_body_trickling_past_deadline_returns_none(monke
     monkeypatch.setattr(ws, "_client", client)
     try:
         start = time.monotonic()
-        text = await asyncio.wait_for(ws.fetch_and_extract("http://pub.test/trickle"), timeout=2)
+        text = await asyncio.wait_for(ws.fetch_page_text("http://pub.test/trickle"), timeout=2)
         elapsed = time.monotonic() - start
     finally:
         await client.aclose()
@@ -190,7 +194,7 @@ async def test_fetch_and_extract_body_trickling_past_deadline_returns_none(monke
     assert elapsed < 1.0  # deadline (0.3s) plus a generous margin
 
 
-async def test_fetch_and_extract_skips_non_text_content_type_without_reading_body(monkeypatch, resolve_pub_test):
+async def test_fetch_page_text_skips_non_text_content_type_without_reading_body(monkeypatch, resolve_pub_test):
     """A non-text Content-Type (e.g. application/pdf) must short-circuit
     before the body is read at all — not just before it's decoded."""
     body_was_read = False
@@ -206,14 +210,14 @@ async def test_fetch_and_extract_skips_non_text_content_type_without_reading_bod
     client = _mock_transport_client(handler)
     monkeypatch.setattr(ws, "_client", client)
     try:
-        text = await ws.fetch_and_extract("http://pub.test/doc.pdf")
+        text = await ws.fetch_page_text("http://pub.test/doc.pdf")
     finally:
         await client.aclose()
     assert text is None
     assert body_was_read is False
 
 
-async def test_fetch_and_extract_still_extracts_normal_html_via_mock_transport(monkeypatch, resolve_pub_test):
+async def test_fetch_page_text_still_extracts_normal_html_via_mock_transport(monkeypatch, resolve_pub_test):
     """Sanity check that the streamed final hop still produces normal output
     for an ordinary, fully-buffered HTML page."""
     html = (
@@ -233,7 +237,7 @@ async def test_fetch_and_extract_still_extracts_normal_html_via_mock_transport(m
     client = _mock_transport_client(handler)
     monkeypatch.setattr(ws, "_client", client)
     try:
-        text = await ws.fetch_and_extract("http://pub.test/normal")
+        text = await ws.fetch_page_text("http://pub.test/normal")
     finally:
         await client.aclose()
     assert text is not None
@@ -241,47 +245,164 @@ async def test_fetch_and_extract_still_extracts_normal_html_via_mock_transport(m
     assert "home about" not in text
 
 
-async def test_summarize_one_goes_through_the_router(monkeypatch):
-    from server.llm.types import CallSettings
+async def test_page_fetches_share_the_services_concurrency_bound(monkeypatch):
+    """fetch_page_text is what read_web_pages fans out over, so the bound lives in it, not in its callers."""
+    monkeypatch.setattr(ws, "_semaphore", asyncio.Semaphore(2))
+    running, peak = 0, 0
 
-    calls = {}
+    async def slow_get(url):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.02)
+        running -= 1
+        return None
 
-    class _FakeRouter:
-        async def complete(self, model_id, messages, settings=CallSettings()):
-            calls["model"] = model_id
-            calls["prompt"] = messages[0].content
-            return "  A short summary.  "
-
-    monkeypatch.setenv("SUMMARIZE_MODEL", "llama3.2:3b")
-    monkeypatch.setattr(ws, "get_router", lambda: _FakeRouter())
-    out = await ws.summarize_one("what is x", "long page text about x")
-    assert out == "A short summary."
-    assert calls["model"] == "llama3.2:3b"            # bare name: the router sends it to the first ollama provider
-    assert "what is x" in calls["prompt"] and "long page text about x" in calls["prompt"]
+    monkeypatch.setattr(ws, "_safe_get", slow_get)
+    results = await asyncio.gather(*(ws.fetch_page_text(f"http://pub.test/{i}") for i in range(6)))
+    assert results == [None] * 6 and peak == 2
 
 
-async def test_web_search_fans_out_with_snippet_fallback(monkeypatch):
+def test_the_summary_machinery_is_gone():
+    for name in ("summarize_one", "_SUMMARY_PROMPT", "MAX_PAGE_CHARS", "SUMMARY_TIMEOUT_S", "fetch_and_extract"):
+        assert not hasattr(ws, name), name
+
+
+def _no_fetch_no_model(monkeypatch):
+    """Anything that fetches a page or calls a model fails the test."""
+    from server.llm import router as llm_router
+
+    async def no_fetch(*a, **k):
+        raise AssertionError("web_search must not fetch a page")
+
+    def no_model(*a, **k):
+        raise AssertionError("web_search must not call a model")
+
+    monkeypatch.setattr(ws, "fetch_page_text", no_fetch)
+    monkeypatch.setattr(ws, "_safe_get", no_fetch)
+    monkeypatch.setattr(ws, "_fetch_capped", no_fetch)
+    monkeypatch.setattr(llm_router, "get_router", no_model)
+
+
+async def test_web_search_makes_no_page_fetch_and_no_model_call(monkeypatch):
     async def fake_search(query, count):
         return [
-            {"title": "T1", "url": "http://one.test", "snippet": "snip1"},
-            {"title": "T2", "url": "http://two.test", "snippet": "snip2"},
+            {"title": "T1", "url": "http://one.test/a", "snippet": "snip1"},
+            {"title": "T2", "url": "https://WWW.Two.Test/b", "snippet": "snip2"},
         ]
 
-    async def fake_fetch(url):
-        return "page text" if url == "http://one.test" else None
-
-    async def fake_summarize(query, text):
-        return "SUMMARY"
-
     monkeypatch.setattr(ws, "searxng_search", fake_search)
-    monkeypatch.setattr(ws, "fetch_and_extract", fake_fetch)
-    monkeypatch.setattr(ws, "summarize_one", fake_summarize)
+    _no_fetch_no_model(monkeypatch)
 
     out = await ws.web_search("q", 5)
-    assert out["query"] == "q"
-    assert len(out["results"]) == 2
-    first, second = out["results"]
-    assert first == {"title": "T1", "url": "http://one.test",
-                     "summary": "SUMMARY", "source": "page"}
-    assert second == {"title": "T2", "url": "http://two.test",
-                      "summary": "snip2", "source": "snippet"}
+    assert out == {"query": "q", "results": [
+        {"title": "T1", "url": "http://one.test/a", "site": "one.test", "snippet": "snip1"},
+        {"title": "T2", "url": "https://WWW.Two.Test/b", "site": "two.test", "snippet": "snip2"},
+    ]}
+
+
+@pytest.mark.parametrize("url,site", [
+    ("https://www.example.com/a/b?x=1", "example.com"),
+    ("https://WWW.Example.COM/", "example.com"),
+    ("http://sub.example.org:8080/x", "sub.example.org"),
+    ("https://wwwx.example.net/", "wwwx.example.net"),    # only a leading "www." goes
+    ("https://docs.www.example.net/", "docs.www.example.net"),
+    ("notaurl", ""),
+    ("", ""),
+])
+def test_site_is_the_lowercased_hostname_without_a_leading_www(url, site):
+    assert ws.site_of(url) == site
+
+
+async def test_web_search_clamps_the_count(monkeypatch):
+    asked = []
+
+    async def fake_search(query, count):
+        asked.append(count)
+        return []
+
+    monkeypatch.setattr(ws, "searxng_search", fake_search)
+    assert await ws.web_search("q", 99) == {"query": "q", "results": []}
+    await ws.web_search("q", 0)
+    assert asked == [10, 1]
+
+
+# ---- page_passages: the part of a page worth reading ----
+
+def _para(i: int, words: str = "") -> str:
+    return f"Section {i} of the manual. {words} " + "Plain filler sentence about nothing in particular. " * 12
+
+
+def test_page_passages_find_text_past_six_thousand_characters():
+    """The old fetch kept the first 6,000 characters, so an answer on page two of a long article was never
+    seen. The passages are chosen from the whole page."""
+    answer = "To change the listening port, edit server.toml and set port = 8080 under [network]."
+    page = "\n\n".join([_para(i) for i in range(30)] + [answer] + [_para(i) for i in range(30, 40)])
+    assert page.index(answer) > 6000
+    picked = ws.page_passages(page, "change listening port", "the config setting for the port", 3000)
+    assert answer in picked
+    assert sum(len(p) for p in picked) + 2 * (len(picked) - 1) <= 3000
+
+
+def test_page_passages_come_back_in_page_order():
+    page = "\n\n".join(["intro words", "alpha beta gamma", "nothing here", "beta gamma delta epsilon"])
+    picked = ws.page_passages(page, "", "alpha beta gamma delta epsilon", 10_000)
+    assert picked == ["intro words", "alpha beta gamma", "nothing here", "beta gamma delta epsilon"]
+    only_best = ws.page_passages(page, "", "alpha beta gamma delta epsilon", 45)
+    assert only_best == ["alpha beta gamma", "beta gamma delta epsilon"]    # best two, in page order
+
+
+def test_page_passages_score_distinct_casefolded_words_of_need_and_query():
+    page = "\n\n".join(["Port PORT port", "install the Port", "unrelated"])
+    # Room for one. "port" three times counts once (1 point); "install" + "port" count twice, and the query's
+    # words are added to the need's.
+    assert ws.page_passages(page, "install", "port", 16) == ["install the Port"]
+
+
+def test_page_passages_break_ties_by_earlier_position():
+    page = "\n\n".join(["one needle here", "two needle here", "six needle here"])
+    assert ws.page_passages(page, "needle", "", 15) == ["one needle here"]
+    assert ws.page_passages(page, "needle", "", 32) == ["one needle here", "two needle here"]
+    assert len(ws.page_passages(page, "needle", "", 49)) == 3     # 15 + 2 + 15 + 2 + 15
+
+
+def test_page_passages_take_the_top_of_the_page_when_nothing_matches():
+    page = "\n\n".join(["first block", "second block", "third block", "fourth block"])
+    assert ws.page_passages(page, "zzz", "yyy", 27) == ["first block", "second block"]
+    assert ws.page_passages(page, "", "", 10_000) == ["first block", "second block", "third block", "fourth block"]
+
+
+def test_page_passages_count_the_joins_in_the_budget():
+    page = "\n\n".join(["aaaa needle", "bbbb needle"])    # 11 + 2 + 11 = 24
+    assert len(ws.page_passages(page, "needle", "", 24)) == 2
+    assert len(ws.page_passages(page, "needle", "", 23)) == 1
+
+
+def test_page_passages_split_a_long_paragraph_at_sentence_ends():
+    sentences = [f"Sentence number {i:02d} says something of about this length. " for i in range(40)]
+    page = "".join(sentences).strip()
+    assert len(page) > 2000 and "\n" not in page
+    picked = ws.page_passages(page, "", "Sentence", 100_000)
+    assert len(picked) >= 2
+    assert all(len(p) <= 1000 for p in picked)
+    assert all(p.endswith(".") for p in picked)                       # cut at sentence ends
+    assert " ".join(picked) == page                                    # nothing lost, nothing repeated
+
+
+def test_page_passages_hard_split_a_sentence_over_a_thousand_characters():
+    page = "word " * 600                                              # 3,000 characters, no sentence end
+    picked = ws.page_passages(page, "", "word", 100_000)
+    assert len(picked) >= 3 and all(0 < len(p) <= 1000 for p in picked)
+    assert "".join(p.replace(" ", "") for p in picked) == "word" * 600
+    unbroken = ws.page_passages("x" * 2500, "", "x", 100_000)
+    assert [len(p) for p in unbroken] == [1000, 1000, 500]
+
+
+def test_page_passages_never_return_a_passage_longer_than_the_budget():
+    picked = ws.page_passages("y" * 900, "", "y", 500)
+    assert picked and all(len(p) <= 500 for p in picked)
+
+
+def test_page_passages_of_no_text_are_none():
+    assert ws.page_passages("", "q", "n", 1000) == []
+    assert ws.page_passages(" \n\n \n ", "q", "n", 1000) == []

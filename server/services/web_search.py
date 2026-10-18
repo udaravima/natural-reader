@@ -1,12 +1,13 @@
 """
-Web search tool backend — SearXNG search + per-page fetch/extract + small-model
-summary.
+Web search backend (C2.1 spec §5.4, §5.8): SearXNG results, and the text of one page.
 
-Mirrors services/embeddings.py: a module-level httpx.AsyncClient with
-start_client()/stop_client() wired into the app lifecycle, a Semaphore bounding
-the parallel Ollama calls, and env-driven config. Unlike indexing this runs
-synchronously (a tool call can't poll), so web_search() does all the work in one
-request and returns per-result summaries — the chat model does final synthesis.
+web_search() only searches: it returns title, url, site and snippet, with no page fetch and no model call. The
+chat model picks the results worth reading, and read_web_pages (chat/tools/read_web_pages.py) fetches those with
+fetch_page_text(), cuts each page to its passages that matter (page_passages()) and reads them through the
+reader sub-agent (chat/reader.py).
+
+Mirrors services/embeddings.py: a module-level httpx.AsyncClient with start_client()/stop_client() wired into
+the app lifecycle, a Semaphore bounding the parallel page fetches, and env-driven config.
 """
 from __future__ import annotations
 
@@ -14,26 +15,19 @@ import asyncio
 import ipaddress
 import logging
 import os
+import re
 import socket
 from urllib.parse import urlparse
 
 import httpx
 
-from ..llm.router import get_router
-from ..llm.types import CallSettings, Message
-from . import model_router
-
 logger = logging.getLogger(__name__)
 
-# OLLAMA_URL / SUMMARY_MODEL live in model_router now (SUMMARIZE_MODEL env,
-# falling back to the pre-gateway WEB_SEARCH_SUMMARY_MODEL).
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://localhost:18043").rstrip("/")
 RESULT_COUNT = int(os.environ.get("WEB_SEARCH_RESULT_COUNT", "5"))
 RESULT_COUNT_CAP = 10
 MAX_CONCURRENCY = int(os.environ.get("WEB_SEARCH_MAX_CONCURRENCY", "4"))
 FETCH_TIMEOUT_S = float(os.environ.get("WEB_SEARCH_FETCH_TIMEOUT_S", "8"))
-SUMMARY_TIMEOUT_S = float(os.environ.get("WEB_SEARCH_SUMMARY_TIMEOUT_S", "30"))
-MAX_PAGE_CHARS = int(os.environ.get("WEB_SEARCH_MAX_PAGE_CHARS", "6000"))
 MAX_RESPONSE_BYTES = int(os.environ.get("WEB_SEARCH_MAX_RESPONSE_BYTES", "2000000"))
 FETCH_TOTAL_S = float(os.environ.get("WEB_SEARCH_FETCH_TOTAL_S", "15"))
 
@@ -178,71 +172,104 @@ async def _safe_get(url: str) -> tuple[bytes, str] | None:
         return None
 
 
-async def fetch_and_extract(url: str) -> str | None:
-    """Fetch a page and return clean, truncated text — or None on block/failure."""
-    fetched = await _safe_get(url)
+async def fetch_page_text(url: str) -> str | None:
+    """A page's readable text, whole (no character cut), or None when it is blocked, can't be fetched or has no
+    text. At most WEB_SEARCH_MAX_CONCURRENCY fetches run at once, whoever asks."""
+    async with _semaphore:
+        fetched = await _safe_get(url)
     if fetched is None:
         return None
     raw, encoding = fetched
     html = raw.decode(encoding or "utf-8", errors="ignore")
     import trafilatura
     # favor_recall keeps short pages from being dropped by trafilatura's
-    # precision heuristic — we'd rather summarize a thin page than lose it.
-    text = (trafilatura.extract(html, favor_recall=True) or "").strip()
-    if not text:
-        return None
-    return text[:MAX_PAGE_CHARS]
+    # precision heuristic — we'd rather read a thin page than lose it.
+    return (trafilatura.extract(html, favor_recall=True) or "").strip() or None
 
 
-_SUMMARY_PROMPT = (
-    "You are summarizing a web page for someone researching: \"{query}\".\n"
-    "Write 2-4 sentences capturing ONLY the information on the page relevant to "
-    "that query. If the page has nothing relevant, say so in one sentence. Do "
-    "not invent information that is not present.\n\nPAGE CONTENT:\n{text}"
-)
+# ---- the part of a page worth reading --------------------------------------------------------------------
+
+PASSAGE_CHARS = 1000        # about: the size a page is cut into before the best are picked
+PASSAGE_JOIN = "\n\n"       # what passages are joined with, and so what each join costs in a budget
+_PARAGRAPHS = re.compile(r"\n\s*\n")
+# A zero-width cut after a sentence end that whitespace follows, or after a CJK full stop (no space is written).
+_SENTENCE_ENDS = re.compile(r"(?<=[.!?])(?=\s)|(?<=[\u3002\uff01\uff1f])")
+_WORDS = re.compile(r"\w+")
 
 
-async def summarize_one(query: str, text: str) -> str:
-    """Summarize one page's text with the summary model, through the provider
-    router (spec §4.5) — any configured provider can serve it."""
-    cfg = model_router.get_config()
-    prompt = _SUMMARY_PROMPT.format(query=query, text=text)
-    out = await asyncio.wait_for(
-        get_router().complete(cfg.summarize_model, [Message("user", prompt)], CallSettings()),
-        timeout=SUMMARY_TIMEOUT_S)
-    return out.strip()
+def _pieces(text: str, limit: int) -> list[str]:
+    """`text` in pieces of at most `limit` characters, cut at a space in the window's second half when there is
+    one, else anywhere."""
+    out: list[str] = []
+    while len(text) > limit:
+        cut = next((i for i in range(limit, limit // 2, -1) if text[i].isspace()), limit)
+        out.append(text[:cut].strip())
+        text = text[cut:].lstrip()
+    out.append(text)
+    return [p for p in out if p]
+
+
+def _split(text: str, limit: int) -> list[str]:
+    """Paragraphs (blank-line breaks); a paragraph over `limit` is packed from its sentences, each passage as
+    many whole sentences as fit; a sentence over `limit` is cut by `_pieces`."""
+    out: list[str] = []
+    for para in _PARAGRAPHS.split(text):
+        para = para.strip()
+        if len(para) <= limit:
+            if para:
+                out.append(para)
+            continue
+        current = ""
+        for sentence in _SENTENCE_ENDS.split(para):
+            if len(sentence.strip()) > limit:
+                if current.strip():
+                    out.append(current.strip())
+                current = ""
+                out.extend(_pieces(sentence.strip(), limit))
+            elif len(current) + len(sentence) > limit:
+                if current.strip():
+                    out.append(current.strip())
+                current = sentence
+            else:
+                current += sentence
+        if current.strip():
+            out.append(current.strip())
+    return out
+
+
+def page_passages(text: str, query: str, need: str, max_chars: int) -> list[str]:
+    """The passages of a page that best serve `need` (and `query`, the search that found it), in page order, in
+    at most `max_chars` characters counting the joins between them.
+
+    The page is cut into passages of about PASSAGE_CHARS (paragraphs, then sentences, then anywhere), each is
+    scored by how many distinct words (`\\w+`, case-folded) it shares with need + query, and the best are kept
+    while they fit, ties going to the earlier one. A page that shares no word with them is taken from the top."""
+    passages = _split(text, max(1, min(PASSAGE_CHARS, max_chars)))
+    wanted = set(_WORDS.findall(f"{need} {query}".casefold()))
+    scores = [len(wanted & set(_WORDS.findall(p.casefold()))) for p in passages]
+    chosen: list[int] = []
+    used = 0
+    for i in sorted(range(len(passages)), key=lambda i: (-scores[i], i)):
+        cost = len(passages[i]) + (len(PASSAGE_JOIN) if chosen else 0)
+        if used + cost <= max_chars:
+            chosen.append(i)
+            used += cost
+    return [passages[i] for i in sorted(chosen)]
+
+
+def site_of(url: str) -> str:
+    """The URL's hostname, lowercased, without a leading "www."; "" when it has none."""
+    try:
+        host = urlparse(url).hostname or ""
+    except ValueError:
+        return ""
+    return host.removeprefix("www.")
 
 
 async def web_search(query: str, count: int) -> dict:
-    """Search, then fetch+summarize each result in parallel (semaphore-bounded).
-    Per-result failures degrade to the SearXNG snippet rather than dropping —
-    the caller always gets one entry per result."""
-    count = max(1, min(RESULT_COUNT_CAP, count))
-    hits = await searxng_search(query, count)
-
-    async def _one(hit: dict) -> dict:
-        async with _semaphore:
-            summary = ""
-            source = "snippet"
-            text = await fetch_and_extract(hit["url"])
-            if text:
-                try:
-                    summary = await summarize_one(query, text)
-                    if summary:
-                        source = "page"
-                except Exception as e:  # noqa: BLE001 — degrade, don't abort the batch
-                    # %r not %s: httpx timeout exceptions stringify to "", which
-                    # hides the cause — repr keeps the type (e.g. ReadTimeout('')).
-                    logger.warning("Summary failed for %s: %r", hit["url"], e)
-            if not summary:
-                summary = hit.get("snippet") or "(no summary available)"
-                source = "snippet"
-            return {
-                "title": hit["title"],
-                "url": hit["url"],
-                "summary": summary.strip(),
-                "source": source,
-            }
-
-    results = await asyncio.gather(*(_one(h) for h in hits))
-    return {"query": query, "results": list(results)}
+    """Search and list what was found; nothing is fetched and no model is called. Values are SearXNG's own, not
+    yet made safe to show a model (the chat tool does that)."""
+    hits = await searxng_search(query, max(1, min(RESULT_COUNT_CAP, count)))
+    return {"query": query, "results": [
+        {"title": h["title"], "url": h["url"], "site": site_of(h["url"]), "snippet": h.get("snippet") or ""}
+        for h in hits]}

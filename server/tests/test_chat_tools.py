@@ -57,8 +57,8 @@ async def test_readable_doc_uses_the_readers_name_and_hides_others_docs(indexed)
 async def test_search_documents_is_offered_only_for_an_indexed_readable_doc(indexed):
     conn, alice = indexed
     doc = await doc_search.readable_doc(conn, DOC, alice.user_id)
-    assert [t.name for t in available_tools(ToolContext(alice.user_id, doc))] == ["search_documents", "read_document_pages", "extract_from_documents", "web_search"]
-    assert [t.name for t in available_tools(ToolContext(alice.user_id, None))] == ["web_search"]
+    assert [t.name for t in available_tools(ToolContext(alice.user_id, doc))] == ["search_documents", "read_document_pages", "extract_from_documents", "web_search", "read_web_pages"]
+    assert [t.name for t in available_tools(ToolContext(alice.user_id, None))] == ["web_search", "read_web_pages"]
     extracting = doc_search.ReadableDoc(DOC, "x", "extracting")
     assert "search_documents" not in [t.name for t in available_tools(ToolContext(alice.user_id, extracting))]
 
@@ -194,7 +194,8 @@ async def test_a_tool_failure_logs_only_the_exception_type_at_warning(monkeypatc
 
 async def test_web_search_validates_count_and_summarizes(monkeypatch):
     async def fake(query, count):
-        return {"query": query, "results": [{"title": "t", "url": "https://example.com", "summary": "s"}] * count}
+        return {"query": query, "results": [{"title": "t", "url": f"https://example.com/{i}", "site": "example.com",
+                                             "snippet": "s"} for i in range(count)]}
     monkeypatch.setattr(ws_tool, "web_search", fake)
     ctx = ToolContext("u", None)
     bad = await run_tool(ToolCall("c1", "web_search", {"query": "x", "count": 50}), ctx, available_tools(ctx))
@@ -206,7 +207,8 @@ async def test_web_search_validates_count_and_summarizes(monkeypatch):
 
 def test_registry_order_is_stable():
     assert [t.name for t in chat_tools.REGISTRY] == ["search_documents", "read_document_pages",
-                                                     "extract_from_documents", "document_outline", "web_search"]
+                                                     "extract_from_documents", "document_outline", "web_search",
+                                                     "read_web_pages"]
 
 
 class _NullPool:
