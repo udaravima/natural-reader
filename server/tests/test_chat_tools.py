@@ -220,15 +220,15 @@ class _NullPool:
         return self._Conn()
 
 
-@pytest.mark.parametrize("shown,want", [(0, 5), (15, 20), (60, 65), (200, 100)])
-async def test_a_search_asks_for_enough_rows_to_skip_everything_already_shown(monkeypatch, shown, want):
-    """Review I1: over three rounds a turn can have shown 20+ passages. The
-    search must look past all of them (up to MAX_ROWS, a cost bound),
-    or it reports "nothing new" while new evidence ranks lower."""
+@pytest.mark.parametrize("shown", [0, 15, 60, 200])
+async def test_a_search_hands_what_is_shown_to_the_search_and_does_not_widen_it(monkeypatch, shown):
+    """Review I1: over three rounds a turn can have shown 20+ passages. The search is told to look past all of
+    them (`exclude`, set aside before the per-document balance) and still asks for k: widening k by the number
+    shown let the shown ones use up a document's allowance (fix round 1)."""
     asked = {}
 
-    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0):
-        asked.update(k=k, per_doc=per_doc, doc_ids=doc_ids)
+    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0, exclude=()):
+        asked.update(k=k, per_doc=per_doc, doc_ids=doc_ids, exclude=exclude)
         return []
 
     async def fake_embed(text):
@@ -239,7 +239,7 @@ async def test_a_search_asks_for_enough_rows_to_skip_everything_already_shown(mo
     monkeypatch.setattr(sd_tool, "get_pool", lambda: _NullPool())
     ctx = ToolContext("u", doc_search.ReadableDoc(DOC, "T.pdf", "indexed"), shown=set(range(shown)))
     await sd_tool.TOOL.execute({"query": "q", "k": 5}, ctx)
-    assert asked["k"] == want
+    assert asked["k"] == 5 and set(asked["exclude"]) == set(range(shown))
     assert asked["doc_ids"] == [DOC] and asked["per_doc"] is None     # one document: nothing to balance
 
 
@@ -377,7 +377,7 @@ async def test_search_documents_balances_in_project_scope(project):
 async def test_project_search_hands_the_fusion_depth_and_the_cap_to_the_search(monkeypatch):
     asked = {}
 
-    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0):
+    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0, exclude=()):
         asked.update(per_doc=per_doc, depth=depth, text=text, doc_ids=doc_ids)
         return []
 
@@ -441,3 +441,46 @@ def test_the_search_tool_takes_an_optional_documents_list():
     assert spec["properties"]["documents"]["type"] == "array"
     assert spec["properties"]["documents"]["items"] == {"type": ["integer", "string"]}
     assert spec["required"] == ["query"]
+
+
+async def test_a_follow_up_search_reaches_a_documents_deeper_passages(db_conn, monkeypatch):
+    """Fix round 1: passages already shown must not use up their document's allowance (2 per document in a
+    project search). Alpha's two best, Beta's best and Gamma's best were shown; widening k by that count and
+    balancing BEFORE dropping them left Alpha's 3rd and 4th out of reach (the follow-up gave Delta 1, Beta 2,
+    Gamma 2, Delta 2, Epsilon 1) unless the model narrowed with `documents`."""
+    shim_pool(monkeypatch, db_conn, sd_tool)
+
+    async def fake_embed(text):
+        return [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+
+    monkeypatch.setattr(sd_tool, "embed_query", fake_embed)
+    alice = await member(db_conn, "alice")
+    pid = await seed.make_project(db_conn, alice.user_id, "Handbook")
+    ids = {name: chr(97 + i) * 64 for i, name in enumerate(("Alpha", "Beta", "Gamma", "Delta", "Epsilon"))}
+    for name, doc_id in ids.items():
+        await seed.seed_doc(db_conn, doc_id, alice.user_id, file_name=f"{name}.md", state="indexed")
+        await db_conn.execute("UPDATE documents SET page_count = 9, embedding_profile = %s WHERE doc_id = %s",
+                              (current_profile(), doc_id))
+        await seed.place_doc(db_conn, pid, doc_id, alice.user_id, file_name=f"{name}.md")
+    # Meaning order, best first (the query vector is (1, 0, ...), the 2nd number is the distance): the page is
+    # the document's own rank, so "Alpha 3" is Alpha's third best.
+    order = [("Alpha", 1), ("Alpha", 2), ("Beta", 1), ("Gamma", 1), ("Alpha", 3), ("Alpha", 4), ("Delta", 1),
+             ("Beta", 2), ("Gamma", 2), ("Delta", 2), ("Epsilon", 1), ("Epsilon", 2), ("Beta", 3), ("Gamma", 3)]
+    for rank, (name, page) in enumerate(order):
+        await _pchunk(db_conn, ids[name], page, page, f"{name} overview {page}.", 1, 0.02 * (rank + 1))
+    scope_ = await load_project_scope(db_conn, alice.user_id, pid, open_doc_id=None)
+    cur = await db_conn.execute(
+        "SELECT id FROM doc_chunks WHERE (doc_id, page) IN ((%s, 1), (%s, 2), (%s, 1), (%s, 1))",
+        (ids["Alpha"], ids["Alpha"], ids["Beta"], ids["Gamma"]))
+    shown = {r[0] for r in await cur.fetchall()}
+    assert len(shown) == 4
+    ctx = ToolContext(alice.user_id, None, project=scope_, question="q", shown=set(shown))
+    run = await _search(ctx, {"query": "zzzz", "k": 5})
+    assert run.ok
+    got = [(p["ref"], p["page"]) for p in run.result["passages"]]
+    # refs follow the names: Alpha 1, Beta 2, Delta 3, Epsilon 4, Gamma 5
+    assert got == [(1, 3), (1, 4), (3, 1), (2, 2), (5, 2)]       # Alpha 3 and 4 are reachable; five NEW passages
+    assert ctx.shown >= shown and len(ctx.shown) == 9
+    # The notes about what the model already has still come, for the documents they are from.
+    assert run.result["already_shown"] == [{"ref": 1, "pages": [1, 2]}, {"ref": 2, "pages": [1]}, {"ref": 5, "pages": [1]}]
+    assert [d["ref"] for d in run.result["documents"]] == [1, 2, 3, 5]

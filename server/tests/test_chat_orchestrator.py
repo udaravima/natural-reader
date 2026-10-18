@@ -551,7 +551,7 @@ def open_doc(monkeypatch):
     async def fake_embed_one(text):
         return [0.0]
 
-    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0):
+    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0, exclude=()):
         return []
 
     monkeypatch.setattr(orchestrator, "_open_doc", fake_open_doc)
@@ -776,7 +776,7 @@ async def test_prefetched_passages_are_not_repeated_by_a_search_and_the_floor_co
                         {"kind": "prefetch", "docId": doc.doc_id, "docName": doc.name, "count": 1,
                          "topScore": 0.8, "pages": [3]})
 
-    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0):
+    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0, exclude=()):
         return [{"doc_id": doc_ids[0], **r} for r in (
             {"id": 11, "page": 3, "score": 0.8, "text": "prefetched"},
             {"id": 12, "page": 5, "score": 0.6, "text": "new"},

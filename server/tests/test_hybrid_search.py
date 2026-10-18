@@ -438,9 +438,63 @@ async def test_partial_word_ties_do_not_favour_the_oldest_documents(two_docs):
     assert {r["doc_id"] for r in by_words} == {DOC_A, DOC_B}
 
 
+async def _ids(conn, doc_id, *pages):
+    cur = await conn.execute("SELECT page, id FROM doc_chunks WHERE doc_id = %s AND page = ANY(%s)", (doc_id, list(pages)))
+    by_page = dict(await cur.fetchall())
+    return [by_page[p] for p in pages]
+
+
+async def test_excluded_chunks_use_up_neither_k_nor_a_documents_allowance(two_docs):
+    """C2.1 Task 8 fix: what the caller already has is set aside BEFORE balancing. Alpha's two best are excluded;
+    the balance still lets Alpha give two more (counted against its allowance they would have used it up)."""
+    conn = two_docs
+    for i in range(4):
+        await _chunk_in(conn, DOC_A, i, 1 + i, f"Alpha part {i}.", _vec(1, 0.1 * (i + 1)))
+    await _chunk_in(conn, DOC_B, 0, 1, "Beta part.", _vec(1, 1))
+    shown = await _ids(conn, DOC_A, 1, 2)
+    plain = await doc_search.search_scope(conn, [DOC_A, DOC_B], QUERY_VEC, 3, per_doc=2)
+    assert [(r["doc_id"], r["page"]) for r in plain] == [(DOC_A, 1), (DOC_A, 2), (DOC_B, 1)]
+    rows = await doc_search.search_scope(conn, [DOC_A, DOC_B], QUERY_VEC, 3, per_doc=2, exclude=shown)
+    new = [(r["doc_id"], r["page"]) for r in rows if r["id"] not in shown]
+    assert new == [(DOC_A, 3), (DOC_A, 4), (DOC_B, 1)]          # three new rows; Alpha gave two more
+    assert [r["page"] for r in rows if r["id"] in shown] == [1, 2]   # the excluded come back in place, for a note
+    assert [r["id"] for r in rows[:2]] == shown
+
+
+async def test_exclusion_works_without_a_cap_and_with_words(two_docs):
+    conn = two_docs
+    for i in range(5):
+        await _chunk_in(conn, DOC_A, i, 1 + i, f"Widget manual, section {i}.", _vec(1, 0.1 * (i + 1)))
+    shown = await _ids(conn, DOC_A, 1)
+    rows = await doc_search.search_scope(conn, [DOC_A], QUERY_VEC, 2, exclude=shown)
+    assert [r["page"] for r in rows] == [1, 2, 3]                # the first two NEW rows, the excluded one in place
+    rows = await doc_search.search_scope(conn, [DOC_A], QUERY_VEC, 2, text="widget", exclude=shown)
+    assert [r["page"] for r in rows] == [1, 2, 3]
+
+
+async def test_many_excluded_chunks_do_not_starve_the_search(two_docs):
+    """30 excluded chunks, k=3, the default candidate depth is 20: the search must look k + 30 deep."""
+    conn = two_docs
+    for i in range(40):
+        await _chunk_in(conn, DOC_A, i, 1 + i, f"Passage {i}.", _vec(1, 0.01 * (i + 1)))
+    shown = await _ids(conn, DOC_A, *range(1, 31))
+    for text in (None, "passage"):
+        rows = await doc_search.search_scope(conn, [DOC_A], QUERY_VEC, 3, text=text, exclude=shown)
+        assert [r["page"] for r in rows if r["id"] not in shown] == [31, 32, 33]
+
+
+def test_the_balance_walk_sets_excluded_rows_aside():
+    rows = [{"id": i, "doc_id": d} for i, d in enumerate("aaabab")]
+    assert [r["id"] for r in doc_search._balance(rows, 2, 1, {0, 1})] == [0, 1, 2, 3]   # 0, 1 in place; 2, 3 new
+    assert [r["id"] for r in doc_search._balance(rows, 2, None, {0})] == [0, 1, 2]
+    assert [r["id"] for r in doc_search._balance(rows, 3, 2, {2})] == [0, 1, 2, 3]      # three new (0, 1, 3); the excluded 2 is not one
+    assert [r["id"] for r in doc_search._balance(rows, 2, 2)] == [0, 1]                  # nothing excluded: as before
+
+
 async def test_a_query_counts_at_most_64_distinct_words(two_docs):
-    """C2.1 Task 8: every distinct word costs a frequency lookup (200 words took over 300 ms), so only the first
-    64 count. 63 words nobody has, then alpha (64th: counts) and beta (65th: cut)."""
+    """C2.1 Task 8: every distinct word costs a frequency lookup, so only the first 64 count (measured on 10,000
+    chunks, vacuumed: a 200-word query took 130 ms p50 uncapped and 66 ms capped; see EVAL.md). 63 words nobody
+    has, then alpha (64th: counts) and beta (65th: cut)."""
     conn = two_docs
     await _chunk_in(conn, DOC_A, 0, 1, "alpha only here", _vec(1, 0.1))
     await _chunk_in(conn, DOC_A, 1, 2, "beta only here", _vec(1, 0.2))

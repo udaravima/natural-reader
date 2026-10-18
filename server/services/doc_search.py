@@ -4,6 +4,7 @@ search_documents tool and stage-0 prefetch (spec §5.2, §5.3), so they can neve
 disagree about what "relevant" means."""
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Any
 
@@ -69,7 +70,8 @@ async def search_chunks(conn, doc_id: str, qvec: list[float], k: int,
 
 
 async def search_scope(conn, doc_ids: list[str], qvec: list[float], k: int, text: str | None = None,
-                       *, per_doc: int | None = None, depth: int = FUSION_DEPTH) -> list[dict[str, Any]]:
+                       *, per_doc: int | None = None, depth: int = FUSION_DEPTH,
+                       exclude: Collection[int] = ()) -> list[dict[str, Any]]:
     """Top-k chunks over ONE OR MANY documents, ranked once (C2.1 spec 5.5). Rows
     are `search_chunks`'s plus `doc_id`. `score` is the cosine similarity.
 
@@ -102,6 +104,14 @@ async def search_scope(conn, doc_ids: list[str], qvec: list[float], k: int, text
     gives at most that many chunks until k are chosen, then skipped chunks
     fill any shortfall in rank order. None = no cap.
 
+    `exclude` is the chunk ids the caller already has (the chat tool passes
+    what it showed this turn). They are set aside BEFORE balancing: they use
+    up neither k nor a document's `per_doc` allowance, so a follow-up search
+    still reaches a document's deeper passages. k counts rows NOT excluded; the
+    excluded rows that rank among them come back in their rank place (so the
+    caller can still say "you already have page 3"), and the search looks
+    k + len(exclude) deep so they cannot crowd the new rows out.
+
     Meaning is ranked exactly, not approximately: the HNSW index covers every
     document, and a plan that walks it filters doc_id only AFTER keeping
     ef_search (40) candidates library-wide, losing the scope's passages
@@ -120,15 +130,18 @@ async def search_scope(conn, doc_ids: list[str], qvec: list[float], k: int, text
     breaks ties among the first PARTIAL_POOL x depth candidates by matched
     count (ties beyond that pool fall to a hash of the id: id order would give every place to the document
     indexed first). A query's first QUERY_LEXEMES (64) distinct words are looked at, because each word is
-    one such lookup (200 words took over 300 ms)."""
+    one such lookup (measured on 10,000 chunks, vacuumed, 50 documents x 200 chunks: a 200-word query took
+    130 ms p50 uncapped and 66 ms capped; EVAL.md)."""
     # prepare=False below: psycopg would prepare this text after 5 runs, and PostgreSQL would then switch to a
     # generic plan that cannot see how many documents are in scope or how common the query words are.
     # Measured on 10,000 chunks: the generic plan was 40-100% slower; planning afresh costs about 1 ms.
     if not doc_ids:
         return []
+    exclude = set(exclude)
+    fetch = k + len(exclude)   # candidates to look at: the excluded ones are walked past
     if not text:
-        return _balance(await _meaning_only(conn, list(doc_ids), qvec, k, per_doc, depth), k, per_doc)
-    depth = max(k, depth)
+        return _balance(await _meaning_only(conn, list(doc_ids), qvec, fetch, per_doc, depth), k, per_doc, exclude)
+    depth = max(fetch, depth)
     async with conn.cursor() as cur:
         await cur.execute(
             """
@@ -233,31 +246,40 @@ async def search_scope(conn, doc_ids: list[str], qvec: list[float], k: int, text
             """,
             {"docs": list(doc_ids), "q": qvec, "depth": depth, "rrf": RRF_K, "text": text,
              "rare": PARTIAL_WORDS, "lexemes": QUERY_LEXEMES, "pweight": PARTIAL_WEIGHT, "pool": PARTIAL_POOL * depth, "sample": COMMON_SAMPLE,
-             "limit": k if per_doc is None else None},   # balancing needs the whole fused list
+             "limit": fetch if per_doc is None else None},   # balancing needs the whole fused list
             prepare=False,   # see the comment above
         )
-        return _balance(_rows(cur, await cur.fetchall()), k, per_doc)
+        return _balance(_rows(cur, await cur.fetchall()), k, per_doc, exclude)
 
 
-def _balance(rows: list[dict[str, Any]], k: int, per_doc: int | None) -> list[dict[str, Any]]:
+def _balance(rows: list[dict[str, Any]], k: int, per_doc: int | None,
+             exclude: Collection[int] = ()) -> list[dict[str, Any]]:
     """Walk the ranked rows and take one unless its document already gave `per_doc`;
     stop at k. If that ends short of k, the skipped rows fill in rank order. So a
     document that really holds every answer still fills the list when nothing else
-    matches. `per_doc` None = no cap, just the first k."""
-    if per_doc is None:
-        return rows[:k]
+    matches. `per_doc` None = no cap, just the first k.
+
+    Rows whose id is in `exclude` are walked past: they are neither counted toward k
+    nor toward a document's allowance. The ones met before the k-th row stay in the
+    result in their rank place (the caller tells them apart by id); with no
+    `exclude` this is exactly the walk above."""
     taken: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     given: dict[str, int] = {}
+    new = 0
     for r in rows:
-        if len(taken) == k:
+        if new == k:
             break
-        if given.get(r["doc_id"], 0) < per_doc:
-            given[r["doc_id"]] = given.get(r["doc_id"], 0) + 1
+        if r["id"] in exclude:
             taken.append(r)
+        elif per_doc is None or given.get(r["doc_id"], 0) < per_doc:
+            if per_doc is not None:
+                given[r["doc_id"]] = given.get(r["doc_id"], 0) + 1
+            taken.append(r)
+            new += 1
         else:
             skipped.append(r)
-    return taken + skipped[:k - len(taken)]
+    return taken + skipped[:k - new]
 
 
 async def _meaning_only(conn, doc_ids: list[str], qvec: list[float], k: int,

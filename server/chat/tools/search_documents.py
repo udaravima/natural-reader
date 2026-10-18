@@ -25,7 +25,7 @@ PER_CHUNK_TEXT_CAP = 1500   # characters per passage the model reads
 # questions it does answer (0.66-0.78), so a "strong" label would tell the
 # model a passage answers when it doesn't. The order is the only signal; the
 # model judges by reading. The floor below only drops plain noise.
-MAX_ROWS = 100   # rows read per search (whatever the number of documents): past the shown ones, to k new
+MAX_ROWS = 100   # the word rank of a row no word search found: past WORD_BYPASS_RANKS
 # Only the best matches of EVERY word of the query may skip the floor: a common
 # word ("method") matches many chunks, and weak ones would crowd out passages
 # near in meaning. A partial word match (some of the words, doc_search) is no
@@ -118,18 +118,18 @@ class _SearchDocuments:
                                      f"Use a number or name from the list: {choices_text(scope)}."}
                 scope = [d for d in scope if d in found]   # the project's order, whatever the model's
         qvec = await embed_query(query)
-        # Look past everything already shown, so a later round still finds k
-        # new passages. The search is exact (doc_search.search_scope), so
-        # MAX_ROWS is only a cost bound.
-        want = min(k + len(ctx.shown), MAX_ROWS)
+        # What the model already has is handed to the search as `exclude`: it is set aside BEFORE the per-document
+        # balance (so it doesn't use up a document's allowance and starve its deeper passages in a follow-up
+        # search), and the search looks past it to find k new passages. The excluded passages that rank among
+        # them come back in place, for the "already shown" note below.
         by_doc = {d.doc.doc_id: d for d in scope}
         async with get_pool().connection() as conn:
             if ctx.project is not None:
                 # One ranking over the project, a document giving a few passages at a time (spec 5.5).
-                rows = await search_scope(conn, list(by_doc), qvec, want, text=query,
+                rows = await search_scope(conn, list(by_doc), qvec, k, text=query, exclude=ctx.shown,
                                           per_doc=ctx.cfg.search_per_doc, depth=ctx.cfg.project_fusion_depth)
             else:
-                rows = await search_scope(conn, list(by_doc), qvec, want, text=query)
+                rows = await search_scope(conn, list(by_doc), qvec, k, text=query, exclude=ctx.shown)
         found_rows = [(by_doc[r["doc_id"]], r) for r in rows]
         floor = ctx.cfg.search_min_score
         # One of the best matches of every word stays even when weak in meaning (Task F). A partial match

@@ -40,7 +40,7 @@ def corpus(open_doc, monkeypatch):
     async def fake_embed_one(text):
         return [text]
 
-    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0):
+    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0, exclude=()):
         runs.append(qvec[0])
         return [{"doc_id": doc_ids[0], **r} for r in CORPUS.get(qvec[0], [])]
 
