@@ -313,6 +313,14 @@ async def test_bad_pages_say_what_is_valid(env, use_router, pages, error):
     assert router.calls == []
 
 
+@pytest.mark.parametrize("empty", ["", {}, [], None])
+async def test_an_empty_pages_means_no_pages_were_asked_for(env, use_router, empty):
+    await _alpha_and_gamma(env)
+    router = use_router(NOTHING)
+    run = await _extract(await env.ctx(), {"documents": [1], "need": "n", "pages": empty})
+    assert run.ok and router.seen() == [f"[1, page {n}]" for n in (1, 2, 3, 4)]
+
+
 async def test_pages_naming_a_document_outside_documents_is_an_error_listing_the_documents(env, use_router):
     await _alpha_and_gamma(env)
     await env.add_doc(PB, "Beta.md", {1: "Beta text."})
@@ -392,6 +400,50 @@ async def test_empty_pages_are_never_sent_and_never_listed_as_not_read(env, use_
     assert run.result["not_read"] == [] and run.result["failed"] == []
 
 
+# Pages 1-3 and 7 are blank (a cover, a scan): no chunks. Eight pages have text.
+BLANKS = {1, 2, 3, 7}
+TEXT_PAGES = [4, 5, 6, 8, 9, 10, 11, 12]
+
+
+async def _gappy(env, dist):
+    await env.add_doc(PB, "Beta.md", {p: f"Page {p} filler text." for p in TEXT_PAGES}, page_count=12, dist=dist)
+
+
+async def test_over_the_cap_blank_pages_are_not_picked_by_the_fill_nor_listed_as_not_read(env, use_router):
+    """Only pages 11 and 5 can be found by the search (the others have no embedding), so the cap of 5 is filled
+    from the rest of the candidates in order. Those are the pages that have text: 4, 6 and 8, never the blank
+    pages 1-3 that come first, and the blank page 7 is not "not read" either."""
+    await _gappy(env, {p: None for p in TEXT_PAGES} | {11: 0.01, 5: 0.02})
+    router = use_router(NOTHING)
+    run = await _extract(await env.ctx(cfg=ChatConfig(extract_max_pages=5)), {"documents": [1], "need": "zephyr quartz"})
+    assert router.seen() == [f"[1, page {p}]" for p in (4, 5, 6, 8, 11)]
+    assert run.result["not_read"] == [{"ref": 1, "pages": "9-10, 12"}]
+    assert "message" not in run.result
+
+
+async def test_over_the_cap_blank_pages_are_not_taken_when_the_ranking_fails(env, use_router, monkeypatch):
+    await _gappy(env, {})
+
+    async def boom(text):
+        raise ConnectionError("down")
+
+    monkeypatch.setattr(ex_tool, "embed_query", boom)
+    router = use_router(NOTHING)
+    run = await _extract(await env.ctx(cfg=ChatConfig(extract_max_pages=5)), {"documents": [1], "need": "n"})
+    assert run.result["message"] == FALLBACK
+    assert router.seen() == [f"[1, page {p}]" for p in (4, 5, 6, 8, 9)]            # the first five pages with text
+    assert run.result["not_read"] == [{"ref": 1, "pages": "10-12"}]
+
+
+async def test_pages_asked_for_that_are_all_blank_read_nothing_and_are_no_error(env, use_router):
+    await _gappy(env, {})
+    router = use_router(NOTHING)
+    run = await _extract(await env.ctx(), {"documents": [1], "need": "n",
+                                           "pages": [{"document": 1, "first_page": 1, "last_page": 3}]})
+    assert run.ok and router.calls == [] and run.result["message"] == "The pages have no text (they may be images)."
+    assert run.result["not_read"] == []
+
+
 async def test_a_document_with_no_text_at_all_never_calls_the_reader(env, use_router):
     await env.add_doc(PA, "Alpha.md", {}, page_count=3)
     router = use_router(NOTHING)
@@ -441,9 +493,35 @@ async def test_a_page_longer_than_a_batch_is_split_and_a_quote_from_its_second_h
     assert len(router.calls) >= 3 and set(router.seen()) == {"[1, page 1]"}              # one label for every piece
     assert max(len(messages[1].content) for _, messages, _ in router.calls) < 900         # a piece, not the page
     assert ctx.evidence == [(PA, 1, "port to use is 8080")]
-    # the pieces, put together, are the page
+
+
+async def test_a_quote_may_come_from_any_piece_and_may_cross_a_cut(env, use_router, monkeypatch):
+    """Consecutive pieces overlap, so a quote that crosses a cut is whole in the next piece, and one in the
+    overlap is found twice but reported once."""
+    monkeypatch.setenv("READER_INPUT_CHARS", "500")
+    text = " ".join(f"w{i:04d}" for i in range(400))          # 2,800 characters, every word different
+    await env.add_doc(PA, "Alpha.md", {1: text})
     pieces = ex_tool._pieces(text, 500)
-    assert all(len(p) <= 500 for p in pieces) and " ".join(" ".join(p.split()) for p in pieces) == " ".join(text.split())
+    assert len(pieces) >= 5
+    cut = len(pieces[0])                                       # where the first piece ends in the page
+    quotes = {"EARLY": text[10:60],                            # only in the first piece
+              "OVERLAP": text[cut - 150:cut - 100],            # in the end of the first piece and the start of the second
+              "SPAN": text[cut - 25:cut + 25],                 # crosses the first cut: in the second piece only
+              "LATE": text[-40:]}                              # only in the last piece
+    quotes = {name: quote.strip() for name, quote in quotes.items()}      # the reader keeps a quote stripped
+    assert quotes["OVERLAP"] in pieces[0] and quotes["OVERLAP"] in pieces[1]
+    assert quotes["SPAN"] not in pieces[0] and quotes["SPAN"] in pieces[1]
+
+    def script(user):
+        return facts_json(*[("[1, page 1]", f"fact {name}", q) for name, q in quotes.items() if q in user])
+
+    router = use_router(script)
+    ctx = await env.ctx()
+    run = await _extract(ctx, {"documents": [1], "need": "anything"})
+    assert [(f["page"], f["fact"], f["quote"]) for f in run.result["facts"]] == [
+        (1, f"fact {name}", quotes[name]) for name in ("EARLY", "OVERLAP", "SPAN", "LATE")]
+    assert len(router.calls) == len(pieces) and set(router.seen()) == {"[1, page 1]"}
+    assert [e[2] for e in ctx.evidence] == [quotes[n] for n in ("EARLY", "OVERLAP", "SPAN", "LATE")]
 
 
 def test_pieces_cut_at_a_paragraph_then_a_line_then_a_space_then_anywhere():
@@ -451,7 +529,22 @@ def test_pieces_cut_at_a_paragraph_then_a_line_then_a_space_then_anywhere():
     assert ex_tool._pieces("a" * 70 + "\n\n" + "b" * 60, 100) == ["a" * 70, "b" * 60]
     assert ex_tool._pieces("a" * 70 + "\n" + "b" * 60, 100) == ["a" * 70, "b" * 60]
     assert ex_tool._pieces("a" * 70 + " " + "b" * 60, 100) == ["a" * 70, "b" * 60]
-    assert ex_tool._pieces("c" * 250, 100) == ["c" * 100, "c" * 100, "c" * 50]
+    # No break at all: cut at the limit, and each piece starts 49 characters (half the limit, less one) before the
+    # end of the one before (200 for a real limit).
+    assert ex_tool._pieces("c" * 250, 100) == ["c" * 100, "c" * 100, "c" * 100, "c" * 97]
+
+
+def test_pieces_overlap_by_200_characters_and_start_at_a_word():
+    words = [f"w{i:04d}" for i in range(300)]
+    text = " ".join(words)
+    pieces = ex_tool._pieces(text, 500)
+    assert all(len(p) <= 500 for p in pieces)
+    assert text.startswith(pieces[0]) and text.endswith(pieces[-1])
+    for a, b in zip(pieces, pieces[1:]):
+        assert b.startswith("w") and b.split()[0] in a.split()         # a whole word, one the piece before has
+        overlap = len(a) - a.index(b.split()[0])
+        assert 195 <= overlap <= 200 + 6                                # the overlap, to a word
+    assert " ".join(w for w in words if w not in " ".join(pieces).split()) == ""      # nothing is lost
 
 
 async def test_a_label_never_holds_a_document_title(env, use_router):
@@ -489,6 +582,22 @@ async def test_the_output_is_cut_to_the_limit_by_dropping_the_last_facts(env, us
     # with room, nothing is cut and there is no "more"
     roomy = await _extract(await env.ctx(), {"documents": [1], "need": "n"}, "c2")
     assert len(roomy.result["facts"]) == 8 and "more" not in roomy.result
+
+
+async def test_the_output_limit_counts_characters_not_escapes_so_cjk_facts_are_not_cut_early(env, use_router):
+    """json.dumps escapes each CJK character to \\uXXXX (6 characters); the model reads the characters themselves.
+    The limit is measured on what the model reads."""
+    pages = {p: f"第{p}页：安装说明在这里，请先下载安装包再运行安装程序。" for p in range(1, 9)}
+    await env.add_doc(PA, "Alpha.md", pages)
+    use_router(lambda user: facts_json(*[(f"[1, page {p}]", f"第{p}页的安装说明" + "很重要" * 4, "请先下载安装包再运行安装程序")
+                                         for p in range(1, 9)]))
+    ctx = await env.ctx(cfg=ChatConfig(extract_output_chars=500))
+    run = await _extract(ctx, {"documents": [1], "need": "安装说明"})
+    kept = run.result["facts"]
+    assert len(json.dumps(run.result, ensure_ascii=False)) <= 500 < len(json.dumps(run.result))   # fits as read, not as escaped
+    assert 3 <= len(kept) < 8 and [f["page"] for f in kept] == list(range(1, len(kept) + 1))
+    assert run.result["more"] == 8 - len(kept)
+    assert [e[1] for e in ctx.evidence] == [f["page"] for f in kept]
 
 
 async def test_the_turns_model_reaches_the_reader(env, use_router, monkeypatch):
@@ -539,8 +648,11 @@ async def test_one_to_five_documents(env, use_router):
     unknown = await _extract(ctx, {"documents": [1, "Nope.md"], "need": "n"})
     assert unknown.result == {"error": "Unknown document: Nope.md. Use a number or name from the list: 1 Alpha.md."}
     assert router.calls == []
-    one = await _extract(ctx, {"documents": "1", "need": "n"})      # a lone value names one document
-    assert one.ok and one.result["documents"] == [{"ref": 1, "name": "Alpha.md"}]
+    for lone in ("1", 1, 1.0):                                      # a lone value names one document
+        one = await _extract(ctx, {"documents": lone, "need": "n"})
+        assert one.ok and one.result["documents"] == [{"ref": 1, "name": "Alpha.md"}], lone
+    assert not (await _extract(ctx, {"documents": 1.5, "need": "n"})).ok
+    assert not (await _extract(ctx, {"documents": True, "need": "n"})).ok
 
 
 async def test_in_document_scope_documents_means_the_open_document(env, use_router):

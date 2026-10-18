@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Iterable
 
 from ...db import get_pool
@@ -31,6 +32,8 @@ logger = logging.getLogger(__name__)
 MAX_DOCUMENTS = 5
 NEED_MAX_CHARS = 500
 RANK_DEPTH = 3     # the ranking looks at this many chunks per page it may read: pages hold several
+PIECE_OVERLAP = 200    # characters two consecutive pieces of a split page share, so a quote across a cut is whole in one
+_WHITESPACE = re.compile(r"\s")
 IN_ORDER_NOTE = "The pages were taken in order: finding the best pages failed."
 NO_TEXT_NOTE = "The pages have no text (they may be images)."
 PAGES_SHAPE = "pages must be a list of {document, first_page, last_page}."
@@ -88,8 +91,8 @@ def _chosen(scope: list[ScopeDoc], values: Any, ctx) -> list[ScopeDoc]:
     read_document_pages). In a project each value gets the same lookup and errors as named_in_project."""
     if ctx.project is None:
         return [scope[0]]
-    if isinstance(values, (int, str)) and not isinstance(values, bool) and values != "":
-        values = [values]    # a lone value names one document
+    if isinstance(values, (int, float, str)) and not isinstance(values, bool) and values != "":
+        values = [values]    # a lone value names one document (1.0 too, as inside a list)
     if not isinstance(values, list) or not values:
         raise _Refused(f"documents is required: 1-{MAX_DOCUMENTS} numbers or names from the list: "
                        f"{choices_text(scope)}.")
@@ -107,8 +110,8 @@ def _chosen(scope: list[ScopeDoc], values: Any, ctx) -> list[ScopeDoc]:
 
 def _asked(raw: Any, scope: list[ScopeDoc], chosen: list[ScopeDoc], ctx) -> dict[int, list[tuple[int, int]]]:
     """`pages` as {ref: [(first, last)]}; a document with no entry is read whole."""
-    if raw in (None, []):
-        return {}
+    if raw is None or (isinstance(raw, (str, list, dict)) and not raw):
+        return {}    # "", {} and [] are what a small model sends for "none"
     if not isinstance(raw, list):
         raise _Refused(PAGES_SHAPE)
     asked: dict[int, list[tuple[int, int]]] = {}
@@ -135,7 +138,8 @@ def _asked(raw: Any, scope: list[ScopeDoc], chosen: list[ScopeDoc], ctx) -> dict
 
 async def _candidates(chosen: list[ScopeDoc], asked: dict[int, list[tuple[int, int]]]) -> list[tuple[int, int]]:
     """Every (ref, page) that may be read, in that order: the ranges asked for, clamped to the document's pages,
-    else all of its pages."""
+    else all of its pages. Only pages that have text: a blank page (a cover, a scan) has no chunks, is never
+    sent to the reader, and so must neither take a place in the cap nor be listed as not read."""
     out: list[tuple[int, int]] = []
     async with get_pool().connection() as conn:
         for d in chosen:
@@ -148,7 +152,11 @@ async def _candidates(chosen: list[ScopeDoc], asked: dict[int, list[tuple[int, i
                     pages.update(range(first, min(last, count) + 1))
             else:
                 pages.update(range(1, count + 1))    # none when its pages are unknown and it has no text
-            out.extend((d.ref, page) for page in sorted(pages))
+            cur = await conn.execute(
+                "SELECT DISTINCT page FROM doc_chunks WHERE doc_id = %s AND page BETWEEN %s AND %s",
+                (d.doc.doc_id, min(pages, default=1), max(pages, default=0)))
+            with_text = {row[0] for row in await cur.fetchall()}
+            out.extend((d.ref, page) for page in sorted(pages & with_text))
     return out
 
 
@@ -203,20 +211,27 @@ def _listed(pairs: Iterable[tuple[int, int]]) -> list[dict[str, Any]]:
 
 
 def _pieces(text: str, limit: int) -> list[str]:
-    """`text` in pieces of at most `limit` characters, cut at a paragraph break, else a line break, else a space
-    (in the window's second half), else anywhere. A page longer than a reader batch must not be cut silently
-    (reader.batches), and a fact is quoted from one piece."""
+    """`text` in pieces of at most `limit` characters. A page longer than a reader batch must not be cut silently
+    (reader.batches), and a fact is quoted from one piece.
+    - Each piece ends at a paragraph break, else a line break, else a space (in the window's second half), else
+      at the limit.
+    - The next one starts PIECE_OVERLAP characters back, at the first word inside that stretch, so a quote that
+      crosses a cut is whole in the next piece. A quote in the overlap is found twice; the results are merged.
+      (The overlap is kept under half the limit, so that every piece moves on.)"""
+    overlap = min(PIECE_OVERLAP, limit // 2 - 1)
     pieces: list[str] = []
-    while len(text) > limit:
-        cut = limit
+    start = 0
+    while len(text) - start > limit:
+        end = start + limit
         for sep in ("\n\n", "\n", " "):
-            at = text.rfind(sep, limit // 2, limit)
+            at = text.rfind(sep, start + limit // 2, end)
             if at >= 0:
-                cut = at + len(sep)
+                end = at + len(sep)
                 break
-        pieces.append(text[:cut])
-        text = text[cut:]
-    pieces.append(text)
+        pieces.append(text[start:end])
+        word = _WHITESPACE.search(text, end - overlap, end)
+        start = word.end() if word else end - overlap
+    pieces.append(text[start:])
     return [p for p in (piece.strip() for piece in pieces) if p]
 
 
