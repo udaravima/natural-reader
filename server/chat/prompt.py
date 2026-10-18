@@ -131,11 +131,13 @@ def _project_line(project: ProjectScope) -> str:
     return line
 
 
-def _live_line(offered: set[str], noun: str | None) -> str:
+def _live_line(offered: set[str], noun: str | None, names_sites: bool = False) -> str:
     """Step 1's line for live information and facts outside the documents, by the web tools offered:
     web_search (auto mode) searches and reads; read_web_pages without it is the turn after the user approved a
     search (its results are already above); the offer alone is ask mode; none, the web is off. `noun`: what the
-    document-first suffix calls the searchable documents ("document", "documents"), None without document tools."""
+    document-first suffix calls the searchable documents ("document", "documents"), None without document tools.
+    `names_sites`: there is no step 4 to say how to name the site of a web fact (no document tools, no passages),
+    so this line says it."""
     head = "   - Live information (news, prices, weather, anything about today)"
     outside = ", or outside facts your own knowledge can't answer: "
     read = "read_web_pages on the one to three best results, saying in need exactly what to bring back"
@@ -152,6 +154,8 @@ def _live_line(offered: set[str], noun: str | None) -> str:
         return f"{head}: say you can't look it up here."
     if noun:
         line += f" If it concerns something named in the {noun}, find the name in the {noun} first."
+    if names_sites and WEB_READ in offered:
+        line += SITE_SENTENCE
     return head + outside + line
 
 
@@ -188,6 +192,9 @@ def _find_step(offered: set[str], project: bool, prefetch: bool) -> str:
     return find
 
 
+SITE_SENTENCE = " After each fact from the web, name its site like this: (example.com)."
+
+
 def _web_answer_sentences(offered: set[str]) -> str:
     """The ends of step 4 that follow the web tools: the offer (ask mode, and the approved turn), and the site
     that names a web fact."""
@@ -195,7 +202,7 @@ def _web_answer_sentences(offered: set[str]) -> str:
     if WEB_OFFER in offered:
         out += " If the answer needs current or outside facts you don't have, call offer_web_search."
     if WEB_READ in offered:
-        out += " After each fact from the web, name its site like this: (example.com)."
+        out += SITE_SENTENCE
     return out
 
 
@@ -237,7 +244,8 @@ def _procedure(doc: ReadableDoc | None, offered: set[str], prefetch: bool = Fals
                      "term that may come from it: go to step 2.")
     elif doc is not None:
         lines.append("   - Questions about the open document: say it can't be searched yet, as explained above.")
-    lines.append(_live_line(offered, ("documents" if project is not None else "document") if doc_tools else None))
+    lines.append(_live_line(offered, ("documents" if project is not None else "document") if doc_tools else None,
+                            names_sites=not (doc_tools or prefetched_only)))
     lines.append("   - Other general questions: answer from your own knowledge.")
     if doc_tools:
         lines += [_find_step(offered, project is not None, prefetch),

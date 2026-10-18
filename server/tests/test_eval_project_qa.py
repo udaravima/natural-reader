@@ -446,8 +446,10 @@ def test_the_report_tallies_repeats_by_kind():
 
 def test_result_keeps_every_field_of_the_single_document_result_with_its_default():
     single, project = {f.name: f for f in fields(doc_qa.Result)}, {f.name: f for f in fields(pq.Result)}
-    assert single.keys() <= project.keys()
-    for name in single.keys() - {"case", "answer"}:
+    # `mode` is doc_qa's alone: its report words the live case by the run's web mode, while a project case
+    # carries its own in Case.web and is reported by what the turn did (offered, web calls).
+    assert single.keys() - {"mode"} <= project.keys()
+    for name in single.keys() - {"case", "answer", "mode"}:
         assert project[name].default == single[name].default, name
         assert (project[name].default_factory is single[name].default_factory) or (
             project[name].default_factory() == single[name].default_factory()), name

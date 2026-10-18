@@ -355,7 +355,7 @@ def test_live_report_says_what_the_model_did_in_ask_mode():
 
 
 def test_an_offer_does_not_fail_a_refusal_but_an_invented_page_still_does():
-    """Task 14: an `absent` answer passes on a refusal that invents no page; the offer next to it is fine."""
+    """Task 14: an `absent` answer passes on a refusal or an offer that invents no page or figure."""
     case = _case("absent", ["capital budget", "2030"], [])
     ok = doc_qa.score(case, "The document doesn't seem to cover that. Shall I search the web?", OFFER, mode="ask")
     assert ok.passed and ok.offered and "refused (offered the search)" in doc_qa.format_report([[ok]], model="m")
@@ -365,8 +365,16 @@ def test_an_offer_does_not_fail_a_refusal_but_an_invented_page_still_does():
     assert not paged.passed and paged.invented_pages == {4}
     figure = doc_qa.score(case, "Not covered here. It is probably 3 million. Shall I search?", OFFER)
     assert not figure.passed and figure.invented_figure
-    # An offer with no refusal in the words is not a refusal: nothing is loosened beyond the ruling.
-    assert not doc_qa.score(case, "", OFFER).passed
+    # The offer is itself the answer to a gap (ruling 8), even when the turn wrote nothing before it.
+    assert doc_qa.score(case, "", OFFER, mode="ask").passed
+    assert doc_qa.score(case, "Shall I look that up?", OFFER, mode="ask").passed
+    report = doc_qa.format_report([[doc_qa.score(case, "", OFFER, mode="ask")]], model="m")
+    assert "offered the search (wrote no text)" in report
+    # ... but not an offer next to a made-up page or figure, and not neither a refusal nor an offer.
+    assert not doc_qa.score(case, "See (page 4).", OFFER, mode="ask").passed
+    assert not doc_qa.score(case, "It is 3 million.", OFFER, mode="ask").passed
+    assert not doc_qa.score(case, "", []).passed
+    assert not doc_qa.score(case, "The budget is large.", []).passed
 
 
 def test_the_runs_web_mode_is_the_deployments_resolution_of_the_environment(monkeypatch):
@@ -469,16 +477,23 @@ print(json.dumps({"rc": rc, **seen, "after": os.path.isdir(seen["dir"])}))
 """
 
 
-def _run_doc_main(tmp_path, database_url, *argv):
+REAL_URL = "postgresql://u:p@h:5433/natural_reader"
+
+
+def _run_doc_main(tmp_path, database_url, *argv, dotenv_url=REAL_URL):
     """The script's real main(), with a fake run_eval that records where storage points, in a subprocess
-    (main loads a .env into os.environ). The test's .env and the environment both name another folder."""
+    (main loads a .env into os.environ). The test's .env and the environment both name another folder.
+    `database_url`: DATABASE_URL as exported (None: not exported); `dotenv_url`: DATABASE_URL in the .env
+    (None: the .env has none). By default the .env names the real database, as a developer's may."""
     import os
     import subprocess
     import sys
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
-    (tmp_path / ".env").write_text("DOC_STORAGE_DIR=/from/dotenv\\nPDF_STORAGE_DIR=/from/dotenv/pdfs\\n"
-                                   "DATABASE_URL=postgresql://u:p@h:5433/natural_reader\\n")
+    lines = ["DOC_STORAGE_DIR=/from/dotenv", "PDF_STORAGE_DIR=/from/dotenv/pdfs"]
+    if dotenv_url:
+        lines.append(f"DATABASE_URL={dotenv_url}")
+    (tmp_path / ".env").write_text("\n".join(lines) + "\n")
     import json
     env = {**os.environ, "PROBE_DOTENV": str(tmp_path / ".env"),
            "PROBE_SCRIPT": str(root / "scripts" / "eval_doc_qa.py"), "PROBE_ARGV": json.dumps(list(argv)),
@@ -513,10 +528,21 @@ def test_main_honours_storage_dir_for_the_doc_eval_and_keeps_it(tmp_path):
     assert seen["dir"] == str(Path(mine).resolve()) and seen["exists"] and seen["after"]
 
 
-def test_main_refuses_the_real_database_before_anything_runs(tmp_path):
-    """Exported or from .env (the probe's .env names natural_reader; the environment's value wins, so this
-    is the exported one), and unset: the run never starts."""
-    for url in ("postgresql://u:p@localhost:5434/natural_reader", None):
-        out = _run_doc_main(tmp_path, url)
-        assert out.returncode == 2 and "Refusing to run" in out.stderr, (url, out.stderr)
-        assert "u:p" not in out.stderr and out.stdout.strip() == ""
+@pytest.mark.parametrize("exported,dotenv", [
+    ("postgresql://u:p@localhost:5434/natural_reader", REAL_URL),   # exported, real (and the .env's too)
+    (None, REAL_URL),                                               # the real URL is only in .env
+    (None, None),                                                   # unset everywhere: the server would use its default
+])
+def test_main_refuses_the_real_database_before_anything_runs(tmp_path, exported, dotenv):
+    """Whether the real database comes from the environment or only from .env, or no database is named
+    at all, the run never starts and the password is not echoed."""
+    out = _run_doc_main(tmp_path, exported, dotenv_url=dotenv)
+    assert out.returncode == 2 and "Refusing to run" in out.stderr, out.stderr
+    assert "u:p" not in out.stderr and out.stdout.strip() == ""
+
+
+def test_an_exported_scratch_url_wins_over_a_real_one_in_dotenv(tmp_path):
+    """dotenv fills only what the environment lacks, so a developer's .env naming natural_reader does not
+    send an eval with an exported scratch URL to the real database."""
+    out = _run_doc_main(tmp_path, "postgresql://u:p@localhost:5434/natural_reader_eval", dotenv_url=REAL_URL)
+    assert out.returncode == 0, out.stderr

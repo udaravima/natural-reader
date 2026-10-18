@@ -196,7 +196,10 @@ def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], *, error: s
         result.refused = is_refusal(answer)
         result.invented_pages = cited_pages(answer)
         result.invented_figure = _invents_a_figure(answer)
-        result.passed = result.refused and not result.invented_pages and not result.invented_figure
+        # A gap is answered by a refusal or by the offer to search the web (Task 14, ruling 8). The offer ends the
+        # turn, so a model may call it before writing anything: no text is no invented page and no figure.
+        result.passed = ((result.refused or result.offered)
+                         and not result.invented_pages and not result.invented_figure)
     else:
         result.fact = all(has_term(answer, term) for term in case.expect)
         result.cited_inline = set(case.pages) <= cited_pages(answer)
@@ -236,6 +239,8 @@ def _detail(r: Result) -> str:
             return "gave a figure the document doesn't have"
         if r.refused:
             return "refused (offered the search)" if r.offered else "refused"
+        if r.offered:
+            return "offered the search" + ("" if r.answer.strip() else " (wrote no text)")
         return "answered instead of saying the document doesn't cover it"
     fact = "fact ok" if r.fact else f"fact missing ({', '.join(r.case.expect)})"
     pages = ("pages ok (inline)" if r.cited_inline else "pages ok (chips)" if r.cited

@@ -263,7 +263,6 @@ class Result:
     wrong_docs: set[str] = field(default_factory=set)   # cited, and not the right one (see score)
     web_calls: int = 0
     offered: bool = False             # the turn ended with the offer to search the web
-    mode: str = "auto"                # the web search mode the case was asked in (its `web`; the field exists in doc_qa.Result too)
     near_miss: bool = False           # web-read: the answer gives a number the case forbids
 
     @property
@@ -282,7 +281,7 @@ def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], names: list
     gap-general cases can't be asked (no offer is possible), and are skipped."""
     tools = [c.get("toolName") or c.get("name") for c in tool_calls]
     result = Result(case, answer, tools, max((c.get("round") or 0 for c in tool_calls), default=0),
-                    web_calls=sum(t in WEB_TOOLS for t in tools), offered=offered, error=error, mode=case.web)
+                    web_calls=sum(t in WEB_TOOLS for t in tools), offered=offered, error=error)
     result.chip_pages = sorted(chip_pages or [])
     if error:
         return result
