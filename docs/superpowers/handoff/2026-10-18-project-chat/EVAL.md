@@ -1372,3 +1372,311 @@ variant-50 run. One run cannot be told from noise: the model-facing text is iden
   the page whose facts it used. A page the reader found nothing on, a page read in a call the turn's budget dropped, and a result
   whose URL is not `http(s)` (the `javascript:` and `data:` cases) are never listed; those are unit-tested
   (`test_chat_sources.py`, `test_chat_orchestrator.py`), not exercised by the fake web.
+
+## Final (cloud)
+
+The last cloud measurement of C2.1 project chat, against the spec's section 2 targets. The local `gemma4:e4b` run is a separate
+step and is appended below this section when it has been made.
+
+- Dates: the cloud runs 2026-10-19; the rebuild timing and the gates 2026-10-20.
+- Code under test: `ec297f4` (`fix(chat): the approved search query is cleaned on the server too`). The tree has moved to docs-only
+  commits since (`git diff ec297f4 HEAD` touches `.env.example`, `CHANGELOG.md`, `README.md`, `docs/` and the spec, no code).
+- Model: `ollama:gemma4:31b-cloud`, thinking off; chat web mode `ask` (the eval's default for every case). Scratch database
+  `natural_reader_eval`. Reader: the default `llama3.2:3b`. Fake web only in variant 9 (`--web-fixture`).
+- Commands, as briefed (`--show-answers` added so the answers could be quoted; it changes only what is printed):
+
+  ```sh
+  DATABASE_URL=postgresql://natural_reader:natural_reader@127.0.0.1:5434/natural_reader_eval \
+    .venv/bin/python scripts/eval_project_qa.py --model ollama:gemma4:31b-cloud --variant 9  --repeat 3 --web-fixture
+  DATABASE_URL=... same, --variant 50 --repeat 3
+  ```
+
+  Both ran through a thin wrapper kept outside the repository (it calls the script's own `main()` and logs each chat turn: its
+  question, whether it carried `context.web`, the tool names it called). It does not change what the eval does; it is how the
+  unapproved web calls below were counted exactly.
+- **Runs, all reported (nothing dropped):**
+
+  | run | result | note |
+  |---|---|---|
+  | variant 9, `--repeat 3 --web-fixture` | 37/42 passed, exit 1 | one attempt, no provider error |
+  | variant 50, `--repeat 3`, **attempt 1** | 29/45 passed, exit 2 | one turn ended `provider_unavailable` (`features-50`, run 3, 18.4 s into the turn); a provider failure says nothing about the rules, so the variant was run once more |
+  | variant 50, `--repeat 3`, **attempt 2** | 32/45 passed, exit 1 | no error; both attempts are shown below, none is preferred |
+
+- Which results survived the loss of the scratch Postgres (a container restart wiped its tmpfs on 2026-10-20): all of them. The
+  numbers above are read from the saved stdout, stderr and per-turn logs of these runs, not from the database. Nothing in
+  `natural_reader_eval` was needed afterwards; the next eval run indexes the fixture again first. What the restart did cost:
+  a first, half-finished rebuild-timing database (`natural_reader_rebuild`) was lost with it, so that measurement was made again
+  from the start (twice, below).
+
+### The spec section 2 targets
+
+| target (spec section 2, "our call", cloud model) | measured | met |
+|---|---|---|
+| at least 90% right-document citations on cases with a document answer | **variant 9: 29/33 = 87.9%.** Variant 50: attempt 1 28/38 = 73.7%, attempt 2 28/39 = 71.8%. (The eval's own line, "right-document citations": the answer cites every document the case names, in the form `(Name, page N)`, and none it forbids.) Read from the sources notes the replies were saved with (the chips): the expected document was named in 30/30 (variant 9), 32/33 and 33/33 (variant 50), and the expected page in 15/15, 18/18 and 18/18. | **no** |
+| the exact command on the code case | `code` cases (start, quickstart, test): variant 9 9/9; variant 50 attempt 1 9/9, **attempt 2 8/9**. The one miss: asked for the Linux quickstart command, the answer gave `./startup.sh start` (README.md, page 3) instead of `./startup.sh quickstart`. The variant-50 `start-command-50` also passes 3/3 and 3/3. | **no, 26 of 27 turns** (every run of variant 9, and attempt 1, were exact) |
+| 0 unapproved web calls | **0** `web_search` / `read_web_pages` calls in the 132 turns that carried no `context.web` (42 + 45 + 45); the 3 approved turns made 7 calls (below). | **yes** |
+| 0 invented pages on gap cases | the `gap-general` case (`rhel-packages`): variant 9 0 of 3 flagged, but in all three the model called `offer_web_search` and wrote no text, so there was nothing to cite a page in. Variant 50: **attempt 1 flagged 2 of 3** (`cited pages [1] for the part they don't cover`), attempt 2 0 of 3. | **no** (2 of 9 gap turns flagged; one attempt clean) |
+
+Two things about the first row. The 87.9% is the eval's *inline* citation rule, which counts a *joined* citation
+`(ARCHITECTURE.md, page 3; USER_GUIDE.md, page 1)` as no citation (the Task 15 ruling left that unchanged on purpose) and requires an
+overview answer to cite at least three distinct documents. Of the four variant-9 turns that miss, three are the overview
+(`features`, 1-2 documents cited each time) and one is a joined citation whose document and page the saved chips do name. If a joined
+citation counted, variant 9 would be 30/33 = 90.9% (variant 50: 31/38 and 30/39), which is my arithmetic, not a score the eval
+gives. The overview misses would remain. Second, the chip figures leave out the cases that list no expected document (the
+overview), so they cannot show the overview shortfall.
+
+### How the unapproved web calls were counted
+
+A web request leaves the server only through `web_search` or `read_web_pages` (`offer_web_search` is the offer; it sends nothing).
+"Unapproved" is one of those two tools running in a turn that did not carry the user's yes (`context.web` / `web_query`), in
+`ask` mode. The eval's own `web calls N` line is not that number: it counts the *scored* turn, and for the `web-read` case the scored
+turn is the approved one. So the count is from the wrapper's per-turn log, which includes the `web-read` case's first (offer) turn:
+
+| run | turns | turns without `context.web` | web calls in them | turns with `context.web` | web calls in them |
+|---|---|---|---|---|---|
+| variant 9 | 45 | 42 | **0** | 3 | 7 (per turn: the app's own approved `web_search`, then the model's `read_web_pages`; one turn read twice) |
+| variant 50, attempt 1 | 45 | 45 | **0** | 0 | 0 |
+| variant 50, attempt 2 | 45 | 45 | **0** | 0 | 0 |
+
+A second, independent check in variant 9: the fake web recorded exactly one search query per run (three queries, the approved
+query each time) and four page fetches (all of the one 4.18 install page), all inside the approved turns. The eval's `web calls`
+lines read 7 for variant 9 (the approved calls) and 0 for both variant-50 attempts. `offer_web_search` was called in 9 of the 42
+variant-9 turns (the `rhel-packages`, `ollama-release` and `web-read` questions, three runs each) and in 3 of 45 variant-50 turns
+per attempt (`ollama-release`).
+
+### Variant 9, `--repeat 3 --web-fixture` (37/42 passed; right-document citations 29/33)
+
+Per-kind tally: overview 0/3, procedure 3/3, code 9/9, exact-label 5/6, named-doc 5/6, balance 6/6, gap-general 3/3, live 3/3,
+web-read 3/3. Source chips: documents 30/30 (0 searched only), pages 15/15. Web source chips 3/3 (the 4.18 install page every
+time). `fact found` is the answer's fact apart from the citation form; `right document` and `page` are the inline score (a case
+that lists no page shows `-`); `chip doc` / `chip page` are what the saved sources note names.
+
+| case | kind | passed | fact found | right document (inline) | page (inline) | chip doc | chip page | rounds per run |
+|---|---|---|---|---|---|---|---|---|
+| features | overview | 0/3 | 2/3 | 0/3 | - | - | - | 2 / 2 / 2 |
+| deploy-and-test | procedure | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 2 / 2 / 2 |
+| start-command | code | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| quickstart-command | code | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 2 / 2 / 2 |
+| test-command | code | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| session-lifetimes | exact-label | 2/3 | 3/3 | 2/3 | 2/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| oidc-issuer | exact-label | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| user-guide-pins | named-doc | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 1 / 1 / 1 |
+| deployment-uploads | named-doc | 2/3 | 2/3 | 3/3 | - | 3/3 | - | 1 / 4 / 4 |
+| next-work | balance | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 1 / 1 / 1 |
+| changelog-unreleased | balance | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 1 / 1 / 1 |
+| rhel-packages | gap-general | 3/3 | - | - | - | - | - | 1 / 2 / 1 |
+| ollama-release | live | 3/3 | - | - | - | - | - | 1 / 1 / 1 |
+| web-read | web-read | 3/3 | 3/3 | - | - | - | - | 1 / 2 / 1 |
+
+### Variant 50, `--repeat 3` (no web fixture), both attempts
+
+Attempt 1: 29/45 passed (one turn `provider_unavailable`, so exit 2); attempt 2: 32/45 passed. Per-kind tally, attempt 1: overview
+0/3, procedure 1/3, code 9/9, exact-label 3/6, named-doc 6/6, balance 3/6, gap-general 1/3, live 3/3, map-shortened 3/6 (one of
+the three errored); attempt 2: overview 0/3, procedure 2/3, code 8/9, exact-label 4/6, named-doc 6/6, balance 3/6, gap-general 3/3,
+live 3/3, map-shortened 3/6. Right-document citations 28/38 and 28/39. Source chips: documents 32/33 and 33/33 (the second
+with one `searched only`), pages 18/18 and 18/18. Web calls 0 in both. "a1 / a2" = attempt 1 / attempt 2.
+
+| case | kind | passed (a1 / a2) | fact found (a1 / a2) | right document, inline (a1 / a2) | page, inline (a1 / a2) | chip doc (a1 / a2) | chip page (a1 / a2) |
+|---|---|---|---|---|---|---|---|
+| features | overview | 0/3 / 0/3 | 1/3 / 3/3 | 0/3 / 0/3 | - / - | - / - | - / - |
+| deploy-and-test | procedure | 1/3 / 2/3 | 2/3 / 3/3 | 2/3 / 2/3 | - / - | 2/3 / 3/3 | - / - |
+| start-command | code | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 |
+| quickstart-command | code | 3/3 / 2/3 | 3/3 / 2/3 | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 |
+| test-command | code | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 |
+| session-lifetimes | exact-label | 0/3 / 1/3 | 3/3 / 3/3 | 0/3 / 1/3 | 0/3 / 1/3 | 3/3 / 3/3 | 3/3 / 3/3 |
+| oidc-issuer | exact-label | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 |
+| user-guide-pins | named-doc | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 | - / - | 3/3 / 3/3 | - / - |
+| deployment-uploads | named-doc | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 | - / - | 3/3 / 3/3 | - / - |
+| next-work | balance | 0/3 / 0/3 | 0/3 / 0/3 | 2/3 / 1/3 | - / - | 3/3 / 3/3 | - / - |
+| changelog-unreleased | balance | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 | - / - | 3/3 / 3/3 | - / - |
+| rhel-packages | gap-general | 1/3 / 3/3 | 3/3 / 3/3 | - / - | - / - | - / - | - / - |
+| ollama-release | live | 3/3 / 3/3 | - / - | - / - | - / - | - / - | - / - |
+| features-50 | map-shortened | 0/3 (1 error) / 0/3 | 2/2 / 2/3 | 0/2 / 0/3 | - / - | - / - | - / - |
+| start-command-50 | map-shortened | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 / 3/3 |
+
+### Every miss, case by case
+
+The inline score decides pass and fail. "Excerpt" is the start of the model's answer (or the part that shows the miss).
+a1 / a2 = variant-50 attempt 1 / 2; v9 = variant 9.
+
+**`features`** (overview; needs 4 of 6 terms and at least 3 distinct documents cited). Failed in **all 9 turns** (v9 0/3, a1 0/3, a2
+0/3) and `features-50` in all 5 of 5 that finished (a1 0/2 and one error, a2 0/3). In every finished turn the model searched, read pages, and wrote a list under the same four headings (Document
+Viewing; Text-to-Speech; Local AI Chat; Additional Tools, with a Multi-User heading in 3 of the 14 that finished). Its
+citations are README.md plus, in 9 of the 14, one or two USER_GUIDE.md lines; LIBRARY.md, IDENTITY_AND_ROLES.md, DEPLOYMENT.md
+and the rest are never cited in a features answer. Terms and documents
+cited by turn:
+
+| turn | terms of 6 | documents cited | what the answer cites |
+|---|---|---|---|
+| v9 run 1 | 3 (missing: library, accounts, admin/project) | 1 | README.md only |
+| v9 run 2 | 4 | 2 | README.md, USER_GUIDE.md (CHAT_WITH_PDF.md sits in a joined citation, not read) |
+| v9 run 3 | 4 | 2 | README.md, USER_GUIDE.md |
+| a1 run 1 / run 3 | 3 / 3 | 1 / 1 | README.md only |
+| a1 run 2 | 4 | 2 | README.md, USER_GUIDE.md |
+| a2 runs 1, 2, 3 | 4, 4, 4 | 2, 2, 2 | README.md, USER_GUIDE.md |
+| `features-50` a1 run 1 / run 2 | 4 / 4 | 2 / 1 | README.md (+ USER_GUIDE.md in run 1) |
+| `features-50` a1 run 3 | - | - | **ERROR** `provider_unavailable`, not a model miss |
+| `features-50` a2 run 1 / 2 / 3 | 4 / 4 / 3 | 2 / 2 / 1 | README.md (+ USER_GUIDE.md in runs 1 and 2) |
+
+Excerpt (v9 run 1): "Neural Reader is a modern document reader with the following key features: ### Document Viewing ... (README.md,
+page 1) ... ### Text-to-Speech (TTS) ... ### Local AI Chat (Ollama) ... ### Additional Tools (v1.8.0+) ..." The answer
+cites `(README.md, page 1)` 15 times and nothing else.
+
+**`session-lifetimes`** (exact-label, expects ARCHITECTURE.md p. 3). 6 failing turns (v9 run 1; a1 runs 1-3; a2 runs 1-2). All six
+have the fact right (168 and 12) and all six cite in the **joined** form the inline rule does not read, so the verdict is `not
+cited (ARCHITECTURE.md); page missing`; the saved chips name ARCHITECTURE.md and page 3 in all six. Excerpt (the same shape every time):
+"SESSION_TTL_HOURS: 168 (which equals 7 days) (ARCHITECTURE.md, page 3; USER_GUIDE.md, page 1) / SESSION_IDLE_HOURS: 12
+(ARCHITECTURE.md, page 3; USER_GUIDE.md, page 1)". A form miss, not a content miss.
+
+**`next-work`** (balance, fact `HANDOVER`). v9 3/3 pass; **variant 50 fails 6 of 6** (a1 and a2, fact missing every time). The padding
+documents make the "What's next" sections win: a1 run 1 "there are a few places where future or next steps are mentioned: CHAT_WITH_PDF.md
+... page 8 'What's next' ... LIBRARY.md ... page 6 ... DOCS_INDEX.md: Mentions that post-v1.9.0 work (multi-user auth and the inference
+gateway) is covered by the documentation set ..." In a1 run 2 and a2 runs 1 and 2 it also names DOCS_INDEX.md in bold with "(page 1)",
+not in the `(Name, page N)` form, so `not cited (DOCS_INDEX.md)` as well. The pointer to `../HANDOVER.md` that DOCS_INDEX.md carries
+is never relayed. In v9 the same question was answered with it (3/3).
+
+**`deploy-and-test`** (procedure; fact `./startup.sh start` and `pytest server/tests`; cites DEPLOYMENT.md and TESTING.md; v9 passes
+3/3). Variant 50 fails 3 of 6, three different ways. a1 run 1: fact ok, but `not cited (DEPLOYMENT.md, TESTING.md)`: a long walk-through
+(production deployment, then `podman-compose up -d postgres` and `.venv/bin/python -m pytest server/tests/ -q`) with a single
+citation at its very end, in the joined form: "(DEPLOYMENT.md, page 5; TESTING.md, page 1)". a1 run 2: **fact missing**: it has
+`./startup.sh start` (DEPLOYMENT.md, page 5) but, for the tests, only "To run the tests, refer to the 'How to run' section in
+`TESTING.md` (page 1)" and no command; it cites TESTING.md six times while its saved sources note lists no TESTING.md page at all
+(`chip doc missing (TESTING.md)`), so those citations were not backed by a page the turn had retrieved (inferred from the note;
+the per-turn log keeps tool names, not their arguments). a2 run 3: fact ok, `not cited (TESTING.md)`: it gives
+`.venv/bin/pytest server/tests` and `npm run test:run` and cites them to README.md, page 10; TESTING.md is `searched only`.
+
+**`quickstart-command`** (code; a2 run 3). Fact missing. The whole answer: "Based on the Quickstart (Linux) section in the
+documentation, the command used to start the whole stack in live mode is: `./startup.sh start` (README.md, page 3)". Right document and
+page, wrong command: the neighbouring `start` instead of `./startup.sh quickstart`.
+
+**`deployment-uploads`** (named-doc; v9 run 3). Fact missing (`100m`). The answer gives the cause and says the fix "is not explicitly
+detailed in the provided passages": "larger PDF uploads fail because nginx has a default `client_max_body_size` of 1 MB (DEPLOYMENT.md,
+page 4) ... 413 Request Entity Too Large ... While the provided text identifies the cause, the specific fix (which would typically
+involve increasing the `client_max_body_size` ...) is not explicitly detailed". It had read 3 passages in 4 rounds. The same question
+passed in 5 of 6 other turns.
+
+**`rhel-packages`** (gap-general; the invented-pages check). v9: 3/3 pass, but all three are `offer_web_search` with no text.
+Variant 50 a1: **run 2 fail** - "cited pages [1] for the part they don't cover": the answer says the documents list no RHEL 9
+packages, then a bullet "Containerized Deployment: ... pinned inside the image to prevent host OS upgrades (like those in RHEL 9)
+from affecting the application (DEPLOYMENT.md, page 1)". **Run 3 fail** - "didn't say the documents don't cover it" (its first
+sentence is "The provided documents do not list specific RHEL 9 system packages that you need to install", which the eval's refusal
+wording check did not accept) and the same shape: "... a host OS upgrade (like moving to RHEL 9) will not affect the application's
+interpreter (DEPLOYMENT.md, page 1)". My reading: the page backs the document's own statement about the container image; the
+words "RHEL 9" are the model's gloss inside a cited sentence, which is the blur the rule exists to stop, so I count it as a miss
+rather than excuse it. a2: 3/3 pass.
+
+**`features-50` run 3 of attempt 1** is the one `ERROR` (provider), listed above; no answer to judge.
+
+### Not a target row, but spec section 2 asks for it: the shape of the RHEL answer
+
+Section 2 describes the answer as: says the documents don't cover RHEL; gives the documents' own requirements (cited); adds general
+knowledge introduced as not from the documents (no page); ends with an offer to search the web for a short query. Measured, what the
+user gets:
+
+| | says the documents don't cover it | documents' own requirements, cited | general knowledge, labelled | offer to search the web |
+|---|---|---|---|---|
+| variant 9 (3 runs) | no text written | no | no | **yes**, the consent offer (`offer_web_search`) 3/3 |
+| variant 50 attempt 1 (3 runs) | 3/3 in words (one phrased so the eval's check missed it) | 3/3 (container image, podman/docker, nginx; DEPLOYMENT.md page 1) | **none**; no package names beyond what the documents say | **none**, 0/3 |
+| variant 50 attempt 2 (3 runs) | 3/3 | 3/3 | none | **in words in 2 of 3** ("would you like me to search the web for ...?"); run 1 none. The consent offer tool was called in 0/3 |
+
+So the full shape in section 2 is not produced by either variant. In variant 9 the offer comes with no explanation; in variant 50 there
+is an explanation and, mostly, no offer. A sentence-form offer is also not the consent card, so a "yes" typed under it would be an
+ordinary turn that carries no `context.web`, and no search would run in `ask` mode. Neither is counted in the targets table, which
+follows the "our call" sentence of section 2 only.
+
+### What this layer shows
+
+- Of the four section 2 targets, one is met (no unapproved web call, 0 of 132 turns). The citation target is missed on the
+  eval's own rule in both variants (87.9% and about 72%), the code case has one wrong command in 27 turns, and the gap case had two
+  flagged turns in one attempt.
+- The citation shortfall has three causes that are not the same thing: the overview answer drawn from README.md alone (0 of 14
+  finished turns across the two variants), the joined citation form (6 turns, content right and chips right), and variant 50's
+  `next-work` / `deploy-and-test` where the document that matters is not reached or not cited. The chips are right far more often
+  (30/30, 32/33, 33/33) than the inline text is, and they exclude the overview, so they flatter the overview-shaped weakness.
+- Variant 9 against the strategy layer's three variant-9 runs (36/42, right-document 28/33): 37/42 and 29/33. The model-facing
+  text was not changed between them in a way this table can separate from run-to-run noise.
+- Variant 50 is clearly weaker than variant 9 on `next-work` (0/6 against 3/3) and `deploy-and-test` (3/6 against 3/3), where 41
+  padding documents compete in the ranking. The two variant-50 attempts also differ by 3 passes on the same code (29 with an error
+  against 32), so single digits of difference between layers are inside the noise.
+- The user's three §1 questions, as the cloud model answers them today: the deploy-and-test walk-through is right in variant 9 and
+  uneven in variant 50; the code questions are right (26/27); "what are the features" is answered from README.md plus, at most, a line or two of USER_GUIDE.md, in every turn;
+  the RHEL question gets an offer without an explanation, or an explanation without the offer (above).
+
+## Rebuild timing
+
+What an existing library pays, the first time a project chat opens after the upgrade: the background re-chunk of every document
+under the new chunker version (`split1:1200:200` before; `split1:1200:200:code1:cells1` now), and how much of it is embedding.
+CPU-bound: the embeddings are the local Ollama `nomic-embed-text` on this machine's CPU (the GPU is disabled), so the seconds
+are for this machine and nothing else. The machine was also busy (load average 5.6-7.1 during the rebuilds: the app walk's
+Chromium and another agent), so read the seconds as an upper estimate.
+
+### How it was set up
+
+- A fresh scratch database `natural_reader_rebuild` (created, used, **dropped at the end**; `natural_reader_eval` left in place).
+  Migrations: the current ones, through `init_db`, as the eval script does.
+- The frozen fixture (the nine documents of `server/evals/fixtures/project_docs`) seeded as a project with the eval's own `seed_project`.
+- **The old index was made by the old code, not by editing a string.** The brief said to index the fixture and then set the stored
+  chunker version to the old value. That edit alone does nothing useful: the stored chunks were just made by the *current*
+  extractor, so their texts already equal the new ones, every vector is reusable, and the rebuild embeds nothing (I ran exactly
+  that as the control below: 0 texts embedded, 0.5 s). So the nine documents were indexed with the **v2.3.0 extractor and pipeline**
+  (the released code before the code-block and table-cell changes; `git archive v2.3.0 server`, put on `PYTHONPATH`, outside the
+  repository; its `CHUNKER_VERSION` is `split1:1200:200`). Their stored profile is
+  `nomic-embed-text|'search_document: '|'search_query: '|split1:1200:200` (it lives in `documents.embedding_profile`; the chunker
+  version is its last `|` part, built from `extract.CHUNKER_VERSION` by `embeddings.current_profile()`). One departure from a real
+  upgrade: the current migrations were applied before the old code indexed, not after; the old code ran without complaint.
+- The upgrade was triggered the way a project chat triggers it: `chat.project_scope.load_project_scope(...)`, which calls
+  `doc_pipeline.ensure_current` for each document of the project (the orchestrator calls it for every project turn). That only
+  *schedules* one background rebuild per document; the script then waits for those tasks and times them. The rebuild is
+  `doc_pipeline.run_rebuild`, one document at a time (a semaphore of 1), re-extracting the stored file and embedding only texts that
+  have no vector yet in that document's old index.
+
+### Result (run 1; run 2 had the same counts)
+
+| document | old chunks | new chunks | embedded | reused | embedded, by kind | finished at |
+|---|---|---|---|---|---|---|
+| ARCHITECTURE.md | 92 | 92 | 3 | 89 | 3 table | 0.6 s |
+| CHAT_WITH_PDF.md | 126 | 139 | 24 | 115 | 12 code, 12 table | 2.6 s |
+| DEPLOYMENT.md | 84 | 88 | 8 | 80 | 4 code, 4 table | 3.4 s |
+| DOCS_INDEX.md | 7 | 7 | 3 | 4 | 3 table | 3.8 s |
+| IDENTITY_AND_ROLES.md | 56 | 57 | 7 | 50 | 1 code, 6 table | 4.8 s |
+| LIBRARY.md | 105 | 107 | 15 | 92 | 2 code, 13 table | 6.8 s |
+| README.md | 176 | 207 | 48 | 156 | 31 code, 17 table | 12.0 s |
+| TESTING.md | 64 | 65 | 23 | 42 | 1 code, 22 table | 14.9 s |
+| USER_GUIDE.md | 83 | 84 | 5 | 79 | 1 code, 4 table | 15.2 s |
+| **total** | **793** | **846** | **136** | **707** | **52 code, 84 table** | **15.2 s** |
+
+- **Total time: 15.2 s** (run 1) and **15.0 s** (run 2, a second fresh database; identical counts). Both are the wall clock from
+  the call that opened the project to the last swap. The turn itself waited **5 ms** and **2 ms** (the scope load that schedules the
+  rebuilds): the upgrade never blocks the chat.
+- **136 of 843 distinct new chunk texts were embedded (16%); 707 (84%) kept their vector.** "Reused" is the distinct new texts minus
+  the embedded ones (843 distinct texts in 846 chunks: README.md holds 3 duplicates). The pipeline's own log line says "N vectors
+  kept"; that is the size of the document's *old* index, not how many the new set reused (e.g. ARCHITECTURE.md: 92 kept, 89 reused
+  plus 3 embedded), so I counted from the stored texts instead and checked it against the "texts embedded" figure in the same log lines.
+- Embedding: 13 calls (batches), 136 texts, 14.4 s (run 1) and 14.1 s (run 2) inside `embed_documents`, about 0.1 s per text. The
+  rest of the 15 s is re-extraction, the reads and the swap transactions (the control below, which embeds nothing, takes about 0.05 s per document).
+- **What was embedded.** Not only code chunks, as the brief expected (it also expected the table chunks): **52 code chunks** (42
+  `code`, 10 `code+cont`; the extractor did not index code blocks before) and **84 table chunks** (66 `block`, 18 `block+cont`; the
+  `cells1` change puts a space between a table's cells, so their text changed). I checked the 84 by re-extracting the fixture with
+  both extractors outside the database: 64 of them are the same words as an old chunk with the cell separators now apart; the other
+  20 start with a table header or row (`Symptom Cause Fix ...`, `Route Guard Notes ...`, `# Doc Audience What it owns ...`,
+  `Endpoint Method Description ...`, `File Covers ...`) or continue a split table, where the longer text moved the split point. I judged
+  that last group from the first ~110 characters of each; it is not machine-checked. No prose chunk was re-embedded.
+- For scale, indexing the same nine documents from nothing with the old code took **51.9 s** and **51.7 s** (793 chunks embedded,
+  extraction included): the lazy upgrade costs about 29% of the time and 17% of the embeddings of a full re-index.
+
+### The control: the profile string edited, chunk texts left alone
+
+After the run above the documents were current. Setting `embedding_profile` back to the old value
+(`replace(embedding_profile, ':code1:cells1', '')`, the brief's setup edit) and opening the project again gave: 9 rebuilds, **0 texts
+embedded, 843 vectors reused, 0.5 s** in total, 2 ms for the turn. That is what a profile-only edit measures: the re-chunk and
+the swap, with no embedding. It is not the upgrade cost; the table above is.
+
+### What it means, and what I did not measure
+
+- A library of nine documents pays about 15 s of background work once, on first use, on this CPU; a turn waits for none of it.
+- During that window the old chunks keep answering: the documents stay `indexed` and the embedding model is the same, so
+  `ensure_current` does not mark them `reindexing` (read from `doc_pipeline.ensure_current`, not tested here). The old index lacks the code
+  chunks and the separated table cells, so questions about those would be answered worse until the swap of the document concerned.
+- Not measured: a project of many documents (the rebuild is serial, one gate for the whole process, so N documents queue; time
+  scales with the changed chunks, roughly 0.1 s each here), rebuilds started from several users at once, and a GPU or a hosted
+  embedding model. Also not measured: the answer quality of a turn that arrives mid-rebuild.
