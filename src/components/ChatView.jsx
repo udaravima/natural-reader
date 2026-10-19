@@ -25,6 +25,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import AttachmentPreview from "./AttachmentPreview";
 import ScopeChip from "./chat/ScopeChip";
+import WebOfferCard from "./chat/WebOfferCard";
 import { citationDocs, remarkCitations } from "../lib/citations";
 import { estimateTokens } from "../hooks/inference";
 import { buildPinPreamble } from "../hooks/pins";
@@ -257,6 +258,18 @@ export default function ChatView({
     }
   };
 
+  // The offer card's controls (C2.1 Task 18). "Search the web" is the user's
+  // yes: the message they see says what was asked, and `web` carries the query
+  // for this turn only (the server runs exactly that search). Either control
+  // removes what had focus, so the cursor goes to the message box.
+  const focusComposer = () => {
+    if (!effectiveIsMobile) textareaRef.current?.focus();
+  };
+  const handleWebSearch = (query) => {
+    sendMessage(`Search the web for: ${query}`, [], { web: { query } });
+    focusComposer();
+  };
+
   return (
     <section
       className={`flex-1 flex flex-col overflow-hidden ${theme.viewportBg} transition-colors duration-300 relative`}
@@ -317,6 +330,10 @@ export default function ChatView({
                       : null
                   }
                   onOpenCitation={onOpenCitation}
+                  offerIsOpen={isLatestAssistant}
+                  searchDisabled={isStreaming}
+                  onWebSearch={handleWebSearch}
+                  onWebDismiss={focusComposer}
                 />
               );
             })}
@@ -465,6 +482,10 @@ function MessageBubble({
   isDownloading,
   onDownloadAudio,
   onOpenCitation,
+  offerIsOpen = false,
+  searchDisabled = false,
+  onWebSearch,
+  onWebDismiss,
 }) {
   const isUser = message.role === "user";
   const Icon = isUser ? User : Bot;
@@ -487,6 +508,11 @@ function MessageBubble({
     () => (canCite ? citationDocs({ docContext: savedContext, toolCalls: savedCalls }) : null),
     [canCite, savedContext, savedCalls],
   );
+  // A web search the model offered (saved with the reply, so it survives a
+  // reload). Only the newest reply can still be answered; an older one is a line.
+  const offer = !isUser && Array.isArray(savedContext?.notes)
+    ? savedContext.notes.findLast((n) => n?.kind === "web_offer")
+    : null;
   return (
     <div className={`flex gap-3 ${isUser ? "flex-row-reverse" : ""}`}>
       <div
@@ -622,6 +648,18 @@ function MessageBubble({
         )}
         {!isUser && <ReplyStatus message={message} isStreamingNow={isStreamingNow} theme={theme} />}
         {!isUser && <SourceChips notes={message.docContext?.notes} theme={theme} onOpenCitation={onOpenCitation} />}
+        {offer && (offerIsOpen ? (
+          <WebOfferCard
+            theme={theme}
+            reason={offer.reason}
+            query={offer.query}
+            disabled={searchDisabled}
+            onSearch={onWebSearch}
+            onDismiss={onWebDismiss}
+          />
+        ) : (
+          <p className={`text-[10px] italic ${theme.textMuted}`}>Offered a web search</p>
+        ))}
         {toolCalls && toolCalls.length > 0 && (
           <ToolCallsDisclosure
             toolCalls={toolCalls}

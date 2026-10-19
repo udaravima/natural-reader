@@ -344,10 +344,11 @@ describe('ChatView — web sources (C2.1)', () => {
         expect(screen.getByRole('link', { name: 'example.com' })).toBeInTheDocument();
     });
 
-    it('shows nothing for an offer note (the card is Task 18) and keeps the reply normal', () => {
+    it('keeps a reply with an offer note normal: the text, no error, the card beside it (Task 18)', () => {
         renderReply(reply('Not in the files.', { docContext: { notes: [{ kind: 'web_offer', query: 'zephyr release', reason: 'files are silent' }] } }));
         expect(screen.getByText('Not in the files.')).toBeInTheDocument();
-        expect(screen.queryByText(/zephyr release|files are silent/)).toBeNull();
+        expect(screen.getByRole('region', { name: 'Web search offer' })).toHaveTextContent('files are silent');
+        expect(screen.queryByText(/failed|error/i)).toBeNull();
     });
 });
 

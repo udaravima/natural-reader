@@ -280,3 +280,44 @@ describe('remarkCitations — page forms', () => {
         expect(linksIn(nodes)).toEqual([{ text: '(page 4)', page: 4, doc: undefined }]);
     });
 });
+
+// Server/client parity (carried from Task 15, fix round 1): the strings the server's
+// test_cited_pages_counts_exactly_what_the_client_links pins in
+// server/tests/test_chat_sources.py. The server counts a page for a source chip
+// exactly when the client links it, so each row here is that test's row, and
+// `want` is what the client links ([document, page] pairs) where the server's
+// `want` is the same documents and pages. A drift on either side fails one of the two files.
+describe('remarkCitations — parity with the server\'s cited_pages (Task 15)', () => {
+    const G = 'g'.repeat(64);
+    const T = 't'.repeat(64);
+    // The server test's NAMES, in the same order.
+    const SERVER_NAMES = [
+        { name: 'Guide.md', docId: G }, { name: 'Guide.md (2)', docId: 'g2'.repeat(32) },
+        { name: 'Notes, v2 (final).md', docId: 'n'.repeat(64) }, { name: 'Tour.md', docId: T },
+    ];
+    const pairs = (text) => linksIn(run(text, SERVER_NAMES)).map((l) => [l.doc, l.page]);
+
+    it.each([
+        ['(Guide.md, page 3;)', [[G, 3]]],
+        ['(Guide.md, page 3; Tour.md, page 1;)', [[G, 3], [T, 1]]],
+        ['(Guide.md, page 3;; Tour.md, page 1)', [[G, 3], [T, 1]]],
+        ['(Guide.md, page 3; see (fig. 2))', [[G, 3]]],
+        ['(Guide.md, page 3; Other (v2).md, page 2)', [[G, 3]]],
+    ])('one bad item beside a good citation never costs the good one: %s', (text, want) => {
+        expect(pairs(text)).toEqual(want);
+    });
+
+    it('"page3" is no page: the page word needs a space', () => {
+        expect(pairs('(Guide.md, page3)')).toEqual([]);
+        expect(pairs('(Guide.md, pages3)')).toEqual([]);
+        expect(linksIn(run('Look at (page3).'))).toEqual([]);
+    });
+
+    it('a list holding page 0 is no citation at all', () => {
+        expect(pairs('(Guide.md, pages 0-3)')).toEqual([]);
+        expect(pairs('(Guide.md, pages 0 and 4)')).toEqual([]);
+        expect(pairs('(Guide.md, pages 4 and 0)')).toEqual([]);
+        expect(linksIn(run('(pages 0-3)'))).toEqual([]);
+        expect(linksIn(run('Look at (pages 0 and 4).'))).toEqual([]);
+    });
+});

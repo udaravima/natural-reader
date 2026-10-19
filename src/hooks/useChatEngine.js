@@ -420,8 +420,12 @@ export function useChatEngine({
         newSession();
     }, [newSession]);
 
-    const sendMessage = useCallback(async (userText, attachments = []) => {
+    // `options.web = {query}` is the user's yes to a web search the model
+    // offered (C2.1 spec §5.8): it rides in this turn's context only, so the
+    // server runs exactly that search and the next turn asks again.
+    const sendMessage = useCallback(async (userText, attachments = [], options = {}) => {
         const trimmed = (userText || '').trim();
+        const webQuery = typeof options?.web?.query === 'string' ? options.web.query.trim() : '';
         const cleanAttachments = (attachments || []).filter((a) => a && a.kind);
         if (!trimmed && cleanAttachments.length === 0 && pinsRef.current.length === 0) return { sent: false };
         if (isStreaming || sendingRef.current) return { sent: false };
@@ -508,6 +512,7 @@ export function useChatEngine({
                 doc_id: (from.project || from.docEnabled) ? (currentDocId || null) : null,
                 project_id: from.project ? from.project.id : null,
                 timezone: browserTimezone(),
+                ...(webQuery ? { web: { query: webQuery } } : {}),
             },
             // Always sent: the server uses it only when this turn creates the chat
             // (a retry after a first send that failed on the network included).

@@ -580,3 +580,46 @@ describe('useChatEngine — chat scope (C2.1 Task 17)', () => {
         expect(result.current.scope).toEqual({ kind: 'none' });
     });
 });
+
+describe('useChatEngine — an approved web search (C2.1 Task 18)', () => {
+    const lastContext = () => postTurn.mock.calls.at(-1)[0].body.context;
+    const send = async (result, ...args) => {
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        await act(async () => { await result.current.sendMessage(...args); });
+    };
+
+    it('options.web becomes context.web', async () => {
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await send(result, 'Search the web for: zephyr release', [], { web: { query: 'zephyr release' } });
+        expect(lastContext().web).toEqual({ query: 'zephyr release' });
+        // The visible message is what the user sees; the query rides in the context only.
+        expect(postTurn.mock.calls[0][0].body.message.content).toBe('Search the web for: zephyr release');
+        // The scope still goes along with it.
+        expect(lastContext()).toMatchObject({ doc_id: 'a'.repeat(64), project_id: null });
+    });
+
+    it('is for that turn only: the next turn carries no web', async () => {
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await send(result, 'Search the web for: zephyr release', [], { web: { query: 'zephyr release' } });
+        await send(result, 'And what else?');
+        expect(lastContext()).not.toHaveProperty('web');
+    });
+
+    it('a turn with no options, or options without a query, carries no web', async () => {
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await send(result, 'Hi');
+        expect(lastContext()).not.toHaveProperty('web');
+        await send(result, 'Hi', [], {});
+        expect(lastContext()).not.toHaveProperty('web');
+        await send(result, 'Hi', [], { web: { query: '   ' } });
+        expect(lastContext()).not.toHaveProperty('web');
+        await send(result, 'Hi', [], { web: null });
+        expect(lastContext()).not.toHaveProperty('web');
+    });
+
+    it('sends the query trimmed, and nothing else in web (the server refuses extra fields)', async () => {
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await send(result, 'Search the web for: x', [], { web: { query: '  zephyr release  ', extra: 1 } });
+        expect(lastContext().web).toStrictEqual({ query: 'zephyr release' });
+    });
+});
