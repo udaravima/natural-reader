@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { noticeFor, describeRefusal, PROJECT_NOT_FOUND } from './apiErrors';
+import { noticeFor, describeRefusal, refusalMessage, PROJECT_NOT_FOUND } from './apiErrors';
 
 describe('noticeFor', () => {
     it('maps the A0 project refusals', () => {
@@ -56,5 +56,18 @@ describe('chat refusals', () => {
         expect(noticeFor(503, { error: 'db_unavailable', message: 'Chat is offline: the database is unavailable.' }))
             .toBe('Chat is offline: the database is unavailable.');
         expect(noticeFor(503, { error: 'db_unavailable' })).toBe('The database is unavailable. Try again in a moment.');
+    });
+});
+
+describe('refusalMessage', () => {
+    it('reads the message of a refusal body', async () => {
+        const res = { json: async () => ({ detail: { error: 'not_found', message: PROJECT_NOT_FOUND } }) };
+        expect(await refusalMessage(res)).toBe(PROJECT_NOT_FOUND);
+    });
+
+    it('is null for a string detail, no message, or an unreadable body', async () => {
+        expect(await refusalMessage({ json: async () => ({ detail: 'Not Found' }) })).toBeNull();
+        expect(await refusalMessage({ json: async () => ({ detail: { error: 'x' } }) })).toBeNull();
+        expect(await refusalMessage({ json: async () => { throw new Error('not json'); } })).toBeNull();
     });
 });

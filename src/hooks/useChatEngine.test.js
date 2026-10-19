@@ -339,6 +339,9 @@ describe('useChatEngine — chat scope (C2.1 Task 17)', () => {
         await act(async () => { await result.current.sendMessage(text); });
     };
     const lastContext = () => postTurn.mock.calls.at(-1)[0].body.context;
+    // The server's own words for "no such project" (server/auth/authz.py PROJECT_NOT_FOUND).
+    const PROJECT_GONE = refusal(404, { error: 'not_found', message: "This project doesn't exist or you don't have access." });
+    const CHAT_GONE = refusal(404, { error: 'not_found', message: "This chat doesn't exist or you don't have access." });
 
     it('sends project_id and the open doc in project scope', async () => {
         const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
@@ -363,7 +366,7 @@ describe('useChatEngine — chat scope (C2.1 Task 17)', () => {
     });
 
     it('a 404 in project scope clears the scope and warns', async () => {
-        postTurn.mockResolvedValue(refusal(404, { error: 'not_found', message: 'Gone.' }));
+        postTurn.mockResolvedValue(PROJECT_GONE);
         const props = baseProps({ userId: 'u1' });
         const { result } = renderHook(() => useChatEngine(props));
         act(() => result.current.startProjectChat(Q3));
@@ -379,7 +382,7 @@ describe('useChatEngine — chat scope (C2.1 Task 17)', () => {
         expect(lastContext()).toMatchObject({ project_id: null, doc_id: null });
     });
 
-    it('a 404 in an existing project chat clears that chat\'s scope for good', async () => {
+    it('a 404 in an existing project chat clears that chat\'s scope for good, before the list is re-read', async () => {
         store.getRecentSessions.mockResolvedValue([meta('s1', Q3)]);
         store.getSession.mockResolvedValue(record('s1'));
         const props = baseProps({ userId: 'u1' });
@@ -387,12 +390,42 @@ describe('useChatEngine — chat scope (C2.1 Task 17)', () => {
         await waitFor(() => expect(result.current.sessions).toHaveLength(1));
         await act(async () => { await result.current.switchToSession('s1'); });
         expect(result.current.scope.kind).toBe('project');
-        postTurn.mockResolvedValue(refusal(404, { error: 'not_found', message: 'Gone.' }));
-        store.getRecentSessions.mockResolvedValue([meta('s1', null)]);   // the server cleared it
+        postTurn.mockResolvedValue(PROJECT_GONE);
+        // The refreshed list is slow: the scope must not wait for it. (The list still says "project" meanwhile.)
+        let listArrives;
+        store.getRecentSessions.mockImplementation(() => new Promise((resolve) => { listArrives = resolve; }));
         await act(async () => { await result.current.sendMessage('Hi'); });
         expect(props.showToast).toHaveBeenCalledWith("This project doesn't exist or you don't have access.", 5000);
         expect(result.current.scope).toEqual({ kind: 'none' });
         expect(result.current.activeSessionId).toBe('s1');
+        // When the list does arrive, the server has cleared the scope: still none.
+        await act(async () => { listArrives([meta('s1', null)]); });
+        expect(result.current.scope).toEqual({ kind: 'none' });
+        // And the next turn is a general chat.
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        await act(async () => { await result.current.sendMessage('Again'); });
+        expect(lastContext()).toMatchObject({ project_id: null, doc_id: null });
+    });
+
+    it('a 404 that is not about the project keeps the project scope and shows the usual error', async () => {
+        postTurn.mockResolvedValue(CHAT_GONE);
+        const props = baseProps({ userId: 'u1' });
+        const { result } = renderHook(() => useChatEngine(props));
+        act(() => result.current.startProjectChat(Q3));
+        await act(async () => { await result.current.sendMessage('Hi'); });
+        expect(props.showToast).toHaveBeenCalledWith("This chat doesn't exist or you don't have access.", 5000);
+        expect(props.showToast).not.toHaveBeenCalledWith("This project doesn't exist or you don't have access.", 5000);
+        expect(result.current.scope).toEqual({ kind: 'project', project: Q3 });   // the pending project is kept
+    });
+
+    it('a 404 with no readable body is not taken for a missing project', async () => {
+        postTurn.mockResolvedValue({ ok: false, status: 404, json: async () => { throw new Error('not json'); }, clone() { return this; } });
+        const props = baseProps({ userId: 'u1' });
+        const { result } = renderHook(() => useChatEngine(props));
+        act(() => result.current.startProjectChat(Q3));
+        await act(async () => { await result.current.sendMessage('Hi'); });
+        expect(props.showToast).not.toHaveBeenCalledWith("This project doesn't exist or you don't have access.", 5000);
+        expect(result.current.scope.kind).toBe('project');
     });
 
     it('a 404 without a project scope keeps the chat notice', async () => {

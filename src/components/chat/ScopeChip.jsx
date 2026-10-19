@@ -9,7 +9,7 @@ const labelOf = (scope, openDocName) => {
     return 'No document';
 };
 
-const menuItems = (menu) => [...(menu?.querySelectorAll('[role="menuitem"]') ?? [])];
+const menuItems = (menu) => [...(menu?.querySelectorAll('[role^="menuitem"]') ?? [])];
 
 const TITLES = {
     none: "The assistant won't read a document in this chat.",
@@ -21,6 +21,8 @@ const TITLES = {
  * What this chat is about (C2.1 spec §6): no document, the open document, or
  * a project. A menu button — Enter, Space or the arrow keys open it, the
  * arrows move, Escape closes it. Replaces the "Use this document" switch.
+ * The scopes are radio items (one is checked); "Choose a project…" is a plain
+ * item that opens the list.
  *
  * `scope` is {kind: 'none'|'document'|'project', project?: {id, name}}; a
  * project whose `name` is null is one the reader can no longer see. Names are
@@ -49,7 +51,7 @@ export default function ScopeChip({
     useEffect(() => {
         if (!open) return;
         const all = menuItems(menuRef.current);
-        (all.find((el) => el.getAttribute('aria-current') === 'true') ?? all[0])?.focus();
+        (all.find((el) => el.getAttribute('aria-checked') === 'true') ?? all[0])?.focus();
     }, [open]);
 
     useEffect(() => {
@@ -78,6 +80,11 @@ export default function ScopeChip({
     };
 
     const onKeyDown = (e) => {
+        // In the reader, Space (play/pause) and Escape (stop) are narration
+        // shortcuts on window. Keep them off the chip and its menu: Space opens
+        // or picks (the button's own click still fires; nothing preventDefaults
+        // it), Escape closes the menu.
+        if (e.key === ' ' || e.key === 'Enter' || e.key === 'Escape') e.stopPropagation();
         if (!open) {
             if (e.target === buttonRef.current && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
                 e.preventDefault();
@@ -105,7 +112,7 @@ export default function ScopeChip({
 
     const isProject = (id) => scope.kind === 'project' && scope.project?.id === id;
     const projectItem = (p) => (
-        <Item key={p.id} theme={theme} current={isProject(p.id)} icon={<Folder size={12} />}
+        <Item key={p.id} radio theme={theme} current={isProject(p.id)} icon={<Folder size={12} />}
             onSelect={() => pick({ kind: 'project', project: { id: p.id, name: p.name } })}>
             {p.name}
         </Item>
@@ -134,11 +141,11 @@ export default function ScopeChip({
             {open && (
                 <div className={`absolute left-0 bottom-full mb-1 z-30 w-72 max-w-[calc(100vw-2rem)] max-h-72 overflow-y-auto rounded-xl border shadow-lg p-1 ${theme.border} ${theme.bgSecondary}`}>
                     <div ref={menuRef} id={menuId} role="menu" aria-label="What this chat is about" className="flex flex-col">
-                        <Item theme={theme} current={scope.kind === 'none'} icon={<FileX size={12} />} onSelect={() => pick({ kind: 'none' })}>
+                        <Item radio theme={theme} current={scope.kind === 'none'} icon={<FileX size={12} />} onSelect={() => pick({ kind: 'none' })}>
                             No document
                         </Item>
                         {openDocName && (
-                            <Item theme={theme} current={scope.kind === 'document'} icon={<FileText size={12} />} onSelect={() => pick({ kind: 'document' })}>
+                            <Item radio theme={theme} current={scope.kind === 'document'} icon={<FileText size={12} />} onSelect={() => pick({ kind: 'document' })}>
                                 {`This document: ${openDocName}${oldVersion}`}
                             </Item>
                         )}
@@ -158,13 +165,14 @@ export default function ScopeChip({
     );
 }
 
-function Item({ theme, current = false, icon = null, onSelect, children }) {
+// `radio`: one of the scopes (aria-checked says which is current); else an action.
+function Item({ theme, radio = false, current = false, icon = null, onSelect, children }) {
     return (
         <button
             type="button"
-            role="menuitem"
+            role={radio ? 'menuitemradio' : 'menuitem'}
             tabIndex={-1}
-            aria-current={current ? 'true' : undefined}
+            aria-checked={radio ? current : undefined}
             onClick={onSelect}
             className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left text-[11px] outline-none hover:bg-blue-500/10 focus:bg-blue-500/15 focus:ring-1 focus:ring-inset focus:ring-blue-500 ${theme.text} ${current ? 'font-bold' : ''}`}
         >

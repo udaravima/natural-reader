@@ -104,7 +104,7 @@ describe('project chat, start to finish (C2.1 Task 17)', () => {
 
         // Leaving the project from the chip sends project_id null on the next turn.
         fireEvent.click(screen.getByRole('button', { name: 'Project: Q3 Audit' }));
-        fireEvent.click(screen.getByRole('menuitem', { name: 'No document' }));
+        fireEvent.click(screen.getByRole('menuitemradio', { name: 'No document' }));
         expect(screen.getByRole('button', { name: 'No document' })).toBeInTheDocument();
         await user.type(screen.getByRole('textbox'), 'And in general?{Enter}');
         await waitFor(() => expect(postTurn).toHaveBeenCalledTimes(2));
@@ -118,10 +118,10 @@ describe('project chat, start to finish (C2.1 Task 17)', () => {
         fireEvent.click(await screen.findByRole('button', { name: 'Open project Q3 Audit' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Ask about this project' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Project: Q3 Audit' }));
-        fireEvent.click(screen.getByRole('menuitem', { name: 'No document' }));
+        fireEvent.click(screen.getByRole('menuitemradio', { name: 'No document' }));
         fireEvent.click(screen.getByRole('button', { name: 'No document' }));
         fireEvent.click(screen.getByRole('menuitem', { name: 'Choose a project…' }));
-        fireEvent.click(await screen.findByRole('menuitem', { name: 'Q3 Audit' }));
+        fireEvent.click(await screen.findByRole('menuitemradio', { name: 'Q3 Audit' }));
         await user.type(screen.getByRole('textbox'), 'Hello{Enter}');
         await waitFor(() => expect(postTurn).toHaveBeenCalledTimes(1));
         expect(postTurn.mock.calls[0][0].body.context).toMatchObject({ project_id: 'p1', doc_id: null });

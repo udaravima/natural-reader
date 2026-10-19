@@ -51,6 +51,20 @@ export function noticeFor(status, detail, { notFound, tooLarge, serverNotFound }
     return `Request failed (HTTP ${status}).`;
 }
 
+/**
+ * The `message` of a refusal body ({ detail: { error, message } }), or null
+ * when there is none or the body isn't JSON. Reads the body: pass a clone if
+ * the response is still wanted (describeRefusal).
+ */
+export async function refusalMessage(res) {
+    try {
+        const detail = (await res.json())?.detail;
+        return detail && typeof detail === 'object' ? (detail.message ?? null) : null;
+    } catch {
+        return null;
+    }
+}
+
 export async function describeRefusal(res, options = {}) {
     let detail = null;
     try {

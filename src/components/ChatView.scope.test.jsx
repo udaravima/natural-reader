@@ -33,7 +33,7 @@ describe('ChatView — the scope chip (C2.1 Task 17; was "Use this document", v2
         const setScope = vi.fn();
         render(<ChatView {...props({ openDocName: 'Thesis.pdf', scope: { kind: 'document' }, setScope })} />);
         fireEvent.click(chip());
-        fireEvent.click(screen.getByRole('menuitem', { name: 'No document' }));
+        fireEvent.click(screen.getByRole('menuitemradio', { name: 'No document' }));
         expect(setScope).toHaveBeenCalledWith({ kind: 'none' });
     });
 
@@ -41,14 +41,14 @@ describe('ChatView — the scope chip (C2.1 Task 17; was "Use this document", v2
         render(<ChatView {...props({ openDocName: 'Thesis.pdf', scope: { kind: 'none' } })} />);
         expect(chip().textContent).toBe('No document');
         fireEvent.click(chip());
-        expect(screen.getByRole('menuitem', { name: 'This document: Thesis.pdf' })).toBeInTheDocument();
+        expect(screen.getByRole('menuitemradio', { name: 'This document: Thesis.pdf' })).toBeInTheDocument();
     });
 
     it('turns the document back on from the menu', () => {
         const setScope = vi.fn();
         render(<ChatView {...props({ openDocName: 'Thesis.pdf', scope: { kind: 'none' }, setScope })} />);
         fireEvent.click(chip());
-        fireEvent.click(screen.getByRole('menuitem', { name: 'This document: Thesis.pdf' }));
+        fireEvent.click(screen.getByRole('menuitemradio', { name: 'This document: Thesis.pdf' }));
         expect(setScope).toHaveBeenCalledWith({ kind: 'document' });
     });
 
@@ -56,7 +56,7 @@ describe('ChatView — the scope chip (C2.1 Task 17; was "Use this document", v2
         const setScope = vi.fn();
         render(<ChatView {...props({ openDocName: 'Thesis.pdf', openDocProjects: [{ id: 'p1', name: 'Q3 Audit' }], setScope })} />);
         fireEvent.click(chip());
-        fireEvent.click(screen.getByRole('menuitem', { name: 'Q3 Audit' }));
+        fireEvent.click(screen.getByRole('menuitemradio', { name: 'Q3 Audit' }));
         expect(setScope).toHaveBeenCalledWith({ kind: 'project', project: { id: 'p1', name: 'Q3 Audit' } });
     });
 

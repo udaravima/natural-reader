@@ -39,10 +39,42 @@ export function useChatScope({ docUse, activeSessionId, activeSession, hasDoc })
         docUse.setEnabled(next.kind === 'document');
     }, [activeSessionId, docUse]);
 
-    // Pin a chat's project (null: none), whatever chat is on screen: a new
-    // chat taking its session id, a fork taking its parent's, a refused first
-    // send putting the choice back, a 404 clearing it.
+    // Pin a chat's project (null: none), whatever chat is on screen: a new chat
+    // clearing the last one's, "Ask about this project" holding one for the new
+    // chat, an opened chat's stored project. Only the project changes; the
+    // operations below change the document's choice with it.
     const hold = useCallback((sessionId, next) => setHeld({ sessionId, project: next }), []);
 
-    return useMemo(() => ({ scope, project, setScope, hold }), [scope, project, setScope, hold]);
+    // --- A turn's life. The two stores (project here, document in useDocUse) change together, in one place each. ---
+
+    // What this chat has now, read once before a send, while its session id can
+    // still change (a new chat, a fork): { project, docEnabled }.
+    const read = useCallback((sessionId) => ({ project, docEnabled: docUse.enabledFor(sessionId) }), [project, docUse]);
+
+    // A new chat, or a browser-only chat forked to the server, takes the scope
+    // of the chat it was sent from (`from`, from read()).
+    const adopt = useCallback((sessionId, from) => {
+        docUse.adopt(sessionId, from.docEnabled);
+        setHeld({ sessionId, project: from.project });
+    }, [docUse]);
+
+    // A refused first send: the new chat never existed, so its scope goes back
+    // to being the person's pending choice (adopt() had reset the document's).
+    const restore = useCallback((from) => {
+        docUse.setEnabledFor(null, from.docEnabled);
+        setHeld({ sessionId: null, project: from.project });
+    }, [docUse]);
+
+    // The server refused the chat's project (404) and cleared its stored scope:
+    // mirror it, so the chat is a general one with no document. `sessionId`
+    // null is the new chat.
+    const clearProject = useCallback((sessionId) => {
+        setHeld({ sessionId, project: null });
+        docUse.setEnabledFor(sessionId, false);
+    }, [docUse]);
+
+    return useMemo(
+        () => ({ scope, setScope, hold, read, adopt, restore, clearProject }),
+        [scope, setScope, hold, read, adopt, restore, clearProject],
+    );
 }

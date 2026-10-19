@@ -15,6 +15,8 @@ function mount(over = {}) {
     };
     return { props, ...render(<ScopeChip {...props} />) };
 }
+// Every item of the open menu, whatever its menuitem role (scopes are radios, Choose a project… is a plain item).
+const menuItems = () => [...screen.getByRole('menu').querySelectorAll('[role^="menuitem"]')];
 const chip = () => screen.getByRole('button', { name: /No document|This document|Project/ });
 
 describe('ScopeChip', () => {
@@ -45,14 +47,14 @@ describe('ScopeChip', () => {
     it('offers no document, the open document, and its projects', () => {
         mount({ openDocName: 'Thesis.pdf', openDocProjects: [{ id: 'p1', name: 'Q3 Audit' }, { id: 'p2', name: 'Board' }] });
         fireEvent.click(chip());
-        const names = screen.getAllByRole('menuitem').map((i) => i.textContent);
+        const names = menuItems().map((i) => i.textContent);
         expect(names).toEqual(['No document', 'This document: Thesis.pdf', 'Q3 Audit', 'Board', 'Choose a project…']);
     });
 
     it("offers the open document's projects, and choosing one reports that project", () => {
         const { props } = mount({ openDocName: 'Thesis.pdf', openDocProjects: [{ id: 'p1', name: 'Q3 Audit' }] });
         fireEvent.click(chip());
-        fireEvent.click(screen.getByRole('menuitem', { name: 'Q3 Audit' }));
+        fireEvent.click(screen.getByRole('menuitemradio', { name: 'Q3 Audit' }));
         expect(props.onChange).toHaveBeenCalledWith({ kind: 'project', project: { id: 'p1', name: 'Q3 Audit' } });
         expect(screen.queryByRole('menu')).toBeNull();
     });
@@ -60,17 +62,17 @@ describe('ScopeChip', () => {
     it('offers "This document" only when a document is open', () => {
         mount({ openDocName: null });
         fireEvent.click(chip());
-        expect(screen.queryByRole('menuitem', { name: /This document/ })).toBeNull();
-        expect(screen.getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['No document', 'Choose a project…']);
+        expect(screen.queryByRole('menuitemradio', { name: /This document/ })).toBeNull();
+        expect(menuItems().map((i) => i.textContent)).toEqual(['No document', 'Choose a project…']);
     });
 
     it('reports the document and none scopes', () => {
         const { props } = mount({ scope: project('Q3 Audit'), openDocName: 'Thesis.pdf' });
         fireEvent.click(chip());
-        fireEvent.click(screen.getByRole('menuitem', { name: 'This document: Thesis.pdf' }));
+        fireEvent.click(screen.getByRole('menuitemradio', { name: 'This document: Thesis.pdf' }));
         expect(props.onChange).toHaveBeenLastCalledWith({ kind: 'document' });
         fireEvent.click(chip());
-        fireEvent.click(screen.getByRole('menuitem', { name: 'No document' }));
+        fireEvent.click(screen.getByRole('menuitemradio', { name: 'No document' }));
         expect(props.onChange).toHaveBeenLastCalledWith({ kind: 'none' });
     });
 
@@ -79,11 +81,20 @@ describe('ScopeChip', () => {
         expect(chip().textContent).toBe('This document: Thesis.pdf · v2 (old version)');
     });
 
-    it('marks the current scope in the menu', () => {
-        mount({ scope: DOC, openDocName: 'Thesis.pdf' });
+    it('marks the current scope as the checked radio item, and Choose a project… as a plain item', () => {
+        mount({ scope: DOC, openDocName: 'Thesis.pdf', openDocProjects: [{ id: 'p1', name: 'Q3 Audit' }] });
         fireEvent.click(chip());
-        expect(screen.getByRole('menuitem', { name: 'This document: Thesis.pdf' }).getAttribute('aria-current')).toBe('true');
-        expect(screen.getByRole('menuitem', { name: 'No document' }).getAttribute('aria-current')).toBeNull();
+        expect(screen.getByRole('menuitemradio', { name: 'This document: Thesis.pdf' }).getAttribute('aria-checked')).toBe('true');
+        expect(screen.getByRole('menuitemradio', { name: 'No document' }).getAttribute('aria-checked')).toBe('false');
+        expect(screen.getByRole('menuitemradio', { name: 'Q3 Audit' }).getAttribute('aria-checked')).toBe('false');
+        expect(screen.getByRole('menuitem', { name: 'Choose a project…' }).hasAttribute('aria-checked')).toBe(false);
+        expect(document.querySelector('[aria-current]')).toBeNull();
+    });
+
+    it('checks the open document\'s project when it is the scope', () => {
+        mount({ scope: project('Q3 Audit'), openDocName: 'Thesis.pdf', openDocProjects: [{ id: 'p1', name: 'Q3 Audit' }] });
+        fireEvent.click(chip());
+        expect(screen.getByRole('menuitemradio', { name: 'Q3 Audit' }).getAttribute('aria-checked')).toBe('true');
     });
 
     it('renders names as text, never as HTML', () => {
@@ -91,8 +102,8 @@ describe('ScopeChip', () => {
         mount({ scope: project(evil), openDocName: '<b>Bold</b>.pdf', openDocProjects: [{ id: 'p9', name: '<i>Hi</i>' }] });
         expect(chip().textContent).toBe(`Project: ${evil}`);
         fireEvent.click(chip());
-        expect(screen.getByRole('menuitem', { name: '<i>Hi</i>' })).toBeInTheDocument();
-        expect(screen.getByRole('menuitem', { name: 'This document: <b>Bold</b>.pdf' })).toBeInTheDocument();
+        expect(screen.getByRole('menuitemradio', { name: '<i>Hi</i>' })).toBeInTheDocument();
+        expect(screen.getByRole('menuitemradio', { name: 'This document: <b>Bold</b>.pdf' })).toBeInTheDocument();
         expect(document.querySelector('img, i, b')).toBeNull();
     });
 
@@ -104,8 +115,8 @@ describe('ScopeChip', () => {
             expect(loadProjects).not.toHaveBeenCalled();
             fireEvent.click(screen.getByRole('menuitem', { name: 'Choose a project…' }));
             expect(loadProjects).toHaveBeenCalledTimes(1);
-            const board = await screen.findByRole('menuitem', { name: 'Board' });
-            expect(screen.getByRole('menuitem', { name: 'Q3 Audit' })).toBeInTheDocument();
+            const board = await screen.findByRole('menuitemradio', { name: 'Board' });
+            expect(screen.getByRole('menuitemradio', { name: 'Q3 Audit' })).toBeInTheDocument();
             fireEvent.click(board);
             expect(props.onChange).toHaveBeenCalledWith({ kind: 'project', project: { id: 'p2', name: 'Board' } });
             expect(screen.queryByRole('menu')).toBeNull();
@@ -119,7 +130,7 @@ describe('ScopeChip', () => {
             fireEvent.click(screen.getByRole('menuitem', { name: 'Choose a project…' }));
             expect(screen.getByText('Loading projects…')).toBeInTheDocument();
             finish([{ id: 'p1', name: 'Q3 Audit' }]);
-            await screen.findByRole('menuitem', { name: 'Q3 Audit' });
+            await screen.findByRole('menuitemradio', { name: 'Q3 Audit' });
             expect(screen.queryByText('Loading projects…')).toBeNull();
         });
 
@@ -140,7 +151,7 @@ describe('ScopeChip', () => {
             expect(await screen.findByText("Couldn't load projects.")).toBeInTheDocument();
             fireEvent.click(screen.getByRole('menuitem', { name: 'Choose a project…' }));
             expect(loadProjects).toHaveBeenCalledTimes(2);
-            expect(await screen.findByRole('menuitem', { name: 'Q3 Audit' })).toBeInTheDocument();
+            expect(await screen.findByRole('menuitemradio', { name: 'Q3 Audit' })).toBeInTheDocument();
             expect(screen.queryByText("Couldn't load projects.")).toBeNull();
         });
 
@@ -153,7 +164,7 @@ describe('ScopeChip', () => {
             fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
             finish([{ id: 'p1', name: 'Q3 Audit' }]);
             fireEvent.click(chip());
-            expect(screen.queryByRole('menuitem', { name: 'Q3 Audit' })).toBeNull();   // a fresh menu starts from the top
+            expect(screen.queryByRole('menuitemradio', { name: 'Q3 Audit' })).toBeNull();   // a fresh menu starts from the top
             expect(screen.queryByText('Loading projects…')).toBeNull();
         });
     });
@@ -166,7 +177,7 @@ describe('ScopeChip', () => {
             expect(chip()).toHaveFocus();
             await user.keyboard('{Enter}');
             expect(chip().getAttribute('aria-expanded')).toBe('true');
-            const items = screen.getAllByRole('menuitem');
+            const items = menuItems();
             expect(items[0]).toHaveFocus();
             await user.keyboard('{ArrowDown}');
             expect(items[1]).toHaveFocus();
@@ -200,7 +211,7 @@ describe('ScopeChip', () => {
             await user.tab();
             await user.keyboard('{ArrowDown}');
             expect(screen.getByRole('menu')).toBeInTheDocument();
-            expect(screen.getAllByRole('menuitem')[0]).toHaveFocus();
+            expect(menuItems()[0]).toHaveFocus();
         });
 
         it('Escape closes the menu without choosing, and returns focus to the chip', async () => {
@@ -220,7 +231,7 @@ describe('ScopeChip', () => {
             mount({ scope: DOC, openDocName: 'Thesis.pdf' });
             await user.tab();
             await user.keyboard('{Enter}');
-            expect(screen.getByRole('menuitem', { name: 'This document: Thesis.pdf' })).toHaveFocus();
+            expect(screen.getByRole('menuitemradio', { name: 'This document: Thesis.pdf' })).toHaveFocus();
         });
 
         it('arrow keys reach the projects that Choose a project… loads', async () => {
@@ -228,7 +239,7 @@ describe('ScopeChip', () => {
             mount({ loadProjects: vi.fn(async () => [{ id: 'p1', name: 'Q3 Audit' }]) });
             await user.tab();
             await user.keyboard('{Enter}{ArrowDown}{Enter}');   // No document → Choose a project…
-            const loaded = await screen.findByRole('menuitem', { name: 'Q3 Audit' });
+            const loaded = await screen.findByRole('menuitemradio', { name: 'Q3 Audit' });
             expect(screen.getByRole('menuitem', { name: 'Choose a project…' })).toHaveFocus();   // the menu stays put
             await user.keyboard('{ArrowDown}');
             expect(loaded).toHaveFocus();
