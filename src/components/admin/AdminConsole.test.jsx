@@ -22,8 +22,11 @@ const user = (over = {}) => ({
 // enrollResponse(created) lets a test opt into the current
 // { user, onboarding, temp_password? } POST contract; by default the mock
 // returns the raw created-user row (the shape older/simpler tests assert on).
-function mount({ users, usage = [], config = {}, showToast = vi.fn(), currentUserId = 'me', enrollResponse } = {}) {
+// extra(path, opts) answers routes of its own first (undefined = fall through).
+function mount({ users, usage = [], config = {}, showToast = vi.fn(), currentUserId = 'me', enrollResponse, extra } = {}) {
   apiFetch.mockImplementation(async (host, port, path, opts) => {
+    const answered = extra?.(path, opts);   // a test's own routes (chat options, the assistant) win
+    if (answered) return answered;
     if (path === '/v1/admin/users' && opts?.method === 'POST') {
       const body = JSON.parse(opts.body);
       if (users.some((u) => u.email === body.email)) return json(409, { detail: 'email already exists' });
@@ -322,5 +325,41 @@ describe('AdminConsole — assistant profile', () => {
   it('has an Assistant section (v2.4 Task A2)', async () => {
     mount({ users: [user()] });
     expect(await screen.findByRole('region', { name: 'Assistant' })).toBeTruthy();
+  });
+});
+
+describe('AdminConsole — chat options', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const assistantView = (preview) => ({ text: '', source: 'none', fileConfigured: false, maxChars: 8000, preview, warnings: [] });
+
+  it('has a Chat options section after the Assistant section', async () => {
+    mount({ users: [user()] });
+    const assistant = await screen.findByRole('region', { name: 'Assistant' });
+    const options = await screen.findByRole('region', { name: 'Chat options' });
+    expect(assistant.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('a saved web search mode refreshes what the model receives', async () => {
+    let mode = { web_search: 'ask', source: 'default', searxng: true };
+    mount({
+      users: [user()],
+      extra: (path, opts) => {
+        if (path === '/v1/admin/chat-options' && opts?.method === 'PUT') {
+          mode = { ...mode, web_search: JSON.parse(opts.body).web_search, source: 'admin' };
+          return json(200, mode);
+        }
+        if (path === '/v1/admin/chat-options') return json(200, mode);
+        if (path === '/v1/admin/assistant') {
+          return json(200, assistantView(mode.web_search === 'auto' ? 'Rules: web_search, read_web_pages.' : 'Rules: offer_web_search.'));
+        }
+        return undefined;
+      },
+    });
+    fireEvent.click(await screen.findByText('What the model receives'));
+    expect(await screen.findByText('Rules: offer_web_search.')).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('radio', { name: 'Search without asking' }));
+    expect(await screen.findByText('Rules: web_search, read_web_pages.')).toBeInTheDocument();
+    expect(screen.queryByText('Rules: offer_web_search.')).toBeNull();
   });
 });

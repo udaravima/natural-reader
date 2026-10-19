@@ -6,6 +6,7 @@ empty text does."""
 from __future__ import annotations
 
 import logging
+import re
 
 import httpx
 import pytest
@@ -175,3 +176,48 @@ async def test_an_anonymous_request_gets_401_on_get_and_put(db_conn):
         assert (await client.get("/v1/admin/chat-options")).status_code == 401
         assert (await client.put("/v1/admin/chat-options", json={"web_search": "off"})).status_code == 401
     assert await load_chat_options(db_conn, {}) == ChatOptions("ask", "default")
+
+
+# ---------- the assistant preview follows the mode (C2.1 Task 19) ----------
+
+def _names(preview: str) -> set[str]:
+    """The chat tools the preview names. \\b keeps "web_search" from matching inside "offer_web_search"."""
+    every = ("search_documents", "read_document_pages", "extract_from_documents", "document_outline",
+             "web_search", "read_web_pages", "offer_web_search")
+    return {name for name in every if re.search(rf"\b{name}\b", preview)}
+
+
+_DOCUMENT_TOOLS = {"search_documents", "read_document_pages", "extract_from_documents"}
+
+
+@pytest.mark.parametrize("mode, web_tools", [("auto", {"web_search", "read_web_pages"}),
+                                             ("ask", {"offer_web_search"}),
+                                             ("off", set())])
+async def test_the_assistant_preview_names_the_web_tools_of_the_mode(db_conn, mode, web_tools):
+    """The preview is what a real document-scope turn would get: the document tools (document_outline is for
+    project chats), and the web tools of the deployment's mode. Never web_search beside the offer sentence."""
+    admin = await _principal(db_conn, "s1", "a@x.io", "admin")
+    async with _client(_app(db_conn, admin)) as client:
+        await client.put("/v1/admin/chat-options", json={"web_search": mode})
+        preview = (await client.get("/v1/admin/assistant")).json()["preview"]
+        assert _names(preview) == _DOCUMENT_TOOLS | web_tools
+
+
+@pytest.mark.parametrize("mode", ["auto", "ask", "off"])
+async def test_the_assistant_preview_has_no_web_tool_without_searxng(db_conn, monkeypatch, mode):
+    admin = await _principal(db_conn, "s1", "a@x.io", "admin")
+    monkeypatch.setattr(web_search_service, "SEARXNG_URL", "")
+    async with _client(_app(db_conn, admin)) as client:
+        await client.put("/v1/admin/chat-options", json={"web_search": mode})
+        preview = (await client.get("/v1/admin/assistant")).json()["preview"]
+    assert _names(preview) == _DOCUMENT_TOOLS
+
+
+async def test_the_assistant_preview_follows_the_environment_when_the_admin_has_not_chosen(db_conn, monkeypatch):
+    admin = await _principal(db_conn, "s1", "a@x.io", "admin")
+    monkeypatch.setenv("CHAT_WEB_SEARCH", "auto")
+    async with _client(_app(db_conn, admin)) as client:
+        assert "web_search" in _names((await client.get("/v1/admin/assistant")).json()["preview"])
+        monkeypatch.delenv("CHAT_WEB_SEARCH")
+        assert _names((await client.get("/v1/admin/assistant")).json()["preview"]) \
+            == _DOCUMENT_TOOLS | {"offer_web_search"}

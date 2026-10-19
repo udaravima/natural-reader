@@ -67,6 +67,43 @@ describe('AssistantProfileSection', () => {
     expect(screen.getByText(/You are working in Natural Reader/)).toBeTruthy();
   });
 
+  it('fetches the preview again when refreshKey changes, and keeps what is being typed', async () => {
+    let preview = 'Rules with the offer sentence.';
+    apiFetch.mockImplementation(async () => json(200, view({ text: 'Be brief.', source: 'admin', preview })));
+    const props = { theme, apiHost: '', apiPort: '', showToast: vi.fn() };
+    const { rerender } = render(<AssistantProfileSection {...props} refreshKey={0} />);
+    fireEvent.click(await screen.findByText('What the model receives'));
+    expect(screen.getByText('Rules with the offer sentence.')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('Assistant profile'), { target: { value: 'Be brief. And kind.' } });
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+
+    preview = 'Rules with web_search.';
+    rerender(<AssistantProfileSection {...props} refreshKey={1} />);
+    expect(await screen.findByText('Rules with web_search.')).toBeTruthy();
+    expect(apiFetch).toHaveBeenCalledTimes(2);
+    expect(screen.getByLabelText('Assistant profile').value).toBe('Be brief. And kind.');   // unsaved text survives
+    expect(screen.getByRole('button', { name: 'Save' }).disabled).toBe(false);
+  });
+
+  it('does not fetch again while refreshKey stays the same', async () => {
+    mount(view());
+    await screen.findByLabelText('Assistant profile');
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the old preview when a refresh fails', async () => {
+    let ok = true;
+    apiFetch.mockImplementation(async () => (ok ? json(200, view({ preview: 'First preview.' })) : json(500, {})));
+    const props = { theme, apiHost: '', apiPort: '', showToast: vi.fn() };
+    const { rerender } = render(<AssistantProfileSection {...props} refreshKey={0} />);
+    fireEvent.click(await screen.findByText('What the model receives'));
+    ok = false;
+    rerender(<AssistantProfileSection {...props} refreshKey={1} />);
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+    expect(screen.getByText('First preview.')).toBeTruthy();
+    expect(screen.queryByText(/Couldn't load the assistant profile/)).toBeNull();
+  });
+
   it('says so when the profile cannot be loaded', async () => {
     apiFetch.mockResolvedValue(json(500, {}));
     render(<AssistantProfileSection theme={theme} apiHost="" apiPort="" showToast={vi.fn()} />);

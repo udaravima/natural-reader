@@ -403,16 +403,21 @@ class AssistantProfileIn(BaseModel):
 async def _assistant_view(conn) -> dict:
     """What the admin console shows: the profile, where it comes from, and
     the full system message a sample turn would get (an indexed 10-page
-    document, every tool, no pins), so an admin sees the profile next to the
-    app's rules before users do."""
+    document, no pins, the tools that turn is offered under the deployment's
+    web search mode), so an admin sees the profile next to the app's rules
+    before users do."""
     from ..chat.context import today_line
     from ..chat.prompt import system_rules
-    from ..chat.tools import REGISTRY
+    from ..chat.tools import ToolContext, available_tools
     from ..services.doc_search import ReadableDoc
 
     profile = await assistant_profile.load_profile(conn)
     sample = ReadableDoc("0" * 64, "Example.pdf", "indexed", 10)
-    preview = system_rules(sample, REGISTRY, has_pins=False, profile=profile.text,
+    # The same call a real document chat makes (chat/orchestrator.py), so the preview can't show a combination
+    # no turn has (web_search beside the offer sentence); a project chat's document_outline isn't offered.
+    options = await chat_options.load_chat_options(conn)
+    offered = available_tools(ToolContext("", sample, web_mode=options.web_search))
+    preview = system_rules(sample, offered, has_pins=False, profile=profile.text,
                            today=today_line(datetime.now(timezone.utc), "UTC"))
     # `text` is the effective profile, from the file too: the editor starts
     # from it, and saving it unchanged is the console's job to skip.
