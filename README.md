@@ -906,8 +906,8 @@ python scripts/eval_doc_qa.py --model ollama:llama3.2:3b
 
 The backend logs to **both the console and a size-rotating file** at
 `logs/server.log` (10 MB × 5 backups; `logs/` is gitignored). This captures TTS,
-chat, embedding, and `web_search` activity — including SSRF blocks and per-page
-fetch/summary fallbacks. Tune it with env vars (see `.env.example`):
+chat, embedding, and `web_search` activity — including SSRF blocks, failed or
+slow page fetches, and the reader's failed or timed-out calls and dropped facts (counts and error types, never page text). Tune it with env vars (see `.env.example`):
 
 | Var | Default | Controls |
 |-----|---------|----------|

@@ -488,9 +488,23 @@ Three things arrive together, and each has a knob a deployer may care about.
 
 ### Settings
 
-Every value is an environment variable, read at startup unless noted. One that
-is not a number, or is outside its range, logs a warning and the default is
-used. All of them are in [`../.env.example`](../.env.example).
+Every value is an environment variable, read at startup unless noted. All of
+them are in [`../.env.example`](../.env.example).
+
+- **The `CHAT_*` and `READER_*` values** are checked: one that is not a number
+  (or, for `CHAT_WEB_SEARCH`, not one of the listed words), or is outside its
+  range, logs a warning and the default is used (for the reader's model and
+  timeout, the next name in the chain).
+- **The numeric `WEB_SEARCH_*` values are not checked.** `WEB_SEARCH_RESULT_COUNT`,
+  `WEB_SEARCH_MAX_CONCURRENCY`, `WEB_SEARCH_FETCH_TIMEOUT_S`,
+  `WEB_SEARCH_FETCH_TOTAL_S` and `WEB_SEARCH_MAX_RESPONSE_BYTES` are read once
+  when the server starts, as plain numbers: a value that isn't a valid number
+  (for example `WEB_SEARCH_FETCH_TIMEOUT_S=abc`) stops the server from starting,
+  and one that is out of range is not replaced by the default (for example, a
+  `WEB_SEARCH_RESULT_COUNT` over 10 makes every search that names no count come
+  back as an error). Keep them to valid numbers in their range.
+  `WEB_SEARCH_SUMMARY_MODEL` and `WEB_SEARCH_SUMMARY_TIMEOUT_S` are read by the
+  reader and checked like its own values.
 
 **The project map and project search**
 
@@ -511,7 +525,7 @@ used. All of them are in [`../.env.example`](../.env.example).
 | `READER_INPUT_CHARS` | `12000` characters (about 3,000 tokens) | 500-200000 | Source text in one reader batch. A document page longer than this is read in pieces that overlap by 200 characters; a web page is cut into passages of about 1,000 characters and the best-matching ones are kept up to this size. |
 | `READER_OUTPUT_CHARS` | `1200` characters | 100-20000 | The most one batch may return. The reader is told to stay under it and its reply is capped at about that length; a reply cut off mid-way counts as a failed batch. |
 | `READER_MAX_CONCURRENCY` | `2` batches | 1-32 | Batches running at once. |
-| `READER_TIMEOUT_S` | `60` seconds | 1-3600 | Time one batch may take. `WEB_SEARCH_SUMMARY_TIMEOUT_S` is read when this is unset. A batch that fails is reported as pages not read (documents) or falls back to a short excerpt (web). |
+| `READER_TIMEOUT_S` | `60` seconds | 1-3600 | Time one batch may take. `WEB_SEARCH_SUMMARY_TIMEOUT_S` is read when this is unset; with both unset, the reader uses 60 seconds. A batch that fails is listed under `failed` in the result (documents; `not_read` is only for pages left out by the page cap) or falls back to a short excerpt (web). |
 
 Every reader call sets its context size from what it sends, clamped by
 `INFERENCE_NUM_CTX_MAX`, rather than leaving the provider's default, which on
@@ -543,7 +557,7 @@ stream.
 | `WEB_SEARCH_FETCH_TIMEOUT_S` | `8` seconds | Per request: the SearXNG query and each redirect hop of a page fetch. |
 | `WEB_SEARCH_FETCH_TOTAL_S` | `15` seconds | Whole deadline for one page, redirects and body included. |
 | `WEB_SEARCH_MAX_RESPONSE_BYTES` | `2000000` bytes | Largest page body read. |
-| `WEB_SEARCH_SUMMARY_MODEL`, `WEB_SEARCH_SUMMARY_TIMEOUT_S` | | Old names, kept as fallbacks for `READER_MODEL` and `READER_TIMEOUT_S`. |
+| `WEB_SEARCH_SUMMARY_MODEL`, `WEB_SEARCH_SUMMARY_TIMEOUT_S` | none | Old names, kept as fallbacks for `READER_MODEL` and `READER_TIMEOUT_S`. With `READER_TIMEOUT_S` and `WEB_SEARCH_SUMMARY_TIMEOUT_S` both unset, the reader uses 60 seconds. |
 
 ### How web search asks
 

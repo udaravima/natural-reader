@@ -129,7 +129,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - **Words in a Markdown table cell can be found.** Cells ran together
-  (`OIDC_ISSUER|http://x` was one word); they are now separated in the
+  (`OIDC_ISSUERhttp://x` was one word); they are now separated in the
   searchable text. The reader's pages don't move.
 - **Leaving Chat no longer stops the reply.** A deliberate effect aborted the
   stream and its read-aloud whenever you left the Chat view (and the narration

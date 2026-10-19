@@ -357,7 +357,7 @@ may look at. Click it for the menu:
   assistant can search and read that document. A new chat starts with this
   when a document is open. For an old version the chip adds *v2 (old
   version)*.
-- One entry per project that holds the open document, **Project: *name***.
+- One entry per project that holds the open document, shown as the project's name. Picking it makes the chip read **Project: *name***.
 - **Choose a project…**, which lists the projects you belong to (or says
   *You're not in any project yet.*).
 
