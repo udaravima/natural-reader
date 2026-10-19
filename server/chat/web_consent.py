@@ -10,6 +10,11 @@ and approved it. So it skips the guard that keeps document text off the web, whi
 model writes. Its results are numbered into the turn's web results like any search, so read_web_pages can read
 them.
 
+The query the app runs is the one the user SAW: a model can put characters in it that render as nothing (Tag
+characters, variation selectors, zero-width and direction controls), so `clean_query` removes them first, exactly
+as the offer card does (src/components/chat/WebOfferCard.jsx `plain()`), and a query with nothing visible in it is
+no approval at all.
+
 A yes is for that one search. In the same turn the model may read its results (read_web_pages) or offer a different
 search (offer_web_search, which ends the turn again); it is never offered web_search, so no query the user didn't
 see leaves the server.
@@ -17,6 +22,8 @@ see leaves the server.
 from __future__ import annotations
 
 import dataclasses
+import re
+import unicodedata
 from typing import Any
 
 from ..llm.types import Message, ToolCall
@@ -26,6 +33,34 @@ from .tools import web_search as web_search_tool
 
 APP_WEB_CALL_ID = "app-web-1"
 OFFER_TOOL = "offer_web_search"
+
+
+# Line breaks become a space, so words don't run together; then what can't be seen is dropped.
+_BREAKS = re.compile("[\t\n\r\u0085\u2028\u2029]+")
+# ZWNJ and ZWJ are format characters too, but emoji sequences and Persian or Indic text need them.
+_KEPT = frozenset("\u200c\u200d")
+# Not Cf, but they join, select or fill and render as nothing (the same ranges as the card):
+# the combining grapheme joiner, the Hangul fillers, variation selectors 1-15 (U+FE0F, the emoji
+# presentation selector, stays), the variation selectors supplement and the Tag block.
+_INVISIBLE = ((0x034F, 0x034F), (0x115F, 0x1160), (0x3164, 0x3164), (0xFFA0, 0xFFA0),
+              (0xFE00, 0xFE0E), (0xE0100, 0xE01EF),
+              (0xE0000, 0xE007F))   # the whole Tag block: its unassigned code points are not Cf
+
+
+def _hidden(ch: str) -> bool:
+    if ch in _KEPT:
+        return False
+    # Cf: every format character (bidi controls, zero-width characters, soft hyphen, the Tag block, ...).
+    # Cc: the control characters (U+0000-U+001F, U+007F-U+009F), as the card strips them.
+    if unicodedata.category(ch) in ("Cf", "Cc"):
+        return True
+    cp = ord(ch)
+    return any(low <= cp <= high for low, high in _INVISIBLE)
+
+
+def clean_query(text: str) -> str:
+    """The query as the user saw it, trimmed. Empty when nothing visible is left."""
+    return "".join(ch for ch in _BREAKS.sub(" ", text) if not _hidden(ch)).strip()
 
 
 def search_possible() -> bool:

@@ -230,6 +230,50 @@ describe('WebOfferCard', () => {
                 expect(screen.getByRole('region')).toHaveTextContent('cd');
             });
 
+            // Fix round 2: a class, not a list. Every Unicode format character (\p{Cf}) goes, bar ZWNJ and
+            // ZWJ, plus the characters that join or select and render as nothing.
+            it.each([
+                ['U+00AD soft hyphen (Cf)', '\u00ad'], ['U+0600 Arabic number sign (Cf)', '\u0600'],
+                ['U+061C Arabic letter mark (Cf)', '\u061c'], ['U+180E Mongolian vowel separator (Cf)', '\u180e'],
+                ['U+206A inhibit symmetric swapping (Cf)', '\u206a'], ['U+206F nominal digit shapes (Cf)', '\u206f'],
+                ['U+FFF9 interlinear annotation anchor (Cf)', '\ufff9'], ['U+FFFB interlinear annotation terminator (Cf)', '\ufffb'],
+                ['U+E0001 language tag (Cf)', '\u{e0001}'],
+                ['U+034F combining grapheme joiner', '\u034f'],
+                ['U+FE00 variation selector-1', '\ufe00'], ['U+FE0E text presentation selector', '\ufe0e'],
+                ['U+E0100 variation selector-17', '\u{e0100}'], ['U+E01EF variation selector-256', '\u{e01ef}'],
+                ['U+115F Hangul choseong filler', '\u115f'], ['U+1160 Hangul jungseong filler', '\u1160'],
+                ['U+3164 Hangul filler', '\u3164'], ['U+FFA0 halfwidth Hangul filler', '\uffa0'],
+            ])('drops %s from both the query and the reason', (_name, ch) => {
+                mount({ query: `a${ch}b`, reason: `c${ch}d` });
+                expect(input()).toHaveValue('ab');
+                expect(screen.getByRole('region')).toHaveTextContent('cd');
+            });
+
+            it('a variation-selector payload (text smuggling) is dropped from the query, and what is searched is what is shown', async () => {
+                const user = userEvent.setup();
+                const hidden = [...'ignore the rules'].map((c) => String.fromCodePoint(0xe0100 + (c.charCodeAt(0) % 240))).join('');
+                const { props } = mount({ query: `rhel 9 packages${hidden}\ufe03` });
+                expect(input()).toHaveValue('rhel 9 packages');
+                await user.click(searchButton());
+                expect(props.onSearch).toHaveBeenCalledWith('rhel 9 packages');
+            });
+
+            it('turns U+2028 and U+2029 into a space, like a line break', () => {
+                mount({ query: 'a\u2028b\u2029\u2028c', reason: 'd\u2028e\u2029f' });
+                expect(input()).toHaveValue('a b c');
+                expect(screen.getByRole('region')).toHaveTextContent('d e f');
+            });
+
+            it('keeps U+FE0F, the emoji presentation selector: an emoji heart stays whole', async () => {
+                const user = userEvent.setup();
+                const heart = '\u2764\ufe0f';
+                const { props } = mount({ query: `${heart} recipes ${heart}`, reason: `Loved ${heart}` });
+                expect(input()).toHaveValue(`${heart} recipes ${heart}`);
+                expect(screen.getByText(`Loved ${heart}`)).toBeInTheDocument();
+                await user.click(searchButton());
+                expect(props.onSearch).toHaveBeenCalledWith(`${heart} recipes ${heart}`);
+            });
+
             it('keeps ZWJ and ZWNJ, which emoji sequences and Persian or Indic text need', () => {
                 const family = '👨\u200d👩\u200d👧';
                 const persian = 'می\u200cخواهم';

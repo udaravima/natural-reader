@@ -41,7 +41,7 @@ from .sources import answer_sources, sources_by_document, web_sources
 from .store import TurnClaim, title_from_prompt
 from .tools import ToolContext, ToolRun, TurnTools, available_tools, result_text
 from .tools.scope import scope_docs
-from .web_consent import APP_WEB_CALL_ID, app_web_exchange, app_web_search, search_possible, web_offer
+from .web_consent import APP_WEB_CALL_ID, app_web_exchange, app_web_search, clean_query, search_possible, web_offer
 
 logger = logging.getLogger(__name__)
 
@@ -252,7 +252,11 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         async with get_pool().connection() as conn:
             profile = await assistant_profile.load_profile(conn)
         options = await _chat_options()
-        web_query = req.web_query
+        # What was approved is what the user saw: a query with hidden characters is cleaned first, and one with
+        # nothing visible left is no approval (chat/web_consent.py).
+        web_query = clean_query(req.web_query) if req.web_query else None
+        if req.web_query and not web_query:
+            logger.info("An approved web search was ignored: its query had nothing visible in it")   # never the query itself
         if web_query and options.web_search == "off":
             logger.info("An approved web search was ignored: web search is off")   # never the query itself
             web_query = None

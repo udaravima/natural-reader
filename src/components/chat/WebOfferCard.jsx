@@ -6,16 +6,21 @@ const MAX_REASON = 300;   // characters shown; the rest is cut and marked with a
 
 // The reason and the query are the model's words: shown as text only, and the
 // server skips its own check of an approved query because the user saw it, so
-// what is shown must be exactly what is searched. Tabs and line breaks (\t \n \r
-// and U+0085) become one space, then every other control character
-// (U+0000-U+001F, U+007F-U+009F) and every character that is invisible or
-// reorders text is dropped: the zero-width space, direction marks, embeddings,
-// overrides and isolates, the word joiner and invisible operators, the byte
-// order mark, and the Unicode Tag characters (which render as nothing). ZWJ and
-// ZWNJ (U+200D, U+200C) stay: emoji sequences and Persian or Indic text need them.
-const BREAKS = /[\t\n\r\u0085]+/g;
+// what is shown must be exactly what is searched. Tabs, line breaks, U+0085,
+// U+2028 and U+2029 become one space; then everything the user can't see is
+// dropped: the control characters (U+0000-U+001F, U+007F-U+009F), every Unicode
+// format character (\p{Cf}: direction marks and overrides, zero-width characters,
+// the soft hyphen, most of the Tag block, ...) and the characters that join, select or
+// fill and render as nothing (U+034F, the Hangul fillers, variation selectors
+// U+FE00-U+FE0E and U+E0100-U+E01EF), and the whole Tag block U+E0000-U+E007F
+// (\p{Cf} leaves its unassigned code points). ZWNJ and ZWJ (U+200C, U+200D) stay, for
+// emoji sequences and Persian or Indic text, and so does U+FE0F, which makes an
+// emoji an emoji. The server cleans an approved query the same way (clean_query
+// in server/chat/web_consent.py).
+const BREAKS = /[\t\n\r\u0085\u2028\u2029]+/g;
+// The combining ones come first in the class: a combining character after a plain one reads as a mistake to the linter.
 // eslint-disable-next-line no-control-regex
-const HIDDEN = /[\u0000-\u001f\u007f-\u009f\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/gu;
+const HIDDEN = /(?![\u200c\u200d])\p{Cf}|[\u034f\ufe00-\ufe0e\u{e0100}-\u{e01ef}\u{e0000}-\u{e007f}\u0000-\u001f\u007f-\u009f\u115f\u1160\u3164\uffa0]/gu;
 const plain = (value) => (typeof value === 'string' ? value.replace(BREAKS, ' ').replace(HIDDEN, '') : '');
 
 // The query as the box holds it: cleaned, and cut to what the box (and the
