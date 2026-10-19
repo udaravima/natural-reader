@@ -97,15 +97,6 @@ describe('ChatView — the web offer card (C2.1 Task 18)', () => {
         expect(sendMessage.mock.calls[0][1]).toEqual([]);
     });
 
-    it('keeps the card when the turn is refused, so the user can try again', async () => {
-        const sendMessage = vi.fn(async () => ({ sent: false, refused: true }));
-        render(<ChatView {...baseProps({ sendMessage, messages: [user('u1'), reply('a1', '', offer())] })} />);
-        fireEvent.click(searchButton());
-        await Promise.resolve();
-        expect(card()).toBeInTheDocument();
-        expect(searchButton()).toBeEnabled();
-    });
-
     it('"Not now" hides the card and sends nothing', () => {
         const sendMessage = vi.fn();
         render(<ChatView {...baseProps({ sendMessage, messages: [user('u1'), reply('a1', 'Not in the files.', offer())] })} />);

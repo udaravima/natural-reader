@@ -107,6 +107,35 @@ describe('the web offer, start to finish (C2.1 Task 18)', () => {
         expect(postTurn.mock.calls[2][0].body.context).not.toHaveProperty('web');
     });
 
+    // With the real engine: a refused turn (here 409, a reply still being written) takes its optimistic
+    // messages back, so the offer reply is the last one again and its card returns to ask again.
+    it('a refused search brings the card back, and searching again sends the query again', async () => {
+        const user = userEvent.setup();
+        const busy = { ok: false, status: 409, json: async () => ({ detail: { error: 'turn_in_progress', message: 'A reply is still being written in this chat.' } }), clone() { return this; } };
+        postTurn.mockResolvedValueOnce(stream(offerTurn())).mockResolvedValueOnce(busy).mockResolvedValueOnce(stream(answerTurn(2)));
+        render(<App />);
+        await user.type(screen.getByPlaceholderText(/Ask the model/), 'Which RHEL 9 packages ship auditd?{Enter}');
+        let card = await screen.findByRole('region', { name: 'Web search offer' });
+        await waitFor(() => expect(within(card).getByRole('button', { name: 'Search the web' })).toBeEnabled());
+        await user.click(within(card).getByRole('button', { name: 'Search the web' }));
+
+        // Refused: nothing was added to the chat, and the card is back.
+        await waitFor(() => expect(postTurn).toHaveBeenCalledTimes(2));
+        expect(postTurn.mock.calls[1][0].body.context.web).toEqual({ query: 'rhel 9 package list' });
+        card = await screen.findByRole('region', { name: 'Web search offer' });
+        expect(screen.queryByText('Search the web for: rhel 9 package list')).toBeNull();
+        expect(screen.queryByText('Offered a web search')).toBeNull();
+        await waitFor(() => expect(within(card).getByRole('button', { name: 'Search the web' })).toBeEnabled());
+
+        // Again: the same query goes out as context.web, and this time it is answered.
+        await user.click(within(card).getByRole('button', { name: 'Search the web' }));
+        await waitFor(() => expect(postTurn).toHaveBeenCalledTimes(3));
+        expect(postTurn.mock.calls[2][0].body.context.web).toEqual({ query: 'rhel 9 package list' });
+        expect(postTurn.mock.calls[2][0].body.message.content).toBe('Search the web for: rhel 9 package list');
+        expect(await screen.findByRole('link', { name: 'access.example.com' })).toBeInTheDocument();
+        expect(screen.queryByRole('region', { name: 'Web search offer' })).toBeNull();
+    });
+
     it('"Not now" asks nothing; the user can carry on with an ordinary question', async () => {
         const user = userEvent.setup();
         postTurn.mockResolvedValueOnce(stream(offerTurn()));
