@@ -445,10 +445,144 @@ Full `.env.example` block: [`../.env.example`](../.env.example), just after
   server waits up to 5 seconds for turns' final "complete"/"aborted" write to
   land before closing the database pool, so a restart during a reply doesn't
   usually leave it stuck `streaming` until the next startup sweep.
-- **Web-search page summaries** now go through the same provider router as
-  chat, using `SUMMARIZE_MODEL`. A bare model name (no `provider:` prefix,
-  e.g. the pre-C1 default) resolves to the first configured provider of kind
-  `ollama`.
+- **Model names without a `provider:` prefix** (the pre-C1 `SUMMARIZE_MODEL`,
+  `llama3.2:3b`, and `READER_MODEL`) resolve to the first configured provider
+  of kind `ollama`. Web search no longer summarizes pages; the reader does the
+  reading (next section).
+
+## Project chat, the reader and web search
+
+Three things arrive together, and each has a knob a deployer may care about.
+
+- **A chat can be about a whole project.** The assistant gets a map of the
+  project (every current document's name, page count and outline) and searches
+  and reads across all of them. Migration `021` adds the chat's project and a
+  table of document outlines; it is additive and runs at startup.
+- **A reader sub-agent does the bulk reading.** For "go through these pages for
+  X" the chat model hands the job to a separate, small model call that reads in
+  batches and returns only the facts, each with a quote the app has checked
+  against the source. This is the same call that reads web pages.
+- **Web search asks first.** By default the assistant can only *offer* a search
+  and the person says yes on a card. Nothing leaves the server before that.
+
+**Behaviour changes on upgrade.**
+- **Web search was "on its own"; the default is now "ask".** A deployment with
+  SearXNG that relied on the assistant searching by itself needs
+  `CHAT_WEB_SEARCH=auto`, or an admin's choice in **Admin console →
+  Chat options**, to keep that.
+- **Existing documents are re-chunked on first use.** Fenced code blocks and
+  outlines are new, so each indexed document is rebuilt in the background the
+  first time someone chats with or searches it, and its old chunks keep
+  answering until the new set swaps in. Text that already has an embedding
+  under the same model is not embedded again, so the rebuild embeds only the
+  new code chunks and the Markdown tables whose cells were glued together
+  before. (This comes from the code and its tests, not from timing a large
+  library, so watch the first days on a big one.) A document with no stored
+  file keeps what it has.
+- **`WEB_SEARCH_MAX_PAGE_CHARS` is no longer read.** It cut each web page at its
+  first 6,000 characters before summarizing it; pages are now cut into
+  passages and the ones that match the goal are read from anywhere on the page.
+  Delete it from `.env`.
+- **`POST /v1/tools/web_search` returns different fields** (see the API
+  section below).
+
+### Settings
+
+Every value is an environment variable, read at startup unless noted. One that
+is not a number, or is outside its range, logs a warning and the default is
+used. All of them are in [`../.env.example`](../.env.example).
+
+**The project map and project search**
+
+| Variable | Default | Range | What it does |
+|---|---|---|---|
+| `CHAT_PROJECT_MAP_CHARS` | `6000` characters | 500-100000 | Size of the project map in the system message, sent with every message. 6000 is about 1,500 tokens and leaves room to answer in an 8,192-token window. Over it, outlines are shortened step by step and the assistant gets a `document_outline` tool. Raise it only if your models run with a large context window. |
+| `CHAT_PROJECT_MAX_TOOL_ROUNDS` | `5` rounds | 0-20 | Tool rounds in a project chat before the final answer. `CHAT_MAX_TOOL_ROUNDS` (3) still applies to the other chats. `0` turns the tools off in project chats. |
+| `CHAT_PROJECT_FUSION_DEPTH` | `50` candidates | 1-500 | Candidates taken from the meaning ranking and from the exact-word ranking before they are fused, in a project search. A single-document search uses 20. |
+| `CHAT_SEARCH_PER_DOC` | `2` passages | 1-10 | Passages one document may give a project search before other documents get a turn. A short list is filled from the skipped ones, so a document that holds all the answers still fills it. |
+| `CHAT_EXTRACT_MAX_PAGES` | `12` pages | 1-200 | Pages one `extract_from_documents` call hands to the reader. Over it, the pages closest to the question are read and the rest are listed as not read. 12 is about three or four reader batches. |
+| `CHAT_EXTRACT_OUTPUT_CHARS` | `4000` characters | 500-50000 | Most one `extract_from_documents` result may take, measured as compact JSON. The model reads it indented, so what reaches it is typically 15-25% larger (more when the facts are short). Over the limit, the last facts are dropped and `more` says how many. |
+
+**The reader**
+
+| Variable | Default | Range | What it does |
+|---|---|---|---|
+| `READER_MODEL` | none: falls back to `SUMMARIZE_MODEL`, then `WEB_SEARCH_SUMMARY_MODEL`, then `llama3.2:3b` | a model id | The model that reads. `chat` (any letter case) means the model of the turn itself; `SUMMARIZE_MODEL=chat` means the same for the reader. |
+| `READER_INPUT_CHARS` | `12000` characters (about 3,000 tokens) | 500-200000 | Source text in one reader batch. A document page longer than this is read in pieces that overlap by 200 characters; a web page is cut into passages of about 1,000 characters and the best-matching ones are kept up to this size. |
+| `READER_OUTPUT_CHARS` | `1200` characters | 100-20000 | The most one batch may return. The reader is told to stay under it and its reply is capped at about that length; a reply cut off mid-way counts as a failed batch. |
+| `READER_MAX_CONCURRENCY` | `2` batches | 1-32 | Batches running at once. |
+| `READER_TIMEOUT_S` | `60` seconds | 1-3600 | Time one batch may take. `WEB_SEARCH_SUMMARY_TIMEOUT_S` is read when this is unset. A batch that fails is reported as pages not read (documents) or falls back to a short excerpt (web). |
+
+Every reader call sets its context size from what it sends, clamped by
+`INFERENCE_NUM_CTX_MAX`, rather than leaving the provider's default, which on
+Ollama can be smaller than the batch and would cut it without a word.
+
+**CPU-only Ollama: set `READER_MODEL=chat`.** With the default the reader runs
+on `llama3.2:3b`, a second model that Ollama loads into RAM next to the chat
+model, and on a CPU swapping them costs seconds to minutes on every project
+question. `READER_MODEL=chat` reads with the model already loaded. The price is
+that the chat model does the reading too, so a slow chat model makes `extract`
+slow; on a CPU the batches run one after another whatever
+`READER_MAX_CONCURRENCY` says. Keep a separate small model when the chat model
+is a large or paid one: every batch is a full model call, and a small model is
+cheaper and faster for it.
+
+A project question can be silent for a while when the reader is working. The
+server's 15-second keep-alive (see [Streaming through a
+proxy](#streaming-through-a-proxy)) is what keeps a proxy from closing the
+stream.
+
+**Web search**
+
+| Variable | Default | What it does |
+|---|---|---|
+| `CHAT_WEB_SEARCH` | `ask` | `ask`, `auto` or `off`, case-insensitive; anything else is ignored with a warning. The starting value: an admin's choice in the console wins over it. |
+| `SEARXNG_URL` | `http://localhost:18043` | The SearXNG instance. Every mode needs it. Set it to an empty value to turn web search off for the whole server; the console then shows its control disabled. |
+| `WEB_SEARCH_RESULT_COUNT` | `5` results | Results one search lists (1-10). A search no longer fetches pages or calls a model. |
+| `WEB_SEARCH_MAX_CONCURRENCY` | `4` fetches | Pages fetched at once when the assistant reads results. |
+| `WEB_SEARCH_FETCH_TIMEOUT_S` | `8` seconds | Per request: the SearXNG query and each redirect hop of a page fetch. |
+| `WEB_SEARCH_FETCH_TOTAL_S` | `15` seconds | Whole deadline for one page, redirects and body included. |
+| `WEB_SEARCH_MAX_RESPONSE_BYTES` | `2000000` bytes | Largest page body read. |
+| `WEB_SEARCH_SUMMARY_MODEL`, `WEB_SEARCH_SUMMARY_TIMEOUT_S` | | Old names, kept as fallbacks for `READER_MODEL` and `READER_TIMEOUT_S`. |
+
+### How web search asks
+
+| Mode | What the assistant can do |
+|---|---|
+| `ask` (default) | Only `offer_web_search`: it proposes a short query and a reason, the turn ends, and the person sees a card with the query in an editable box, **Search the web** and **Not now**. **Search the web** runs exactly the query on the card, for the next message only; the assistant may then read 1-3 of those results, or offer a different search (which needs its own yes). The web search tool is not offered, so the rule is enforced in code, not asked of the model. |
+| `auto` | The assistant searches the web itself and reads the pages it picks. |
+| `off` | No web tool at all. |
+
+Which setting applies, first match wins: the admin's choice in **Admin console
+→ Chat options → Web search**; then `CHAT_WEB_SEARCH`; then `ask`. The
+database is read once per message, so a change applies from the next message on
+every worker. **Use the server setting** in the same section deletes the
+admin's choice, so `CHAT_WEB_SEARCH` (or `ask`) applies again, and the section
+says which of the three decided. Changing it writes an audit line with who, the
+old mode and the new one. The query a person approves is the one that leaves:
+invisible and direction-changing characters are removed from it on the card and
+again on the server.
+
+### API changes
+
+- `POST /v1/tools/web_search` (a public route; nothing in the app calls it)
+  used to fetch each page and return `{title, url, summary, source}`. It now
+  returns the search results only: `{title, url, site, snippet}`, with no
+  page fetch and no model call. A caller that read `summary` needs to read
+  `snippet`, or fetch the page itself.
+- `GET /v1/admin/chat-options` returns `{web_search, source, searxng}`
+  (`source` is `admin`, `env` or `default`; `searxng` is false when
+  `SEARXNG_URL` is empty). `PUT` takes `{"web_search": "ask" | "auto" | "off" | null}`;
+  `null` removes the admin's choice. Both need the `admin` capability.
+- `POST /v1/chat/sessions/{id}/turns` accepts `context.project_id` (a project
+  id scopes the chat to it, `null` clears the scope, leaving it out keeps what
+  the chat has) and `context.web` (`{query}`, up to 300 characters: the person's
+  approval of one web search for this turn). A turn for a project the caller
+  isn't a member of is refused with 404 and the message "This project doesn't
+  exist or you don't have access.", and the chat's project is cleared.
+- The chat session list and the session record carry `scopeProject`
+  (`{id, name}` or `null`); `name` is `null` when the caller can no longer see
+  the project.
 
 ## Bring-up checklist
 

@@ -40,6 +40,59 @@ All notable changes to this project will be documented in this file.
 - **Sessions end when unused.** `SESSION_IDLE_HOURS` (default 12; 0 = off)
   ends a sign-in the browser hasn't used for that long. `SESSION_TTL_HOURS`
   (168) stays the absolute cap.
+- **Ask a whole project.** **Ask about this project** on a project page
+  (Library → Projects) starts a chat about all of the project's current
+  documents; the chat's scope chip reads **Project: *name***. The assistant
+  gets a map of the project (each document's name, pages and headings),
+  searches across the documents as one ranked list, and tells you which
+  document and page each fact came from. The chip also takes a project from
+  inside any chat (**Choose a project…**), and the chat list shows a project
+  chat's project. A project you can no longer see reads **Project
+  unavailable**; the next message is refused with "This project doesn't exist
+  or you don't have access." and the chat goes back to no project. Documents
+  still being indexed are listed but not searchable yet; old versions are
+  never searched.
+- **Citations and source chips name the document.** In a project chat a fact
+  is cited **(Guide.md, page 7)** and the link opens that document at that
+  page; joined citations, page lists and ranges count. The chips under a
+  reply are grouped by document (**Guide.md · p. 3 · p. 6**).
+- **A reader goes through many pages for one goal.** For "every command, in
+  order" the assistant hands the pages to a separate small model call that
+  returns only the facts, each with a quote the app checks against the page
+  and drops if it isn't there. `extract_from_documents` reads up to
+  `CHAT_EXTRACT_MAX_PAGES` pages a call (the closest to the goal when there are
+  more) and lists what it didn't read. It also reads the web pages the
+  assistant picks. Set `READER_MODEL=chat` on a CPU-only Ollama so no second
+  model is loaded.
+- **Web search asks first.** By default the assistant can only offer a web
+  search: a card, **Search the web?**, shows its reason and the query in an
+  editable box, with **Search the web** and **Not now**. Yes runs exactly the
+  query on the card, for that one answer; a different search needs a new
+  card. Facts from the web cite their site, **(example.com)**, and the pages
+  read show as links under **Web sources**. `CHAT_WEB_SEARCH=ask|auto|off`
+  sets the starting mode.
+- **Admin → Chat options → Web search.** *Ask first*, *Search without
+  asking* or *Off*, for everyone, from the next message. It says whether the
+  value was set there, comes from `CHAT_WEB_SEARCH`, or is the default, and
+  **Use the server setting** hands control back to the server setting.
+  `GET`/`PUT /v1/admin/chat-options` (`PUT {"web_search": "ask"|"auto"|"off"|null}`;
+  `null` resets).
+- **Code blocks, outlines and table cells are searchable.** A Markdown code
+  block is its own passage on the page it sits on, so a command can be found
+  and read; each document's headings (or a PDF's bookmarks) are stored as its
+  outline. Existing documents are re-chunked in the background on first use;
+  only text with no embedding yet is embedded. Migration `021` adds
+  `chat_sessions.scope_project_id` and `doc_outlines`.
+- New settings, all with defaults in `.env.example` and
+  [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): `CHAT_PROJECT_MAP_CHARS` (6000),
+  `CHAT_PROJECT_MAX_TOOL_ROUNDS` (5), `CHAT_PROJECT_FUSION_DEPTH` (50),
+  `CHAT_SEARCH_PER_DOC` (2), `CHAT_EXTRACT_MAX_PAGES` (12),
+  `CHAT_EXTRACT_OUTPUT_CHARS` (4000), `CHAT_WEB_SEARCH` (`ask`),
+  `READER_MODEL`, `READER_INPUT_CHARS` (12000), `READER_OUTPUT_CHARS` (1200),
+  `READER_MAX_CONCURRENCY` (2) and `READER_TIMEOUT_S` (60).
+- API: chat turns accept `context.project_id` (an id sets the chat's project,
+  `null` clears it, absent keeps it) and `context.web` (`{query}`, the
+  approved search); session list and record carry `scopeProject`.
 
 ### Changed
 
@@ -50,9 +103,34 @@ All notable changes to this project will be documented in this file.
 - **A setting stores only a choice.** One you never touched follows the
   current default (the admin's, else the built-in), and changing one model
   setting no longer saves the others' defaults with it.
+- **Web search asks first by default.** It used to run on its own whenever
+  SearXNG was configured. A deployment that wants that again sets
+  `CHAT_WEB_SEARCH=auto` (or an admin picks *Search without asking*).
+- **`web_search` lists results; it no longer fetches or summarizes pages.**
+  A result is its title, site, address and snippet. Reading a page is
+  `read_web_pages`, through the reader, which takes the passages that match
+  the goal from anywhere on the page (it used to cut each page at its first
+  6,000 characters). **`WEB_SEARCH_MAX_PAGE_CHARS` is no longer read.**
+  `POST /v1/tools/web_search` follows: it returns `{title, url, site,
+  snippet}` per result, not `{title, url, summary, source}`. Nothing in the
+  app calls it, but it is public API. `WEB_SEARCH_SUMMARY_MODEL` and
+  `WEB_SEARCH_SUMMARY_TIMEOUT_S` remain only as fallbacks for `READER_MODEL`
+  and `READER_TIMEOUT_S`.
+- **The "Use this document" chip became the scope chip.** One menu: *No
+  document*, *This document: name*, a project, or *Choose a project…*.
+- **The assistant may fill a gap from general knowledge,** if it says the
+  part isn't from the documents and gives it no page, and it offers a web
+  search when the answer needs current or outside facts. It used to be told
+  never to fill a gap from memory. This applies to a single document too.
+- **Search matches part of a query.** When no passage has every word, passages
+  with at least half of the query's informative words rank (document chats
+  too).
 
 ### Fixed
 
+- **Words in a Markdown table cell can be found.** Cells ran together
+  (`OIDC_ISSUER|http://x` was one word); they are now separated in the
+  searchable text. The reader's pages don't move.
 - **Leaving Chat no longer stops the reply.** A deliberate effect aborted the
   stream and its read-aloud whenever you left the Chat view (and the narration
   stopped on leaving the reader); both now carry on.

