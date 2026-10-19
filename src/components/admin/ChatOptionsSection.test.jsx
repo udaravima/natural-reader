@@ -36,7 +36,8 @@ describe('ChatOptionsSection', () => {
     mount(view({ web_search: 'auto', source: 'admin' }));
     expect(await screen.findByRole('region', { name: 'Chat options' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Chat options' })).toBeTruthy();
-    expect(radio('Search without asking').checked).toBe(true);
+    // The section is on screen while it still loads: wait for the radios themselves.
+    expect((await screen.findByRole('radio', { name: 'Search without asking' })).checked).toBe(true);
     expect(radio('Ask first').checked).toBe(false);
     expect(radio('Off').checked).toBe(false);
   });
@@ -63,6 +64,19 @@ describe('ChatOptionsSection', () => {
     expect(await screen.findByText('Set here.')).toBeTruthy();
   });
 
+  it("shows the server's answer to a change, not what the console assumed", async () => {
+    // The console shows a choice at once and assumes "Set here." and the mode it sent; the answer wins. (Here
+    // something else decided: a change made elsewhere at the same time.)
+    const showToast = mount(view({ source: 'default' }), { onPut: () => view({ web_search: 'off', source: 'env' }) });
+    fireEvent.click(await screen.findByRole('radio', { name: 'Search without asking' }));
+    expect(await screen.findByText('From the server setting CHAT_WEB_SEARCH.')).toBeTruthy();
+    expect(radio('Off').checked).toBe(true);
+    expect(radio('Search without asking').checked).toBe(false);
+    expect(screen.queryByText('Set here.')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Use the server setting' })).toBeNull();
+    expect(showToast).toHaveBeenCalledWith('Web search: Off. Applies from the next message.', expect.any(Number));
+  });
+
   it('does nothing when the chosen mode is clicked again', async () => {
     mount(view({ web_search: 'off', source: 'admin' }));
     fireEvent.click(await screen.findByRole('radio', { name: 'Off' }));
@@ -75,6 +89,18 @@ describe('ChatOptionsSection', () => {
     for (const name of ['Ask first', 'Search without asking', 'Off']) expect(radio(name).disabled).toBe(true);
   });
 
+  it('describes the group by where the mode comes from, and by why it is disabled', async () => {
+    mount(view({ searxng: false, source: 'env' }));
+    const group = await screen.findByRole('group', { name: 'Web search' });
+    expect(group).toHaveAccessibleDescription(
+      "Web search isn't set up on this server (SEARXNG_URL). From the server setting CHAT_WEB_SEARCH.");
+  });
+
+  it('describes the group by the source line alone when SearXNG is set up', async () => {
+    mount(view({ source: 'admin' }));
+    expect(await screen.findByRole('group', { name: 'Web search' })).toHaveAccessibleDescription('Set here.');
+  });
+
   it('does not mention SearXNG when it is set up', async () => {
     mount(view());
     await screen.findByRole('radio', { name: 'Off' });
@@ -85,19 +111,25 @@ describe('ChatOptionsSection', () => {
     const showToast = mount(view({ web_search: 'ask', source: 'env' }),
       { onPut: () => json(500, { detail: 'database is down' }) });
     fireEvent.click(await screen.findByRole('radio', { name: 'Off' }));
-    await waitFor(() => expect(showToast).toHaveBeenCalledWith("That didn't work: database is down", expect.any(Number)));
-    expect(radio('Ask first').checked).toBe(true);
+    // The toast is sent before React commits the restore: wait for the screen, then read the toast.
+    await waitFor(() => {
+      expect(radio('Ask first').checked).toBe(true);
+      expect(radio('Off').disabled).toBe(false);
+    });
     expect(radio('Off').checked).toBe(false);
     expect(screen.getByText('From the server setting CHAT_WEB_SEARCH.')).toBeTruthy();   // not "Set here."
     expect(screen.queryByRole('button', { name: 'Use the server setting' })).toBeNull();
-    expect(radio('Off').disabled).toBe(false);
+    expect(showToast).toHaveBeenCalledWith("That didn't work: database is down", expect.any(Number));
   });
 
   it('a failed save without a readable detail says the HTTP status', async () => {
     const showToast = mount(view(), { onPut: () => ({ ok: false, status: 502, json: async () => { throw new Error('not json'); } }) });
     fireEvent.click(await screen.findByRole('radio', { name: 'Off' }));
-    await waitFor(() => expect(showToast).toHaveBeenCalledWith("That didn't work: HTTP 502", expect.any(Number)));
-    expect(radio('Ask first').checked).toBe(true);
+    await waitFor(() => {
+      expect(radio('Ask first').checked).toBe(true);
+      expect(radio('Off').disabled).toBe(false);
+    });
+    expect(showToast).toHaveBeenCalledWith("That didn't work: HTTP 502", expect.any(Number));
   });
 
   it.each([
@@ -134,10 +166,10 @@ describe('ChatOptionsSection', () => {
     const showToast = mount(view({ web_search: 'auto', source: 'admin' }),
       { onPut: () => json(500, { detail: 'nope' }) });
     fireEvent.click(await screen.findByRole('button', { name: 'Use the server setting' }));
-    await waitFor(() => expect(showToast).toHaveBeenCalledWith("That didn't work: nope", expect.any(Number)));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Use the server setting' }).disabled).toBe(false));
     expect(radio('Search without asking').checked).toBe(true);
     expect(screen.getByText('Set here.')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Use the server setting' }).disabled).toBe(false);
+    expect(showToast).toHaveBeenCalledWith("That didn't work: nope", expect.any(Number));
   });
 
   it('disables the radios and the reset while a save is in flight', async () => {
@@ -189,7 +221,42 @@ describe('ChatOptionsSection', () => {
     fireEvent.click(radio('Off'));
     await waitFor(() => expect(radio('Off').disabled).toBe(false));
     expect(radio('Off').checked).toBe(true);
-    expect(document.activeElement).toBe(radio('Off'));
+    await waitFor(() => expect(document.activeElement).toBe(radio('Off')));
+  });
+
+  it('puts the focus back when the browser dropped it because the radio was disabled', async () => {
+    // What a browser does to a focused control that gets disabled: focus falls to the page.
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    mount(view(), { onPut: () => held });
+    (await screen.findByRole('radio', { name: 'Ask first' })).focus();
+    fireEvent.click(radio('Off'));
+    await waitFor(() => expect(radio('Off').disabled).toBe(true));
+    document.activeElement.blur();
+    release(json(200, view({ web_search: 'off', source: 'admin' })));
+    await waitFor(() => expect(radio('Off').disabled).toBe(false));
+    await waitFor(() => expect(document.activeElement).toBe(radio('Off')));
+  });
+
+  it('does not steal the focus when the admin moved to another field during the save', async () => {
+    // Otherwise the next arrow key would change a deployment-wide setting from a field they never meant to leave.
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    mount(view(), { onPut: () => held });
+    (await screen.findByRole('radio', { name: 'Ask first' })).focus();
+    fireEvent.click(radio('Off'));
+    await waitFor(() => expect(radio('Off').disabled).toBe(true));
+    const field = document.createElement('textarea');
+    document.body.appendChild(field);
+    try {
+      field.focus();
+      release(json(200, view({ web_search: 'off', source: 'admin' })));
+      await waitFor(() => expect(radio('Off').disabled).toBe(false));
+      expect(radio('Off').checked).toBe(true);
+      expect(document.activeElement).toBe(field);
+    } finally {
+      field.remove();
+    }
   });
 
   it('leaves the focus alone when it was not in the options', async () => {
@@ -197,11 +264,14 @@ describe('ChatOptionsSection', () => {
     await screen.findByRole('radio', { name: 'Ask first' });
     const outside = document.createElement('button');
     document.body.appendChild(outside);
-    outside.focus();
-    fireEvent.click(radio('Off'));
-    await waitFor(() => expect(radio('Off').disabled).toBe(false));
-    expect(document.activeElement).toBe(outside);
-    outside.remove();
+    try {
+      outside.focus();
+      fireEvent.click(radio('Off'));
+      await waitFor(() => expect(radio('Off').disabled).toBe(false));
+      expect(document.activeElement).toBe(outside);
+    } finally {
+      outside.remove();
+    }
   });
 
   it('says so when the options cannot be loaded', async () => {

@@ -19,6 +19,8 @@ const MODES = [
     hint: 'The assistant never searches the web.' },
 ];
 const LABEL = Object.fromEntries(MODES.map((m) => [m.id, m.label]));
+const SOURCE_ID = 'chat-web-search-source';
+const UNAVAILABLE_ID = 'chat-web-search-unavailable';
 const SOURCE_LINE = {
   admin: 'Set here.',
   env: 'From the server setting CHAT_WEB_SEARCH.',
@@ -46,11 +48,16 @@ export function ChatOptionsSection({ theme, apiHost, apiPort, showToast, onSaved
   useEffect(() => { load(); }, [load]);
 
   // The radios are disabled while a save is out, and a browser drops the focus from a control that gets
-  // disabled: put it back on the chosen radio, so ArrowDown works twice in a row.
+  // disabled: put it back on the chosen radio, so ArrowDown works twice in a row. Only if the focus is still
+  // nowhere or in this section when the save ends: an admin who moved on to another field keeps it there,
+  // or their next arrow key would change a deployment-wide setting.
   useEffect(() => {
     if (saving || !refocus.current) return;
     refocus.current = false;
-    sectionRef.current?.querySelector('input[type="radio"]:checked')?.focus();
+    const section = sectionRef.current;
+    const active = document.activeElement;
+    if (active && active !== document.body && !section?.contains(active)) return;
+    section?.querySelector('input[type="radio"]:checked')?.focus();
   }, [saving]);
 
   // One PUT for both a choice and the reset (mode null). `optimistic` shows a choice at once; a failure puts
@@ -103,7 +110,10 @@ export function ChatOptionsSection({ theme, apiHost, apiPort, showToast, onSaved
         <p className={`text-xs ${theme.textMuted}`}>Loading…</p>
       ) : (
         <div className={`flex flex-col gap-2 p-3 rounded-lg border ${theme.border} ${theme.bgSecondary}`}>
-          <fieldset className="flex flex-col gap-2 min-w-0">
+          <fieldset
+            aria-describedby={[!data.searxng && UNAVAILABLE_ID, SOURCE_ID].filter(Boolean).join(' ')}
+            className="flex flex-col gap-2 min-w-0"
+          >
             <legend className={`text-xs font-bold mb-2 ${theme.text}`}>Web search</legend>
             {MODES.map((m) => (
               <div key={m.id} className="flex flex-col gap-0.5">
@@ -123,10 +133,10 @@ export function ChatOptionsSection({ theme, apiHost, apiPort, showToast, onSaved
             ))}
           </fieldset>
           {!data.searxng && (
-            <p className="text-xs text-amber-600">Web search isn&apos;t set up on this server (SEARXNG_URL).</p>
+            <p id={UNAVAILABLE_ID} className="text-xs text-amber-600">Web search isn&apos;t set up on this server (SEARXNG_URL).</p>
           )}
           <div className="flex flex-wrap items-center gap-3 text-[10px]">
-            <span className={theme.textSecondary}>{SOURCE_LINE[data.source] ?? data.source}</span>
+            <span id={SOURCE_ID} className={theme.textSecondary}>{SOURCE_LINE[data.source] ?? data.source}</span>
             {data.source === 'admin' && (
               <button
                 onClick={() => put(null, false)}
