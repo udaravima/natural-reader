@@ -74,23 +74,29 @@ def answer_sources(answer: str, evidence: list[tuple[int | None, str]]) -> tuple
 
 # ---- a project answer: citations and sources by document (C2.1 Task 15) ----
 
-# "page 4", "p. 4", "pages 4-5", "pp. 4 and 6", "pages 4, 6 & 8"; page numbers of at most six digits.
-_PAGE_LABEL = r"(?:pages?|pp?\.)"
+# "page 4", "p. 4", "pages 4-5", "pp. 4 and 6", "pages 4, 6 & 8"; page numbers of at most six digits. This is the
+# grammar of the client (src/lib/citations.js): the server counts what the client links. A page word is followed by
+# a space ("page3" is no citation), "p." and "pp." need not be.
+_PAGE_LABEL = r"(?:pages?\s+|pp?\.\s*)"
 _PAGE_ITEM = r"\d{1,6}(?:\s*[-\u2013\u2014]\s*\d{1,6})?"
 _PAGE_LIST = rf"{_PAGE_ITEM}(?:\s*(?:,\s*and\b|,|\band\b|&)\s*{_PAGE_ITEM})*"
 _PAGE_NUMBER = re.compile(r"(\d+)(?:\s*[-\u2013\u2014]\s*(\d+))?")
 RANGE_PAGES = 10   # a range of up to this many pages counts every page in it; a longer one, only its two ends
-_BARE_CITATION = re.compile(rf"\(\s*{_PAGE_LABEL}\s*({_PAGE_LIST})\s*\)", re.IGNORECASE)
+_BARE_CITATION = re.compile(rf"\(\s*{_PAGE_LABEL}({_PAGE_LIST})\s*\)", re.IGNORECASE)
 _WEB_SCHEMES = ("http://", "https://")   # the only links the client may render for a web source
 
 
 def _page_numbers(spec: str) -> set[int]:
+    """The pages of a list such as "4-5 and 8". A list with an item that starts below page 1 ("0-3", "0 and 4") is
+    no citation as a whole, as the client reads it: none of its pages."""
     pages: set[int] = set()
     for first, last in _PAGE_NUMBER.findall(spec):
         lo = int(first)
+        if lo < 1:
+            return set()
         hi = int(last) if last else lo
         pages.update(range(lo, hi + 1) if 0 <= hi - lo < RANGE_PAGES else (lo, hi))
-    pages.discard(0)    # there is no page 0
+    pages.discard(0)    # the far end of "3-0" is no page
     return pages
 
 
@@ -98,29 +104,24 @@ def cited_pages(answer: str, names: list[str]) -> dict[str, set[int]]:
     """The pages the answer cites as `(Name, page N)`, by document, for any of `names` (their canonical
     spelling is the key; the match ignores case). A name may hold commas and parentheses, and one that is the
     front of another ("Guide.md", "Guide.md (2)") never claims the longer one's citation, because the longest
-    is tried first. Within one pair of parentheses the model may join citations with ";" and may name
-    several pages: "(A.md, page 3; B.md, pages 1-2)". A name that isn't in `names` is no citation, and the
-    others beside it still count."""
-    if not names:
+    is tried first.
+
+    A citation is a part, NAME, comma, a page form, that sits right after "(" or ";" and right before ";" or ")":
+    so a joined citation "(A.md, page 3; B.md, pages 1-2)" is several parts, a part with another name or a
+    malformed neighbour ("(A.md, page 3;)", "(A.md, page 3; see (fig. 2))") leaves the rest counted, and
+    "A.md, page 3" in running prose is none. The client reads it the same way (`named` in src/lib/citations.js).
+    One scan of the answer, with no nesting to backtrack through: linear in its length for a fixed set of names."""
+    names = [n for n in names if n]
+    if not names or ("(" not in answer and ";" not in answer):
         return {}
     alternatives = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
-    # One citation, then the same without capture groups, so it can sit inside a larger pattern.
-    part = rf"({alternatives})\s*,\s*{_PAGE_LABEL}\s*({_PAGE_LIST})"
-    quiet = rf"(?:{alternatives})\s*,\s*{_PAGE_LABEL}\s*{_PAGE_LIST}"
-    # A pair of parentheses holding only ";"-joined items: a known citation, or else any text without
-    # parentheses (an unknown name). The second alternative applies only where the first does not, so an item
-    # can match in one way only, and a malformed list fails in linear time. The other text starts and ends on
-    # a non-space for the same reason.
-    item = rf"(?:{quiet}(?=\s*[;)])|(?!{quiet}\s*[;)])[^;()\s](?:[^;()]*[^;()\s])?)"
-    group = re.compile(rf"\(\s*{item}(?:\s*;\s*{item})*\s*\)", re.IGNORECASE)
-    first = re.compile(rf"(?:(?<=\()|(?<=;))\s*{part}(?=\s*[;)])", re.IGNORECASE)
+    part = re.compile(rf"(?<=[(;])\s*({alternatives})\s*,\s*{_PAGE_LABEL}({_PAGE_LIST})(?=\s*[;)])", re.IGNORECASE)
     canonical = {n.lower(): n for n in names}
     found: dict[str, set[int]] = {}
-    for pair in group.finditer(answer):
-        for name, spec in first.findall(pair.group()):
-            pages = _page_numbers(spec)
-            if pages and name.lower() in canonical:
-                found.setdefault(canonical[name.lower()], set()).update(pages)
+    for name, spec in part.findall(answer):
+        pages = _page_numbers(spec)
+        if pages and name.lower() in canonical:
+            found.setdefault(canonical[name.lower()], set()).update(pages)
     return found
 
 
@@ -142,7 +143,7 @@ def sources_by_document(answer: str, evidence: list[tuple[str, int | None, str]]
     present = [(doc_id, name) for doc_id, name in docs if doc_id in given]
     if not present:
         return []
-    cited = cited_pages(answer, [name for _, name in docs])
+    cited = cited_pages(answer, [name for _, name in present])
     bare = {p for spec in _BARE_CITATION.findall(answer) for p in _page_numbers(spec)} if len(present) == 1 else set()
     distinctive = _distinctive(answer, (runs for doc_id, _ in present for runs in given[doc_id].values()))
     sources = []

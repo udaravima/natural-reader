@@ -109,6 +109,58 @@ def test_cited_pages_ignores_unknown_names_and_keeps_the_known_ones_beside_them(
     assert cited_pages("(Guide.md, page 3)", []) == {}
 
 
+@pytest.mark.parametrize("text, want", [
+    # The five strings the review of Task 15 probed: one bad item beside a good citation never costs the good one.
+    ("(Guide.md, page 3;)", {"Guide.md": {3}}),
+    ("(Guide.md, page 3; Tour.md, page 1;)", {"Guide.md": {3}, "Tour.md": {1}}),
+    ("(Guide.md, page 3;; Tour.md, page 1)", {"Guide.md": {3}, "Tour.md": {1}}),
+    ("(Guide.md, page 3; see (fig. 2))", {"Guide.md": {3}}),
+    ("(Guide.md, page 3; Other (v2).md, page 2)", {"Guide.md": {3}}),
+    # The page word needs a space (or a "." for p.), and a list holding page 0 is no citation at all.
+    ("(Guide.md, page3)", {}),
+    ("(Guide.md, pages3)", {}),
+    ("(Guide.md, pages 0-3)", {}),
+    ("(Guide.md, pages 0 and 4)", {}),
+    ("(Guide.md, pages 4 and 0)", {}),
+    ("(Guide.md, pages 3-0)", {"Guide.md": {3}}),      # only the first number of an item must be a page
+    ("(Guide.md, p.4)", {"Guide.md": {4}}),
+    ("(Guide.md, pp.4-5)", {"Guide.md": {4, 5}}),
+    ("( Guide.md , page 3 )", {"Guide.md": {3}}),
+    ("x; Guide.md, page 3)", {"Guide.md": {3}}),         # a part sits after "(" OR ";" and before ";" or ")"
+    ("(Guide.md, page 4, line 5)", {}),
+])
+def test_cited_pages_counts_exactly_what_the_client_links(text, want):
+    """Server/client parity (ruled in fix round 1 of Task 15): a part is counted when the client links it. Both
+    read a part as NAME, comma, a page form, sitting after "(" or ";" and before ";" or ")" (cited_pages here,
+    `named` in src/lib/citations.js). Every row was checked against `remarkCitations` when it was added.
+    The client's own tests pin the same grammar in src/lib/citations.test.js: "links the known parts of a joined
+    citation and leaves an unknown name's part as text", "does not link page 0", "links a long or backwards range at
+    its first page too" (pages 0-3) and "does not link a page word inside another word". The review's five strings,
+    "page3" and "pages 0 and 4" are not in that file yet; src/ was another task's tree when this was written."""
+    assert cited_pages(text, NAMES) == want
+
+
+@pytest.mark.parametrize("answer", ["Look at (page3).", "Look at (pages 0).", "Look at (pages 0 and 4)."])
+def test_a_bare_page_needs_the_page_word_spaced_and_no_page_zero(answer):
+    ev = [(G, 3, "Alpha text one."), (G, 4, "Beta text two.")]
+    [out] = sources_by_document(answer, ev, DOCS)
+    assert out["used"] is False
+
+
+def test_cited_pages_is_not_slowed_by_fifty_long_names_and_a_dense_answer():
+    """Fifty names of 300 characters that share a 299-character front, against an answer with a delimiter every 300
+    characters, each followed by the shared front: every delimiter makes every name match almost to its end."""
+    import time
+
+    front = "A" * 299
+    names = [f"{front}{i}" for i in range(50)]
+    for answer in (("(" + front + ";") * 400, ("(" + front) * 400, (";" + front) * 400, "(" + ";" * 100000,
+                   "(" * 100000, ("( " * 50 + front) * 200):
+        started = time.perf_counter()
+        cited_pages(answer, names)
+        assert time.perf_counter() - started < 2
+
+
 @pytest.mark.parametrize("shape", [
     "(" + "Guide.md, page 3; " * 4000,                    # a list that never closes
     "(" + "Guide.md, page 3; " * 4000 + ")",              # ... or ends on a stray ";"
@@ -169,6 +221,17 @@ def test_a_citation_of_an_unknown_document_makes_no_chip():
 def test_a_known_name_beside_an_unknown_one_in_the_same_parentheses_still_counts():
     out = sources_by_document("See (Other.md, page 3; Tour.md, page 2).", EVIDENCE, DOCS)
     assert {s["docName"]: s["used"] for s in out} == {"Guide.md": False, "Tour.md": True, "Notes, v2 (final).md": False}
+
+
+def test_a_citation_of_a_longer_name_that_gave_no_evidence_never_credits_the_shorter_one():
+    """Only the names of documents with evidence are read, so "Guide.md (2)" (no evidence) is not in the pattern;
+    "Guide.md" must still not claim its citation."""
+    docs = [(G, "Guide.md"), ("h" * 64, "Guide.md (2)")]
+    ev = [(G, 3, "Alpha text one."), (G, 5, "Beta text two.")]
+    [out] = sources_by_document("It is in (Guide.md (2), page 5).", ev, docs)
+    assert (out["docName"], out["pages"], out["used"]) == ("Guide.md", [3, 5], False)
+    [out] = sources_by_document("It is in (Guide.md, page 5).", ev, docs)
+    assert (out["pages"], out["used"]) == ([5], True)
 
 
 def test_text_without_a_page_is_never_a_source_by_document():

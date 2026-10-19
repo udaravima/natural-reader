@@ -848,6 +848,11 @@ def _event(events, kind):
     return next(e for e in events if e["type"] == kind)
 
 
+def _last(kinds, kind):
+    """The position of the last `kind`: a multi-step turn has several text-end events, and the notes come after the final one."""
+    return len(kinds) - 1 - kinds[::-1].index(kind)
+
+
 def _notes(row):
     return (row[5] or {}).get("notes", [])
 
@@ -864,7 +869,7 @@ async def test_project_turn_saves_scope_and_sources_notes(db_conn, monkeypatch):
                              {"docId": B, "docName": "Beta.md", "pages": [4], "used": True}]}
     event = _event(events, "data-sources")
     assert {k: v for k, v in event.items() if k not in ("type", "seq")} == sources
-    assert kinds.index("text-end") < kinds.index("data-sources") < kinds.index("finish")
+    assert _last(kinds, "text-end") < kinds.index("data-sources") < kinds.index("finish")
     assert "data-web-sources" not in kinds
     row = await _msg(db_conn, claim.turn_id)
     assert _notes(row) == [SCOPE_NOTE, {"kind": "sources", **sources}]
@@ -916,7 +921,7 @@ async def test_web_pages_with_facts_become_web_sources(conn, web, use_router, we
     pages = [{"n": 2, "title": "Title b", "url": url("b")}]
     event = _event(events, "data-web-sources")
     assert {k: v for k, v in event.items() if k not in ("type", "seq")} == {"pages": pages}
-    assert kinds.index("text-end") < kinds.index("data-web-sources") < kinds.index("finish")
+    assert _last(kinds, "text-end") < kinds.index("data-web-sources") < kinds.index("finish")
     assert "data-sources" not in kinds                                                # no document in this chat
     assert _notes(await _msg(conn, claim.turn_id)) == [{"kind": "web_sources", "pages": pages}]
 
@@ -978,3 +983,42 @@ async def test_a_project_turn_has_document_sources_then_web_sources(db_conn, mon
     assert kinds.index("data-sources") < kinds.index("data-web-sources") < kinds.index("finish")
     assert [n["kind"] for n in _notes(await _msg(db_conn, claim.turn_id))] == ["scope", "sources", "web_sources"]
     assert _event(events, "data-sources")["documents"][0]["docName"] == "Alpha.md"
+
+
+async def test_a_turn_that_ends_with_an_offer_still_gets_its_sources(db_conn, monkeypatch):
+    """The offer ends the turn (no further model step), but the document pages it read before are still sources:
+    data-sources follows data-web-offer, before `finish`, and the notes are saved in that order."""
+    from server.services import web_search as ws
+
+    monkeypatch.setattr(ws, "SEARXNG_URL", "http://searx.test")
+    monkeypatch.delenv("CHAT_WEB_SEARCH", raising=False)                      # the default: ask
+    offer = {"query": "ZEPHYR-9 rollout dates", "reason": "The documents give no dates."}
+    router = FakeRouter(steps=[
+        _search_step(0),
+        [TextDelta("Alpha covers ZEPHYR-9 (Alpha.md, page 1), but no dates. "),
+         ToolCallReady(ToolCall("o1", "offer_web_search", offer)), Usage(5, 5), Finish("tool_calls")],
+        reply("SHOULD NEVER BE SENT")])
+    events, claim = await _project_turn(db_conn, monkeypatch, router)
+    kinds = types(events)
+    assert len(router.calls) == 2                                              # the offer ended the turn
+    assert _event(events, "data-web-offer")["query"] == offer["query"]
+    assert kinds.index("data-web-offer") < kinds.index("data-sources") < kinds.index("finish")
+    documents = _event(events, "data-sources")["documents"]
+    assert [(d["docName"], d["pages"], d["used"]) for d in documents] == [("Alpha.md", [1], True), ("Beta.md", [4], False)]
+    assert [n["kind"] for n in _notes(await _msg(db_conn, claim.turn_id))] == ["scope", "web_offer", "sources"]
+
+
+async def test_web_sources_come_with_a_document_scope_chat_too(conn, open_doc, web, use_router, web_auto):
+    """Any scope: a chat about one open document that reads the web saves the web sources, and no document sources
+    are invented for it (nothing was read from the document)."""
+    web.searches["port"] = [hit("a"), hit("b")]
+    web.pages[url("a")] = web.pages[url("b")] = PAGE
+    use_router(by_label({"[web 1]": ("The port is 8080", "set port = 8080")}))
+    events, claim = await _run(conn, FakeRouter(steps=_web_turn_steps("It is 8080 (a.test).", results=(1,))),
+                               text="Which port?")
+    kinds = types(events)
+    pages = [{"n": 1, "title": "Title a", "url": url("a")}]
+    assert _event(events, "data-web-sources")["pages"] == pages
+    assert _last(kinds, "text-end") < kinds.index("data-web-sources") < kinds.index("finish")
+    assert "data-sources" not in kinds
+    assert _notes(await _msg(conn, claim.turn_id)) == [{"kind": "web_sources", "pages": pages}]

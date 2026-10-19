@@ -342,24 +342,27 @@ def score(case: Case, answer: str, tool_calls: list[dict[str, Any]], names: list
     return result
 
 
+def _searched_only(r: Result, docs) -> bool:
+    """Some of `docs` are in the saved sources note with `used: false`: the model was given them, and the answer
+    neither cited them nor shared a distinctive run with them."""
+    named = {str(c.get("docName", "")).casefold(): c for c in r.chips or []}
+    return any(not named[d.casefold()].get("used") for d in docs if d.casefold() in named)
+
+
 def _chip_parts(r: Result) -> list[str]:
     """The citations layer's columns: does the saved sources note name the document and page the case expects,
     and, for the web-read case, did its answer produce a web source. Nothing when no note was observed."""
     if r.chips is None:
         return []
     case = r.case
-    named = {str(c.get("docName", "")).casefold(): c for c in r.chips}
-
-    def searched(docs) -> bool:
-        return any(not named[d.casefold()].get("used") for d in docs if d.casefold() in named)
-
+    named = {str(c.get("docName", "")).casefold() for c in r.chips}
     parts = []
     if case.docs:
         missing = [d for d in case.docs if d.casefold() not in named]
         parts.append(f"chip doc missing ({', '.join(missing)})" if missing
-                     else "chip doc ok" + (" (searched only)" if searched(case.docs) else ""))
+                     else "chip doc ok" + (" (searched only)" if _searched_only(r, case.docs) else ""))
     if case.pages:
-        parts.append("chip page ok" + (" (searched only)" if searched([d for d, _ in case.pages]) else "")
+        parts.append("chip page ok" + (" (searched only)" if _searched_only(r, [d for d, _ in case.pages]) else "")
                      if r.chip_page else f"chip page missing (want {', '.join(f'{d} p. {p}' for d, p in case.pages)})")
     if case.kind == "web-read" and r.web_chips is not None:
         hosts = list(dict.fromkeys(urlsplit(str(p.get("url"))).hostname or "?" for p in r.web_chips))
@@ -447,11 +450,14 @@ def format_report(runs: list[list[Result]], *, model: str, variant: str) -> str:
     if answered:
         right = sum(bool(r.cited) and not r.wrong_docs for r in answered)
         lines.append(f"right-document citations {right}/{len(answered)}")
-    chips = [(r.chip_doc, r.chip_page) for r in asked if not r.error and r.chips is not None]
-    docs, pages = [d for d, _ in chips if d is not None], [p for _, p in chips if p is not None]
+    observed = [r for r in asked if not r.error and r.chips is not None]
+    docs, pages = [r for r in observed if r.chip_doc is not None], [r.chip_page for r in observed if r.chip_page is not None]
     if docs or pages:
+        # A document the note lists as searched only counts as named; the total says how many were.
+        searched = sum(bool(r.chip_doc) and _searched_only(r, r.case.docs) for r in docs)
         lines.append("source chips: " + ", ".join(
-            [f"documents {sum(docs)}/{len(docs)}"] * bool(docs) + [f"pages {sum(pages)}/{len(pages)}"] * bool(pages)))
+            [f"documents {sum(bool(r.chip_doc) for r in docs)}/{len(docs)} ({searched} searched only)"] * bool(docs)
+            + [f"pages {sum(pages)}/{len(pages)}"] * bool(pages)))
     web = [bool(r.web_chips) for r in asked if r.case.kind == "web-read" and not r.error and r.web_chips is not None]
     if web:
         lines.append(f"web source chips {sum(web)}/{len(web)}")

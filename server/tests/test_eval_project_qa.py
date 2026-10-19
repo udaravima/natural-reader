@@ -929,7 +929,8 @@ def test_the_report_has_the_chip_columns_and_a_total():
     assert "; chip doc ok (searched only); chip page ok (searched only)" in lines[2]
     assert "; chip doc missing (ARCHITECTURE.md); chip page missing (want ARCHITECTURE.md p. 3)" in lines[3]
     assert "chip" not in lines[4]                                         # no note was observed: no column
-    assert "source chips: documents 2/3, pages 2/3" in "\n".join(lines)
+    # A document listed as searched only counts as named, and the total says how many were: it must not flatter.
+    assert "source chips: documents 2/3 (1 searched only), pages 2/3" in "\n".join(lines)
 
 
 def test_the_web_read_case_reports_whether_its_answer_produced_a_web_chip():
@@ -969,3 +970,13 @@ async def test_ask_scores_the_chips_the_question_turn_saved(monkeypatch):
     r = await pq._ask(WEB, names=NAMES, web_offered=True, user_id="u", project_id="p", model="m", think="off",
                       router=None, cfg=None, budget=None)
     assert r.web_chips == pages and r.chips == []          # the yes turn's note, not the first turn's (none)
+
+
+def test_the_chip_total_counts_the_documents_that_were_only_searched():
+    used = _score(START, START_ANSWER, chips=[READ_CHIP])
+    searched = _score(START, START_ANSWER, chips=[{**READ_CHIP, "used": False}])
+    nothing = _score(START, START_ANSWER, chips=[SEARCHED_CHIP])
+    assert "source chips: documents 1/1 (0 searched only), pages 1/1" in pq.format_report([[used]], model="m", variant="9")
+    both = pq.format_report([[used, searched, nothing]], model="m", variant="9")
+    assert "source chips: documents 2/3 (1 searched only), pages 2/3" in both
+    assert all(r.passed for r in (used, searched, nothing))                   # recorded, never scored
