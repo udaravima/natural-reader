@@ -64,8 +64,8 @@ A few load-bearing decisions worth knowing:
 
 | Component | Minimum | Notes |
 |---|---|---|
-| Node.js | 18+ | Frontend dev server. |
-| Python | 3.10+ | FastAPI uses `\|` union syntax. |
+| Node.js | 20.19+ or 22.12+ | Frontend dev server (Vite 7). `startup.sh` refuses older versions. |
+| Python | 3.12 or 3.13 | For the bare-metal backend (`BACKEND_RUNTIME=venv`) and the test suite; the backend container needs none. 3.14 is untested. |
 | Docker (or Postgres + pgvector locally) | any recent | The compose file pins `pgvector/pgvector:pg16`. |
 | Ollama | latest | Both the chat model and `nomic-embed-text` must be pulled locally. |
 | RAM | ~6 GB free | Postgres + Ollama + a small chat model fit comfortably. Larger chat models scale linearly. |
