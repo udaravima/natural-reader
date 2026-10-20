@@ -218,3 +218,154 @@ No access-log line carried a query string. `audit.log` records IDs only, e.g. `p
 - **Not removed:** `~/.cache/ms-playwright-mcp/mcp-chrome-0ac177b`. It is the Playwright MCP's own profile directory, created by its failed launch.
 
 Nothing was committed, and no repo file other than this one was changed.
+
+## Re-walk after Task 22 (2026-10-20)
+
+Walked 2026-10-20, 13:03–13:33, on `feat/c2.1-project-chat`. The code under test is `26ace78`. HEAD moved to `cd0e956` at 13:00, before the backend started at 13:08, and that commit changes only `EVAL.md`, so the walked code equals HEAD.
+
+**Headline.** Every Task 22 fix that a person can see works in the running app. The client fixes (e, j, k, l, m, n) all pass, now with real mouse clicks. The reader fix (h) works too: an approved search now shows a **docs.redhat.com** web source chip, which the first walk never got. The new answer step (a) does what spec §5.8 says whenever the model offers: text first, the card under it, no card after Stop.
+
+The surprise is a different one. In the project chat, the RHEL question now usually gets **no offer at all**. That happened in 3 of 4 chats. Each of those replies says the documents lack a RHEL 9 package list, and none gives a card, so the user's one-click path to the web is gone. Two of the four answers also gave versions from an older document that would not run this app (finding 2).
+
+### Set-up differences from the first walk
+
+The rules were the same as the first walk's: the throwaway Keycloak on `127.0.0.1:18081`, the scratch `natural_reader_walk` on `nr-c21-testpg` (`:5434`), the backend under `env -i`, the cloud model only, the fake SearXNG on `:18888`, Vite on 5173, and headless Chromium. The docker-compose Keycloak, the `natural_reader` database and `:5433` were not started, contacted or read. `natural_reader_eval`, `natural_reader_test` and `EVAL.md` were not touched.
+
+- **Nothing was reused.** `natural_reader_walk` didn't exist (the first walk dropped it), and there was no Keycloak container. An earlier start of this re-walk had been cut off by a session limit before any set-up existed. So everything was rebuilt.
+- **Keycloak.** A container `nr-walk-keycloak` from `quay.io/keycloak/keycloak:26.0` (patch version not checked), run with `--userns=keep-id` so it could read the scratch directory. It imported a scratch copy of `deploy/keycloak/realm-export.json`:
+  - the copy gained `olive`, `max` and `walkadmin` (realm role `admin`), all with `reader` and `chat`, `emailVerified: true` and random passwords;
+  - the copy's demo `admin-user` password was also replaced with a random one;
+  - the Keycloak bootstrap admin password was random and never printed.
+- **Backend.** `run.py` with the same explicit values as the first walk, plus `HOME` pointing at a scratch directory. No `KC_ADMIN_*` was set, and `FRONTEND_ORIGIN` was unset. `CHAT_WEB_SEARCH` was unset all through, so the mode was **ask**. Migrations 001–021 ran at start. Olive and Max were pre-enrolled as `active` rows (set-up only).
+- **Documents.** The project was made through the UI: Library → **New project** → "Natural Reader docs" → **Create**.
+  - The nine fixture `.md` files went in through the API as Olive, from her signed-in browser context: `POST /v1/docs`, then `PUT /v1/projects/{id}/docs/{doc}`. The first walk used the reader's Choose File instead.
+  - All nine reached `indexed` · v1 in under a minute.
+- **Member.** Max was added through the UI: Members → **+ Add people** → `max@example.com` → "Max Member" → **Role for the new member** = Reader → **Add**. The tab then read "Members (2)".
+- **Fake SearXNG snippets.** This time each snippet was copied from the page's own text (its opening sentence or meta description). The first walk's snippets were hand-written and more specific than the pages (its finding 1 caveat). The three URLs were the same.
+- **Red Hat page.** With the server's own user agent it returned 200, and trafilatura extracted 4,058 characters, the same as the first walk, including "To install Python 3.12, use: # dnf install python3.12". With a bare `Mozilla/5.0` agent, docs.redhat.com served an "Access Denied" page instead.
+- **Browser.** Headless Chromium 1217 through Playwright, from a scratch Node driver kept running between steps. The contexts were:
+  - Olive at 1366×900 (resized to 700×900 for the narrow menus);
+  - Olive on a phone, 390×844 with `isMobile` and `hasTouch`;
+  - Max at 1366×900;
+  - walkadmin at 1366×900.
+
+  Sign-in was through Keycloak's own form, starting at `/v1/auth/login`.
+- **How controls were operated.** This differs from the first walk, which used DOM `click()`, and that bypasses hit-testing.
+  - Real mouse clicks at the control's centre (`page.mouse.click`) for Read, Stop, the three reader menus, the row ⋯ menu, the outside click, the Chat options radio and **Use the server setting**.
+  - Playwright locator clicks for the rest. These fail if another element covers the control.
+  - Text through `fill`, and keys as real key presses.
+- **Narration.** It really played this time. The progress counter advanced from 2 to 11 of 37 sentences during k.
+- **Ollama.** At 13:22, mid-walk, `ollama ps` listed only `nomic-embed-text:latest`, the local embedding model; the eval agent may share it. At the end it listed nothing. No local chat model ran.
+
+### W1–W5
+
+| Step | Control | What was seen | Result |
+|---|---|---|---|
+| W1a. Documents before the offer | Project page **Ask about this project** → sidebar **Model** (first use) → composer, Enter | In the one reply that offered, the tool lines were `search_documents(query="RHEL 9 packages install") → 5 new passages`, then `offer_web_search(…)`. The three replies with no offer searched 2× and read pages 1–2 or 3–5. | **Pass** |
+| W1b. One reply: text, then the card | (same) | The text cited README.md page 3. It said what the documents lack ("do not provide a specific list of RHEL 9 packages or installation commands") and had a section headed **"General Guidance (Not from documents)"** with no pages. The card sat under it in the same reply (screenshot `w1-03-fresh1.png`). The stream ran text deltas ×400 → `data-web-offer` → `data-sources` → `finish`. The text doesn't ask whether to search. | **Pass** |
+| W1c. Reload | Browser reload → **Sessions** row "I'm a newcomer on RHEL 9…" | The reload itself opened a fresh, empty "No document" chat. Reopening the session row showed the same text (1,249 rendered characters before and after), the same card (same reason and query) and the chip "Project: Natural Reader docs". | **Pass** (see finding 6) |
+| W1d. Approve | Card **Web search query** (edited to "RHEL 9 install Python 3.12 Node.js 22 Podman packages") → **Search the web** | SearXNG received exactly that string at 13:18:48, one second after the click at 13:18:47. The tool lines were `web_search(…) → returned 3 result(s)` and `read_web_pages(results=1) → Found facts on 1 of 1 page(s): docs.redhat.com.` The **Web sources** chip "docs.redhat.com" links to the Red Hat page in a new tab. The Python fact is followed by its site: "`sudo dnf install python3.12` (docs.redhat.com)". The Node.js and Podman lines give dnf commands with no site and no general-knowledge label. The old card turned into the inert "Offered a web search" line. | **Pass** for (h); unlabelled lines in finding 3 |
+| W1e. Count | 3 fresh chats via **Ask about this project**, plus the first | See "W1 count" below | **Partial** |
+| W2. Features | Project page **Ask about this project** → "What are the features of this app?" | The tools were `search_documents(query="features") → 5 new passages` and `read_document_pages(document=7, first_page=1)`. The answer was long and accurate, but every citation was "(README.md, page 1)". **Sources:** README.md p. 1. **Searched (not cited):** ARCHITECTURE.md p. 4, CHAT_WITH_PDF.md p. 1, USER_GUIDE.md p. 1 · p. 5. It doesn't go beyond README. | **Partial** (as in the first walk; Task 22 (c) was measured and removed, EVAL.md) |
+| W3. No document, ask mode | Chat view → **New chat** (sidebar, "Start a fresh chat…") → chip **No document** → "What is the latest stable Python version right now?" | The first round was the offer alone. The answer step then wrote: "Based on my general knowledge, the latest stable version of Python is typically in the 3.12 or 3.13 series, but since I cannot access live updates without a search, this information may be out of date." There were no page citations, and the card ("latest stable Python version October 2026") sat under it. The stream ran text → `data-web-offer` → `finish`. The wording matches note (3). | **Pass** |
+| W4a. Stop during the answer step | No-document chat → "What is the newest stable Podman release right now? Explain in detail…" → **Stop generation** once the answer text had started | Stop was clicked once the tool line `offer_web_search` showed and the text read "Since I have not yet performed a live web search". The reply kept its text, marked **Stopped**, with no card and no "Offered a web search" line (`w4-01-after-stop.png`). After a reload and reopen there was still no card. The saved reply has `status: aborted` and no `web_offer` note. | **Pass** |
+| W4b. Typed request | Same chat, composer: "search the web for RHEL 9 python packages" | A card appeared, prefilled with **"RHEL 9 python 3.13 packages"**, not the typed text. A second try in a fresh no-document chat was prefilled exactly: "RHEL 9 python packages". | **Partial** (finding 4) |
+| W5e. Ask button and membership | walkadmin: Admin console → **Open Natural Reader docs** · Max: Library → Projects → the project | walkadmin (`my_role: null`) saw **Edit**, **Delete project** and the Members and Activity tabs, plus "Only members can see this project's documents.", and **no** Ask about this project. Max (`reader`) saw **Ask about this project** and **Leave project**, and clicking it opened a chat with the chip "Project: Natural Reader docs". | **Pass** |
+| W5j. Read Selection and Send | A document opened from the project (**Open README.md**), then **Chat** / **Chat mode**; then the reader → **Chat beside the page** → a mouse drag over document text | Read Selection is absent in the Chat view at both sizes. Send is the element at its own centre: at 1366×900, Send is 1185,846 42×42; at 390×844, it is 330,720 44×44. In the reader with the panel open and the text "A modern, feature-rich document reader…" selected, Read Selection was at 632,832 160×44 with Ask AI beside it, clear of the panel's Send at 1312,850, which is the element at its own centre (`w5j-06-reader-panel-selection.png`). | **Pass** |
+| W5k. Menu openers keep their keys | Reader, **Read** (mouse) → the menus opened by mouse: **Account** at 1366; header **More actions** and PDF toolbar **More actions** at 700 → Escape → Space on the opener → Escape | In all three, Escape closed the menu (`aria-expanded` went true → false) and focus stayed on the opener. Narration kept playing: "Pause" / "Reading..." at 1366, and the bottom player's pause icon at 700, while the counter advanced 3 → 5 → 6 → 8 → 11 of 37. Space on the opener opened the menu and didn't toggle play. | **Pass** |
+| W5l. The project row's ⋯ menu | Documents tab **More actions for README.md** (mouse) → Escape; reopen → mouse click on empty page; reopen → Tab into "Upload new version" → Escape | `aria-expanded` read true when open and false after each close. Escape from the opener closed it, and so did Escape from inside, which returned focus to the opener. An outside click closed it too. | **Pass** |
+| W5m. Query field at 390 px | Phone: **Chat mode** → **Show Sidebar** → session row → backdrop → the open card | The query field is **278×44**; **Search the web** is 116×44 and **Not now** 77×44; the card is 304×213; there is no horizontal scroll (scrollWidth 390). | **Pass** |
+| W5n. Focus after reset | Admin console → Chat options **Search without asking** (mouse) → **Use the server setting** (mouse) | After the pick: "Set here.", with the radio focused and checked. After the reset: focus is on the **checked "Ask first" radio** (`INPUT radio`, checked), with "The default." and no reset button. `GET /v1/admin/chat-options` = `{"web_search":"ask","source":"default"}`. The audit shows `old=ask new=auto`, then `old=auto new=None`, by user id. | **Pass** |
+
+### W1 count
+
+The same first question, "I'm a newcomer on RHEL 9. Which packages do I need to install to run this?", was asked in four project chats, each opened with **Ask about this project**:
+
+| Chat | Shape | Tools | What the text cited |
+|---|---|---|---|
+| first (W1a) | text only | 2 searches, then CHAT_WITH_PDF.md pages 1–2 | CHAT_WITH_PDF.md p. 1–2, README.md p. 4 |
+| fresh 1 | **text + card** | 1 search, then the offer | README.md p. 3, plus a "General Guidance (Not from documents)" section |
+| fresh 2 | text only | 2 searches, then CHAT_WITH_PDF.md p. 1 and README.md pp. 3–5 | README.md p. 3–4, CHAT_WITH_PDF.md p. 1 |
+| fresh 3 | text only | 2 searches, then CHAT_WITH_PDF.md p. 1 | CHAT_WITH_PDF.md p. 1, README.md p. 4, p. 10 |
+
+- **Text plus card: 1. Card only: 0. Text only: 3.** Over the three fresh chats alone, that's 1 / 0 / 2.
+- The card-only reply that both J3 runs in the first walk got never appeared.
+- No reply asked in words whether to search.
+
+### Privacy check
+
+The fake SearXNG logged **1 query** all walk:
+
+| Time | Query | Approval |
+|---|---|---|
+| 13:18:48 | "RHEL 9 install Python 3.12 Node.js 22 Podman packages" | The **Search the web** click at 13:18:47 (W1d), on the card query Olive had edited |
+
+**Unapproved queries: 0.** The other five offers (W3, W4a, the two W4b cards and the fresh-1 card before approval) sent nothing. The auto mode in W5n was set for about two seconds, and no message was sent during it.
+
+The server logs (`server.log` 378 lines, `audit.log` 22, stdout 380) were searched for:
+
+- `@example.com` and `%40`;
+- RHEL, Podman, podman and "packages";
+- the fetched sites, the project name and README.md;
+- phrases from the W1–W4 questions.
+
+The only hits were the bootstrap line `Bootstrap admin email set to walkadmin@example.com` and "packages" inside a `site-packages` path in an authlib warning. The audit records ids only.
+
+### Findings
+
+Severity follows the review ledger. "Seen" is what the screen, the stream or the saved reply showed. "Inferred" is my reading of why.
+
+1. **Important: in the project chat, the RHEL question usually gets no offer.**
+   - **Seen.** In 3 of 4 chats the model answered from the documents and never called `offer_web_search`. Each of those replies says the documents lack what was asked: "the documentation doesn't provide a specific dnf command for RHEL 9" and "the documents do not provide a specific list of RHEL 9 dnf packages". None has a card. A newcomer who wants the dnf names has no one-click path; they must know to type "search the web for …". EVAL.md's diagnostic counts text plus card in 5 of 6 runs for `rhel-packages`.
+   - **Inferred, not verified.** The eval asks "I'm on RHEL 9, which packages do I need?". The walk asks "I'm a newcomer on RHEL 9. Which packages do I need to install to run this?". "To run this" points at the app, which the documents do cover, so the model may see no gap. I didn't ask the eval's wording in the app.
+2. **Important (answer quality): 2 of 4 RHEL answers gave requirements from the older CHAT_WITH_PDF.md that would not run this app.**
+   - **Seen.** The first chat and fresh 3 both read `read_document_pages(document=2, first_page=1)` and answered "Node.js 18+", "Python 3.10+" and "Docker", citing "(CHAT_WITH_PDF.md, page 1)".
+   - **The fixtures say otherwise.** README.md's requirements table gives Node.js 20.19+ or 22.12+ ("older Node will fail to start") and Python 3.12–3.13 ("The chat server needs 3.12+"). CHAT_WITH_PDF.md's table, from v1.6.0, says 18+ and 3.10+.
+   - **Stakes.** A newcomer who follows the answer installs a Node and a Python that the app refuses. Fresh 2 got README's numbers right. The answer cites its page correctly, so the citation checks pass. The fault is choosing the stale source.
+   - **Inferred.** Nothing in the map or the rules tells the model which document is current when two disagree.
+3. **Minor: in the approved web answer, the lines not taken from a page carry neither a site nor a general-knowledge label.**
+   - **Seen.** The answer gave "`sudo dnf module enable nodejs:22`" and "`sudo dnf install podman`" with no site. Only result 1 was read. podman.io's extracted text does contain `sudo dnf install podman` and a "# RHEL 9+" line, so reading result 2 would have given a site.
+   - **Not checked:** whether the approved-turn rules ask for a label on general knowledge.
+4. **Minor: "search the web for X" brings the card back, but X can change.**
+   - **Seen.** In the chat that held the stopped Podman reply, the card was prefilled with "RHEL 9 python 3.13 packages". The typed text was "RHEL 9 python packages". In a fresh chat it was exact.
+   - Consent still holds: the user sees and can edit the query before anything leaves, and SearXNG got nothing.
+   - The prefill is the model's call to `offer_web_search`; no code copies X into it.
+   - **The answer under that card was also wrong in two ways.** It said "Since I am currently waiting for the search results", though nothing runs until the click. It also suggested `sudo dnf module install python3.11`, while the Red Hat page says Python 3.11 ships "as the python3.11 package suite".
+5. **Minor: after Stop, the saved text runs a few words past what the screen showed.** At the click the screen read "…for today, October 20,". After a reload the reply ends "…October 20, 2026,". **Inferred:** the server kept the deltas it had made before the abort reached it.
+6. **Minor (pre-existing): a browser reload opens a new empty chat**, not the one you were in. The chip shows "No document". The chat is one click away in **Sessions**, and the J7 path is the same.
+7. **Minor (pre-existing): on the phone, the open sidebar covers its own Hide Sidebar button.**
+   - **Seen.** At 390 px, the header's **Hide Sidebar** (16,10 44×44) sits under the sidebar's blank top strip: `elementFromPoint` returns the `ASIDE` (`fixed … z-40`, `pt-16`). A mouse click on the button can't reach it.
+   - Tapping the dimmed backdrop closes the sidebar (verified at 355,400), so the user isn't stuck.
+   - The first walk's "Hide Sidebar" step used DOM `click()`, which skips hit-testing, so it couldn't have seen this.
+8. **Walk note: one wrong click of mine.** In W3 my first "New chat" locator matched the Conversation section header, which collapsed the section. My fallback then switched the open features chat's chip to "No document". No message was sent from that state, the features chat kept its project label in **Sessions**, and W2 had already been recorded. The W3 chat was then started with the sidebar's **New chat** ("Start a fresh chat (saved session preserved)").
+
+### Not checked
+
+- **The note's exact text as sent to the model.** The stream doesn't carry it. Form (3) is inferred from W3's wording and `offer_note()` in `server/chat/web_consent.py`.
+- **Note form (2)**, one document: no single-document offer was walked.
+- **The answer step's other paths:** budget exhausted, a provider failure, and Stop on an approved turn where the model offers again.
+- **The chat side panel at phone width.** (j) at 390 px covered the Chat view only.
+- **The PDF toolbar menu with a real PDF.** It was tested with README.md, a Markdown document, at 700 px, where it shows.
+- **The RHEL count with the eval's own wording.**
+- **Not now.** It wasn't re-walked; first walk J4 covers it.
+
+### Removed afterwards
+
+- **Processes.** Each PID was checked by its command line, then stopped with SIGTERM, and all exited:
+  - the driver 4021434, after its browser was closed;
+  - the backend 4020548;
+  - Vite 4021011;
+  - the fake SearXNG 4020088.
+
+  No Chromium process was left. Ports 8000, 5173, 18081, 18888 and 18990 are free.
+- **Container.** `nr-walk-keycloak` was stopped and removed. Only `nr-c21-testpg` remains, still running.
+- **Database.** `natural_reader_walk` was dropped. `nr-c21-testpg` keeps `natural_reader_eval` and `natural_reader_test`, which I didn't touch.
+- **Scratch files deleted:** the passwords file, the realm copy (it held the passwords too), the client secret and session secret files, the scratch document store, the scratch `HOME` and the fetched page copies.
+- **Kept** in `/tmp/claude-1000/-home-fire310w-Documents-Github-natural-reader/ed5a4c77-101f-455a-a6c0-8d9f09fac689/scratchpad/rw/`:
+  - `shots/`: 41 screenshots, e.g. `w1-03-fresh1.png`, `w1-06-web-answer.png`, `w3-02-answer.png`, `w4-01-after-stop.png`, `w5j-06-reader-panel-selection.png`, `w5m-01-phone-card.png`;
+  - `logs/`: `searxng-queries.log`, the SSE bodies of each turn, and the backend and Vite output;
+  - `logdir/`: the server and audit logs;
+  - `pids.txt`;
+  - the scripts: the driver, the fake SearXNG and the backend launcher, which holds no secret.
+
+Nothing was committed, and no tracked file other than this one was changed.
