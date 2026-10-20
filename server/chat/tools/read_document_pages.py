@@ -242,10 +242,11 @@ def _chosen(scope: list[ScopeDoc], value: Any, ctx) -> ScopeDoc | dict[str, str]
     """The ScopeDoc `document` names, or the error the model reads. In document
     scope it is the open document whatever `document` says: a small model
     fills the argument in with a near-name, and one wrong guess must not cost
-    it a round. In a project, leaving it out is an error."""
+    it a round. In a project, leaving it out means the document open in the reader, if it is one of the
+    project's searchable documents, else it is an error."""
     if ctx.project is None:
         return scope[0]
-    return named_in_project(scope, value, ctx)
+    return named_in_project(scope, value, ctx, open_if_missing=True)
 
 
 TOOL = _ReadDocumentPages()

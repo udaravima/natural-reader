@@ -175,6 +175,45 @@ def test_cited_docs_ignores_what_the_app_would_not_link():
     assert pq.cited_docs("(docs README.md, page 1)", ["README.md", "docs README.md"]) == {"docs README.md": {1}}
 
 
+def test_cited_docs_counts_a_joined_citation_as_the_product_does():
+    """Task 22 (d): the eval reads citations with server.chat.sources.cited_pages, the grammar the server counts and the
+    client links: a joined citation names each of its documents (6 turns of the final cloud run were scored as
+    uncited for it)."""
+    names = ["ARCHITECTURE.md", "USER_GUIDE.md", "README.md"]
+    joined = "SESSION_TTL_HOURS: 168 (ARCHITECTURE.md, page 3; USER_GUIDE.md, pages 1-2)."
+    assert pq.cited_docs(joined, names) == {"ARCHITECTURE.md": {3}, "USER_GUIDE.md": {1, 2}}
+    assert pq.cited_docs("(ARCHITECTURE.md, page 3; README.md, p. 4 and 6)", names) == {
+        "ARCHITECTURE.md": {3}, "README.md": {4, 6}}
+
+
+def test_a_page_word_with_no_space_counts_nothing_as_in_the_product():
+    names = ["README.md"]
+    assert pq.cited_docs("(README.md, page3)", names) == {}
+    assert pq.cited_docs("(README.md, page 3)", names) == {"README.md": {3}}
+
+
+def test_a_joined_citation_now_passes_the_case_it_failed():
+    """session-lifetimes failed 6 turns of the final cloud run with the right fact and the right chips, only
+    because the model joined its citations."""
+    case = next(c for c in pq.CASES if c.name == "session-lifetimes")
+    answer = ("SESSION_TTL_HOURS: 168 (ARCHITECTURE.md, page 3; USER_GUIDE.md, page 1) and "
+              "SESSION_IDLE_HOURS: 12 (ARCHITECTURE.md, page 3; USER_GUIDE.md, page 1).")
+    r = _score(case, answer)
+    assert r.passed and r.cited and r.pages_ok and r.cited_docs == {"ARCHITECTURE.md", "USER_GUIDE.md"}
+
+
+def test_a_joined_citation_of_a_forbidden_document_is_still_wrong():
+    case = next(c for c in pq.CASES if c.name == "user-guide-pins")
+    r = _score(case, "Pins go with each message (USER_GUIDE.md, page 3; README.md, page 1).")
+    assert not r.passed and r.wrong_docs == {"README.md"}
+
+
+def test_the_invented_page_check_for_gap_cases_keeps_its_own_narrow_pattern():
+    """Task 22 (d) leaves `_pages_cited_in_sentences_with` alone: it reads the plain "(Name, page N)" form only."""
+    names = ["DEPLOYMENT.md"]
+    assert pq._pages_cited_in_sentences_with("RHEL 9 needs dnf (DEPLOYMENT.md, page 2).", names, "RHEL") == {2}
+
+
 def test_a_wrong_document_citation_fails_the_case():
     case = next(c for c in pq.CASES if c.kind == "named-doc")
     r = pq.score(case, f"... ({case.forbid_docs[0]}, page 1)", [], ["README.md", *case.docs, *case.forbid_docs],

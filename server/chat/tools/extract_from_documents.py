@@ -25,7 +25,7 @@ from ...services.embeddings import embed_query
 from ..project_scope import ScopeDoc
 from ..reader import Passage, ReaderResult, batches, get_reader_config, read_many
 from .read_document_pages import page_count, page_number, page_texts
-from .scope import choices_text, documents_listing, named_in_project, scope_docs
+from .scope import choices_text, documents_listing, named_in_project, open_document, scope_docs
 
 logger = logging.getLogger(__name__)
 
@@ -88,9 +88,14 @@ def _need(value: Any) -> str:
 def _chosen(scope: list[ScopeDoc], values: Any, ctx) -> list[ScopeDoc]:
     """The documents named, in ref order. In document scope it is the open document whatever `documents` says
     (a small model fills the argument with a near-name, and one wrong guess must not cost it a round, as for
-    read_document_pages). In a project each value gets the same lookup and errors as named_in_project."""
+    read_document_pages). In a project each value gets the same lookup and errors as named_in_project; with
+    none named, it is the document open in the reader if that is one of the project's searchable documents."""
     if ctx.project is None:
         return [scope[0]]
+    if values is None or values == "" or values == []:
+        open_doc = open_document(scope)
+        if open_doc is not None:
+            return [open_doc]
     if isinstance(values, (int, float, str)) and not isinstance(values, bool) and values != "":
         values = [values]    # a lone value names one document (1.0 too, as inside a list)
     if not isinstance(values, list) or not values:

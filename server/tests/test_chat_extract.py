@@ -94,8 +94,8 @@ class Env:
             "VALUES (%s, %s, %s, %s, %s, %s, %s::vector, 'm')",
             (doc_id, ord_, page, chunk_type, text, f"h{doc_id[:2]}{ord_}", None if d is None else _vec(1, d)))
 
-    async def ctx(self, **kw):
-        scope = await load_project_scope(self.conn, self.alice.user_id, self.project_id, open_doc_id=None)
+    async def ctx(self, open_doc_id=None, **kw):
+        scope = await load_project_scope(self.conn, self.alice.user_id, self.project_id, open_doc_id=open_doc_id)
         return ToolContext(self.alice.user_id, None, project=scope, question="How do I install it?", **kw)
 
     async def doc_ctx(self, doc_id, **kw):
@@ -653,6 +653,36 @@ async def test_one_to_five_documents(env, use_router):
         assert one.ok and one.result["documents"] == [{"ref": 1, "name": "Alpha.md"}], lone
     assert not (await _extract(ctx, {"documents": 1.5, "need": "n"})).ok
     assert not (await _extract(ctx, {"documents": True, "need": "n"})).ok
+
+
+async def test_without_documents_a_project_reads_the_open_document(env, use_router):
+    """Task 22 (o): `documents` left out (or empty) means the document open in the reader, when it is one of the
+    project's searchable documents. A pages entry without its own `document` is still an error."""
+    await _alpha_and_gamma(env)
+    await env.add_doc(PB, "Beta.md", {1: "Beta has the answer."})          # Alpha 1, Beta 2, Gamma 3
+    use_router(by_label({"[2, page 1]": ("Beta fact", "Beta has the answer")}))
+    ctx = await env.ctx(open_doc_id=PB)
+    for documents in (None, [], ""):
+        run = await _extract(ctx, {"documents": documents, "need": "n"})
+        assert run.ok and run.result["documents"] == [{"ref": 2, "name": "Beta.md"}], documents
+        assert [(f["ref"], f["page"]) for f in run.result["facts"]] == [(2, 1)]
+    run = await _extract(ctx, {"need": "n"})                                # `documents` not sent at all
+    assert run.ok and run.result["documents"] == [{"ref": 2, "name": "Beta.md"}]
+    named = await _extract(ctx, {"documents": [1], "need": "n"})            # a named document is the one asked for
+    assert named.ok and named.result["documents"] == [{"ref": 1, "name": "Alpha.md"}]
+    pages = await _extract(ctx, {"documents": [2], "need": "n", "pages": [{"first_page": 1}]})
+    assert pages.result == {"error": "document is required: use a number or name from the list: "
+                                     "1 Alpha.md, 2 Beta.md."}
+
+
+async def test_without_documents_nothing_open_or_open_elsewhere_is_still_an_error(env, use_router):
+    await _alpha_and_gamma(env)
+    router = use_router(NOTHING)
+    error = {"error": "documents is required: 1-5 numbers or names from the list: 1 Alpha.md."}
+    assert (await _extract(await env.ctx(), {"need": "n"})).result == error             # nothing open
+    assert (await _extract(await env.ctx(open_doc_id=PC), {"need": "n"})).result == error   # open, still extracting
+    assert (await _extract(await env.ctx(open_doc_id="9" * 64), {"need": "n"})).result == error   # not the project's
+    assert router.calls == []
 
 
 async def test_in_document_scope_documents_means_the_open_document(env, use_router):

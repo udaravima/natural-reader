@@ -23,7 +23,8 @@ from server.chat.tools import ToolContext, ToolRun, TurnTools, available_tools, 
 from server.chat.tools import search_documents as sd_tool
 from server.chat.tools import web_search as ws_tool
 from server.chat.web_consent import app_web_search, web_offer
-from server.llm.types import CallSettings, Finish, TextDelta, ToolCall, ToolCallReady, Usage
+from server.llm.types import (CallSettings, Finish, ProviderError, ProviderUnavailable, TextDelta, ToolCall,
+                              ToolCallReady, Usage)
 from server.services import chat_options
 from server.services.doc_search import ReadableDoc
 from server.services import web_search as ws
@@ -141,19 +142,211 @@ async def test_offer_ends_the_turn_and_saves_the_note(conn, engine):
     assert engine.queries == []                                    # nothing went out
 
 
-async def test_an_offer_with_no_text_adds_none(conn, engine):
-    router = FakeRouter(steps=[offer_call()])
+# Task 22 (a): an offer turn writes its answer. The offer with no text in its round gets one more model step with
+# no tools, so the card is never the whole reply.
+
+OFFER_NOTE_PROJECT = (
+    "The user now sees a card asking whether to search the web. Write your answer: what the documents say about "
+    "this, with their pages, and what they don't cover. You may add what you know in general, introduced as not "
+    "from the documents and never with a page. Don't ask whether to search; the card does.")
+# In document scope "the document" replaces "the documents", and the verbs and pronouns agree with it.
+OFFER_NOTE_DOCUMENT = (
+    "The user now sees a card asking whether to search the web. Write your answer: what the document says about "
+    "this, with its pages, and what it doesn't cover. You may add what you know in general, introduced as not "
+    "from the document and never with a page. Don't ask whether to search; the card does.")
+ANSWER = "The documents don't mention RHEL 9. In general, you would install python3.13 from AppStream."
+
+
+def tool_message(call, call_id="o1"):
+    return next(m for m in call["messages"] if getattr(m, "tool_call_id", None) == call_id)
+
+
+async def test_an_offer_with_no_text_gets_one_more_step_with_no_tools(conn, engine):
+    router = FakeRouter(steps=[offer_call(), [TextDelta(ANSWER), Usage(7, 9), Finish("stop")],
+                               reply("SHOULD NEVER BE SENT")])
     events, claim = await turn(conn, router)
-    assert "text-delta" not in types(events)
-    assert (await _msg(conn, claim.turn_id))[2] == ""
+    assert len(router.calls) == 2
+    assert router.calls[0]["tools"] == ["offer_web_search"] and router.calls[1]["tools"] == []
+    # The final step's text, then the card, then finish.
+    assert types(events) == ["start", "start-step", "finish-step", "tool-input-available", "tool-output-available",
+                             "start-step", "text-start", "text-delta", "text-end", "finish-step",
+                             "data-web-offer", "finish"]
+    assert "".join(e["delta"] for e in events if e["type"] == "text-delta") == ANSWER
+    offer = next(e for e in events if e["type"] == "data-web-offer")
+    assert (offer["query"], offer["reason"]) == (OFFER["query"], OFFER["reason"])
+    assert events[-1]["finishReason"] == "stop"
+    status, reason, content, _, tool_calls, doc_context, stats = await _msg(conn, claim.turn_id)
+    assert (status, reason) == ("complete", "stop")
+    assert content == ANSWER
+    assert doc_context == {"notes": [{"kind": "web_offer", **OFFER}]}
+    assert [c["name"] for c in tool_calls] == ["offer_web_search"]
+    # An ordinary step for the stats: counted, with its tokens, and the last step's figures.
+    assert (stats["steps"], stats["doneReason"], stats["evalCount"]) == (2, "stop", 9)
+    assert events[-1]["usage"] == {"promptTokens": 12, "completionTokens": 14, "estimated": False}
+    assert engine.queries == []                                    # the extra step runs no web tool
+
+
+async def test_the_offers_result_carries_the_note_to_the_model(conn, engine):
+    router = FakeRouter(steps=[offer_call(), reply(ANSWER)])
+    await turn(conn, router)
+    result = json.loads(tool_message(router.calls[1]).content)
+    assert result == {"offered": True, **OFFER, "note": OFFER_NOTE_DOCUMENT}      # no project: the document
+
+
+async def test_the_note_names_the_documents_in_a_project(conn, engine):
+    router = FakeRouter(steps=[offer_call(), reply(ANSWER)])
+    _, pid = await _two_doc_project(conn)
+    await turn(conn, router, project_id=pid, user=await member(conn, "alice"))
+    assert json.loads(tool_message(router.calls[1]).content)["note"] == OFFER_NOTE_PROJECT
+
+
+def test_the_offer_notes_are_exact():
+    assert web_consent.offer_note(project=True) == OFFER_NOTE_PROJECT
+    assert web_consent.offer_note(project=False) == OFFER_NOTE_DOCUMENT
+
+
+async def test_an_offer_with_text_gets_no_extra_step(conn, engine):
+    """The model already wrote its answer in the offer round: nothing changes."""
+    router = FakeRouter(steps=[[TextDelta("The documents don't cover RHEL. "), *offer_call()],
+                               reply("SHOULD NEVER BE SENT")])
+    events, claim = await turn(conn, router)
+    assert len(router.calls) == 1
+    assert types(events)[-2:] == ["data-web-offer", "finish"]
+    assert (await _msg(conn, claim.turn_id))[2] == "The documents don't cover RHEL. "
+
+
+async def test_the_extra_step_runs_when_the_offer_round_was_the_last_allowed_one(conn, engine, open_doc):
+    router = FakeRouter(steps=[offer_call(), reply(ANSWER)])
+    events, claim = await turn(conn, router, doc_id="d" * 64, cfg=ChatConfig(max_tool_rounds=1))
+    assert len(router.calls) == 2 and router.calls[1]["tools"] == []
+    assert types(events)[-2:] == ["data-web-offer", "finish"]
+    assert (await _msg(conn, claim.turn_id))[2] == ANSWER
+    # The offer says what to write; the tools-are-over note is for the results that carry no offer.
+    assert json.loads(tool_message(router.calls[1]).content)["note"] == OFFER_NOTE_DOCUMENT
+
+
+async def test_other_results_of_the_last_round_keep_the_rounds_over_note(conn, engine, open_doc):
+    router = FakeRouter(steps=[[ToolCallReady(ToolCall("c1", "search_documents", {"query": "rhel"})),
+                                ToolCallReady(ToolCall("o1", "offer_web_search", OFFER)),
+                                Usage(5, 5), Finish("tool_calls")], reply(ANSWER)])
+    await turn(conn, router, doc_id="d" * 64, cfg=ChatConfig(max_tool_rounds=1))
+    assert json.loads(tool_message(router.calls[1], "c1").content)["note"] == orchestrator.LAST_ROUND_NOTE
+    assert json.loads(tool_message(router.calls[1], "o1").content)["note"] == OFFER_NOTE_DOCUMENT
+
+
+async def test_a_second_offer_in_the_round_gets_no_note(conn, engine):
+    """One card is shown (the first offer); the second result only has to be answered."""
+    router = FakeRouter(steps=[[ToolCallReady(ToolCall("o1", "offer_web_search", OFFER)),
+                                ToolCallReady(ToolCall("o2", "offer_web_search", {**OFFER, "query": "another"})),
+                                Usage(5, 5), Finish("tool_calls")], reply(ANSWER)])
+    events, _ = await turn(conn, router)
+    assert "note" in json.loads(tool_message(router.calls[1], "o1").content)
+    assert "note" not in json.loads(tool_message(router.calls[1], "o2").content)
+    assert [e["query"] for e in events if e["type"] == "data-web-offer"] == [OFFER["query"]]
+
+
+async def test_the_extra_step_is_held_to_the_length_cap(conn, engine):
+    router = FakeRouter(steps=[offer_call(), [TextDelta("The documents say"), Usage(5, 5), Finish("length")]])
+    events, claim = await turn(conn, router)
+    assert events[-1]["finishReason"] == "length" and types(events)[-2:] == ["data-web-offer", "finish"]
+    status, reason, content, _, _, doc_context, stats = await _msg(conn, claim.turn_id)
+    assert (reason, content, stats["doneReason"]) == ("length", "The documents say", "length")
+    assert doc_context == {"notes": [{"kind": "web_offer", **OFFER}]}
+
+
+async def test_the_extra_step_still_ends_the_turn_with_the_offer_when_the_model_writes_nothing(conn, engine):
+    router = FakeRouter(steps=[offer_call(), [Usage(5, 0), Finish("stop")]])
+    events, claim = await turn(conn, router)
+    assert types(events)[-2:] == ["data-web-offer", "finish"] and "error" not in types(events)
+    status, reason, content, _, _, doc_context, _ = await _msg(conn, claim.turn_id)
+    assert (status, reason, content) == ("complete", "stop", "")        # not "max-steps": the card is the answer
+    assert doc_context == {"notes": [{"kind": "web_offer", **OFFER}]}
+
+
+async def test_an_offer_never_runs_a_tool_in_the_extra_step(conn, engine):
+    """A model that calls a tool anyway in the tools-off step gets nothing run, and the turn still ends with the card."""
+    router = FakeRouter(steps=[offer_call(), [TextDelta("Let me look. "), *offer_call(), ]])
+    events, claim = await turn(conn, router)
+    assert len(router.calls) == 2
+    assert [e["toolCallId"] for e in events if e["type"] == "tool-input-available"] == ["o1"]
+    assert types(events)[-2:] == ["data-web-offer", "finish"]
+    assert [e["type"] for e in events].count("data-web-offer") == 1
+
+
+async def test_a_provider_failure_in_the_extra_step_still_ends_with_the_offer(conn, engine):
+    router = FakeRouter(steps=[offer_call(), ([], ProviderUnavailable("connection lost"))])
+    events, claim = await turn(conn, router)
+    assert "error" not in types(events)
+    assert types(events)[-2:] == ["data-web-offer", "finish"]
+    status, reason, content, _, _, doc_context, _ = await _msg(conn, claim.turn_id)
+    assert (status, reason, content) == ("complete", "stop", "")
+    assert doc_context == {"notes": [{"kind": "web_offer", **OFFER}]}
+
+
+async def test_a_provider_failure_mid_text_keeps_the_text_and_the_offer(conn, engine):
+    router = FakeRouter(steps=[offer_call(), ([TextDelta("The documents don't ")], ProviderError(500, "oom"))])
+    alice = await member(conn, "alice")
+    events, claim = await turn(conn, router, user=alice)
+    assert "error" not in types(events)
+    assert types(events)[-4:] == ["text-end", "finish-step", "data-web-offer", "finish"]
+    status, reason, content, _, _, doc_context, _ = await _msg(conn, claim.turn_id)
+    assert (status, reason, content) == ("complete", "stop", "The documents don't ")
+    assert doc_context == {"notes": [{"kind": "web_offer", **OFFER}]}
+    # The partial reply was billed, as a step cut short is (test_provider_error_mid_text_still_records_usage).
+    cur = await conn.execute("SELECT prompt_tokens, eval_tokens FROM inference_usage WHERE user_id=%s",
+                             (alice.user_id,))
+    prompt, completion = (await cur.fetchone())
+    assert prompt > 10 and completion > 5                              # more than the offer round's 5 + 5
+
+
+async def test_a_provider_that_refuses_the_extra_step_is_not_charged_for_it(conn, engine):
+    router = FakeRouter(steps=[offer_call(), ([], ProviderError(400, "invalid model name"))])
+    alice = await member(conn, "alice")
+    await turn(conn, router, user=alice)
+    cur = await conn.execute("SELECT prompt_tokens, eval_tokens FROM inference_usage WHERE user_id=%s",
+                             (alice.user_id,))
+    assert tuple(await cur.fetchone()) == (5, 5)                       # the offer round only
+
+
+async def test_an_exhausted_budget_skips_the_extra_step_and_the_card_still_appears(conn, engine):
+    """The extra step is a model call, so the daily budget holds it back, like any step. What the user was
+    offered is still shown: an error here would hide a card that costs nothing."""
+    alice = await member(conn, "alice")
+    await conn.execute("UPDATE users SET inference_daily_token_budget = 10 WHERE id = %s", (alice.user_id,))
+    router = FakeRouter(steps=[offer_call(), reply(ANSWER)])           # the offer round uses 5 + 5 = the budget
+    events, claim = await turn(conn, router, user=alice)
+    assert len(router.calls) == 1
+    assert "error" not in types(events) and types(events)[-2:] == ["data-web-offer", "finish"]
+    status, reason, content, _, _, doc_context, _ = await _msg(conn, claim.turn_id)
+    assert (status, reason, content) == ("complete", "stop", "")
+    assert doc_context == {"notes": [{"kind": "web_offer", **OFFER}]}
+
+
+async def test_a_cancelled_extra_step_saves_the_text_so_far_and_no_card(conn, engine):
+    """The card was never shown, so none is saved: a reload would show a card the stream never offered."""
+    router = FakeRouter(steps=[offer_call(), [TextDelta("The documents "), TextDelta("don't"), Usage(5, 5),
+                                              Finish("stop")]])
+    alice = await member(conn, "alice")
+    claim = await store.begin_turn(session_id="s-1", user_id=alice.user_id, model_id="ollama:m", text="Hi",
+                                   attachments=[], new_session_pins=None, scope_project_id=None)
+    req = TurnRequest(user_id=alice.user_id, session_id="s-1", model_id="ollama:m", text="Hi", attachments=(),
+                      settings=CallSettings(), doc_id=None, timezone="UTC")
+    agen = run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)
+    async for e in agen:
+        if e["type"] == "text-delta":
+            break
+    await agen.aclose()
+    status, reason, content, _, _, doc_context, _ = await _msg(conn, claim.turn_id)
+    assert (status, reason, content) == ("aborted", "aborted", "The documents ")
+    assert not doc_context or not any(n.get("kind") == "web_offer" for n in doc_context.get("notes", []))
 
 
 async def test_other_calls_in_the_offer_round_still_run(conn, engine, open_doc):
     router = FakeRouter(steps=[[ToolCallReady(ToolCall("c1", "search_documents", {"query": "rhel"})),
                                 ToolCallReady(ToolCall("o1", "offer_web_search", OFFER)),
-                                Usage(5, 5), Finish("tool_calls")]])
+                                Usage(5, 5), Finish("tool_calls")], reply(ANSWER)])
     events, claim = await turn(conn, router, doc_id="d" * 64)
-    assert len(router.calls) == 1
+    assert len(router.calls) == 2                                  # the offer round, then the answer
     outputs = [e["toolCallId"] for e in events if e["type"] == "tool-output-available"]
     assert outputs == ["c1", "o1"]
     assert types(events)[-2:] == ["data-web-offer", "finish"]
@@ -210,11 +403,14 @@ async def test_in_an_approved_turn_the_model_cannot_search_by_name(conn, engine)
 
 async def test_in_an_approved_turn_a_different_search_needs_a_new_offer(conn, engine):
     router = FakeRouter(steps=[offer_call(query="second look", reason="The first search missed it."),
-                               reply("SHOULD NEVER BE SENT")])
+                               reply("The page didn't have it.")])
     events, claim = await turn(conn, router, web="RHEL 9 packages")
-    assert len(router.calls) == 1 and types(events)[-2:] == ["data-web-offer", "finish"]
+    assert types(events)[-2:] == ["data-web-offer", "finish"]
     assert engine.queries == ["RHEL 9 packages"]
     assert (await _msg(conn, claim.turn_id))[5]["notes"][-1]["query"] == "second look"
+    # An offer with no text writes its answer here too: one more step, no tools, the app's search still above it.
+    assert len(router.calls) == 2 and router.calls[1]["tools"] == []
+    assert app_exchange(router.calls[1]) and (await _msg(conn, claim.turn_id))[2] == "The page didn't have it."
 
 
 async def test_the_exchange_follows_the_users_message(conn, engine):
@@ -574,10 +770,12 @@ async def test_an_offer_after_the_result_budget_is_spent_still_ends_the_turn_wit
     budget = used + 20
     assert offered > 20                                             # the offer does not fit in what is left
     router = FakeRouter(steps=[[ToolCallReady(ToolCall("c1", "search_documents", {"query": "rhel"})),
-                                Usage(5, 5), Finish("tool_calls")], offer_call(), reply("SHOULD NEVER BE SENT")])
+                                Usage(5, 5), Finish("tool_calls")], offer_call(), reply(ANSWER)])
     events, claim = await turn(conn, router, doc_id="d" * 64, cfg=ChatConfig(tool_result_budget_chars=budget))
     assert "error" not in types(events) and types(events)[-2:] == ["data-web-offer", "finish"]
-    assert len(router.calls) == 2 and events[-1]["finishReason"] == "stop"
+    # The offer is unmetered, so its final step is too: search, offer, then the answer with no tools.
+    assert len(router.calls) == 3 and router.calls[2]["tools"] == [] and events[-1]["finishReason"] == "stop"
+    assert json.loads(tool_message(router.calls[2]).content)["note"] == OFFER_NOTE_DOCUMENT
     status, reason, _, _, tool_calls, doc_context, stats = await _msg(conn, claim.turn_id)
     assert (status, reason) == ("complete", "stop")
     assert doc_context == {"notes": [{"kind": "web_offer", **OFFER}]}

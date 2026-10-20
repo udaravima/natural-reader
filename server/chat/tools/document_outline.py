@@ -43,7 +43,7 @@ class _DocumentOutline:
 
     async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
         scope = scope_docs(ctx)
-        chosen = named_in_project(scope, args.get("document"), ctx)
+        chosen = named_in_project(scope, args.get("document"), ctx, open_if_missing=True)
         if isinstance(chosen, dict):
             return chosen
         outline = ctx.outlines.get(chosen.doc.doc_id)

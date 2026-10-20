@@ -494,3 +494,94 @@ async def test_a_list_page_as_trafilatura_gives_it_keeps_the_answers_row_whole(m
     assert all(part in lines for p in picked for part in p.split("\n"))       # no row cut anywhere
     assert sum(len(p) for p in picked) + 2 * (len(picked) - 1) <= 3000
     assert picked == sorted(picked, key=text.index)             # page order
+
+
+# ---- Task 22 (g): the numeric WEB_SEARCH_* settings warn and default ----
+
+import logging
+import subprocess
+import sys
+
+DEFAULTS = ws.WebSearchSettings(result_count=5, max_concurrency=4, fetch_timeout_s=8.0, fetch_total_s=15.0,
+                                max_response_bytes=2_000_000)
+
+
+def test_the_defaults_when_nothing_is_set():
+    assert ws.load_web_search_settings({}) == DEFAULTS
+
+
+def test_valid_values_are_used():
+    env = {"WEB_SEARCH_RESULT_COUNT": "7", "WEB_SEARCH_MAX_CONCURRENCY": "8", "WEB_SEARCH_FETCH_TIMEOUT_S": "2.5",
+           "WEB_SEARCH_FETCH_TOTAL_S": "30", "WEB_SEARCH_MAX_RESPONSE_BYTES": "500000"}
+    assert ws.load_web_search_settings(env) == ws.WebSearchSettings(7, 8, 2.5, 30.0, 500_000)
+
+
+@pytest.mark.parametrize("key,field", [
+    ("WEB_SEARCH_RESULT_COUNT", "result_count"), ("WEB_SEARCH_MAX_CONCURRENCY", "max_concurrency"),
+    ("WEB_SEARCH_FETCH_TIMEOUT_S", "fetch_timeout_s"), ("WEB_SEARCH_FETCH_TOTAL_S", "fetch_total_s"),
+    ("WEB_SEARCH_MAX_RESPONSE_BYTES", "max_response_bytes")])
+@pytest.mark.parametrize("raw", ["abc", "5 results", "nan", "inf", "0x10"])
+def test_a_value_that_is_not_a_number_warns_and_uses_the_default(key, field, raw, caplog):
+    with caplog.at_level(logging.WARNING, logger=ws.logger.name):
+        got = ws.load_web_search_settings({key: raw})
+    assert got == DEFAULTS
+    assert [r.getMessage() for r in caplog.records if key in r.getMessage()], caplog.text
+
+
+@pytest.mark.parametrize("key,field,bad", [
+    ("WEB_SEARCH_RESULT_COUNT", "result_count", ["0", "11", "-3", "5.5"]),
+    ("WEB_SEARCH_MAX_CONCURRENCY", "max_concurrency", ["0", "33", "-1"]),
+    ("WEB_SEARCH_FETCH_TIMEOUT_S", "fetch_timeout_s", ["0", "0.5", "121", "-8"]),
+    ("WEB_SEARCH_FETCH_TOTAL_S", "fetch_total_s", ["0", "0.9", "301", "-15"]),
+    ("WEB_SEARCH_MAX_RESPONSE_BYTES", "max_response_bytes", ["0", "9999", "50000001", "-1"])])
+def test_a_value_out_of_range_warns_and_uses_the_default(key, field, bad, caplog):
+    for raw in bad:
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger=ws.logger.name):
+            got = ws.load_web_search_settings({key: raw})
+        assert got == DEFAULTS, (key, raw)
+        assert any(key in r.getMessage() for r in caplog.records), (key, raw)
+
+
+@pytest.mark.parametrize("key,low,high,field", [
+    ("WEB_SEARCH_RESULT_COUNT", "1", "10", "result_count"),
+    ("WEB_SEARCH_MAX_CONCURRENCY", "1", "32", "max_concurrency"),
+    ("WEB_SEARCH_FETCH_TIMEOUT_S", "1", "120", "fetch_timeout_s"),
+    ("WEB_SEARCH_FETCH_TOTAL_S", "1", "300", "fetch_total_s"),
+    ("WEB_SEARCH_MAX_RESPONSE_BYTES", "10000", "50000000", "max_response_bytes")])
+def test_the_ends_of_each_range_are_allowed(key, low, high, field, caplog):
+    cast = float if key.endswith("_S") else int
+    with caplog.at_level(logging.WARNING, logger=ws.logger.name):
+        for raw in (low, high):
+            assert getattr(ws.load_web_search_settings({key: raw}), field) == cast(raw)
+    assert not caplog.records
+
+
+@pytest.mark.parametrize("raw", ["", "   "])
+def test_an_empty_value_is_the_default_and_says_nothing(raw, caplog):
+    env = {k: raw for k in ("WEB_SEARCH_RESULT_COUNT", "WEB_SEARCH_MAX_CONCURRENCY", "WEB_SEARCH_FETCH_TIMEOUT_S",
+                            "WEB_SEARCH_FETCH_TOTAL_S", "WEB_SEARCH_MAX_RESPONSE_BYTES")}
+    with caplog.at_level(logging.WARNING, logger=ws.logger.name):
+        assert ws.load_web_search_settings(env) == DEFAULTS
+    assert not caplog.records
+
+
+def test_one_bad_value_does_not_spoil_the_others(caplog):
+    env = {"WEB_SEARCH_RESULT_COUNT": "many", "WEB_SEARCH_MAX_CONCURRENCY": "2", "WEB_SEARCH_FETCH_TOTAL_S": "20"}
+    with caplog.at_level(logging.WARNING, logger=ws.logger.name):
+        got = ws.load_web_search_settings(env)
+    assert (got.result_count, got.max_concurrency, got.fetch_total_s) == (5, 2, 20.0)
+
+
+def test_the_server_still_starts_with_a_typo_in_a_web_search_setting():
+    """Import-time reads were bare int()/float(): a typo stopped the server. A fresh interpreter, so the module's
+    own import is what runs."""
+    env = {**__import__("os").environ, "WEB_SEARCH_RESULT_COUNT": "ten", "WEB_SEARCH_FETCH_TIMEOUT_S": "fast",
+           "WEB_SEARCH_MAX_RESPONSE_BYTES": "1e99"}
+    out = subprocess.run(
+        [sys.executable, "-c", "import server.services.web_search as w; "
+         "print(w.RESULT_COUNT, w.FETCH_TIMEOUT_S, w.MAX_RESPONSE_BYTES, w.MAX_CONCURRENCY, w.FETCH_TOTAL_S)"],
+        env=env, capture_output=True, text=True, cwd=str(__import__("pathlib").Path(__file__).resolve().parents[2]))
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split() == ["5", "8.0", "2000000", "4", "15.0"]
+    assert "WEB_SEARCH_RESULT_COUNT" in out.stderr and "WEB_SEARCH_FETCH_TIMEOUT_S" in out.stderr

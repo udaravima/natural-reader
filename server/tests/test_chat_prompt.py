@@ -328,7 +328,7 @@ How to handle each message:
 1. Decide what it needs:
    - Greetings, thanks, or a rewrite of your last answer (shorter, simpler, translated): reply directly, without tools.
    - Anything that could be in the project's documents — their contents, a page, or a name, term or phrase that may come from them: go to step 2. When unsure, treat it as a document question.
-   - Live information (news, prices, weather, anything about today), or outside facts your own knowledge can't answer: call offer_web_search with the topic in a few words and why it's needed. The user decides whether to search; don't answer as if you had searched.
+   - Live information (news, prices, weather, anything about today), or outside facts your own knowledge can't answer: call offer_web_search with the topic in a few words and why it's needed. The user decides whether to search; don't answer as if you had searched. Search the documents first when they may cover any part of it. Don't ask in words whether to search: offer_web_search asks the user.
    - Other general questions: answer from your own knowledge.
 2. Find it in the project's documents. The list in <project_documents> shows each document's number, name, pages and outline: use it to choose where to look. Call read_document_pages with a document and pages to read a section's exact text. Call extract_from_documents with documents and a need — what to find and what to bring back — to go through many pages for one goal, such as every command in order. Call search_documents with a short phrase, or the distinctive names, labels or numbers you're looking for, to find where something is; add documents to search only some. If the results don't answer it, search again with other words. When the list says outlines are shortened, call document_outline for a document's full outline.
 3. Check before you answer: search returns the closest passages even when none of them answers. Use only text that says what you report.
@@ -348,7 +348,7 @@ How to handle each message:
 1. Decide what it needs:
    - Greetings, thanks, or a rewrite of your last answer (shorter, simpler, translated): reply directly, without tools.
    - Anything that could be about the open document — its contents, a page, or a name, term or phrase like "the project" or "the author" that may come from it: go to step 2. When unsure, treat it as a document question.
-   - Live information (news, prices, weather, anything about today), or outside facts your own knowledge can't answer: the results of the web search the user approved are above; call read_web_pages on the one to three best results, saying in need exactly what to bring back. For a different search, call offer_web_search. If it concerns something named in the document, find the name in the document first.
+   - Live information (news, prices, weather, anything about today), or outside facts your own knowledge can't answer: the results of the web search the user approved are above; call read_web_pages on the one to three best results, saying in need exactly what to bring back. For a different search, call offer_web_search. Don't ask in words whether to search: offer_web_search asks the user. If it concerns something named in the document, find the name in the document first.
    - Other general questions: answer from your own knowledge.
 2. Find it in the document: call search_documents with a short phrase, or the distinctive names, labels or numbers you're looking for, in the document's language. If the results don't answer it, search again with other words, or with a name, label or number from what you found. Call read_document_pages to read pages in full when the user names a page, or when a passage is cut short or points to a table, figure or section. Call extract_from_documents with a need to go through many pages for one goal.
 3. Check before you answer: search returns the closest passages even when none of them answers. Use only text that says what you report.
@@ -649,8 +649,9 @@ def test_approved_turn_reads_the_approved_results_and_offers_for_another_search(
     # The user said yes to ONE search the app ran: the model is not told to run its own (it has no such tool).
     assert "web_search" not in _named(text) and "use web_search" not in text
     # Document scope: the document comes first, as in auto mode; project scope says "documents".
-    assert approved + " If it concerns something named in the document, find the name in the document first." in text
-    assert approved + " If it concerns something named in the documents, find the name in the documents first." \
+    no_words = " Don't ask in words whether to search: offer_web_search asks the user."
+    assert approved + no_words + " If it concerns something named in the document, find the name in the document first." in text
+    assert approved + no_words + " If it concerns something named in the documents, find the name in the documents first." \
         in _rules("project", [*DOC_TOOLS, *APPROVED_WEB])
     # Only an approved turn says so: ask mode before a yes (the offer), auto mode (search it yourself).
     for tools in (ASK_WEB, AUTO_WEB, NO_WEB):
@@ -669,7 +670,9 @@ def test_the_live_line_is_chosen_by_the_web_tools_offered():
     assert "the results of the web search the user approved are above" in lines["approved"]
     assert lines["offer"] == ("   - Live information (news, prices, weather, anything about today), or outside facts "
                               "your own knowledge can't answer: call offer_web_search with the topic in a few words and "
-                              "why it's needed. The user decides whether to search; don't answer as if you had searched.")
+                              "why it's needed. The user decides whether to search; don't answer as if you had searched. "
+                              "Search the document first when it may cover any part of it. "
+                              "Don't ask in words whether to search: offer_web_search asks the user.")
     assert lines["none"] == ("   - Live information (news, prices, weather, anything about today): say you can't look "
                              "it up here.")
 
@@ -743,3 +746,36 @@ def test_with_step_four_the_site_sentence_is_in_it_and_only_there(scope, tools):
     assert "4. Answer" in text and text.count(SITE_SENTENCE) == 1
     assert SITE_SENTENCE not in _live(text)
     assert text.index(SITE_SENTENCE) > text.index("4. Answer")
+
+
+# ---- Task 22 (b), (b2): no offers in words, the documents first ----
+# (c), a sentence sending a whole-project question to each document's opening, was measured and removed:
+# EVAL.md, "Final (cloud, after Task 22)".
+
+NO_WORDS = " Don't ask in words whether to search: offer_web_search asks the user."
+DECIDES = "The user decides whether to search; don't answer as if you had searched."
+
+
+def test_every_rule_set_that_offers_the_offer_says_not_to_ask_in_words():
+    """(b): the offer line (ask mode) and the approved turn's line both carry the sentence; the sets that don't
+    offer offer_web_search (auto, off, no web tools at all) don't."""
+    for scope in ("document", "project"):
+        for tools in (ASK_WEB, APPROVED_WEB):
+            assert NO_WORDS in _rules(scope, [*DOC_TOOLS, *tools]), (scope, tools)
+        for tools in (AUTO_WEB, NO_WEB):
+            assert "Don't ask in words" not in _rules(scope, [*DOC_TOOLS, *tools]), (scope, tools)
+    assert NO_WORDS in system_rules(None, ASK_WEB, has_pins=False)           # also with no document at all
+    assert NO_WORDS in system_rules(FIELD(), ASK_WEB, has_pins=False)        # ... and with prefetched passages only
+
+
+def test_the_offer_line_says_to_search_the_documents_first_when_document_tools_are_offered():
+    """(b2): before the sentence of (b), worded for what the scope calls its documents."""
+    doc = _live(_rules("document", [*DOC_TOOLS, *ASK_WEB]))
+    assert doc.endswith(DECIDES + " Search the document first when it may cover any part of it." + NO_WORDS)
+    project = _live(_rules("project", [*DOC_TOOLS, *ASK_WEB]))
+    assert project.endswith(DECIDES + " Search the documents first when they may cover any part of it." + NO_WORDS)
+    # No document tools, nothing to search first: only the sentence of (b).
+    for text in (system_rules(None, ASK_WEB, has_pins=False), system_rules(FIELD(), ASK_WEB, has_pins=False)):
+        assert _live(text).endswith(DECIDES + NO_WORDS) and "first when" not in _live(text)
+    # The approved turn already has its own document-first suffix; (b2) is the offer line's.
+    assert "may cover any part of it" not in _rules("project", [*DOC_TOOLS, *APPROVED_WEB])

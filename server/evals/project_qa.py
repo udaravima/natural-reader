@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from ..chat.sources import cited_pages
 from .doc_qa import EvalSetupError, has_term, is_refusal, web_mode   # EvalSetupError: the script catches it from here
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "project_docs"
@@ -203,7 +204,8 @@ def _terms_needed(case: Case) -> int:
 
 def _citation_pattern(names: list[str]) -> re.Pattern[str] | None:
     """`(Name, page N)`, with any of `names`: longest first, so a name that ends like another isn't
-    mistaken for it, and a name may hold commas and parentheses."""
+    mistaken for it, and a name may hold commas and parentheses. Only the invented-page check of the gap cases
+    reads this plain form now (`_pages_cited_in_sentences_with`); the scores use `cited_docs`."""
     if not names:
         return None
     alternatives = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
@@ -211,17 +213,11 @@ def _citation_pattern(names: list[str]) -> re.Pattern[str] | None:
 
 
 def cited_docs(answer: str, names: list[str]) -> dict[str, set[int]]:
-    """The documents (by their names in `names`) and pages the app would link in this answer."""
-    pattern = _citation_pattern(names)
-    if pattern is None:
-        return {}
-    by_lower = {n.lower(): n for n in names}
-    found: dict[str, set[int]] = {}
-    for match in pattern.finditer(answer):
-        page = int(match.group(2))
-        if page >= 1:     # page 0 is no page
-            found.setdefault(by_lower[match.group(1).lower()], set()).add(page)
-    return found
+    """The documents (by their names in `names`) and pages the app would link in this answer: read with
+    `server.chat.sources.cited_pages`, the grammar the server counts and the client links, so the eval and the
+    product agree on what a citation is (a joined "(A, page 3; B, page 1)" names both; "page3" names none).
+    Task 22 (d): until then the eval had a narrower pattern of its own and failed 6 turns of the final run for it."""
+    return cited_pages(answer, names)
 
 
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+|\n+")

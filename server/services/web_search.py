@@ -17,6 +17,8 @@ import logging
 import os
 import re
 import socket
+from dataclasses import dataclass
+from typing import Callable, Mapping
 from urllib.parse import urlparse
 
 import httpx
@@ -24,12 +26,53 @@ import httpx
 logger = logging.getLogger(__name__)
 
 SEARXNG_URL = os.environ.get("SEARXNG_URL", "http://localhost:18043").rstrip("/")
-RESULT_COUNT = int(os.environ.get("WEB_SEARCH_RESULT_COUNT", "5"))
 RESULT_COUNT_CAP = 10
-MAX_CONCURRENCY = int(os.environ.get("WEB_SEARCH_MAX_CONCURRENCY", "4"))
-FETCH_TIMEOUT_S = float(os.environ.get("WEB_SEARCH_FETCH_TIMEOUT_S", "8"))
-MAX_RESPONSE_BYTES = int(os.environ.get("WEB_SEARCH_MAX_RESPONSE_BYTES", "2000000"))
-FETCH_TOTAL_S = float(os.environ.get("WEB_SEARCH_FETCH_TOTAL_S", "15"))
+
+
+@dataclass(frozen=True)
+class WebSearchSettings:
+    result_count: int = 5                  # results one search lists
+    max_concurrency: int = 4               # page fetches at once
+    fetch_timeout_s: float = 8.0           # seconds: the SearXNG query, and each hop of a page fetch
+    fetch_total_s: float = 15.0            # seconds: one page, redirects and body included
+    max_response_bytes: int = 2_000_000    # largest page body read
+
+
+def load_web_search_settings(env: Mapping[str, str]) -> WebSearchSettings:
+    """The numeric WEB_SEARCH_* settings, each checked like the CHAT_* and READER_* ones (chat/config.py): unset
+    or empty is the default, and a value that is not a number or is outside its range logs a WARNING and the
+    default is used, so a typo can't stop the server from starting. The log names the variable and the value."""
+    d = WebSearchSettings()
+
+    def num(key: str, default, cast: Callable, lo, hi):
+        raw = (env.get(key) or "").strip()
+        if not raw:
+            return default
+        try:
+            value = cast(raw)
+        except ValueError:
+            logger.warning("%s=%r is not a number; using %s", key, raw, default)
+            return default
+        if not lo <= value <= hi:    # also false for nan
+            logger.warning("%s=%r is outside %s..%s; using %s", key, raw, lo, hi, default)
+            return default
+        return value
+
+    return WebSearchSettings(
+        result_count=num("WEB_SEARCH_RESULT_COUNT", d.result_count, int, 1, RESULT_COUNT_CAP),
+        max_concurrency=num("WEB_SEARCH_MAX_CONCURRENCY", d.max_concurrency, int, 1, 32),
+        fetch_timeout_s=num("WEB_SEARCH_FETCH_TIMEOUT_S", d.fetch_timeout_s, float, 1.0, 120.0),
+        fetch_total_s=num("WEB_SEARCH_FETCH_TOTAL_S", d.fetch_total_s, float, 1.0, 300.0),
+        max_response_bytes=num("WEB_SEARCH_MAX_RESPONSE_BYTES", d.max_response_bytes, int, 10_000, 50_000_000),
+    )
+
+
+_SETTINGS = load_web_search_settings(os.environ)
+RESULT_COUNT = _SETTINGS.result_count
+MAX_CONCURRENCY = _SETTINGS.max_concurrency
+FETCH_TIMEOUT_S = _SETTINGS.fetch_timeout_s
+MAX_RESPONSE_BYTES = _SETTINGS.max_response_bytes
+FETCH_TOTAL_S = _SETTINGS.fetch_total_s
 
 _UA = "Mozilla/5.0 (compatible; NaturalReaderBot/1.0)"
 

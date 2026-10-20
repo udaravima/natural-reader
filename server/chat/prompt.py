@@ -131,6 +131,10 @@ def _project_line(project: ProjectScope) -> str:
     return line
 
 
+# Task 22 (b): the offer is a tool, not a question in words (a typed "yes" carries no context.web).
+NO_OFFER_IN_WORDS = " Don't ask in words whether to search: offer_web_search asks the user."
+
+
 def _live_line(offered: set[str], noun: str | None, names_sites: bool = False) -> str:
     """Step 1's line for live information and facts outside the documents, by the web tools offered:
     web_search (auto mode) searches and reads; read_web_pages without it is the turn after the user approved a
@@ -146,10 +150,13 @@ def _live_line(offered: set[str], noun: str | None, names_sites: bool = False) -
     elif WEB_READ in offered:
         line = f"the results of the web search the user approved are above; call {read}."
         if WEB_OFFER in offered:
-            line += " For a different search, call offer_web_search."
+            line += " For a different search, call offer_web_search." + NO_OFFER_IN_WORDS
     elif WEB_OFFER in offered:
-        return (f"{head}{outside}call offer_web_search with the topic in a few words and why it's needed. "
+        line = (f"{head}{outside}call offer_web_search with the topic in a few words and why it's needed. "
                 "The user decides whether to search; don't answer as if you had searched.")
+        if noun:   # Task 22 (b2): in ask mode the model went straight to the offer, 2 of 2 times
+            line += f" Search the {noun} first when {'it' if noun == 'document' else 'they'} may cover any part of it."
+        return line + NO_OFFER_IN_WORDS
     else:
         return f"{head}: say you can't look it up here."
     if noun:

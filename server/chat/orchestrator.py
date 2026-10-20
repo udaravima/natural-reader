@@ -4,8 +4,11 @@ run_turn is an async generator of event dicts (spec §6); routers/chat_turns.py
 frames them as SSE. Per step: stream one model call; if it asked for tools, run
 them and go again; after CHAT_MAX_TOOL_ROUNDS rounds (CHAT_PROJECT_MAX_TOOL_ROUNDS
 in a project chat), one last step with tools OFF, so the turn always ends in
-an answer (the OpenAI Agents SDK max_turns idea). Provider and tool failures
-become an `error` event or a tool error the model sees; they never escape. A
+an answer (the OpenAI Agents SDK max_turns idea). An offer to search the web
+ends the turn; if its round wrote no text, the model first gets that same
+tools-off step to write its answer, and the card follows the text (C2.1 Task
+22). Provider and tool failures become an `error` event or a tool error the
+model sees; they never escape. A
 disconnect (the Stop button, a closed tab) arrives as cancellation: the
 partial reply is saved `aborted` and the claim is released, even though the
 task is being torn down (spec §5.4).
@@ -41,7 +44,8 @@ from .sources import answer_sources, sources_by_document, web_sources
 from .store import TurnClaim, title_from_prompt
 from .tools import ToolContext, ToolRun, TurnTools, available_tools, result_text
 from .tools.scope import scope_docs
-from .web_consent import APP_WEB_CALL_ID, app_web_exchange, app_web_search, clean_query, search_possible, web_offer
+from .web_consent import (APP_WEB_CALL_ID, app_web_exchange, app_web_search, clean_query, offer_note, search_possible,
+                          web_offer)
 
 logger = logging.getLogger(__name__)
 
@@ -309,6 +313,16 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             yield ev("data-context", items=notes)
         messages = list(built.messages)
         rounds = 0
+        # The offer of a round that wrote no text (spec 5.8): the turn takes one more step, tools off, to write its
+        # answer, and then ends with the card. Set when that round's results are in; the card is not sent before.
+        pending_offer: dict[str, Any] | None = None
+
+        def end_with_offer(offer: dict[str, Any], finish_reason: str = "stop") -> list[dict[str, Any]]:
+            """The end of a turn that offered a web search: the card is saved as a note and sent, and the
+            turn is over (stats.doneReason agrees with finish_reason: the turn ended here)."""
+            state.add_note(offer)
+            state.last_finish = state.finish_reason = finish_reason
+            return [ev("data-web-offer", query=offer["query"], reason=offer["reason"])]
 
         def say(delta: str) -> list[dict[str, Any]]:
             """Show `delta` as this step's text: text-start before its first
@@ -334,12 +348,20 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
 
         while True:
             if await _over_budget(req.user_id, deployment_budget):
-                yield ev("error", code="budget_exhausted", message=ERROR_TEXT["budget_exhausted"])
-                await _log_event(claim.session_id, "budget", "daily token budget exhausted")
-                return
+                if pending_offer is None:
+                    yield ev("error", code="budget_exhausted", message=ERROR_TEXT["budget_exhausted"])
+                    await _log_event(claim.session_id, "budget", "daily token budget exhausted")
+                    return
+                # The answer step is held back like any step, but the card costs nothing and the user was
+                # offered it: an error here would hide it.
+                logger.info("The answer step after an offer was skipped: the daily token budget is used")
+                for e in end_with_offer(pending_offer):
+                    yield e
+                await _save(claim, state)
+                break
             state.steps += 1
             step = state.steps
-            tools_now = offered if rounds < max_rounds else []
+            tools_now = offered if rounds < max_rounds and pending_offer is None else []
             # rounds > 0: "max-steps" means a tool round actually ran and got
             # capped, not merely that CHAT_MAX_TOOL_ROUNDS=0 kept tools off
             # from the first step (fix round 1, item 3).
@@ -356,48 +378,58 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             open_text = open_reasoning = tools_dropped = False
             probe = _TextProbe(active=bool(tools_now))   # nothing to recover on a tools-off step
             last_flush = time.monotonic()
-            async with aclosing(router.stream_chat(req.model_id, messages, [t.spec for t in tools_now],
-                                                   req.settings)) as stream:
-                async for chunk in stream:
-                    if isinstance(chunk, ReasoningDelta):
-                        if not open_reasoning:
-                            open_reasoning = True
-                            yield ev("reasoning-start", id=f"r{step}")
-                        reasoning += chunk.text
-                        state.thinking += chunk.text
-                        # Set before the yield, not after: a cancellation lands
-                        # AT a yield, and by then this chunk's text must already
-                        # be reflected — same reason state.content is set before
-                        # its yield too (fix round 1, item 2).
-                        state.pending_output = text + probe.held + reasoning
-                        yield ev("reasoning-delta", id=f"r{step}", delta=chunk.text)
-                    elif isinstance(chunk, TextDelta):
-                        if open_reasoning:
-                            open_reasoning = False
-                            yield ev("reasoning-end", id=f"r{step}")
-                        shown = probe.feed(chunk.text)
-                        state.pending_output = text + probe.held + reasoning
-                        for e in say(shown):
-                            yield e
-                    elif isinstance(chunk, ToolCallReady):
-                        if tools_now:   # a tools-off step cannot call tools
-                            calls.append(chunk.call)
-                    elif isinstance(chunk, Usage):
-                        usage = chunk
-                        state.pending_usage = chunk
-                    elif isinstance(chunk, Finish):
-                        finish = chunk.reason
-                    elif isinstance(chunk, FeatureDropped):
-                        if chunk.feature == "tools":   # this step's reply can't be a tool call
-                            tools_dropped = True
-                            for e in say(probe.release()):
+            failed = False
+            try:
+                async with aclosing(router.stream_chat(req.model_id, messages, [t.spec for t in tools_now],
+                                                       req.settings)) as stream:
+                    async for chunk in stream:
+                        if isinstance(chunk, ReasoningDelta):
+                            if not open_reasoning:
+                                open_reasoning = True
+                                yield ev("reasoning-start", id=f"r{step}")
+                            reasoning += chunk.text
+                            state.thinking += chunk.text
+                            # Set before the yield, not after: a cancellation lands
+                            # AT a yield, and by then this chunk's text must already
+                            # be reflected — same reason state.content is set before
+                            # its yield too (fix round 1, item 2).
+                            state.pending_output = text + probe.held + reasoning
+                            yield ev("reasoning-delta", id=f"r{step}", delta=chunk.text)
+                        elif isinstance(chunk, TextDelta):
+                            if open_reasoning:
+                                open_reasoning = False
+                                yield ev("reasoning-end", id=f"r{step}")
+                            shown = probe.feed(chunk.text)
+                            state.pending_output = text + probe.held + reasoning
+                            for e in say(shown):
                                 yield e
-                        code, notice = _FEATURE_NOTICE[chunk.feature]
-                        await _log_event(claim.session_id, _FEATURE_LOG[chunk.feature], notice)
-                        yield ev("data-notice", code=code, message=notice)
-                    if time.monotonic() - last_flush >= store.FLUSH_EVERY_S:
-                        await _save(claim, state)   # a reload mid-reply shows the text so far
-                        last_flush = time.monotonic()
+                        elif isinstance(chunk, ToolCallReady):
+                            if tools_now:   # a tools-off step cannot call tools
+                                calls.append(chunk.call)
+                        elif isinstance(chunk, Usage):
+                            usage = chunk
+                            state.pending_usage = chunk
+                        elif isinstance(chunk, Finish):
+                            finish = chunk.reason
+                        elif isinstance(chunk, FeatureDropped):
+                            if chunk.feature == "tools":   # this step's reply can't be a tool call
+                                tools_dropped = True
+                                for e in say(probe.release()):
+                                    yield e
+                            code, notice = _FEATURE_NOTICE[chunk.feature]
+                            await _log_event(claim.session_id, _FEATURE_LOG[chunk.feature], notice)
+                            yield ev("data-notice", code=code, message=notice)
+                        if time.monotonic() - last_flush >= store.FLUSH_EVERY_S:
+                            await _save(claim, state)   # a reload mid-reply shows the text so far
+                            last_flush = time.monotonic()
+            except (ProviderUnavailable, ProviderTimeout, ProviderError) as e:
+                if pending_offer is None:
+                    raise
+                # The offer is the turn's answer and the text before it was a courtesy: end with the card, keeping
+                # what came, as a step that finished (it is billed below like one cut short).
+                failed, finish = True, "error"
+                logger.warning("The answer step after an offer failed (%s): the turn ends with the offer",
+                               type(e).__name__)
             if open_reasoning:
                 yield ev("reasoning-end", id=f"r{step}")
             recovered = (None if calls or tools_dropped or not probe.held
@@ -417,12 +449,20 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             # during the pool's commit) can't stop the row landing, and _finalize
             # must never charge this step a second time.
             state.step_recorded = True
-            usage = await asyncio.shield(_record_usage(req.user_id, usage, messages,
-                                                       text + probe.held + reasoning))
+            if failed and usage is None and not (text or reasoning):
+                usage = Usage(0, 0)   # refused before generating anything: nothing to charge (as _finalize)
+            else:
+                usage = await asyncio.shield(_record_usage(req.user_id, usage, messages,
+                                                           text + probe.held + reasoning))
             state.add(usage, finish)
             yield ev("finish-step", step=step, usage=_usage_json(usage), finishReason=finish)
             await _save(claim, state)
             if not calls:
+                if pending_offer is not None:   # the answer step is over: the card follows its text
+                    for e in end_with_offer(pending_offer, "length" if finish == "length" else "stop"):
+                        yield e
+                    await _save(claim, state)
+                    break
                 state.finish_reason = ("max-steps" if capped and not text.strip()
                                        else "length" if finish == "length" else "stop")
                 break
@@ -434,6 +474,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             # tools, and the rules (stable for the turn) can't say that.
             last_round = rounds >= max_rounds
             runs = []
+            offer = None
             for call in calls:
                 yield ev("tool-input-available", toolCallId=call.id, toolName=call.name, input=call.arguments,
                          round=rounds)
@@ -441,19 +482,26 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                 runs.append(run)
                 state.tool_calls.append(run.summary)
                 yield tool_result(run)
-                result = {**run.result, "note": LAST_ROUND_NOTE} if last_round else run.result
+                first_offer = offer is None and (offer := web_offer(runs)) is not None
+                if first_offer and not text.strip():
+                    # The model offers without having written anything: its next step is the answer.
+                    result = {**run.result, "note": offer_note(project is not None)}
+                elif last_round:
+                    result = {**run.result, "note": LAST_ROUND_NOTE}
+                else:
+                    result = run.result
                 messages.append(Message("tool", result_text(result),
                                         tool_call_id=call.id, name=call.name))
-            # An offer to search the web ends the turn: the user answers it, and their yes is the next turn.
-            offer = web_offer(runs)
-            if offer:
-                state.add_note(offer)
-                state.last_finish = "stop"   # stats.doneReason agrees with finish_reason: the turn ended here
-                yield ev("data-web-offer", query=offer["query"], reason=offer["reason"])
+            # An offer to search the web ends the turn: the user answers it, and their yes is the next turn. With
+            # the model's text before it, the turn ends here; without, after one more step that writes the answer.
+            if offer and text.strip():
+                for e in end_with_offer(offer):
+                    yield e
             await _save(claim, state)
-            if offer:
-                state.finish_reason = "stop"
+            if offer and text.strip():
                 break
+            if offer:
+                pending_offer = offer
         # v2.4 Task D: the pages the answer drew on, as source chips, even when the model wrote no "(page N)".
         # C2.1 Task 15: by document in a project chat, and the web pages the answer read in any chat.
         for note in _source_notes(state.content, tool_ctx, project=project, doc=doc):

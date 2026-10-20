@@ -452,21 +452,50 @@ async def test_pages_are_fetched_concurrently(web, use_router, monkeypatch):
 
 # ---- summaries, and the turn's budget -----------------------------------------------------------------------
 
-async def test_read_web_pages_summary_names_the_sites_and_the_pages_not_read(web, use_router):
-    use_router(NOTHING)
-    ctx = await searched(web, "abc")
+async def test_read_web_pages_summary_counts_the_pages_that_gave_facts(web, use_router):
+    """Task 22 (h): the tool line used to say "Read 2 page(s)" when nothing came back from them (walk finding 1,
+    observation 5). It counts the pages that gave facts, lists the ones that gave none as "nothing found", and says
+    how many it could not read."""
+    use_router(lambda user: facts_json(("[web 2]", "The port is 8080", "set port = 8080")) if "[web 2]" in user
+               else facts_json(("[web 3]", "The port is 8080", "set port = 8080")) if "[web 3]" in user
+               else facts_json())
+    ctx = await searched(web, "abcd")
     web.pages[url("a")] = None
     web.pages[url("b")] = PAGE
     web.pages[url("c")] = PAGE
+    web.pages[url("d")] = PAGE
     ok = await _read(ctx, [2, 3])
     assert ok.summary["result_summary"] == {"ok": True, "chunk_count": None, "query": None,
-                                            "summary_text": "Read 2 page(s): b.test, c.test."}
+                                            "summary_text": "Found facts on 2 of 2 page(s): b.test, c.test."}
     mixed = await _read(ctx, [1, 2], call_id="r2")
-    assert mixed.summary["result_summary"]["summary_text"] == "Read 1 page(s): b.test. Couldn't read 1."
-    none = await _read(ctx, [1], call_id="r3")
-    assert none.summary["result_summary"]["summary_text"] == "Read 0 page(s). Couldn't read 1."
-    bad = await _read(ctx, [9], call_id="r4")
+    assert mixed.summary["result_summary"]["summary_text"] == "Found facts on 1 of 2 page(s): b.test. Couldn't read 1."
+    nothing = await _read(ctx, [4], call_id="r3")
+    assert nothing.summary["result_summary"]["summary_text"] == "Found facts on 0 of 1 page(s). Nothing found: d.test."
+    every = await _read(ctx, [1, 2, 4], call_id="r4")
+    assert every.summary["result_summary"]["summary_text"] == (
+        "Found facts on 1 of 3 page(s): b.test. Nothing found: d.test. Couldn't read 1.")
+    none = await _read(ctx, [1], call_id="r5")
+    assert none.summary["result_summary"]["summary_text"] == "Found facts on 0 of 1 page(s). Couldn't read 1."
+    bad = await _read(ctx, [9], call_id="r6")
     assert bad.summary["result_summary"] == {"error": bad.result["error"]}
+
+
+async def test_a_page_that_answers_one_part_of_a_multi_part_need_is_kept(web, use_router):
+    """Task 22 (h), walk finding 1: a need with two parts, a page that answers one of them. The reader's brief now
+    tells the model to return that part (and the test pins what it is sent); what the reader returns is kept, the
+    page is marked read for the web sources, and the summary counts it."""
+    router = use_router(lambda user: facts_json(("[web 1]", "The port is 8080", "set port = 8080")))
+    ctx = await searched(web, "a")
+    web.pages[url("a")] = PAGE
+    need = "the listening port, and the minimum version of the product that supports it"
+    run = await _read(ctx, [1], need=need)
+    (page,) = run.result["pages"]
+    assert page["found"] is True and page["facts"] == [{"fact": "The port is 8080", "quote": "set port = 8080"}]
+    assert ctx.web_results[1]["read"] is True
+    system, user = router.calls[0][1]
+    assert "Return every fact that serves any part of the goal." in system.content
+    assert f"Goal: {need}" in user.content
+    assert run.summary["result_summary"]["summary_text"] == "Found facts on 1 of 1 page(s): a.test."
 
 
 async def test_a_result_dropped_for_the_turns_budget_leaves_no_trace(web, use_router):

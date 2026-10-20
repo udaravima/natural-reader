@@ -1,7 +1,9 @@
 """The two ends of "web search asks first" that the orchestrator calls (C2.1 spec 5.8).
 
 The offer: when a round's calls include a real offer_web_search (its own result, `offered: true`), the turn ends there with the offer
-(`web_offer`, below) and the model takes no further step.
+(`web_offer`, below). If the model wrote no text in that round, it takes one more step with no tools first, to write its
+answer (what the documents say and don't, and general knowledge, labelled): the offer's result carries `offer_note` for
+that step, and the card (`data-web-offer`) follows the answer's text. Otherwise the model takes no further step.
 
 The yes: the next turn carries `context.web = {query}`. The app runs that search itself before the model's first
 step, and the model finds the result as a tool exchange already in the prompt, call id `app-web-1`, the way it
@@ -33,6 +35,23 @@ from .tools import web_search as web_search_tool
 
 APP_WEB_CALL_ID = "app-web-1"
 OFFER_TOOL = "offer_web_search"
+
+
+# What the offer's result tells the model when its round wrote no text: the card is shown, so the answer is its to
+# write (spec 5.8). A project chat has documents; otherwise there is the one open document, whose verbs and
+# pronouns agree with it.
+OFFER_NOTE_PROJECT = (
+    "The user now sees a card asking whether to search the web. Write your answer: what the documents say about "
+    "this, with their pages, and what they don't cover. You may add what you know in general, introduced as not "
+    "from the documents and never with a page. Don't ask whether to search; the card does.")
+OFFER_NOTE_DOCUMENT = (
+    "The user now sees a card asking whether to search the web. Write your answer: what the document says about "
+    "this, with its pages, and what it doesn't cover. You may add what you know in general, introduced as not "
+    "from the document and never with a page. Don't ask whether to search; the card does.")
+
+
+def offer_note(project: bool) -> str:
+    return OFFER_NOTE_PROJECT if project else OFFER_NOTE_DOCUMENT
 
 
 # Line breaks become a space, so words don't run together; then what can't be seen is dropped.

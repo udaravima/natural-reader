@@ -257,15 +257,16 @@ async def test_session_meta_carries_scope_project_name_for_members_only(db_conn,
 
 # ---- the tools in project scope ----
 
-async def _project_ctx(conn, monkeypatch):
-    """Alice's two-document project with pages to read, as a turn's ToolContext."""
+async def _project_ctx(conn, monkeypatch, open_doc_id=None):
+    """Alice's two-document project with pages to read, as a turn's ToolContext. `open_doc_id`: the document the
+    reader has open (the turn's doc_id)."""
     shim_pool(monkeypatch, conn, rp_tool, sd_tool)
     alice, pid = await _two_doc_project(conn)
     await _chunk(conn, A2, 0, 1, "Alpha page one.")
     await _chunk(conn, A2, 1, 2, "Alpha page two.")
     await _chunk(conn, B, 0, 1, "Beta page one.", _vec(1, 1))
     await _chunk(conn, B, 1, 2, "Beta page two.", _vec(0, 1))
-    scope = await load_project_scope(conn, alice.user_id, pid, open_doc_id=None)
+    scope = await load_project_scope(conn, alice.user_id, pid, open_doc_id=open_doc_id)
     return ToolContext(alice.user_id, None, project=scope, question="q")
 
 
@@ -293,6 +294,83 @@ async def test_read_document_pages_needs_a_document_in_project_scope(db_conn, mo
     assert (await _call(ctx, "read_document_pages", {"document": "2", "first_page": 2})).result["pages"][0]["ref"] == 2
     unknown = await _call(ctx, "read_document_pages", {"document": "Gamma.md", "first_page": 1})
     assert unknown.result["error"].startswith("Unknown document: Gamma.md.") and "2 Beta.md" in unknown.result["error"]
+
+
+# ---- Task 22 (o): a missing document in a project means the one open in the reader ----
+
+async def test_read_document_pages_without_a_document_reads_the_open_one(db_conn, monkeypatch):
+    """Walk observation 6d: the model asked for the document open in the reader and left `document` out, twice, and
+    each time the error cost a tool round."""
+    ctx = await _project_ctx(db_conn, monkeypatch, open_doc_id=B)
+    for args in ({"first_page": 1}, {"document": None, "first_page": 1}, {"document": "", "first_page": 1}):
+        run = await _call(ctx, "read_document_pages", args)
+        assert run.ok, args
+        assert run.result["pages"] == [{"ref": 2, "page": 1, "text": "Beta page one."}]
+        assert run.result["documents"] == [{"ref": 2, "name": "Beta.md"}]
+    assert ctx.evidence[-1] == (B, 1, "Beta page one.")
+    # A document that is named is still the one asked for.
+    other = await _call(ctx, "read_document_pages", {"document": 1, "first_page": 2})
+    assert other.result["pages"] == [{"ref": 1, "page": 2, "text": "Alpha page two."}]
+
+
+def _outlined(ctx, *doc_ids):
+    """A context whose map was shortened, so document_outline is offered, with an outline for each document."""
+    import dataclasses
+
+    from server.services.doc_outlines import Outline, OutlineEntry
+    outlines = {d: Outline((OutlineEntry(1, f"Heading of {d[:1]}", 1),), "", "headings") for d in doc_ids}
+    return dataclasses.replace(ctx, map_shortened=True, outlines=outlines)
+
+
+async def test_document_outline_without_a_document_gives_the_open_ones(db_conn, monkeypatch):
+    ctx = _outlined(await _project_ctx(db_conn, monkeypatch, open_doc_id=B), A2, B)
+    for args in ({}, {"document": None}, {"document": ""}):
+        run = await _call(ctx, "document_outline", args)
+        assert run.ok, args
+        assert run.result["document"] == {"ref": 2, "name": "Beta.md"}
+        assert run.result["outline"] == [{"level": 1, "text": f"Heading of {B[:1]}", "page": 1}]
+    assert (await _call(ctx, "document_outline", {"document": 1})).result["document"] == {"ref": 1, "name": "Alpha.md"}
+
+
+async def test_without_an_open_document_the_missing_one_is_still_an_error(db_conn, monkeypatch):
+    ctx = _outlined(await _project_ctx(db_conn, monkeypatch), A2, B)
+    for name, args in (("read_document_pages", {"first_page": 1}), ("document_outline", {})):
+        run = await _call(ctx, name, args)
+        assert run.result == {"error": "document is required: use a number or name from the list: "
+                                       "1 Alpha.md, 2 Beta.md."}, name
+
+
+async def test_an_open_document_outside_the_project_is_no_default(db_conn, monkeypatch):
+    """The reader has some other document open: it is not one of the project's, so nothing is assumed."""
+    ctx = _outlined(await _project_ctx(db_conn, monkeypatch, open_doc_id=D), A2, B)
+    for name, args in (("read_document_pages", {"first_page": 1}), ("document_outline", {})):
+        run = await _call(ctx, name, args)
+        assert not run.ok and run.result["error"].startswith("document is required:"), name
+        assert not any(d.open_in_reader for d in ctx.project.docs)
+
+
+async def test_an_open_document_that_is_not_searchable_is_no_default(db_conn, monkeypatch):
+    shim_pool(monkeypatch, db_conn, rp_tool)
+    alice = await member(db_conn, "alice")
+    pid = await seed.make_project(db_conn, alice.user_id)
+    await _doc(db_conn, A1, alice, "Ready.md")
+    await _doc(db_conn, B, alice, "Scan.pdf", state="failed")
+    for doc_id in (A1, B):
+        await seed.place_doc(db_conn, pid, doc_id, alice.user_id)
+    scope = await load_project_scope(db_conn, alice.user_id, pid, open_doc_id=B)    # the failed one is open
+    ctx = ToolContext(alice.user_id, None, project=scope)
+    run = await _call(ctx, "read_document_pages", {"first_page": 1})
+    assert run.result == {"error": "document is required: use a number or name from the list: 1 Ready.md."}
+
+
+async def test_a_document_scope_chat_is_unchanged_by_the_default(db_conn, monkeypatch):
+    """Document scope always read the open document; nothing about it moves."""
+    shim_pool(monkeypatch, db_conn, rp_tool)
+    alice, _ = await _two_doc_project(db_conn)
+    await _chunk(db_conn, B, 0, 1, "Beta page one.")
+    from server.services.doc_search import readable_doc
+    ctx = ToolContext(alice.user_id, await readable_doc(db_conn, B, alice.user_id))
+    assert (await _call(ctx, "read_document_pages", {"first_page": 1})).result["pages"][0]["ref"] == 1
 
 
 async def test_a_document_that_isnt_searchable_is_named_as_such(db_conn, monkeypatch):

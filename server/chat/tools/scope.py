@@ -72,10 +72,21 @@ def choices_text(scope: list[ScopeDoc]) -> str:
     return ", ".join(f"{d.ref} {d.name}" for d in scope)
 
 
-def named_in_project(scope: list[ScopeDoc], value: Any, ctx) -> ScopeDoc | dict[str, str]:
+def open_document(scope: list[ScopeDoc]) -> ScopeDoc | None:
+    """The document the reader has open, when it is one of `scope` (a project's searchable documents): a project
+    chat's default for a tool call that names no document. None when nothing is open, or the open document is
+    not in the project, or is in it but isn't searchable yet."""
+    return next((d for d in scope if d.open_in_reader), None)
+
+
+def named_in_project(scope: list[ScopeDoc], value: Any, ctx, *, open_if_missing: bool = False) -> ScopeDoc | dict[str, str]:
     """The document `value` names in a project chat, or the error the model reads: required, in the
-    project but not searchable yet, or unknown. `scope` is the searchable documents (scope_docs)."""
+    project but not searchable yet, or unknown. `scope` is the searchable documents (scope_docs).
+    `open_if_missing`: a call that names no document means the one open in the reader (Task 22 (o)), when it is
+    one of the project's searchable documents; otherwise it is the same "required" error."""
     if value is None or value == "":
+        if open_if_missing and (found := open_document(scope)) is not None:
+            return found
         return {"error": f"document is required: use a number or name from the list: {choices_text(scope)}."}
     found = resolve_document(scope, value)
     if found is not None:

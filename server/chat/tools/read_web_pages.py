@@ -179,11 +179,24 @@ class _ReadWebPages:
         return {"need": need, "pages": pages}
 
     def summarize(self, args: dict[str, Any], result: dict[str, Any], ctx) -> dict[str, Any]:
-        read = [p for p in result["pages"] if "error" not in p and "unread_excerpt" not in p]
-        sites = list(dict.fromkeys(s for p in read if (s := ctx.web_results[p["n"]].get("site"))))
-        text = f"Read {len(read)} page(s)" + (f": {', '.join(sites)}" if sites else "") + "."
-        if len(read) < len(result["pages"]):
-            text += f" Couldn't read {len(result['pages']) - len(read)}."
+        """The tool line the user reads: the pages that gave facts, then the ones read that gave none ("nothing
+        found", with their sites), then how many could not be read. A page that gave nothing is not "read": that
+        word made a failed read look like a success (walk finding 1)."""
+        pages = result["pages"]
+        unread = [p for p in pages if "error" in p or "unread_excerpt" in p]
+        found = [p for p in pages if p.get("found")]
+        nothing = [p for p in pages if p not in unread and not p.get("found")]
+
+        def sites(of: list[dict[str, Any]]) -> list[str]:
+            return list(dict.fromkeys(s for p in of if (s := ctx.web_results[p["n"]].get("site"))))
+
+        where = sites(found)
+        text = f"Found facts on {len(found)} of {len(pages)} page(s)" + (f": {', '.join(where)}" if where else "") + "."
+        if nothing:
+            where = sites(nothing)
+            text += f" Nothing found: {', '.join(where)}." if where else f" Nothing found on {len(nothing)}."
+        if unread:
+            text += f" Couldn't read {len(unread)}."
         return {"ok": True, "chunk_count": None, "query": None, "summary_text": text}
 
 

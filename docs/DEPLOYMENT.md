@@ -495,16 +495,11 @@ them are in [`../.env.example`](../.env.example).
   (or, for `CHAT_WEB_SEARCH`, not one of the listed words), or is outside its
   range, logs a warning and the default is used (for the reader's model and
   timeout, the next name in the chain).
-- **The numeric `WEB_SEARCH_*` values are not checked.** `WEB_SEARCH_RESULT_COUNT`,
-  `WEB_SEARCH_MAX_CONCURRENCY`, `WEB_SEARCH_FETCH_TIMEOUT_S`,
-  `WEB_SEARCH_FETCH_TOTAL_S` and `WEB_SEARCH_MAX_RESPONSE_BYTES` are read once
-  when the server starts, as plain numbers: a value that isn't a valid number
-  (for example `WEB_SEARCH_FETCH_TIMEOUT_S=abc`) stops the server from starting,
-  and one that is out of range is not replaced by the default (for example, a
-  `WEB_SEARCH_RESULT_COUNT` over 10 makes every search that names no count come
-  back as an error). Keep them to valid numbers in their range.
-  `WEB_SEARCH_SUMMARY_MODEL` and `WEB_SEARCH_SUMMARY_TIMEOUT_S` are read by the
-  reader and checked like its own values.
+- **The numeric `WEB_SEARCH_*` values** are checked the same way: a value that
+  is not a number, or is outside its range, logs a warning and the default is
+  used (the table under "Web search" gives each range). An empty value is the
+  default, silently. `WEB_SEARCH_SUMMARY_MODEL` and `WEB_SEARCH_SUMMARY_TIMEOUT_S`
+  are read by the reader and checked like its own values.
 
 **The project map and project search**
 
@@ -552,18 +547,18 @@ stream.
 |---|---|---|
 | `CHAT_WEB_SEARCH` | `ask` | `ask`, `auto` or `off`, case-insensitive; anything else is ignored with a warning. The starting value: an admin's choice in the console wins over it. |
 | `SEARXNG_URL` | `http://localhost:18043` | The SearXNG instance. Every mode needs it. Set it to an empty value to turn web search off for the whole server; the console then shows its control disabled. |
-| `WEB_SEARCH_RESULT_COUNT` | `5` results | Results one search lists (1-10). A search no longer fetches pages or calls a model. |
-| `WEB_SEARCH_MAX_CONCURRENCY` | `4` fetches | Pages fetched at once when the assistant reads results. |
-| `WEB_SEARCH_FETCH_TIMEOUT_S` | `8` seconds | Per request: the SearXNG query and each redirect hop of a page fetch. |
-| `WEB_SEARCH_FETCH_TOTAL_S` | `15` seconds | Whole deadline for one page, redirects and body included. |
-| `WEB_SEARCH_MAX_RESPONSE_BYTES` | `2000000` bytes | Largest page body read. |
+| `WEB_SEARCH_RESULT_COUNT` | `5` results | Results one search lists, 1-10. A search no longer fetches pages or calls a model. |
+| `WEB_SEARCH_MAX_CONCURRENCY` | `4` fetches | Pages fetched at once when the assistant reads results, 1-32. |
+| `WEB_SEARCH_FETCH_TIMEOUT_S` | `8` seconds | Per request: the SearXNG query and each redirect hop of a page fetch, 1-120. |
+| `WEB_SEARCH_FETCH_TOTAL_S` | `15` seconds | Whole deadline for one page, redirects and body included, 1-300. |
+| `WEB_SEARCH_MAX_RESPONSE_BYTES` | `2000000` bytes | Largest page body read, 10000-50000000. |
 | `WEB_SEARCH_SUMMARY_MODEL`, `WEB_SEARCH_SUMMARY_TIMEOUT_S` | none | Old names, kept as fallbacks for `READER_MODEL` and `READER_TIMEOUT_S`. With `READER_TIMEOUT_S` and `WEB_SEARCH_SUMMARY_TIMEOUT_S` both unset, the reader uses 60 seconds. |
 
 ### How web search asks
 
 | Mode | What the assistant can do |
 |---|---|
-| `ask` (default) | Only `offer_web_search`: it proposes a short query and a reason, the turn ends, and the person sees a card with the query in an editable box, **Search the web** and **Not now**. **Search the web** runs exactly the query on the card, for the next message only; the assistant may then read 1-3 of those results, or offer a different search (which needs its own yes). The web search tool is not offered, so the rule is enforced in code, not asked of the model. |
+| `ask` (default) | Only `offer_web_search`: it proposes a short query and a reason; if it has written no answer yet it gets one more step, with no tools, to write what the documents say and don't (and what it knows in general, labelled), and then the turn ends and the person sees that text and a card with the query in an editable box, **Search the web** and **Not now**. **Search the web** runs exactly the query on the card, for the next message only; the assistant may then read 1-3 of those results, or offer a different search (which needs its own yes). The web search tool is not offered, so the rule is enforced in code, not asked of the model. |
 | `auto` | The assistant searches the web itself and reads the pages it picks. |
 | `off` | No web tool at all. |
 
