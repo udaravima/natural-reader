@@ -1791,6 +1791,159 @@ sentence is "The project documents do not list specific RHEL 9 packages". With "
 the model never reaches `LIBRARY.md`, `IDENTITY_AND_ROLES.md` or the admin and project areas, because nothing it has seen points there, and a rule sentence made the case worse. Untried: an overview the app builds
 (each document's opening, which the project map already carries for small projects), one search per area name, or following the README's own "see also" links. Not done here.
 
+## Final (cloud, cloud reader)
+
+The shipped measurement. It repeats "Final (cloud, after Task 22)" with one change **in the reader**, not in the code under test: the reader is now `gemma4:31b-cloud`
+(`SUMMARIZE_MODEL=gemma4:31b-cloud`) instead of the local `llama3.2:3b` default that every earlier run in this plan used. It is also the first run of the tree **after fix round 1**,
+so it carries the code changes that round made, which the section before it does not: (1) three offer notes instead of two (project with a searchable document, one searchable document, and
+otherwise a general-knowledge note, chosen by `prompt.document_tools_offered`, the condition the rules use for "Search the document first"; this includes a project whose documents are all still indexing),
+(2) the daily budget used up before an offer's answer step sends a notice and a `budget` log line (the card stays), (3) the reader keeps every fact whose quote verifies even when the model said
+`found: false`, and `found` is true exactly when one verified. Nothing else in the server changed (`_billable` is a refactor).
+
+- Date: 2026-10-20. Code under test: `26ace78` (the fix round is `9333cd7`), clean working tree apart from the untracked `HANDOFF.md`. No code was changed for this measurement.
+- Model `ollama:gemma4:31b-cloud`, thinking off, chat web mode `ask`. Scratch database `natural_reader_eval`. Fake web only in variant 9 (`--web-fixture`).
+  The commands were the briefed ones, `SUMMARIZE_MODEL=gemma4:31b-cloud DATABASE_URL=...5434/natural_reader_eval ... scripts/eval_project_qa.py --model ollama:gemma4:31b-cloud --variant 9 --repeat 3 --web-fixture`
+  and the same with `--variant 50 --repeat 3`, plus `--show-answers`, run through the same thin logging wrapper kept outside the repository as before (it adds a log of the model the reader resolved to).
+- **The reader really was the cloud model.** A pre-flight `read_batch` call with that environment resolved to `gemma4:31b-cloud` and returned a verified fact. In the run, the wrapper logged the model of every
+  reader call: 3 calls in variant 9 (the three `web-read` turns), all `gemma4:31b-cloud`; none in variant 50 (`read_web_pages` is not offered there, and `extract_from_documents` was not called in
+  any of the 87 turns). `ollama ps` was sampled every 15 seconds for the whole window (about 1,100 samples): nothing was loaded except `nomic-embed-text:latest` (the embedding model that `search_documents` needs);
+  **no `llama3.2`, and no chat model.**
+- **Runs, all reported, none dropped.** Variant 9: 38/42 passed. Variant 50: 34/45 passed. No provider error in either, so no re-run.
+
+### The spec section 2 targets
+
+| target | "after Task 22" (local reader) | **cloud reader** | met |
+|---|---|---|---|
+| at least 90% right-document citations on cases with a document answer | v9 30/33 = 90.9%; v50 31/39 = 79.5% | **v9 29/33 = 87.9%; v50 32/39 = 82.1%** | **no, in both** (v9 misses by one turn: a `next-work` turn that never cites `DOCS_INDEX.md`) |
+| the exact command on the code case | v9 9/9; v50 9/9 | **v9 9/9; v50 9/9** (`start-command-50` 3/3) | yes |
+| 0 unapproved web calls | 0 of 87 turns | **0 of 87 turns** (42 + 45; the 3 approved turns made 6 calls, one search and one read each) | yes |
+| 0 invented pages on gap cases | 1 of 6 gap turns flagged | **1 of 6 flagged** (variant 50, run 1: a page cited for the part the documents don't cover). Variant 9's three: none | **no** |
+
+**Still missed: two of the four.** The citation rate (87.9% and 82.1% against 90%), and the invented page (one of six gap turns). The code case and the unapproved web calls are met. "What are the features?" is
+also still wrong (below), though it is not a row of this table.
+
+### Variant 9, `--repeat 3 --web-fixture` (38/42 passed; right-document citations 29/33), cloud reader
+
+Per-kind tally: overview 0/3, procedure 3/3, code 9/9, exact-label 6/6, named-doc 6/6, balance 5/6, gap-general 3/3, live 3/3, web-read 3/3. Source chips: documents 30/30, pages 15/15. Web source chips 3/3. Web calls 6.
+
+| case | kind | passed | fact found | right document (inline) | page (inline) | chip doc | chip page | rounds per run |
+|---|---|---|---|---|---|---|---|---|
+| features | overview | 0/3 | 3/3 | 0/3 | - | - | - | 1 / 2 / 2 |
+| deploy-and-test | procedure | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 2 / 2 / 2 |
+| start-command | code | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| quickstart-command | code | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 2 / 2 / 2 |
+| test-command | code | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| session-lifetimes | exact-label | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| oidc-issuer | exact-label | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| user-guide-pins | named-doc | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 1 / 1 / 1 |
+| deployment-uploads | named-doc | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 4 / 1 / 4 |
+| next-work | balance | 2/3 | 2/3 | 2/3 | - | 3/3 | - | 1 / 1 / 2 |
+| changelog-unreleased | balance | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 1 / 1 / 1 |
+| rhel-packages | gap-general | 3/3 | 3/3 | - | - | - | - | 2 / 2 / 2 |
+| ollama-release | live | 3/3 | - | - | - | - | - | 1 / 1 / 1 |
+| web-read | web-read | 3/3 | 3/3 | - | - | - | - | 1 / 1 / 1 |
+
+### Variant 50, `--repeat 3` (no web fixture), cloud reader (34/45 passed; right-document citations 32/39)
+
+Per-kind tally: overview 0/3, procedure 3/3, code 9/9, exact-label 6/6, named-doc 6/6, balance 3/6, gap-general 0/3, live 3/3, map-shortened 4/6. Source chips: documents 33/33, pages 18/18. Web calls 0.
+
+| case | kind | passed | fact found | right document (inline) | page (inline) | chip doc | chip page | rounds per run |
+|---|---|---|---|---|---|---|---|---|
+| features | overview | 0/3 | 3/3 | 0/3 | - | - | - | 2 / 2 / 2 |
+| deploy-and-test | procedure | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 2 / 2 / 2 |
+| start-command | code | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| quickstart-command | code | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 2 / 2 / 2 |
+| test-command | code | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| session-lifetimes | exact-label | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| oidc-issuer | exact-label | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| user-guide-pins | named-doc | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 1 / 1 / 1 |
+| deployment-uploads | named-doc | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 4 / 4 / 1 |
+| next-work | balance | 0/3 | 0/3 | 1/3 | - | 3/3 | - | 2 / 1 / 1 |
+| changelog-unreleased | balance | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 1 / 1 / 1 |
+| rhel-packages | gap-general | 0/3 | 3/3 | - | - | - | - | 2 / 2 / 3 |
+| ollama-release | live | 3/3 | - | - | - | - | - | 1 / 1 / 1 |
+| features-50 | map-shortened | 1/3 | 3/3 | 0/3 | - | - | - | 2 / 2 / 2 |
+| start-command-50 | map-shortened | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+
+### Before and after: a change of reader, with the fix-round code
+
+Cases passed of 3, "after Task 22" against this run. Two things changed between them, and this table cannot separate them: the reader (only the `web-read` case uses it here) and the fix round's code
+(the three offer notes, the budget notice, the reader keeping verified facts on `found: false`). Run-to-run noise on the same code is at least two passes, so most of the differences below are not findings.
+
+**Variant 9, cases passed of 3**
+
+| case | after Task 22, local reader | cloud reader | |
+|---|---|---|---|
+| features | 0/3 | 0/3 | |
+| deploy-and-test | 3/3 | 3/3 | |
+| start-command | 3/3 | 3/3 | |
+| quickstart-command | 3/3 | 3/3 | |
+| test-command | 3/3 | 3/3 | |
+| session-lifetimes | 3/3 | 3/3 | |
+| oidc-issuer | 3/3 | 3/3 | |
+| user-guide-pins | 3/3 | 3/3 | |
+| deployment-uploads | 2/3 | 3/3 | changed |
+| next-work | 3/3 | 2/3 | changed |
+| changelog-unreleased | 3/3 | 3/3 | |
+| rhel-packages | 2/3 | 3/3 | changed |
+| ollama-release | 3/3 | 3/3 | |
+| web-read | 2/3 | 3/3 | changed |
+
+**Variant 50, cases passed of 3**
+
+| case | after Task 22, local reader | cloud reader | |
+|---|---|---|---|
+| features | 1/3 | 0/3 | changed |
+| deploy-and-test | 3/3 | 3/3 | |
+| start-command | 3/3 | 3/3 | |
+| quickstart-command | 3/3 | 3/3 | |
+| test-command | 3/3 | 3/3 | |
+| session-lifetimes | 3/3 | 3/3 | |
+| oidc-issuer | 3/3 | 3/3 | |
+| user-guide-pins | 3/3 | 3/3 | |
+| deployment-uploads | 3/3 | 3/3 | |
+| next-work | 0/3 | 0/3 | |
+| changelog-unreleased | 3/3 | 3/3 | |
+| rhel-packages | 1/3 | 0/3 | changed |
+| ollama-release | 3/3 | 3/3 | |
+| features-50 | 0/3 | 1/3 | changed |
+| start-command-50 | 3/3 | 3/3 | |
+
+Totals: variant 9 36/42 to 38/42 and variant 50 35/45 to 34/45.
+
+### The RHEL question's answer shape
+
+| runs | text and card | says the documents don't cover it | cites the documents' own requirements | general knowledge introduced as such (my reading) | offer in words | invented page |
+|---|---|---|---|---|---|---|
+| variant 9, 3 runs | **3/3** (each turn three steps: `search_documents`, `offer_web_search`, then the answer step) | 3/3 | 3/3 | 2/3 | 0 | 0 |
+| variant 50, 3 runs | **1/3** (run 3: `search_documents`, `read_document_pages`, `offer_web_search`, then the answer step) | 3/3 | 3/3 | 1/3 | 0 | 1 of 3 |
+
+**Text and card in 4 of the 6 runs** (3 of 6 in "after Task 22"). Variant 9 is as before. Variant 50 now shows the card once, but the other two runs read the documents, wrote an answer and ended with no card and no offer,
+in words or by the tool, so section 2's shape is still not reliable in a 50-document project. The reader is not involved in this case, so the difference from the local-reader run is the model's variation (and the
+fix round's note changes do not touch a project with searchable documents).
+
+### What are the features? (still wrong)
+
+Variant 9: `features` 0/3. The terms are found (3/3 turns have 4 of 6 or more) but each turn cites **one** document; three are needed. Variant 50: `features` 0/3 (2 documents cited each time) and
+`features-50` 1/3. So **1 turn of 9** passes, as in "after Task 22". The cloud reader changes nothing here: the case does not use the reader.
+
+### Web chips on `web-read`
+
+The approved turn reads one page through the reader. With the cloud reader: **3 of 3 turns had a web source chip** (`docs.marrowdeck.example`), each turn made 2 web calls (the app's search, then one `read_web_pages`),
+and all three passed (the answer names `marrowdeck-srv` and 4.18.3; the near-miss 4.17.3 was avoided). The watch item from "after Task 22" (chips in 10 of 12 turns with the local reader and the new brief, against 9 of 9 with the old brief)
+does not show up here: 3 of 3. That is three turns, so it says the cloud reader keeps the chip, not why the local one sometimes did not. Each turn took about 2.5 seconds, against 25 to 60 with the local reader.
+
+### Invented pages on the gap cases
+
+Variant 9: 0 of 3 flagged, and all three wrote text (they were empty before Task 22, so nothing could be flagged). Variant 50: **1 of 3** flagged (run 1: "cited pages [1] for the part they don't cover").
+Overall 1 of 6, the same count as "after Task 22".
+
+### `gap-general` with "list" accepted by the refusal check (an alternative, not the official score)
+
+The official score is the eval's own and was not changed: variant 9 **3/3**, variant 50 **0/3**. The eval's refusal wording (`doc_qa._REFUSAL`) does not include "list", and the variant 50 answers
+open with "The documents do not list ...". With "list" accepted (a score I computed from the saved answers; the scorer was not changed): variant 9 **3/3**, variant 50 **2/3** (the failing turn is run 1, the invented page).
+Variant 50 run 3 is the one with the card; with "list" accepted it passes too.
+
 ## Rebuild timing
 
 What an existing library pays, the first time a project chat opens after the upgrade: the background re-chunk of every document
