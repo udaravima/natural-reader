@@ -1602,6 +1602,195 @@ follows the "our call" sentence of section 2 only.
   uneven in variant 50; the code questions are right (26/27); "what are the features" is answered from README.md plus, at most, a line or two of USER_GUIDE.md, in every turn;
   the RHEL question gets an offer without an explanation, or an explanation without the offer (above).
 
+## Final (cloud, after Task 22)
+
+The measurement after Task 22 closed the gaps that "Final (cloud)" found. The server and eval items: (a) an offer with no text gets a tools-off answer
+step, (b) no offers in words, (b2) documents first, (c) a whole-project sentence (measured and **removed**, below), (d) the eval counts citations with the
+product's parser, (g) web search settings warn and default, (h) the reader keeps partial answers and the tool line counts only pages with facts, (o) a
+missing document in a project means the open one.
+
+- Date: 2026-10-20. Code under test: the Task 22a working tree on `bf88b94`, uncommitted when measured (Task 22b's client files change nothing here).
+- Model `ollama:gemma4:31b-cloud`, thinking off, chat web mode `ask`. Scratch database `natural_reader_eval`. **Reader: the default `llama3.2:3b`, as in
+  "Final (cloud)"**, so the two are comparable (the brief's commands name no other; a cloud reader would change every `extract_from_documents` and `read_web_pages` result
+  and could not be compared). Fake web only in variant 9 (`--web-fixture`). `--show-answers` was added so the answers could be read; the same kind of thin wrapper kept outside the
+  repository as for "Final (cloud)" logged every chat turn (question, whether it carried `context.web`, tool names, steps, answer).
+- **Runs, all reported, none dropped.** No provider error in any of them.
+
+  | run | tree | result |
+  |---|---|---|
+  | variant 9, `--repeat 3 --web-fixture` | with (c) | 33/42 passed |
+  | variant 50, `--repeat 3` | with (c) | 35/45 passed |
+  | variant 9, `--repeat 3 --web-fixture` | **shipped (c removed)** | 36/42 passed |
+  | variant 50, `--repeat 3` | **shipped (c removed)** | 35/45 passed |
+  | diagnostic: `web-read` only, 6 runs each, the reader brief of (h) and the brief before it | shipped | 5/6 and 5/6 |
+  | diagnostic: `rhel-packages` only, 6 runs, steps recorded | shipped | text and card in 5/6 |
+
+- **A measurement change comes with this section.** Task 22 (d) makes the eval count citations with the product's own grammar (`server.chat.sources.cited_pages`), so a joined citation
+  `(A.md, page 3; B.md, page 1)` names both documents, as the server counts it and the client links it. "Final (cloud)" was scored with the narrower pattern. Its answers were kept
+  (`--show-answers`), so those three runs are **re-scored here with the new parser** from the saved output: variant 9 37/42 becomes 38/42 and right-document citations 29/33 becomes 30/33;
+  variant 50 attempt 1 29/45 becomes 33/45 (28/38 becomes 32/38) and attempt 2 32/45 becomes 35/45 (28/39 becomes 31/39). The cases that change are `session-lifetimes` (6 turns, the joined citation),
+  `deploy-and-test` (one turn, attempt 1) and `features` (one turn, attempt 2: three documents cited, one in joined form). The re-scoring takes the saved answer, the tool names and the offer flag
+  from the saved report; it does not re-derive the source chips. The gap case's invented-page check keeps its own narrower pattern (the brief says not to change it), so a page cited in a joined citation
+  inside a sentence about the gap would not be flagged.
+
+### The spec section 2 targets
+
+Shipped tree (no (c)). "Before" is "Final (cloud)", as published and, where the number moves, re-scored with (d).
+
+| target | before | after | met |
+|---|---|---|---|
+| at least 90% right-document citations on cases with a document answer | variant 9: 29/33 = 87.9% (re-scored 30/33 = 90.9%); variant 50: 28/38 and 28/39 (re-scored 32/38 = 84.2% and 31/39 = 79.5%) | **variant 9: 30/33 = 90.9%; variant 50: 31/39 = 79.5%** (the tree with (c): 30/33 and 33/39 = 84.6%) | variant 9 yes, **variant 50 no**. The variant 9 gain is the measurement change, not the model |
+| the exact command on the code case | 26 of 27 turns (variant 9 9/9; variant 50 9/9 and 8/9) | **variant 9 9/9; variant 50 9/9** (and `start-command-50` 3/3) | yes |
+| 0 unapproved web calls | 0 of 132 turns | **0 of 87 turns** (42 + 45; the 3 approved turns made 7 calls). The runs with (c) and the diagnostics: 0 as well | yes |
+| 0 invented pages on gap cases | 2 of 9 gap turns flagged (variant 50 attempt 1: 2 of 3; variant 9's three wrote no text, so nothing could be flagged) | **1 of 6 flagged** (variant 50, run 2: "(DEPLOYMENT.md, page 1)" inside a sentence about RHEL 9). Variant 9's three now wrote text, and none was flagged | **no** (one turn; the same blur as before) |
+
+The user's three questions as the cloud model answers them now: the deploy-and-test walk-through is right in both variants (3/3 and 3/3); the code questions are right; "What are the features?"
+is still wrong (below); the RHEL question gets its answer shape in variant 9 and not in variant 50 (below).
+
+### Variant 9, `--repeat 3 --web-fixture` (36/42 passed; right-document citations 30/33), shipped tree
+
+Per-kind tally: overview 0/3, procedure 3/3, code 9/9, exact-label 6/6, named-doc 5/6, balance 6/6, gap-general 2/3, live 3/3, web-read 2/3. Source chips: documents 30/30, pages 15/15.
+Web source chips 3/3. Columns as in "Final (cloud)".
+
+| case | kind | passed | fact found | right document (inline) | page (inline) | chip doc | chip page | rounds per run |
+|---|---|---|---|---|---|---|---|---|
+| features | overview | 0/3 | 2/3 | 0/3 | - | - | - | 2 / 2 / 2 |
+| deploy-and-test | procedure | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 2 / 2 / 2 |
+| start-command | code | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| quickstart-command | code | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 2 / 2 / 2 |
+| test-command | code | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| session-lifetimes | exact-label | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| oidc-issuer | exact-label | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| user-guide-pins | named-doc | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 1 / 1 / 1 |
+| deployment-uploads | named-doc | 2/3 | 2/3 | 3/3 | - | 3/3 | - | 1 / 1 / 4 |
+| next-work | balance | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 1 / 1 / 1 |
+| changelog-unreleased | balance | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 1 / 1 / 1 |
+| rhel-packages | gap-general | 2/3 | 3/3 | - | - | - | - | 2 / 2 / 2 |
+| ollama-release | live | 3/3 | - | - | - | - | - | 1 / 1 / 1 |
+| web-read | web-read | 2/3 | 2/3 | - | - | - | - | 1 / 1 / 2 |
+
+### Variant 50, `--repeat 3` (no web fixture), shipped tree (35/45 passed; right-document citations 31/39)
+
+Per-kind tally: overview 1/3, procedure 3/3, code 9/9, exact-label 6/6, named-doc 6/6, balance 3/6, gap-general 1/3, live 3/3, map-shortened 3/6. Source chips: documents 33/33, pages 18/18. Web calls 0.
+
+| case | kind | passed | fact found | right document (inline) | page (inline) | chip doc | chip page | rounds per run |
+|---|---|---|---|---|---|---|---|---|
+| features | overview | 1/3 | 3/3 | 1/3 | - | - | - | 2 / 2 / 2 |
+| deploy-and-test | procedure | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 2 / 2 / 2 |
+| start-command | code | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| quickstart-command | code | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 2 / 2 / 2 |
+| test-command | code | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| session-lifetimes | exact-label | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| oidc-issuer | exact-label | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+| user-guide-pins | named-doc | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 1 / 1 / 1 |
+| deployment-uploads | named-doc | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 1 / 4 / 1 |
+| next-work | balance | 0/3 | 0/3 | 0/3 | - | 3/3 | - | 2 / 2 / 2 |
+| changelog-unreleased | balance | 3/3 | 3/3 | 3/3 | - | 3/3 | - | 1 / 1 / 1 |
+| rhel-packages | gap-general | 1/3 | 3/3 | - | - | - | - | 2 / 2 / 2 |
+| ollama-release | live | 3/3 | - | - | - | - | - | 1 / 1 / 1 |
+| features-50 | map-shortened | 0/3 | 1/3 | 0/3 | - | - | - | 2 / 2 / 2 |
+| start-command-50 | map-shortened | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1 / 1 / 1 |
+
+### Before and after, case by case
+
+Cases passed of 3. "As published" and "re-scored" are "Final (cloud)" (variant 50: attempt 1 / attempt 2); the third column is the tree with (c); the last is the shipped tree.
+
+**Variant 9, cases passed of 3**
+
+| case | Final (cloud), as published | Final (cloud), re-scored with (d) | after Task 22, with (c) | after Task 22, shipped (no (c)) |
+|---|---|---|---|---|
+| features | 0/3 | 0/3 | 0/3 | 0/3 |
+| deploy-and-test | 3/3 | 3/3 | 0/3 | 3/3 |
+| start-command | 3/3 | 3/3 | 3/3 | 3/3 |
+| quickstart-command | 3/3 | 3/3 | 3/3 | 3/3 |
+| test-command | 3/3 | 3/3 | 3/3 | 3/3 |
+| session-lifetimes | 2/3 | 3/3 | 3/3 | 3/3 |
+| oidc-issuer | 3/3 | 3/3 | 3/3 | 3/3 |
+| user-guide-pins | 3/3 | 3/3 | 3/3 | 3/3 |
+| deployment-uploads | 2/3 | 2/3 | 3/3 | 2/3 |
+| next-work | 3/3 | 3/3 | 3/3 | 3/3 |
+| changelog-unreleased | 3/3 | 3/3 | 3/3 | 3/3 |
+| rhel-packages | 3/3 | 3/3 | 0/3 | 2/3 |
+| ollama-release | 3/3 | 3/3 | 3/3 | 3/3 |
+| web-read | 3/3 | 3/3 | 3/3 | 2/3 |
+
+**Variant 50, cases passed of 3 (Final (cloud) columns: attempt 1 / attempt 2)**
+
+| case | Final (cloud), as published | Final (cloud), re-scored with (d) | after Task 22, with (c) | after Task 22, shipped (no (c)) |
+|---|---|---|---|---|
+| features | 0/3 / 0/3 | 0/3 / 1/3 | 1/3 | 1/3 |
+| deploy-and-test | 1/3 / 2/3 | 2/3 / 2/3 | 1/3 | 3/3 |
+| start-command | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 | 3/3 |
+| quickstart-command | 3/3 / 2/3 | 3/3 / 2/3 | 3/3 | 3/3 |
+| test-command | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 | 3/3 |
+| session-lifetimes | 0/3 / 1/3 | 3/3 / 3/3 | 3/3 | 3/3 |
+| oidc-issuer | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 | 3/3 |
+| user-guide-pins | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 | 3/3 |
+| deployment-uploads | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 | 3/3 |
+| next-work | 0/3 / 0/3 | 0/3 / 0/3 | 1/3 | 0/3 |
+| changelog-unreleased | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 | 3/3 |
+| rhel-packages | 1/3 / 3/3 | 1/3 / 3/3 | 2/3 | 1/3 |
+| ollama-release | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 | 3/3 |
+| features-50 | 0/3 / 0/3 | 0/3 / 0/3 | 0/3 | 0/3 |
+| start-command-50 | 3/3 / 3/3 | 3/3 / 3/3 | 3/3 | 3/3 |
+
+Some of the differences between the first and the last column are changes in what is measured, not in what the model does: `session-lifetimes`, one `features` turn and one `deploy-and-test` turn are (d); the
+`rhel-packages` figures move with the eval's refusal wording (below). The rest are inside run-to-run noise, which is at least two passes on the same code (the two "Final (cloud)" variant 50 attempts differed by 3).
+
+### What each item moved
+
+- **(a) an offer with no text writes its answer.** The RHEL question in variant 9 went from the card alone (3 of 3, no text) to **text and card**, 3 of 3, and 5 of 6 in the diagnostic. In those five the
+  turn had three steps (`search_documents`, `offer_web_search`, then the answer step) and ended `data-web-offer`, `data-sources`, `finish`: the extra step ran with the real model. The sixth answered from five
+  document tool calls and did not offer. The live question `ollama-release` (the documents have nothing on it) used to be the card alone; it is now a one-sentence text and the card, 6 of 6 (in variant 50: two
+  steps each), with 0 web calls.
+- **(b) no offers in words.** Variant 50: 0 of 6 RHEL turns offered in words (before: 2 of 3 in attempt 2). They offered no card either (below), so the consent dead end is gone and the offer is still missing.
+- **(b2) documents first, in ask mode.** Every RHEL turn that offered searched the documents first: 11 of 11 in variant 9 and the diagnostic (3 + 3 + 5; the first three on the tree with (c)), against the
+  offer as the only call in 3 of 3 before. The documents list the stack on README page 3, so the answers now cite it (every text answer, 12 of 12, cites a document's own requirement).
+- **(c) whole-project questions: removed.** See the decision below.
+- **(d) citations.** In the re-scored table above: `session-lifetimes` 2/3 to 3/3 in variant 9 and 0/3 and 1/3 to 3/3 in variant 50, one `deploy-and-test` turn, one `features` turn.
+- **(h) the reader keeps partial answers.** Unit tested: a scripted reader returns one fact for one of two parts and it is kept; the tool line counts pages with facts and lists the others as "Nothing found". In the
+  eval the only reader case is `web-read` (one need with two parts, the package and the minimum version), and it did not move: 3/3 with (c), 2/3 shipped, and 5/6 against 5/6 in the diagnostic with the brief of (h)
+  and the brief before it. The miss each time is the same shape: the answer gave the archived guide's 4.17.3 and not 4.18.3. **Watch item:** web source chips appeared in 4 of 6 `web-read` turns with the new brief
+  and 6 of 6 with the old one; over every new-brief `web-read` turn this task (both variant 9 runs and the diagnostic) it is 10 of 12, against 9 of 9 for the old brief ("Final (cloud)" and the diagnostic). In the two chipless
+  turns the answer was still right. Too few turns to call it, and I did not look at why (the reader here is the local `llama3.2:3b`, which can time out or return no verifiable quote).
+- **(o) a missing document means the open one.** Not exercised: the eval opens no document (`doc_id` is `None`), so no document is ever open. Unit tested for all three tools.
+- **(g) web search settings.** Not exercised by the eval. Unit tested, including that the module imports with a typo in a setting.
+
+### Item (c), the decision
+
+(c) was appended to the project's step 2: "For a question about the whole project, such as its features or what it does, read the opening section of each document whose outline covers a part of it, not only the first."
+The rule: keep it if variant 9's `features` passes in at least 2 of 3 runs and no other case loses a pass that isn't noise. Measured with (c):
+
+- `features`, variant 9: **0 of 3** (it called `read_document_pages` once, on the README, and cited one document each time); variant 50: 1 of 3, and `features-50` 0 of 3.
+- `deploy-and-test`, variant 9: **3/3 became 0/3** (the model read pages and skipped the search, so `TESTING.md` was never reached: fact missing, chip for `TESTING.md` missing), variant 50: 1/3. Without (c) the same
+  case is 3/3 in both variants, so this is not noise.
+
+(c) is **removed**: its code, its golden lines and its test. The shipped runs above are without it. The cause of the `features` shortfall is unchanged, and a prompt sentence did not fix it.
+
+### The RHEL question's answer shape
+
+Spec section 2: say the documents don't cover RHEL; give the documents' own requirements, cited; add general knowledge introduced as not from the documents, with no page; end with the offer to search the web.
+The "general knowledge, introduced as such" column is my reading of the answers, not a score.
+
+| runs (shipped tree) | text and card | says the documents don't cover it | cites the documents' own requirements | general knowledge, introduced as such | offer in words | invented page |
+|---|---|---|---|---|---|---|
+| variant 9, 3 runs | **3/3** | 3/3 | 3/3 | 2/3 (the third says what to install without the label) | 0 | 0 |
+| variant 9 diagnostic, 6 runs | 5/6 | 6/6 | 6/6 | 3/6 labelled; the rest say "you will likely need" | 0 | 0 |
+| variant 50, 3 runs | **0/3** | 3/3 | 3/3 | 0/3 (the answers stay inside the documents: the container image, podman, nginx) | 0 | 1 of 3 |
+
+Of the six runs of the brief (three of each variant) that is **text and card in 3 of 6**: all of variant 9's, none of variant 50's. In variant 50 the model answers from the documents (it finds the container
+requirements in DEPLOYMENT.md) and ends without an offer, in words or by the tool. That is a consent-safe failure (no dead end), but not the shape section 2 asks for.
+
+The eval scores some of these `gap-general` turns FAIL that it should not: its refusal wording (`doc_qa._REFUSAL`) has "not cover, mention, say, contain, include, ..." but not "list", and the model's usual first
+sentence is "The project documents do not list specific RHEL 9 packages". With "list" accepted (my arithmetic, not a score the eval gives; the eval was not changed) variant 9 would be 3/3 in both runs and variant 50
+2/3 in both (the failing turn is the invented page).
+
+### Where this leaves the features question
+
+"What are the features?" still fails: 1 turn of 9 across the two variants (`features` 1 of 3 in variant 50, 0 of 3 in variant 9, `features-50` 0 of 3). The answer is a long README list with a line or two from USER_GUIDE.md;
+the model never reaches `LIBRARY.md`, `IDENTITY_AND_ROLES.md` or the admin and project areas, because nothing it has seen points there, and a rule sentence made the case worse. Untried: an overview the app builds
+(each document's opening, which the project map already carries for small projects), one search per area name, or following the README's own "see also" links. Not done here.
+
 ## Rebuild timing
 
 What an existing library pays, the first time a project chat opens after the upgrade: the background re-chunk of every document
