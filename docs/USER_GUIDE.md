@@ -325,8 +325,8 @@ sharing. If the list of people can't be loaded, the panel shows the error and a
 library stay there.
 
 **Asking the project.** The **Ask about this project** button in the project
-header starts a chat about all of its documents at once; see [Asking a whole
-project](#asking-a-whole-project).
+header (shown to members who have the chat permission) starts a chat about all
+of its documents at once; see [Asking a whole project](#asking-a-whole-project).
 
 What you can't do yet: compare two versions or review a version before it
 becomes current (planned), or rename a document without uploading a new
@@ -426,9 +426,10 @@ You can also change an existing chat: click the chip, then the project (listed
 when the document you have open is in it) or **Choose a project…**.
 
 You need the chat permission and to be a member of the project. The button
-shows for everyone who has the chat permission, but a site admin who is not a
-member is refused at the first message ("This project doesn't exist or you
-don't have access.").
+shows only for members who have the chat permission. A site admin who is not a
+member can open and manage the project but doesn't see the button, because the
+assistant answers about a project's documents only for its members; add the
+admin to the project first.
 
 **What the assistant sees.** It is given a list of the project's documents (each
 one's name, page count and headings) and can search them together, read exact

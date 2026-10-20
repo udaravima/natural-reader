@@ -87,7 +87,7 @@ export default function WebOfferCard({ theme, reason, query, onSearch, onDismiss
                     e.preventDefault();
                     search();
                 }}
-                className={`w-full min-w-0 p-2 rounded-lg border ${theme.border} ${theme.bgTertiary} ${theme.text} text-xs outline-none focus:ring-2 focus:ring-blue-500 transition-colors`}
+                className={`w-full min-w-0 max-md:min-h-11 p-2 rounded-lg border ${theme.border} ${theme.bgTertiary} ${theme.text} text-xs outline-none focus:ring-2 focus:ring-blue-500 transition-colors`}
             />
             <div className="flex flex-wrap items-center gap-2">
                 <button

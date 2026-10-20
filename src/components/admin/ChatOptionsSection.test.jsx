@@ -238,6 +238,30 @@ describe('ChatOptionsSection', () => {
     await waitFor(() => expect(document.activeElement).toBe(radio('Off')));
   });
 
+  it('after "Use the server setting" the focus goes to the checked radio, not the page (the button is gone)', async () => {
+    // The reset button unmounts once the admin's choice is gone, taking the focus with it.
+    mount(view({ web_search: 'auto', source: 'admin' }), { onPut: () => view({ web_search: 'ask', source: 'default' }) });
+    const reset = await screen.findByRole('button', { name: 'Use the server setting' });
+    reset.focus();
+    fireEvent.click(reset);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Use the server setting' })).toBeNull());
+    await waitFor(() => expect(radio('Ask first').disabled).toBe(false));
+    expect(radio('Ask first').checked).toBe(true);
+    await waitFor(() => expect(document.activeElement).toBe(radio('Ask first')));
+  });
+
+  it('...also when the click never focused the button (a script click, or Safari, which does not focus buttons on click)', async () => {
+    // Walk 6c: the focus was nowhere to begin with, so it stayed nowhere: <body>, once the button was gone.
+    mount(view({ web_search: 'auto', source: 'admin' }), { onPut: () => view({ web_search: 'ask', source: 'default' }) });
+    const reset = await screen.findByRole('button', { name: 'Use the server setting' });
+    expect(document.activeElement).toBe(document.body);
+    fireEvent.click(reset);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Use the server setting' })).toBeNull());
+    await waitFor(() => expect(radio('Ask first').disabled).toBe(false));
+    expect(radio('Ask first').checked).toBe(true);
+    await waitFor(() => expect(document.activeElement).toBe(radio('Ask first')));
+  });
+
   it('does not steal the focus when the admin moved to another field during the save', async () => {
     // Otherwise the next arrow key would change a deployment-wide setting from a field they never meant to leave.
     let release;

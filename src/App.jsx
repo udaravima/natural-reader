@@ -1172,6 +1172,7 @@ export default function App() {
         onStopSelectionRead={stopSelectionRead}
         onAskAboutSelection={inChat ? null : handleAskAboutSelection}
         besideChatPanel={showChatPanel}
+        inChat={inChat}
       />
 
       {!distractionFree && (

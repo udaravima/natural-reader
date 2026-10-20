@@ -32,7 +32,7 @@ export function ChatOptionsSection({ theme, apiHost, apiPort, showToast, onSaved
   const [failed, setFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const sectionRef = useRef(null);
-  const refocus = useRef(false);   // the focus was in this section when a save began
+  const refocus = useRef(false);   // a save began from a control in this section (a change or the reset)
 
   const load = useCallback(async () => {
     try {
@@ -48,9 +48,10 @@ export function ChatOptionsSection({ theme, apiHost, apiPort, showToast, onSaved
   useEffect(() => { load(); }, [load]);
 
   // The radios are disabled while a save is out, and a browser drops the focus from a control that gets
-  // disabled: put it back on the chosen radio, so ArrowDown works twice in a row. Only if the focus is still
-  // nowhere or in this section when the save ends: an admin who moved on to another field keeps it there,
-  // or their next arrow key would change a deployment-wide setting.
+  // disabled: put it back on the chosen radio, so ArrowDown works twice in a row. The reset button is gone
+  // once its save lands, which would leave the focus on the page; the radio takes it then too. Only if the
+  // focus is still nowhere or in this section when the save ends: an admin who moved on to another field
+  // keeps it there, or their next arrow key would change a deployment-wide setting.
   useEffect(() => {
     if (saving || !refocus.current) return;
     refocus.current = false;
@@ -64,7 +65,9 @@ export function ChatOptionsSection({ theme, apiHost, apiPort, showToast, onSaved
   // back exactly what was there, mode and source both.
   const put = async (mode, optimistic) => {
     const before = data;
-    refocus.current = !!sectionRef.current?.contains(document.activeElement);
+    // Only a control in this section calls this, so the admin's attention is here whether or not the browser
+    // focused that control on the click (a script click, or Safari, which does not focus buttons on click).
+    refocus.current = true;
     setSaving(true);
     if (optimistic) setData({ ...before, web_search: mode, source: 'admin' });
     try {

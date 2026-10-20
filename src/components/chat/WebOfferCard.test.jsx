@@ -25,6 +25,13 @@ describe('WebOfferCard', () => {
         expect(screen.getByRole('button', { name: 'Not now' })).toBeEnabled();
     });
 
+    it('keeps its query field at least 44 px tall at phone widths (walk 6e: it was 39 px)', () => {
+        // The app's phone rule (index.css, under 768 px) makes buttons 44 px and sets inputs to 16 px text, so a
+        // padded field came out at 39 px. jsdom has no layout: the class that holds it is max-md:min-h-11 (2.75rem).
+        mount();
+        expect(input().className).toMatch(/(^|\s)max-md:min-h-11(\s|$)/);
+    });
+
     it('edits the query and searches with it', async () => {
         const user = userEvent.setup();
         const { props } = mount();

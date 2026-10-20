@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { MoreHorizontal } from 'lucide-react';
+import { useMenuDismiss } from '../hooks/useMenuDismiss';
 
 /**
  * Compact "⋯ More" dropdown for the PDF options toolbar, shown only below the
@@ -13,27 +14,16 @@ import { MoreHorizontal } from 'lucide-react';
  * the open/close/outside-click/escape behaviour. Each entry is
  * `{ key, label, Icon, onClick, disabled?, active?, tone?: 'accent'|'danger',
  * sublabel? }`; falsy entries are skipped so callers can inline conditionals.
- * Selecting an item runs its `onClick` and closes the menu.
+ * Selecting an item runs its `onClick` and closes the menu. The wrapper is
+ * data-own-keys: with the focus on the button or in the menu, Space and Escape
+ * belong to the menu, not to the reader's narration shortcuts.
  */
 export default function PdfToolbarMenu({ theme, actions = [] }) {
     const [open, setOpen] = useState(false);
     const wrapRef = useRef(null);
 
-    useEffect(() => {
-        if (!open) return undefined;
-        const onClick = (e) => {
-            if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
-        };
-        const onKey = (e) => {
-            if (e.key === 'Escape') setOpen(false);
-        };
-        document.addEventListener('mousedown', onClick);
-        document.addEventListener('keydown', onKey);
-        return () => {
-            document.removeEventListener('mousedown', onClick);
-            document.removeEventListener('keydown', onKey);
-        };
-    }, [open]);
+    const openerRef = useRef(null);
+    useMenuDismiss({ open, onClose: () => setOpen(false), wrapRef, openerRef });
 
     const items = actions.filter(Boolean);
     if (items.length === 0) return null;
@@ -45,8 +35,9 @@ export default function PdfToolbarMenu({ theme, actions = [] }) {
     };
 
     return (
-        <div ref={wrapRef} className="relative md:hidden">
+        <div ref={wrapRef} data-own-keys className="relative md:hidden">
             <button
+                ref={openerRef}
                 onClick={() => setOpen((v) => !v)}
                 className={`px-2 py-1.5 rounded-lg transition-all ${theme.hover} ${open ? 'text-blue-500' : theme.textSecondary}`}
                 aria-haspopup="menu"

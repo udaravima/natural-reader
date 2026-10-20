@@ -26,6 +26,17 @@ function mount(routes, extra = {}) {
   return props;
 }
 
+// mount() for one project; also hands back the render's unmount, for tests that mount several in a row.
+function render_(project, extra) {
+  apiFetch.mockImplementation(async (h, p, path) => {
+    if (path === '/v1/projects/p1') return json(200, project);
+    if (path.startsWith('/v1/docs')) return json(200, []);
+    return json(404, {});
+  });
+  return render(<ProjectPage theme={theme} apiHost="" apiPort="" projectId="p1" currentUserId="me"
+    showToast={vi.fn()} onBack={vi.fn()} onChanged={vi.fn()} onOpenDoc={vi.fn()} {...extra} />);
+}
+
 describe('ProjectPage', () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -94,6 +105,29 @@ describe('ProjectPage', () => {
   it('offers no Ask button where chat is not available', async () => {
     mount({ 'GET /v1/projects/p1': json(200, proj()) });
     await screen.findByRole('heading', { name: /Q3 Audit/ });
+    expect(screen.queryByRole('button', { name: 'Ask about this project' })).toBeNull();
+  });
+
+  // The server answers a project chat only for a member (admin_ok=False): a site admin looking at a project
+  // they aren't in sees the page, with admin powers (`can`), but has no role (`my_role` is null).
+  it('a member with chat sees the Ask button, at every role', async () => {
+    for (const role of ['reader', 'contributor', 'maintainer', 'owner']) {
+      const { unmount } = render_(proj({ my_role: role }), { onAskProject: vi.fn() });
+      expect(await screen.findByRole('button', { name: 'Ask about this project' })).toBeTruthy();
+      unmount();
+    }
+  });
+
+  it('a site admin who is not a member does not see the Ask button, though they can manage the project', async () => {
+    const adminCan = can({ edit: true, manage_members: true, manage_owners: true, remove_docs: true, delete: true, leave: false });
+    render_(proj({ my_role: null, can: adminCan }), { onAskProject: vi.fn(), isAdmin: true });
+    expect(await screen.findByRole('button', { name: 'Delete project' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Ask about this project' })).toBeNull();
+  });
+
+  it('a member without the chat capability does not see the Ask button', async () => {
+    render_(proj({ my_role: 'owner', can: can({ delete: true }) }), {});
+    expect(await screen.findByRole('button', { name: 'Delete project' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Ask about this project' })).toBeNull();
   });
 

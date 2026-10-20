@@ -1,37 +1,30 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { UserCircle, User, Settings as SettingsIcon, Moon, Sun, LogOut } from 'lucide-react';
 import Avatar from './account/Avatar';
+import { useMenuDismiss } from '../hooks/useMenuDismiss';
 
 /**
  * Header profile dropdown: identity, a Settings shortcut, a dark-mode quick
  * toggle, and Log out. Persistent (lives in the always-mounted Header), so it's
  * reachable from every view — unlike the old logout that was buried in the
  * reader sidebar's account panel. Open/outside-click/Escape behaviour mirrors
- * PdfToolbarMenu / HeaderOverflowMenu.
+ * PdfToolbarMenu / HeaderOverflowMenu (useMenuDismiss). The wrapper is
+ * data-own-keys: with the focus on the button or in the menu, Space and Escape
+ * belong to the menu, not to the reader's narration shortcuts.
  */
 export default function ProfileMenu({ theme, user, apiHost, apiPort, darkMode, setDarkMode, onOpenSettings, onLogout }) {
     const [open, setOpen] = useState(false);
     const wrapRef = useRef(null);
 
-    useEffect(() => {
-        if (!open) return undefined;
-        const onClick = (e) => {
-            if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
-        };
-        const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
-        document.addEventListener('mousedown', onClick);
-        document.addEventListener('keydown', onKey);
-        return () => {
-            document.removeEventListener('mousedown', onClick);
-            document.removeEventListener('keydown', onKey);
-        };
-    }, [open]);
+    const openerRef = useRef(null);
+    useMenuDismiss({ open, onClose: () => setOpen(false), wrapRef, openerRef });
 
     const identity = user?.name || user?.display_name || user?.email || 'Account';
 
     return (
-        <div ref={wrapRef} className="relative">
+        <div ref={wrapRef} data-own-keys className="relative">
             <button
+                ref={openerRef}
                 onClick={() => setOpen((v) => !v)}
                 className={`p-2 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500 ${open ? 'text-blue-500' : ''}`}
                 aria-haspopup="menu"
