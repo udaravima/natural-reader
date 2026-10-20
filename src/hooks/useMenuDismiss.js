@@ -10,6 +10,15 @@ import { useEffect, useRef } from 'react';
  * another field, with the menu left open behind it, closes the menu but does
  * not pull the person out of what they were typing.
  *
+ * An Escape that closes the menu is the menu's: it is stopped at `document`,
+ * so it never reaches the reader's keyboard shortcuts on `window` (where Escape
+ * stops the narration). Those shortcuts skip a key whose target is inside a
+ * `data-own-keys` wrapper, but a menu opened by a click that took no focus
+ * (Safari), or left open while the focus moved on, has `<body>` as the target.
+ * The event path runs target, then `document`, then `window`, so this listener
+ * is always ahead of theirs. With the menu closed nothing is listening here, and
+ * Escape goes on to the shortcuts as usual.
+ *
  * Listens on `document` only while `open`, so a closed menu costs nothing.
  */
 export function useMenuDismiss({ open, onClose, wrapRef, openerRef }) {
@@ -23,6 +32,7 @@ export function useMenuDismiss({ open, onClose, wrapRef, openerRef }) {
         };
         const onKey = (e) => {
             if (e.key !== 'Escape') return;
+            e.stopPropagation();
             closeRef.current();
             const at = document.activeElement;
             if (!at || at === document.body || wrapRef.current?.contains(at)) openerRef.current?.focus();

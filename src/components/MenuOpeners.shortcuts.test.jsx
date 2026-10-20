@@ -66,13 +66,52 @@ describe.each(Object.entries(MENUS))('the %s beside the reader (narration shortc
         expect(cb.stopPlayback).not.toHaveBeenCalled();
     });
 
-    it('Escape from another field leaves the focus where it is', async () => {
+    it('Escape from another field leaves the focus where it is, closes the menu, and leaves the narration alone', async () => {
         const user = userEvent.setup();
-        const { opener } = mount(menu);
+        const { cb, opener } = mount(menu);
         await user.click(opener);                       // open by mouse
         screen.getByRole('button', { name: 'page body' }).focus();   // Tab-like move out; the menu stays open
         await user.keyboard('{Escape}');
+        expect(screen.queryByRole('menu')).toBeNull();
         expect(document.activeElement).toBe(screen.getByRole('button', { name: 'page body' }));
+        expect(cb.stopPlayback).not.toHaveBeenCalled(); // that Escape was the menu's; the next one is the narration's
+        await user.keyboard('{Escape}');
+        expect(cb.stopPlayback).toHaveBeenCalledTimes(1);
+    });
+
+    it('a menu opened by a click that took no focus (Safari): Escape closes it, hands the focus to the opener, and does not stop the narration', async () => {
+        // Safari doesn't focus a button on click, so the focus is on the page and the key event's target is <body>,
+        // outside the data-own-keys wrapper: only the menu's own Escape handling can keep the shortcut away.
+        const user = userEvent.setup();
+        const { cb, opener } = mount(menu);
+        await user.click(opener);
+        opener.blur();
+        expect(document.activeElement).toBe(document.body);
+        expect(screen.getByRole('menu')).toBeInTheDocument();
+        await user.keyboard('{Escape}');
+        expect(screen.queryByRole('menu')).toBeNull();
+        expect(document.activeElement).toBe(opener);
+        expect(cb.stopPlayback).not.toHaveBeenCalled();
+    });
+
+    it('with the menu closed and the focus on the page, Escape still stops the narration', async () => {
+        const user = userEvent.setup();
+        const { cb } = mount(menu);
+        expect(document.activeElement).toBe(document.body);
+        await user.keyboard('{Escape}');
+        expect(cb.stopPlayback).toHaveBeenCalledTimes(1);
+    });
+
+    it('once the menu has closed, the next Escape reaches the narration again', async () => {
+        const user = userEvent.setup();
+        const { cb, opener } = mount(menu);
+        await user.click(opener);
+        opener.blur();
+        await user.keyboard('{Escape}');                // closes the menu
+        expect(cb.stopPlayback).not.toHaveBeenCalled();
+        document.activeElement.blur();                  // the refocus put the focus on the opener
+        await user.keyboard('{Escape}');
+        expect(cb.stopPlayback).toHaveBeenCalledTimes(1);
     });
 
     it('a click elsewhere still closes the menu', async () => {
