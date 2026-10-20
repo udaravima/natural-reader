@@ -492,6 +492,9 @@ under its reply:
 - **Approval is for one search.** If the assistant wants a different search, it
   shows a new card. Only the newest reply's card can be answered; an older one
   reads *Offered a web search*.
+- **If you press Stop** while the assistant is writing the answer above the
+  card, you keep the text so far but get no card for that reply. Ask again, or
+  type "search the web for ..." with what you want, to bring the card back.
 - **Not now** closes the card and sends nothing; the chat carries on. If you
   reload the chat while that reply is still the newest, the card is back.
 - The card only shows what is searched, so read it: the query is the only text
