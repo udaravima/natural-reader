@@ -779,3 +779,16 @@ def test_the_offer_line_says_to_search_the_documents_first_when_document_tools_a
         assert _live(text).endswith(DECIDES + NO_WORDS) and "first when" not in _live(text)
     # The approved turn already has its own document-first suffix; (b2) is the offer line's.
     assert "may cover any part of it" not in _rules("project", [*DOC_TOOLS, *APPROVED_WEB])
+
+
+def test_document_tools_offered_is_the_one_gate_for_the_find_step_and_the_offers_note():
+    """Fix round 1: the orchestrator chooses an offer's note with `document_tools_offered`; the rules use the same
+    function, so "step 2: find it in the document(s)" exists exactly when it says so."""
+    from server.chat.prompt import document_tools_offered
+    names = list(TOOLS)
+    for doc in (None, FIELD("stored"), FIELD()):
+        for size in range(len(names) + 1):
+            for subset in itertools.combinations(names, size):
+                text = system_rules(doc, [TOOLS[n] for n in subset], has_pins=False)
+                assert ("2. Find it in the document" in text) == document_tools_offered(subset), (doc, subset)
+    assert document_tools_offered(["search_documents", "offer_web_search"]) and not document_tools_offered(["offer_web_search"])

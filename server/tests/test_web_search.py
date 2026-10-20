@@ -1,6 +1,11 @@
 import asyncio
+import logging
+import os
 import socket
+import subprocess
+import sys
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -498,10 +503,6 @@ async def test_a_list_page_as_trafilatura_gives_it_keeps_the_answers_row_whole(m
 
 # ---- Task 22 (g): the numeric WEB_SEARCH_* settings warn and default ----
 
-import logging
-import subprocess
-import sys
-
 DEFAULTS = ws.WebSearchSettings(result_count=5, max_concurrency=4, fetch_timeout_s=8.0, fetch_total_s=15.0,
                                 max_response_bytes=2_000_000)
 
@@ -528,8 +529,18 @@ def test_a_value_that_is_not_a_number_warns_and_uses_the_default(key, field, raw
     assert [r.getMessage() for r in caplog.records if key in r.getMessage()], caplog.text
 
 
+@pytest.mark.parametrize("key", ["WEB_SEARCH_RESULT_COUNT", "WEB_SEARCH_MAX_CONCURRENCY", "WEB_SEARCH_MAX_RESPONSE_BYTES"])
+def test_a_fraction_for_a_whole_number_setting_is_not_a_number_to_it(key, caplog):
+    """"5.5" is a number, but not one of these settings can take: it is the not-a-number path (the same message as
+    chat/config.py), and the default is used."""
+    with caplog.at_level(logging.WARNING, logger=ws.logger.name):
+        assert ws.load_web_search_settings({key: "5.5"}) == DEFAULTS
+    messages = [r.getMessage() for r in caplog.records]
+    assert len(messages) == 1 and messages[0].startswith(f"{key}='5.5' is not a number; using ")
+
+
 @pytest.mark.parametrize("key,field,bad", [
-    ("WEB_SEARCH_RESULT_COUNT", "result_count", ["0", "11", "-3", "5.5"]),
+    ("WEB_SEARCH_RESULT_COUNT", "result_count", ["0", "11", "-3"]),
     ("WEB_SEARCH_MAX_CONCURRENCY", "max_concurrency", ["0", "33", "-1"]),
     ("WEB_SEARCH_FETCH_TIMEOUT_S", "fetch_timeout_s", ["0", "0.5", "121", "-8"]),
     ("WEB_SEARCH_FETCH_TOTAL_S", "fetch_total_s", ["0", "0.9", "301", "-15"]),
@@ -576,12 +587,12 @@ def test_one_bad_value_does_not_spoil_the_others(caplog):
 def test_the_server_still_starts_with_a_typo_in_a_web_search_setting():
     """Import-time reads were bare int()/float(): a typo stopped the server. A fresh interpreter, so the module's
     own import is what runs."""
-    env = {**__import__("os").environ, "WEB_SEARCH_RESULT_COUNT": "ten", "WEB_SEARCH_FETCH_TIMEOUT_S": "fast",
+    env = {**os.environ, "WEB_SEARCH_RESULT_COUNT": "ten", "WEB_SEARCH_FETCH_TIMEOUT_S": "fast",
            "WEB_SEARCH_MAX_RESPONSE_BYTES": "1e99"}
     out = subprocess.run(
         [sys.executable, "-c", "import server.services.web_search as w; "
          "print(w.RESULT_COUNT, w.FETCH_TIMEOUT_S, w.MAX_RESPONSE_BYTES, w.MAX_CONCURRENCY, w.FETCH_TOTAL_S)"],
-        env=env, capture_output=True, text=True, cwd=str(__import__("pathlib").Path(__file__).resolve().parents[2]))
+        env=env, capture_output=True, text=True, cwd=str(Path(__file__).resolve().parents[2]))
     assert out.returncode == 0, out.stderr
     assert out.stdout.split() == ["5", "8.0", "2000000", "4", "15.0"]
     assert "WEB_SEARCH_RESULT_COUNT" in out.stderr and "WEB_SEARCH_FETCH_TIMEOUT_S" in out.stderr

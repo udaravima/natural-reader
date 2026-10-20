@@ -314,12 +314,14 @@ async def read_batch(question: str, need: str, batch: list[Passage], *, chat_mod
     if "found" not in parsed and "facts" not in parsed:    # JSON, but not an answer in our format
         logger.warning("reader reply was an object with neither found nor facts")
         return _error("invalid_json")
-    if parsed.get("found") is False:
-        return ReaderResult(False, (), 0, None)    # whatever it listed anyway is ignored
     raw_facts = parsed.get("facts", [])
     if not isinstance(raw_facts, list):
+        if parsed.get("found") is False:    # "nothing", with nothing usable listed: not an error
+            return ReaderResult(False, (), 0, None)
         logger.warning("reader reply's facts were not a list")
         return _error("invalid_json")
+    # The quote check decides, not the model's `found`: a small model may answer one part of a goal and still say
+    # false because the whole goal isn't met (Task 22 fix round 1). `found` is true exactly when a fact verified.
 
     facts, dropped = verify(raw_facts, batch)
     if dropped:

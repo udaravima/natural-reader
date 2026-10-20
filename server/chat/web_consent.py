@@ -38,8 +38,10 @@ OFFER_TOOL = "offer_web_search"
 
 
 # What the offer's result tells the model when its round wrote no text: the card is shown, so the answer is its to
-# write (spec 5.8). A project chat has documents; otherwise there is the one open document, whose verbs and
-# pronouns agree with it.
+# write (spec 5.8). Three notes, by what the model can search this turn: a project's documents; the one open document,
+# whose verbs and pronouns agree with it; or nothing (no document open, or one that can't be searched yet, or a project
+# with no searchable document yet), where there is no page to give and the answer is general knowledge, said not to be
+# from a search.
 OFFER_NOTE_PROJECT = (
     "The user now sees a card asking whether to search the web. Write your answer: what the documents say about "
     "this, with their pages, and what they don't cover. You may add what you know in general, introduced as not "
@@ -48,9 +50,17 @@ OFFER_NOTE_DOCUMENT = (
     "The user now sees a card asking whether to search the web. Write your answer: what the document says about "
     "this, with its pages, and what it doesn't cover. You may add what you know in general, introduced as not "
     "from the document and never with a page. Don't ask whether to search; the card does.")
+OFFER_NOTE_NO_DOCUMENT = (
+    "The user now sees a card asking whether to search the web. Write your answer from what you know in general, "
+    "saying it is not from a search and may be out of date. Don't ask whether to search; the card does.")
 
 
-def offer_note(project: bool) -> str:
+def offer_note(project: bool, document_tools: bool) -> str:
+    """`document_tools`: the document tools are offered this turn (`prompt.document_tools_offered`), the same condition
+    the rules' offer line uses to say "search the document(s) first". Without them there is nothing to cite, in a project
+    (whose documents are all still being indexed, say) as in a chat with no document, so only the general note fits."""
+    if not document_tools:
+        return OFFER_NOTE_NO_DOCUMENT
     return OFFER_NOTE_PROJECT if project else OFFER_NOTE_DOCUMENT
 
 

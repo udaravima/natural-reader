@@ -40,6 +40,7 @@ from .config import ChatConfig
 from .context import TurnInput, build_context
 from .project_map import ProjectMap, build_map
 from .project_scope import ProjectScope, load_project_scope
+from .prompt import document_tools_offered
 from .sources import answer_sources, sources_by_document, web_sources
 from .store import TurnClaim, title_from_prompt
 from .tools import ToolContext, ToolRun, TurnTools, available_tools, result_text
@@ -66,6 +67,8 @@ _FEATURE_NOTICE = {
 }
 _FEATURE_LOG = {"tools": "tool-fallback", "thinking": "think-fallback", "think_level": "think-fallback",
                 "system": "system-fallback"}
+# The notice sent when the daily budget keeps an offer turn from writing its answer (the card is still shown).
+ANSWER_SKIPPED_NOTICE = "Daily inference budget exhausted — no written answer for this offer."
 # Added to the results of the last tool round (v2.3 Task A). Worded to match
 # the rule in server/chat/prompt.py ("When a tool result says the tool rounds
 # are over, answer from what you already have").
@@ -353,8 +356,11 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                     await _log_event(claim.session_id, "budget", "daily token budget exhausted")
                     return
                 # The answer step is held back like any step, but the card costs nothing and the user was
-                # offered it: an error here would hide it.
+                # offered it: an error here would hide it. The reason is not silent: a notice (the user's next
+                # message would fail at once) and the session log's `budget` line, as for the error.
                 logger.info("The answer step after an offer was skipped: the daily token budget is used")
+                await _log_event(claim.session_id, "budget", "daily token budget exhausted")
+                yield ev("data-notice", code="budget_exhausted_no_answer", message=ANSWER_SKIPPED_NOTICE)
                 for e in end_with_offer(pending_offer):
                     yield e
                 await _save(claim, state)
@@ -449,7 +455,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             # during the pool's commit) can't stop the row landing, and _finalize
             # must never charge this step a second time.
             state.step_recorded = True
-            if failed and usage is None and not (text or reasoning):
+            if failed and not _billable(usage, text + probe.held + reasoning):
                 usage = Usage(0, 0)   # refused before generating anything: nothing to charge (as _finalize)
             else:
                 usage = await asyncio.shield(_record_usage(req.user_id, usage, messages,
@@ -485,7 +491,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                 first_offer = offer is None and (offer := web_offer(runs)) is not None
                 if first_offer and not text.strip():
                     # The model offers without having written anything: its next step is the answer.
-                    result = {**run.result, "note": offer_note(project is not None)}
+                    result = {**run.result, "note": offer_note(
+                        project is not None, document_tools_offered(t.name for t in offered))}
                 elif last_round:
                     result = {**run.result, "note": LAST_ROUND_NOTE}
                 else:
@@ -575,7 +582,7 @@ async def _finalize(claim: TurnClaim, state: _State, outcome: str, req: TurnRequ
             # (aborted) after the prompt was already processed. A provider
             # that refuses before generating anything (e.g. HTTP 400 on an
             # invalid model) leaves nothing to charge (walk fix 2).
-            if outcome == "aborted" or state.pending_usage is not None or state.pending_output:
+            if outcome == "aborted" or _billable(state.pending_usage, state.pending_output):
                 await _record_usage(req.user_id, state.pending_usage, state.pending_messages, state.pending_output)
             state.step_recorded = True
         if outcome == "aborted":
@@ -757,6 +764,13 @@ async def _over_budget(user_id: str, deployment_budget: int | None) -> bool:
     except Exception:
         logger.warning("Budget check failed (fail-open)", exc_info=True)
         return False
+
+
+def _billable(usage: Usage | None, output: str) -> bool:
+    """A step that was cut short or failed is charged only if the provider did something billable: it sent a Usage
+    chunk, or it produced output (text or reasoning). One that refused before generating anything (e.g. HTTP 400 on
+    an invalid model) leaves nothing to charge. The one rule for _finalize and for the answer step after an offer."""
+    return usage is not None or bool(output)
 
 
 async def _record_usage(user_id: str, usage: Usage | None, messages: list[Message], output: str) -> Usage:

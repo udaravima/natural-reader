@@ -334,10 +334,34 @@ async def test_read_batch_logs_a_provider_errors_status_but_not_its_text(use_rou
     assert "bad gateway" not in caplog.text and "dnf install" not in caplog.text
 
 
-async def test_read_batch_found_false_ignores_listed_facts(use_router):
+async def test_read_batch_keeps_a_verified_fact_whatever_found_says(use_router):
+    """Task 22 fix round 1 (closes (h)'s purpose): a small model may answer one part of a goal and still say
+    `found: false` because the whole goal isn't met. What the app trusts is the quote check, not that flag: a fact whose
+    quote verifies is kept, and `found` is true exactly when one did."""
     use_router(FakeRouter('{"found": false, "facts": [{"fact": "f", "quote": "dnf install", "from": "[1, page 2]"}]}'))
+    result = await read_batch("q", "n", [PAGE], chat_model="m", cfg=CFG)
+    assert result.found is True and result.error is None and result.dropped == 0
+    assert [(f.fact, f.quote, f.label) for f in result.facts] == [("f", "dnf install", "[1, page 2]")]
+
+
+async def test_read_batch_found_false_with_a_fact_that_does_not_verify_is_nothing_found(use_router):
+    use_router(FakeRouter('{"found": false, "facts": [{"fact": "f", "quote": "made up text", "from": "[1, page 2]"}]}'))
+    assert await read_batch("q", "n", [PAGE], chat_model="m", cfg=CFG) == ReaderResult(False, (), 1, None)
+
+
+async def test_read_batch_found_false_keeps_only_the_facts_that_verify(use_router):
+    use_router(FakeRouter('{"found": false, "facts": ['
+                          '{"fact": "a", "quote": "made up", "from": "[1, page 2]"}, '
+                          '{"fact": "b", "quote": "dnf install python3.13", "from": "[1, page 2]"}]}'))
+    result = await read_batch("q", "n", [PAGE], chat_model="m", cfg=CFG)
+    assert result.found and [f.fact for f in result.facts] == ["b"] and result.dropped == 1
+
+
+@pytest.mark.parametrize("facts", ["null", '"none"', '{"fact": "x"}', "[]"], ids=["null", "string", "object", "empty"])
+async def test_read_batch_found_false_with_no_usable_facts_is_nothing_found_not_an_error(use_router, facts):
+    use_router(FakeRouter('{"found": false, "facts": ' + facts + '}'))
     assert await read_batch("q", "n", [PAGE], chat_model="m", cfg=CFG) == ReaderResult(False, (), 0, None)
-    use_router(FakeRouter('{"found": false, "facts": null}'))
+    use_router(FakeRouter('{"found": false}'))
     assert await read_batch("q", "n", [PAGE], chat_model="m", cfg=CFG) == ReaderResult(False, (), 0, None)
 
 

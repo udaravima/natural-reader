@@ -1752,7 +1752,7 @@ Some of the differences between the first and the last column are changes in wha
   eval the only reader case is `web-read` (one need with two parts, the package and the minimum version), and it did not move: 3/3 with (c), 2/3 shipped, and 5/6 against 5/6 in the diagnostic with the brief of (h)
   and the brief before it. The miss each time is the same shape: the answer gave the archived guide's 4.17.3 and not 4.18.3. **Watch item:** web source chips appeared in 4 of 6 `web-read` turns with the new brief
   and 6 of 6 with the old one; over every new-brief `web-read` turn this task (both variant 9 runs and the diagnostic) it is 10 of 12, against 9 of 9 for the old brief ("Final (cloud)" and the diagnostic). In the two chipless
-  turns the answer was still right. Too few turns to call it, and I did not look at why (the reader here is the local `llama3.2:3b`, which can time out or return no verifiable quote).
+  turns the answer was still right. Too few turns to call it, and I did not look at why (the reader here is the local `llama3.2:3b`, which can time out or return no verifiable quote). Fix round 1 changed the reader after these runs so that a `found: false` reply keeps any fact whose quote verifies (before, such facts were discarded unchecked); that is unit tested and **not measured here**: a re-measure with a cloud reader comes after the re-review.
 - **(o) a missing document means the open one.** Not exercised: the eval opens no document (`doc_id` is `None`), so no document is ever open. Unit tested for all three tools.
 - **(g) web search settings.** Not exercised by the eval. Unit tested, including that the module imports with a typo in a setting.
 

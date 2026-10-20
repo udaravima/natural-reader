@@ -93,6 +93,13 @@ FIRST_LINE = "You are the assistant in Natural Reader, an app for reading and li
 FIRST_LINE_WITH_PROFILE = "You are working in Natural Reader, an app for reading and listening to documents."
 
 
+def document_tools_offered(offered: Iterable[str]) -> bool:
+    """The document tools are on offer this turn (search_documents is their gate): steps 2 to 4 of the rules exist, and
+    the offer line says to search the documents first. The orchestrator asks the same question to choose the note an
+    offer's result carries (chat/web_consent.py), so the two can't disagree."""
+    return DOC_SEARCH in offered
+
+
 def _document_line(doc: ReadableDoc | None) -> str | None:
     line = _document_line_base(doc)
     if line and doc is not None and doc.version_note:
@@ -232,7 +239,7 @@ def _procedure(doc: ReadableDoc | None, offered: set[str], prefetch: bool = Fals
                project: ProjectScope | None = None) -> str:
     """The strategy, steps 1 to 4. Step 1 always; steps 2 to 4 when the
     document can reach the model (its tools, or prefetched passages)."""
-    doc_tools = DOC_SEARCH in offered
+    doc_tools = document_tools_offered(offered)
     prefetched_only = not doc_tools and doc is not None and doc.state == "indexed"
     lines = ["How to handle each message:",
              "1. Decide what it needs:",

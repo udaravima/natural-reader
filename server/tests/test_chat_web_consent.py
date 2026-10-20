@@ -31,7 +31,8 @@ from server.services import web_search as ws
 from server.tests.chat_harness import FakeRouter, member, reply, shim_pool
 from server.tests.test_chat_orchestrator import _msg, open_doc  # noqa: F401 — open_doc is a fixture
 from server.routers import chat_turns
-from server.tests.test_chat_project_scope import _two_doc_project
+from server.tests import seed
+from server.tests.test_chat_project_scope import A1, _doc, _two_doc_project
 from server.tests.test_chat_turns import BODY, _frames, _post, app  # noqa: F401 — app is a fixture
 
 OFFER = {"query": "RHEL 9 python 3.13 packages", "reason": "The documents don't cover RHEL."}
@@ -154,6 +155,10 @@ OFFER_NOTE_DOCUMENT = (
     "The user now sees a card asking whether to search the web. Write your answer: what the document says about "
     "this, with its pages, and what it doesn't cover. You may add what you know in general, introduced as not "
     "from the document and never with a page. Don't ask whether to search; the card does.")
+# A chat with no document the model can search (none open, or the open one isn't indexed yet): there is nothing to cite.
+OFFER_NOTE_NO_DOCUMENT = (
+    "The user now sees a card asking whether to search the web. Write your answer from what you know in general, "
+    "saying it is not from a search and may be out of date. Don't ask whether to search; the card does.")
 ANSWER = "The documents don't mention RHEL 9. In general, you would install python3.13 from AppStream."
 
 
@@ -186,11 +191,50 @@ async def test_an_offer_with_no_text_gets_one_more_step_with_no_tools(conn, engi
     assert engine.queries == []                                    # the extra step runs no web tool
 
 
-async def test_the_offers_result_carries_the_note_to_the_model(conn, engine):
+async def test_the_offers_result_carries_the_note_to_the_model(conn, engine, open_doc):
+    router = FakeRouter(steps=[offer_call(), reply(ANSWER)])
+    await turn(conn, router, doc_id="d" * 64)
+    result = json.loads(tool_message(router.calls[1]).content)
+    assert result == {"offered": True, **OFFER, "note": OFFER_NOTE_DOCUMENT}      # no project, a document to search: the document
+
+
+async def test_a_chat_with_no_document_gets_the_general_note(conn, engine):
+    """Fix round 1: offer_web_search is offered with or without a document, and a note that sends the model to "what the
+    document says, with its pages" is wrong when there is none (it invites an invented page)."""
     router = FakeRouter(steps=[offer_call(), reply(ANSWER)])
     await turn(conn, router)
+    assert router.calls[0]["tools"] == ["offer_web_search"]
     result = json.loads(tool_message(router.calls[1]).content)
-    assert result == {"offered": True, **OFFER, "note": OFFER_NOTE_DOCUMENT}      # no project: the document
+    assert result == {"offered": True, **OFFER, "note": OFFER_NOTE_NO_DOCUMENT}
+    assert "document" not in result["note"] and "page" not in result["note"]
+
+
+async def test_an_open_document_that_cannot_be_searched_yet_gets_the_general_note(conn, engine, monkeypatch):
+    async def stored(req):
+        return ReadableDoc("d" * 64, "Thesis.pdf", "stored")
+
+    monkeypatch.setattr(orchestrator, "_open_doc", stored)
+    router = FakeRouter(steps=[offer_call(), reply(ANSWER)])
+    await turn(conn, router, doc_id="d" * 64)
+    assert "search_documents" not in router.calls[0]["tools"]
+    assert json.loads(tool_message(router.calls[1]).content)["note"] == OFFER_NOTE_NO_DOCUMENT
+
+
+@pytest.mark.parametrize("state", [None, "stored", "indexed"])
+async def test_the_note_and_the_documents_first_sentence_never_disagree(conn, engine, monkeypatch, state):
+    """The note names the document exactly when the rules' offer line says to search it first: both follow whether
+    search_documents is offered this turn."""
+    async def opened(req):
+        return ReadableDoc("d" * 64, "Thesis.pdf", state) if state else None
+
+    monkeypatch.setattr(orchestrator, "_open_doc", opened)
+    router = FakeRouter(steps=[offer_call(), reply(ANSWER)])
+    await turn(conn, router, doc_id="d" * 64 if state else None)
+    system = router.calls[0]["messages"][0].content
+    note = json.loads(tool_message(router.calls[1]).content)["note"]
+    searchable = "search_documents" in router.calls[0]["tools"]
+    assert ("Search the document first when it may cover any part of it." in system) == searchable
+    assert (note == OFFER_NOTE_DOCUMENT) == searchable and (note == OFFER_NOTE_NO_DOCUMENT) == (not searchable)
 
 
 async def test_the_note_names_the_documents_in_a_project(conn, engine):
@@ -200,9 +244,37 @@ async def test_the_note_names_the_documents_in_a_project(conn, engine):
     assert json.loads(tool_message(router.calls[1]).content)["note"] == OFFER_NOTE_PROJECT
 
 
+async def test_a_project_with_nothing_searchable_yet_gets_the_general_note(conn, engine):
+    """The project note sends the model to the documents' pages; a project whose only document is still being indexed
+    offers no document tool (and the rules have no step 2), so there is nothing to cite: the no-document note applies."""
+    alice = await member(conn, "alice")
+    pid = await seed.make_project(conn, alice.user_id, "Handbook")
+    await _doc(conn, A1, alice, "Alpha.md", state="indexing")
+    await seed.place_doc(conn, pid, A1, alice.user_id, file_name="Alpha.md")
+    router = FakeRouter(steps=[offer_call(), reply(ANSWER)])
+    await turn(conn, router, project_id=pid, user=alice)
+    assert "search_documents" not in router.calls[0]["tools"]
+    assert "Search the documents first" not in router.calls[0]["messages"][0].content
+    assert json.loads(tool_message(router.calls[1]).content)["note"] == OFFER_NOTE_NO_DOCUMENT
+
+
+async def test_a_project_with_a_searchable_document_still_gets_the_project_note(conn, engine):
+    alice = await member(conn, "alice")
+    pid = await seed.make_project(conn, alice.user_id, "Handbook")
+    await _doc(conn, A1, alice, "Alpha.md", state="indexed")
+    await seed.place_doc(conn, pid, A1, alice.user_id, file_name="Alpha.md")
+    router = FakeRouter(steps=[offer_call(), reply(ANSWER)])
+    await turn(conn, router, project_id=pid, user=alice)
+    assert "search_documents" in router.calls[0]["tools"]
+    assert "Search the documents first when they may cover any part of it." in router.calls[0]["messages"][0].content
+    assert json.loads(tool_message(router.calls[1]).content)["note"] == OFFER_NOTE_PROJECT
+
+
 def test_the_offer_notes_are_exact():
-    assert web_consent.offer_note(project=True) == OFFER_NOTE_PROJECT
-    assert web_consent.offer_note(project=False) == OFFER_NOTE_DOCUMENT
+    assert web_consent.offer_note(project=True, document_tools=True) == OFFER_NOTE_PROJECT
+    assert web_consent.offer_note(project=True, document_tools=False) == OFFER_NOTE_NO_DOCUMENT    # nothing to cite yet
+    assert web_consent.offer_note(project=False, document_tools=True) == OFFER_NOTE_DOCUMENT
+    assert web_consent.offer_note(project=False, document_tools=False) == OFFER_NOTE_NO_DOCUMENT
 
 
 async def test_an_offer_with_text_gets_no_extra_step(conn, engine):
@@ -310,16 +382,22 @@ async def test_a_provider_that_refuses_the_extra_step_is_not_charged_for_it(conn
 
 async def test_an_exhausted_budget_skips_the_extra_step_and_the_card_still_appears(conn, engine):
     """The extra step is a model call, so the daily budget holds it back, like any step. What the user was
-    offered is still shown: an error here would hide a card that costs nothing."""
+    offered is still shown: an error here would hide a card that costs nothing. But it isn't silent: the existing
+    non-fatal notice says why there is no written answer, and the session log keeps its `budget` line."""
     alice = await member(conn, "alice")
     await conn.execute("UPDATE users SET inference_daily_token_budget = 10 WHERE id = %s", (alice.user_id,))
     router = FakeRouter(steps=[offer_call(), reply(ANSWER)])           # the offer round uses 5 + 5 = the budget
     events, claim = await turn(conn, router, user=alice)
     assert len(router.calls) == 1
-    assert "error" not in types(events) and types(events)[-2:] == ["data-web-offer", "finish"]
+    assert "error" not in types(events) and types(events)[-3:] == ["data-notice", "data-web-offer", "finish"]
+    notice = next(e for e in events if e["type"] == "data-notice")
+    assert notice["code"] == "budget_exhausted_no_answer"
+    assert notice["message"] == "Daily inference budget exhausted — no written answer for this offer."
     status, reason, content, _, _, doc_context, _ = await _msg(conn, claim.turn_id)
     assert (status, reason, content) == ("complete", "stop", "")
     assert doc_context == {"notes": [{"kind": "web_offer", **OFFER}]}
+    cur = await conn.execute("SELECT kind FROM chat_events WHERE session_id = 's-1' ORDER BY id")
+    assert "budget" in [r[0] for r in await cur.fetchall()]
 
 
 async def test_a_cancelled_extra_step_saves_the_text_so_far_and_no_card(conn, engine):
