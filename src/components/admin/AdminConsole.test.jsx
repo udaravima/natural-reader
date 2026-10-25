@@ -157,6 +157,18 @@ describe('AdminConsole — users', () => {
     expect(caps).toHaveLength(2);
   });
 
+  it('offers the docling capability on a person and when enrolling', async () => {
+    const users = [user({ id: 'u2', email: 'b@x.io', capabilities: ['reader'] })];
+    mount({ users });
+    await screen.findByText('b@x.io');
+    const row = screen.getByTestId('user-row-u2');
+    fireEvent.click(within(row).getByRole('checkbox', { name: 'docling' }));
+    await waitFor(() => expect(calls('PATCH').length).toBe(1));
+    expect(lastBody('PATCH').capabilities.sort()).toEqual(['docling', 'reader']);
+    const form = screen.getByLabelText(/enroll email/i).closest('form');
+    expect(within(form).getByRole('checkbox', { name: 'docling' })).not.toBeChecked();
+  });
+
   it('includes selected capabilities in the enroll POST body', async () => {
     mount({ users: [user({ id: 'me', role: 'admin' })] });
     await screen.findByText('a@x.io');

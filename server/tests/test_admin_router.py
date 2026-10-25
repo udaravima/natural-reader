@@ -251,6 +251,23 @@ async def test_patch_capabilities_reconciles_kc_and_db(db_conn):
     assert kc.assigned == [("sub-1", ["chat"])] and kc.removed == []
 
 
+async def test_patch_accepts_the_docling_capability(db_conn):
+    _, p = await _admin(db_conn)
+    from server.auth.users import enroll_linked_user, get_user
+    u = await enroll_linked_user(db_conn, iss="i", sub="sub-d", email="d@x.io",
+                                 capabilities=["reader"], status="active")
+
+    class _KC(_FakeKC):
+        def __init__(self): super().__init__(); self.assigned=[]
+        async def assign_realm_roles(self, sub, names): self.assigned.append((sub, list(names)))
+    kc = _KC()
+    async with _client(_app_kc(db_conn, p, kc)) as c:
+        r = await c.patch(f"/v1/admin/users/{u['id']}", json={"capabilities": ["reader", "docling"]})
+    assert r.status_code == 200
+    assert set((await get_user(db_conn, u["id"]))["capabilities"]) == {"reader", "docling"}
+    assert kc.assigned == [("sub-d", ["docling"])]
+
+
 async def test_disable_propagates_enabled_false(db_conn):
     _, p = await _admin(db_conn)
     from server.auth.users import enroll_linked_user

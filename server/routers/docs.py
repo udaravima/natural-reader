@@ -32,7 +32,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from psycopg import errors as pg_errors
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..audit import audit
 from ..auth.authz import (
@@ -48,7 +48,7 @@ from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
 from ..http_errors import BUSY_MESSAGE, refusal
 from ..services import (
-    doc_content, doc_pipeline, doc_storage, doc_versions, docling_convert, people,
+    doc_content, doc_pipeline, doc_storage, doc_versions, docling_convert, docling_limits, extract, people,
 )
 from ..services.doc_search import ReadableDoc, search_chunks
 from ..services.embeddings import embed_query
@@ -85,6 +85,13 @@ class ConvertOptionsIn(BaseModel):
     images: str = Field(default="drop", pattern="^(drop|embed|describe)$")
     # Inclusive 1-based [start, end]. None = whole document.
     page_range: list[int] | None = None
+
+    @field_validator("page_range")
+    @classmethod
+    def _page_range_is_start_then_end(cls, value: list[int] | None) -> list[int] | None:
+        if value is not None and not (len(value) == 2 and 1 <= value[0] <= value[1]):
+            raise ValueError("page_range must be [start, end], counted from 1, with start <= end")
+        return value
 
 
 # Background jobs live in services/doc_pipeline.py. The old private names are
@@ -911,13 +918,15 @@ async def start_convert_job(
     doc_id: DocId,
     options: ConvertOptionsIn,
     background: BackgroundTasks,
-    _principal: Principal = Depends(_require_content_op),
+    principal: Principal = Depends(_require_content_op),
 ) -> dict[str, Any]:
     """
     Kick off a docling conversion in the background. Requires that the
     document's bytes are already stored (registration stores them). A
     content-changing op: only the sole holder or an admin (else 409
-    content_shared, spec §5). Returns 202; poll GET /v1/docs/{doc_id} to
+    content_shared, spec §5). The admin's Docling limits (who may convert,
+    which options, how many pages) are checked before anything is marked as
+    converting; a refusal is 403 convert_not_allowed naming the option. Returns 202; poll GET /v1/docs/{doc_id} to
     watch `conversion_state` and then `state`.
     """
     _ensure_ready()
@@ -930,7 +939,7 @@ async def start_convert_job(
     pool = get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT bytes_path FROM documents WHERE doc_id = %s",
+            "SELECT bytes_path, page_count FROM documents WHERE doc_id = %s",
             (doc_id,),
         )
         row = await cur.fetchone()
@@ -938,6 +947,22 @@ async def start_convert_job(
             raise HTTPException(status_code=404, detail="Document not found")
         if not row[0]:
             raise refusal(409, "bytes_missing", "Upload the file again first.")
+        limits = await docling_limits.load_limits(conn)
+        pages = None
+        if limits.max_pages > 0:
+            total = row[1]
+            if options.page_range is None and total is None:
+                # Just uploaded and indexing hasn't recorded the pages yet: count them from the stored file. One
+                # that can't be counted goes on as unknown, and Docling's own failure reports it.
+                try:
+                    total = await asyncio.to_thread(extract.pdf_page_count, doc_storage.resolve_stored(row[0]))
+                except Exception:
+                    logger.warning("Could not count the pages of %s for the page limit", doc_id, exc_info=True)
+            pages = docling_limits.pages_requested(options.page_range, total)
+        refused = docling_limits.check(limits, options.model_dump(), is_admin=principal.role == "admin",
+                                       capabilities=principal.capabilities, pages=pages)
+        if refused:
+            raise refusal(403, "convert_not_allowed", refused.message, option=refused.option)
         await conn.execute(
             """
             UPDATE documents

@@ -20,7 +20,7 @@ from ..auth.kc_admin import KCAdminError
 from ..llm.router import get_router
 from ..http_errors import refusal
 from ..services import (assistant_profile, chat_options, console_overview, console_settings, deployment_info, deployment_settings,
-                        doc_content, inference_budget, model_router, people, user_defaults,
+                        doc_content, docling_limits, inference_budget, model_router, people, user_defaults,
                         web_search as web_search_service)
 from ..services.console_settings import Section, SettingError
 
@@ -497,6 +497,7 @@ async def put_chat_options(
 # section key -> (its settings, a function giving the read-only values shown beside them)
 _SECTIONS: dict[str, tuple[Section, Callable[[], list[dict]]]] = {
     "deployment": (deployment_settings.SECTION, deployment_info.readonly_rows),
+    "documents": (docling_limits.SECTION, docling_limits.info_rows),
 }
 
 

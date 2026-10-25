@@ -8,7 +8,7 @@ import { formatDay } from '../../lib/zoneFormat';
  * capabilities, and delete. Moved out of AdminConsole unchanged.
  */
 
-const CAPABILITIES = ['reader', 'chat', 'admin'];
+const CAPABILITIES = ['reader', 'chat', 'admin', 'docling'];
 
 // Per-user budget editor. PATCH exclude_unset semantics: the field is only
 // sent when the admin presses Set — empty = explicit clear (null →
@@ -64,7 +64,7 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
   const [enrollLast, setEnrollLast] = useState('');
   const [enrollStatus, setEnrollStatus] = useState('pending');
   const [enrollBudget, setEnrollBudget] = useState('');
-  const [enrollCaps, setEnrollCaps] = useState({ reader: false, chat: false, admin: false });
+  const [enrollCaps, setEnrollCaps] = useState({ reader: false, chat: false, admin: false, docling: false });
   const [enrollNote, setEnrollNote] = useState(null); // { kind: 'ok'|'err', text }
   const [enrolling, setEnrolling] = useState(false); // POST in flight → busy button
 
@@ -157,7 +157,7 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
       setEnrollEmail(''); setEnrollName(''); setEnrollBudget('');
       setEnrollUsername(''); setEnrollFirst(''); setEnrollLast('');
       setEnrollStatus('pending');
-      setEnrollCaps({ reader: false, chat: false, admin: false });
+      setEnrollCaps({ reader: false, chat: false, admin: false, docling: false });
       await loadUsers();
     } catch (e) {
       setEnrollNote({ kind: 'err', text: `Enroll failed: ${e.message}` });
