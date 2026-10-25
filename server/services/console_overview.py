@@ -209,7 +209,11 @@ def project_turn_tokens(cfg: ChatConfig, web_mode: str, profile: str = "") -> in
     return math.ceil(chars / 4) + cfg.reply_reserve_tokens
 
 
-async def _context(llm, cfg: ChatConfig, web_mode: str, profile: str, embed_model: str) -> Check:
+async def _context(llm, env: Mapping[str, str], web_mode: str, profile: str) -> Check:
+    # Config parsing lives here, not up front: one malformed value (INFERENCE_DAILY_TOKEN_BUDGET=lots) must cost
+    # this check's line, not the page an admin uses to find it.
+    cfg = get_chat_config()
+    embed_model = model_router.load_inference_config(env).embed_model
     models, _failed = await llm.list_models()
     models = model_router.offered_chat_models(models, embed_model)
     if not models:
@@ -243,12 +247,15 @@ async def run_checks(conn, llm, env: Mapping[str, str] = os.environ,
                      http: httpx.AsyncClient | None = None) -> list[Check]:
     # Every database read first, in turn, outside any timeout (see the module docstring).
     web_mode = (await chat_options.load_chat_options(conn, env)).web_search
-    cur = await conn.execute("SELECT count(*) FROM documents WHERE state = 'indexed' "
-                             "AND embedding_profile IS DISTINCT FROM %s", (embeddings.current_profile(),))
-    stale = (await cur.fetchone())[0]
+    try:
+        current = embeddings.current_profile()
+    except ValueError:   # a malformed INFERENCE_* value: the embeddings and context checks report it themselves
+        stale = 0
+    else:
+        cur = await conn.execute("SELECT count(*) FROM documents WHERE state = 'indexed' "
+                                 "AND embedding_profile IS DISTINCT FROM %s", (current,))
+        stale = (await cur.fetchone())[0]
     profile = (await assistant_profile.load_profile(conn)).text
-    chat_cfg = get_chat_config()
-    embed_model = model_router.load_inference_config(env).embed_model
 
     owned = http is None
     client = httpx.AsyncClient() if owned else http
@@ -256,7 +263,7 @@ async def run_checks(conn, llm, env: Mapping[str, str] = os.environ,
         return list(await asyncio.gather(
             _bounded("providers", lambda: _providers(llm)),
             _bounded("reader", lambda: _reader(llm, env)),
-            _bounded("context", lambda: _context(llm, chat_cfg, web_mode, profile, embed_model)),
+            _bounded("context", lambda: _context(llm, env, web_mode, profile)),
             _bounded("embeddings", lambda: _embeddings(env, stale)),
             _bounded("docling", _docling),
             _bounded("web_search", lambda: _web_search(client, web_mode)),

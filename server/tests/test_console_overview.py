@@ -335,3 +335,35 @@ def test_the_embedding_model_isnt_listed_as_a_chat_model():
     other = ModelInfo("oa:nomic-embed-text", "oa", "openai", "nomic-embed-text", Capabilities())
     assert offered_chat_models([emb, chat, other], "nomic-embed-text") == [chat, other]
     assert offered_chat_models([emb, chat], "nomic-embed-text:latest") == [chat]
+
+
+async def test_a_malformed_env_value_costs_one_line_not_the_page(db_conn, monkeypatch):
+    checks = {c.id: c for c in await run_checks(db_conn, _router(), {"INFERENCE_DAILY_TOKEN_BUDGET": "lots"},
+                                                http=_searxng_ok())}
+    assert list(checks) == ["providers", "reader", "context", "embeddings", "docling", "web_search"]
+    assert (checks["context"].state, checks["context"].summary) == ("error", "The check failed: ValueError.")
+    assert checks["providers"].state == "ok" and checks["web_search"].state == "ok"
+
+
+async def test_the_overview_route_answers_with_a_malformed_env_value(db_conn, monkeypatch):
+    monkeypatch.setattr(admin_router, "get_router", lambda: _router())
+    monkeypatch.setenv("INFERENCE_DAILY_TOKEN_BUDGET", "lots")
+    monkeypatch.setattr(console_overview, "_web_search", lambda http, mode: _off())
+    app = FastAPI()
+
+    async def _conn_override():
+        yield db_conn
+    admin = await resolve_or_provision_user(db_conn, iss="i", sub="s9", email="z@x.io")
+    app.dependency_overrides[deps.get_conn] = _conn_override
+    app.dependency_overrides[deps.get_current_user] = lambda: deps.Principal(
+        user_id=admin["id"], email=admin["email"], role="admin")
+    app.include_router(admin_router.router)
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.get("/v1/admin/overview")
+    assert r.status_code == 200
+    by = {x["id"]: x for x in r.json()["checks"]}
+    assert by["context"]["summary"] == "The check failed: ValueError."
+
+
+async def _off():
+    return console_overview._check("web_search", "off", "Off.")
