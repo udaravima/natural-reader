@@ -1,6 +1,6 @@
 # Admin console v2: run the deployment from the console, not from `.env`
 
-**Status:** proposal, revision 2 (2026-10-25). Not approved yet. Written after v2.4.0 from the owner's notes: the admin panel needs more flexibility and should be as friendly as the Settings window; the timezone should be set there; "we're trapped on the embedding model and llama3.2:3b". Revision 2 folds in a review of revision 1. Its four must-fix findings were checked against this repository and against Ollama's source (`server/routes.go` `EmbedHandler`, `server/sched.go` `needsReload`).
+**Status:** revision 2 (2026-10-25). The owner approved the §7 decisions as written on 2026-10-25; phase 1's plan is `docs/superpowers/plans/2026-10-25-admin-console-v2-phase1.md`. Written after v2.4.0 from the owner's notes: the admin panel needs more flexibility and should be as friendly as the Settings window; the timezone should be set there; "we're trapped on the embedding model and llama3.2:3b". Revision 2 folds in a review of revision 1. Its four must-fix findings were checked against this repository and against Ollama's source (`server/routes.go` `EmbedHandler`, `server/sched.go` `needsReload`).
 
 ## 1. Why
 
@@ -199,7 +199,7 @@ What a conversion may use. `POST /v1/docs/{id}/convert` enforces it, and a refus
    - **b.** The embedding provider, the two-step probe, build-then-switch, and the database rebuild queue. These share one machinery.
 3. **Usage by model:** the migration, writers for chat and reader calls, and the new Usage section.
 
-## 7. Decisions (recommended; the owner confirms at review)
+## 7. Decisions (approved by the owner, 2026-10-25)
 
 1. **When no reader model is set anywhere:** the chat model (§4.2.2). The owner's direction is to make the reader choosable; this is only the fallback.
 2. **Context size for local Ollama models:** 16,384 by default, one size per model (§4.2.1). The rule matters more than the number: without it, a fixed default still reloads the model on every reader call.
