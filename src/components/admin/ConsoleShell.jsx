@@ -19,7 +19,15 @@ export function ConsoleShell({ theme, sections, active, onSelect, onBack, dirty 
   const [pending, setPending] = useState(null);
 
   const activeLabel = sections.find((s) => s.id === active)?.label ?? '';
-  const tabEl = (id) => rootRef.current?.querySelector(`#admin-tab-${id}`);
+  // The visible way to pick a section: the tab from md up, the picker below
+  // (the tabs are display:none there, and focus() on those does nothing).
+  // jsdom has no matchMedia; treat that as desktop.
+  const navControl = (id) => {
+    const wide = window.matchMedia?.('(min-width: 768px)').matches ?? true;
+    return wide
+      ? rootRef.current?.querySelector(`#admin-tab-${id}`)
+      : rootRef.current?.querySelector('select[aria-label="Admin section"]');
+  };
 
   // The question opens with focus on its safe answer, so Escape and Enter both mean Keep editing.
   useEffect(() => { if (pending) keepRef.current?.focus(); }, [pending]);
@@ -40,12 +48,12 @@ export function ConsoleShell({ theme, sections, active, onSelect, onBack, dirty 
     setPending(null);
     if (p.go === 'back') { onBack(); return; }
     onSelect(p.id);
-    tabEl(p.id)?.focus();
+    navControl(p.id)?.focus();
   };
 
   const keepEditing = () => {
     setPending(null);
-    tabEl(active)?.focus();
+    navControl(active)?.focus();
   };
 
   const onKeyDown = (e) => {
@@ -64,7 +72,7 @@ export function ConsoleShell({ theme, sections, active, onSelect, onBack, dirty 
     goTo(to.id);
     // Selection follows focus; when the guard held the move back, the
     // question takes focus instead.
-    if (!dirty) tabEl(to.id)?.focus();
+    if (!dirty) navControl(to.id)?.focus();
   };
 
   return (

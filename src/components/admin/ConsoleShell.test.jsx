@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { ConsoleShell } from './ConsoleShell';
 
@@ -90,5 +90,23 @@ describe('ConsoleShell', () => {
     const { onBack } = shell();
     fireEvent.click(screen.getByRole('button', { name: /Back to reader/ }));
     expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  describe('on a phone', () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('returns focus to the picker after Keep editing and after Discard', () => {
+      vi.stubGlobal('matchMedia', () => ({ matches: false }));
+      shell({ dirty: true });
+      const picker = screen.getByLabelText('Admin section');
+      fireEvent.change(picker, { target: { value: 'b' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Keep editing' }));
+      expect(document.activeElement).toBe(picker);
+
+      screen.getByRole('button', { name: /Back to reader/ }).focus();
+      fireEvent.change(picker, { target: { value: 'c' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }));
+      expect(document.activeElement).toBe(picker);
+    });
   });
 });

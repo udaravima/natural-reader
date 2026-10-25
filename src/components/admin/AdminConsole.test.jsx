@@ -211,6 +211,8 @@ describe('AdminConsole — users', () => {
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(
       expect.stringContaining('library and chat history'), expect.anything()
     ));
+    const deleted = showToast.mock.calls.filter(([m]) => m.includes('library and chat history were removed'));
+    expect(deleted).toHaveLength(1);
   });
 
   it('states what deleting a user does to their projects, and reloads the Projects section afterwards', async () => {

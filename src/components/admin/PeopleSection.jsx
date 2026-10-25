@@ -205,7 +205,6 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
       if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
       setDeleteTarget(null); setDeleteTyped('');
       showToast(`Deleted ${u.email} — their library and chat history were removed; projects they belonged to stay (ownerless ones appear under Projects).`, 6000);
-      showToast(`Deleted ${u.email} — their library and chat history were removed; projects they belonged to stay (ownerless ones appear under Projects).`, 6000);
       await loadUsers();
     } catch (e) {
       showToast(`Delete failed: ${e.message}`, 5000);
