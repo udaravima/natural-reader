@@ -32,7 +32,7 @@ from ..llm.router import UnknownModel
 from ..llm.types import (Attachment, CallSettings, Capabilities, FeatureDropped, Finish, Message,
                          ProviderError, ProviderTimeout, ProviderUnavailable, ReasoningDelta,
                          TextDelta, ToolCall, ToolCallReady, Usage)
-from ..services import assistant_profile, chat_options, inference_budget
+from ..services import assistant_profile, chat_options, deployment_settings, inference_budget
 from ..services import doc_pipeline
 from ..services.doc_outlines import Outline, load_outlines
 from ..services.doc_search import ReadableDoc, readable_doc
@@ -299,7 +299,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             window=_window(router, req, caps), now=datetime.now(timezone.utc),
             tools=tuple(offered if max_rounds > 0 else ()), tool_ctx=tool_ctx,
             profile=profile.text, scope=tuple(scope_docs(tool_ctx)),
-            project_map=project_map.text if project_map else "", app_exchange=app_exchange), cfg)
+            project_map=project_map.text if project_map else "", app_exchange=app_exchange,
+            default_timezone=await _deployment_timezone()), cfg)
         tool_ctx.shown.update(built.shown_chunk_ids)
         # Document text the model already has: the web search guard's reference.
         tool_ctx.seen_text.extend(built.shown_texts)
@@ -758,6 +759,17 @@ async def _chat_options() -> chat_options.ChatOptions:
     except Exception:  # noqa: BLE001 — see above
         logger.warning("Chat options couldn't be read: using CHAT_WEB_SEARCH, else the default", exc_info=True)
         return chat_options.from_env()
+
+
+async def _deployment_timezone() -> str:
+    """The deployment's timezone, for the "Today" line when the browser sent none. Fail-open like _chat_options:
+    if the row can't be read, UTC."""
+    try:
+        async with get_pool().connection() as conn:
+            return await deployment_settings.deployment_zone_name(conn)
+    except Exception:  # noqa: BLE001 — see above
+        logger.warning("The deployment timezone couldn't be read: using UTC", exc_info=True)
+        return "UTC"
 
 
 async def _over_budget(user_id: str, deployment_budget: int | None) -> bool:

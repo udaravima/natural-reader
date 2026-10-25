@@ -1,9 +1,22 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+import pytest
 
 from server.auth.users import SEED_ADMIN_ID
+from server.services import console_settings, deployment_settings
 from server.services import inference_budget as ib
 
 U = SEED_ADMIN_ID
+
+
+@pytest.fixture(autouse=True)
+def _no_tz_env(monkeypatch):
+    monkeypatch.delenv("TZ", raising=False)   # no row and no TZ: the zone is UTC
+
+
+async def _set_zone(conn, name):
+    await console_settings.save(conn, deployment_settings.SECTION, {"timezone": name}, updated_by=U)
 
 
 async def test_record_usage_increments(db_conn):
@@ -81,3 +94,37 @@ async def test_admin_usage_respects_days_window(db_conn):
     )
     assert len(await ib.admin_usage(db_conn, days=1)) == 1
     assert len(await ib.admin_usage(db_conn, days=90)) == 2
+
+
+async def test_usage_counts_toward_the_deployment_day(db_conn, monkeypatch):
+    await _set_zone(db_conn, "Asia/Colombo")
+    monkeypatch.setattr(ib, "_now", lambda: datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc))
+    await ib.record_usage(db_conn, U, 10, 5)
+    cur = await db_conn.execute("SELECT day FROM inference_usage WHERE user_id = %s", (U,))
+    assert (await cur.fetchone())[0] == date(2026, 10, 26)     # 01:30 on the 26th in Colombo
+    assert await ib.spent_today(db_conn, U) == (10, 5)
+
+
+def test_reset_is_the_next_local_midnight():
+    now = datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc)
+    assert ib.next_reset_at(now, ZoneInfo("Asia/Colombo")) == datetime(2026, 10, 26, 18, 30, tzinfo=timezone.utc)
+
+
+def test_reset_on_the_night_the_clocks_change():
+    now = datetime(2026, 11, 1, 15, 0, tzinfo=timezone.utc)    # New York falls back at 06:00 UTC that day
+    assert ib.next_reset_at(now, ZoneInfo("America/New_York")) == datetime(2026, 11, 2, 5, 0, tzinfo=timezone.utc)
+
+
+async def test_budget_state_reports_the_local_reset(db_conn, monkeypatch):
+    await _set_zone(db_conn, "Asia/Colombo")
+    monkeypatch.setattr(ib, "_now", lambda: datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc))
+    assert (await ib.budget_state(db_conn, U, None))["reset_at"] == "2026-10-26T18:30:00Z"
+
+
+async def test_admin_usage_window_starts_on_the_deployment_day(db_conn, monkeypatch):
+    await _set_zone(db_conn, "Asia/Colombo")
+    monkeypatch.setattr(ib, "_now", lambda: datetime(2026, 10, 25, 20, 0, tzinfo=timezone.utc))
+    for day in (date(2026, 10, 26), date(2026, 10, 25)):
+        await db_conn.execute("INSERT INTO inference_usage (user_id, day, prompt_tokens, eval_tokens, requests) "
+                              "VALUES (%s, %s, 1, 1, 1)", (U, day))
+    assert [r["day"] for r in await ib.admin_usage(db_conn, days=1)] == [date(2026, 10, 26)]

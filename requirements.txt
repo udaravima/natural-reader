@@ -52,6 +52,9 @@ pydantic
 # then check the startup line "Available ONNX Runtime providers".
 onnxruntime
 
+# The zone database for the deployment timezone (Windows has no system copy; Linux and macOS use theirs first).
+tzdata
+
 # Backend test harness (dev). respx mocks httpx; pytest-asyncio runs async tests.
 pytest
 pytest-asyncio

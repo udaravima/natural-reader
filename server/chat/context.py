@@ -71,18 +71,24 @@ def pin_text(pins: list[dict[str, Any]]) -> str:
     return "\n\n".join(_pin_block(p) for p in pins)
 
 
-def today_line(now: datetime, tz_name: str | None) -> str:
-    """Today's date in the browser's timezone (anything unusable is UTC), for
+def _zone(name: str | None) -> ZoneInfo | None:
+    try:
+        return ZoneInfo(name) if name else None
+    except Exception:  # noqa: BLE001 — ZoneInfo raises several types for bad names
+        return None
+
+
+def today_line(now: datetime, tz_name: str | None, default_tz: str = "UTC") -> str:
+    """Today's date in the browser's timezone (else the deployment's `default_tz`, else UTC), for
     the system rules. v2.4: to the day, not the minute — it used to lead the
     user's message as "Current time: …", where a follow-up like "say that
     more simply" was read as being about the clock (eval, 2026-10-05); in the
     rules it changes once a day, so the prefix cache survives the day."""
     tz, label = timezone.utc, "UTC"
-    if tz_name:
-        try:
-            tz, label = ZoneInfo(tz_name), tz_name
-        except Exception:  # noqa: BLE001 — ZoneInfo raises several types for bad names
-            tz, label = timezone.utc, "UTC"
+    for name in (tz_name, default_tz):
+        if zone := _zone(name):
+            tz, label = zone, name
+            break
     day = now.astimezone(tz)
     return f"Today is {day:%A}, {day.day} {day:%B %Y} ({label})."
 
@@ -243,6 +249,7 @@ class TurnInput:
     scope: tuple[ScopeDoc, ...] = ()   # the documents the tools read (tools.scope.scope_docs); prefetch searches them
     project_map: str = ""              # a project chat's map of its documents (chat/project_map.py): after the rules
     app_exchange: tuple[Message, ...] = ()   # a tool exchange the app ran (the approved web search), after the prefetch's
+    default_timezone: str = "UTC"            # the deployment's zone: the "Today" line's fallback when the browser sent none
 
 
 @dataclass
@@ -281,7 +288,7 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     exchange += turn.app_exchange
     rules = system_rules(turn.doc, turn.tools, has_pins=bool(turn.pins),
                          prefetch=cfg.prefetch == "on" and cfg.prefetch_min_score < 1.0,
-                         today=today_line(turn.now, turn.timezone), profile=turn.profile,
+                         today=today_line(turn.now, turn.timezone, turn.default_timezone), profile=turn.profile,
                          has_map=bool(turn.project_map), project=getattr(turn.tool_ctx, "project", None))
     system = Message("system", "\n\n".join(c for c in (rules, turn.project_map, pin_text(turn.pins)) if c))
     fixed_chars = len(system.content) + len(volatile) + 2 + len(turn.text) + sum(len(m.content) for m in exchange)

@@ -452,3 +452,10 @@ async def test_a_project_prefetch_without_tools_is_a_fenced_block_that_names_eac
     assert user.count("<document_passages") == 1 and user.count("</document_passages>") == 1
     assert "[1] (Alpha.md, page 3)" in user and "[2] (Beta.md, page 4)" in user and "[3] (Alpha.md, page 5)" in user
     assert built.prefetch_hit and len(built.evidence) == 3
+
+
+def test_today_line_falls_back_to_the_deployment_zone():
+    colombo = "Today is Sunday, 27 September 2026 (Asia/Colombo)."
+    assert today_line(NOW, None, "Asia/Colombo") == colombo
+    assert today_line(NOW, "Mars/Olympus", "Asia/Colombo") == colombo
+    assert today_line(NOW, None, "Nope/Nope") == "Today is Saturday, 26 September 2026 (UTC)."

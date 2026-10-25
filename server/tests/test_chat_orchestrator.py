@@ -548,6 +548,33 @@ async def test_num_ctx_sets_the_trimming_window_only_for_ollama_providers(conn, 
     assert seen["window"] == want
 
 
+async def test_a_turn_gets_the_deployment_zone_as_its_default(conn, monkeypatch):
+    seen = []
+    real = orchestrator.build_context
+
+    async def spy(turn, cfg):
+        seen.append(turn.default_timezone)
+        return await real(turn, cfg)
+
+    async def colombo():
+        return "Asia/Colombo"
+
+    monkeypatch.setattr(orchestrator, "build_context", spy)
+    alice = await member(conn, "alice")
+    monkeypatch.setattr(orchestrator, "_deployment_timezone", colombo)
+    claim, req = await _start(alice)
+    [_ async for _ in run_turn(req, claim, router=FakeRouter(), cfg=ChatConfig(), deployment_budget=None)]
+    assert seen == ["Asia/Colombo"]
+
+
+async def test_the_deployment_zone_is_utc_when_it_cannot_be_read(monkeypatch):
+    def broken():
+        raise RuntimeError("no pool")
+
+    monkeypatch.setattr(orchestrator, "get_pool", broken)
+    assert await orchestrator._deployment_timezone() == "UTC"
+
+
 # ---- v2.1 follow-ups, Task 2: tool calls a model writes as text ----
 
 OPEN_DOC = ReadableDoc("d" * 64, "Thesis.pdf", "indexed")

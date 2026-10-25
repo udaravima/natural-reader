@@ -1,22 +1,33 @@
 """Per-user daily inference budgets (gateway spec §4.3).
 
-Day boundaries are UTC and computed in Python — a SQL `DEFAULT CURRENT_DATE`
-would use the Postgres server's timezone and silently shift the reset time.
-All functions take an explicit conn; callers own fail-open behavior (the
+A day is the deployment's (services/deployment_settings.py: the console's timezone, else TZ, else UTC),
+computed in Python — a SQL `DEFAULT CURRENT_DATE` would use the Postgres server's timezone and silently shift
+the reset time. Rows already written keep their days: changing the zone moves the boundary from then on and
+rewrites nothing. All functions take an explicit conn, which also reads the zone; callers own fail-open behavior (the
 gateway logs and proceeds when the DB is down — chat never dies with Postgres).
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+from .deployment_settings import deployment_zone
 
 
-def _utc_today():
-    return datetime.now(timezone.utc).date()
+def _now() -> datetime:
+    """The clock, aware UTC: the seam tests patch."""
+    return datetime.now(timezone.utc)
 
 
-def _next_reset_at() -> datetime:
-    now = datetime.now(timezone.utc)
-    return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+async def today(conn) -> date:
+    return _now().astimezone(await deployment_zone(conn)).date()
+
+
+def next_reset_at(now: datetime, zone: ZoneInfo) -> datetime:
+    """The next local midnight in `zone`, as UTC. Built from the local date, not by adding 24 hours, so the night
+    the clocks change still resets at midnight."""
+    tomorrow = now.astimezone(zone).date() + timedelta(days=1)
+    return datetime.combine(tomorrow, time(0), tzinfo=zone).astimezone(timezone.utc)
 
 
 def _normalize_budget(value: int | None) -> int | None:
@@ -39,7 +50,7 @@ async def spent_today(conn, user_id: str) -> tuple[int, int]:
     cur = await conn.execute(
         "SELECT prompt_tokens, eval_tokens FROM inference_usage "
         "WHERE user_id = %s AND day = %s",
-        (user_id, _utc_today()),
+        (user_id, await today(conn)),
     )
     row = await cur.fetchone()
     return (row[0] or 0, row[1] or 0) if row else (0, 0)
@@ -47,7 +58,7 @@ async def spent_today(conn, user_id: str) -> tuple[int, int]:
 
 async def budget_state(conn, user_id: str, deployment_budget: int | None) -> dict:
     """{remaining_tokens, reset_at}; remaining_tokens is None when unlimited."""
-    reset_at = _next_reset_at().isoformat().replace("+00:00", "Z")
+    reset_at = next_reset_at(_now(), await deployment_zone(conn)).isoformat().replace("+00:00", "Z")
     budget = await effective_budget(conn, user_id, deployment_budget)
     if budget is None:
         return {"remaining_tokens": None, "reset_at": reset_at}
@@ -72,12 +83,12 @@ async def record_usage(conn, user_id: str, prompt_tokens: int, eval_tokens: int)
         "prompt_tokens = inference_usage.prompt_tokens + EXCLUDED.prompt_tokens, "
         "eval_tokens = inference_usage.eval_tokens + EXCLUDED.eval_tokens, "
         "requests = inference_usage.requests + 1",
-        (user_id, _utc_today(), prompt_tokens, eval_tokens),
+        (user_id, await today(conn), prompt_tokens, eval_tokens),
     )
 
 
 async def admin_usage(conn, days: int = 7) -> list[dict]:
-    since = _utc_today() - timedelta(days=days - 1)
+    since = await today(conn) - timedelta(days=days - 1)
     cur = await conn.execute(
         "SELECT u.email, s.user_id, s.day, s.prompt_tokens, s.eval_tokens, s.requests "
         "FROM inference_usage s JOIN users u ON u.id = s.user_id "
