@@ -51,6 +51,7 @@ import ChatSidePanel from './components/chat/ChatSidePanel';
 import { ProfilePanel } from './components/account/ProfilePanel';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
+import { useConvertLimits } from './hooks/useConvertLimits';
 import NameMatchDialog from './components/projects/NameMatchDialog';
 import { useProjectFiling } from './hooks/useProjectFiling';
 import { useVersionStatus } from './hooks/useVersionStatus';
@@ -189,6 +190,8 @@ export default function App() {
   const [docViewByDocId, setDocViewByDocId] = useState({});
   // Modal visibility for the docling options dialog.
   const [convertDialogOpen, setConvertDialogOpen] = useState(false);
+  // What the admin lets the dialog offer; fetched each time it opens.
+  const convertLimits = useConvertLimits(apiHost, apiPort, convertDialogOpen);
 
   // Project list for the optional register/upload picker (Task 9). Session-
   // level (not per-document): fetched once when signed in (below) — null while
@@ -1399,6 +1402,7 @@ export default function App() {
         onSubmit={submitConvertDialog}
         pageCount={numPages}
         initialOptions={currentConvertEntry?.options}
+        limits={convertLimits}
       />
       {projectFiling.dialog && <NameMatchDialog theme={theme} {...projectFiling.dialog} />}
 

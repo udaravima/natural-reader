@@ -27,11 +27,28 @@ const PRESETS = [
     },
 ];
 
-function deriveInitial(initialOptions, pageCount) {
+const OFF_NOTE = 'Turned off by your admin';
+
+// Move a form off any choice the admin has turned off: the first allowed
+// preset, OCR off, images dropped. A null `limits` (not answered yet, or the
+// call failed) changes nothing. With no preset allowed the preset is left
+// alone: Convert is disabled then, so it is never sent.
+function followLimits(form, limits) {
+    if (!limits) return form;
+    const presets = limits.presets || [];
+    return {
+        ...form,
+        preset: presets.length === 0 || presets.includes(form.preset) ? form.preset : presets[0],
+        ocr: limits.ocr ? form.ocr : false,
+        images: form.images === 'describe' && !limits.picture_description ? 'drop' : form.images,
+    };
+}
+
+function deriveInitial(initialOptions, pageCount, limits) {
     const opts = initialOptions || {};
     const pr = opts.page_range;
     const useRange = Array.isArray(pr) && pr.length === 2;
-    return {
+    return followLimits({
         preset: opts.preset || 'standard',
         ocr: !!opts.ocr,
         tables: opts.tables == null ? true : !!opts.tables,
@@ -39,7 +56,7 @@ function deriveInitial(initialOptions, pageCount) {
         useRange,
         rangeStart: useRange ? pr[0] : 1,
         rangeEnd: useRange ? pr[1] : (pageCount || 1),
-    };
+    }, limits);
 }
 
 export default function DoclingConvertDialog({
@@ -50,17 +67,26 @@ export default function DoclingConvertDialog({
     onSubmit,
     pageCount,
     initialOptions,
+    limits = null,
 }) {
     // React-recommended pattern for "reset state when prop changes": store the
     // open/initial inputs in state and reset during render when they flip.
     // Avoids cascading-render warnings from a setState-in-effect approach.
     const [prevOpen, setPrevOpen] = useState(open);
-    const [form, setForm] = useState(() => deriveInitial(initialOptions, pageCount));
+    const [prevLimits, setPrevLimits] = useState(limits);
+    const [form, setForm] = useState(() => deriveInitial(initialOptions, pageCount, limits));
     if (open && !prevOpen) {
         setPrevOpen(true);
-        setForm(deriveInitial(initialOptions, pageCount));
+        setPrevLimits(limits);
+        setForm(deriveInitial(initialOptions, pageCount, limits));
     } else if (!open && prevOpen) {
         setPrevOpen(false);
+    }
+    // The limits arrive a moment after the dialog opens: move whatever the
+    // reader hasn't yet changed off a turned-off choice once they do.
+    if (limits !== prevLimits) {
+        setPrevLimits(limits);
+        setForm((prev) => followLimits(prev, limits));
     }
 
     const update = (patch) => setForm((prev) => ({ ...prev, ...patch }));
@@ -71,7 +97,24 @@ export default function DoclingConvertDialog({
     const clampedStart = Math.max(1, Math.min(form.rangeStart || 1, total));
     const clampedEnd = Math.max(clampedStart, Math.min(form.rangeEnd || total, total));
 
+    const presetAllowed = (key) => !limits || (limits.presets || []).includes(key);
+    const ocrAllowed = !limits || !!limits.ocr;
+    const describeAllowed = !limits || !!limits.picture_description;
+
+    // Why Convert is off, if it is. The server refuses these too; saying it here
+    // saves the reader a round trip.
+    const pagesToConvert = form.useRange ? clampedEnd - clampedStart + 1 : total;
+    let blocker = null;
+    if (limits && !limits.may_convert) {
+        blocker = 'Only people your admin has given the Docling role can convert documents on this server.';
+    } else if (limits && (limits.presets || []).length === 0) {
+        blocker = "Your admin hasn't allowed any conversion preset.";
+    } else if (limits && limits.max_pages > 0 && pagesToConvert > limits.max_pages) {
+        blocker = `This server converts at most ${limits.max_pages} pages at a time. Choose a page range of ${limits.max_pages} pages or fewer.`;
+    }
+
     const handleSubmit = () => {
+        if (blocker) return;
         onSubmit({
             preset: form.preset,
             ocr: form.ocr,
@@ -113,21 +156,25 @@ export default function DoclingConvertDialog({
                         <label className="text-xs font-bold uppercase tracking-wide">Quality</label>
                         <div className="grid grid-cols-3 gap-2 mt-2">
                             {PRESETS.map((p) => {
-                                const active = form.preset === p.key;
+                                const allowed = presetAllowed(p.key);
+                                const active = allowed && form.preset === p.key;
                                 const Icon = p.Icon;
                                 return (
                                     <button
                                         key={p.key}
                                         onClick={() => update({ preset: p.key })}
+                                        disabled={!allowed}
                                         className={`flex flex-col items-start gap-1 p-3 rounded-lg border text-left transition-all ${
+                                            allowed ? '' : 'opacity-50 cursor-not-allowed'
+                                        } ${
                                             active
                                                 ? 'border-blue-500 bg-blue-500/10'
-                                                : `${fieldBorder} ${fieldBg} ${theme.hover}`
+                                                : `${fieldBorder} ${fieldBg} ${allowed ? theme.hover : ''}`
                                         }`}
                                     >
                                         <Icon size={16} className={active ? 'text-blue-500' : theme.textSecondary} />
                                         <span className="text-sm font-bold">{p.label}</span>
-                                        <span className={`text-[11px] leading-tight ${theme.textMuted}`}>{p.blurb}</span>
+                                        <span className={`text-[11px] leading-tight ${theme.textMuted}`}>{allowed ? p.blurb : OFF_NOTE}</span>
                                     </button>
                                 );
                             })}
@@ -135,16 +182,19 @@ export default function DoclingConvertDialog({
                     </section>
 
                     <section className="space-y-2">
-                        <label className={`flex items-center justify-between p-3 rounded-lg ${fieldBg} border ${fieldBorder} cursor-pointer`}>
+                        <label className={`flex items-center justify-between p-3 rounded-lg ${fieldBg} border ${fieldBorder} ${ocrAllowed ? 'cursor-pointer' : 'opacity-50 cursor-not-allowed'}`}>
                             <span>
                                 <span className="text-sm font-bold">Force OCR</span>
                                 <span className={`block text-xs ${theme.textMuted}`}>
-                                    Run OCR even when text is already extractable. Needed for scanned PDFs.
+                                    {ocrAllowed
+                                        ? 'Run OCR even when text is already extractable. Needed for scanned PDFs.'
+                                        : OFF_NOTE}
                                 </span>
                             </span>
                             <input
                                 type="checkbox"
                                 checked={form.ocr}
+                                disabled={!ocrAllowed}
                                 onChange={(e) => update({ ocr: e.target.checked })}
                                 className="h-4 w-4 accent-blue-500"
                             />
@@ -173,19 +223,23 @@ export default function DoclingConvertDialog({
                                 { key: 'embed', label: 'Embed', blurb: 'Inline base64' },
                                 { key: 'describe', label: 'Describe', blurb: 'VLM caption' },
                             ].map(({ key, label, blurb }) => {
+                                const allowed = key !== 'describe' || describeAllowed;
                                 const active = form.images === key;
                                 return (
                                     <button
                                         key={key}
                                         onClick={() => update({ images: key })}
+                                        disabled={!allowed}
                                         className={`p-2 rounded-lg border text-left transition-all ${
+                                            allowed ? '' : 'opacity-50 cursor-not-allowed'
+                                        } ${
                                             active
                                                 ? 'border-blue-500 bg-blue-500/10'
-                                                : `${fieldBorder} ${fieldBg} ${theme.hover}`
+                                                : `${fieldBorder} ${fieldBg} ${allowed ? theme.hover : ''}`
                                         }`}
                                     >
                                         <div className="text-sm font-bold">{label}</div>
-                                        <div className={`text-[11px] ${theme.textMuted}`}>{blurb}</div>
+                                        <div className={`text-[11px] ${theme.textMuted}`}>{allowed ? blurb : OFF_NOTE}</div>
                                     </button>
                                 );
                             })}
@@ -232,6 +286,10 @@ export default function DoclingConvertDialog({
                     </section>
                 </div>
 
+                {blocker && (
+                    <p role="alert" className="px-5 pb-3 text-sm text-amber-600">{blocker}</p>
+                )}
+
                 <footer className={`flex items-center justify-end gap-2 px-5 py-3 border-t ${fieldBorder}`}>
                     <button
                         onClick={onClose}
@@ -241,7 +299,8 @@ export default function DoclingConvertDialog({
                     </button>
                     <button
                         onClick={handleSubmit}
-                        className="px-4 py-1.5 rounded-lg text-sm font-bold bg-blue-600 text-white hover:bg-blue-700 transition-all"
+                        disabled={!!blocker}
+                        className="px-4 py-1.5 rounded-lg text-sm font-bold bg-blue-600 text-white hover:bg-blue-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-blue-600"
                     >
                         Convert
                     </button>
