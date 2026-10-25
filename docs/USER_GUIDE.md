@@ -224,17 +224,19 @@ Notes:
 - Roles are managed **here, not in the login system** — your organization's
   login (Keycloak) only verifies who you are; whether you're an admin is a
   fact this application owns.
-- Per-user inference budget and the usage dashboard are server-side already;
-  the UI for them is a planned follow-up (admins can currently manage budgets
-  only via the API).
-- The **Deployment** section lists every configured model provider (name,
-  kind, host, and either how many models it has or "unreachable") so you can
-  see at a glance what's wired up without reading `.env` on the server — API
-  keys are never shown here or anywhere else. The row that used to say "Ollama
-  URL" is now **"Embeddings (Ollama) URL"**, since that's the only thing that
-  setting still controls (chat models come from the provider list above it).
-  There's still no button here to add or change a provider — that's a `.env` +
-  restart task for whoever runs the server. The [full list](#deployment-the-timezone-and-the-servers-own-values)
+- Each person's daily token budget is the **Budget** box on their row under
+  **People** (empty = the deployment default, 0 = unlimited; press **Set**).
+  **Usage** shows tokens per person and per day.
+- The **Deployment** section's read-only list shows every configured model
+  provider as `kind · URL` (for example `ollama · http://host:11434`), so you
+  can see at a glance what's wired up without reading `.env` on the server.
+  API keys are never shown here or anywhere else: a key reads only **set** or
+  **not set**. The embedding server has its own row, **Embedding server**
+  (that's the only thing the `OLLAMA_URL` setting still controls; chat models
+  come from the providers). Whether a provider answers, and how many models it
+  lists, is in **Overview → Model providers**, not here. There's still no
+  button to add or change a provider: that's a `.env` + restart task for
+  whoever runs the server. The [full list](#deployment-the-timezone-and-the-servers-own-values)
   is below.
 - The **Assistant profile** (in **Chat**) sets the assistant's profile: its name,
   personality, tone and house rules (for example "You are Ada, the
@@ -254,7 +256,8 @@ Notes:
 - **Chat options** (also in **Chat**) has one setting so far, **Web search**: **Ask first** (the
   default: the assistant can only offer a search and the person says yes on a
   card), **Search without asking**, or **Off**.
-  - A change applies from each person's next message and shows a notice
+  - There is no Save button: picking a choice saves it at once. A change
+    applies from each person's next message and shows a notice
     ("Web search: Ask first. Applies from the next message.").
   - The line under the choices says where the current value comes from: **Set
     here.**, **From the server setting CHAT_WEB_SEARCH.** or **The default.**
@@ -267,19 +270,26 @@ Notes:
 
 ### Settings that share one look
 
-Every setting in **Chat options**, **Documents** and **Deployment** works the
-same way:
+Every setting in **Chat options**, **Documents** and **Deployment** says where
+its value comes from and can go back to the server's, the same way. **Documents**
+and **Deployment** also share one Save; **Chat options** saves each choice as you
+pick it (see above), so it has no Save, no draft and no unsaved-changes question.
+The **Assistant profile** and **Defaults for users** keep their own Save buttons.
 
 - A line under the setting says where its value comes from: **Set here.**
   (you chose it in the console), **From the server setting** `NAME` (the
   deployer's `.env`), or **The default.**
 - **Use the server setting** appears once you've set one here. It removes
   your choice, so the deployer's value (or the default) applies again.
-- A section has **one Save**, for everything you changed in it. Nothing is
-  written until you press it. **Discard changes** puts the section back as saved.
-- Leaving a section with unsaved changes (another section, a phone's picker, or
-  Back to reader) asks first: **Keep editing** stays and keeps your changes,
-  **Discard changes** leaves without them. **Esc** is the same as Keep editing.
+- In **Documents** and **Deployment**, a section has **one Save**, for
+  everything you changed in it. Nothing is written until you press it.
+  **Discard changes** puts the section back as saved.
+- Leaving a section with unsaved changes (another section, a phone's picker,
+  **Back to reader**, or the header's Reader / Chat / Library buttons and Log
+  out) asks first: **Keep editing** stays and keeps your changes, **Discard
+  changes** leaves without them. **Esc** is the same as Keep editing. The same
+  question covers an unsaved Assistant profile or Defaults change. Reloading or
+  closing the browser tab is not guarded.
 - A change applies at once, on every worker: the next request, message or
   conversion reads it. There is no restart.
 - **The console can only narrow what the server allows.** If `.env` allows
@@ -314,18 +324,18 @@ cloud model shows its maximum.
 
 ### Documents: what a conversion may use
 
-Docling turns a PDF (or Word, PowerPoint, HTML, images) into Markdown. It is
+Docling turns a PDF into Markdown (the reader offers **Convert** for PDFs). It is
 the heaviest job the server does, so **Documents** lets you narrow it. It
 appears only as a limit: the server's `DOCLING_ENABLED` (see the Deployment
 list) still decides whether conversion exists at all.
 
 | Setting | Choices | Server setting (default) |
 |---|---|---|
-| **Who may convert** | **Everyone who can read**, or **Only people with the Docling role** (admins always can) | `DOCLING_CONVERT_BY` (`readers`) |
+| **Who may convert** | **Everyone with the reader capability**, or **Only people with the Docling role** (admins always can) | `DOCLING_CONVERT_BY` (`readers`) |
 | **Presets** | Fast, Standard, Accurate; at least one | `DOCLING_PRESETS` (`fast,standard,accurate`) |
 | **Allow OCR** | on / off | `DOCLING_ALLOW_OCR` (`true`) |
 | **Allow picture descriptions** | on / off | `DOCLING_ALLOW_PICTURE_DESCRIPTION` (`true`) |
-| **Largest conversion** | Pages one conversion may cover; empty or 0 = no limit | `DOCLING_MAX_PAGES` (`0`) |
+| **Largest conversion** | Pages one conversion may cover; 0 = no limit (an empty box is refused, and Save stays disabled until it holds a whole number) | `DOCLING_MAX_PAGES` (`0`) |
 
 - **Accurate runs OCR, so it's off whenever OCR is off.** The section says so
   and the stored choice of presets is kept: allow OCR again and Accurate comes

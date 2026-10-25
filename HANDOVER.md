@@ -47,10 +47,10 @@ Walked in the running app (headless Chromium, scratch database on 5434, `AUTH_EN
 ### Open items
 
 1. **Merge** `feat/admin-console-v2` into `development` (then push? and find out what pushes this branch).
-2. **Deploy** is a separate decision (v2.4.0 itself is also not deployed; see the 2026-10-25 entry). This work needs no migration. For `role` mode, create the `docling` realm role first.
+2. **Deploy** is a separate decision (v2.4.0 itself is also not deployed; see the 2026-10-25 entry). This work needs no migration. For `role` mode, create the `docling` realm role first. **Upgrade note: if the backend's environment sets `TZ` (this host's `.env` does), the daily token budget and the usage days follow it from the deploy, with no console action: budgets reset at local midnight instead of UTC midnight, the switch day gives an early or late reset, and usage days shift. To keep UTC days, choose UTC under Deployment.**
 3. **Deferred review findings** (minor, none blocks; the ledger has the rest):
    - `GET /v1/admin/inference/config` (`admin.py`, from before this work) calls `urlsplit(...).hostname` unguarded: a malformed provider URL is a 500.
-   - The embeddings check goes through `embed_one`'s shared semaphore, so a busy-but-healthy embedder during heavy indexing can read "Didn't answer within 5 seconds"; a 404 (model not pulled) reads "Can't reach the embedding model".
+   - (Fixed after the final review: the embeddings check now makes its own request, so it no longer waits on the indexing semaphore, and a 404 reads "answered HTTP 404".)
    - A scheme-less URL (`OLLAMA_URL=localhost:11434`) shows an empty host in the Overview and Deployment lists.
    - A page limit with a PDF pdfium can't open skips the limit; a range starting past the end counts negative pages.
    - A day boundary in a zone whose local midnight doesn't exist (a DST gap at 00:00, e.g. America/Havana) is about an hour off.

@@ -187,7 +187,7 @@ Keycloak is the **source of truth**; the app keeps a **mirror**:
 
 `docling` decides who may start a Docling conversion (PDF/Office/HTML → Markdown), and
 only when an admin has limited conversion to it: the admin console's **Documents**
-section has **Who may convert**, either **Everyone who can read** (`readers`, the
+section has **Who may convert**, either **Everyone with the reader capability** (`readers`, the
 default and what the app always did) or **Only people with the Docling role** (`role`).
 `DOCLING_CONVERT_BY=readers|role` sets the starting value. In `role` mode a person
 needs `docling`; **an admin may always convert**, which is why the bootstrap admin set

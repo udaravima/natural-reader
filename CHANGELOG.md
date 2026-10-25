@@ -32,7 +32,7 @@ All notable changes to this project will be documented in this file.
   the server's own values (providers, storage, Docling, web search, workers)
   read-only; secrets only show as set or not set.
 - **Limits on Docling conversion.** Under **Documents**, an admin chooses who
-  may convert (everyone who can read, or only people with the new `docling`
+  may convert (everyone with the reader capability, or only people with the new `docling`
   role; admins always can), which presets are offered, whether OCR and picture
   descriptions are allowed, and the most pages one conversion may cover. The
   convert dialog greys out what is off with "Turned off by your admin", and
@@ -58,9 +58,15 @@ All notable changes to this project will be documented in this file.
   "only people with the Docling role". A role given in Keycloak applies at the
   person's next login; one ticked under **People** applies at once.
 - `tzdata` is added to `requirements.txt` so Windows has a zone database.
-- Nothing changes until an admin changes it: conversion stays open to
-  everyone who can read, with every preset, OCR and picture descriptions on,
-  and no page limit.
+- **If your environment sets `TZ`, the daily token budget and the usage days
+  follow it from this release, with no console action.** `TZ` is the
+  fallback for the new deployment timezone, and it is often set for log
+  timestamps. Each person's budget then resets at local midnight instead of
+  UTC midnight, the day of the switch gives an early or late reset, and the
+  days in **Usage** shift. To keep UTC days, choose UTC under **Deployment**.
+- Apart from that, nothing changes until an admin changes it: conversion stays
+  open to everyone with the reader capability, with every preset, OCR and
+  picture descriptions on, and no page limit.
 - Not yet in the console: choosing the reading model or context sizes,
   changing the embedding model, and usage by model. Those are later phases.
 
