@@ -48,3 +48,13 @@ def test_defaults_and_env_values_come_from_the_given_env():
     assert e["searxng"]["value"] == "Not set up"
     assert (e["storage"]["value"], e["storage"]["env"]) == ("/srv/pdfs", "PDF_STORAGE_DIR")
     assert e["workers"]["value"] == "3" and e["daily_budget"]["value"] == "5000"
+
+
+def test_a_malformed_url_shows_a_placeholder_instead_of_failing():
+    env = {"INFERENCE_PROVIDERS": "x", "INFERENCE_X_KIND": "openai", "INFERENCE_X_URL": "http://[::1",
+           "SEARXNG_URL": "http://[bad", "OLLAMA_URL": "http://[nope"}
+    rows = _by_id(env)
+    assert rows["provider:x"]["value"] == "Not a valid URL" and rows["provider:x"]["source"] == "env"
+    assert rows["provider:x"]["env"] == "INFERENCE_X_URL"
+    assert rows["searxng"]["value"] == "Not a valid URL" and rows["searxng"]["source"] == "env"
+    assert rows["embedding_url"]["value"] == "Not a valid URL"

@@ -54,3 +54,14 @@ async def test_member_gets_403_on_get_and_put(db_conn):
     async with _client(_app(db_conn, member)) as c:
         assert (await c.get("/v1/admin/settings/deployment")).status_code == 403
         assert (await c.put("/v1/admin/settings/deployment", json={"changes": {}})).status_code == 403
+
+
+async def test_get_survives_a_malformed_url_in_the_environment(db_conn, monkeypatch):
+    monkeypatch.setenv("SEARXNG_URL", "http://[bad")
+    monkeypatch.setenv("INFERENCE_PROVIDERS", "x")
+    monkeypatch.setenv("INFERENCE_X_KIND", "openai")
+    monkeypatch.setenv("INFERENCE_X_URL", "http://[::1")
+    async with _client(_app(db_conn, await _admin(db_conn))) as c:
+        r = await c.get("/v1/admin/settings/deployment")
+    assert r.status_code == 200
+    assert {row["value"] for row in r.json()["info"] if row["id"] in ("searxng", "provider:x")} == {"Not a valid URL"}

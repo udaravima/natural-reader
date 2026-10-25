@@ -25,14 +25,29 @@ def _host(netloc: str) -> str:
     return netloc.rsplit("@", 1)[-1]
 
 
+NOT_A_URL = "Not a valid URL"
+
+
 def safe_url(url: str) -> str:
     """The URL's scheme, host, port and path. User info (a password may sit in it), query and fragment (a key
     may) are dropped, so the result is safe to show an admin."""
-    parts = urlsplit(url.strip())
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:    # a malformed bracketed host (http://[::1): shown as such, never a 500 for the whole section
+        return NOT_A_URL
     if not parts.netloc:
         return ""
     scheme = f"{parts.scheme}://" if parts.scheme else ""
     return f"{scheme}{_host(parts.netloc)}{parts.path}"
+
+
+def _searxng_host(url: str) -> str:
+    if not url:
+        return "Not set up"
+    try:
+        return _host(urlsplit(url).netloc)
+    except ValueError:
+        return NOT_A_URL
 
 
 def _set(env: Mapping[str, str], key: str) -> bool:
@@ -55,7 +70,7 @@ def readonly_rows(env: Mapping[str, str] = os.environ) -> list[dict]:
         key = cfg.name.upper().replace("-", "_")
         var = f"INFERENCE_{key}_URL" if listed else "OLLAMA_URL"
         rows.append(_row(f"provider:{cfg.name}", f"Model provider “{cfg.name}”",
-                         f"{cfg.kind} · {safe_url(cfg.url)}", var, _set(env, var)))
+                         (NOT_A_URL if safe_url(cfg.url) == NOT_A_URL else f"{cfg.kind} · {safe_url(cfg.url)}"), var, _set(env, var)))
         if listed:
             rows.append(_secret(env, f"provider_key:{cfg.name}", f"Key for “{cfg.name}”", f"INFERENCE_{key}_API_KEY"))
 
@@ -84,7 +99,7 @@ def readonly_rows(env: Mapping[str, str] = os.environ) -> list[dict]:
         _row("docling", "Docling",
              "On" if (env.get("DOCLING_ENABLED") or "false").lower() in ("1", "true", "yes") else "Off",
              "DOCLING_ENABLED", _set(env, "DOCLING_ENABLED")),
-        _row("searxng", "Web search server", _host(urlsplit(searxng).netloc) if searxng else "Not set up",
+        _row("searxng", "Web search server", _searxng_host(searxng),
              "SEARXNG_URL", bool(searxng) and "SEARXNG_URL" in env),
         _row("workers", "Server workers", (env.get("WORKERS") or "").strip() or "1", "WORKERS", _set(env, "WORKERS")),
         _secret(env, "session_secret", "Session secret", "SESSION_SECRET"),
