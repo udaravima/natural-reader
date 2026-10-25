@@ -8,11 +8,12 @@ import { ArrowLeft, Shield } from 'lucide-react';
  * picker.
  *
  * `sections` is [{ id, label }]; the parent owns `active` and the section's
- * content (`children`). While `dirty` (a section has unsaved edits), leaving
+ * content (`children`). A section that links to another one calls
+ * `openRef.current(id)`, which goes the way a tab click goes. While `dirty` (a section has unsaved edits), leaving
  * through a tab, the picker or Back to reader asks first, inline above the
  * panel; Escape in the console means Keep editing.
  */
-export function ConsoleShell({ theme, sections, active, onSelect, onBack, dirty = false, children }) {
+export function ConsoleShell({ theme, sections, active, onSelect, onBack, dirty = false, openRef, children }) {
   const rootRef = useRef(null);
   const keepRef = useRef(null);
   // What the admin tried to do while dirty: { go: 'tab', id } or { go: 'back' }.
@@ -55,6 +56,16 @@ export function ConsoleShell({ theme, sections, active, onSelect, onBack, dirty 
     setPending(null);
     navControl(active)?.focus();
   };
+
+  // A link inside a section: same path as the tab, and focus follows to the
+  // tab (or picker), since the link that held it is about to disappear.
+  const open = (id) => {
+    goTo(id);
+    if (!dirty) navControl(id)?.focus();
+  };
+  useEffect(() => {
+    if (openRef) openRef.current = open;
+  });
 
   const onKeyDown = (e) => {
     if (e.key === 'Escape' && pending) { e.stopPropagation(); keepEditing(); }

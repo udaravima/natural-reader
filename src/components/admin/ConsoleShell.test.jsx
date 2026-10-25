@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, within, act, cleanup } from '@testing-library/react';
 import { ConsoleShell } from './ConsoleShell';
 
 const theme = { bg: '', bgSecondary: '', border: '', text: '', textSecondary: '', textMuted: '', hover: '' };
@@ -62,6 +62,18 @@ describe('ConsoleShell', () => {
     expect(onSelect).toHaveBeenCalledWith('b');
     expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'B' }));
+  });
+
+  it('sends a link inside a section the way a tab click goes: straight when clean, asking when dirty', () => {
+    const openRef = { current: null };
+    const clean = shell({ openRef });
+    act(() => openRef.current('c'));
+    expect(clean.onSelect).toHaveBeenCalledWith('c');
+    cleanup();
+    const dirty = shell({ dirty: true, openRef });
+    act(() => openRef.current('c'));
+    expect(dirty.onSelect).not.toHaveBeenCalled();
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in A.');
   });
 
   it('asks before the phone picker leaves a dirty section', () => {

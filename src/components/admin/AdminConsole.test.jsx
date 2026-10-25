@@ -23,7 +23,8 @@ const user = (over = {}) => ({
 // { user, onboarding, temp_password? } POST contract; by default the mock
 // returns the raw created-user row (the shape older/simpler tests assert on).
 // extra(path, opts) answers routes of its own first (undefined = fall through).
-function mount({ users, usage = [], config = {}, showToast = vi.fn(), currentUserId = 'me', enrollResponse, extra } = {}) {
+// section is the tab opened after mounting (the console opens on Overview); null stays on Overview.
+function mount({ users, usage = [], config = {}, showToast = vi.fn(), currentUserId = 'me', enrollResponse, extra, section = 'People' } = {}) {
   apiFetch.mockImplementation(async (host, port, path, opts) => {
     const answered = extra?.(path, opts);   // a test's own routes (chat options, the assistant) win
     if (answered) return answered;
@@ -45,6 +46,7 @@ function mount({ users, usage = [], config = {}, showToast = vi.fn(), currentUse
     if (path.startsWith('/v1/admin/inference/usage')) return json(200, usage);
     if (path === '/v1/admin/inference/config') return json(200, config);
     if (path.startsWith('/v1/admin/projects')) return json(200, []);
+    if (path === '/v1/admin/overview') return json(200, { checks: [] });
     return json(404, {});
   });
   render(
@@ -53,16 +55,17 @@ function mount({ users, usage = [], config = {}, showToast = vi.fn(), currentUse
       onBack={vi.fn()} showToast={showToast}
     />
   );
+  if (section) openSection(section);
 }
 
-const openSection = (name) => fireEvent.click(screen.getByRole('tab', { name }));
+function openSection(name) { fireEvent.click(screen.getByRole('tab', { name })); }
 
 const calls = (method) =>
   apiFetch.mock.calls.filter(([, , , opts]) => opts?.method === method);
 const lastBody = (method) => JSON.parse(calls(method).at(-1)[3].body);
 
 describe('AdminConsole — users', () => {
-  // mount() is called inside each test; People is the default section.
+  // mount() is called inside each test and opens People (the console itself opens on Overview).
   it('sets a per-user project limit, empty meaning the default', async () => {
     mount({ users: [user()] });
     fireEvent.change(await screen.findByLabelText('Project limit for a@x.io'), { target: { value: '5' } });
@@ -259,6 +262,23 @@ describe('AdminConsole — users', () => {
     fireEvent.change(screen.getByLabelText(/enroll email/i), { target: { value: 'me@x.io' } });
     fireEvent.click(screen.getByRole('button', { name: /^enroll$/i }));
     expect(await screen.findByText(/already taken/i)).toBeInTheDocument();
+  });
+});
+
+describe('AdminConsole — overview', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('opens on Overview, and an Open link switches section', async () => {
+    mount({
+      users: [user()], section: null,
+      extra: (path) => path === '/v1/admin/overview' ? json(200, { checks: [
+        { id: 'docling', state: 'error', title: 'Docling', summary: 'Docling is not installed.', section: 'documents' },
+      ] }) : undefined,
+    });
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Documents' }));
+    expect(screen.getByRole('tab', { name: 'Documents' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'false');
   });
 });
 

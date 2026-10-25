@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../../utils/apiFetch';
 import { AssistantProfileSection } from './AssistantProfileSection';
 import { ChatOptionsSection } from './ChatOptionsSection';
 import { DefaultsSection } from './DefaultsSection';
 import { AdminProjectsSection } from './AdminProjectsSection';
+import { OverviewSection } from './OverviewSection';
 import { PeopleSection } from './PeopleSection';
 import { UsageSection } from './UsageSection';
 import { ConsoleShell } from './ConsoleShell';
@@ -20,8 +21,10 @@ import ProjectPage from '../projects/ProjectPage';
  */
 
 const SECTIONS = [
+  { id: 'overview', label: 'Overview' },
   { id: 'people', label: 'People' },
   { id: 'projects', label: 'Projects' },
+  { id: 'documents', label: 'Documents' },
   { id: 'chat', label: 'Chat' },
   { id: 'defaults', label: 'Defaults for users' },
   { id: 'usage', label: 'Usage' },
@@ -85,7 +88,7 @@ function DeploymentBlock({ theme, apiHost, apiPort }) {
 }
 
 export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, showToast }) {
-  const [active, setActive] = useState('people');
+  const [active, setActive] = useState('overview');
   // A section that edits reports unsaved changes through onDirtyChange
   // (none does yet); every completed navigation starts clean.
   const [dirty, setDirty] = useState(false);
@@ -93,6 +96,8 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
   const [previewVersion, setPreviewVersion] = useState(0);  // bumped when a chat option changed what the assistant's rules say
 
   const select = (id) => { setActive(id); setDirty(false); };
+  const sectionLabel = (id) => SECTIONS.find((s) => s.id === id)?.label ?? id;
+  const openRef = useRef(null);   // the shell's tab-click path, for Overview's Open links
 
   if (openProjectId) {
     return (
@@ -106,7 +111,11 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
   }
 
   return (
-    <ConsoleShell theme={theme} sections={SECTIONS} active={active} onSelect={select} onBack={onBack} dirty={dirty}>
+    <ConsoleShell theme={theme} sections={SECTIONS} active={active} onSelect={select} onBack={onBack} dirty={dirty} openRef={openRef}>
+      {active === 'overview' && (
+        <OverviewSection theme={theme} apiHost={apiHost} apiPort={apiPort} sectionLabel={sectionLabel}
+          onOpenSection={(id) => openRef.current(id)} />
+      )}
       {active === 'people' && (
         <PeopleSection theme={theme} apiHost={apiHost} apiPort={apiPort} currentUserId={currentUserId} showToast={showToast} />
       )}
