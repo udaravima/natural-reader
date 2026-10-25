@@ -944,7 +944,9 @@ async def start_convert_job(
             SET conversion_state = 'converting',
                 conversion_options = %s,
                 conversion_error = NULL,
-                conversion_progress = NULL,
+                -- until docling's first report: the job waits for the document's
+                -- lock, which a new upload's own indexing holds first
+                conversion_progress = '{"phase": "queued"}',
                 updated_at = now()
             WHERE doc_id = %s
             """,

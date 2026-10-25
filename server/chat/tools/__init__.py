@@ -64,6 +64,7 @@ class ToolContext:
 class Tool(Protocol):
     name: str
     spec: ToolSpec   # what it does and how to use it; never contradicts the strategy (server/chat/prompt.py)
+    # A tool whose wording depends on the scope also has `project_spec`, sent in a project chat (tool_spec).
     source: str      # "document" | "web": where its results come from
     reads_documents: bool   # its results are document text (brings the data rule)
 
@@ -97,6 +98,14 @@ REGISTRY: list[Tool] = [search_documents.TOOL, read_document_pages.TOOL, extract
 
 def available_tools(ctx: ToolContext) -> list[Tool]:
     return [t for t in REGISTRY if t.available(ctx)]
+
+
+def tool_spec(tool: Tool, ctx: ToolContext) -> ToolSpec:
+    """The spec the model gets for `tool` this turn: a project chat's own wording when the tool has one (it
+    reaches every searchable document of the project, named by the map's number or name), else the one spec.
+    Each is a constant, so a chat's tool list stays the same bytes from turn to turn (the prefix cache)."""
+    project_spec = getattr(tool, "project_spec", None)
+    return project_spec if ctx.project is not None and project_spec is not None else tool.spec
 
 
 async def run_tool(call: ToolCall, ctx: ToolContext, offered: list[Tool]) -> ToolRun:

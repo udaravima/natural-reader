@@ -57,19 +57,37 @@ def resolve_document(scope: list[ScopeDoc], value: Any) -> ScopeDoc | None:
     return None
 
 
-def resolve_documents(scope: list[ScopeDoc], values: Any) -> tuple[list[ScopeDoc], list[str]]:
-    """`resolve_document` for a list: (found, unknown). `found` has each document once, in the order the
-    values name them; `unknown` holds what matched nothing, as one inert line each (it goes into an error
-    the model reads, and a name is someone else's text)."""
+def resolve_documents(scope: list[ScopeDoc], values: Any,
+                      listed: list[ScopeDoc] = ()) -> tuple[list[ScopeDoc], list[ScopeDoc], list[str]]:
+    """`resolve_document` for a list: (found, waiting, unknown). `found` has each document of `scope` once, in
+    the order the values name them; `waiting` the same for the `listed` documents that aren't in `scope` (a
+    project's documents that aren't searchable yet); `unknown` holds what matched neither, as one inert line
+    each (it goes into an error the model reads, and a name is someone else's text)."""
     found: list[ScopeDoc] = []
+    waiting: list[ScopeDoc] = []
     unknown: list[str] = []
     for value in values:
-        doc = resolve_document(scope, value)
+        doc, bucket = resolve_document(scope, value), found
+        if doc is None:
+            doc, bucket = resolve_document(list(listed), value), waiting
         if doc is None:
             unknown.append(display_name(value))
-        elif doc not in found:
-            found.append(doc)
-    return found, unknown
+        elif doc not in bucket:
+            bucket.append(doc)
+    return found, waiting, unknown
+
+
+def documents_named_in_project(scope: list[ScopeDoc], values: Any, ctx) -> list[ScopeDoc] | dict[str, str]:
+    """The documents `values` name in a project chat, or the error the model reads, worded as named_in_project
+    words it for one: a document in the project that isn't searchable yet is named as such, the rest unknown."""
+    found, waiting, unknown = resolve_documents(scope, values, list(ctx.project.docs))
+    if not waiting and not unknown:
+        return found
+    errors = [_not_searchable(d) for d in waiting]
+    if unknown:
+        errors.append(f"Unknown document: {', '.join(unknown)}. "
+                      f"Use a number or name from the list: {choices_text(scope)}.")
+    return {"error": " ".join(errors)}
 
 
 def documents_listing(scope: list[ScopeDoc]) -> list[dict]:
@@ -87,6 +105,10 @@ def documents_listing(scope: list[ScopeDoc]) -> list[dict]:
 def choices_text(scope: list[ScopeDoc]) -> str:
     """The valid documents, for an error the model can recover from."""
     return ", ".join(f'{d.ref}. "{d.name}"' for d in scope)   # the map's form (project_map._line)
+
+
+def _not_searchable(d: ScopeDoc) -> str:
+    return f'Document {d.ref} ("{d.name}") isn\'t searchable yet.'
 
 
 def open_document(scope: list[ScopeDoc]) -> ScopeDoc | None:
@@ -110,6 +132,6 @@ def named_in_project(scope: list[ScopeDoc], value: Any, ctx, *, open_if_missing:
         return found
     listed = resolve_document(list(ctx.project.docs), value)
     if listed is not None:   # in the project, but not indexed (or reindexing)
-        return {"error": f'Document {listed.ref} ("{listed.name}") isn\'t searchable yet.'}
+        return {"error": _not_searchable(listed)}
     return {"error": f"Unknown document: {display_name(value)}. "
                      f"Use a number or name from the list: {choices_text(scope)}."}

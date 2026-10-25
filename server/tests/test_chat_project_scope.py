@@ -420,6 +420,12 @@ async def test_a_document_that_isnt_searchable_is_named_as_such(db_conn, monkeyp
                       project=await load_project_scope(db_conn, alice.user_id, pid, open_doc_id=None))
     run = await _call(ctx, "read_document_pages", {"document": "Scan.pdf", "first_page": 1})
     assert run.result == {"error": 'Document 2 ("Scan.pdf") isn\'t searchable yet.'}
+    # search_documents says the same, not "Unknown document" (it is in the project's map)
+    search = await _call(ctx, "search_documents", {"query": "scan", "documents": [2]})
+    assert search.result == {"error": 'Document 2 ("Scan.pdf") isn\'t searchable yet.'}
+    both = await _call(ctx, "search_documents", {"query": "scan", "documents": ["Scan.pdf", "Nope.md", 1]})
+    assert both.result == {"error": 'Document 2 ("Scan.pdf") isn\'t searchable yet. Unknown document: Nope.md. '
+                                    'Use a number or name from the list: 1. "Ready.md".'}
 
 
 async def test_search_documents_covers_the_project_sorted_by_cosine(db_conn, monkeypatch):

@@ -23,6 +23,12 @@ describe('ConvertButton while Docling converts', () => {
     expect(screen.getByRole('button', { name: /Preparing/ })).toBeInTheDocument();
   });
 
+  it('queued: Docling hasn\'t started (the upload\'s own indexing runs first)', () => {
+    converting({ phase: 'queued' });
+    const btn = screen.getByRole('button', { name: /Queued/ });
+    expect(btn).toHaveAttribute('title', expect.stringMatching(/indexing/));
+  });
+
   it('shows enrichment items, with the step in the tooltip', () => {
     converting({ phase: 'enrich', done: 2, total: 5, label: 'picture description' });
     const btn = screen.getByRole('button', { name: /Enriching 2\/5/ });

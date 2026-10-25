@@ -285,6 +285,8 @@ async def test_conversion_progress_is_stored_while_converting_and_cleared_after(
     seen = []
 
     async def converting(_path, _options, on_progress=None):
+        # Until docling's first report: queued (behind the upload's own indexing, which holds the document's lock)
+        seen.append(await _progress(db_conn, HEX))
         for done in (1, 2):
             await asyncio.to_thread(on_progress, {"phase": "build", "done": done, "total": 2})
             await asyncio.sleep(0.05)   # the write is the event loop's, not this thread's
@@ -295,7 +297,8 @@ async def test_conversion_progress_is_stored_while_converting_and_cleared_after(
     async with as_user(owner) as client:
         assert (await client.post(f"/v1/docs/{HEX}/convert", json={})).status_code == 202
         status = (await client.get(f"/v1/docs/{HEX}")).json()
-    assert seen == [{"phase": "build", "done": 1, "total": 2}, {"phase": "build", "done": 2, "total": 2}]
+    assert seen == [{"phase": "queued"},
+                    {"phase": "build", "done": 1, "total": 2}, {"phase": "build", "done": 2, "total": 2}]
     assert await _progress(db_conn, HEX) is None and status["conversion_progress"] is None
     assert status["conversion_state"] == "converted"
 

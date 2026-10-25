@@ -45,7 +45,7 @@ from .prompt import document_tools_offered
 from .reader import BatchCall
 from .sources import answer_sources, sources_by_document, web_sources
 from .store import TurnClaim, title_from_prompt
-from .tools import ToolContext, ToolRun, TurnTools, available_tools, result_text
+from .tools import ToolContext, ToolRun, TurnTools, available_tools, result_text, tool_spec
 from .tools.scope import scope_docs
 from .web_consent import (APP_WEB_CALL_ID, app_web_exchange, app_web_search, clean_query, offer_note, search_possible,
                           web_offer)
@@ -389,7 +389,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             last_flush = time.monotonic()
             failed = False
             try:
-                async with aclosing(router.stream_chat(req.model_id, messages, [t.spec for t in tools_now],
+                async with aclosing(router.stream_chat(req.model_id, messages, [tool_spec(t, tool_ctx) for t in tools_now],
                                                        req.settings)) as stream:
                     async for chunk in stream:
                         if isinstance(chunk, ReasoningDelta):

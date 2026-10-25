@@ -16,6 +16,9 @@ import { FileText, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
 function converting(progress) {
     const { phase, done, total, label } = progress || {};
     const counted = Number.isFinite(done) && Number.isFinite(total) && total > 0;
+    if (phase === 'queued') {
+        return { text: 'Queued', title: 'Docling starts once the server has finished indexing the PDF\'s own text.' };
+    }
     if (phase === 'initialize') {
         return { text: 'Preparing', title: 'Docling is getting ready — loading its models is slow the first time.' };
     }

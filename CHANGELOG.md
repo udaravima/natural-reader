@@ -13,8 +13,9 @@ All notable changes to this project will be documented in this file.
   chat. A file in "Your Library" with the same name is still never used in
   its place.
 - **Docling conversion shows its progress.** The Convert button used to say
-  "Converting" until the whole PDF was done. It now shows **Preparing** while
-  Docling loads its models, **Converting 3/40** as pages finish, then
+  "Converting" until the whole PDF was done. It now shows **Queued** while the
+  upload's own indexing of the PDF's text runs first (the two share the
+  document's lock), **Preparing** while Docling loads its models, **Converting 3/40** as pages finish, then
   **Assembling** and, when pictures are described, **Enriching 2/5**. The
   server stores Docling's latest report in `documents.conversion_progress`
   (migration 022) and `GET /v1/docs/{id}` returns it. A conversion Docling
@@ -27,6 +28,18 @@ All notable changes to this project will be documented in this file.
   number and the name together, or the name in quotes, as long as both name
   the same document. Its "Use a number or name from the list" error lists
   them the way the map does.
+- **Project chat: a document that isn't searchable yet is named as such by
+  every tool.** `search_documents` answered "Unknown document" for a project
+  document still indexing (or failed), so the model kept guessing; it now
+  says `Document 16 ("…") isn't searchable yet.`, as the other tools did.
+- **The search and page tools describe the chat they're in.** A project chat
+  was told `search_documents` "searches the open document" and
+  `read_document_pages` "reads the open document"; they now say they reach
+  the project's documents, named by the number or name in the project map. A
+  one-document chat's tools no longer offer a document field that was
+  ignored. Measured side by side against the previous wording on the cloud
+  model (3 repeats): project eval 33/42 against 32/42, document eval 27/27
+  both.
 
 ## [2.4.0] - 2026-10-25
 
