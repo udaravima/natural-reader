@@ -167,6 +167,9 @@ def check(limits: ConvertLimits, options: dict, *, is_admin: bool, capabilities:
     preset = options.get("preset", "standard")
     if preset not in limits.presets:
         return Refused("preset", f"Your admin has turned off the {preset.capitalize()} preset.")
+    if preset == "accurate" and not limits.ocr:
+        # the Accurate pipeline always runs OCR (docling_convert: do_ocr = ocr or preset == "accurate")
+        return Refused("ocr", "Your admin has turned off OCR, which the Accurate preset uses.")
     if options.get("ocr") and not limits.ocr:
         return Refused("ocr", "Your admin has turned off OCR for conversions.")
     if options.get("images") == "describe" and not limits.picture_description:
@@ -180,9 +183,9 @@ def check(limits: ConvertLimits, options: dict, *, is_admin: bool, capabilities:
 
 def user_view(limits: ConvertLimits, *, is_admin: bool, capabilities: frozenset[str], enabled: bool) -> dict:
     """What the convert dialog needs from GET /v1/settings/docling: whether to offer conversion at all, and
-    which options are off. `enabled` is the server's DOCLING_ENABLED."""
+    which options are off (Accurate is off with OCR, since it always runs OCR). `enabled` is the server's DOCLING_ENABLED."""
     return {"enabled": enabled, "may_convert": may_convert(limits, is_admin=is_admin, capabilities=capabilities),
-            "presets": list(limits.presets), "ocr": limits.ocr, "picture_description": limits.picture_description,
+            "presets": [p for p in limits.presets if limits.ocr or p != "accurate"], "ocr": limits.ocr, "picture_description": limits.picture_description,
             "max_pages": limits.max_pages}
 
 

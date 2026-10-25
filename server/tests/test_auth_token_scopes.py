@@ -200,3 +200,13 @@ async def test_an_expired_scoped_token_is_refused(db_conn, admin_user):
     past = datetime.now(timezone.utc) - timedelta(seconds=1)
     _, raw = await create_token(db_conn, admin_user["id"], "ext", scopes=["read_aloud"], expires_at=past)
     assert (await _call(db_conn, "GET", "/gate/read-aloud", raw)).status_code == 401
+
+
+def test_the_documents_scope_lets_the_docling_role_through_and_read_aloud_does_not():
+    from server.auth.scopes import narrow
+    account = frozenset({"reader", "docling", "chat"})
+    assert narrow(account, frozenset({"documents"})) == {"reader", "docling"}
+    assert narrow(account, frozenset({"read_aloud"})) == frozenset()
+    assert narrow(frozenset({"reader", "docling"}), frozenset({"read_aloud"})) == frozenset()
+    assert narrow(account, frozenset({"chat"})) == {"chat"}
+    assert narrow(account, None) == account

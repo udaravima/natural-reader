@@ -9,7 +9,7 @@ import pytest
 from server.auth.users import SEED_ADMIN_ID
 from server.services import console_settings
 from server.services.console_settings import SettingError
-from server.services.docling_limits import (SECTION, ConvertLimits, Refused, check, info_rows, load_limits,
+from server.services.docling_limits import (PRESETS, SECTION, ConvertLimits, Refused, check, info_rows, load_limits,
                                             may_convert, pages_requested, user_view)
 
 
@@ -142,6 +142,14 @@ def test_check_walks_ocr_then_pictures_then_pages():
                  **kw) is None
 
 
+def test_accurate_is_refused_when_ocr_is_off_because_it_runs_ocr():
+    limits = ConvertLimits("readers", PRESETS, False, True, 0)
+    assert check(limits, {"preset": "accurate"}, is_admin=False, capabilities=frozenset({"reader"}),
+                 pages=None) == Refused("ocr", "Your admin has turned off OCR, which the Accurate preset uses.")
+    assert check(limits, {"preset": "standard"}, is_admin=False, capabilities=frozenset({"reader"}),
+                 pages=None) is None
+
+
 def test_options_default_like_the_request_model():
     # an options dict without keys is the request model's defaults: standard, no OCR, drop images
     limits = ConvertLimits("readers", ("standard",), False, False, 0)
@@ -172,6 +180,13 @@ def test_user_view_is_what_the_dialog_needs():
         "enabled": True, "may_convert": False, "presets": ["fast", "standard"], "ocr": True,
         "picture_description": False, "max_pages": 25}
     assert user_view(limits, is_admin=False, capabilities=frozenset({"docling"}), enabled=False)["may_convert"] is True
+
+
+def test_user_view_drops_accurate_when_ocr_is_off():
+    limits = ConvertLimits("readers", PRESETS, False, True, 0)
+    assert user_view(limits, is_admin=False, capabilities=frozenset(), enabled=True)["presets"] == ["fast", "standard"]
+    assert user_view(ConvertLimits("readers", PRESETS, True, True, 0), is_admin=False, capabilities=frozenset(),
+                     enabled=True)["presets"] == ["fast", "standard", "accurate"]
 
 
 def test_info_rows_show_the_servers_own_values():

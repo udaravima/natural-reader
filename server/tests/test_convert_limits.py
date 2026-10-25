@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from fastapi import FastAPI
 
-from server.auth import deps
+from server.auth import deps, scopes as token_scopes
 from server.auth.users import resolve_or_provision_user, set_status
 from server.routers import admin as admin_router, settings as settings_router
 from server.services import console_settings, docling_convert, docling_limits
@@ -179,6 +179,34 @@ async def test_ocr_and_describe_refusals_name_the_option(db_conn, harness, store
         r = await client.post(f"/v1/docs/{HEX}/convert", json={"images": "describe"})
         assert r.status_code == 403 and r.json()["detail"]["option"] == "picture_description"
         assert (await client.post(f"/v1/docs/{HEX}/convert", json={"images": "embed"})).status_code == 202
+
+
+async def test_accurate_is_refused_when_ocr_is_off(db_conn, harness, store):
+    _, as_user = harness
+    owner = await _member(db_conn, "ac-owner")
+    await _seeded(db_conn, store, owner)
+    await _save_documents(db_conn, {"ocr": False})
+    async with as_user(owner) as client:
+        r = await client.post(f"/v1/docs/{HEX}/convert", json={"preset": "accurate"})
+        assert r.status_code == 403 and r.json()["detail"]["option"] == "ocr"
+        assert r.json()["detail"]["message"] == "Your admin has turned off OCR, which the Accurate preset uses."
+        assert (await _doc(db_conn, HEX))["conversion_state"] != "converting"
+        assert (await client.post(f"/v1/docs/{HEX}/convert", json={"preset": "standard"})).status_code == 202
+
+
+async def test_a_documents_scoped_token_with_the_docling_role_converts_in_role_mode(db_conn, harness, store):
+    _, as_user = harness
+    await _save_documents(db_conn, {"convert_by": "role"})
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="tok-owner", email="tok@x.io")
+    await set_status(db_conn, u["id"], "active")
+    account = frozenset({"reader", "docling"})
+    # what deps._principal builds for a token scoped to `documents`
+    scoped = deps.Principal(user_id=u["id"], email=u["email"], role="member",
+                            capabilities=token_scopes.narrow(account, frozenset({"documents"})),
+                            scopes=frozenset({"documents"}), account_capabilities=account)
+    await _seeded(db_conn, store, scoped)
+    async with as_user(scoped) as client:
+        assert (await client.post(f"/v1/docs/{HEX}/convert", json={})).status_code == 202
 
 
 async def test_an_env_bound_refuses_what_the_console_allowed(db_conn, harness, store, monkeypatch):   # Review Focus 5
