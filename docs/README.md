@@ -18,7 +18,7 @@ If you're touching a feature, its "owner" doc below is the first thing to read.
 | 10 | [superpowers/plans/](superpowers/plans/) | **Developers (execution)** | The committed TDD task plans that implemented the specs |
 | 11 | [../CHANGELOG.md](../CHANGELOG.md) | Everyone | Every release, newest first; `[Unreleased]` is what's on `development` since the last tag. Per-release notes: [Release_notes/](Release_notes/) |
 | 12 | [superpowers/handoff/](superpowers/handoff/) | Session continuity | One folder per feature build: what shipped, how it was verified (walks, evals), rulings, what's deferred. Newest: [project chat](superpowers/handoff/2026-10-18-project-chat/HANDOFF.md) |
-| 13 | [../HANDOVER.md](../HANDOVER.md) | Session continuity (older) | Session notes up to 2026-09-22, newest on top |
+| 13 | [../HANDOVER.md](../HANDOVER.md) | Session continuity | Session notes, newest on top; the 2026-10-25 entry is where a fresh session starts |
 
 Quick routing:
 

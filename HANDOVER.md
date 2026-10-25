@@ -4,6 +4,113 @@
 
 ---
 
+## 2026-10-25 — v2.4.0 released; six post-release fixes; eval "drift" diagnosed; admin console v2 designed (START HERE)
+
+**Branch:** `fix/folder-index-docling-progress-doc-refs`, cut from `development` at `955231d`. **Commits on it:** `6ef6ef5`, `9127981`, and the commit that added this entry and the spec. **Not merged into `development`, not pushed.** **Tests at `9127981`:** backend 2139 passed and 16 skipped, frontend 1022 passed, eslint clean. **Releases:** v2.4.0 is on `master` (`ff71f75`), tagged, pushed, and is the GitHub release marked Latest; v2.3.0 also has a GitHub release now. **The live site is NOT redeployed** (see "Deploying 2.4.0" below).
+
+### Starting a fresh session
+
+Paste this as the first message:
+
+> Read `HANDOVER.md` (the 2026-10-25 entry) and `docs/superpowers/specs/2026-10-25-admin-console-v2-design.md`. I approve the spec's §7 decisions [or: change X]. Write the implementation plan for **phase 1** of that spec with superpowers:writing-plans, on a new branch from `development` after merging the fix branch.
+
+Before that session builds anything, the owner decides the first two items under "Waiting on the owner".
+
+### What this session changed (all on the fix branch)
+
+**Commit `6ef6ef5`:**
+
+1. **Index works for a file opened with Open folder.** The reader keeps a workspace file's bytes (`docBytes` in `src/hooks/usePdfEngine.js`). `src/utils/docHash.js` `readOpenDocBytes` / `openDocHash` hash and upload those bytes, never a same-named library book's. Walked in the running app: folder → README.md → **Index** → "Indexed 3 chunks", stored under the file's own hash.
+2. **Docling shows progress.** The convert job passes Docling 2.142's `progress_callback` (`services/docling_convert.py` `progress_from_event`). `_ConversionProgress` (`routers/docs.py`) stores the latest report in `documents.conversion_progress` (**migration 022**). It writes only the latest value and has at most one write in flight, posted from Docling's thread back to the event loop. The progress lives in the database, not memory, because of `WORKERS>1`. The button reads Queued → Preparing → Converting n/N → Assembling → Enriching n/N. A conversion Docling fails on offers Retry convert. Walked with a 6-page PDF.
+3. **A project chat finds "17-README.md".** `server/chat/tools/scope.py` `resolve_document` takes a document's number and name together (`17-README.md`, `17. "README.md"`) or its quoted name, but only when both name the same document. Error lists now use the map's form: `1. "Alpha.md"`.
+
+**Commit `9127981`:**
+
+4. **`search_documents` names a document that isn't searchable yet** the way the other tools do: `Document 16 ("…") isn't searchable yet.` (`scope.documents_named_in_project`).
+5. **Convert shows Queued until Docling starts.** Uploading a new PDF runs its own indexing first, which holds the document's lock. That indexing is redundant once the PDF is converted, but it is cheap and makes the document searchable sooner, so it stays.
+6. **Tool specs fit the chat they're in** (`tools.tool_spec`). A project chat gets project wording for `search_documents` and `read_document_pages`; a one-document chat no longer gets the `documents`/`document` fields its code ignored. This is the "I2" change that was reverted before release on noise. It was re-measured side by side with a control, 3 repeats on `gemma4:31b-cloud`: project eval 33/42 against 32/42, document eval 27/27 both. Kept.
+
+### The eval "drift", diagnosed
+
+- **Not our code.** The shipped code `26ace78` scored 38/42 on 2026-10-20 and 34/42 today, the same as HEAD.
+- **Not context length for the cloud model.** A 19k-token prompt to `gemma4:31b-cloud` with no `num_ctx` kept a word from its first line; Ollama's docs say cloud models get their maximum context.
+- **About 2 passes per run are the eval's own scorer.** The model now writes "The documents **do not list** …", and `_REFUSAL` (`server/evals/doc_qa.py:103`) has no "list". Rescored, today's runs come to 35–36/42.
+- **The rest:** sampling noise (the eval sets no temperature; four runs on unchanged code spanned 32–34). Ollama was also upgraded locally on 2026-10-22 (0.40.8); its effect wasn't separated.
+- **A real bug found on the way, for local models:**
+  1. Ollama gives a local model 4k tokens of context below 24 GiB of VRAM, so always 4k on this machine.
+  2. With no `num_ctx` set, the app trims history against the model's *maximum* context (`chat/orchestrator.py:684-689`), so it never trims, and Ollama silently cuts the prompt.
+  3. Also, Ollama reloads a model whenever a request's `num_ctx` differs from the one it was loaded with. The reader sends a per-batch size (`chat/reader.py:320-322`), so `READER_MODEL=chat` on a local model reloads the model when chat and reader calls alternate.
+
+  Both are in the spec's phase 2a. Neither is fixed yet.
+
+### Admin console v2: the design (`docs/superpowers/specs/2026-10-25-admin-console-v2-design.md`, revision 2)
+
+The console gets the Settings window's layout: nine sections, one row pattern, and each setting's source shown with a reset. Console row, then env var, then default; allow-lists can only narrow. Revision 2 folds in a review whose four must-fix findings were verified against this repository and Ollama's source:
+
+- the 768-dimension embedding probe must never trust a returned length, because Ollama cuts any vector to `dimensions`;
+- changing the embedding model builds first, then switches, with a second `vector(768)` column;
+- the rebuild queue moves into the database (`FOR UPDATE SKIP LOCKED`);
+- one context size per local Ollama model, with the reader sized to it.
+
+The spec also adds an embedding provider for both provider kinds, which is what removes the dependency on Ollama.
+
+**Phases:**
+
+1. The shell, timezone, and Docling limits.
+2. Models, in two parts: **2a** the reader falling back to the chat model, plus the context-size fixes; **2b** the embedding provider and build-then-switch.
+3. Usage by model.
+
+The §8 measurements (gemma4:e4b as the reader, reload time) are deferred by the owner. Don't run them unasked.
+
+### Waiting on the owner
+
+1. **Merge** the fix branch into `development` (then push?).
+2. **Approve the spec's §7 decisions:**
+   - the reader falls back to the chat model;
+   - local Ollama models get 16,384 tokens of context, one size per model;
+   - Docling stays open to everyone with the reader capability.
+3. **The eval scorer:** add "list" to `_REFUSAL`. Recommended.
+4. **Deploying 2.4.0 plus these fixes.** Order matters:
+   - back up the Postgres volume first: the compose Keycloak goes 26.0 → 26.8.0 and migrates its database irreversibly on first start;
+   - run the `embedding_model` query from the release notes;
+   - migrations 020–022 apply at backend start.
+5. **Still open from earlier:**
+   - the one local `gemma4:e4b` eval run (only with the owner's go-ahead);
+   - replace the old access token (which one is in Claude's memory, deliberately not in git);
+   - remove the `nr-c21-testpg` container when done;
+   - delete or keep the old plan workspace under `.superpowers/sdd/`.
+
+### Environment and safety rules (each one was learned the hard way)
+
+- **The real database:** `127.0.0.1:5433`, database `natural_reader`. **Never write to it, and never run tests against it.** Without the variables below, pytest defaults to 5433.
+- **The scratch database** is the container `nr-c21-testpg` (`pgvector:pg16`) on `127.0.0.1:5434`. Its data is on **tmpfs**, so stopping the container wipes every database in it. Start it with `podman start nr-c21-testpg`, then run tests with:
+  `TEST_ADMIN_DATABASE_URL=postgresql://natural_reader:natural_reader@127.0.0.1:5434/postgres TEST_DATABASE_URL=postgresql://natural_reader:natural_reader@127.0.0.1:5434/natural_reader_test .venv/bin/python -m pytest -q`
+  Shell variables don't persist between agent tool calls: put them on every command, or in a wrapper script.
+- **Frontend:** `npx vitest run`, then `npx eslint src`.
+- **The compose Keycloak is the owner's real identity server** (its `.env` points at the public auth host). Never enroll or test against it.
+- **Walking the app** doesn't need Keycloak: `AUTH_ENABLED=false` is accepted on a loopback bind only. Run `run.py` under `env -i` with explicit values: `HOST=127.0.0.1`, a scratch `DATABASE_URL` on 5434, scratch `DOC_STORAGE_DIR` and `LOG_DIR`, `DOCLING_ENABLED=true` when needed, `OLLAMA_URL`, `INFERENCE_MODELS=gemma4:31b-cloud`, `EMBEDDING_MODEL=nomic-embed-text`. Then `npx vite --port 5173`.
+  - Headless Chromium: use the Playwright in `~/.npm/_npx/*/node_modules/playwright` with `executablePath` set to `~/.cache/ms-playwright/chromium_headless_shell-1217/...`, because its own browser build isn't downloaded.
+  - To open a folder, delete `window.showDirectoryPicker` in an init script, so the app falls back to its `webkitdirectory` input, which `setFiles(dir)` can fill.
+- **Evals** (`docs/superpowers/handoff/2026-10-18-project-chat/EVAL.md`):
+  - always a scratch database (the script refuses `natural_reader`);
+  - always `SUMMARIZE_MODEL=gemma4:31b-cloud`, with `--model ollama:gemma4:31b-cloud --repeat 3`;
+  - **never the local `llama3.2:3b`**;
+  - comparing two versions needs a same-day control: a `git worktree` at the old commit, run in parallel against a second scratch database;
+  - SearXNG isn't running, so the document eval's `live` case logs `ConnectError`, the same in both arms.
+- **Processes:** never `pkill -f run.py`; stop a process by its PID, or by the agent's task ID.
+- **Secrets:** never print `.env` values; check a key's presence with `grep -c '^KEY=' .env`.
+- **Git:** commit or push only with per-action permission from the owner. Stage explicit paths.
+- **Open source:** no deployment-specific value in code or docs; docs use example.com.
+- **zsh traps:** quote globs (`--include='*.py'`), and don't use `#` as the `sed` delimiter on Markdown.
+
+### Pointers
+
+- `CHANGELOG.md` `## [Unreleased]`: the six fixes, written for users.
+- The project chat's full record: `docs/superpowers/handoff/2026-10-18-project-chat/` (`HANDOFF.md`, `EVAL.md`, `WALK.md`).
+- The owner's feature wish-list (bulk project upload, auto tags, DeepSeek-OCR vs Docling, embedding trials, MCP, agents, Markdown and PDF side by side, and more) is in Claude's memory as `project_feature_backlog.md`. The admin console v2 covers its timezone, Docling-limits, cloud-stats and embedding items.
+
+---
+
 ## 2026-09-22 — Fresh-deploy debugging: founder lockout, login-flow bugs, library bounce, and the docs-404 (ownership guard) + access-model design discussion
 
 **Branch:** `development` · **Commits:** `175ef05`, `df82ef3`, `b20a0cc` (all today) · **Tests:** backend 245, frontend 229 (guard 10/10) · Nothing merged to `master`. Two threads got fixed-and-committed; the last (docs-404) was **diagnosis only — no code**, and opened a design discussion the user is still deciding.
