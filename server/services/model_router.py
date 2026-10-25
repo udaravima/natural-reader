@@ -72,3 +72,14 @@ def load_inference_config(env: Mapping[str, str]) -> InferenceConfig:
 
 def get_config() -> InferenceConfig:
     return load_inference_config(os.environ)
+
+
+def _strip_latest(name: str) -> str:
+    return name[:-len(":latest")] if name.endswith(":latest") else name
+
+
+def offered_chat_models(models: list, embed_model: str) -> list:
+    """The models a person may chat with: everything the providers list except the Ollama embedding model
+    (`:latest` on either side doesn't matter), which can't answer a chat."""
+    embed = _strip_latest(embed_model)
+    return [m for m in models if not (m.kind == "ollama" and _strip_latest(m.name) == embed)]

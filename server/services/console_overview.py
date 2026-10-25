@@ -13,18 +13,28 @@ Two rules keep the page usable when something is wrong:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import importlib.util
+import json
+import math
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Awaitable, Callable, Mapping
 
 import httpx
 
+from ..chat import context as chat_context
 from ..chat import reader
-from ..llm.router import UnknownModel
-from . import chat_options, docling_convert, embeddings, model_router, web_search
+from ..chat.config import ChatConfig, get_chat_config
+from ..chat.project_scope import ProjectScope, ScopeDoc
+from ..chat.prompt import system_rules
+from ..chat.tools import ToolContext, available_tools, tool_spec
+from ..llm.router import ModelInfo, UnknownModel
+from . import assistant_profile, chat_options, docling_convert, embeddings, model_router, web_search
 from .deployment_info import NOT_A_URL, url_host
+from .doc_search import ReadableDoc
 
 CHECK_TIMEOUT_S = 5.0
 SEARXNG_TIMEOUT_S = 3.0
@@ -33,7 +43,7 @@ EMBEDDING_PROBE = "Natural Reader embedding check."
 _TITLES = {   # id -> (title, section), in the order the Overview shows them
     "providers": ("Model providers", "deployment"),
     "reader": ("Reader", "deployment"),
-    # Task 6 adds "context" here, third
+    "context": ("Context windows", None),
     "embeddings": ("Embeddings", "deployment"),
     "docling": ("Docling", "documents"),
     "web_search": ("Web search", "chat"),
@@ -160,6 +170,66 @@ async def _web_search(http: httpx.AsyncClient, mode: str) -> Check:
     return _check("web_search", "ok", f"SearXNG at {host} answers.")
 
 
+def is_ollama_cloud(name: str) -> bool:
+    return name.endswith(("-cloud", ":cloud"))
+
+
+def window_for(model: ModelInfo, loaded: dict[str, int]) -> tuple[int | None, str]:
+    """The context window `model` gets, and where the number comes from. A local Ollama model's /api/show
+    maximum is never reported as its window: Ollama loads it at 4,096 tokens on a machine with under 24 GiB
+    of VRAM, and the app trims history against whatever number it believes."""
+    maximum = model.capabilities.context_window
+    if model.kind == "ollama":
+        if is_ollama_cloud(model.name):
+            if maximum:
+                return maximum, "The model's maximum (Ollama cloud)."
+        else:
+            mine = model.name.removesuffix(":latest")
+            for name, size in loaded.items():
+                if name.removesuffix(":latest") == mine:
+                    return size, "Loaded now (Ollama)."
+            return None, ("Unknown: Ollama picks the size when it loads the model "
+                          "(4,096 tokens on a machine with under 24 GiB of VRAM).")
+    if maximum:
+        return maximum, "Reported by the provider."
+    return None, "Unknown: the provider doesn't report one."
+
+
+def project_turn_tokens(cfg: ChatConfig, web_mode: str, profile: str = "") -> int:
+    """About how many tokens a project-chat turn needs before any history: the rules, the tools' specs, a full
+    project map and a full tool-result budget (4 characters a token), plus the reply's reserve."""
+    ready = ReadableDoc("sample", "Sample document", "indexed", 10)
+    scope = ProjectScope("sample", "Sample project", (ScopeDoc(1, ready, "Sample document", False),))
+    ctx = ToolContext("sample", None, cfg=cfg, project=scope, web_mode=web_mode)
+    tools = available_tools(ctx)
+    rules = system_rules(None, tools, has_pins=True, prefetch=True, profile=profile, has_map=True, project=scope,
+                         today=chat_context.today_line(datetime.now(timezone.utc), "UTC"))
+    spec_chars = sum(len(json.dumps(dataclasses.asdict(tool_spec(t, ctx)))) for t in tools)
+    chars = len(rules) + spec_chars + cfg.project_map_chars + cfg.tool_result_budget_chars
+    return math.ceil(chars / 4) + cfg.reply_reserve_tokens
+
+
+async def _context(llm, cfg: ChatConfig, web_mode: str, profile: str, embed_model: str) -> Check:
+    models, _failed = await llm.list_models()
+    models = model_router.offered_chat_models(models, embed_model)
+    if not models:
+        return _check("context", "warn", "No chat models are listed.")
+    ollama = [p for p in llm.providers.values() if p.config.kind == "ollama"]
+    lengths = await asyncio.gather(*(p.loaded_context_lengths() for p in ollama))
+    loaded = {p.config.name: got for p, got in zip(ollama, lengths)}
+    needed = project_turn_tokens(cfg, web_mode, profile)
+    items = []
+    for m in models:
+        window, source = window_for(m, loaded.get(m.provider, {}))
+        items.append({"model": m.id, "window": window, "source": source,
+                      "enough": window is not None and window >= needed})
+    fits = sum(1 for i in items if i["enough"])
+    summary = (f"{fits} of {len(items)} chat models have room for a project-chat turn here "
+               f"(about {needed:,} tokens).")
+    title, section = _TITLES["context"]
+    return Check("context", "ok" if fits == len(items) else "warn", title, summary, section, tuple(items))
+
+
 async def _bounded(id: str, run: Callable[[], Awaitable[Check]]) -> Check:
     try:
         return await asyncio.wait_for(run(), timeout=CHECK_TIMEOUT_S)
@@ -176,6 +246,9 @@ async def run_checks(conn, llm, env: Mapping[str, str] = os.environ,
     cur = await conn.execute("SELECT count(*) FROM documents WHERE state = 'indexed' "
                              "AND embedding_profile IS DISTINCT FROM %s", (embeddings.current_profile(),))
     stale = (await cur.fetchone())[0]
+    profile = (await assistant_profile.load_profile(conn)).text
+    chat_cfg = get_chat_config()
+    embed_model = model_router.load_inference_config(env).embed_model
 
     owned = http is None
     client = httpx.AsyncClient() if owned else http
@@ -183,7 +256,7 @@ async def run_checks(conn, llm, env: Mapping[str, str] = os.environ,
         return list(await asyncio.gather(
             _bounded("providers", lambda: _providers(llm)),
             _bounded("reader", lambda: _reader(llm, env)),
-            # Task 6 adds _bounded("context", ...) here, third
+            _bounded("context", lambda: _context(llm, chat_cfg, web_mode, profile, embed_model)),
             _bounded("embeddings", lambda: _embeddings(env, stale)),
             _bounded("docling", _docling),
             _bounded("web_search", lambda: _web_search(client, web_mode)),

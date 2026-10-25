@@ -343,3 +343,16 @@ async def test_a_model_list_401_behind_an_auth_proxy_is_explained():
     with pytest.raises(ProviderError) as ei:
         await OllamaProvider(CFG, up.client()).list_models()
     assert ei.value.safe_message.startswith("The provider rejected this server's credentials")
+
+
+async def test_loaded_context_lengths_from_api_ps():
+    up = FakeUpstream().on("GET", "/api/ps", lambda: httpx.Response(
+        200, json={"models": [{"name": "m:latest", "context_length": 8192}, {"name": "x"}]}))
+    assert await OllamaProvider(CFG, up.client()).loaded_context_lengths() == {"m:latest": 8192}
+
+
+async def test_loaded_context_lengths_is_empty_on_any_error():
+    up = FakeUpstream().on("GET", "/api/ps", lambda: httpx.Response(500, json={"error": "x"}))
+    assert await OllamaProvider(CFG, up.client()).loaded_context_lengths() == {}
+    down = FakeUpstream().on("GET", "/api/ps", httpx.ConnectError("down"))
+    assert await OllamaProvider(CFG, down.client()).loaded_context_lengths() == {}

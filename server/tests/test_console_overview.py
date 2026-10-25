@@ -17,7 +17,8 @@ from server.llm.router import ModelInfo, UnknownModel
 from server.llm.types import Capabilities
 from server.routers import admin as admin_router
 from server.services import chat_options, console_overview, docling_convert, embeddings, web_search
-from server.services.console_overview import run_checks
+from server.chat.config import ChatConfig
+from server.services.console_overview import project_turn_tokens, run_checks, window_for
 from server.tests import seed
 
 
@@ -30,6 +31,9 @@ class _Provider:
         if self._fails:
             raise httpx.ConnectError("down")
         return list(self._names)
+
+    async def loaded_context_lengths(self):
+        return dict(getattr(self, "loaded", {}))
 
 
 class _Router:
@@ -109,7 +113,7 @@ async def test_a_check_that_raises_says_which_kind_of_failure(db_conn, monkeypat
 
 async def test_checks_come_in_a_fixed_order(db_conn):
     checks = await run_checks(db_conn, _router(), {}, http=_searxng_ok())
-    assert [c.id for c in checks] == ["providers", "reader", "embeddings", "docling", "web_search"]
+    assert [c.id for c in checks] == ["providers", "reader", "context", "embeddings", "docling", "web_search"]
 
 
 async def test_providers_states(db_conn):
@@ -261,4 +265,73 @@ async def test_overview_route_is_admin_only(db_conn, monkeypatch):
     async with client(app_for(deps.Principal(user_id=admin["id"], email=admin["email"], role="admin"))) as c:
         r = await c.get("/v1/admin/overview")
     assert r.status_code == 200
-    assert [x["id"] for x in r.json()["checks"]] == ["providers", "reader", "embeddings", "docling", "web_search"]
+    assert [x["id"] for x in r.json()["checks"]] == ["providers", "reader", "context", "embeddings", "docling", "web_search"]
+
+
+def test_a_local_ollama_model_not_loaded_is_unknown_never_its_maximum():
+    m = ModelInfo("ollama:gemma4:e4b", "ollama", "ollama", "gemma4:e4b", Capabilities(context_window=131072))
+    assert window_for(m, {}) == (None, "Unknown: Ollama picks the size when it loads the model (4,096 tokens on a machine with under 24 GiB of VRAM).")
+    assert window_for(m, {"gemma4:e4b": 4096}) == (4096, "Loaded now (Ollama).")
+
+
+def test_an_ollama_cloud_model_gets_its_maximum():
+    m = ModelInfo("ollama:gemma4:31b-cloud", "ollama", "ollama", "gemma4:31b-cloud", Capabilities(context_window=262144))
+    assert window_for(m, {}) == (262144, "The model's maximum (Ollama cloud).")
+
+
+def test_other_providers_report_their_own_number_or_none():
+    m = ModelInfo("oa:gpt", "oa", "openai", "gpt", Capabilities(context_window=131072))
+    assert window_for(m, {}) == (131072, "Reported by the provider.")
+    m = ModelInfo("oa:gpt", "oa", "openai", "gpt", Capabilities())
+    assert window_for(m, {}) == (None, "Unknown: the provider doesn't report one.")
+
+
+def test_a_project_turn_is_larger_than_its_fixed_budgets():
+    cfg = ChatConfig()
+    n = project_turn_tokens(cfg, "ask")
+    assert n > (cfg.project_map_chars + cfg.tool_result_budget_chars) // 4 + cfg.reply_reserve_tokens
+    assert project_turn_tokens(cfg, "ask", profile="x" * 4000) >= n + 900   # the profile leads the rules (its first line is a little shorter than the default)
+
+
+class _Caps(_Router):
+    """A router whose models carry given context windows."""
+    def __init__(self, models, *providers):
+        super().__init__(*providers)
+        self._models = models
+
+    async def list_models(self):
+        return self._models, []
+
+
+async def test_context_check_warns_on_a_small_or_unknown_window(db_conn):
+    p = _Provider("local")
+    p.loaded = {"small": 4096}
+    models = [ModelInfo("local:small", "local", "ollama", "small", Capabilities(context_window=131072)),
+              ModelInfo("local:idle", "local", "ollama", "idle", Capabilities(context_window=131072))]
+    c = (await _by_id(db_conn, _Caps(models, p)))["context"]
+    assert c.state == "warn" and c.summary.startswith("0 of 2 chat models have room")
+    assert [i["enough"] for i in c.items] == [False, False]
+    assert c.items[0]["window"] == 4096 and c.items[1]["window"] is None
+    assert (c.title, c.section) == ("Context windows", None)
+
+
+async def test_context_check_ok_when_every_window_fits(db_conn):
+    models = [ModelInfo("local:big-cloud", "local", "ollama", "big-cloud", Capabilities(context_window=262144)),
+              ModelInfo("oa:gpt", "oa", "openai", "gpt", Capabilities(context_window=131072))]
+    llm = _Caps(models, _Provider("local"), _Provider("oa", kind="openai"))
+    c = (await _by_id(db_conn, llm))["context"]
+    assert c.state == "ok" and all(i["enough"] for i in c.items)
+
+
+async def test_context_check_warns_when_no_chat_models(db_conn):
+    c = (await _by_id(db_conn, _Caps([], _Provider("local"))))["context"]
+    assert (c.state, c.summary) == ("warn", "No chat models are listed.")
+
+
+def test_the_embedding_model_isnt_listed_as_a_chat_model():
+    from server.services.model_router import offered_chat_models
+    emb = ModelInfo("o:nomic-embed-text:latest", "o", "ollama", "nomic-embed-text:latest", Capabilities())
+    chat = ModelInfo("o:m", "o", "ollama", "m", Capabilities())
+    other = ModelInfo("oa:nomic-embed-text", "oa", "openai", "nomic-embed-text", Capabilities())
+    assert offered_chat_models([emb, chat, other], "nomic-embed-text") == [chat, other]
+    assert offered_chat_models([emb, chat], "nomic-embed-text:latest") == [chat]
