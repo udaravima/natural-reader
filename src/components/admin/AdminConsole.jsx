@@ -33,11 +33,14 @@ const SECTIONS = [
   { id: 'deployment', label: 'Deployment' },
 ];
 
-export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, showToast }) {
+export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, leaveRef, showToast }) {
   const [active, setActive] = useState('overview');
   // A section that edits reports unsaved changes through onDirtyChange;
   // every completed navigation starts clean.
+  // The Chat tab holds two sections, so each reports separately and the tab is dirty if either is.
   const [dirty, setDirty] = useState(false);
+  const [profileDirty, setProfileDirty] = useState(false);
+  const [defaultsDirty, setDefaultsDirty] = useState(false);
   const [openProjectId, setOpenProjectId] = useState(null);
   const [previewVersion, setPreviewVersion] = useState(0);  // bumped when a chat option changed what the assistant's rules say
 
@@ -56,7 +59,7 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
     return () => { cancelled = true; };
   }, [apiHost, apiPort]);
 
-  const select = (id) => { setActive(id); setDirty(false); };
+  const select = (id) => { setActive(id); setDirty(false); setProfileDirty(false); setDefaultsDirty(false); };
   const sectionLabel = (id) => SECTIONS.find((s) => s.id === id)?.label ?? id;
   const openRef = useRef(null);   // the shell's tab-click path, for Overview's Open links
 
@@ -72,7 +75,7 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
   }
 
   return (
-    <ConsoleShell theme={theme} sections={SECTIONS} active={active} onSelect={select} onBack={onBack} dirty={dirty} openRef={openRef}>
+    <ConsoleShell theme={theme} sections={SECTIONS} active={active} onSelect={select} onBack={onBack} dirty={dirty || profileDirty || defaultsDirty} openRef={openRef} leaveRef={leaveRef}>
       {active === 'overview' && (
         <OverviewSection theme={theme} apiHost={apiHost} apiPort={apiPort} sectionLabel={sectionLabel}
           onOpenSection={(id) => openRef.current(id)} />
@@ -92,13 +95,14 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
       {active === 'chat' && (
         <>
           <AssistantProfileSection theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast}
-            refreshKey={previewVersion} />
+            refreshKey={previewVersion} onDirtyChange={setProfileDirty} />
           <ChatOptionsSection theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast}
             onSaved={() => setPreviewVersion((v) => v + 1)} />
         </>
       )}
       {active === 'defaults' && (
-        <DefaultsSection theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast} />
+        <DefaultsSection theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast}
+          onDirtyChange={setDefaultsDirty} />
       )}
       {active === 'usage' && <UsageSection theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast} />}
       {active === 'deployment' && (

@@ -12,7 +12,7 @@ const SOURCE_LABEL = { admin: 'Set here', file: 'From the deployment file', none
 
 const fmt = (n) => n.toLocaleString('en-US');
 
-export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, refreshKey = 0 }) {
+export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, refreshKey = 0, onDirtyChange }) {
   const [data, setData] = useState(null);       // the server's view; null while loading
   const [draft, setDraft] = useState('');
   const [failed, setFailed] = useState(false);
@@ -68,6 +68,10 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
     }
   };
 
+  // The console asks before a tab switch drops an unsaved draft.
+  const dirty = data !== null && draft !== (data.text || '');
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+
   const sectionTitle = 'text-xs font-bold uppercase tracking-wider text-blue-500';
   const max = data?.maxChars ?? 8000;
 
@@ -115,7 +119,7 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
               </button>
               <button
                 onClick={() => save(draft)}
-                disabled={saving || draft === (data.text || '')}
+                disabled={saving || !dirty}
                 className="min-h-11 md:min-h-0 underline text-blue-500 font-bold disabled:opacity-40 disabled:no-underline"
               >
                 Save

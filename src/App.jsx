@@ -112,6 +112,10 @@ export default function App() {
   const [showHeaderControlsOnMobile, setShowHeaderControlsOnMobile] = usePersistedState('showHeaderControlsOnMobile', false);
   // Reader / Chat top-level view
   const [viewMode, setViewMode] = usePersistedState('viewMode', 'reader');
+  // The admin console sets this while it is mounted. The header's exits (view buttons, Log out) run
+  // through it so a dirty console asks before they unmount it; outside the console it runs them straight.
+  const adminLeaveRef = useRef(null);
+  const leaveAdmin = (run) => (adminLeaveRef.current ? adminLeaveRef.current(run) : run());
   const [selectedModel, setSelectedModel] = usePersistedState('selectedModel', '');
   const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', deploymentDefaults.chatTtsMode);
   const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', deploymentDefaults.chatAutoTts);
@@ -1177,7 +1181,7 @@ export default function App() {
           theme={theme}
           darkMode={darkMode}
           hasDocument={hasDocument}
-          viewMode={viewMode} setViewMode={setViewMode}
+          viewMode={viewMode} setViewMode={(mode) => (mode === 'admin' ? setViewMode(mode) : leaveAdmin(() => setViewMode(mode)))}
           isAdmin={canAdmin}
           canReader={canReader}
           canChat={canChat}
@@ -1208,7 +1212,7 @@ export default function App() {
           onCloseWorkspace={() => { setOwnedWorkspace(null); setWorkspaceEntryPath(null); clearWorkspaceState(); }}
           user={auth.user}
           apiHost={apiHost} apiPort={apiPort}
-          onLogout={auth.logout}
+          onLogout={() => leaveAdmin(auth.logout)}
           narration={{ held: narrationHeld, docName: pdfFileName, currentPage, numPages, pausedForChat }}
           onOpenSettings={openSettings}
           chatPanelOpen={showChatPanel}
@@ -1303,6 +1307,7 @@ export default function App() {
               apiPort={apiPort}
               currentUserId={auth.user.id}
               onBack={() => setViewMode('reader')}
+              leaveRef={adminLeaveRef}
               showToast={showToast}
             />
           )

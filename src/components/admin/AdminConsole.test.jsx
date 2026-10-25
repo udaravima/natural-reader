@@ -420,6 +420,105 @@ describe('AdminConsole — assistant profile', () => {
   });
 });
 
+describe('AdminConsole — unsaved drafts in Chat and Defaults', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const assistant = { text: '', source: 'none', fileConfigured: false, maxChars: 8000, preview: '', warnings: [] };
+  const BUILT_IN = { chatAutoTts: false, chatTtsMode: 'after-complete', think: 'off', selectedVoice: 'af_heart', playbackSpeed: 1 };
+  const defaultsView = { values: { ...BUILT_IN }, builtIn: BUILT_IN, overridden: [], epochs: {},
+    choices: { chatTtsMode: ['streaming', 'after-complete'], think: ['off', 'on', 'low', 'medium', 'high'] } };
+  const routes = (path) => {
+    if (path === '/v1/admin/assistant') return json(200, assistant);
+    if (path === '/v1/admin/chat-options') return json(200, { web_search: 'ask', source: 'default', searxng: true });
+    if (path === '/v1/admin/defaults') return json(200, defaultsView);
+    return undefined;
+  };
+
+  it('asks before a tab switch drops an unsaved assistant profile', async () => {
+    mount({ users: [user()], section: null, extra: routes });
+    openSection('Chat');
+    fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'You are Sam.' } });
+    openSection('Overview');
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Chat.');
+    expect(screen.getByRole('tab', { name: 'Chat' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Discard changes' }));
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('does not ask when the assistant profile is untouched or back to what is saved', async () => {
+    mount({ users: [user()], section: null, extra: routes });
+    openSection('Chat');
+    const box = await screen.findByRole('textbox');
+    fireEvent.change(box, { target: { value: 'x' } });
+    fireEvent.change(box, { target: { value: '' } });
+    await act(async () => {});
+    openSection('Overview');
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('asks before a tab switch drops an unsaved Defaults change', async () => {
+    mount({ users: [user()], section: null, extra: routes });
+    openSection('Defaults for users');
+    fireEvent.click(await screen.findByRole('checkbox', { name: /read replies aloud/i }));
+    openSection('Overview');
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Defaults for users.');
+    expect(screen.getByRole('tab', { name: 'Defaults for users' })).toHaveAttribute('aria-selected', 'true');
+  });
+});
+
+describe('AdminConsole — leaving through the app header', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const deployment = { settings: { timezone: { value: 'UTC', source: 'default', env: 'TZ', fallback: 'UTC', fallback_source: 'default' } }, info: [] };
+  // The app hands the console a ref; the header's view buttons and Log out call leaveRef.current(run).
+  function mountWithLeaveRef() {
+    const leaveRef = { current: null };
+    apiFetch.mockImplementation(async (host, port, path) => {
+      if (path === '/v1/admin/settings/deployment') return json(200, deployment);
+      if (path === '/v1/admin/overview') return json(200, { checks: [] });
+      return json(404, {});
+    });
+    render(<AdminConsole theme={theme} apiHost="" apiPort="" currentUserId="me" onBack={vi.fn()} leaveRef={leaveRef} showToast={vi.fn()} />);
+    return leaveRef;
+  }
+  const dirtyDeployment = async () => {
+    openSection('Deployment');
+    fireEvent.change(await screen.findByLabelText('Timezone'), { target: { value: 'Asia/Colombo' } });
+  };
+
+  it('runs a header exit straight away when nothing is unsaved', async () => {
+    const leaveRef = mountWithLeaveRef();
+    const run = vi.fn();
+    act(() => leaveRef.current(run));
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('asks first when a header exit (a view button or Log out) would drop an unsaved change', async () => {
+    const leaveRef = mountWithLeaveRef();
+    await dirtyDeployment();
+    const run = vi.fn();
+    act(() => leaveRef.current(run));
+    expect(run).not.toHaveBeenCalled();
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Deployment.');
+  });
+
+  it('Keep editing stays; Discard changes then runs the exit', async () => {
+    const leaveRef = mountWithLeaveRef();
+    await dirtyDeployment();
+    const run = vi.fn();
+    act(() => leaveRef.current(run));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Keep editing' }));
+    expect(run).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getByLabelText('Timezone')).toHaveValue('Asia/Colombo');   // the draft is still there
+    act(() => leaveRef.current(run));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Discard changes' }));
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('AdminConsole — chat options', () => {
   beforeEach(() => vi.clearAllMocks());
 

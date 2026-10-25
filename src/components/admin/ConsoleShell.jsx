@@ -12,11 +12,16 @@ import { ArrowLeft, Shield } from 'lucide-react';
  * `openRef.current(id)`, which goes the way a tab click goes. While `dirty` (a section has unsaved edits), leaving
  * through a tab, the picker or Back to reader asks first, inline above the
  * panel; Escape in the console means Keep editing.
+ *
+ * The app's header stays on screen beside the console, so its exits (the view
+ * buttons, Log out) go through `leaveRef` too: the shell sets
+ * `leaveRef.current = (run) => ...`, which calls `run()` when clean and asks
+ * first when dirty (Discard changes then calls it).
  */
-export function ConsoleShell({ theme, sections, active, onSelect, onBack, dirty = false, openRef, children }) {
+export function ConsoleShell({ theme, sections, active, onSelect, onBack, dirty = false, openRef, leaveRef, children }) {
   const rootRef = useRef(null);
   const keepRef = useRef(null);
-  // What the admin tried to do while dirty: { go: 'tab', id } or { go: 'back' }.
+  // What the admin tried to do while dirty: { go: 'tab', id }, { go: 'back' } or { go: 'leave', run }.
   const [pending, setPending] = useState(null);
 
   const activeLabel = sections.find((s) => s.id === active)?.label ?? '';
@@ -48,6 +53,7 @@ export function ConsoleShell({ theme, sections, active, onSelect, onBack, dirty 
     const p = pending;
     setPending(null);
     if (p.go === 'back') { onBack(); return; }
+    if (p.go === 'leave') { p.run(); return; }
     onSelect(p.id);
     navControl(p.id)?.focus();
   };
@@ -65,6 +71,16 @@ export function ConsoleShell({ theme, sections, active, onSelect, onBack, dirty 
   };
   useEffect(() => {
     if (openRef) openRef.current = open;
+  });
+
+  // The header's exits: the same question, then whatever the header meant to do.
+  useEffect(() => {
+    if (!leaveRef) return undefined;
+    leaveRef.current = (run) => {
+      if (dirty) { setPending({ go: 'leave', run }); return; }
+      run();
+    };
+    return () => { leaveRef.current = null; };
   });
 
   const onKeyDown = (e) => {

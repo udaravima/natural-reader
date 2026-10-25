@@ -30,7 +30,7 @@ function shown(name, value) {
   return String(value);
 }
 
-export function DefaultsSection({ theme, apiHost, apiPort, showToast }) {
+export function DefaultsSection({ theme, apiHost, apiPort, showToast, onDirtyChange }) {
   const [data, setData] = useState(null);
   const [draft, setDraft] = useState(null);
   const [failed, setFailed] = useState(false);
@@ -82,6 +82,8 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast }) {
 
   const set = (name, value) => setDraft((d) => ({ ...d, [name]: value }));
   const dirty = data && draft && ORDER.some((n) => draft[n] !== data.values[n]);
+  // The console asks before a tab switch drops an unsaved draft.
+  useEffect(() => { onDirtyChange?.(!!dirty); }, [dirty, onDirtyChange]);
   const control = `min-h-11 md:min-h-0 text-xs p-1 rounded border ${theme.border} ${theme.bg} ${theme.text}`;
 
   const field = (name) => {
