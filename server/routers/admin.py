@@ -5,7 +5,7 @@ import logging
 import os
 import secrets
 import uuid
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from urllib.parse import urlsplit
 
 from datetime import datetime, timezone
@@ -18,8 +18,11 @@ from ..auth.capabilities import KNOWN_CAPABILITIES
 from ..auth.config import load_auth_config
 from ..auth.kc_admin import KCAdminError
 from ..llm.router import get_router
-from ..services import (assistant_profile, chat_options, doc_content, inference_budget, model_router, people,
-                        user_defaults, web_search as web_search_service)
+from ..http_errors import refusal
+from ..services import (assistant_profile, chat_options, console_settings, deployment_info, deployment_settings,
+                        doc_content, inference_budget, model_router, people, user_defaults,
+                        web_search as web_search_service)
+from ..services.console_settings import Section, SettingError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -478,3 +481,54 @@ async def put_chat_options(
     """Save how web search asks; null resets it. Applies from the next chat message."""
     saved = await chat_options.save_chat_options(conn, body.web_search, updated_by=str(principal.user_id))
     return _chat_options_view(saved)
+
+
+# ---------- console settings, one pair of routes for every section (admin console v2 spec §3) ----------
+
+# section key -> (its settings, a function giving the read-only values shown beside them)
+_SECTIONS: dict[str, tuple[Section, Callable[[], list[dict]]]] = {
+    "deployment": (deployment_settings.SECTION, deployment_info.readonly_rows),
+}
+
+
+class SectionChangesIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # {setting: new value}; null resets that setting to the server's own (env or default).
+    changes: dict[str, Any]
+
+
+def _section(key: str) -> tuple[Section, Callable[[], list[dict]]]:
+    if key not in _SECTIONS:
+        raise refusal(404, "unknown_section", "No such settings section.")
+    return _SECTIONS[key]
+
+
+async def _section_view(conn, key: str) -> dict:
+    section, info = _section(key)
+    values = await console_settings.load(conn, section)
+    return {"settings": console_settings.view(section, values), "info": info()}
+
+
+@router.get("/settings/{section}")
+async def get_settings_section(
+    section: str,
+    _: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    return await _section_view(conn, section)
+
+
+@router.put("/settings/{section}")
+async def put_settings_section(
+    section: str,
+    body: SectionChangesIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Save some settings of one section; null resets one. One refused value saves nothing. Applies at once."""
+    spec, _info = _section(section)
+    try:
+        await console_settings.save(conn, spec, body.changes, updated_by=str(principal.user_id))
+    except SettingError as e:
+        raise refusal(422, "invalid_setting", str(e), setting=e.name) from None
+    return await _section_view(conn, section)

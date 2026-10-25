@@ -129,6 +129,17 @@ def _number(env: Mapping[str, str], key: str, cast: Callable, lo, hi):
     return value
 
 
+_MODEL_VARS = ("READER_MODEL", "SUMMARIZE_MODEL", "WEB_SEARCH_SUMMARY_MODEL")
+
+
+def reader_model_source(env: Mapping[str, str]) -> str | None:
+    """The variable that decided the reader model (the first of _MODEL_VARS that is set), None for the default."""
+    for key in _MODEL_VARS:
+        if (env.get(key) or "").strip():
+            return key
+    return None
+
+
 def load_reader_config(env: Mapping[str, str]) -> ReaderConfig:
     d = ReaderConfig(model=DEFAULT_MODEL)
 
@@ -137,11 +148,10 @@ def load_reader_config(env: Mapping[str, str]) -> ReaderConfig:
         return default if value is None else value
 
     model = DEFAULT_MODEL
-    for key in ("READER_MODEL", "SUMMARIZE_MODEL", "WEB_SEARCH_SUMMARY_MODEL"):
-        value = (env.get(key) or "").strip()
-        if value:
-            model = "chat" if value.lower() == "chat" else value
-            break
+    source = reader_model_source(env)
+    if source:
+        value = env[source].strip()
+        model = "chat" if value.lower() == "chat" else value
 
     # READER_TIMEOUT_S, else the older web-search name, else 60 (web search's own default of 30 doesn't apply)
     timeout = None
