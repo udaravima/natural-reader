@@ -19,7 +19,7 @@ from ..auth.config import load_auth_config
 from ..auth.kc_admin import KCAdminError
 from ..llm.router import get_router
 from ..http_errors import refusal
-from ..services import (assistant_profile, chat_options, console_settings, deployment_info, deployment_settings,
+from ..services import (assistant_profile, chat_options, console_overview, console_settings, deployment_info, deployment_settings,
                         doc_content, inference_budget, model_router, people, user_defaults,
                         web_search as web_search_service)
 from ..services.console_settings import Section, SettingError
@@ -312,6 +312,15 @@ async def delete_user(
     for doc_id in doc_ids:
         await doc_content.gc_content_if_orphaned(conn, doc_id, trigger="user_deleted")
     return Response(status_code=204)
+
+
+@router.get("/overview")
+async def overview(
+    _: deps.Principal = Depends(deps.require_admin), conn=Depends(deps.get_conn, scope="function"),
+):
+    """The Overview page's health checks: each part of the deployment, one line, never a hang."""
+    checks = await console_overview.run_checks(conn, get_router())
+    return {"checks": [c.to_json() for c in checks]}
 
 
 @router.get("/inference/config")

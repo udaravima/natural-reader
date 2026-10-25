@@ -41,13 +41,16 @@ def safe_url(url: str) -> str:
     return f"{scheme}{_host(parts.netloc)}{parts.path}"
 
 
-def _searxng_host(url: str) -> str:
-    if not url:
-        return "Not set up"
+def url_host(url: str) -> str:
+    """`host[:port]` of a URL, without user info, or NOT_A_URL when it can't be parsed. Never a 500, never a secret."""
     try:
-        return _host(urlsplit(url).netloc)
+        return _host(urlsplit(url.strip()).netloc)
     except ValueError:
         return NOT_A_URL
+
+
+def _searxng_host(url: str) -> str:
+    return url_host(url) if url else "Not set up"
 
 
 def _set(env: Mapping[str, str], key: str) -> bool:
