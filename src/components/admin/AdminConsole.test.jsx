@@ -55,11 +55,14 @@ function mount({ users, usage = [], config = {}, showToast = vi.fn(), currentUse
   );
 }
 
+const openSection = (name) => fireEvent.click(screen.getByRole('tab', { name }));
+
 const calls = (method) =>
   apiFetch.mock.calls.filter(([, , , opts]) => opts?.method === method);
 const lastBody = (method) => JSON.parse(calls(method).at(-1)[3].body);
 
 describe('AdminConsole — users', () => {
+  // mount() is called inside each test; People is the default section.
   it('sets a per-user project limit, empty meaning the default', async () => {
     mount({ users: [user()] });
     fireEvent.change(await screen.findByLabelText('Project limit for a@x.io'), { target: { value: '5' } });
@@ -215,13 +218,24 @@ describe('AdminConsole — users', () => {
     mount({ users });
     await screen.findByText('b@x.io');
     const projectGets = () => apiFetch.mock.calls.filter(([, , path]) => path.startsWith('/v1/admin/projects')).length;
-    await waitFor(() => expect(projectGets()).toBe(1));
+    expect(projectGets()).toBe(0);
     const row = screen.getByTestId('user-row-u2');
     fireEvent.click(within(row).getByRole('button', { name: /delete/i }));
     expect(within(row).getByText(/permanently deletes their library and chat history\. Projects they belong to stay; any they were the only Owner of become ownerless \(recover them under Projects\)\./)).toBeTruthy();
     fireEvent.change(within(row).getByLabelText(/confirm email/i), { target: { value: 'b@x.io' } });
     fireEvent.click(within(row).getByRole('button', { name: /confirm delete/i }));
-    await waitFor(() => expect(projectGets()).toBe(2));
+    await waitFor(() => expect(calls('DELETE').length).toBe(1));
+    openSection('Projects');
+    await waitFor(() => expect(projectGets()).toBe(1));
+  });
+
+  it('shows one section at a time', async () => {
+    mount({ users: [user()] });
+    await screen.findByText('a@x.io');
+    expect(screen.queryByRole('region', { name: 'Inference usage' })).toBeNull();
+    openSection('Usage');
+    expect(await screen.findByRole('region', { name: 'Inference usage' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Users' })).toBeNull();
   });
 
   it('enrolls a pre-provisioned user and shows the claim instruction', async () => {
@@ -254,12 +268,14 @@ describe('AdminConsole — usage', () => {
       users: [user()],
       usage: [{ email: 'a@x.io', user_id: 'u1', day: '2026-09-17', prompt_tokens: 10, eval_tokens: 5, requests: 2, tokens: 15 }],
     });
+    openSection('Usage');
     expect(await screen.findByText('2026-09-17')).toBeInTheDocument();
     expect(screen.getByText('15')).toBeInTheDocument();
   });
 
   it('shows the empty state and re-fetches when the days selector changes', async () => {
     mount({ users: [user()], usage: [] });
+    openSection('Usage');
     expect(await screen.findByText('No usage recorded yet.')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/usage days/i), { target: { value: '30' } });
     await waitFor(() =>
@@ -279,6 +295,7 @@ describe('AdminConsole — config', () => {
         summarize_model: 'sum', embed_model: 'emb', daily_token_budget: null,
       },
     });
+    openSection('Deployment');
     expect(await screen.findByText('http://ollama:11434')).toBeInTheDocument();
     expect(screen.getByText('all models allowed')).toBeInTheDocument();
     expect(screen.getByText('unlimited (unset)')).toBeInTheDocument();
@@ -289,6 +306,7 @@ describe('AdminConsole — config', () => {
       users: [user()],
       config: { ollama_url: 'http://x:11434', timeout_s: 60, allowed_models: ['llama3.2:3b', 'qwen3.5'], summarize_model: null, embed_model: null, daily_token_budget: 1000 },
     });
+    openSection('Deployment');
     expect(await screen.findByText('llama3.2:3b, qwen3.5')).toBeInTheDocument();
     expect(screen.getByText('1000 tokens/day')).toBeInTheDocument();
   });
@@ -305,6 +323,7 @@ describe('AdminConsole — config', () => {
         ],
       },
     });
+    openSection('Deployment');
     expect(await screen.findByText('local · ollama · gpu.example.com · 1 model')).toBeInTheDocument();
     expect(screen.getByText('cloud · openai · openrouter.example.com · unreachable')).toBeInTheDocument();
   });
@@ -315,6 +334,7 @@ describe('AdminConsole — config', () => {
       config: { ollama_url: 'http://x:11434', timeout_s: 60, allowed_models: null, summarize_model: null,
                 embed_model: null, daily_token_budget: null, providers: [] },
     });
+    openSection('Deployment');
     expect(await screen.findByText('none configured')).toBeInTheDocument();
   });
 });
@@ -324,6 +344,7 @@ describe('AdminConsole — assistant profile', () => {
 
   it('has an Assistant section (v2.4 Task A2)', async () => {
     mount({ users: [user()] });
+    openSection('Chat');
     expect(await screen.findByRole('region', { name: 'Assistant' })).toBeTruthy();
   });
 });
@@ -335,6 +356,7 @@ describe('AdminConsole — chat options', () => {
 
   it('has a Chat options section after the Assistant section', async () => {
     mount({ users: [user()] });
+    openSection('Chat');
     const assistant = await screen.findByRole('region', { name: 'Assistant' });
     const options = await screen.findByRole('region', { name: 'Chat options' });
     expect(assistant.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -356,6 +378,7 @@ describe('AdminConsole — chat options', () => {
         return undefined;
       },
     });
+    openSection('Chat');
     fireEvent.click(await screen.findByText('What the model receives'));
     expect(await screen.findByText('Rules: offer_web_search.')).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('radio', { name: 'Search without asking' }));
