@@ -126,7 +126,7 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
             <p key={w} className="text-xs text-amber-600">{w}</p>
           ))}
           <details className="text-xs">
-            <summary className={`min-h-11 md:min-h-0 flex items-center cursor-pointer ${theme.textMuted}`}>What the model receives</summary>
+            <summary className={`min-h-11 md:min-h-0 cursor-pointer ${theme.textMuted}`}>What the model receives</summary>
             <pre className={`mt-2 whitespace-pre-wrap p-2 rounded border ${theme.border} ${theme.bgSecondary}`}>
               {data.preview}
             </pre>

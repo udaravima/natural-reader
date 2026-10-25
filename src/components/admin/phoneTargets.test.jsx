@@ -50,10 +50,23 @@ const SECTIONS = {
 const hasClass = (el) => el.classList.contains('min-h-11');
 const tappable = (el) => hasClass(el) || hasClass(el.closest('label') ?? document.createElement('i'));
 
+const CONTROLS = 'button, input, select, textarea, summary';
 const unsized = (container) =>
-  [...container.querySelectorAll('button, input, select, textarea, summary')]
+  [...container.querySelectorAll(CONTROLS)]
     .filter((el) => !tappable(el))
     .map((el) => el.getAttribute('aria-label') || el.textContent || el.outerHTML.slice(0, 60));
+
+// The other half: from md up the look stays as it was. Anything sized for a phone gives the size back
+// at md, and a summary keeps its default display (a display utility on it removes the disclosure triangle).
+const DISPLAY = /^(max-\w+:)?(flex|inline-flex|grid|inline-grid|block|inline-block|contents|hidden)$/;
+const desktopChanged = (container) => [
+  ...[...container.querySelectorAll('.min-h-11')]
+    .filter((el) => !el.classList.contains('md:min-h-0'))
+    .map((el) => `min-h-11 without md:min-h-0: ${el.outerHTML.slice(0, 60)}`),
+  ...[...container.querySelectorAll('summary')]
+    .filter((el) => [...el.classList].some((c) => DISPLAY.test(c)))
+    .map((el) => `summary with a display utility: ${el.textContent}`),
+];
 
 describe('Admin console: 44 px tap targets below md', () => {
   beforeEach(() => {
@@ -67,6 +80,7 @@ describe('Admin console: 44 px tap targets below md', () => {
       await screen.findByLabelText(ready);
       expect(container.querySelectorAll('button, input, select, textarea, summary').length).toBeGreaterThan(0);
       expect(unsized(container)).toEqual([]);
+      expect(desktopChanged(container)).toEqual([]);
     });
   }
 
@@ -76,6 +90,7 @@ describe('Admin console: 44 px tap targets below md', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'Delete' })[0]);
     expect(screen.getByLabelText('Confirm email')).toBeTruthy();
     expect(unsized(container)).toEqual([]);
+    expect(desktopChanged(container)).toEqual([]);
   });
 
   it('Defaults: the "Apply to everyone" confirmation too', async () => {
@@ -84,6 +99,7 @@ describe('Admin console: 44 px tap targets below md', () => {
     fireEvent.click(screen.getByRole('button', { name: /apply voice to everyone/i }));
     expect(screen.getByRole('button', { name: 'Replace for everyone' })).toBeTruthy();
     expect(unsized(container)).toEqual([]);
+    expect(desktopChanged(container)).toEqual([]);
   });
 
   it('Projects: the Retry button of a failed load too', async () => {
@@ -91,5 +107,6 @@ describe('Admin console: 44 px tap targets below md', () => {
     const { container } = render(SECTIONS.Projects.ui);
     await screen.findByRole('button', { name: 'Retry' });
     expect(unsized(container)).toEqual([]);
+    expect(desktopChanged(container)).toEqual([]);
   });
 });
