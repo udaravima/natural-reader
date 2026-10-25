@@ -44,6 +44,15 @@ describe('SettingRow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Use the server setting' }));
     expect(onUseServer).toHaveBeenCalledTimes(1);
   });
+
+  it('names a group of controls by the row label, when the row has no single control', () => {
+    render(
+      <SettingRow theme={theme} id="who" label="Who" group source="default" envName="WHO">
+        <div role="group" aria-labelledby="who-label"><input type="radio" aria-label="Everyone" /></div>
+      </SettingRow>,
+    );
+    expect(screen.getByRole('group', { name: 'Who' })).toBeInTheDocument();
+  });
 });
 
 describe('SectionSaveBar', () => {
@@ -71,6 +80,11 @@ describe('SectionSaveBar', () => {
   it('shows Saving… and cannot be clicked again while a save is out', () => {
     bar({ dirty: true, saving: true });
     expect(screen.getByRole('button', { name: 'Saving…' })).toBeDisabled();
+  });
+
+  it('keeps Save off while something on screen is invalid', () => {
+    bar({ dirty: true, canSave: false });
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 
   it('shows the error as an alert', () => {

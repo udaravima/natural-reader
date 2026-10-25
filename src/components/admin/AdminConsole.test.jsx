@@ -294,6 +294,28 @@ describe('AdminConsole — overview', () => {
   });
 });
 
+describe('AdminConsole — documents', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const rule = (env, value) => ({ value, source: 'default', env, fallback: value, fallback_source: 'default' });
+  const documents = { settings: {
+    convert_by: rule('DOCLING_CONVERT_BY', 'readers'),
+    presets: rule('DOCLING_PRESETS', ['fast', 'standard', 'accurate']),
+    ocr: rule('DOCLING_ALLOW_OCR', true),
+    picture_description: rule('DOCLING_ALLOW_PICTURE_DESCRIPTION', true),
+    max_pages: rule('DOCLING_MAX_PAGES', 0),
+  }, info: [] };
+
+  it('asks before leaving Documents with an unsaved limit', async () => {
+    mount({ users: [user()], section: null, extra: (path) => (path === '/v1/admin/settings/documents' ? json(200, documents) : undefined) });
+    openSection('Documents');
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Allow OCR' }));
+    openSection('People');
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Documents.');
+    expect(screen.getByRole('tab', { name: 'Documents' })).toHaveAttribute('aria-selected', 'true');
+  });
+});
+
 describe('AdminConsole — usage', () => {
   beforeEach(() => vi.clearAllMocks());
 

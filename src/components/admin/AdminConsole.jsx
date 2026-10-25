@@ -4,6 +4,7 @@ import { DeploymentSection } from './DeploymentSection';
 import { AssistantProfileSection } from './AssistantProfileSection';
 import { ChatOptionsSection } from './ChatOptionsSection';
 import { DefaultsSection } from './DefaultsSection';
+import { DocumentsSection } from './DocumentsSection';
 import { AdminProjectsSection } from './AdminProjectsSection';
 import { OverviewSection } from './OverviewSection';
 import { PeopleSection } from './PeopleSection';
@@ -83,6 +84,10 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
       {active === 'projects' && (
         <AdminProjectsSection theme={theme} apiHost={apiHost} apiPort={apiPort} currentUserId={currentUserId}
           showToast={showToast} onOpenProject={setOpenProjectId} />
+      )}
+      {active === 'documents' && (
+        <DocumentsSection theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast}
+          onDirtyChange={setDirty} />
       )}
       {active === 'chat' && (
         <>
