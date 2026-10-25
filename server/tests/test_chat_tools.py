@@ -353,7 +353,8 @@ async def test_search_documents_unknown_document_lists_valid_ones(project):
     run = await _search(ctx, {"query": "overview", "documents": [1, "Nope.md"]})
     assert not run.ok
     assert run.result["error"].startswith("Unknown document: Nope.md. Use a number or name from the list: ")
-    assert run.result["error"].endswith("1 Alpha.md, 2 Beta.md, 3 Gamma.md.")
+    # the map's own form: where the number ends and the name begins can't be misread
+    assert run.result["error"].endswith('1. "Alpha.md", 2. "Beta.md", 3. "Gamma.md".')
     assert ctx.shown == set() and ctx.evidence == []                     # nothing was searched
     two = await _search(ctx, {"query": "overview", "documents": [7, "x\ny"]}, "c2")
     assert two.result["error"].startswith("Unknown document: 7, x y. ")
@@ -431,6 +432,20 @@ def test_resolve_documents_returns_found_and_unknown_in_the_order_given():
     assert [d.ref for d in found] == [2, 1, 3]            # "2" and 2.0 name Beta again: once; "2024" is a name
     assert unknown == ["9", "x y", "True"]
     assert scope.resolve_documents(docs, []) == ([], [])
+
+
+def test_resolve_document_takes_the_number_and_name_together():
+    """The map lists `17. "README.md"`; next to names that start with their own number ("10-pbx.md") a model
+    writes "17-README.md". The number and the name must name the SAME document: a number that is another
+    document's, or a name that isn't the numbered one's, is still unknown."""
+    docs = [ScopeDoc(i, doc_search.ReadableDoc(str(i) * 64, n, "indexed"), n, False)
+            for i, n in ((10, "10-pbx.md"), (17, "README.md"), (18, "README.md (2)"))]
+    named = {v: (d.ref if (d := scope.resolve_document(docs, v)) else None)
+             for v in ("17-README.md", '17. "README.md"', "17 readme.md", "17: README.md", "18-README.md (2)",
+                       '"README.md"', "10-pbx.md", "10-10-pbx.md", "18-README.md", "17-pbx.md", "17-", "17x")}
+    assert named == {"17-README.md": 17, '17. "README.md"': 17, "17 readme.md": 17, "17: README.md": 17,
+                     "18-README.md (2)": 18, '"README.md"': 17, "10-pbx.md": 10, "10-10-pbx.md": 10,
+                     "18-README.md": None, "17-pbx.md": None, "17-": None, "17x": None}
 
 
 async def test_search_documents_ignores_documents_in_document_scope(indexed):

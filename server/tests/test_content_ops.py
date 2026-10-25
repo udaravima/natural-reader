@@ -266,3 +266,54 @@ async def test_non_reader_gets_404_on_both_routes(db_conn, harness, store):
 
     assert r1.status_code == 404
     assert r2.status_code == 404
+
+
+async def _progress(db_conn, doc_id):
+    cur = await db_conn.execute("SELECT conversion_progress FROM documents WHERE doc_id = %s", (doc_id,))
+    return (await cur.fetchone())[0]
+
+
+async def test_conversion_progress_is_stored_while_converting_and_cleared_after(
+        db_conn, harness, store, monkeypatch):
+    """Docling reports from its worker thread; the latest report is stored for the Convert button
+    (and GET /v1/docs/{id} returns it), and is gone once the conversion is over."""
+    import asyncio
+    _, as_user = harness
+    owner = await _member(db_conn, "c-prog")
+    path = _write(store, HEX, "pdf", make_pdf(["one", "two"]))
+    await seed.seed_doc(db_conn, HEX, owner.user_id, file_type="pdf", bytes_path=path)
+    seen = []
+
+    async def converting(_path, _options, on_progress=None):
+        for done in (1, 2):
+            await asyncio.to_thread(on_progress, {"phase": "build", "done": done, "total": 2})
+            await asyncio.sleep(0.05)   # the write is the event loop's, not this thread's
+            seen.append(await _progress(db_conn, HEX))
+        return [(1, "# P1"), (2, "# P2")]
+    monkeypatch.setattr(docling_convert, "convert_pdf_to_markdown_pages", converting)
+
+    async with as_user(owner) as client:
+        assert (await client.post(f"/v1/docs/{HEX}/convert", json={})).status_code == 202
+        status = (await client.get(f"/v1/docs/{HEX}")).json()
+    assert seen == [{"phase": "build", "done": 1, "total": 2}, {"phase": "build", "done": 2, "total": 2}]
+    assert await _progress(db_conn, HEX) is None and status["conversion_progress"] is None
+    assert status["conversion_state"] == "converted"
+
+
+async def test_a_failed_conversion_leaves_no_progress(db_conn, harness, store, monkeypatch):
+    import asyncio
+    _, as_user = harness
+    owner = await _member(db_conn, "c-prog2")
+    path = _write(store, HEX, "pdf", make_pdf(["one"]))
+    await seed.seed_doc(db_conn, HEX, owner.user_id, file_type="pdf", bytes_path=path)
+
+    async def failing(_path, _options, on_progress=None):
+        await asyncio.to_thread(on_progress, {"phase": "build", "done": 1, "total": 3})
+        await asyncio.sleep(0.05)
+        raise RuntimeError("docling fell over")
+    monkeypatch.setattr(docling_convert, "convert_pdf_to_markdown_pages", failing)
+
+    async with as_user(owner) as client:
+        assert (await client.post(f"/v1/docs/{HEX}/convert", json={})).status_code == 202
+    assert (await _doc(db_conn, HEX))["conversion_state"] == "conversion_failed"
+    assert await _progress(db_conn, HEX) is None

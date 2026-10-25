@@ -173,7 +173,7 @@ async def _fetch_doc_status(conn, doc_id: str, user_id: str) -> dict[str, Any] |
                    d.state, d.embedding_model, d.embedding_dim, d.error_message,
                    d.created_at, d.updated_at,
                    d.conversion_state, d.conversion_options, d.conversion_error,
-                   d.converted_at, d.bytes_path, {_ENTRY_COLS},
+                   d.converted_at, d.conversion_progress, d.bytes_path, {_ENTRY_COLS},
                    {_doc_projects_sql('d')} AS projects,
                    {doc_versions.versions_in_sql('d')} AS versions_in,
                    COALESCE(c.cnt, 0) AS chunk_count,
@@ -770,6 +770,49 @@ async def search_document(
 
 # ---------- Docling conversion (PDF → Markdown) ----------
 
+class _ConversionProgress:
+    """Stores docling's latest progress report for the Convert button
+    (documents.conversion_progress), which polls GET /v1/docs/{id}: in the
+    database, not in memory, because with WORKERS > 1 the poll can reach
+    another process. Docling reports from its worker thread, so each report
+    is handed to the event loop; only the latest is kept, and one write is in
+    flight at a time, so a fast run of pages never queues up writes. A write
+    lands only while the document is still converting: one that loses the
+    race with the job's final UPDATE changes nothing."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, doc_id: str):
+        self._loop = loop
+        self._doc_id = doc_id
+        self._latest: dict[str, Any] | None = None
+        self._writer: asyncio.Task | None = None
+
+    def __call__(self, progress: dict[str, Any]) -> None:   # docling's thread
+        self._loop.call_soon_threadsafe(self._set, progress)
+
+    def _set(self, progress: dict[str, Any]) -> None:
+        self._latest = progress
+        if self._writer is None or self._writer.done():
+            self._writer = asyncio.create_task(self._drain())
+
+    async def _drain(self) -> None:
+        while self._latest is not None:
+            progress, self._latest = self._latest, None
+            try:
+                async with get_pool().connection() as conn:
+                    await conn.execute(
+                        "UPDATE documents SET conversion_progress = %s "
+                        "WHERE doc_id = %s AND conversion_state = 'converting'",
+                        (Jsonb(progress), self._doc_id))
+            except Exception:   # the button just shows less; the conversion goes on
+                logger.debug("Could not store conversion progress for %s", self._doc_id, exc_info=True)
+
+    async def close(self) -> None:
+        """The conversion is over: drop what hasn't been written, and wait out a write in flight."""
+        self._latest = None
+        if self._writer is not None:
+            await asyncio.gather(self._writer, return_exceptions=True)
+
+
 async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
     """
     Background task: convert the retained PDF for `doc_id` to per-page Markdown,
@@ -782,6 +825,7 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
             logger.warning("Skipping convert job for %s — DB not ready", doc_id)
             return
         pool = get_pool()
+        progress = _ConversionProgress(asyncio.get_running_loop(), doc_id)
         try:
             async with pool.connection() as conn, conn.cursor() as cur:
                 await cur.execute(
@@ -792,8 +836,11 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
             if not row or not row[0]:
                 raise RuntimeError("No retained PDF for this document")
 
-            pages = await docling_convert.convert_pdf_to_markdown_pages(
-                doc_storage.resolve_stored(row[0]), options)
+            try:
+                pages = await docling_convert.convert_pdf_to_markdown_pages(
+                    doc_storage.resolve_stored(row[0]), options, on_progress=progress)
+            finally:
+                await progress.close()
             if not pages:
                 raise RuntimeError("Conversion produced no pages")
 
@@ -817,6 +864,7 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
                     UPDATE documents
                     SET conversion_state = 'converted',
                         conversion_error = NULL,
+                        conversion_progress = NULL,
                         converted_at = now(),
                         state = 'indexing',
                         error_message = NULL,
@@ -838,6 +886,7 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
                         UPDATE documents
                         SET conversion_state = 'conversion_failed',
                             conversion_error = %s,
+                            conversion_progress = NULL,
                             -- set to 'indexing' with 'converted' above; don't
                             -- leave it claiming an embed job that never runs
                             state = CASE WHEN state = 'indexing' THEN 'failed' ELSE state END,
@@ -895,6 +944,7 @@ async def start_convert_job(
             SET conversion_state = 'converting',
                 conversion_options = %s,
                 conversion_error = NULL,
+                conversion_progress = NULL,
                 updated_at = now()
             WHERE doc_id = %s
             """,

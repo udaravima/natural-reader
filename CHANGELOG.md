@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A file opened from a folder can be indexed.** Index on a Markdown or
+  text file opened with **Open folder** used to refuse ("open the file
+  itself with Choose File"). The reader now keeps the file's bytes when it
+  opens it, so Index uploads that file, and it gets its own server copy and
+  chat. A file in "Your Library" with the same name is still never used in
+  its place.
+- **Docling conversion shows its progress.** The Convert button used to say
+  "Converting" until the whole PDF was done. It now shows **Preparing** while
+  Docling loads its models, **Converting 3/40** as pages finish, then
+  **Assembling** and, when pictures are described, **Enriching 2/5**. The
+  server stores Docling's latest report in `documents.conversion_progress`
+  (migration 022) and `GET /v1/docs/{id}` returns it. A conversion Docling
+  fails on now offers **Retry convert** with the reason, as a failed upload
+  did, instead of a plain **Convert**.
+- **Project chat finds a document named with its number.** The project map
+  lists documents as `17. "README.md"`. Next to names that start with their
+  own number (`10-pbx.md`), the model wrote `17-README.md`, and every tool
+  answered "Unknown document" until the turn ran out. A tool now takes the
+  number and the name together, or the name in quotes, as long as both name
+  the same document. Its "Use a number or name from the list" error lists
+  them the way the map does.
+
 ## [2.4.0] - 2026-10-25
 
 **Ask a whole project.** A chat can cover every current document in a

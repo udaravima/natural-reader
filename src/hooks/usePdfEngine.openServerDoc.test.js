@@ -145,4 +145,20 @@ describe('opening a server document', () => {
         act(() => { result.current.loadMarkdownDocument('# From the folder', 'notes.md'); });
         expect(result.current.docInLibrary).toBe(false);
     });
+
+    it('keeps the bytes of a document opened outside the library, so a folder file can be indexed', async () => {
+        const { result } = renderHook(() => usePdfEngine({ scale: 1, setStatus: vi.fn(), setToastMessage: vi.fn() }));
+        const bytes = new TextEncoder().encode('# From the folder').buffer;
+        act(() => { result.current.loadMarkdownDocument('# From the folder', 'notes.md', { bytes }); });
+        expect(result.current.docBytes).toBe(bytes);
+        act(() => { result.current.loadTextDocument('Plain.', 'plain.txt', { bytes }); });
+        expect(result.current.docBytes).toBe(bytes);
+        // a library document's bytes are in the library: none kept here, nor a previous document's
+        await act(async () => { await result.current.processFile(new File(['Picked.'], 'notes.md', { type: 'text/markdown' })); });
+        expect(result.current.docInLibrary).toBe(true);
+        expect(result.current.docBytes).toBe(null);
+        act(() => { result.current.loadMarkdownDocument('# Folder again', 'notes.md', { bytes }); });
+        act(() => { result.current.closeDocument(); });
+        expect(result.current.docBytes).toBe(null);
+    });
 });

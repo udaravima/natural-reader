@@ -21,7 +21,7 @@ import { useDeploymentDefaults } from './hooks/useDeploymentDefaults';
 
 // Utils
 import { apiFetch } from './utils/apiFetch';
-import { getOrComputeDocHash } from './utils/docHash';
+import { openDocHash, readOpenDocBytes } from './utils/docHash';
 import { useWorkspaceRestore } from './hooks/useWorkspaceRestore';
 import { useUserDraft } from './hooks/useUserDraft';
 import { ownedBy, visibleTo } from './lib/visibleTo';
@@ -225,7 +225,7 @@ export default function App() {
   const pdfEngine = usePdfEngine({ scale, setStatus, setToastMessage });
 
   const {
-    pdfDoc, pdfFileName, docLoadId, docInLibrary, fileType, currentPage, setCurrentPage, numPages,
+    pdfDoc, pdfFileName, docLoadId, docInLibrary, docBytes, fileType, currentPage, setCurrentPage, numPages,
     textItems, isLibLoaded, pdfOutline, recentBooks,
     currentSentenceIndex, setCurrentSentenceIndex,
     canvasRef, textLayerRef, fileInputRef, sentenceRefs, playbackIndexRef,
@@ -588,16 +588,12 @@ export default function App() {
   // even big ones waste tokens on a whole dense PDF page.
   const CONTEXT_CHAR_CAP = 8000;
 
-  // Read the file bytes back out of IndexedDB and compute (or look up) its
-  // sha256 hash. Returns null if the doc isn't in the library yet.
-  const ensureDocHash = useCallback(async () => {
-    // A workspace file isn't in the local library: getBook would find a
-    // same-named book and hand back that book's id (v2.2 Task C).
-    if (!pdfFileName || !docInLibrary) return null;
-    const record = await getBook(pdfFileName);
-    if (!record?.data) return null;
-    return getOrComputeDocHash(pdfFileName, record.data);
-  }, [pdfFileName, docInLibrary]);
+  // The open document's bytes — from IndexedDB, or the ones a workspace file
+  // was opened with (utils/docHash) — and their sha256 hash. Null when there
+  // are none (nothing open, or a library book that has gone).
+  const docSource = useMemo(() => ({ fileName: pdfFileName, inLibrary: docInLibrary, bytes: docBytes, getBook }),
+    [pdfFileName, docInLibrary, docBytes]);
+  const ensureDocHash = useCallback(() => openDocHash(docSource), [docSource]);
 
   const handleAskAboutPage = useCallback(async (page) => {
     if (!pdfFileName) return;
@@ -692,10 +688,12 @@ export default function App() {
   const onOpenDoc = useCallback(async (path, { anchor } = {}) => {
     if (!workspace) return;
     try {
-      const text = await workspace.readText(path);
+      // The bytes as well as the text: Index uploads them (the file isn't in the local library).
+      const bytes = await (await workspace.readBlob(path)).arrayBuffer();
+      const text = new TextDecoder().decode(bytes);
       const name = path.split('/').pop();
-      if (isMarkdownPath(path)) loadMarkdownDocument(text, name);
-      else loadTextDocument(text, name);
+      if (isMarkdownPath(path)) loadMarkdownDocument(text, name, { bytes });
+      else loadTextDocument(text, name, { bytes });
       saveWorkspaceState({ rootName: workspace.rootName, handle: workspace.handle || null, lastPath: path });
       if (anchor) {
         setTimeout(() => {
@@ -829,6 +827,7 @@ export default function App() {
             error: data.conversion_error || null,
             options: data.conversion_options || null,
             hasPdf: !!data.has_pdf,
+            progress: data.conversion_progress || null,
           },
         }));
       } catch {
@@ -842,11 +841,6 @@ export default function App() {
 
   const handleIndexDocument = useCallback(async () => {
     if (!pdfFileName) return;
-    if (!docInLibrary) {
-      // A file opened from a folder was never saved locally (v2.2 Task C).
-      showToast('Files opened from a folder can\'t be indexed. Open the file itself with Choose File to index it.', 5000);
-      return;
-    }
     const docId = await ensureDocHash();
     if (!docId) { showToast('Could not read document bytes — re-open the file and try again.', 4000); return; }
     const setIndex = (id, patch) =>
@@ -873,10 +867,10 @@ export default function App() {
     setIndex(docId, { state: 'uploading' });
     let result;
     try {
-      const record = await getBook(pdfFileName);
-      if (!record?.data) throw new Error('File is not in the local library — re-open it and try again.');
+      const data = await readOpenDocBytes(docSource);
+      if (!data) throw new Error('File is not in the local library — re-open it and try again.');
       result = await registerDocument({
-        apiHost, apiPort, file: new Blob([record.data]), fileName: pdfFileName,
+        apiHost, apiPort, file: new Blob([data]), fileName: pdfFileName,
         clientDocId: docId, projectId: docProjectId, tags: parseTagsInput(docTagsText),
       });
     } catch (e) {
@@ -899,7 +893,7 @@ export default function App() {
       return;
     }
     await pollIndexUntilSettled({ apiDocId: serverId, stateKey: docId, apiHost, apiPort, setDocIndexByDocId, showToast });
-  }, [pdfFileName, docInLibrary, ensureDocHash, docIndexByDocId, showToast, apiHost, apiPort, docProjectId, docTagsText, askAboutFiling]);
+  }, [pdfFileName, docSource, ensureDocHash, docIndexByDocId, showToast, apiHost, apiPort, docProjectId, docTagsText, askAboutFiling]);
 
   // ---------- DOCLING CONVERSION ----------
   // Mirror of handleIndexDocument: uploads (registers) the PDF bytes →
@@ -924,10 +918,10 @@ export default function App() {
     // refused — spec §5).
     let result;
     try {
-      const record = await getBook(pdfFileName);
-      if (!record?.data) throw new Error('File is not in the local library — re-open it and try again.');
+      const data = await readOpenDocBytes(docSource);
+      if (!data) throw new Error('File is not in the local library — re-open it and try again.');
       result = await registerDocument({
-        apiHost, apiPort, file: new Blob([record.data], { type: 'application/pdf' }), fileName: pdfFileName,
+        apiHost, apiPort, file: new Blob([data], { type: 'application/pdf' }), fileName: pdfFileName,
         clientDocId: docId, tags: parseTagsInput(docTagsText), linkProject: false,
       });
     } catch (e) {
@@ -982,7 +976,7 @@ export default function App() {
       apiDocId: convertDocId, stateKey: docId, apiHost, apiPort,
       setDocConvertByDocId, setDocIndexByDocId, setDocViewByDocId, showToast,
     });
-  }, [pdfFileName, fileType, ensureDocHash, showToast, apiHost, apiPort, docProjectId, docTagsText, askAboutFiling]);
+  }, [pdfFileName, fileType, docSource, ensureDocHash, showToast, apiHost, apiPort, docProjectId, docTagsText, askAboutFiling]);
 
   const openConvertDialog = useCallback(() => setConvertDialogOpen(true), []);
   const closeConvertDialog = useCallback(() => setConvertDialogOpen(false), []);
@@ -1361,6 +1355,7 @@ export default function App() {
             convertState={currentConvertEntry?.state || 'idle'}
             convertError={currentConvertEntry?.error}
             convertedPageCount={currentConvertEntry?.pageCount}
+            convertProgress={currentConvertEntry?.progress}
             onOpenConvertDialog={fileType === 'pdf' ? openConvertDialog : null}
             onExportMarkdown={handleExportMarkdown}
             onDeleteMarkdown={handleDeleteMarkdown}

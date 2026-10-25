@@ -43,3 +43,21 @@ export function clearDocHashCache() {
     for (const name of cache.keys()) generation.set(name, (generation.get(name) || 0) + 1);
     cache.clear();
 }
+
+// The open document's bytes: from the local library for a library document,
+// else the bytes the reader kept when it opened it (a workspace file, which
+// is never saved locally). Looking a workspace file up in the library by name
+// would find a different book that happens to share it (v2.2 Task C).
+export async function readOpenDocBytes({ fileName, inLibrary, bytes, getBook }) {
+    if (!fileName) return null;
+    if (inLibrary) return (await getBook(fileName))?.data || null;
+    return bytes || null;
+}
+
+// The open document's id. Only a library document's hash is cached by name:
+// the cache is keyed on the name, which a workspace file shares with others.
+export async function openDocHash(source) {
+    const data = await readOpenDocBytes(source);
+    if (!data) return null;
+    return source.inLibrary ? getOrComputeDocHash(source.fileName, data) : sha256Hex(data);
+}

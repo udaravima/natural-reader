@@ -27,7 +27,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -220,9 +220,37 @@ def _doc_to_pages(doc) -> list[tuple[int, str]]:
     return _split_markdown_by_pages(full)
 
 
-def _convert_sync(pdf_path: Path, options: dict, converter) -> list[tuple[int, str]]:
+def _value(x: Any) -> Any:
+    return getattr(x, "value", x)   # docling's kinds and phases are str enums
+
+
+def progress_from_event(event: Any) -> dict[str, Any] | None:
+    """What the Convert button shows for one of docling's progress events
+    (docling.datamodel.progress, docling 2.142+): the phase, and for pages and
+    enrichment items how many of how many are done. Pages may finish out of
+    order, so the count is `completed_pages`, not the page number. None for an
+    event with nothing to show (a document starting or finishing)."""
+    kind = _value(getattr(event, "kind", None))
+    if kind == "phase_started":
+        return {"phase": str(_value(event.phase))}
+    if kind == "page_completed":
+        return {"phase": "build", "done": event.completed_pages, "total": event.total_pages}
+    if kind == "enrichment_progress":
+        return {"phase": "enrich", "done": event.completed_items, "total": event.total_items,
+                "label": str(event.label)}
+    return None
+
+
+def _convert_sync(pdf_path: Path, options: dict, converter,
+                  on_progress: Callable[[dict], None] | None = None) -> list[tuple[int, str]]:
     page_range = options.get("page_range")
     convert_kwargs = {}
+    if on_progress is not None:
+        def report(event):   # docling logs (and survives) a callback that raises
+            progress = progress_from_event(event)
+            if progress is not None:
+                on_progress(progress)
+        convert_kwargs["progress_callback"] = report
     if page_range:
         # docling 2.x accepts page_range=(start, end) on convert(). If the
         # installed version doesn't, we just convert the whole doc.
@@ -231,7 +259,7 @@ def _convert_sync(pdf_path: Path, options: dict, converter) -> list[tuple[int, s
     try:
         result = converter.convert(source=str(pdf_path), **convert_kwargs)
     except TypeError:
-        # page_range not supported on this docling version.
+        # page_range (or progress_callback, before docling 2.142) not supported on this docling version.
         result = converter.convert(source=str(pdf_path))
 
     document = getattr(result, "document", None)
@@ -248,10 +276,13 @@ def _convert_sync(pdf_path: Path, options: dict, converter) -> list[tuple[int, s
 async def convert_pdf_to_markdown_pages(
     pdf_path: Path,
     options: dict | None = None,
+    on_progress: Callable[[dict], None] | None = None,
 ) -> list[tuple[int, str]]:
     """
     Convert a PDF to per-page Markdown. Returns ``[(page_no, markdown), ...]``
     sorted by page. Raises if docling is unavailable or conversion fails.
+    `on_progress` gets each `progress_from_event` dict, called from docling's
+    worker thread, not the event loop.
     """
     if not DOCLING_ENABLED:
         raise RuntimeError("Docling is disabled. Set DOCLING_ENABLED=true to enable.")
@@ -262,4 +293,4 @@ async def convert_pdf_to_markdown_pages(
 
     opts = _normalize_options(options)
     converter = await _get_converter(opts["preset"], opts["ocr"], opts["tables"], opts["images"])
-    return await asyncio.to_thread(_convert_sync, pdf_path, opts, converter)
+    return await asyncio.to_thread(_convert_sync, pdf_path, opts, converter, on_progress)

@@ -4,6 +4,7 @@ document as ref 1. Widening the scope happens here, for every document tool
 at once."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..project_scope import ScopeDoc
@@ -20,9 +21,22 @@ def scope_docs(ctx) -> list[ScopeDoc]:
     return []
 
 
+# A number, then the separator the map or a file name puts after it ("17. ", "17-", "17: "), then the rest.
+_NUMBERED = re.compile(r"(\d+)\s*[-.:)_\s]\s*(.+)", re.S)
+
+
+def _named(scope: list[ScopeDoc], name: str) -> ScopeDoc | None:
+    key = name.strip().strip('"').strip().casefold()
+    return next((d for d in scope if d.name.casefold() == key), None) if key else None
+
+
 def resolve_document(scope: list[ScopeDoc], value: Any) -> ScopeDoc | None:
     """The document a tool argument names: its ref (2, "2"; 2.0 from small
-    models), or its exact name, compared case-insensitively."""
+    models), or its exact name, compared case-insensitively and with or
+    without the map's quotes. Or both together, as the map lists them
+    (`17. "README.md"`): next to names that start with their own number
+    ("10-pbx.md") a model writes "17-README.md". The number and the name must
+    then name the same document; nothing is guessed."""
     ref = None
     if isinstance(value, int) and not isinstance(value, bool):
         ref = value
@@ -35,8 +49,11 @@ def resolve_document(scope: list[ScopeDoc], value: Any) -> ScopeDoc | None:
         if found is not None or not isinstance(value, str):
             return found
     if isinstance(value, str):   # also a name that is all digits ("2024")
-        key = value.strip().casefold()
-        return next((d for d in scope if d.name.casefold() == key), None)
+        found = _named(scope, value)
+        if found is None and (m := _NUMBERED.fullmatch(value.strip())):
+            numbered = _named(scope, m.group(2))
+            found = numbered if numbered is not None and numbered.ref == int(m.group(1)) else None
+        return found
     return None
 
 
@@ -69,7 +86,7 @@ def documents_listing(scope: list[ScopeDoc]) -> list[dict]:
 
 def choices_text(scope: list[ScopeDoc]) -> str:
     """The valid documents, for an error the model can recover from."""
-    return ", ".join(f"{d.ref} {d.name}" for d in scope)
+    return ", ".join(f'{d.ref}. "{d.name}"' for d in scope)   # the map's form (project_map._line)
 
 
 def open_document(scope: list[ScopeDoc]) -> ScopeDoc | None:

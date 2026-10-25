@@ -84,6 +84,7 @@ export async function pollConvertUntilSettled({
                     error: sData.conversion_error || null,
                     options: sData.conversion_options || prev[stateKey]?.options || null,
                     hasPdf: !!sData.has_pdf,
+                    progress: sData.conversion_progress || null,
                 },
             }));
             setDocIndexByDocId((prev) => ({
