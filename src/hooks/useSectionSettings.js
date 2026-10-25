@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../utils/apiFetch';
 
 /**
@@ -37,6 +37,7 @@ export function useSectionSettings(apiHost, apiPort, section) {
   const [drafts, setDrafts] = useState({});     // name -> a value, or USE_SERVER
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const inFlight = useRef(false);   // checked synchronously: `saving` is a render-time value and lags a second call in the same tick
 
   useEffect(() => {
     let cancelled = false;
@@ -91,10 +92,12 @@ export function useSectionSettings(apiHost, apiPort, section) {
   };
 
   const save = async () => {
-    const names = Object.keys(drafts);
-    if (saving) return false;   // one request at a time; the one in flight decides
+    if (inFlight.current) return false;   // one request at a time; the one in flight decides
+    const sent = { ...drafts };           // what this request carries; the admin may keep editing while it is out
+    const names = Object.keys(sent);
     if (!names.length) return true;
-    const changes = Object.fromEntries(names.map((n) => [n, drafts[n] === USE_SERVER ? null : drafts[n]]));
+    const changes = Object.fromEntries(names.map((n) => [n, sent[n] === USE_SERVER ? null : sent[n]]));
+    inFlight.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -109,12 +112,18 @@ export function useSectionSettings(apiHost, apiPort, section) {
       }
       const body = await res.json();
       setLoaded({ key, settings: body.settings, info: body.info ?? [] });
-      setDrafts({});
+      // Drop only what was saved: a name edited again, or first edited, during the request stays drafted.
+      setDrafts((d) => {
+        const next = { ...d };
+        for (const n of names) if (n in next && (next[n] === sent[n] || same(next[n], sent[n]))) delete next[n];
+        return next;
+      });
       return true;
     } catch (e) {
       setError(e.message || 'The request failed.');
       return false;
     } finally {
+      inFlight.current = false;
       setSaving(false);
     }
   };

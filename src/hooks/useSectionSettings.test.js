@@ -95,6 +95,41 @@ describe('useSectionSettings', () => {
     expect(result.current.dirty).toBe(false);
   });
 
+  it('keeps edits made while a save is out, and drops only what was saved unchanged', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const after = view({ a: row({ value: 1, source: 'admin' }), b: row(), c: row({ value: 'x', source: 'admin' }) });
+    const { result } = await ready(
+      view({ a: row({ value: 0 }), b: row(), c: row({ value: 'x', source: 'admin' }) }),
+      async () => { await gate; return json(200, after); },
+    );
+    act(() => { result.current.set('a', 1); result.current.useServer('c'); });
+    let saved;
+    act(() => { saved = result.current.save(); });
+    act(() => { result.current.set('a', 2); result.current.set('b', 'new'); });   // while the PUT is out
+    await act(async () => { release(); await saved; });
+    expect(puts()).toEqual([{ changes: { a: 1, c: null } }]);
+    expect(result.current.dirty).toBe(true);
+    expect([result.current.value('a'), result.current.value('b')]).toEqual([2, 'new']);
+    expect(result.current.source('a')).toBe('admin');
+    // c was saved as sent and is no longer drafted: it reads from the adopted view again
+    expect(result.current.value('c')).toBe('x');
+  });
+
+  it('two save() calls in the same tick send one request', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const { result } = await ready(view({ a: row() }), async () => { await gate; return json(200, view({ a: row({ value: 1, source: 'admin' }) })); });
+    act(() => result.current.set('a', 1));
+    let first;
+    let second;
+    act(() => { first = result.current.save(); second = result.current.save(); });
+    await act(async () => { release(); });
+    expect(await second).toBe(false);
+    expect(await first).toBe(true);
+    expect(puts()).toHaveLength(1);
+  });
+
   it('discard drops the drafts without a request', async () => {
     const { result } = await ready(view({ timezone: row() }));
     act(() => result.current.set('timezone', 'Asia/Tokyo'));
