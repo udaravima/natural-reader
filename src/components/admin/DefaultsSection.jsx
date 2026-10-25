@@ -82,12 +82,16 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast }) {
 
   const set = (name, value) => setDraft((d) => ({ ...d, [name]: value }));
   const dirty = data && draft && ORDER.some((n) => draft[n] !== data.values[n]);
-  const control = `text-xs p-1 rounded border ${theme.border} ${theme.bg} ${theme.text}`;
+  const control = `min-h-11 md:min-h-0 text-xs p-1 rounded border ${theme.border} ${theme.bg} ${theme.text}`;
 
   const field = (name) => {
     const v = draft[name];
     if (name === 'chatAutoTts') {
-      return <input type="checkbox" aria-label={LABELS[name]} checked={!!v} onChange={(e) => set(name, e.target.checked)} />;
+      return (
+        <label className="flex items-center min-h-11 md:min-h-0">
+          <input type="checkbox" aria-label={LABELS[name]} checked={!!v} onChange={(e) => set(name, e.target.checked)} />
+        </label>
+      );
     }
     if (name === 'chatTtsMode' || name === 'think') {
       const labels = name === 'think' ? THINK_LABEL : TTS_MODE_LABEL;
@@ -139,14 +143,14 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast }) {
                     <span className="flex items-center gap-2 text-[10px]">
                       <span className={theme.textSecondary}>Replaces everyone&apos;s own choice with {shown(name, data.values[name])}.</span>
                       <button onClick={() => applyToEveryone(name)} disabled={busy}
-                        className="underline text-red-500 font-bold">Replace for everyone</button>
-                      <button onClick={() => setConfirming(null)} className="underline">Cancel</button>
+                        className="min-h-11 md:min-h-0 underline text-red-500 font-bold">Replace for everyone</button>
+                      <button onClick={() => setConfirming(null)} className="min-h-11 md:min-h-0 underline">Cancel</button>
                     </span>
                   ) : (
                     <button onClick={() => setConfirming(name)} disabled={busy || dirty}
                       title={dirty ? 'Save first: this applies the saved default' : undefined}
                       aria-label={`Apply ${LABELS[name].toLowerCase()} to everyone`}
-                      className="text-[10px] underline text-blue-500 disabled:opacity-40 disabled:no-underline">
+                      className="min-h-11 md:min-h-0 text-[10px] underline text-blue-500 disabled:opacity-40 disabled:no-underline">
                       Apply to everyone
                     </button>
                   )}
@@ -156,7 +160,7 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast }) {
           </ul>
           <div className="flex justify-end">
             <button onClick={save} disabled={busy || !dirty}
-              className="text-xs underline text-blue-500 font-bold disabled:opacity-40 disabled:no-underline">
+              className="min-h-11 md:min-h-0 text-xs underline text-blue-500 font-bold disabled:opacity-40 disabled:no-underline">
               Save
             </button>
           </div>

@@ -120,7 +120,7 @@ export function ChatOptionsSection({ theme, apiHost, apiPort, showToast, onSaved
             <legend className={`text-xs font-bold mb-2 ${theme.text}`}>Web search</legend>
             {MODES.map((m) => (
               <div key={m.id} className="flex flex-col gap-0.5">
-                <label className={`flex items-center gap-2 text-xs ${theme.text} ${locked ? 'opacity-60' : 'cursor-pointer'}`}>
+                <label className={`min-h-11 md:min-h-0 flex items-center gap-2 text-xs ${theme.text} ${locked ? 'opacity-60' : 'cursor-pointer'}`}>
                   <input
                     type="radio" name="chat-web-search" value={m.id}
                     checked={data.web_search === m.id}
@@ -144,7 +144,7 @@ export function ChatOptionsSection({ theme, apiHost, apiPort, showToast, onSaved
               <button
                 onClick={() => put(null, false)}
                 disabled={saving}
-                className="underline text-blue-500 disabled:opacity-40 disabled:no-underline"
+                className="min-h-11 md:min-h-0 underline text-blue-500 disabled:opacity-40 disabled:no-underline"
               >
                 Use the server setting
               </button>

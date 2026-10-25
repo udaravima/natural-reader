@@ -31,7 +31,7 @@ export function UsageSection({ theme, apiHost, apiPort, showToast }) {
           <select
             value={days} onChange={(e) => setDays(Number(e.target.value))}
             aria-label="Usage days"
-            className={`px-2 py-1 text-[10px] rounded border ${theme.border} ${theme.bgSecondary}`}
+            className={`min-h-11 md:min-h-0 px-2 py-1 text-[10px] rounded border ${theme.border} ${theme.bgSecondary}`}
           >
             {DAY_OPTIONS.map((d) => <option key={d} value={d}>last {d} day{d > 1 ? 's' : ''}</option>)}
           </select>

@@ -25,10 +25,10 @@ function BudgetField({ u, theme, onSet }) {
         placeholder="default"
         aria-label={`Budget for ${u.email}`}
         title="empty = default, 0 = unlimited"
-        className={`px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg} w-20`}
+        className={`min-h-11 md:min-h-0 px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg} w-20`}
       />
       <span aria-hidden="true" className={`text-[10px] ${theme.textMuted}`}>tokens/day</span>
-      <button onClick={() => onSet(u, val)} className="text-[10px] underline">Set</button>
+      <button onClick={() => onSet(u, val)} className="min-h-11 md:min-h-0 text-[10px] underline">Set</button>
     </span>
   );
 }
@@ -45,10 +45,10 @@ function ProjectLimitField({ u, theme, onSet }) {
         placeholder="default"
         aria-label={`Project limit for ${u.email}`}
         title="projects this person may create; empty = default, 0 = unlimited"
-        className={`px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg} w-16`}
+        className={`min-h-11 md:min-h-0 px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg} w-16`}
       />
       <span aria-hidden="true" className={`text-[10px] ${theme.textMuted}`}>projects</span>
-      <button onClick={() => onSet(u, val)} aria-label={`Set project limit for ${u.email}`} className="text-[10px] underline">Set</button>
+      <button onClick={() => onSet(u, val)} aria-label={`Set project limit for ${u.email}`} className="min-h-11 md:min-h-0 text-[10px] underline">Set</button>
     </span>
   );
 }
@@ -225,28 +225,28 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
             onChange={(e) => setEnrollEmail(e.target.value)}
             placeholder="email (required)"
             aria-label="Enroll email"
-            className={`px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-w-[180px]`}
+            className={`min-h-11 md:min-h-0 px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-w-[180px]`}
           />
           <input
             type="text" value={enrollName}
             onChange={(e) => setEnrollName(e.target.value)}
             placeholder="display name"
             aria-label="Enroll display name"
-            className={`px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-w-[120px]`}
+            className={`min-h-11 md:min-h-0 px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-w-[120px]`}
           />
           <input type="text" value={enrollUsername} onChange={(e) => setEnrollUsername(e.target.value)}
             placeholder="username" aria-label="Enroll username"
-            className={`px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-w-[100px]`} />
+            className={`min-h-11 md:min-h-0 px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-w-[100px]`} />
           <input type="text" value={enrollFirst} onChange={(e) => setEnrollFirst(e.target.value)}
             placeholder="first name" aria-label="Enroll first name"
-            className={`px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-w-[100px]`} />
+            className={`min-h-11 md:min-h-0 px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-w-[100px]`} />
           <input type="text" value={enrollLast} onChange={(e) => setEnrollLast(e.target.value)}
             placeholder="last name" aria-label="Enroll last name"
-            className={`px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-w-[100px]`} />
+            className={`min-h-11 md:min-h-0 px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-w-[100px]`} />
           <select
             value={enrollStatus} onChange={(e) => setEnrollStatus(e.target.value)}
             aria-label="Enroll status"
-            className={`px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg}`}
+            className={`min-h-11 md:min-h-0 px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg}`}
           >
             <option value="pending">pending</option>
             <option value="active">active</option>
@@ -257,11 +257,11 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
             onChange={(e) => setEnrollBudget(e.target.value)}
             placeholder="budget (default)"
             aria-label="Enroll budget"
-            className={`px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} w-32`}
+            className={`min-h-11 md:min-h-0 px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} w-32`}
           />
           <span className="flex items-center gap-2 text-[10px]">
             {CAPABILITIES.map((cap) => (
-              <label key={cap} className="flex items-center gap-1 cursor-pointer">
+              <label key={cap} className="flex items-center gap-1 cursor-pointer min-h-11 md:min-h-0">
                 <input
                   type="checkbox"
                   checked={enrollCaps[cap]}
@@ -275,7 +275,7 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
           <button
             type="submit"
             disabled={enrolling}
-            className="text-xs underline text-blue-500 flex items-center gap-1 disabled:opacity-60 disabled:no-underline"
+            className="min-h-11 md:min-h-0 text-xs underline text-blue-500 flex items-center gap-1 disabled:opacity-60 disabled:no-underline"
           >
             {enrolling ? (<><Loader2 size={12} className="animate-spin" /> Enrolling…</>) : 'Enroll'}
           </button>
@@ -316,15 +316,15 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
                     u={u} theme={theme} onSet={setProjectLimit}
                   />
                   {u.status !== 'active' && (
-                    <button onClick={() => patchUser(u.id, { status: 'active' })} className="text-[10px] text-green-600 underline">Activate</button>
+                    <button onClick={() => patchUser(u.id, { status: 'active' })} className="min-h-11 md:min-h-0 text-[10px] text-green-600 underline">Activate</button>
                   )}
                   {u.status === 'active' && !isSelf && (
-                    <button onClick={() => patchUser(u.id, { status: 'disabled' })} className="text-[10px] text-red-500 underline">Disable</button>
+                    <button onClick={() => patchUser(u.id, { status: 'disabled' })} className="min-h-11 md:min-h-0 text-[10px] text-red-500 underline">Disable</button>
                   )}
                   {!isSelf && (
                     <button
                       onClick={() => { setDeleteTarget(deleting ? null : u.id); setDeleteTyped(''); }}
-                      className="text-[10px] text-red-500 underline"
+                      className="min-h-11 md:min-h-0 text-[10px] text-red-500 underline"
                     >{deleting ? 'Cancel' : 'Delete'}</button>
                   )}
                 </span>
@@ -339,7 +339,7 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
                   return (
                     <label
                       key={cap}
-                      className={`flex items-center gap-1 ${locked ? 'opacity-50' : 'cursor-pointer'}`}
+                      className={`min-h-11 md:min-h-0 flex items-center gap-1 ${locked ? 'opacity-50' : 'cursor-pointer'}`}
                     >
                       <input
                         type="checkbox"
@@ -363,12 +363,12 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
                     onChange={(e) => setDeleteTyped(e.target.value)}
                     placeholder="type their email to confirm"
                     aria-label="Confirm email"
-                    className={`px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg} w-44`}
+                    className={`min-h-11 md:min-h-0 px-1.5 py-0.5 text-[10px] rounded border ${theme.border} ${theme.bg} w-44`}
                   />
                   <button
                     onClick={() => confirmDelete(u)}
                     disabled={deleteTyped !== u.email}
-                    className="text-red-500 underline disabled:opacity-40 disabled:no-underline"
+                    className="min-h-11 md:min-h-0 text-red-500 underline disabled:opacity-40 disabled:no-underline"
                   >Confirm delete</button>
                 </div>
               )}
