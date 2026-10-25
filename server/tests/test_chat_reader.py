@@ -13,9 +13,9 @@ import pytest
 
 from server.chat import reader
 from server.chat.prompt import fence
-from server.chat.reader import (Fact, Passage, ReaderConfig, ReaderResult, batches, load_reader_config,
+from server.chat.reader import (BatchCall, Fact, Passage, ReaderConfig, ReaderResult, batches, load_reader_config,
                                 normalise, read_batch, read_many, reader_messages, resolve_model, verify)
-from server.llm.types import CallSettings, ProviderError
+from server.llm.types import CallSettings, ProviderError, Usage
 from server.services.inference_limits import InferenceLimits
 
 CFG = ReaderConfig(model="reader-model")
@@ -237,27 +237,36 @@ def test_reader_user_message_has_the_question_the_goal_and_fenced_labelled_passa
 # ---- read_batch ------------------------------------------------------------------------------------------
 
 class FakeRouter:
-    """Stands in for llm.router.Router.complete: replies (or raises) per call, records what it was given."""
+    """Stands in for llm.router.Router.complete: replies (or raises) per call, records what it was given. Like the
+    real one it fills the caller's `received`: `partial` arrives first (before any delay: what a call that times
+    out or fails had produced), then the whole reply and the provider's `usage` (None: it sent no count)."""
 
-    def __init__(self, *replies, delay=0.0):
+    def __init__(self, *replies, delay=0.0, usage=None, partial=""):
         self.replies = list(replies)
         self.delay = delay
+        self.usage = usage
+        self.partial = partial
         self.calls: list[tuple[str, list, CallSettings]] = []
         self.running = 0
         self.peak = 0
 
-    async def complete(self, model_id, messages, settings=CallSettings()):
+    async def complete(self, model_id, messages, settings=CallSettings(), *, received=None):
         self.calls.append((model_id, messages, settings))
         self.running += 1
         self.peak = max(self.peak, self.running)
         try:
+            if received is not None:
+                received.text += self.partial
             delay = self.delay(messages) if callable(self.delay) else self.delay
             if delay:
                 await asyncio.sleep(delay)
             reply = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
             if isinstance(reply, BaseException):
                 raise reply
-            return reply(messages) if callable(reply) else reply
+            text = reply(messages) if callable(reply) else reply
+            if received is not None:
+                received.text, received.usage = text, self.usage
+            return text
         finally:
             self.running -= 1
 
@@ -436,6 +445,106 @@ async def test_read_many_a_router_failure_in_one_batch_leaves_the_others_alone(u
 async def test_read_many_with_nothing_to_read(use_router):
     use_router(FakeRouter(GOOD))
     assert await read_many("q", "n", [], chat_model="m", cfg=CFG) == []
+
+
+# ---- charging each batch (final review I1) ---------------------------------------------------------------
+
+class Charges:
+    """Stands in for the turn's charge (orchestrator._charge_reader): every BatchCall it is handed."""
+
+    def __init__(self, fail=False):
+        self.calls: list[BatchCall] = []
+        self.fail = fail
+
+    async def __call__(self, call):
+        self.calls.append(call)
+        if self.fail:
+            raise RuntimeError("the usage table is gone")
+
+
+async def test_read_many_charges_every_batch_with_the_reader_model_and_the_providers_usage(use_router):
+    """Each batch's call is handed to the charge: the model the reader resolved (READER_MODEL=chat: the turn's
+    model), the messages it sent, the reply, and the provider's own count."""
+    router = use_router(FakeRouter(_echo_label, usage=Usage(700, 40)))
+    charge = Charges()
+    results = await read_many("q", "n", _batches(3), chat_model="ollama:the-chat-model",
+                              cfg=ReaderConfig(model="chat", timeout_s=5), charge=charge)
+    assert all(r.found for r in results)
+    assert len(charge.calls) == 3
+    assert {c.model for c in charge.calls} == {"ollama:the-chat-model"}
+    assert all(c.usage == Usage(700, 40) and c.finished for c in charge.calls)
+    sent = sorted(messages[1].content for _, messages, _ in router.calls)
+    assert sorted(c.messages[1].content for c in charge.calls) == sent
+    assert all(c.messages[0].content == router.calls[0][1][0].content for c in charge.calls)     # the brief too
+    assert sorted(c.output for c in charge.calls) == sorted(_echo_label(m) for _, m, _ in router.calls)
+
+
+async def test_read_many_charges_the_named_reader_model_without_usage_when_the_provider_sends_none(use_router):
+    use_router(FakeRouter(GOOD))
+    charge = Charges()
+    await read_many("q", "n", [[PAGE]], chat_model="ollama:the-chat-model", cfg=CFG, charge=charge)
+    [call] = charge.calls
+    assert (call.model, call.usage, call.output, call.finished) == ("reader-model", None, GOOD, True)
+
+
+async def test_a_timed_out_batch_that_produced_nothing_is_charged_nothing_produced(use_router):
+    """The charge learns the call didn't finish and brought back nothing: the turn's rule (_billable) then charges
+    nothing for it."""
+    use_router(FakeRouter(GOOD, delay=5.0))
+    charge = Charges()
+    [result] = await read_many("q", "n", [[PAGE]], chat_model="m", cfg=ReaderConfig(model="m", timeout_s=0.2),
+                               charge=charge)
+    assert result.error == "timeout"
+    [call] = charge.calls
+    assert (call.output, call.usage, call.finished) == ("", None, False)
+
+
+async def test_a_timed_out_batch_passes_on_what_it_had_produced(use_router):
+    use_router(FakeRouter(GOOD, delay=5.0, partial='{"found": tr'))
+    charge = Charges()
+    await read_many("q", "n", [[PAGE]], chat_model="m", cfg=ReaderConfig(model="m", timeout_s=0.2), charge=charge)
+    [call] = charge.calls
+    assert (call.output, call.usage, call.finished) == ('{"found": tr', None, False)
+
+
+async def test_a_failed_batch_passes_on_what_it_had_produced(use_router):
+    use_router(FakeRouter(RuntimeError("provider went away"), partial="Half a"))
+    charge = Charges()
+    [result] = await read_many("q", "n", [[PAGE]], chat_model="m", cfg=CFG, charge=charge)
+    assert result.error == "provider_error"
+    [call] = charge.calls
+    assert (call.output, call.usage, call.finished) == ("Half a", None, False)
+
+
+async def test_a_reply_that_is_not_json_is_still_a_finished_call(use_router):
+    use_router(FakeRouter("Sorry, I can't.", usage=Usage(300, 5)))
+    charge = Charges()
+    [result] = await read_many("q", "n", [[PAGE]], chat_model="m", cfg=CFG, charge=charge)
+    assert result.error == "invalid_json"
+    assert charge.calls[0].finished and charge.calls[0].usage == Usage(300, 5)
+
+
+async def test_a_turn_stopped_mid_read_still_charges_the_batch_in_flight(use_router):
+    """Stop cancels the read: the batch in flight is handed to the charge with what it had produced, before the
+    cancellation goes on."""
+    use_router(FakeRouter(GOOD, delay=5.0, partial="So far"))
+    charge = Charges()
+    task = asyncio.ensure_future(read_many("q", "n", [[PAGE]], chat_model="m",
+                                           cfg=ReaderConfig(model="m", timeout_s=30), charge=charge))
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    [call] = charge.calls
+    assert (call.output, call.finished) == ("So far", False)
+
+
+async def test_a_charge_that_fails_never_fails_the_read(use_router, caplog):
+    use_router(FakeRouter(GOOD))
+    with caplog.at_level(logging.WARNING, logger="server.chat.reader"):
+        [result] = await read_many("q", "n", [[PAGE]], chat_model="m", cfg=CFG, charge=Charges(fail=True))
+    assert result.found
+    assert "RuntimeError" in caplog.text and "the usage table is gone" not in caplog.text
 
 
 # ---- config ----------------------------------------------------------------------------------------------

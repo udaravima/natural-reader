@@ -133,8 +133,8 @@ def _project_line(project: ProjectScope) -> str:
     line = f'The user is asking about the project "{display_name(project.name)}": {listed} listed in <{PROJECT_TAG}> below.'
     open_doc = next((d for d in project.docs if d.open_in_reader), None)
     if open_doc is not None:
-        # display_name again, as the map does (project_map.py): a no-op on a scope's name, which already went through it.
-        line += f' The user has "{display_name(open_doc.name)}" (number {open_doc.ref}) open in the reader.'
+        # The scope's name as it is, already inert (ScopeDoc): the one the map shows and the scope note saves.
+        line += f' The user has "{open_doc.name}" (number {open_doc.ref}) open in the reader.'
     return line
 
 

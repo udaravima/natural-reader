@@ -150,6 +150,17 @@ describe('remarkCitations — named citations', () => {
         expect(linksIn(run('(Guide.md (2), page 3)', [...names].reverse()))[0].doc).toBe(B);
     });
 
+    it('links the second of two long names that differ only past the cap to its own document (final review M1)', () => {
+        // The server caps a name at 120 characters and numbers a repeat within the cap: "…" then " (2)".
+        const head = 'Annual report of the regional archive on the migration of its collections '.repeat(2).slice(0, 120);
+        const second = `${head.slice(0, 115)}… (2)`;
+        const message = { docContext: { notes: [{ kind: 'scope', documents: [
+            { ref: 1, docId: A, name: `${head}…` }, { ref: 2, docId: B, name: second }] }] } };
+        const { names } = citationDocs(message);
+        expect(linksIn(run(`See (${second}, page 2).`, names))).toEqual([{ text: `(${second}, page 2)`, page: 2, doc: B }]);
+        expect(linksIn(run(`See (${head}…, page 1).`, names))[0].doc).toBe(A);
+    });
+
     it('leaves an unknown name as text, even though "page 7" alone would link', () => {
         const nodes = run('See (Other.md, page 7) and (Guide.md (2), page 4).', NAMES);
         expect(linksIn(nodes)).toEqual([]);

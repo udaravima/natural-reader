@@ -9,12 +9,16 @@ from server.chat import context as ctx_mod
 from server.chat import orchestrator, store
 from server.chat.config import ChatConfig
 from server.chat.context import Prefetch
+from server.chat import reader
+from server.chat.reader import BatchCall
 from server.chat.orchestrator import TurnRequest, run_turn
 from server.chat.tools import TurnTools
+from server.chat.tools import extract_from_documents as ex_tool
 from server.chat.tools import search_documents as sd_tool
 from server.chat.tools import web_search as ws_tool
 from server.services.doc_search import ReadableDoc
-from server.llm.types import (CallSettings, Capabilities, FeatureDropped, Finish, ProviderError,
+from server.services.inference_limits import InferenceLimits
+from server.llm.types import (CallSettings, Capabilities, FeatureDropped, Finish, Message, ProviderError,
                               ProviderTimeout, ProviderUnavailable, ReasoningDelta, TextDelta,
                               ToolCall, ToolCallReady, Usage)
 from server.tests.chat_harness import FakeRouter, assert_fixture, member, reply, shim_pool
@@ -969,6 +973,95 @@ async def test_a_result_dropped_for_the_budget_is_never_a_web_source(conn, web, 
     assert read["output"]["summary_text"] == TurnTools.BUDGET_USED
     assert "data-web-sources" not in types(events)
     assert _notes(await _msg(conn, claim.turn_id)) == []
+
+
+# ---- the reader's model calls are charged to the user (final review I1) ----
+
+def _spy_charges(monkeypatch) -> list:
+    """Every (user_id, BatchCall) the turn hands to its reader charge; the real charge still runs."""
+    seen = []
+    real = orchestrator._charge_reader
+
+    async def spy(user_id, call):
+        seen.append((user_id, call))
+        await real(user_id, call)
+
+    monkeypatch.setattr(orchestrator, "_charge_reader", spy)
+    return seen
+
+
+async def _usage(conn, user_id):
+    return await _one(conn, "SELECT prompt_tokens, eval_tokens, requests FROM inference_usage WHERE user_id=%s",
+                      (user_id,))
+
+
+async def test_a_read_web_pages_turn_charges_its_reader_calls_to_the_user(conn, web, use_router, web_auto, monkeypatch):
+    """Each page read is one reader call: the provider's own count is added to the user's totals for the day,
+    one request each, with the reader model named. The reply's own usage stays the chat model's."""
+    monkeypatch.setenv("READER_MODEL", "reader-model")
+    web.searches["port"] = [hit("a"), hit("b")]
+    web.pages[url("a")] = web.pages[url("b")] = PAGE
+    use_router(by_label({"[web 2]": ("The port is 8080", "set port = 8080")})).usage = Usage(400, 30)
+    charged = _spy_charges(monkeypatch)
+    alice = await member(conn, "alice")
+    events, _ = await _run(conn, FakeRouter(steps=_web_turn_steps("It is 8080 (b.test).")), user=alice,
+                           text="Which port?")
+    assert [(user, call.model, call.usage) for user, call in charged] == [(alice.user_id, "reader-model", Usage(400, 30))] * 2
+    # Chat steps 5+5, 5+5 and 10+3 (three requests); reader 2 × (400+30) (two requests).
+    assert await _usage(conn, alice.user_id) == (20 + 800, 13 + 60, 5)
+    assert events[-1]["usage"] == {"promptTokens": 20, "completionTokens": 13, "estimated": False}
+
+
+async def test_an_extract_from_documents_turn_charges_its_reader_calls_to_the_user(db_conn, monkeypatch, web, use_router):
+    monkeypatch.setenv("READER_MODEL", "reader-model")
+    shim_pool(monkeypatch, db_conn, ex_tool)
+    use_router(by_label({"[1, page 1]": ("Alpha uses ZEPHYR-9 nodes", "ZEPHYR-9 nodes")})).usage = Usage(900, 50)
+    charged = _spy_charges(monkeypatch)
+    steps = [[ToolCallReady(ToolCall("x1", "extract_from_documents", {"documents": [1], "need": "the node type"})),
+              Usage(5, 5), Finish("tool_calls")],
+             reply("Alpha uses ZEPHYR-9 nodes (Alpha.md, page 1).")]
+    events, claim = await _project_turn(db_conn, monkeypatch, FakeRouter(steps=steps))
+    assert next(e for e in events if e["type"] == "tool-output-available")["output"]["summary_text"] == (
+        "Found 1 fact on page 1 of Alpha.md.")
+    [(user, call)] = charged
+    assert (call.model, call.usage, call.finished) == ("reader-model", Usage(900, 50), True)
+    assert await _usage(db_conn, user) == (5 + 10 + 900, 5 + 3 + 50, 3)
+
+
+async def test_reader_usage_counts_toward_the_daily_budget(conn, web, use_router, web_auto):
+    """Budget 100 tokens. The first step spends 10; the read's two reader calls spend 860, and the read runs to the
+    end (no refusal in the middle of a tool). The next step's own check then stops the turn. Without the reader's
+    charge the turn would have spent 20 and gone on."""
+    web.searches["port"] = [hit("a"), hit("b")]
+    web.pages[url("a")] = web.pages[url("b")] = PAGE
+    use_router(by_label({"[web 2]": ("The port is 8080", "set port = 8080")})).usage = Usage(400, 30)
+    alice = await member(conn, "alice")
+    await conn.execute("UPDATE users SET inference_daily_token_budget = 100 WHERE id = %s", (alice.user_id,))
+    router = FakeRouter(steps=_web_turn_steps("It is 8080 (b.test)."))
+    events, claim = await _run(conn, router, user=alice, text="Which port?")
+    read = [e for e in events if e["type"] == "tool-output-available"][1]
+    assert read["output"]["summary_text"].startswith("Found facts on 1 of 2 page(s)")
+    assert (events[-1]["type"], events[-1]["code"]) == ("error", "budget_exhausted")
+    assert len(router.calls) == 2
+    assert await _usage(conn, alice.user_id) == (10 + 800, 10 + 60, 4)
+
+
+SENT = (Message("system", "x" * 400), Message("user", "y" * 401))     # 801 characters: an estimate of 201 tokens
+
+
+@pytest.mark.parametrize("call,row", [
+    # A finished call: the provider's own count, else the chars/4 estimate _record_usage makes for a chat step.
+    (BatchCall("m", SENT, "z" * 10, Usage(500, 20), True), (500, 20, 1)),
+    (BatchCall("m", SENT, "z" * 10, None, True), (201, 3, 1)),
+    # One that failed or timed out: only if it produced something (_billable), the count if one came.
+    (BatchCall("m", SENT, "", None, False), None),
+    (BatchCall("m", SENT, "z" * 5, None, False), (201, 2, 1)),
+    (BatchCall("m", SENT, "", Usage(300, 0), False), (300, 0, 1)),
+])
+async def test_the_reader_charge_follows_the_chat_steps_rule(conn, call, row):
+    alice = await member(conn, "alice")
+    await orchestrator._charge_reader(alice.user_id, call)
+    assert await _usage(conn, alice.user_id) == row
 
 
 async def test_a_project_turn_has_document_sources_then_web_sources(db_conn, monkeypatch, web, use_router):

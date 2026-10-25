@@ -12,6 +12,11 @@ case, typography and whitespace normalised on both sides, and a fact whose
 quote isn't there is dropped. That check is also where a fact gets the exact
 page for its citation: the passage that holds the quote knows its page.
 
+Every batch's model call is charged to the turn's user (final review I1): `read_many` hands each one, however it
+ended, to the `charge` callback the orchestrator wires up (ToolContext.charge, orchestrator._charge_reader), so this
+module never touches the database. The charge records the provider's own token count when it sent one, else the
+chat steps' estimate (characters / 4, rounded up), against the daily budget the next step checks.
+
 Logs carry counts and error types only, never source text or quotes.
 """
 from __future__ import annotations
@@ -25,10 +30,10 @@ import os
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
-from ..llm.router import get_router
-from ..llm.types import CallSettings, Message
+from ..llm.router import Received, get_router
+from ..llm.types import CallSettings, Message, Usage
 from ..services.inference_limits import clamp, get_limits
 from .prompt import fence
 
@@ -78,6 +83,22 @@ class ReaderResult:
     facts: tuple[Fact, ...]
     dropped: int                # facts the model gave that did not verify
     error: str | None           # "timeout" | "invalid_json" | "provider_error" | None
+
+
+@dataclass(frozen=True)
+class BatchCall:
+    """One batch's model call, as the turn's charge sees it."""
+    model: str                     # the model it ran on: the resolved reader model (resolve_model)
+    messages: tuple[Message, ...]  # what was sent: the brief and the passages
+    output: str                    # what came back, text and any reasoning; only what arrived, if it didn't finish
+    usage: Usage | None            # the provider's own count, if it sent one
+    finished: bool                 # False: it failed or timed out, or the turn was stopped while it ran
+
+
+# The turn's charge (ToolContext.charge): records one BatchCall against the turn's user.
+Charge = Callable[[BatchCall], Awaitable[None]]
+# A batch whose call ended with these didn't finish: it is charged only for what it produced (orchestrator._billable).
+_UNFINISHED = ("provider_error", "timeout")
 
 
 @dataclass(frozen=True)
@@ -290,8 +311,9 @@ def _error(kind: str) -> ReaderResult:
 
 
 async def read_batch(question: str, need: str, batch: list[Passage], *, chat_model: str,
-                     cfg: ReaderConfig) -> ReaderResult:
-    """One reader call over one batch. Never raises for a provider or reply problem: that is `error`."""
+                     cfg: ReaderConfig, received: Received | None = None) -> ReaderResult:
+    """One reader call over one batch. Never raises for a provider or reply problem: that is `error`.
+    `received` is filled with what the call brings back as it arrives (llm/router.py), for its charge."""
     model = resolve_model(cfg, chat_model)
     system, user = reader_messages(question, need, batch, cfg.output_chars)
     # The window is set explicitly: a provider's default can be smaller than the batch, which would cut it
@@ -301,7 +323,7 @@ async def read_batch(question: str, need: str, batch: list[Passage], *, chat_mod
     settings = CallSettings(think="off", num_ctx=num_ctx,
                             num_predict=math.ceil(cfg.output_chars / CHARS_PER_OUTPUT_TOKEN))
     try:
-        reply = await get_router().complete(model, [system, user], settings)
+        reply = await get_router().complete(model, [system, user], settings, received=received)
     except Exception as e:  # noqa: BLE001 — a failed batch is a result, not an abort
         # type and status only: a provider's text could echo the prompt, and the prompt is source text
         logger.warning("reader call failed (%s, status %s)", type(e).__name__, getattr(e, "status", None))
@@ -329,20 +351,40 @@ async def read_batch(question: str, need: str, batch: list[Passage], *, chat_mod
     return ReaderResult(bool(facts), tuple(facts), dropped, None)
 
 
+async def _charge(charge: Charge, call: BatchCall) -> None:
+    try:
+        await charge(call)
+    except Exception as e:  # noqa: BLE001 — a billing failure never fails the read (the usage writer fails open too)
+        logger.warning("charging a reader call failed (%s)", type(e).__name__)
+
+
 async def read_many(question: str, need: str, batches: list[list[Passage]], *, chat_model: str,
-                    cfg: ReaderConfig) -> list[ReaderResult]:
+                    cfg: ReaderConfig, charge: Charge | None = None) -> list[ReaderResult]:
     """`read_batch` over every batch, `cfg.max_concurrency` at a time, results in batch order. The timeout
     covers the model call only (it starts once the batch has a slot), so a batch waiting in the queue can't
-    time out before it begins; a batch that does time out is a "timeout" result and the rest carry on."""
+    time out before it begins; a batch that does time out is a "timeout" result and the rest carry on.
+    `charge`: each batch's call is handed to it once the call ends, however it ends (finished, failed, timed out,
+    or cancelled because the turn was stopped), with what it brought back. It only records: it never stops a read."""
     slots = asyncio.Semaphore(cfg.max_concurrency)
+    model = resolve_model(cfg, chat_model)
 
     async def one(batch: list[Passage]) -> ReaderResult:
         async with slots:
+            received = Received()
+            result: ReaderResult | None = None
             try:
-                return await asyncio.wait_for(
-                    read_batch(question, need, batch, chat_model=chat_model, cfg=cfg), cfg.timeout_s)
+                result = await asyncio.wait_for(
+                    read_batch(question, need, batch, chat_model=chat_model, cfg=cfg, received=received),
+                    cfg.timeout_s)
             except asyncio.TimeoutError:
                 logger.warning("reader call timed out after %ss", cfg.timeout_s)
-                return _error("timeout")
+                result = _error("timeout")
+            finally:   # also when the turn is cancelled mid-call: the charge's own write is shielded
+                if charge is not None:
+                    sent = tuple(reader_messages(question, need, batch, cfg.output_chars))
+                    finished = result is not None and result.error not in _UNFINISHED
+                    await _charge(charge, BatchCall(model, sent, received.text + received.reasoning,
+                                                    received.usage, finished))
+            return result
 
     return list(await asyncio.gather(*(one(b) for b in batches)))

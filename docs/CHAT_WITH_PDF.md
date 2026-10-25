@@ -449,7 +449,7 @@ A project (a team's shelf of documents, see [LIBRARY.md](LIBRARY.md)) can be the
   | Tool | Offered when | Use |
   |---|---|---|
   | `search_documents(query, k?, documents?)` | the scope has an indexed document | find *where* something is, by a phrase or a distinctive name, label or number; `documents` narrows it |
-  | `read_document_pages(document, first_page, last_page?)` | same | the exact wording of a short section; `document` is required in a project |
+  | `read_document_pages(document, first_page, last_page?)` | same | the exact wording of a short section; in a project `document` says which, and left out means the document open in the reader if it is one of the project's (otherwise the call is refused) |
   | `extract_from_documents(documents, need, pages?)` | same | go through a lot of text for one goal (every command in order, a list to collect) |
   | `document_outline(document)` | the map was shortened | the full outline of one document |
   | `offer_web_search(query, reason)` | web mode `ask` | propose a web search to the user |

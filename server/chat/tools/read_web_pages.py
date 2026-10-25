@@ -160,7 +160,7 @@ class _ReadWebPages:
                        for p in page_passages(texts[n], entries[n]["query"], need, reader_cfg.input_chars)]
                    for n in numbers if texts[n]}
         results = dict(zip(batches, await read_many(ctx.question, need, list(batches.values()),
-                                                    chat_model=ctx.model, cfg=reader_cfg)))
+                                                    chat_model=ctx.model, cfg=reader_cfg, charge=ctx.charge)))
 
         pages: list[dict[str, Any]] = []
         for n in numbers:

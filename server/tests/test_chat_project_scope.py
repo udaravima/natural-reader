@@ -92,6 +92,41 @@ async def test_duplicate_names_get_a_number(db_conn):
     assert scope.docs[2].doc.doc_id == C
 
 
+async def test_two_long_names_that_differ_after_the_cap_stay_two_documents_everywhere(db_conn):
+    """Final review M1. Two 136-character names that differ only after character 120 are the same once capped,
+    so the second gets " (2)". That name must reach the model whole, in the map and the first line, and be the
+    one the scope note saves: the model cites the name it was shown, and that citation must open document 2."""
+    from server.chat.project_map import build_map
+    from server.chat.prompt import NAME_CAP, system_rules
+    from server.chat.sources import cited_pages
+    alice = await member(db_conn, "alice")
+    pid = await seed.make_project(db_conn, alice.user_id)
+    head = ("Annual report of the regional archive on the migration of its collections " * 2)[:120]
+    assert len(head) == 120 and not head.endswith(" ")
+    first, second = head + "-first-part1.pdf", head + "-second-part.pdf"
+    assert len(first) == len(second) == 136
+    for doc_id, name in ((A1, first), (B, second)):
+        await _doc(db_conn, doc_id, alice, name)
+        await seed.place_doc(db_conn, pid, doc_id, alice.user_id, file_name=name)
+    scope = await load_project_scope(db_conn, alice.user_id, pid, open_doc_id=B)
+    names = [d.name for d in scope.docs]
+    assert names == [head + "…", head[:NAME_CAP - 5].rstrip() + "… (2)"]
+    assert all(len(n) <= NAME_CAP + 1 for n in names)
+
+    lines = build_map(scope, {}, 100_000).text.splitlines()[1:3]
+    shown = [line.split('"')[1] for line in lines]
+    assert shown == names                                                    # the map shows each name whole
+    rules = system_rules(None, [], has_pins=False, has_map=True, project=scope)
+    assert f'The user has "{names[1]}" (number 2) open in the reader.' in rules
+    note = orchestrator._scope_note(scope)
+    assert [d["name"] for d in note["documents"]] == names and [d["docId"] for d in note["documents"]] == [A1, B]
+
+    # The model cites document 2 by the name the map gave it: that is document 2's, not document 1's.
+    cited = cited_pages(f"Details are in ({shown[1]}, page 2).", [d["name"] for d in note["documents"]])
+    assert cited == {names[1]: {2}}
+    assert next(d["docId"] for d in note["documents"] if d["name"] in cited) == B
+
+
 async def test_unindexed_documents_are_listed_not_searchable(db_conn, monkeypatch):
     monkeypatch.setattr(doc_pipeline, "_schedule_rebuild", lambda doc_id: None)
     alice = await member(db_conn, "alice")

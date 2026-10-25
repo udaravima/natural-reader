@@ -307,7 +307,8 @@ class _ExtractFromDocuments:
         failed: list[tuple[int, int]] = []
         if passages:
             groups = batches(passages, reader_cfg.input_chars)
-            results = await read_many(ctx.question, need, groups, chat_model=ctx.model, cfg=reader_cfg)
+            results = await read_many(ctx.question, need, groups, chat_model=ctx.model, cfg=reader_cfg,
+                                      charge=ctx.charge)
             failed = sorted({(p.doc_ref, p.page) for group, res in zip(groups, results) if res.error for p in group})
         else:
             messages.append(NO_TEXT_NOTE)

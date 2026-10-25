@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from ...llm.types import ToolCall, ToolSpec
 from ..config import ChatConfig
 from ..project_scope import ProjectScope
+from ..reader import Charge
 from ...services.doc_outlines import Outline
 from ...services.doc_search import ReadableDoc
 
@@ -54,6 +55,10 @@ class ToolContext:
     # The default is the safe one: nothing leaves the server until a person approves it.
     web_mode: str = "ask"
     web_approved: bool = False
+    # Records each reader call (extract_from_documents, read_web_pages) against the turn's user, so it counts toward
+    # the daily budget and the usage figures (orchestrator._charge_reader wires it; chat/reader.py BatchCall). None:
+    # nothing is recorded (a tool run outside a turn, as in tests).
+    charge: Charge | None = field(default=None, hash=False, compare=False)
 
 
 class Tool(Protocol):

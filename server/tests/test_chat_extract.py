@@ -42,15 +42,20 @@ def facts_json(*facts):
 
 class ScriptedRouter:
     """Stands in for llm.router.Router.complete. `script` gets the reader's user message (the labelled
-    passages) and returns the reply text, or raises; every call is recorded."""
+    passages) and returns the reply text, or raises; every call is recorded. Like the real one it fills the
+    caller's `received` with the reply and `usage`, the provider's own count (None: it sent none)."""
 
-    def __init__(self, script):
+    def __init__(self, script, usage=None):
         self.script = script
+        self.usage = usage
         self.calls: list[tuple[str, list, CallSettings]] = []
 
-    async def complete(self, model_id, messages, settings=CallSettings()):
+    async def complete(self, model_id, messages, settings=CallSettings(), *, received=None):
         self.calls.append((model_id, messages, settings))
-        return self.script(messages[1].content)
+        text = self.script(messages[1].content)
+        if received is not None:
+            received.text, received.usage = text, self.usage
+        return text
 
     def seen(self) -> list[str]:
         """Every page label the reader was given, in the order given, over all calls."""
@@ -607,9 +612,9 @@ async def test_the_turns_model_reaches_the_reader(env, use_router, monkeypatch):
     seen = {}
     real = ex_tool.read_many
 
-    async def spy(question, need, groups, *, chat_model, cfg):
+    async def spy(question, need, groups, *, chat_model, cfg, charge=None):
         seen.update(question=question, need=need, chat_model=chat_model, cfg=cfg)
-        return await real(question, need, groups, chat_model=chat_model, cfg=cfg)
+        return await real(question, need, groups, chat_model=chat_model, cfg=cfg, charge=charge)
 
     monkeypatch.setattr(ex_tool, "read_many", spy)
     ctx = await env.ctx(model="ollama:gemma4:e4b")

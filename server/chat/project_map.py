@@ -14,7 +14,9 @@ routing: pick documents here, sections from the outlines, then read.
 
 Everything a document or a user wrote (names, headings, openings, the
 project's name) goes through `display_name`, one inert line, so none of it can
-close the tag or speak as us; the data rule names the tag (prompt.py).
+close the tag or speak as us; the data rule names the tag (prompt.py). A
+document's name already did, in the scope (ScopeDoc), and is shown as it is:
+applying display_name again would cut off a long name's " (2)".
 
 Only an INDEXED document's outline and opening are shown. The revert route
 deletes a document's chunks but leaves its `doc_outlines` row, so a stale
@@ -91,7 +93,8 @@ def _outline_items(outline: Outline, step: _Step) -> list[str]:
 
 
 def _line(d: ScopeDoc, outline: Outline | None, step: _Step) -> str:
-    head = f'{d.ref}. "{display_name(d.name)}"'
+    # The scope's name as it is, already inert: the name the scope note saves and citations are matched against.
+    head = f'{d.ref}. "{d.name}"'
     open_mark = " — open in the reader" if d.open_in_reader else ""
     state = d.doc.state
     if state != INDEXED:

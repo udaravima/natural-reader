@@ -80,6 +80,12 @@ open the Chat view instead (the narration carries on there too).
 header says **Paused for the chat reply**. Press **Read** (or the play button)
 to carry on; that also stops the reply's read-aloud.
 
+**Read Selection.** Select text in the reader and **Read Selection** reads it
+aloud (**Ask AI** beside it sends it to the chat). The two buttons don't show
+in the Chat view, where they covered the Send button: to hear a reply, use the
+reply's own **Read aloud** button. A selection still being read when you
+switch to Chat keeps its **Stop** at the top of the view.
+
 ## Profile: your picture, password and signed-in browsers
 
 Open **Profile** from the profile menu (or the Profile tab in Settings).
@@ -454,7 +460,8 @@ all on a slow model.
 - When the project's documents don't cover part of your question, the
   assistant says so. It may add what it knows in general, introduced as not
   from the documents and never with a page. If it needs current or outside
-  facts, it offers a web search instead of guessing; see the next section.
+  facts, it may offer a web search; see the next section, which also says what
+  to do when it doesn't.
 
 **Chats in the sidebar.** A project chat shows the project's name in blue under
 its title in the chat list, and opens with the same project on any device.
@@ -481,6 +488,14 @@ under its reply:
 > *the assistant's reason*  
 > [ the search it proposes ]  
 > **Search the web** · **Not now**
+
+**The card doesn't always come, most of all in a project chat.** The assistant
+may answer from the documents and what it knows in general, say what the
+documents don't cover, and stop there without offering. If you want the web
+then, type **search the web for** and what you want, such as "search the web
+for RHEL 9 packages for Python 3.13". The card comes back with a query; the
+assistant may word it differently from what you typed, and you can edit it
+before you press **Search the web**.
 
 - **The search box is yours to edit.** Change the words, up to 300 characters,
   and what you see is exactly what is searched. Press **Search the web** or
@@ -516,7 +531,9 @@ while you chat.
 A reply you stop partway through, or one that fails, still counts against
 this budget — using the token count the provider reported, or an estimate
 based on how much text was generated if it didn't report one. Stopping early
-doesn't refund the tokens already spent.
+doesn't refund the tokens already spent. The reading the assistant hands to
+its separate reader, going through many pages of a project or reading web
+pages, counts too.
 
 When you run out:
 

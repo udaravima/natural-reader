@@ -63,7 +63,9 @@ All notable changes to this project will be documented in this file.
   `CHAT_EXTRACT_MAX_PAGES` pages a call (the closest to the goal when there are
   more) and lists what it didn't read. It also reads the web pages the
   assistant picks. Set `READER_MODEL=chat` on a CPU-only Ollama so no second
-  model is loaded.
+  model is loaded. Its model calls count toward the person's daily token
+  budget and show in the admin's usage figures, using the provider's token
+  counts, or an estimate (characters ÷ 4) when it reports none.
 - **Web search asks first.** By default the assistant can only offer a web
   search: a card, **Search the web?**, shows its reason and the query in an
   editable box, with **Search the web** and **Not now**. Yes runs exactly the
@@ -125,6 +127,9 @@ All notable changes to this project will be documented in this file.
 - **Search matches part of a query.** When no passage has every word, passages
   with at least half of the query's informative words rank (document chats
   too).
+- **Read Selection and Ask AI no longer float over the Chat view,** where they
+  covered the Send button. To hear a reply, use its own **Read aloud** button.
+  A selection already being read keeps its **Stop**, at the top of the view.
 
 ### Fixed
 

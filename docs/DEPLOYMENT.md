@@ -536,6 +536,18 @@ slow; on a CPU the batches run one after another whatever
 is a large or paid one: every batch is a full model call, and a small model is
 cheaper and faster for it.
 
+**Reader calls count toward the daily budget and show in usage.** Each batch
+is recorded against the person who asked, in the same daily totals as their
+chat replies (the per-user daily token budget and the admin console's usage
+figures), as one request. The figures are **measured** when the provider
+reports token counts, which Ollama and OpenAI-compatible providers do, and
+**estimated** otherwise: characters sent ÷ 4 and characters returned ÷ 4,
+rounded up, the same estimate a chat reply gets. A batch that fails or times
+out counts only if it produced something. A person who runs out mid-read
+isn't cut off half-way through the tool: the assistant's next step is refused,
+as for any reply. The usage figures don't say which model a batch ran on; the
+server log's `reader usage` line does.
+
 A project question can be silent for a while when the reader is working. The
 server's 15-second keep-alive (see [Streaming through a
 proxy](#streaming-through-a-proxy)) is what keeps a proxy from closing the
@@ -560,7 +572,7 @@ stream.
 |---|---|
 | `ask` (default) | Only `offer_web_search`: it proposes a short query and a reason; if it has written no answer yet it gets one more step, with no tools, to write what the documents say and don't (and what it knows in general, labelled), and then the turn ends and the person sees that text and a card with the query in an editable box, **Search the web** and **Not now**. **Search the web** runs exactly the query on the card, for the next message only; the assistant may then read 1-3 of those results, or offer a different search (which needs its own yes). The web search tool is not offered, so the rule is enforced in code, not asked of the model. |
 | `auto` | The assistant searches the web itself and reads the pages it picks. |
-| `off` | No web tool at all. |
+| `off` | No web tool at all, and `POST /v1/tools/web_search` answers 403 "Web search is off on this server." without searching. |
 
 Which setting applies, first match wins: the admin's choice in **Admin console
 → Chat options → Web search**; then `CHAT_WEB_SEARCH`; then `ask`. The
@@ -578,7 +590,8 @@ again on the server.
   used to fetch each page and return `{title, url, summary, source}`. It now
   returns the search results only: `{title, url, site, snippet}`, with no
   page fetch and no model call. A caller that read `summary` needs to read
-  `snippet`, or fetch the page itself.
+  `snippet`, or fetch the page itself. When the web search mode is `off` it
+  refuses with 403; `ask` and `auto` don't affect it (the caller chose the query).
 - `GET /v1/admin/chat-options` returns `{web_search, source, searxng}`
   (`source` is `admin`, `env` or `default`; `searxng` is false when
   `SEARXNG_URL` is empty). `PUT` takes `{"web_search": "ask" | "auto" | "off" | null}`;

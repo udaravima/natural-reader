@@ -16,6 +16,7 @@ task is being torn down (spec §5.4).
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import math
@@ -41,6 +42,7 @@ from .context import TurnInput, build_context
 from .project_map import ProjectMap, build_map
 from .project_scope import ProjectScope, load_project_scope
 from .prompt import document_tools_offered
+from .reader import BatchCall
 from .sources import answer_sources, sources_by_document, web_sources
 from .store import TurnClaim, title_from_prompt
 from .tools import ToolContext, ToolRun, TurnTools, available_tools, result_text
@@ -277,7 +279,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         project_map, outlines = await _project_map(project, cfg, tools_on) if project else (None, {})
         tool_ctx = ToolContext(req.user_id, doc, cfg=cfg, project=project, question=req.text,
                                map_shortened=bool(project_map and project_map.shortened), outlines=outlines,
-                               model=req.model_id, web_mode=options.web_search, web_approved=bool(web_query))
+                               model=req.model_id, web_mode=options.web_search, web_approved=bool(web_query),
+                               charge=functools.partial(_charge_reader, req.user_id))
         offered = [] if caps.tools is False else available_tools(tool_ctx)
         app_exchange = ()
         if web_query and tools_on and search_possible():
@@ -771,6 +774,20 @@ def _billable(usage: Usage | None, output: str) -> bool:
     chunk, or it produced output (text or reasoning). One that refused before generating anything (e.g. HTTP 400 on
     an invalid model) leaves nothing to charge. The one rule for _finalize and for the answer step after an offer."""
     return usage is not None or bool(output)
+
+
+async def _charge_reader(user_id: str, call: BatchCall) -> None:
+    """One reader call (chat/reader.py: extract_from_documents, read_web_pages) recorded against the turn's user by
+    the same writer as a chat step, so the next step's budget check counts it and the admin's usage page shows it:
+    the provider's own count when it sent one, else the chars/4 estimate (`_record_usage`). A call that failed or
+    timed out is charged only if it produced something, by the rule of a step cut short (`_billable`). It only adds
+    to the day's totals: it refuses nothing (the next step's check does), and it is not part of the reply's own
+    usage, which is the chat model's. The usage table has no model column: the log line names the reader model."""
+    if not call.finished and not _billable(call.usage, call.output):
+        return
+    usage = await asyncio.shield(_record_usage(user_id, call.usage, list(call.messages), call.output))
+    logger.info("reader usage user=%s model=%s tokens=%d+%d estimated=%s", user_id, call.model,
+                usage.prompt_tokens, usage.completion_tokens, usage.estimated)
 
 
 async def _record_usage(user_id: str, usage: Usage | None, messages: list[Message], output: str) -> Usage:

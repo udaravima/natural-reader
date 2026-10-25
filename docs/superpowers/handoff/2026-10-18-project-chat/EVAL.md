@@ -2022,3 +2022,53 @@ the swap, with no embedding. It is not the upgrade cost; the table above is.
 - Not measured: a project of many documents (the rebuild is serial, one gate for the whole process, so N documents queue; time
   scales with the changed chunks, roughly 0.1 s each here), rebuilds started from several users at once, and a GPU or a hosted
   embedding model. Also not measured: the answer quality of a turn that arrives mid-rebuild.
+
+## After the final review (I2, cloud reader)
+
+**I2 was reverted by the revert rule.** I2 gave `search_documents` and `read_document_pages` a project wording in a project chat ("Search the project's documents.", "Read whole pages of one of the project's documents", and `document`: "Leave it out only to mean the document open in the reader, if that is one of the project's documents"), with document-scope specs byte-identical. Measured against "Final (cloud, cloud reader)", two variant-9 cases lost three passes each, which is beyond the rule's noise (a drop of 1 of 3), so the code and its tests were taken out again. A same-day control run with I2 reverted then showed the same two drops, so they look like the cloud model's day-to-day variation rather than I2. That is for the controller to weigh: the patch is kept outside the repository (`.superpowers/sdd/2026-10-18-project-chat/final-fix-i2-reverted.patch`).
+
+- Date: 2026-10-25. Code: `7f5b0c3` plus this fix round's uncommitted changes (I1, M1, M3 code; I1 charges the reader's calls to the eval user, and the budget is unlimited, so nothing was refused). Model `ollama:gemma4:31b-cloud`, thinking off, web mode `ask`, scratch database `natural_reader_eval` on a fresh throwaway Postgres.
+- Commands as briefed: `SUMMARIZE_MODEL=gemma4:31b-cloud DATABASE_URL=...5434/natural_reader_eval scripts/eval_project_qa.py --model ollama:gemma4:31b-cloud --variant 9 --repeat 3 --web-fixture`, then `--variant 50 --repeat 3`, both with `--show-answers`. A wrapper outside the repository added two logs: the orchestrator's `reader usage` lines, and one line per tool call saying whether a document tool named its document and what error it returned.
+- **The reader was the cloud model.** A pre-flight `read_batch` in the same environment resolved to `gemma4:31b-cloud` and verified a fact. In the runs, every reader call (3 per variant-9 run, the `web-read` turns; none in variant 50) logged `model=gemma4:31b-cloud` with measured, not estimated, tokens. `ollama ps`, sampled every 15 s through all four runs (42 samples), never showed anything but `nomic-embed-text:latest`: no `llama3.2`, and no local chat model.
+- No provider error in any run, so no re-run.
+
+**Passes per case (of 3).** "Shipped" is "Final (cloud, cloud reader)"; "control" is the same day, I2 reverted.
+
+| case | v9 shipped | v9 I2 | v9 control | v50 shipped | v50 I2 | v50 control |
+|---|---|---|---|---|---|---|
+| features | 0 | 0 | 0 | 0 | 0 | 1 |
+| deploy-and-test | 3 | 3 | 3 | 3 | 3 | 3 |
+| start-command | 3 | 3 | 2 | 3 | 3 | 3 |
+| quickstart-command | 3 | 3 | 3 | 3 | 2 | 3 |
+| test-command | 3 | 3 | 3 | 3 | 3 | 3 |
+| session-lifetimes | 3 | 3 | 3 | 3 | 3 | 3 |
+| oidc-issuer | 3 | 3 | 3 | 3 | 3 | 3 |
+| user-guide-pins | 3 | 3 | 3 | 3 | 3 | 3 |
+| deployment-uploads | 3 | **0** | 1 | 3 | 3 | 3 |
+| next-work | 2 | 2 | 3 | 0 | 0 | 0 |
+| changelog-unreleased | 3 | 3 | 3 | 3 | 3 | 3 |
+| rhel-packages | 3 | **0** | 0 | 0 | 0 | 1 |
+| ollama-release | 3 | 3 | 3 | 3 | 3 | 3 |
+| web-read | 3 | 3 | 3 | — | — | — |
+| features-50 | — | — | — | 1 | 0 | 0 |
+| start-command-50 | — | — | — | 3 | 3 | 3 |
+| **total** | **38/42** | **32/42** | **33/42** | **34/45** | **32/45** | **35/45** |
+
+- **`deployment-uploads` (v9).** Every failing run, with I2 and in the control alike, read DEPLOYMENT.md pages 3-4 first, searched, read again, and reported the 1 MB cause and the 413 without the fix (`client_max_body_size 100m`), saying the fix wasn't in what it read. The same tool pattern failing in the control is why this looks like drift, not the wording.
+- **`rhel-packages` (v9).** All six answers (I2 and control) opened "The documents do not list…", which the eval's refusal check doesn't accept (the known `_REFUSAL` "list" gap, user's decision). Read by hand, they say what the documents lack and give the documents' own requirements.
+- **I2 against the control:** variant 9 32 against 33, variant 50 32 against 35. No case differs by more than one pass except the RHEL card below. That is within run-to-run noise as this file has measured it (at least two passes), but it is not a gain.
+
+**The §2 targets**
+
+| target | shipped | I2 | control |
+|---|---|---|---|
+| ≥ 90% right-document citations | v9 29/33 = 87.9%; v50 32/39 = 82.1% | v9 30/33 = 90.9%; v50 31/39 = 79.5% | v9 30/33 = 90.9%; v50 31/39 = 79.5% |
+| the exact command on the code case | 18/18 | 17/18 (v50 `quickstart-command` 2/3) | 17/18 (v9 `start-command` 2/3) |
+| 0 unapproved web calls | 0 of 87 | 0 of 87 (6 calls, all in the 3 approved `web-read` turns) | 0 of 87 (the same 6) |
+| 0 invented pages on gap cases | 1 of 6 | 1 of 6 (v50 run 1: "cited pages [1] for the part they don't cover") | 0 of 6 |
+
+**Features:** 1 turn of 9 shipped, 0 of 9 with I2, 1 of 9 in the control (v50 `features`). Each failing turn cites one or two documents where three are needed, as before.
+
+**The RHEL shape (text and card):** shipped 4 of 6 (v9 3/3, v50 1/3); I2 2 of 6 (v9 2/3, v50 0/3); control 4 of 6 (v9 3/3, v50 1/3: its first offer was refused, "reason is too long (509 characters)", and the second went through). Two fewer cards with I2 in six runs each is noise-sized, and in the wrong direction.
+
+**Tool rounds lost to a missing `document`:** none in any run. `read_document_pages` was called 62 times with I2 and 55 times in the control, and every call named its document; no document tool returned an error. The eval opens no document and its model always named one, so it never reaches the path I2 was for (walk observation 6d); this measurement could show harm from I2, not a benefit.
