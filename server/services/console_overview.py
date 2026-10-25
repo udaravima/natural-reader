@@ -18,7 +18,6 @@ import importlib.util
 import json
 import math
 import os
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, Mapping
@@ -114,24 +113,31 @@ async def _reader(llm, env: Mapping[str, str]) -> Check:
     return _check("reader", "ok", f"{name}, from {var}.")
 
 
-_DIM_MISMATCH = re.compile(r"model returned (\d+)")
-
-
-async def _embeddings(env: Mapping[str, str], stale: int) -> Check:
+async def _embeddings(http: httpx.AsyncClient, env: Mapping[str, str], stale: int) -> Check:
     cfg = model_router.load_inference_config(env)
     model, host = cfg.embed_model, url_host(cfg.ollama_url)
     dim = embeddings.EMBEDDING_DIM
+    # The probe makes its own single request to the endpoint embed_one uses, with the same body, instead of
+    # calling embed_one: that one waits on the shared indexing semaphore, so right after an upload a healthy
+    # model would read as "didn't answer". No `dimensions` is asked for: the length that comes back is the
+    # model's own.
     try:
-        # No `dimensions` asked for: the length that comes back is the model's own.
-        got = len(await embeddings.embed_one(EMBEDDING_PROBE))
-    except httpx.HTTPError:
+        resp = await http.post(f"{cfg.ollama_url}/api/embeddings",
+                               json={"model": model, "prompt": EMBEDDING_PROBE})
+        resp.raise_for_status()
+        vec = resp.json().get("embedding")
+    except httpx.HTTPStatusError as e:   # reachable, but refusing: a model that was never pulled is a 404
+        return _check("embeddings", "error", f"{model} at {host} answered HTTP {e.response.status_code}: "
+                                             "documents can't be indexed or searched.")
+    except (httpx.HTTPError, httpx.InvalidURL):
         return _check("embeddings", "error", f"Can't reach the embedding model {model} at {host}: "
                                              "documents can't be indexed or searched.")
-    except ValueError as e:   # embed_one's own refusal of a wrong width carries the count
-        found = _DIM_MISMATCH.search(str(e))
-        if not found:
-            raise
-        got = int(found.group(1))
+    except (ValueError, AttributeError):   # an answer that isn't JSON, or isn't an object
+        vec = None
+    if not isinstance(vec, list) or not vec:
+        return _check("embeddings", "error", f"{model} at {host} answered, but returned no embedding: "
+                                             "documents can't be indexed or searched.")
+    got = len(vec)
     if got != dim:
         return _check("embeddings", "error", f"{model} returned {got} dimensions; the database holds {dim}.")
     summary = f"{model} at {host}: {dim} dimensions."
@@ -264,7 +270,7 @@ async def run_checks(conn, llm, env: Mapping[str, str] = os.environ,
             _bounded("providers", lambda: _providers(llm)),
             _bounded("reader", lambda: _reader(llm, env)),
             _bounded("context", lambda: _context(llm, env, web_mode, profile)),
-            _bounded("embeddings", lambda: _embeddings(env, stale)),
+            _bounded("embeddings", lambda: _embeddings(client, env, stale)),
             _bounded("docling", _docling),
             _bounded("web_search", lambda: _web_search(client, web_mode)),
         ))

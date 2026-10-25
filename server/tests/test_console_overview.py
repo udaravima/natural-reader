@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 import time
 
 import httpx
@@ -64,8 +65,16 @@ def _router():
     return _Router(_Provider("local"))
 
 
-def _searxng(status=200):
+def _embedding(width=768):
+    return lambda request: httpx.Response(200, json={"embedding": [0.1] * width})
+
+
+def _searxng(status=200, embed=None):
+    """One client for both network checks: /healthz answers SearXNG's, /api/embeddings the embedding probe's
+    (a healthy 768-wide model unless `embed` says otherwise)."""
     def handler(request):
+        if request.url.path == "/api/embeddings":
+            return (embed or _embedding())(request)
         assert request.url.path == "/healthz"
         return httpx.Response(status)
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -75,11 +84,15 @@ def _searxng_ok():
     return _searxng(200)
 
 
+def _with_embed(embed):
+    return _searxng(200, embed)
+
+
 @pytest.fixture(autouse=True)
 def _defaults(monkeypatch):
-    async def fine(_text):
-        return [0.1] * 768
-    monkeypatch.setattr(embeddings, "embed_one", fine)
+    async def not_this(_text):   # the probe makes its own request: embed_one waits on the indexing semaphore
+        raise AssertionError("the embedding check must not go through embed_one")
+    monkeypatch.setattr(embeddings, "embed_one", not_this)
     monkeypatch.setattr(web_search, "SEARXNG_URL", "http://searx.example.com:8080")
 
 
@@ -90,11 +103,10 @@ async def _by_id(db_conn, llm, env=None, http=None):
 async def test_a_check_that_hangs_reports_itself_and_the_others_still_answer(db_conn, monkeypatch):   # Review Focus 1
     monkeypatch.setattr(console_overview, "CHECK_TIMEOUT_S", 0.2)
 
-    async def never(_text):
+    async def never(_request):
         await asyncio.sleep(10)
-    monkeypatch.setattr(embeddings, "embed_one", never)
     started = time.monotonic()
-    checks = {c.id: c for c in await run_checks(db_conn, _router(), {}, http=_searxng_ok())}
+    checks = {c.id: c for c in await run_checks(db_conn, _router(), {}, http=_with_embed(never))}
     assert time.monotonic() - started < 2
     assert checks["embeddings"].state == "error"
     assert checks["embeddings"].summary.startswith("Didn't answer within")
@@ -104,10 +116,9 @@ async def test_a_check_that_hangs_reports_itself_and_the_others_still_answer(db_
 
 
 async def test_a_check_that_raises_says_which_kind_of_failure(db_conn, monkeypatch):
-    async def boom(_text):
+    def boom(_request):
         raise KeyError("x")
-    monkeypatch.setattr(embeddings, "embed_one", boom)
-    c = (await _by_id(db_conn, _router()))["embeddings"]
+    c = (await _by_id(db_conn, _router(), http=_with_embed(boom)))["embeddings"]
     assert (c.state, c.summary) == ("error", "The check failed: KeyError.")
 
 
@@ -156,31 +167,60 @@ async def test_reader_states(db_conn):
     assert (c.state, c.summary) == ("error", "m can't be used: no Ollama provider is configured, so a bare model name has nowhere to go.")
 
 
-async def test_embeddings_states(db_conn, monkeypatch):
+async def test_embeddings_states(db_conn):
     c = (await _by_id(db_conn, _router()))["embeddings"]
     assert c.state == "ok"
     assert c.summary == "nomic-embed-text at localhost:11434: 768 dimensions."
 
-    async def wide(_text):
-        return [0.1] * 1024
-    monkeypatch.setattr(embeddings, "embed_one", wide)
-    c = (await _by_id(db_conn, _router()))["embeddings"]
+    c = (await _by_id(db_conn, _router(), http=_with_embed(_embedding(1024))))["embeddings"]
     assert (c.state, c.summary) == ("error", "nomic-embed-text returned 1024 dimensions; the database holds 768.")
 
-    async def refuses(_text):
+    def refuses(_request):
         raise httpx.ConnectError("no")
-    monkeypatch.setattr(embeddings, "embed_one", refuses)
-    c = (await _by_id(db_conn, _router()))["embeddings"]
+    c = (await _by_id(db_conn, _router(), http=_with_embed(refuses)))["embeddings"]
     assert c.state == "error"
     assert c.summary == "Can't reach the embedding model nomic-embed-text at localhost:11434: documents can't be indexed or searched."
 
+    def slow(_request):
+        raise httpx.ReadTimeout("slow")
+    c = (await _by_id(db_conn, _router(), http=_with_embed(slow)))["embeddings"]
+    assert c.summary.startswith("Can't reach the embedding model nomic-embed-text")
 
-async def test_the_real_dimension_mismatch_error_still_names_the_count(db_conn, monkeypatch):
-    async def mismatch(_text):
-        raise ValueError("Embedding dim mismatch: model returned 1024, schema expects 768. Switching ...")
-    monkeypatch.setattr(embeddings, "embed_one", mismatch)
-    c = (await _by_id(db_conn, _router()))["embeddings"]
-    assert c.summary == "nomic-embed-text returned 1024 dimensions; the database holds 768."
+
+async def test_a_model_that_was_never_pulled_reads_as_an_http_error_not_as_unreachable(db_conn):
+    c = (await _by_id(db_conn, _router(), http=_with_embed(lambda _r: httpx.Response(404, json={"error": "model not found"}))))["embeddings"]
+    assert (c.state, c.summary) == ("error", "nomic-embed-text at localhost:11434 answered HTTP 404: documents can't be indexed or searched.")
+
+
+async def test_an_answer_with_no_embedding_is_reported_as_such(db_conn):
+    for answer in (httpx.Response(200, json={}), httpx.Response(200, json={"embedding": []}),
+                   httpx.Response(200, text="not json"), httpx.Response(200, json=[1, 2])):
+        c = (await _by_id(db_conn, _router(), http=_with_embed(lambda _r, a=answer: a)))["embeddings"]
+        assert c.state == "error"
+        assert c.summary == "nomic-embed-text at localhost:11434 answered, but returned no embedding: documents can't be indexed or searched."
+
+
+async def test_the_probe_sends_embed_ones_request_and_asks_for_no_dimensions(db_conn):
+    seen = []
+
+    def spy(request):
+        seen.append(request)
+        return httpx.Response(200, json={"embedding": [0.1] * 768})
+    await _by_id(db_conn, _router(), env={"OLLAMA_URL": "http://embed.example.com:11434", "EMBEDDING_MODEL": "other-model"},
+                 http=_with_embed(spy))
+    assert len(seen) == 1
+    assert str(seen[0].url) == "http://embed.example.com:11434/api/embeddings"
+    assert json.loads(seen[0].content) == {"model": "other-model", "prompt": console_overview.EMBEDDING_PROBE}
+
+
+async def test_a_busy_indexing_queue_does_not_make_a_healthy_model_look_down(db_conn):   # T5
+    held = [await embeddings._semaphore.acquire() for _ in range(embeddings.MAX_CONCURRENCY)]
+    try:
+        c = (await _by_id(db_conn, _router()))["embeddings"]
+    finally:
+        for _ in held:
+            embeddings._semaphore.release()
+    assert c.state == "ok"
 
 
 async def test_embeddings_warns_about_documents_under_an_older_setup(db_conn):
