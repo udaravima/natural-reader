@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-10-25
+
+**Ask a whole project.** A chat can cover every current document in a
+project, and each fact names the document and page it came from. **Web search
+asks first:** the assistant offers a search on a card you can edit, and
+nothing leaves the server until you press **Search the web**. Also: Settings
+opens as a window, the narration keeps playing in every view, the chat sits
+beside the page on a wide screen, and there's a profile with a picture and
+your signed-in browsers. **A write is now committed before its response is
+sent**, which fixes v2.3.0's known issue.
+
+Behavior changes: web search no longer runs on its own (`CHAT_WEB_SEARCH=auto`
+restores that); `POST /v1/tools/web_search` returns results without page
+summaries; auto-read is off by default. Two migrations (`020`, `021`), both
+additive. The compose Keycloak image moves to 26.8.0. Release notes:
+[docs/Release_notes/RELEASE_NOTES_v2.4.0.md](docs/Release_notes/RELEASE_NOTES_v2.4.0.md).
+
 ### Added
 
 - **Settings is a window, not a page.** It opens over whatever you have open
@@ -98,6 +115,9 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- **The compose Keycloak image is 26.8.0** (was 26.0), and **Docling must be
+  2.142 or newer** (`requirements-docling.txt`, installed only when the
+  backend is built with `WITH_DOCLING=true`).
 - **Auto-read is off by default, and replies are read once complete**
   (were on, and while streaming). Existing browsers forget their stored value
   for these two once, because until now every setting saved its default on
