@@ -36,6 +36,22 @@ describe('patchForModel', () => {
         const next = patchForModel(map, 'b:latest', { numCtx: 8192 });
         expect(next['a:latest']).toEqual({ numCtx: 4096 });
     });
+    // Changing one knob used to store every default with it, so a model's
+    // thinking was frozen at the default of that day.
+    it('stores only what was changed, not the defaults', () => {
+        expect(patchForModel({}, 'a:latest', { numCtx: 8192 })).toEqual({ 'a:latest': { numCtx: 8192 } });
+    });
+});
+
+describe('resolveForModel with a deployment base', () => {
+    it('an unset knob takes the base value', () => {
+        const base = { ...INFERENCE_DEFAULTS, think: 'on' };
+        expect(resolveForModel({ 'a:latest': { numCtx: 8192 } }, 'a:latest', base).think).toBe('on');
+    });
+    it('a knob the user set wins over the base', () => {
+        const base = { ...INFERENCE_DEFAULTS, think: 'on' };
+        expect(resolveForModel({ 'a:latest': { think: 'off' } }, 'a:latest', base).think).toBe('off');
+    });
 });
 
 describe('toWireSettings', () => {

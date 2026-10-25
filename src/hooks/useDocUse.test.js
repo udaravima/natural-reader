@@ -36,6 +36,16 @@ describe('useDocUse — "Use this document", per user and per chat (v2.4 Task E)
         expect(result.current.enabledFor(null)).toBe(true);        // the next new chat starts on
     });
 
+    it('sets the choice for a named chat, or for the new chat with null, whichever is on screen', () => {
+        const { result } = renderHook(() => useDocUse('u1', 's1'));
+        act(() => result.current.setEnabledFor('s2', false));
+        expect(result.current.enabled).toBe(true);                  // s1 is on screen and untouched
+        expect(result.current.enabledFor('s2')).toBe(false);
+        act(() => result.current.setEnabledFor(null, false));
+        expect(result.current.enabledFor(null)).toBe(false);        // the next new chat
+        expect(JSON.parse(localStorage.getItem(docUseKey('u1')))).toEqual({ s2: false });
+    });
+
     it('stores nothing without a signed-in user', () => {
         const { result } = renderHook(() => useDocUse(null, 's1'));
         act(() => result.current.setEnabled(false));

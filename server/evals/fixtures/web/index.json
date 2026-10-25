@@ -1,0 +1,23 @@
+{
+  "note": "The fake web for the project evaluation's web-read case (server/evals/web_fixture.py). Marrowdeck is made up: no model knows its package name or versions from training. Every query finds these results, in this order; a fetch of a url returns the extracted text of its file.",
+  "results": [
+    {
+      "title": "Installing Marrowdeck 4.17 (archived)",
+      "url": "https://docs.marrowdeck.example/4.17/install",
+      "snippet": "Install the marrowdeck-srv package on Rocky Linux, AlmaLinux and RHEL 9. The 4.17 line needs version 4.17.3 or newer.",
+      "file": "install-archived.html"
+    },
+    {
+      "title": "Installing Marrowdeck 4.18",
+      "url": "https://docs.marrowdeck.example/4.18/install",
+      "snippet": "Install guide for the current Marrowdeck release line: planning, configuration, upgrading, and packages for RHEL-family and Debian-family systems.",
+      "file": "install-current.html"
+    },
+    {
+      "title": "Tiles stay grey after a network interruption",
+      "url": "https://forum.marrowdeck.example/t/tiles-grey-after-interruption",
+      "snippet": "My wall display shows the board but the tiles stay grey after a network interruption. Is there a setting to make it reconnect?",
+      "file": "forum-reconnect.html"
+    }
+  ]
+}

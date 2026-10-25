@@ -11,8 +11,10 @@ const MIN_CHARS = 2;
  * found (USER_DIRECTORY_MODE); "Try their full email address" is advice that
  * works in every mode. `excludeIds` hides people already chosen (`excludedLabel` is shown when that is all the search found). `lookup`
  * resolves to [{id, name, username, email?, status}] or throws Error(notice).
+ * `searchEveryone`: the caller is a site admin, whom the server always gives
+ * type-ahead over every account (server/services/people.py).
  */
-export default function PeoplePicker({ theme, lookup, onPick, excludeIds = [], label = 'Find a person', disabled = false, excludedLabel = 'Already added.' }) {
+export default function PeoplePicker({ theme, lookup, onPick, excludeIds = [], label = 'Find a person', disabled = false, excludedLabel = 'Already added.', searchEveryone = false }) {
   const [q, setQ] = useState('');
   const [results, setResults] = useState(null); // null: nothing searched for the current text
   const [busy, setBusy] = useState(false);
@@ -56,7 +58,7 @@ export default function PeoplePicker({ theme, lookup, onPick, excludeIds = [], l
         <input
           value={q}
           onChange={(e) => change(e.target.value)}
-          placeholder="Name or full email address"
+          placeholder={searchEveryone ? 'Name, username or email' : 'Name or full email address'}
           aria-label={label}
           disabled={disabled}
           className={`flex-1 bg-transparent text-xs outline-none ${theme.text}`}
@@ -66,7 +68,9 @@ export default function PeoplePicker({ theme, lookup, onPick, excludeIds = [], l
       {error && <p role="alert" className="text-[10px] text-red-500">{error}</p>}
       {results !== null && !busy && !error && shown.length === 0 && (
         <p className={`text-[10px] ${theme.textMuted}`}>
-          {results.length > 0 ? excludedLabel : q.includes('@') ? 'No account uses that email address.' : 'Nobody found. Try their full email address.'}
+          {results.length > 0 ? excludedLabel
+            : searchEveryone ? 'Nobody found.'
+              : q.includes('@') ? 'No account uses that email address.' : 'Nobody found. Try their full email address.'}
         </p>
       )}
       {shown.length > 0 && (

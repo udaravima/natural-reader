@@ -52,7 +52,7 @@ services:
   # desyncing the app's users.oidc_sub rows (409 "email already linked to
   # another identity").
   keycloak:
-    image: quay.io/keycloak/keycloak:26.0
+    image: quay.io/keycloak/keycloak:26.8.0
     container_name: natural-reader-keycloak
     # Keycloak refuses an empty KC_PROXY_HEADERS ("Expected values are:
     # forwarded, xforwarded") and restarts forever, and ${KC_PROXY_HEADERS:-}

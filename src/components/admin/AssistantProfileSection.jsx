@@ -12,7 +12,7 @@ const SOURCE_LABEL = { admin: 'Set here', file: 'From the deployment file', none
 
 const fmt = (n) => n.toLocaleString('en-US');
 
-export function AssistantProfileSection({ theme, apiHost, apiPort, showToast }) {
+export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, refreshKey = 0 }) {
   const [data, setData] = useState(null);       // the server's view; null while loading
   const [draft, setDraft] = useState('');
   const [failed, setFailed] = useState(false);
@@ -32,6 +32,23 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast }) 
   }, [apiHost, apiPort]);
 
   useEffect(() => { load(); }, [load]);
+
+  // `refreshKey` is bumped when something the preview depends on changed elsewhere in the console (the web
+  // search mode, chat options): fetch again, take only the preview, so what is being typed stays. A failed
+  // refresh leaves the old preview as it was.
+  useEffect(() => {
+    if (!refreshKey) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch(apiHost, apiPort, '/v1/admin/assistant');
+        if (!res.ok || cancelled) return;
+        const view = await res.json();
+        if (!cancelled) setData((d) => (d ? { ...d, preview: view.preview } : d));
+      } catch { /* the preview stays as it was */ }
+    })();
+    return () => { cancelled = true; };
+  }, [refreshKey, apiHost, apiPort]);
 
   const save = async (text) => {
     setSaving(true);

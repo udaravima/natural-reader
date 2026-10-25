@@ -25,7 +25,7 @@ from ..services import model_router
 from .providers.base import Provider, ProviderConfig
 from .providers.ollama import OllamaProvider
 from .providers.openai_compat import OpenAICompatProvider
-from .types import Capabilities, CallSettings, Chunk, Message, TextDelta, ToolSpec
+from .types import Capabilities, CallSettings, Chunk, Message, ReasoningDelta, TextDelta, ToolSpec, Usage
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,16 @@ class ModelInfo:
 
 class UnknownModel(Exception):
     pass
+
+
+@dataclass
+class Received:
+    """What one `complete` call has received so far, filled in as the stream arrives. A caller that bills for the
+    call passes a fresh one in (the chat's reader, chat/reader.py): a call that fails or is cancelled part-way still
+    shows what it produced, and the provider's own usage once it sent it. `complete` returns the same text either way."""
+    text: str = ""                # the reply so far
+    reasoning: str = ""           # reasoning so far: produced (and billed by the provider), never part of the reply
+    usage: Usage | None = None    # the provider's own count; None until (unless) it sends one
 
 
 class Router:
@@ -177,13 +187,18 @@ class Router:
         provider, name = self.resolve(model_id)
         return provider.stream_chat(name, messages, tools, settings)
 
-    async def complete(self, model_id: str, messages: list[Message],
-                       settings: CallSettings = CallSettings()) -> str:
-        parts: list[str] = []
+    async def complete(self, model_id: str, messages: list[Message], settings: CallSettings = CallSettings(), *,
+                       received: Received | None = None) -> str:
+        """The reply's text. `received`, when given, is filled as the stream arrives (see Received)."""
+        got = received if received is not None else Received()
         async for chunk in self.stream_chat(model_id, messages, [], settings):
             if isinstance(chunk, TextDelta):
-                parts.append(chunk.text)
-        return "".join(parts)
+                got.text += chunk.text
+            elif isinstance(chunk, ReasoningDelta):
+                got.reasoning += chunk.text
+            elif isinstance(chunk, Usage):
+                got.usage = chunk
+        return got.text
 
     async def aclose(self) -> None:
         await self._client.aclose()

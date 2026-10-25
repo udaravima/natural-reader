@@ -344,6 +344,21 @@ describe('LibraryPage', () => {
     expect(await screen.findByRole('button', { name: 'Open project Project A' })).toBeTruthy();
   });
 
+  it('hands the project page an Ask about this project that reaches the chat', async () => {
+    const onAskProject = vi.fn();
+    apiFetch.mockImplementation(async (h, p, path) => {
+      if (path === '/v1/projects') return json(200, projects);
+      if (path === '/v1/projects/p2') return json(200, projects[1]);
+      if (path.startsWith('/v1/docs')) return json(200, []);
+      return json(404, {});
+    });
+    render(<LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} onAskProject={onAskProject} />);
+    fireEvent.click(await screen.findByRole('tab', { name: 'Projects' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open project Project B' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Ask about this project' }));
+    expect(onAskProject).toHaveBeenCalledWith({ id: 'p2', name: 'Project B' });
+  });
+
   it('reloads the documents after a change made on a project page', async () => {
     let filed = false;
     apiFetch.mockImplementation(async (h, p, path, opts) => {

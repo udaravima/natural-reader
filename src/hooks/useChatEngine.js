@@ -5,11 +5,12 @@ import { makeSessionStore } from '../lib/sessionStore';
 import { MODELS_PATH, budgetDetail, formatResetAt } from '../lib/chatTransport';
 import { postTurn, readEvents } from '../lib/chatStream';
 import { applyEvent } from '../lib/chatEvents';
-import { describeRefusal } from '../lib/apiErrors';
+import { describeRefusal, refusalMessage, PROJECT_NOT_FOUND } from '../lib/apiErrors';
 import { addPin as addPinReducer, removePin as removePinReducer, MAX_PINS } from './pins';
 import { INFERENCE_DEFAULTS, toWireSettings, truncationMessage } from './inference';
 import { supportedKnobs } from '../lib/modelIds';
 import { useDocUse } from './useDocUse';
+import { useChatScope } from './useChatScope';
 
 const SENTENCE_TERMINATOR = /(?<=[.!?])\s+/;
 const MIN_TTS_LENGTH = 5;
@@ -103,6 +104,11 @@ export function useChatEngine({
     const activeSessionIdRef = useRef(null);
     const [events, setEvents] = useState([]); // events for the active session
     const eventsRef = useRef([]);              // mirror used inside async callbacks
+    const activeSession = sessions.find(s => s.id === activeSessionId) || null;
+    // What the chat is about: no document, the open one, or a project (C2.1 Task 17).
+    const { scope, setScope, hold: holdScope, read: readScope, adopt: adoptScope, restore: restoreScope, clearProject } = useChatScope({
+        docUse, activeSessionId, activeSession, hasDoc: Boolean(currentDocId),
+    });
 
     // Read latest values via refs so the playback loop and queued items pick up
     // voice/speed/volume changes for not-yet-fetched items without re-creating callbacks.
@@ -264,9 +270,12 @@ export function useChatEngine({
         setPins(record.pins || []);
         eventsRef.current = record.events || [];
         setEvents(eventsRef.current);
+        // The opened chat's stored project is fresher than the list's. A legacy
+        // browser-only chat has none (undefined), so the list and docUse decide.
+        if (record.scopeProject !== undefined) holdScope(id, record.scopeProject);
         setActive(id);
         setIsStreaming(false);
-    }, [stopChatPlayback, sessionStore]);
+    }, [stopChatPlayback, sessionStore, holdScope]);
 
     // Reset the chat view without deleting any saved sessions.
     const newSession = useCallback(() => {
@@ -283,7 +292,15 @@ export function useChatEngine({
         setEvents([]);
         setActive(null);
         setIsStreaming(false);
-    }, [stopChatPlayback]);
+        holdScope(null, null);   // a new chat starts without the last one's project
+    }, [stopChatPlayback, holdScope]);
+
+    // "Ask about this project": a new chat about {id, name}, held until its
+    // first message (the chat has no session before then).
+    const startProjectChat = useCallback((project) => {
+        newSession();
+        holdScope(null, { id: project.id, name: project.name });
+    }, [newSession, holdScope]);
 
     const deleteSession = useCallback(async (id) => {
         await sessionStore.deleteSession(id);
@@ -403,8 +420,12 @@ export function useChatEngine({
         newSession();
     }, [newSession]);
 
-    const sendMessage = useCallback(async (userText, attachments = []) => {
+    // `options.web = {query}` is the user's yes to a web search the model
+    // offered (C2.1 spec §5.8): it rides in this turn's context only, so the
+    // server runs exactly that search and the next turn asks again.
+    const sendMessage = useCallback(async (userText, attachments = [], options = {}) => {
         const trimmed = (userText || '').trim();
+        const webQuery = typeof options?.web?.query === 'string' ? options.web.query.trim() : '';
         const cleanAttachments = (attachments || []).filter((a) => a && a.kind);
         if (!trimmed && cleanAttachments.length === 0 && pinsRef.current.length === 0) return { sent: false };
         if (isStreaming || sendingRef.current) return { sent: false };
@@ -422,7 +443,7 @@ export function useChatEngine({
         let sessionId = activeSessionIdRef.current;
         let isNew = false;
         // Read once, before the session id can change (a new or forked chat).
-        const useDoc = docUse.enabledFor(sessionId);
+        const from = readScope(sessionId);
         if (sessionId && sessionStore.isLocalId(sessionId)) {
             // A pre-Postgres chat kept only in this browser: copy it to the
             // server (each continue of the browser copy makes a new server
@@ -447,13 +468,13 @@ export function useChatEngine({
                 return giveBack;
             }
             sessionId = forkedId;
-            docUse.adopt(forkedId, useDoc);
+            adoptScope(forkedId, from);
             setActive(forkedId);
         }
         if (!sessionId) {
             sessionId = newSessionId();
             isNew = true;
-            docUse.adopt(sessionId, useDoc);
+            adoptScope(sessionId, from);
             setActive(sessionId);
             eventsRef.current = [];
             setEvents([]);
@@ -483,14 +504,23 @@ export function useChatEngine({
             model: selectedModel,
             settings: toWireSettings(inferenceForThisMsg,
                 supportedKnobs(availableModelsRef.current.find((m) => m.id === selectedModel))),
-            // "Use this document" off: no document, so no prefetch, no document tools (v2.4 Task E).
-            context: { doc_id: useDoc ? (currentDocId || null) : null, timezone: browserTimezone() },
+            // "No document": no document, so no prefetch, no document tools (v2.4 Task E).
+            // A project chat sends the open document as well (the model may be
+            // asked about "this page"). `project_id` is always sent: an id sets
+            // the chat's scope, null clears it (C2.1 spec §5.1).
+            context: {
+                doc_id: (from.project || from.docEnabled) ? (currentDocId || null) : null,
+                project_id: from.project ? from.project.id : null,
+                timezone: browserTimezone(),
+                ...(webQuery ? { web: { query: webQuery } } : {}),
+            },
             // Always sent: the server uses it only when this turn creates the chat
             // (a retry after a first send that failed on the network included).
             session: { pins: pinsRef.current },
         };
 
         let refused = false;
+        let projectRefused = false;
         let completed = false;
         let replyText = '';
         try {
@@ -498,7 +528,13 @@ export function useChatEngine({
             if (!res.ok) {
                 refused = true;
                 const budget = await budgetDetail(res.clone());
-                if (budget) {
+                // Only the server's own "no such project" counts: any other 404
+                // (the chat, a proxy) keeps the scope and shows its usual notice.
+                if (res.status === 404 && from.project && await refusalMessage(res.clone()) === PROJECT_NOT_FOUND) {
+                    // The project is gone, or the reader left it.
+                    projectRefused = true;
+                    showToast?.(PROJECT_NOT_FOUND, 5000);
+                } else if (budget) {
                     setInferenceBudget(budget);
                     showToast?.(`Daily inference budget exhausted — resets at ${formatResetAt(budget.reset_at)}`, 6000);
                 } else {
@@ -578,6 +614,13 @@ export function useChatEngine({
                 const localIds = new Set([userId, assistantId]);
                 setMessages((prev) => prev.filter((m) => !localIds.has(m.id)));
                 if (isNew) setActive(null);
+                if (projectRefused) {
+                    // The server has cleared a stored scope: mirror it, and re-read the list to match.
+                    clearProject(isNew ? null : sessionId);
+                    refreshSessions();
+                } else if (isNew) {
+                    restoreScope(from);
+                }
                 setSpeaking(null);
             } else {
                 // However the reply ended (finished, error event, dropped stream),
@@ -593,7 +636,7 @@ export function useChatEngine({
             }
         }
         return refused ? giveBack : { sent: true };
-    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, inference, apiHost, apiPort, currentDocId, docUse,
+    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, inference, apiHost, apiPort, currentDocId, readScope, adoptScope, restoreScope, clearProject,
         sessionStore, showToast, flushBufferedSentences, enqueueTts, refreshSessions, refreshEvents, refreshModels]);
 
     // A reloaded chat whose reply the server is still writing: re-read it until
@@ -613,8 +656,6 @@ export function useChatEngine({
         }, POLL_MS);
         return () => clearInterval(handle);
     }, [hasRemoteStreaming, activeSessionId, sessionStore]);
-
-    const activeSession = sessions.find(s => s.id === activeSessionId) || null;
 
     return {
         messages,
@@ -641,6 +682,10 @@ export function useChatEngine({
         renameSession,
         // "Use this document" for the active chat (v2.4 Task E)
         docUse,
+        // What the chat is about: {kind: 'none'|'document'|'project', project?}
+        scope,
+        setScope,
+        startProjectChat,
         // Persistent pinned-context
         pins,
         addPin,

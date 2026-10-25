@@ -1,7 +1,7 @@
 """Stage 0 (spec §5.2): build the model input with the cheap, bounded work
 first, so a document question can be answered in ONE model call.
 
-Prompt order is fixed for prefix-cache reuse: system rules + pins -> history
+Prompt order is fixed for prefix-cache reuse: system rules + project map + pins -> history
 -> volatile context (passages) -> the new message. The date is in the rules
 only to the day (v2.4: the minute clock that used to lead the user's message
 was mistaken for what "that" referred to), so the prefix changes once a day,
@@ -31,10 +31,11 @@ from zoneinfo import ZoneInfo
 
 from ..db import get_pool
 from ..llm.types import Attachment, Message, ToolCall
-from ..services.doc_search import ReadableDoc, search_chunks
+from ..services.doc_search import ReadableDoc, search_scope
 from ..services.embeddings import embed_query
 from . import store
 from .config import ChatConfig
+from .project_scope import ScopeDoc
 from .prompt import PASSAGES_TAG, PIN_TAG, display_name, fence, system_rules
 from .store import StoredMessage
 from .tools import result_text
@@ -97,42 +98,68 @@ def _cap(text: str) -> str:
     return text if len(text) <= PASSAGE_TEXT_CAP else text[:PASSAGE_TEXT_CAP] + " [truncated]"
 
 
-async def prefetch(doc: ReadableDoc | None, question: str, cfg: ChatConfig) -> Prefetch:
-    """Search the open document before the model runs. Cost when it doesn't
-    help: one embedding call. Every decision is logged at DEBUG so a deployer
-    can tune CHAT_PREFETCH_MIN_SCORE on their own documents."""
-    if (doc is None or doc.state != "indexed" or cfg.prefetch == "off" or cfg.prefetch_min_score >= 1.0
-            or not question.strip()):
+async def prefetch(scope: list[ScopeDoc], question: str, cfg: ChatConfig) -> Prefetch:
+    """Search the scope's documents before the model runs: the open document,
+    or a project chat's searchable ones as one balanced ranking (C2.1 spec
+    5.5). Meaning only, as ever. Cost when it doesn't help: one embedding
+    call. Every decision is logged at DEBUG so a deployer can tune
+    CHAT_PREFETCH_MIN_SCORE on their own documents.
+
+    Each passage carries its document's `ref` and `doc_id`. The note keeps
+    its one-document shape for a single document; for several it names each
+    document that gave passages (`documents`), with no top-level docId."""
+    docs = [d for d in scope if d.doc.state == "indexed"]
+    if not docs or cfg.prefetch == "off" or cfg.prefetch_min_score >= 1.0 or not question.strip():
         return Prefetch()
+    by_doc = {d.doc.doc_id: d for d in docs}
+    project = len(docs) > 1
     try:
         qvec = await embed_query(question)
         async with get_pool().connection() as conn:
-            rows = await search_chunks(conn, doc.doc_id, qvec, cfg.prefetch_k)
+            rows = await search_scope(conn, list(by_doc), qvec, cfg.prefetch_k,
+                                      per_doc=cfg.search_per_doc if project else None)
     except Exception as e:  # noqa: BLE001 — prefetch is an optimization; the tool is still offered
-        logger.warning("Prefetch failed for doc %s: %r", doc.doc_id, e)
+        logger.warning("Prefetch failed for %d document(s): %r", len(docs), e)
         return Prefetch()
     top = max((float(r["score"]) for r in rows), default=None)
     kept = [r for r in rows if float(r["score"]) >= cfg.prefetch_min_score]
-    logger.debug("prefetch doc=%s top=%s kept=%d/%d threshold=%s",
-                 doc.doc_id, top, len(kept), len(rows), cfg.prefetch_min_score)
+    logger.debug("prefetch docs=%d top=%s kept=%d/%d threshold=%s",
+                 len(docs), top, len(kept), len(rows), cfg.prefetch_min_score)
     if not kept:
         return Prefetch(top_score=top)
-    note = {"kind": "prefetch", "docId": doc.doc_id, "docName": doc.name, "count": len(kept),
-            "topScore": round(top, 4),
-            "pages": sorted({r["page"] for r in kept if r.get("page") is not None})}
-    return Prefetch([{"id": r.get("id"), "page": r.get("page"), "score": float(r["score"]),
-                      "text": _cap(r["text"] or "")}
-                     for r in kept], top, note)
+    passages = [{"id": r.get("id"), "ref": by_doc[r["doc_id"]].ref, "doc_id": r["doc_id"],
+                 "page": r.get("page"), "score": float(r["score"]), "text": _cap(r["text"] or "")}
+                for r in kept]
+    if not project:
+        doc = docs[0].doc
+        note = {"kind": "prefetch", "docId": doc.doc_id, "docName": doc.name, "count": len(kept),
+                "topScore": round(top, 4),
+                "pages": sorted({r["page"] for r in kept if r.get("page") is not None})}
+        return Prefetch(passages, top, note)
+    documents = []
+    for d in docs:   # in the project's order
+        mine = [r for r in kept if r["doc_id"] == d.doc.doc_id]
+        if mine:
+            documents.append({"docId": d.doc.doc_id, "docName": d.name, "count": len(mine),
+                              "pages": sorted({r["page"] for r in mine if r.get("page") is not None})})
+    note = {"kind": "prefetch", "documents": documents, "count": len(kept), "topScore": round(top, 4)}
+    return Prefetch(passages, top, note)
 
 
-def _passages_block(name: str, passages: list[dict[str, Any]]) -> str:
+def _passages_block(passages: list[dict[str, Any]], scope: list[ScopeDoc]) -> str:
     """The prefetched passages as data: fenced, labelled with their pages, and
-    no instructions (the rules explain the tag)."""
-    source = display_name(name)
+    no instructions (the rules explain the tag). From one document the label
+    is its page and the tag names the document; from several, each passage
+    names its own document."""
+    names = {d.ref: d.name for d in scope}
+    several = len({p["ref"] for p in passages}) > 1
+    source = "project documents" if several else display_name(names.get(passages[0]["ref"], "document"))
     lines = [f'<{PASSAGES_TAG} source="{source}">']
     for i, p in enumerate(passages, start=1):
-        page = f" (page {p['page']})" if p["page"] is not None else ""
-        lines += [f"[{i}]{page}", fence(p["text"]), ""]
+        where = [display_name(names.get(p["ref"], "document"))] if several else []
+        if p["page"] is not None:
+            where.append(f"page {p['page']}")
+        lines += [f"[{i}]" + (f" ({', '.join(where)})" if where else ""), fence(p["text"]), ""]
     return "\n".join(lines).rstrip() + f"\n</{PASSAGES_TAG}>"
 
 
@@ -213,6 +240,9 @@ class TurnInput:
     tools: tuple[Any, ...] = ()   # offered on the turn's first step: the rules describe exactly these
     tool_ctx: Any = None
     profile: str = ""             # the deployment's assistant profile: leads the system message
+    scope: tuple[ScopeDoc, ...] = ()   # the documents the tools read (tools.scope.scope_docs); prefetch searches them
+    project_map: str = ""              # a project chat's map of its documents (chat/project_map.py): after the rules
+    app_exchange: tuple[Message, ...] = ()   # a tool exchange the app ran (the approved web search), after the prefetch's
 
 
 @dataclass
@@ -222,7 +252,7 @@ class BuiltContext:
     prefetch_hit: bool
     shown_chunk_ids: tuple[int, ...] = ()   # the prefetched chunks: search_documents won't repeat them
     shown_texts: tuple[str, ...] = ()       # their text: web_search won't send it out
-    evidence: tuple[tuple[int | None, str], ...] = ()   # (page, text): for the source chips (v2.4 Task D)
+    evidence: tuple[tuple[str, int | None, str], ...] = ()   # (doc_id, page, text): for the source chips (v2.4 Task D)
 
 
 async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
@@ -231,7 +261,7 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     # them instead: 5/9 against 9/9 without, 2026-10-05).
     has_doc_tools = any(t.name == "search_documents" for t in turn.tools)
     runs = cfg.prefetch == "on" or (cfg.prefetch == "auto" and not has_doc_tools)
-    pre = await prefetch(turn.doc, turn.text, cfg) if runs else Prefetch()
+    pre = await prefetch(list(turn.scope), turn.text, cfg) if runs else Prefetch()
     # v2.4 Task B: with the search tool offered, the passages arrive as that
     # tool's result (a call the app made for the model), not inside the
     # user's message, where a PDF's planted instruction would speak with the
@@ -242,16 +272,18 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     volatile = ""
     if as_tool:
         args = {"query": turn.text, "k": cfg.prefetch_k}
-        result = passages_result(turn.text, [turn.doc], [{"ref": 1, "page": p["page"], "text": p["text"]}
-                                                         for p in pre.passages])
+        result = passages_result(turn.text, list(turn.scope),
+                                 [{"ref": p["ref"], "page": p["page"], "text": p["text"]} for p in pre.passages])
         exchange = [Message("assistant", "", tool_calls=(ToolCall(PREFETCH_CALL_ID, "search_documents", args),)),
                     Message("tool", result_text(result), tool_call_id=PREFETCH_CALL_ID, name="search_documents")]
     elif pre.passages:
-        volatile = _passages_block(pre.note["docName"], pre.passages)
+        volatile = _passages_block(pre.passages, list(turn.scope))
+    exchange += turn.app_exchange
     rules = system_rules(turn.doc, turn.tools, has_pins=bool(turn.pins),
                          prefetch=cfg.prefetch == "on" and cfg.prefetch_min_score < 1.0,
-                         today=today_line(turn.now, turn.timezone), profile=turn.profile)
-    system = Message("system", "\n\n".join(c for c in (rules, pin_text(turn.pins)) if c))
+                         today=today_line(turn.now, turn.timezone), profile=turn.profile,
+                         has_map=bool(turn.project_map), project=getattr(turn.tool_ctx, "project", None))
+    system = Message("system", "\n\n".join(c for c in (rules, turn.project_map, pin_text(turn.pins)) if c))
     fixed_chars = len(system.content) + len(volatile) + 2 + len(turn.text) + sum(len(m.content) for m in exchange)
     items, n_messages, n_attachments = _fit_history(turn.history, fixed_chars, len(turn.attachments),
                                                     turn.window, cfg)
@@ -290,4 +322,4 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     return BuiltContext([system, *history_messages, current, *exchange], notes, bool(pre.passages),
                         tuple(p["id"] for p in pre.passages if p.get("id") is not None),
                         tuple(p["text"] for p in pre.passages),
-                        tuple((p["page"], p["text"]) for p in pre.passages))
+                        tuple((p["doc_id"], p["page"], p["text"]) for p in pre.passages))

@@ -358,3 +358,49 @@ async def test_a_folded_system_role_is_remembered_even_when_tools_were_dropped_a
     assert not [c for c in second if isinstance(c, FeatureDropped)]
     last = up.bodies("/api/v1/chat/completions")[3]
     assert [m["role"] for m in last["messages"]] == ["user"] and "tools" not in last
+
+
+# ---- OpenRouter: "off" must be sent, not omitted ----
+# OpenRouter's /models describes a reasoning model with a `reasoning` object;
+# a request that leaves reasoning out gets the model's DEFAULT, which for many
+# is "on" (docs: use-cases/reasoning-tokens). So "off" is sent as
+# reasoning.effort "none", except for a model whose reasoning is mandatory.
+
+def _router_models(**reasoning):
+    return {"data": [{"id": "vendor/thinker", "context_length": 200000,
+                      "supported_parameters": ["tools", "reasoning", "include_reasoning"],
+                      "reasoning": {"default_enabled": True, "mandatory": False,
+                                    "supported_efforts": ["high", "medium", "low"], **reasoning}}]}
+
+
+async def _body_for(think, models):
+    up = _up(lambda: sse(_finish("stop")), models=models)
+    await _collect(OpenAICompatProvider(CFG, up.client()).stream_chat(
+        "vendor/thinker", HI, [], CallSettings(think=think)))
+    return up.bodies("/api/v1/chat/completions")[0]
+
+
+async def test_think_off_on_an_openrouter_reasoning_model_sends_effort_none():
+    body = await _body_for("off", _router_models())
+    assert body["reasoning"] == {"effort": "none"}
+    assert "reasoning_effort" not in body
+
+
+async def test_think_levels_on_an_openrouter_model_use_the_reasoning_object():
+    assert (await _body_for("on", _router_models()))["reasoning"] == {"effort": "medium"}
+    assert (await _body_for("high", _router_models()))["reasoning"] == {"effort": "high"}
+
+
+async def test_think_off_sends_nothing_when_reasoning_is_mandatory():
+    # It would be rejected, and the model reasons regardless.
+    body = await _body_for("off", _router_models(mandatory=True))
+    assert "reasoning" not in body and "reasoning_effort" not in body
+
+
+async def test_a_rejected_effort_none_retries_without_it_and_remembers():
+    up = _up(lambda: httpx.Response(400, json={"error": {"message": "reasoning is not supported"}}),
+             lambda: sse(_finish("stop")), models=_router_models())
+    provider = OpenAICompatProvider(CFG, up.client())
+    chunks = await _collect(provider.stream_chat("vendor/thinker", HI, [], CallSettings(think="off")))
+    assert FeatureDropped("thinking") in chunks
+    assert ["reasoning" in b for b in up.bodies("/api/v1/chat/completions")] == [True, False]

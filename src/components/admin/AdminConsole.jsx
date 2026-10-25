@@ -2,12 +2,14 @@ import { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, Shield, Loader2 } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
 import { AssistantProfileSection } from './AssistantProfileSection';
+import { ChatOptionsSection } from './ChatOptionsSection';
+import { DefaultsSection } from './DefaultsSection';
 import { AdminProjectsSection } from './AdminProjectsSection';
 import ProjectPage from '../projects/ProjectPage';
 
 /**
  * Full-height admin console (spec §3): Users (list + enroll + delete),
- * Projects (A0), Inference usage, Deployment config, Assistant — one scroll, no tabs. Visual language
+ * Projects (A0), Inference usage, Deployment config, Assistant, Chat options — one scroll, no tabs. Visual language
  * mirrors AdminPanel/AccountPanel (tiny text, list rows, underline buttons).
  *
  * All rails are server-side; this UI only hides/disables affordances
@@ -73,6 +75,7 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
   const [config, setConfig] = useState(null);
   const [days, setDays] = useState(7);
   const [openProjectId, setOpenProjectId] = useState(null);
+  const [previewVersion, setPreviewVersion] = useState(0);  // bumped when a chat option changed what the assistant's rules say
 
   // Enroll form
   const [enrollEmail, setEnrollEmail] = useState('');
@@ -526,7 +529,15 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, s
         </section>
 
         {/* ---------- ASSISTANT (v2.4 Task A2) ---------- */}
-        <AssistantProfileSection theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast} />
+        <AssistantProfileSection theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast}
+          refreshKey={previewVersion} />
+
+        {/* ---------- CHAT OPTIONS (C2.1 Task 19) ---------- */}
+        <ChatOptionsSection theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast}
+          onSaved={() => setPreviewVersion((v) => v + 1)} />
+
+        {/* ---------- DEFAULTS (preferences nobody chose) ---------- */}
+        <DefaultsSection theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast} />
       </div>
     </div>
   );

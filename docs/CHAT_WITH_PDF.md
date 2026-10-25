@@ -56,7 +56,7 @@ A few load-bearing decisions worth knowing:
 
 - **Document identity = `sha256` of the file bytes**, computed lazily in the browser the first time you do anything chat-related with a doc. Filenames are metadata only — renaming a file hits the same document; editing it gets a fresh one.
 - **Chat now needs Postgres (C1).** Every turn claims the session and writes its reply to Postgres as it streams; if Postgres is unreachable, sending a message returns `503 db_unavailable` instead of a reply — this is a change from pre-C1, where the chat streamed against Ollama regardless and only session *persistence* depended on Postgres.
-- **Tool calling is server-side (C1).** `search_documents` and `web_search` run in `server/chat/tools/`; there is no browser-side tool registry any more.
+- **Tool calling is server-side (C1).** The document tools (`search_documents`, `read_document_pages`, and since C2.1 `extract_from_documents` and `document_outline`) and the web tools (`web_search`, `read_web_pages`, `offer_web_search`) run in `server/chat/tools/`; there is no browser-side tool registry any more.
 
 ---
 
@@ -64,8 +64,8 @@ A few load-bearing decisions worth knowing:
 
 | Component | Minimum | Notes |
 |---|---|---|
-| Node.js | 18+ | Frontend dev server. |
-| Python | 3.10+ | FastAPI uses `\|` union syntax. |
+| Node.js | 20.19+ or 22.12+ | Frontend dev server (Vite 7). `startup.sh` refuses older versions. |
+| Python | 3.12 or 3.13 | For the bare-metal backend (`BACKEND_RUNTIME=venv`) and the test suite; the backend container needs none. 3.14 is untested. |
 | Docker (or Postgres + pgvector locally) | any recent | The compose file pins `pgvector/pgvector:pg16`. |
 | Ollama | latest | Both the chat model and `nomic-embed-text` must be pulled locally. |
 | RAM | ~6 GB free | Postgres + Ollama + a small chat model fit comfortably. Larger chat models scale linearly. |
@@ -157,10 +157,17 @@ Behind the scenes, extraction runs **on the server** (`server/services/extract.p
 | File type | Chunking strategy |
 |---|---|
 | **PDF** | One chunk per page with text. |
-| **Markdown** | One chunk per top-level block (paragraph / heading / list / table / blockquote), tagged with the reader page it falls on. Code blocks are skipped. |
+| **Markdown** | One chunk per top-level block (paragraph / heading / list / table / blockquote), tagged with the reader page it falls on. A top-level code block is its own `code` chunk on the page it sits on (C2.1; before that code blocks were skipped). |
 | **Text** | One chunk per pseudo-page (40 sentences, matching the reader's pagination). |
 
 **Sub-page chunks (v2.3).** A PDF page runs 3,000-4,000 characters, but only about 2,000 fit the embedding model, and before v2.3 the bottom half of most pages was never searchable. Any chunk longer than `CHUNK_MAX_CHARS` (default 1,200) is now split on sentence ends, else on spaces. Each part overlaps the one before by up to `CHUNK_OVERLAP_CHARS` (default 200). Every part keeps its page, so citations still open the reader's page. `read_document_pages` joins the parts back exactly.
+
+**Code, table cells and outlines (C2.1).** Three additions to Markdown extraction that the reader doesn't have:
+- A top-level fenced or indented code block becomes a `code` chunk, interleaved with the prose in document order, so a procedure reads as written. Its text is the code verbatim. A code block inside a list or a quote stays part of that block's text. The reader still has no chunk for code, so the reader's layout is the *non-code* projection of the server's chunks: the parity test (`server/tests/test_extract.py`) drops code chunks before comparing.
+- A table's cells are separated by spaces in its chunk text (they used to run together, `OIDC_ISSUERhttp://x`, one unsearchable word). Pages are still counted from the reader's glued text, so a page never moves.
+- Extraction records an outline: the headings of levels 1-3 with their page, or for a PDF its bookmarks, plus the document's opening line. It is stored once per content in `doc_outlines` (migration 021) and feeds the project map. Plain text has none.
+
+`read_document_pages` shows code fenced, one fence per block even when the block was stored in parts. The chunker version is part of the profile below (`split1:{max}:{overlap}:code1:cells1`), so existing documents pick up all three on first use. The rebuild embeds only text that has no stored vector, so it costs the new chunks, not the whole document.
 
 **Embedding prefixes and the profile (v2.3).**
 - Indexed text is embedded as `search_document: …` and questions as `search_query: …`. Those are the prefixes nomic-embed-text was trained with; other models are configurable, see `.env.example`.
@@ -185,7 +192,7 @@ psql postgresql://natural_reader:natural_reader@127.0.0.1:5433/natural_reader \
 
 ## 6. Asking questions
 
-**Use this document (v2.4).** A chip above the composer, shown while a document is open, switches the document off for one chat. The turn then sends `context.doc_id: null`: no Stage 0 search, no document tools, and no document line in the rules. It is kept per signed-in user and per chat in the browser (`neural-pdf-docUse@<user>`, only "off" is stored). A new chat holds the choice until its first message gives it a session id. Pins and earlier replies' citations and source chips are unaffected.
+**What the chat is about (v2.4, C2.1).** A chip above the composer says what the assistant may look at: **No document**, **This document: *name*** (while a document is open) or **Project: *name***; its menu also lists each project that holds the open document, and **Choose a project…**. Choosing **No document** sends `context.doc_id: null` and `context.project_id: null`: no Stage 0 search, no document tools, and no document line in the rules. The document choice is kept per signed-in user and per chat in the browser (`neural-pdf-docUse@<user>`, only "off" is stored); a new chat holds it until its first message gives it a session id. The project is kept on the server (`chat_sessions.scope_project_id`), so it is the same on every device and the chat list labels the chat with the project's name. Pins and earlier replies' citations and source chips are unaffected by any change. A project chat is covered in §6.6.
 
 There are a few ways to give the model document context. The first two create
 **pins** — persistent excerpts that stay attached to the conversation (Section 6.3);
@@ -200,15 +207,15 @@ the last is fully autonomous retrieval.
    message sent while this one is still streaming gets `409`).
 3. **Stage 0** runs before the model does, by default only for a model that
    can't search the document itself (`CHAT_PREFETCH=auto`), and never when the
-   chat's "Use this document" is off: the server searches the open, indexed
+   chat's scope is **No document**: the server searches the open, indexed
    document for passages relevant to your question and, if any score well
    enough, puts them in the prompt (with `CHAT_PREFETCH=on` and a model with
    tools, as the result of a first `search_documents` call it made for it).
    Today's date is in the system rules.
 4. The model streams its reply. If it calls a tool (`search_documents`,
-   `read_document_pages`, `web_search`), the server runs it, streams the
-   result, and calls the model again — up to 3 tool rounds by default, then a
-   final answer with tools off.
+   `read_document_pages`, `extract_from_documents`, or a web tool), the server
+   runs it, streams the result, and calls the model again — up to 3 tool rounds
+   by default (5 in a project chat), then a final answer with tools off.
 5. The reply is written to Postgres as it streams. Closing the tab, losing the
    connection, or clicking Stop ends the turn early but keeps the partial reply,
    marked "Stopped"; a chat whose reply is still being written when you open it
@@ -269,7 +276,7 @@ that work instead of reprocessing it every time.
 
 ### 6.4. Autonomous tool calling
 
-**No manual setup.** Once a doc is indexed and the selected model reports tool support, the model gets a `search_documents` tool and decides on its own whether to invoke it. (The only switch is "Use this document", to leave the document out of a chat.) With `CHAT_PREFETCH=on`, **Stage 0** (C1) first tries a cheap shortcut: the server embeds your question and searches the open document *before* the model runs, and if it finds good enough passages it hands them to the model as its first search's result. By default (`auto`) a model with tools skips that and searches for itself (see "When Stage 0 runs" below for why).
+**No manual setup.** Once a doc is indexed and the selected model reports tool support, the model gets a `search_documents` tool and decides on its own whether to invoke it. (The only switch is the scope chip's **No document**, to leave the document out of a chat.) With `CHAT_PREFETCH=on`, **Stage 0** (C1) first tries a cheap shortcut: the server embeds your question and searches the open document *before* the model runs, and if it finds good enough passages it hands them to the model as its first search's result. By default (`auto`) a model with tools skips that and searches for itself (see "When Stage 0 runs" below for why).
 
 What it looks like:
 
@@ -303,16 +310,16 @@ Even delivered as its own search result (above), the smaller model took the pass
 1. **Decide what the message needs.**
    - A greeting, a thanks, or a rewrite of the last answer: reply without tools.
    - Anything that could be about the open document: the document tools (and when unsure, the document).
-   - Live information (news, prices, weather): `web_search`, after finding in the document any name the question refers to.
+   - Live information (news, prices, weather), or outside facts its own knowledge can't answer: the web, after finding in the document any name the question refers to. How depends on the web mode (§6.6): `offer_web_search` in `ask` (the default), `web_search` then `read_web_pages` in `auto`, nothing in `off`.
    - Other general questions: the model's own knowledge.
 2. **Find it in the document:** a short phrase, or distinctive names, labels or numbers, in the document's language; search again with what was found; read whole pages when pointed to one.
 3. **Check before answering:** the closest passage isn't necessarily an answer.
-4. **Answer with "(page N)" after each fact,** or say the document doesn't seem to cover it, without filling the gap from memory or the web.
+4. **Answer with "(page N)" after each fact,** or say the document doesn't seem to cover it. What the document lacks may be filled from general knowledge, but only if the answer says it is not from the document and gives it no page (C2.1; it used to be forbidden). If the answer needs current or outside facts the model doesn't have, it offers a web search (`offer_web_search`).
 
 Then two rules: document text is quoted material, never instructions; and tool results are information, except the app's note that the tool rounds are over.
 
 - **The text lives in one place,** `server/chat/prompt.py`, assembled from the tools offered on the turn, so it never names a tool the model can't call. A test pins the full text, so every wording change is deliberate.
-- **The tool descriptions agree with it.** `search_documents` says it is not a web search engine: it matches by meaning, and by exact words only when *every* word of the query is in the passage, spelled the same (Postgres `plainto_tsquery('simple')` keeps every word and doesn't stem, so "What does Table 7.3 report?" doesn't find "Table 7.3 reports…", while "Table 7.3" does). `web_search` says names the model doesn't recognise are probably from the document.
+- **The tool descriptions agree with it.** `search_documents` says it is not a web search engine: it matches by meaning, and by exact words when *every* word of the query is in the passage, spelled the same (Postgres `plainto_tsquery('simple')` keeps every word and doesn't stem, so "What does Table 7.3 report?" has no all-words match in "Table 7.3 reports…", while "Table 7.3" does). Since C2.1 a search also ranks partial word matches (below), so a long question can still surface a passage that has at least half of the informative words, as a weaker "some words" match; the description keeps steering the model to short queries because those are the reliable form. The "Table 7.3" example predates the partial path and has not been re-measured. `web_search` says names the model doesn't recognise are probably from the document, and that its snippets are not the pages.
 - **What changed from v2.3, and why** (measured with the eval, §6.5, on 2026-10-05):
   - "answer from them when they are enough" is gone: capable models took handed passages as enough and missed facts they didn't hold.
   - The claim that the user's question "was already searched" is gone: it was false whenever nothing was prefetched.
@@ -322,12 +329,12 @@ Then two rules: document text is quoted material, never instructions; and tool r
 - Passages, nearest in meaning first, each with its reader page. There is no score and no relevance label: the measurements in §6.5 show that closeness can't tell a passage that answers from one that doesn't, so the model reads them to decide. The raw scores are kept in the saved summary, which the browser also receives, and in the DEBUG logs.
 - **Meaning and exact words (v2.3).** A search runs two rankings over the document and fuses them by reciprocal-rank fusion:
   - by meaning (cosine over the embeddings);
-  - by exact words: passages containing every word of the query, from a `'simple'` full-text index that works in any language and keeps labels like "4.2" and "MIMIC-IV".
+  - by exact words: passages containing every word of the query, from a `'simple'` full-text index that works in any language and keeps labels like "4.2" and "MIMIC-IV". **When no passage has every word (C2.1),** the word list is instead the passages with at least half (rounded up) of the query's *informative* words, most words first, then by `ts_rank_cd`. This is word dropping, as Meilisearch does it, so "install podman rootless rhel" still finds a passage that says "install podman rootless". A word is informative when some passage has it but at most half of the passages do, so "what is the clause 4.2" is about "clause" and "4.2", not about words every sentence has; at most the 12 rarest count. A partial match is weaker evidence than a meaning match for a sentence-like query, so it counts a tenth as much as a meaning or all-words match in the fusion.
 
-  One of the 3 best word matches stays even when it is weak in meaning, marked `"match": "words"`; one found both ways is marked `"both"`. Only the top 3 get past the floor this way: a common word matches many passages, and weak ones would crowd out passages close in meaning. The Stage 0 prefetch and `POST /v1/docs/{id}/search` stay meaning-only.
+  One of the 3 best all-words matches stays even when it is weak in meaning, marked `"match": "words"`; one found both ways is marked `"both"`; a partial match whose meaning clears the floor is marked `"some words"`. A partial match gets no pass past the floor: a weak one is dropped like any other weak passage. Only the top 3 all-words matches get past the floor: a common word matches many passages, and weak ones would crowd out passages close in meaning. The Stage 0 prefetch and `POST /v1/docs/{id}/search` stay meaning-only.
 - Passages scoring below `CHAT_SEARCH_MIN_SCORE` (default 0.45) are left out, unless they are among the 3 best word matches. With nothing left, the result says so in words.
 - A passage the model already has this turn is listed by page only, as `"already_shown": [{"ref": 1, "pages": [3, 7]}]`, without its text. That covers passages from the Stage 0 block and from earlier searches, so searching again surfaces new material.
-- Each passage names its document by a short `ref`, listed in `documents`. Only the open document is searched today, as ref 1.
+- Each passage names its document by a short `ref`, listed in `documents`. In a document chat only the open document is searched, as ref 1; in a project chat the refs are the numbers in the project map (§6.6), and the optional `documents` argument narrows one search to some of them. An unknown ref or name comes back as an error listing the valid ones.
 
 Chats saved before v2.3 recorded the tool as `search_document`, and their page citations still open the document.
 
@@ -338,13 +345,14 @@ Chats saved before v2.3 recorded the tool as `search_document`, and their page c
 ```
 1. Server → Stage 0: embed the question, search the open document; good passages
             go straight into the prompt (a data-context event notes this)
-2. Server → calls the model provider with tools=[search_documents, read_document_pages, web_search…]
+2. Server → calls the model provider with tools=[search_documents, read_document_pages,
+            extract_from_documents, and the web tool(s) the web mode allows…]
 3. Provider → streams a tool call (no content for that step)
 4. Server → runs the tool itself (server/chat/tools/), streams the result as
             tool-output-available, appends it to history
 5. Server → calls the model again, with tools while rounds remain; the last
             round's results say so, and the step after it has no tools
-            (CHAT_MAX_TOOL_ROUNDS, default 3), so the turn always ends in an answer
+            (CHAT_MAX_TOOL_ROUNDS, default 3; CHAT_PROJECT_MAX_TOOL_ROUNDS, default 5, in a project chat), so the turn always ends in an answer
 6. Provider → streams the final answer; the server relays it as SSE the whole way
 ```
 
@@ -355,7 +363,7 @@ The browser never talks to a model provider or executes a tool directly any more
 - **Models without tool support** just never get the `tools` field. No breakage.
 - **A model that rejects tools or a thinking level** gets one retry without that feature; you see a one-time toast (`data-notice` event) instead of a failed turn.
 - **A model that writes its tool call as text** (`llama3.2:3b` does this: `{"name": "search_documents", "parameters": {...}}` as the reply, sometimes in a ` ```json ` fence) still gets its search. While a step's reply could still be such a call, the server holds it back (at most 2,000 characters); if it is exactly one object naming a tool offered on that step, and the provider sent no real tool call, the server runs it like a real one and the JSON is never shown or saved. Anything else is released as ordinary text. Prose is never held: the first character that can't start that JSON lets the reply stream at once.
-- **No doc loaded** or **doc not indexed** → `search_documents` isn't offered at all; `web_search` still is, if SearXNG is configured.
+- **No doc loaded** or **doc not indexed** → `search_documents` isn't offered at all; the web tool the mode allows still is, if SearXNG is configured (`offer_web_search` in `ask`, the default).
 
 ---
 
@@ -369,10 +377,10 @@ The browser never talks to a model provider or executes a tool directly any more
 | two-hop | "Which dataset does the method in chapter 3 use, and who collected it?" | both facts, from two pages five apart, and both pages cited |
 | exact-label | "What does Table 7.3 report?" | the value and its page: the exact-word search's job |
 | page-read | "What does page 5 say about the field trial?" | the fact and page 5 |
-| absent | "What is the capital budget for 2030?" | a refusal ("the document doesn't seem to cover…") and no page cited |
+| absent | "What is the capital budget for 2030?" | a refusal ("the document doesn't seem to cover…") or an offer to search the web, and no page cited |
 | small-talk | "Thanks, that's all I needed!" | no tool call and no page cited |
 | general | "In what year did people first walk on the Moon?" | "1969" and no page cited (tools are reported, not judged) |
-| live | "What is the weather in Tromsø right now?" | `web_search` called. Tromsø is in the document (page 5), so this checks that a name from the document with a live intent goes to the web. Shown as SKIP when SearXNG isn't configured. |
+| live | "What is the weather in Tromsø right now?" | In `auto`: `web_search` called. In `ask` (set `CHAT_WEB_SEARCH=ask` for the run): `offer_web_search` called and `web_search` not (the user decides every search, so a search the model ran itself is the failure). Tromsø is in the document (page 5), so this checks that a name from the document with a live intent goes to the web. Shown as SKIP when SearXNG isn't configured, or the mode is `off`. |
 | follow-up | "What is the project's codename?", then "Say that in five words or fewer." | the second answer has the codename and the second turn called no tool |
 
 The last four check the strategy, not the document: whether the model picks the right source, or none (v2.4).
@@ -385,6 +393,7 @@ python scripts/eval_doc_qa.py --model ollama:gemma4:31b-cloud --repeat 3     # a
 
 - **`--repeat N`** (1-10) asks every case N times and ends with a tally per case (`two-hop 2/3`). One run of a small model is noisy: a single case is 11 points of the score.
 - **`--think on|off`** (default `off`, what the chat sends unless a user turns thinking on).
+- **`CHAT_WEB_SEARCH=ask|auto|off`** in the environment sets the web mode of the run. The run is in `auto` unless you say otherwise; `ask` measures the app's default.
 - **Each line shows the seconds** the case's turn took, so a change's cost in time is measured with its effect.
 - **`PASS (no trail)`** means the answer was right, but no document tool ran and no prefetched passages were given: the model got there without the journey, from its own knowledge or by chance.
 
@@ -392,12 +401,12 @@ python scripts/eval_doc_qa.py --model ollama:gemma4:31b-cloud --repeat 3     # a
 - an Ollama cloud model through the local daemon, e.g. `ollama:gemma4:31b-cloud` (after `ollama signin`; it runs on Ollama's servers, about 10 s a run);
 - an OpenRouter model, e.g. `openrouter:google/gemma-4-26b-a4b-it` (needs the `openrouter` provider configured).
 
-Neither hosts the small local models (`gemma4:e4b`, or `llama3.2:3b` with tools), so check those last, one at a time. The web search case still summarises pages with `SUMMARIZE_MODEL` (default `llama3.2:3b`, local), which loads it into RAM.
+Neither hosts the small local models (`gemma4:e4b`, or `llama3.2:3b` with tools), so check those last, one at a time. Reading web pages and many document pages goes through the reader (§6.6), whose model (`READER_MODEL`, default `llama3.2:3b`, local) is loaded into RAM unless you set `READER_MODEL=chat`.
 
 It reads the same environment as the backend: `DATABASE_URL`, the embedding model and the chat provider. It indexes the document for an eval user once (later runs reuse it) and deletes its chats afterwards. Each line reports the tools called and the rounds used.
 - **Exit status:** 0 when every case passed, 1 when the model failed one, and 2 when the harness couldn't run. A turn that ended in an error (provider, budget) is reported as ERROR, not as a model failure.
 - **The eval user:** it runs as its own user (`doc-qa-eval@example.com`, chat and reader only), never as an admin. Its turns count against that user's daily budget and the deployment's.
-- **How the absent case is strict:** it fails if the answer cites any page, including "I checked page 2", or gives any figure; it passes only on a plain "the document doesn't cover it".
+- **How the absent case is strict:** it fails if the answer cites any page, including "I checked page 2", or gives any figure; it passes only on a plain "the document doesn't cover it" or on the offer of a web search (the offer ends the turn; a model that offers without writing anything gets one more step, with no tools, to write its answer, since Task 22).
 - **The page-read case** names its page in the question, so it really tests the fact, not the citation.
 
 Run it after changing a model, a prefix, `CHAT_SEARCH_MIN_SCORE` or the chunk sizes.
@@ -415,6 +424,47 @@ What follows from them:
 - **`CHAT_PREFETCH_MIN_SCORE` (0.6) holds on the short guide but not on the long book.** There "thanks!" (0.62) and "write me a haiku" (0.63) still prefetch passages.
 - **The prefixes help.** In the guide, the passage that answers is in the top five for 9 of 9 questions with them, and 7 of 9 without. A query prefixed against chunks embedded without one, which is a pre-v2.3 document before its rebuild, ranks 8 of 9: no worse than none.
 - **Meaning alone ranks narrative poorly.** In the book, the passage that answers is in the top five for only 4 of 12 questions. The exact-word search, more search rounds and reading whole pages are what make up for it.
+
+### 6.6. Asking a whole project (C2.1)
+
+A project (a team's shelf of documents, see [LIBRARY.md](LIBRARY.md)) can be the thing a chat is about, so "what are the features?" is answered from the README, the deployment guide and the user guide together. Design and the reasons for each call: [the spec](superpowers/specs/2026-10-18-project-chat-design.md); the code-level tour: [ARCHITECTURE.md](ARCHITECTURE.md#project-chat-the-reader-and-web-consent-c21).
+
+**Starting one.** Library → **Projects** → open a project → **Ask about this project** (shown to project members who have the chat permission). Or, in any chat, click the scope chip and pick a project (the ones that hold the open document are listed first, then **Choose a project…**). Every turn sends `context.project_id`, and the server re-checks membership each time, so a removed member's next message is refused (404, "This project doesn't exist or you don't have access.") and the chat falls back to no project.
+
+**What the model is given.**
+- **The map.** One block in the system message, after the rules and before the pins: every current document of the project, numbered from 1 (the `ref` every tool uses), with its page count, its state if it isn't indexed, "open in the reader" if it is, and its outline or opening line.
+
+  ```
+  <project_documents project="Natural Reader docs">
+  1. "README.md" — 9 pages. Outline: Features p1 · Quick start p2 · Configuration p4
+  2. "DEPLOYMENT.md" — 14 pages — open in the reader. Outline: Requirements p1 · Containers p3
+  3. "Annual scan.pdf" — 40 pages. No outline; starts: "Annual report 2024. Prepared by …"
+  4. "Notes.txt" — being indexed, not searchable yet.
+  </project_documents>
+  ```
+
+  Over `CHAT_PROJECT_MAP_CHARS` (6,000 characters, about 1,500 tokens) the outlines are shortened step by step: level-3 headings go, then each document keeps only its first 8 headings, then level 2 goes, then names and pages only. Once anything was cut the map says so and the model gets `document_outline`. Names and headings are other people's text, so each is made one inert line, and the data rule names the tag.
+- **The tools.** The model chooses between them; nothing in the app picks one by context size.
+
+  | Tool | Offered when | Use |
+  |---|---|---|
+  | `search_documents(query, k?, documents?)` | the scope has an indexed document | find *where* something is, by a phrase or a distinctive name, label or number; `documents` narrows it |
+  | `read_document_pages(document, first_page, last_page?)` | same | the exact wording of a short section; in a project `document` says which, and left out means the document open in the reader if it is one of the project's (otherwise the call is refused) |
+  | `extract_from_documents(documents, need, pages?)` | same | go through a lot of text for one goal (every command in order, a list to collect) |
+  | `document_outline(document)` | the map was shortened | the full outline of one document |
+  | `offer_web_search(query, reason)` | web mode `ask` | propose a web search to the user |
+  | `web_search(query)` | web mode `auto` | list web results |
+  | `read_web_pages(results, need)` | `auto`, or `ask` after the user's yes | read 1-3 of this turn's web results |
+
+**One search across the project.** `search_documents` ranks the whole project as one list: meaning and exact words fused once by reciprocal-rank fusion, then balanced so one long document can't take every slot (`CHAT_SEARCH_PER_DOC`, default 2 passages per document, skipped ones filling a short list). When no passage has every word of the query, passages with at least half of its informative words rank (so "install podman rootless rhel" still finds "install podman rootless"); this applies to a single document too. Details and the SQL reasoning are in `doc_search.search_scope`'s docstring.
+
+**The reader.** `extract_from_documents` and `read_web_pages` don't hand pages to the chat model. They hand them to a *reader*: a separate model call with a fresh context and no tools, given the chat model's goal and batches of labelled passages, which returns only the facts that serve the goal, each with a verbatim quote. The app then checks every quote against the passage the reader named (ignoring case, curly quotes, dash kinds and a line-end hyphen; accepting the fenced form the model saw) and drops any fact whose quote isn't there. That check is what makes it accurate rather than just shorter, and it is also where a fact gets its exact page for the citation. A batch that fails or times out has its pages listed under `failed` in the result (documents; `not_read` is for pages left out by the page cap) or is replaced by a short fenced excerpt (a web page). `extract_from_documents` reads up to `CHAT_EXTRACT_MAX_PAGES` (default 12) pages per call, choosing the pages closest to the goal when there are more and listing what it didn't read (`not_read`); its result is capped at `CHAT_EXTRACT_OUTPUT_CHARS` (4,000, about 15-25% more once indented for the model). The model is `READER_MODEL`; on a CPU-only Ollama set `READER_MODEL=chat` so no second model is loaded (all `READER_*` knobs: [DEPLOYMENT.md](DEPLOYMENT.md#project-chat-the-reader-and-web-search)).
+
+**Web search asks first.** In `ask` mode (the default) the model is not given a way to search. It can call `offer_web_search(query, reason)`; that ends the turn (if the model wrote no text in that round it first gets one more step, with no tools, to write its answer: what the documents say and don't cover, and general knowledge labelled as such, never with a page), and the reply, text first, gets an offer card ("Search the web?", the reason, the query in an editable field, **Search the web** / **Not now**). The model is told what to write by a note in the offer's result, which differs by what it can search: a project's searchable documents, the one open document, or nothing to search (no document, or a project still indexing), where the answer is general knowledge said not to be from a search. If the daily budget is used up the answer step is skipped and the card still comes, with a notice. If you press Stop during the answer step you keep the text written so far and get no card for that reply; ask again, or type "search the web for X", to bring the card back. **Search the web** starts a new turn with the visible message "Search the web for: *query*" and `context.web = {query}`. On that turn the app runs exactly that query itself, before the model's first step, as a `web_search` tool exchange the model finds in its prompt; the model may then call `read_web_pages` on the results, or `offer_web_search` for a different search (which needs its own yes), and, in `ask` mode, is never given `web_search`. (In `auto` mode an approved turn gets that mode's tools as usual, `web_search` included; in `off` mode the approval is ignored.) The admin console's **Chat options → Web search** sets the mode for everyone (*Ask first*, *Search without asking*, *Off*), over `CHAT_WEB_SEARCH`, with **Use the server setting** to go back. A fact taken from a web page cites its site, `(example.com)`, and the pages read are listed as links under the reply. Web text is untrusted data: it is fenced in the reader's prompt and its facts reach the chat model as data.
+
+**Citations and source chips.** A fact from a document is cited `(Name, page N)`, with the name exactly as the map gives it; several can be joined, `(A.md, page 3; B.md, pages 1-2)`. The reply saves a `scope` note listing the documents it could cite, and the client links a citation only when its name is in that note; a name that isn't stays text. A bare `(page N)` links only when the reply's evidence came from one document. The source chips under the reply are grouped by document (**Guide.md · p. 3 · p. 6**), with the same "used" or "searched" split as for one document.
+
+**Measuring a project chat.** `scripts/eval_project_qa.py --model … --variant 9|50` asks about 14 questions of a frozen copy of this repository's docs (variant 50 adds 41 generated padding documents, so the map is shortened), through the real turn path, on a scratch database; `--web-fixture` adds the web-read case against a fake web. It fails any answer that cites a document a case forbids, because a citation that names the wrong document is worse than none. `scripts/bench_project_search.py` times `search_scope` on synthetic data (target: p95 under 300 ms for 50 documents of 200 chunks, database work only).
 
 ## 7. Sessions & persistence
 
@@ -459,7 +509,7 @@ the server writes messages itself now, C1.)
 | **Toast: "This model rejected tools" / "…rejected thinking"** | The selected model 4xx'd on that feature; the server retried once without it. | Switch to a model with better feature support, or accept the plain answer — the retry already succeeded. |
 | **Autonomous search never fires and there's no "Used N passages" note either** | The doc isn't indexed yet (state ≠ `indexed`), OR the model doesn't report tool support. | Click Index; or switch to a tools-capable model. |
 | **Old IDB session won't accept new messages** | Read-only by design. | Just type — the next send copies (imports) the session onto Postgres. The IDB original is preserved. |
-| **The machine runs out of RAM while chatting** | Several models loaded at once: Ollama keeps each for 5 minutes after use, and allows 3 on CPU by default. Web search also loads `SUMMARIZE_MODEL` (default `llama3.2:3b`) next to the chat model. A user's "keep warm: Always" or a large context size adds to it. | On the Ollama server set `OLLAMA_MAX_LOADED_MODELS=2` (one chat model plus the embedding model; 1 makes them evict each other on every message). Set `SUMMARIZE_MODEL` to the model you chat with, so web summaries don't load a second one. `INFERENCE_NUM_CTX_MAX` and `INFERENCE_KEEP_ALIVE_MAX` (v2.4) cap what users can ask for. |
+| **The machine runs out of RAM while chatting** | Several models loaded at once: Ollama keeps each for 5 minutes after use, and allows 3 on CPU by default. The reader (project chat, `extract_from_documents`, reading web pages) loads `READER_MODEL` (default `llama3.2:3b`) next to the chat model. A user's "keep warm: Always" or a large context size adds to it. | On the Ollama server set `OLLAMA_MAX_LOADED_MODELS=2` (one chat model plus the embedding model; 1 makes them evict each other on every message). Set `READER_MODEL=chat`, so the reader uses the model you chat with instead of loading a second one. `INFERENCE_NUM_CTX_MAX` and `INFERENCE_KEEP_ALIVE_MAX` (v2.4) cap what users can ask for. |
 | **A second "Send" in the same chat does nothing / errors** | Only one turn can stream per chat at a time; a second send while one is in flight gets `409 turn_in_progress`. | Wait for the first reply to finish or click Stop, then send again. |
 
 ---
@@ -472,9 +522,9 @@ All under `http://localhost:8000` by default. Same FastAPI app as the existing K
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/v1/chat/sessions` | List session metadata (newest first). |
+| `GET` | `/v1/chat/sessions` | List session metadata (newest first). Each carries `scopeProject` (`{id, name}` or `null`; `name` is `null` when the caller can no longer see the project). |
 | `GET` | `/v1/chat/sessions/{id}` | Full record: messages + events. |
-| `POST` | `/v1/chat/sessions/{id}/turns` | **Run one turn** (C1). Server-sent events; the server writes the reply itself as it streams. This replaces the old whole-record `PUT` upsert, which is gone. |
+| `POST` | `/v1/chat/sessions/{id}/turns` | **Run one turn** (C1). Server-sent events; the server writes the reply itself as it streams. This replaces the old whole-record `PUT` upsert, which is gone. `context.project_id` (C2.1) scopes the chat to a project (`null` clears it, absent keeps it; a project the caller isn't a member of is 404 and clears the scope); `context.web` is `{query}`, the user's approval of one web search for this turn. |
 | `POST` | `/v1/chat/sessions/import` | Create-only: copies a legacy IndexedDB-only session onto Postgres (C1, replaces the fork-on-`PUT` behavior). |
 | `PATCH` | `/v1/chat/sessions/{id}` | Partial update — any of `title`, `model`, `pins` (the last powers instant pin save on an existing session). |
 | `DELETE` | `/v1/chat/sessions/{id}` | Cascade-deletes messages + events. |
@@ -518,7 +568,7 @@ The backend also ships as a container (`./startup.sh start`, see [DEPLOYMENT.md]
 
 ## 11. What's next
 
-The server-side tool registry (`server/chat/tools/` — moved from the browser's `src/lib/chatTools/` in C1) is built to host more tools. `search_documents` and `web_search` (SearXNG-backed) already ship; still open:
+The server-side tool registry (`server/chat/tools/` — moved from the browser's `src/lib/chatTools/` in C1) is built to host more tools. `search_documents`, `read_document_pages`, `extract_from_documents`, `document_outline`, `web_search` (SearXNG-backed), `read_web_pages` and `offer_web_search` already ship; still open:
 
 - **`read_url`** — fetch + readability so the model can ingest a URL the user mentions.
 - **`code_interpreter`** — sandboxed Python execution. The biggest jump in scope (process isolation).
@@ -531,6 +581,6 @@ Also tabled for future work:
   - **Per-answer result budget:** `CHAT_TOOL_RESULT_BUDGET_CHARS`, default 24,000. Past it, a call returns "Search budget for this answer used up: answer from what you have." A result that would go past the budget is dropped unseen, and its passages don't count as shown.
   - **Repeated calls:** a call identical to an earlier one in the same answer returns "Already searched: see the results above." without running.
   - **Daily token budget:** checked before every step.
-  - **Web search guard:** `web_search` refuses queries over 300 characters, and any query that shares a run of 8 words with document text the model has this turn (the Stage 0 passages, pins, search results, pages read). For scripts written without spaces (Chinese, Japanese, Thai and others), the check is a shared run of 12 characters. The check also covers the model's own earlier answers in the chat, since they often quote the document; your own messages are not checked. It tells the model to search by topic instead. **Limit:** it catches copied runs, not meaning. A short sensitive fragment, under 8 words, can still be sent, so don't rely on it as a data-loss filter.
+  - **Web search guard:** `web_search` and `offer_web_search` refuse queries over 300 characters, and any query that shares a run of 8 words with document text the model has this turn (the Stage 0 passages, pins, search results, pages read). For scripts written without spaces (Chinese, Japanese, Thai and others), the check is a shared run of 12 characters. The check also covers the model's own earlier answers in the chat, since they often quote the document; your own messages are not checked. It tells the model to search by topic instead. **Limit:** it catches copied runs, not meaning. A short sensitive fragment, under 8 words, can still be sent, so don't rely on it as a data-loss filter.
   - **Status line:** the reply says what is running ("Searching the document…", "Reading the document…", "Searching the web…"), and "Still searching… (round n)" from the second round on.
 - **No-chip retrieval toggle** for users who want manual whole-doc context without going through Ask page / Ask AI first.

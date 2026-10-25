@@ -189,6 +189,117 @@ async def test_pipeline_on_converted_doc_seeds_from_pages(db_conn, harness, stor
     assert doc["extracted_by"] == "client"  # converted pages aren't native extraction
 
 
+async def _outline(db_conn, doc_id=DOC):
+    cur = await db_conn.execute(
+        "SELECT entries, opening, source FROM doc_outlines WHERE doc_id = %s", (doc_id,))
+    return await cur.fetchone()
+
+
+async def test_indexing_saves_the_outline(db_conn, harness, store):
+    owner = await _member(db_conn, "p-outline")
+    data = b"# A\n\nOpening words of the document go here.\n\n## B\n\nMore words follow in this part.\n"
+    doc_id = _sha256(data)
+    path = _write(store, doc_id, "md", data)
+    await seed.seed_doc(db_conn, doc_id, owner.user_id, file_type="markdown", state="stored",
+                        bytes_path=path)
+
+    await doc_pipeline.run_pipeline(doc_id)
+
+    entries, opening, source = await _outline(db_conn, doc_id)
+    assert entries == [{"level": 1, "text": "A", "page": 1}, {"level": 2, "text": "B", "page": 1}]
+    assert opening == "A"
+    assert source == "headings"
+
+
+async def test_markdown_without_headings_saves_source_none_and_its_opening(db_conn, harness, store):
+    owner = await _member(db_conn, "p-no-headings")
+    data = b"Just prose, with no heading at all. A second sentence follows it here.\n\n```sh\nrun it\n```\n"
+    doc_id = _sha256(data)
+    path = _write(store, doc_id, "md", data)
+    await seed.seed_doc(db_conn, doc_id, owner.user_id, file_type="markdown", state="stored",
+                        bytes_path=path)
+
+    await doc_pipeline.run_pipeline(doc_id)
+
+    entries, opening, source = await _outline(db_conn, doc_id)
+    assert (entries, source) == ([], "none")
+    assert opening == "Just prose, with no heading at all. A second sentence follows it here."
+
+
+async def test_a_pdf_with_bookmarks_saves_a_bookmarks_outline(db_conn, harness, store, monkeypatch):
+    owner = await _member(db_conn, "p-bookmarks")
+    data = make_pdf(["Page one text is here.", "Page two text is here."])
+    doc_id = _sha256(data)
+    path = _write(store, doc_id, "pdf", data)
+    await seed.seed_doc(db_conn, doc_id, owner.user_id, file_type="pdf", state="stored", bytes_path=path)
+    monkeypatch.setattr(extract, "_pdf_outline", lambda p: (extract.OutlineEntry(1, "Chapter", 2),))
+
+    await doc_pipeline.run_pipeline(doc_id)
+
+    entries, opening, source = await _outline(db_conn, doc_id)
+    assert entries == [{"level": 1, "text": "Chapter", "page": 2}]
+    assert opening.startswith("Page one text")
+    assert source == "bookmarks"
+
+
+async def test_a_plain_text_file_saves_an_outline_with_only_its_opening(db_conn, harness, store):
+    owner = await _member(db_conn, "p-plain")
+    doc_id = _sha256(TEXT)
+    path = _write(store, doc_id, "txt", TEXT)
+    await seed.seed_doc(db_conn, doc_id, owner.user_id, file_type="text", state="stored", bytes_path=path)
+
+    await doc_pipeline.run_pipeline(doc_id)
+
+    entries, opening, source = await _outline(db_conn, doc_id)
+    assert (entries, source) == ([], "none")
+    assert opening == TEXT.decode()[:extract.OPENING_CHARS]
+
+
+async def test_converted_pages_save_a_headings_outline(db_conn, harness, store):
+    owner = await _member(db_conn, "p-conv-outline")
+    path = _write(store, DOC, "pdf", make_pdf(["Native page text"]))
+    await seed.seed_doc(db_conn, DOC, owner.user_id, file_type="pdf", state="stored", bytes_path=path)
+    await db_conn.execute("UPDATE documents SET conversion_state = 'converted' WHERE doc_id = %s", (DOC,))
+    pages = ((1, "# Title\n\nIntro text.\n\n```sh\n# not a heading\n```"),
+             (2, "## Details\n\nBody text.\n\nSetext\n======"),
+             (3, "Plain page with no heading."))
+    for page, md in pages:
+        await db_conn.execute("INSERT INTO doc_pages (doc_id, page, markdown) VALUES (%s,%s,%s)",
+                              (DOC, page, md))
+
+    await doc_pipeline.run_pipeline(DOC)
+
+    entries, opening, source = await _outline(db_conn)
+    assert entries == [{"level": 1, "text": "Title", "page": 1}, {"level": 2, "text": "Details", "page": 2}]
+    assert opening == pages[0][1][:extract.OPENING_CHARS]
+    assert source == "headings"
+
+
+async def test_converted_pages_without_headings_save_source_none(db_conn, harness, store):
+    owner = await _member(db_conn, "p-conv-none")
+    path = _write(store, DOC, "pdf", make_pdf(["Native page text"]))
+    await seed.seed_doc(db_conn, DOC, owner.user_id, file_type="pdf", state="stored", bytes_path=path)
+    await db_conn.execute("UPDATE documents SET conversion_state = 'converted' WHERE doc_id = %s", (DOC,))
+    await db_conn.execute("INSERT INTO doc_pages (doc_id, page, markdown) VALUES (%s, 1, 'Only prose here.')",
+                          (DOC,))
+
+    await doc_pipeline.run_pipeline(DOC)
+
+    assert await _outline(db_conn) == ([], "Only prose here.", "none")
+
+
+async def test_a_failed_extraction_saves_no_outline(db_conn, harness, store):
+    owner = await _member(db_conn, "p-no-outline")
+    data = b"%PDF-1.4 garbage"
+    doc_id = _sha256(data)
+    path = _write(store, doc_id, "pdf", data)
+    await seed.seed_doc(db_conn, doc_id, owner.user_id, file_type="pdf", state="stored", bytes_path=path)
+
+    await doc_pipeline.run_pipeline(doc_id)
+
+    assert await _outline(db_conn, doc_id) is None
+
+
 # ---------- run_legacy_swap ----------
 
 async def _seed_legacy(db_conn, store, sub, *, doc_id=None):

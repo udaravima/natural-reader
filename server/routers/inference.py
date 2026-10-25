@@ -23,7 +23,7 @@ def _strip_latest(name: str) -> str:
 @router.get("/models")
 async def list_models(
     principal: deps.Principal = Depends(deps.require_capability("chat")),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
 ):
     """Every configured provider's models, tagged `provider:name`, with
     capabilities (spec §7.5). One failing provider is omitted; all failing is 502."""

@@ -307,7 +307,9 @@ and the admin console's two-way capability editor both work — see
 
 ## Roles → UI: capability-gated views
 
-What the frontend knows: `GET /v1/auth/me` → `{id, email, role, capabilities}`,
+What the frontend knows: `GET /v1/auth/me` → `{id, email, role, capabilities}`
+(plus the token's `scopes` and `read_aloud`, and the profile fields `name`,
+`first_name`, `last_name`, `username`, `avatar_url`, `account_url`),
 held in `useAuth`'s `user` state (`capabilities` defaults to `[]` if the
 backend omits it). The SPA has no router — `viewMode` state *is* the routing —
 and it is now a **three-way** value: `'reader' | 'chat' | 'admin'`, each

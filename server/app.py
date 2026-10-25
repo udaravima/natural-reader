@@ -27,6 +27,8 @@ from .routers.inference import router as inference_router
 from .routers.project_documents import router as project_documents_router
 from .routers.projects import router as projects_router
 from .routers.people import router as people_router
+from .routers.settings import router as settings_router
+from .routers.profile import router as profile_router
 from .routers.tools import router as tools_router
 from .services import doc_storage, docling_convert, project_events
 from .services.embeddings import start_client as start_embeddings, stop_client as stop_embeddings
@@ -86,6 +88,8 @@ def create_app() -> FastAPI:
     app.include_router(projects_router)
     app.include_router(project_documents_router)
     app.include_router(people_router)
+    app.include_router(settings_router)
+    app.include_router(profile_router)
     app.include_router(inference_router)
 
     @app.on_event("startup")

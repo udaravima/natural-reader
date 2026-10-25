@@ -1,11 +1,12 @@
 import {
     Play, Pause, Square, Upload, Volume2, SkipForward, SkipBack,
     Loader2, Download, Keyboard, Clock,
-    PanelLeftClose, Menu, Home, Library, X, Maximize2, Settings as SettingsIcon
+    PanelLeftClose, Menu, Home, Library, X, Maximize2, Settings as SettingsIcon, MessagesSquare
 } from 'lucide-react';
 import HeaderOverflowMenu from './HeaderOverflowMenu';
 import ProfileMenu from './ProfileMenu';
 import ViewSwitcher from './ViewSwitcher';
+import NarrationMiniPlayer from './NarrationMiniPlayer';
 
 export default function Header({
     theme,
@@ -43,13 +44,20 @@ export default function Header({
     workspaceName,
     onCloseWorkspace,
     user,
+    apiHost, apiPort,
     onLogout,
+    // { held, docName, currentPage, numPages, pausedForChat }: the narration
+    // outside the reader (NarrationMiniPlayer).
+    narration = null,
+    onOpenSettings,
+    // Chat beside the page (reader, wide screens): null hides the toggle.
+    chatPanelOpen = false,
+    onToggleChatPanel = null,
 }) {
     const isExportingBook = !!bookProgress;
     // Reader-only chrome (playback, downloads, overflow menu, upload) shows
     // in the reader view only — not in chat, not in the admin console.
     const inReader = viewMode === 'reader';
-    const inSettings = viewMode === 'settings';
     return (
         <header className={`h-16 ${theme.bgSecondary} border-b ${theme.border} px-4 md:px-6 flex items-center justify-between z-20 sticky top-0 shadow-sm transition-colors duration-300`}>
             <div className="flex items-center gap-2 md:gap-3">
@@ -114,20 +122,45 @@ export default function Header({
             </div>
             )}
 
+            {/* NARRATION — outside the reader, while it has a place in the document */}
+            {!inReader && hasDocument && narration?.held && (
+                <NarrationMiniPlayer
+                    theme={theme}
+                    docName={narration.docName}
+                    currentPage={narration.currentPage}
+                    numPages={narration.numPages}
+                    isPlaying={isPlaying}
+                    pausedForChat={narration.pausedForChat}
+                    onPlayPause={handlePlayPause}
+                    onStop={stopPlayback}
+                    onShowReader={() => setViewMode('reader')}
+                />
+            )}
+
             {/* RIGHT CONTROLS */}
             <div className="flex items-center gap-1 md:gap-3">
+                {inReader && onToggleChatPanel && (
+                    <button
+                        onClick={onToggleChatPanel}
+                        aria-pressed={chatPanelOpen}
+                        className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${chatPanelOpen ? 'text-blue-500' : `${theme.textSecondary} hover:text-blue-500`}`}
+                        title={chatPanelOpen ? 'Close the chat beside the page' : 'Chat beside the page'}
+                    >
+                        <MessagesSquare size={20} />
+                    </button>
+                )}
                 {/* Reader / Chat / Admin toggle */}
                 <ViewSwitcher theme={theme} viewMode={viewMode} setViewMode={setViewMode} isAdmin={isAdmin} canReader={canReader} canChat={canChat} />
 
                 {/* Settings gear + profile menu — persistent, all widths */}
                 <button
-                    onClick={() => setViewMode('settings')}
-                    className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${inSettings ? 'text-blue-500' : `${theme.textSecondary} hover:text-blue-500`}`}
+                    onClick={() => onOpenSettings?.()}
+                    className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
                     title="Settings"
                 >
                     <SettingsIcon size={20} />
                 </button>
-                <ProfileMenu theme={theme} user={user} darkMode={darkMode} setDarkMode={setDarkMode} setViewMode={setViewMode} onLogout={onLogout} />
+                <ProfileMenu theme={theme} user={user} apiHost={apiHost} apiPort={apiPort} darkMode={darkMode} setDarkMode={setDarkMode} onOpenSettings={onOpenSettings} onLogout={onLogout} />
 
                 {/* Estimated Time */}
                 {inReader && hasDocument && calculateEstimatedTimeRemaining(playbackSpeed) && (
@@ -157,9 +190,11 @@ export default function Header({
                         <div className={`hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.textSecondary}`}>
                             <Loader2 size={14} className="animate-spin text-green-500" />
                             <div className="text-[10px] leading-tight">
-                                <div className="font-bold">
-                                    {bookProgress.current}/{bookProgress.total}
-                                </div>
+                                {bookProgress.total ? (
+                                    <div className="font-bold">
+                                        {bookProgress.current}/{bookProgress.total}
+                                    </div>
+                                ) : null}
                                 <div className={`${theme.textMuted}`}>{bookProgress.label}</div>
                             </div>
                             <button
@@ -235,6 +270,7 @@ export default function Header({
                         onEnterDistractionFree={onEnterDistractionFree}
                         onGoHome={onGoHome}
                         onDownloadBookAudio={onDownloadBookAudio}
+                        onCancelBookDownload={onCancelBookDownload}
                         bookProgress={bookProgress}
                         hasDocument={hasDocument}
                     />

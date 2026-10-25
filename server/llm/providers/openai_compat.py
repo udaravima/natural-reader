@@ -19,6 +19,22 @@ from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_fea
 logger = logging.getLogger(__name__)
 
 _EFFORT = {"on": "medium", "low": "low", "medium": "medium", "high": "high"}   # 'off' -> omitted
+
+
+def _reasoning(entry: dict | None, think: str) -> tuple[str | None, bool]:
+    """(effort, as_object) for this model. OpenRouter describes a reasoning
+    model with a `reasoning` object in /models, takes the effort as
+    `reasoning: {"effort": ...}`, and gives a request that leaves it out the
+    model's DEFAULT, which for many is on: so "off" has to be sent, as "none"
+    ("disables reasoning entirely"), unless the model's reasoning is mandatory
+    (it rejects "none" and reasons anyway). Elsewhere (OpenAI, vLLM) "off"
+    stays omitted: no portable value turns reasoning off."""
+    meta = (entry or {}).get("reasoning")
+    if not isinstance(meta, dict):
+        return _EFFORT.get(think), False
+    if think == "off":
+        return (None if meta.get("mandatory") else "none"), True
+    return _EFFORT.get(think), True
 _AUDIO_FORMAT = {"audio/wav": "wav", "audio/x-wav": "wav", "audio/wave": "wav",
                  "audio/mpeg": "mp3", "audio/mp3": "mp3"}
 
@@ -71,6 +87,12 @@ class OpenAICompatProvider:
         self._models.put("models", entries)
         return entries
 
+    async def _entry(self, model: str) -> dict | None:
+        try:
+            return (await self._entries()).get(model)
+        except (ProviderUnavailable, ProviderError):
+            return None
+
     async def list_models(self) -> list[str]:
         return list((await self._entries()).keys())
 
@@ -96,15 +118,15 @@ class OpenAICompatProvider:
     async def stream_chat(self, model: str, messages: list[Message], tools: list[ToolSpec],
                           settings: CallSettings) -> AsyncIterator[Chunk]:
         caps = await self.capabilities(model)
-        effort = None
+        effort, as_object = None, False
         if caps.thinking is not False and not self._features.rejected(model, "thinking"):
-            effort = _EFFORT.get(settings.think)
+            effort, as_object = _reasoning(await self._entry(model), settings.think)
         use_tools = bool(tools) and caps.tools is not False and not self._features.rejected(model, "tools")
         fold = self._features.rejected(model, "system")
         dropped: list[str] = []
         while True:
             body = self._body(model, fold_system(messages) if fold else messages,
-                              tools if use_tools else [], settings, effort)
+                              tools if use_tools else [], settings, effort, as_object)
             request = self._client.build_request("POST", f"{self.config.url}/chat/completions",
                                                  json=body, headers=auth_headers(self.config))
             try:
@@ -131,7 +153,7 @@ class OpenAICompatProvider:
 
     @staticmethod
     def _body(model: str, messages: list[Message], tools: list[ToolSpec],
-              settings: CallSettings, effort: str | None) -> dict[str, Any]:
+              settings: CallSettings, effort: str | None, as_object: bool = False) -> dict[str, Any]:
         body: dict[str, Any] = {"model": model, "stream": True,
                                 "stream_options": {"include_usage": True},
                                 "messages": [_wire_message(m) for m in messages]}
@@ -139,7 +161,9 @@ class OpenAICompatProvider:
             body["tools"] = [{"type": "function", "function": {
                 "name": t.name, "description": t.description, "parameters": t.parameters}}
                 for t in tools]
-        if effort:
+        if effort and as_object:
+            body["reasoning"] = {"effort": effort}
+        elif effort:
             body["reasoning_effort"] = effort
         if settings.num_predict is not None:
             body["max_tokens"] = settings.num_predict

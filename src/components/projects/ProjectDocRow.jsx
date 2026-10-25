@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { BookOpen, ChevronDown, ChevronRight, MoreHorizontal, X } from 'lucide-react';
 import VersionHistory from './VersionHistory';
+import { useMenuDismiss } from '../../hooks/useMenuDismiss';
 
 const count = (n) => (n === 1 ? '1 version' : `${n} versions`);
 
@@ -8,17 +9,23 @@ const count = (n) => (n === 1 ? '1 version' : `${n} versions`);
  * One document in a project (V1 spec §6): its current version, a version
  * count that expands into the history, and a ⋯ menu with Upload new version
  * (Contributor+) and Mark as newer version of… (Maintainer+). × removes the
- * document with its history (Maintainer+), after a confirmation.
+ * document with its history (Maintainer+), after a confirmation. The ⋯ menu
+ * closes on Escape (the focus goes back to ⋯), on a click anywhere outside
+ * ⋯ and the menu, and on ⋯ again; ⋯ reports aria-expanded.
  */
 export default function ProjectDocRow({ theme, api, project, doc, others, mine, busy, run, onOpenDoc }) {
   const { can } = project;
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState(false);
+  const menuRef = useRef(null);      // ⋯ and its menu: a click inside is not "outside"
+  const menuButtonRef = useRef(null);
   const [panel, setPanel] = useState(null); // 'upload' | 'merge' | 'remove'
   const [file, setFile] = useState(null);
   const [fromLibrary, setFromLibrary] = useState('');
   const [note, setNote] = useState('');
   const [mergeInto, setMergeInto] = useState('');
+
+  useMenuDismiss({ open: menu, onClose: () => setMenu(false), wrapRef: menuRef, openerRef: menuButtonRef });
 
   const close = () => { setPanel(null); setFile(null); setFromLibrary(''); setNote(''); setMergeInto(''); };
   const after = (ok) => { if (ok) close(); };
@@ -47,7 +54,7 @@ export default function ProjectDocRow({ theme, api, project, doc, others, mine, 
             {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}v{doc.version} · {count(doc.versions_count)}
           </button>
         </span>
-        <span className="relative flex items-center gap-2 shrink-0">
+        <span className="flex items-center gap-2 shrink-0">
           {onOpenDoc && (
             <button onClick={() => onOpenDoc({ doc_id: doc.doc_id, file_name: doc.name })} aria-label={`Open ${doc.name}`}
               className="flex items-center gap-1 px-2 py-0.5 text-[10px] rounded bg-blue-500 text-white hover:bg-blue-600">
@@ -55,16 +62,19 @@ export default function ProjectDocRow({ theme, api, project, doc, others, mine, 
             </button>
           )}
           {can.file_docs && (
-            <button onClick={() => setMenu(!menu)} aria-label={`More actions for ${doc.name}`} aria-haspopup="menu"
-              disabled={busy} className={`-m-1 p-1.5 hover:text-blue-500 disabled:opacity-50 ${theme.textSecondary}`}>
-              <MoreHorizontal size={12} />
-            </button>
-          )}
-          {menu && (
-            <span role="menu" className={`absolute right-0 top-5 z-10 flex flex-col min-w-[12rem] p-1 rounded border shadow ${theme.border} ${theme.bg}`}>
-              <button role="menuitem" onClick={() => choose('upload')} className="text-left text-[11px] px-2 py-1 hover:text-blue-500">Upload new version</button>
-              {can.remove_docs && others.length > 0 && (
-                <button role="menuitem" onClick={() => choose('merge')} className="text-left text-[11px] px-2 py-1 hover:text-blue-500">Mark as newer version of…</button>
+            <span ref={menuRef} className="relative flex">
+              <button ref={menuButtonRef} onClick={() => setMenu(!menu)} aria-label={`More actions for ${doc.name}`}
+                aria-haspopup="menu" aria-expanded={menu}
+                disabled={busy} className={`-m-1 p-1.5 hover:text-blue-500 disabled:opacity-50 ${theme.textSecondary}`}>
+                <MoreHorizontal size={12} />
+              </button>
+              {menu && (
+                <span role="menu" className={`absolute right-0 top-5 z-10 flex flex-col min-w-[12rem] p-1 rounded border shadow ${theme.border} ${theme.bg}`}>
+                  <button role="menuitem" onClick={() => choose('upload')} className="text-left text-[11px] px-2 py-1 hover:text-blue-500">Upload new version</button>
+                  {can.remove_docs && others.length > 0 && (
+                    <button role="menuitem" onClick={() => choose('merge')} className="text-left text-[11px] px-2 py-1 hover:text-blue-500">Mark as newer version of…</button>
+                  )}
+                </span>
               )}
             </span>
           )}

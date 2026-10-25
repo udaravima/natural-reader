@@ -26,7 +26,7 @@ async def _get(app, path, headers=None):
 
 
 async def test_me_returns_principal(db_conn):
-    p = deps.Principal(user_id="u1", email="a@x.io", role="admin")
+    p = deps.Principal(user_id="00000000-0000-0000-0000-0000000000a1", email="a@x.io", role="admin")
     r = await _get(_app(db_conn, principal=p), "/v1/auth/me")
     assert r.status_code == 200 and r.json()["email"] == "a@x.io"
 
@@ -37,7 +37,7 @@ async def test_me_401_without_principal(db_conn):
 
 
 async def test_me_returns_capabilities(db_conn):
-    p = deps.Principal(user_id="u", email="e@x.io", role="member",
+    p = deps.Principal(user_id="00000000-0000-0000-0000-0000000000a2", email="e@x.io", role="member",
                        capabilities=frozenset({"reader"}))
     r = await _get(_app(db_conn, principal=p), "/v1/auth/me")
     body = r.json()

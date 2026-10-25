@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import {
     MoreHorizontal, Zap, Moon, Sun, Download, Keyboard, Maximize2,
-    Home, Library, Loader2,
+    Home, Library, Loader2, X,
 } from 'lucide-react';
+import { useMenuDismiss } from '../hooks/useMenuDismiss';
 
 /**
  * Overflow menu for the Header — visible at any viewport narrower than `lg`
@@ -21,6 +22,9 @@ import {
  * `show: false` are silently skipped — convenient for conditional items like
  * "Download page audio" that only appear when Kokoro is selected and a
  * document is open.
+ *
+ * The wrapper is data-own-keys: with the focus on the button or in the menu,
+ * Space and Escape belong to the menu, not to the reader's narration shortcuts.
  */
 export default function HeaderOverflowMenu({
     theme,
@@ -31,28 +35,15 @@ export default function HeaderOverflowMenu({
     onShowShortcuts,
     onEnterDistractionFree,
     onGoHome,
-    onDownloadBookAudio, bookProgress,
+    onDownloadBookAudio, onCancelBookDownload, bookProgress,
     hasDocument,
 }) {
     const [open, setOpen] = useState(false);
     const wrapRef = useRef(null);
 
-    // Click outside / Escape closes.
-    useEffect(() => {
-        if (!open) return undefined;
-        const onClick = (e) => {
-            if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
-        };
-        const onKey = (e) => {
-            if (e.key === 'Escape') setOpen(false);
-        };
-        document.addEventListener('mousedown', onClick);
-        document.addEventListener('keydown', onKey);
-        return () => {
-            document.removeEventListener('mousedown', onClick);
-            document.removeEventListener('keydown', onKey);
-        };
-    }, [open]);
+    const openerRef = useRef(null);
+    // Click outside / Escape closes (Escape also returns the focus to the button).
+    useMenuDismiss({ open, onClose: () => setOpen(false), wrapRef, openerRef });
 
     const close = () => setOpen(false);
 
@@ -95,12 +86,18 @@ export default function HeaderOverflowMenu({
         onDownloadBookAudio && hasDocument && {
             key: 'download-book',
             label: bookProgress
-                ? `Audiobook ${bookProgress.current}/${bookProgress.total}`
+                ? (bookProgress.total ? `Audiobook ${bookProgress.current}/${bookProgress.total}` : 'Making audiobook')
                 : 'Download audiobook',
             sublabel: bookProgress?.label,
             Icon: bookProgress ? Loader2 : Library,
             disabled: !!bookProgress,
             onClick: () => { close(); onDownloadBookAudio(); },
+        },
+        bookProgress && onCancelBookDownload && {
+            key: 'cancel-book',
+            label: 'Cancel audiobook',
+            Icon: X,
+            onClick: () => { close(); onCancelBookDownload(); },
         },
         onShowShortcuts && {
             key: 'shortcuts',
@@ -113,8 +110,9 @@ export default function HeaderOverflowMenu({
     if (actions.length === 0) return null;
 
     return (
-        <div ref={wrapRef} className="relative lg:hidden">
+        <div ref={wrapRef} data-own-keys className="relative lg:hidden">
             <button
+                ref={openerRef}
                 onClick={() => setOpen(v => !v)}
                 className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500 ${open ? 'text-blue-500' : ''}`}
                 aria-haspopup="menu"

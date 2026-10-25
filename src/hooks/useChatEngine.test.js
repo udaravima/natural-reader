@@ -327,3 +327,299 @@ describe('useChatEngine — "Use this document" (v2.4 Task E)', () => {
         expect(postTurn.mock.calls[0][0].body.context.doc_id).toBe('a'.repeat(64));
     });
 });
+
+describe('useChatEngine — chat scope (C2.1 Task 17)', () => {
+    beforeEach(() => localStorage.clear());
+    const DOC = 'a'.repeat(64);
+    const Q3 = { id: 'p1', name: 'Q3 Audit' };
+    const meta = (id, scopeProject) => ({ id, title: id, source: 'pg', messageCount: 0, updatedAt: 1, scopeProject });
+    const record = (id, over = {}) => ({ id, messages: [], events: [], pins: [], ...over });
+    const sendOk = async (result, text = 'Hi') => {
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        await act(async () => { await result.current.sendMessage(text); });
+    };
+    const lastContext = () => postTurn.mock.calls.at(-1)[0].body.context;
+    // The server's own words for "no such project" (server/auth/authz.py PROJECT_NOT_FOUND).
+    const PROJECT_GONE = refusal(404, { error: 'not_found', message: "This project doesn't exist or you don't have access." });
+    const CHAT_GONE = refusal(404, { error: 'not_found', message: "This chat doesn't exist or you don't have access." });
+
+    it('sends project_id and the open doc in project scope', async () => {
+        const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+        act(() => result.current.startProjectChat(Q3));
+        expect(result.current.scope).toEqual({ kind: 'project', project: Q3 });
+        await sendOk(result);
+        expect(lastContext()).toMatchObject({ project_id: 'p1', doc_id: DOC });
+    });
+
+    it('sends project_id null and no doc when the scope is none', async () => {
+        const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+        act(() => result.current.setScope({ kind: 'none' }));
+        expect(result.current.scope).toEqual({ kind: 'none' });
+        await sendOk(result);
+        expect(lastContext()).toMatchObject({ project_id: null, doc_id: null });
+    });
+
+    it('sends the open doc and project_id null in document scope', async () => {
+        const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+        await sendOk(result);
+        expect(lastContext()).toMatchObject({ project_id: null, doc_id: DOC });
+    });
+
+    it('a 404 in project scope clears the scope and warns', async () => {
+        postTurn.mockResolvedValue(PROJECT_GONE);
+        const props = baseProps({ userId: 'u1' });
+        const { result } = renderHook(() => useChatEngine(props));
+        act(() => result.current.startProjectChat(Q3));
+        const listReads = store.getRecentSessions.mock.calls.length;
+        let out;
+        await act(async () => { out = await result.current.sendMessage('Hi'); });
+        expect(props.showToast).toHaveBeenCalledWith("This project doesn't exist or you don't have access.", 5000);
+        expect(result.current.scope).toEqual({ kind: 'none' });
+        expect(out).toMatchObject({ sent: false, refused: true, text: 'Hi' });
+        expect(store.getRecentSessions.mock.calls.length).toBeGreaterThan(listReads);
+        // The next send goes out as a general chat.
+        await sendOk(result, 'Again');
+        expect(lastContext()).toMatchObject({ project_id: null, doc_id: null });
+    });
+
+    it('a 404 in an existing project chat clears that chat\'s scope for good, before the list is re-read', async () => {
+        store.getRecentSessions.mockResolvedValue([meta('s1', Q3)]);
+        store.getSession.mockResolvedValue(record('s1'));
+        const props = baseProps({ userId: 'u1' });
+        const { result } = renderHook(() => useChatEngine(props));
+        await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+        await act(async () => { await result.current.switchToSession('s1'); });
+        expect(result.current.scope.kind).toBe('project');
+        postTurn.mockResolvedValue(PROJECT_GONE);
+        // The refreshed list is slow: the scope must not wait for it. (The list still says "project" meanwhile.)
+        let listArrives;
+        store.getRecentSessions.mockImplementation(() => new Promise((resolve) => { listArrives = resolve; }));
+        await act(async () => { await result.current.sendMessage('Hi'); });
+        expect(props.showToast).toHaveBeenCalledWith("This project doesn't exist or you don't have access.", 5000);
+        expect(result.current.scope).toEqual({ kind: 'none' });
+        expect(result.current.activeSessionId).toBe('s1');
+        // When the list does arrive, the server has cleared the scope: still none.
+        await act(async () => { listArrives([meta('s1', null)]); });
+        expect(result.current.scope).toEqual({ kind: 'none' });
+        // And the next turn is a general chat.
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        await act(async () => { await result.current.sendMessage('Again'); });
+        expect(lastContext()).toMatchObject({ project_id: null, doc_id: null });
+    });
+
+    it('a 404 that is not about the project keeps the project scope and shows the usual error', async () => {
+        postTurn.mockResolvedValue(CHAT_GONE);
+        const props = baseProps({ userId: 'u1' });
+        const { result } = renderHook(() => useChatEngine(props));
+        act(() => result.current.startProjectChat(Q3));
+        await act(async () => { await result.current.sendMessage('Hi'); });
+        expect(props.showToast).toHaveBeenCalledWith("This chat doesn't exist or you don't have access.", 5000);
+        expect(props.showToast).not.toHaveBeenCalledWith("This project doesn't exist or you don't have access.", 5000);
+        expect(result.current.scope).toEqual({ kind: 'project', project: Q3 });   // the pending project is kept
+    });
+
+    it('a 404 with no readable body is not taken for a missing project', async () => {
+        postTurn.mockResolvedValue({ ok: false, status: 404, json: async () => { throw new Error('not json'); }, clone() { return this; } });
+        const props = baseProps({ userId: 'u1' });
+        const { result } = renderHook(() => useChatEngine(props));
+        act(() => result.current.startProjectChat(Q3));
+        await act(async () => { await result.current.sendMessage('Hi'); });
+        expect(props.showToast).not.toHaveBeenCalledWith("This project doesn't exist or you don't have access.", 5000);
+        expect(result.current.scope.kind).toBe('project');
+    });
+
+    it('a 404 without a project scope keeps the chat notice', async () => {
+        postTurn.mockResolvedValue(refusal(404, { error: 'not_found', message: 'Gone.' }));
+        const props = baseProps({ userId: 'u1' });
+        const { result } = renderHook(() => useChatEngine(props));
+        await act(async () => { await result.current.sendMessage('Hi'); });
+        expect(props.showToast).toHaveBeenCalledWith("This chat doesn't exist or you don't have access.", 5000);
+    });
+
+    describe('new chats', () => {
+        it('start in document scope with a document open', () => {
+            const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+            expect(result.current.scope).toEqual({ kind: 'document' });
+        });
+
+        it('start in none scope with no document open', () => {
+            const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1', currentDocId: null })));
+            expect(result.current.scope).toEqual({ kind: 'none' });
+        });
+
+        it('hold a picked project until the first message, then keep it', async () => {
+            const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+            act(() => result.current.setScope({ kind: 'project', project: Q3 }));
+            expect(result.current.activeSessionId).toBeNull();
+            expect(result.current.scope.kind).toBe('project');
+            await sendOk(result);
+            expect(lastContext().project_id).toBe('p1');
+            expect(result.current.activeSessionId).toMatch(/^s-/);
+            expect(result.current.scope).toEqual({ kind: 'project', project: Q3 });
+            await sendOk(result, 'Again');
+            expect(lastContext().project_id).toBe('p1');
+        });
+
+        it('startProjectChat starts a fresh chat, whatever was open', async () => {
+            store.getSession.mockResolvedValue(record('s1', { messages: [{ id: 'm', role: 'user', content: 'old' }] }));
+            const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+            await act(async () => { await result.current.switchToSession('s1'); });
+            expect(result.current.messages).toHaveLength(1);
+            act(() => result.current.startProjectChat(Q3));
+            expect(result.current.activeSessionId).toBeNull();
+            expect(result.current.messages).toEqual([]);
+            expect(result.current.scope).toEqual({ kind: 'project', project: Q3 });
+        });
+
+        it('a refused first send keeps the project the person picked', async () => {
+            postTurn.mockResolvedValue(refusal(409, { error: 'turn_in_progress', message: 'Busy.' }));
+            const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+            act(() => result.current.startProjectChat(Q3));
+            await act(async () => { await result.current.sendMessage('Hi'); });
+            expect(result.current.activeSessionId).toBeNull();
+            expect(result.current.scope).toEqual({ kind: 'project', project: Q3 });
+        });
+
+        it('a refused first send keeps "no document"', async () => {
+            postTurn.mockResolvedValue(refusal(409, { error: 'turn_in_progress', message: 'Busy.' }));
+            const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+            act(() => result.current.setScope({ kind: 'none' }));
+            await act(async () => { await result.current.sendMessage('Hi'); });
+            expect(result.current.scope).toEqual({ kind: 'none' });
+        });
+
+        it('a new chat does not inherit the last chat\'s project', async () => {
+            const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+            act(() => result.current.startProjectChat(Q3));
+            await sendOk(result);
+            act(() => result.current.newSession());
+            expect(result.current.scope).toEqual({ kind: 'document' });
+        });
+    });
+
+    describe('saved chats', () => {
+        it('show their own stored scope as the person switches between them', async () => {
+            store.getRecentSessions.mockResolvedValue([meta('s1', Q3), meta('s2', null)]);
+            store.getSession.mockImplementation(async (id) => record(id));
+            const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+            await waitFor(() => expect(result.current.sessions).toHaveLength(2));
+            await act(async () => { await result.current.switchToSession('s1'); });
+            expect(result.current.scope).toEqual({ kind: 'project', project: Q3 });
+            await act(async () => { await result.current.switchToSession('s2'); });
+            expect(result.current.scope).toEqual({ kind: 'document' });
+            await act(async () => { await result.current.switchToSession('s1'); });
+            expect(result.current.scope.kind).toBe('project');
+        });
+
+        it('read the stored scope from the opened chat when the list has none yet', async () => {
+            store.getSession.mockResolvedValue(record('s1', { scopeProject: Q3 }));
+            const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+            await act(async () => { await result.current.switchToSession('s1'); });
+            expect(result.current.scope).toEqual({ kind: 'project', project: Q3 });
+            await sendOk(result);
+            expect(lastContext().project_id).toBe('p1');
+        });
+
+        it('keep sending the project of a chat the person can no longer see, and let the server clear it', async () => {
+            const gone = { id: 'p1', name: null };
+            store.getRecentSessions.mockResolvedValue([meta('s1', gone)]);
+            store.getSession.mockResolvedValue(record('s1'));
+            const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+            await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+            await act(async () => { await result.current.switchToSession('s1'); });
+            expect(result.current.scope).toEqual({ kind: 'project', project: gone });
+            await sendOk(result);
+            expect(lastContext().project_id).toBe('p1');
+        });
+
+        it('send project_id null after the person leaves the project scope', async () => {
+            store.getRecentSessions.mockResolvedValue([meta('s1', Q3)]);
+            store.getSession.mockResolvedValue(record('s1'));
+            const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+            await waitFor(() => expect(result.current.sessions).toHaveLength(1));
+            await act(async () => { await result.current.switchToSession('s1'); });
+            act(() => result.current.setScope({ kind: 'document' }));
+            expect(result.current.scope).toEqual({ kind: 'document' });
+            await sendOk(result);
+            expect(lastContext()).toMatchObject({ project_id: null, doc_id: DOC });
+        });
+
+        it('switch an existing chat to a project', async () => {
+            store.getRecentSessions.mockResolvedValue([meta('s1', null)]);
+            store.getSession.mockResolvedValue(record('s1'));
+            const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+            await act(async () => { await result.current.switchToSession('s1'); });
+            act(() => result.current.setScope({ kind: 'project', project: Q3 }));
+            await sendOk(result);
+            expect(postTurn.mock.calls[0][0].sessionId).toBe('s1');
+            expect(lastContext().project_id).toBe('p1');
+        });
+    });
+
+    it('a chat forked from a browser-only chat keeps the parent\'s project', async () => {
+        store.isLocalId.mockImplementation((id) => id === 's-legacy');
+        store.getSession.mockResolvedValue(record('s-legacy'));
+        const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+        await act(async () => { await result.current.switchToSession('s-legacy'); });
+        act(() => result.current.setScope({ kind: 'project', project: Q3 }));
+        await sendOk(result, 'continue');
+        expect(postTurn.mock.calls[0][0].sessionId).toBe('s-imported');
+        expect(lastContext().project_id).toBe('p1');
+        expect(result.current.activeSessionId).toBe('s-imported');
+        expect(result.current.scope).toEqual({ kind: 'project', project: Q3 });
+    });
+
+    it('a chat forked from a browser-only chat keeps "no document"', async () => {
+        store.isLocalId.mockImplementation((id) => id === 's-legacy');
+        store.getSession.mockResolvedValue(record('s-legacy'));
+        const { result } = renderHook(() => useChatEngine(baseProps({ userId: 'u1' })));
+        await act(async () => { await result.current.switchToSession('s-legacy'); });
+        act(() => result.current.setScope({ kind: 'none' }));
+        await sendOk(result, 'continue');
+        expect(lastContext()).toMatchObject({ project_id: null, doc_id: null });
+        expect(result.current.scope).toEqual({ kind: 'none' });
+    });
+});
+
+describe('useChatEngine — an approved web search (C2.1 Task 18)', () => {
+    const lastContext = () => postTurn.mock.calls.at(-1)[0].body.context;
+    const send = async (result, ...args) => {
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        await act(async () => { await result.current.sendMessage(...args); });
+    };
+
+    it('options.web becomes context.web', async () => {
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await send(result, 'Search the web for: zephyr release', [], { web: { query: 'zephyr release' } });
+        expect(lastContext().web).toEqual({ query: 'zephyr release' });
+        // The visible message is what the user sees; the query rides in the context only.
+        expect(postTurn.mock.calls[0][0].body.message.content).toBe('Search the web for: zephyr release');
+        // The scope still goes along with it.
+        expect(lastContext()).toMatchObject({ doc_id: 'a'.repeat(64), project_id: null });
+    });
+
+    it('is for that turn only: the next turn carries no web', async () => {
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await send(result, 'Search the web for: zephyr release', [], { web: { query: 'zephyr release' } });
+        await send(result, 'And what else?');
+        expect(lastContext()).not.toHaveProperty('web');
+    });
+
+    it('a turn with no options, or options without a query, carries no web', async () => {
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await send(result, 'Hi');
+        expect(lastContext()).not.toHaveProperty('web');
+        await send(result, 'Hi', [], {});
+        expect(lastContext()).not.toHaveProperty('web');
+        await send(result, 'Hi', [], { web: { query: '   ' } });
+        expect(lastContext()).not.toHaveProperty('web');
+        await send(result, 'Hi', [], { web: null });
+        expect(lastContext()).not.toHaveProperty('web');
+    });
+
+    it('sends the query trimmed, and nothing else in web (the server refuses extra fields)', async () => {
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await send(result, 'Search the web for: x', [], { web: { query: '  zephyr release  ', extra: 1 } });
+        expect(lastContext().web).toStrictEqual({ query: 'zephyr release' });
+    });
+});

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Loader2 } from 'lucide-react';
 
 // Hooks
-import { usePersistedState, migratePersisted } from './hooks/usePersistedState';
+import { usePersistedState, migratePersisted, resetPersisted, runOnce } from './hooks/usePersistedState';
 import { useMobileDetect } from './hooks/useMobileDetect';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useTheme } from './hooks/useTheme';
@@ -16,7 +16,8 @@ import { makePin } from './hooks/pins';
 import { migrateModelId } from './lib/modelIds';
 
 // Constants
-import { resolveForModel, patchForModel, migrateLegacyThinking } from './hooks/inference';
+import { INFERENCE_DEFAULTS, resolveForModel, patchForModel, migrateLegacyThinking, forgetKnob } from './hooks/inference';
+import { useDeploymentDefaults } from './hooks/useDeploymentDefaults';
 
 // Utils
 import { apiFetch } from './utils/apiFetch';
@@ -45,7 +46,9 @@ import { AdminConsole } from './components/admin/AdminConsole';
 import LibraryPage from './components/library/LibraryPage';
 import { fetchDocFile } from './lib/serverDocFile';
 import { openServerDoc, openCitation } from './lib/openDoc';
-import SettingsPage from './components/settings/SettingsPage';
+import SettingsDialog from './components/settings/SettingsDialog';
+import ChatSidePanel from './components/chat/ChatSidePanel';
+import { ProfilePanel } from './components/account/ProfilePanel';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
 import NameMatchDialog from './components/projects/NameMatchDialog';
@@ -73,18 +76,34 @@ export default function App() {
   // Same trap, different spelling: '127.0.0.1' is also a cross-origin host for
   // the cookie (localhost ≠ 127.0.0.1), so it needs the same rewrite.
   migratePersisted('apiHost', '127.0.0.1', '');
+  // Until 2.3.x every setting saved its default on first load as if chosen, so
+  // the new defaults (auto-read off, read once the reply is complete) would
+  // never reach an existing browser. Those two forget their stored value once.
+  runOnce('2.4-chat-tts-defaults', () => {
+    resetPersisted('chatAutoTts');
+    resetPersisted('chatTtsMode');
+  });
 
   // --- PERSISTED SETTINGS ---
   const [darkMode, setDarkMode] = usePersistedState('darkMode', false);
   const [volume, setVolume] = usePersistedState('volume', 1.0);
   const [scale, setScale] = usePersistedState('scale', 1.2);
-  const [playbackSpeed, setPlaybackSpeed] = usePersistedState('playbackSpeed', 1.0);
-  const [selectedVoice, setSelectedVoice] = usePersistedState('selectedVoice', 'af_heart');
   const [isLocalhost, setIsLocalhost] = usePersistedState('isLocalhost', true);
   const [apiHost, setApiHost] = usePersistedState('apiHost', '');
   const [apiPort, setApiPort] = usePersistedState('apiPort', '8000');
   const auth = useAuth(apiHost, apiPort);
   const signedInUserId = auth.state === 'active' ? auth.user?.id : null;
+  // Per-model Ollama inference settings (context window, keep-alive, thinking
+  // level, max reply tokens). Keyed by model name because a 9.7B and a 3B want
+  // different context sizes on the same machine.
+  const [inferenceByModel, setInferenceByModel] = usePersistedState('inferenceByModel', {});
+  // Admin → Defaults: what a setting the user hasn't chosen follows.
+  const deploymentDefaults = useDeploymentDefaults({
+    active: auth.state === 'active', apiHost, apiPort,
+    onResetThink: () => setInferenceByModel((m) => forgetKnob(m, 'think')),
+  });
+  const [playbackSpeed, setPlaybackSpeed] = usePersistedState('playbackSpeed', deploymentDefaults.playbackSpeed);
+  const [selectedVoice, setSelectedVoice] = usePersistedState('selectedVoice', deploymentDefaults.selectedVoice);
   const [requestTimeout, setRequestTimeout] = usePersistedState('requestTimeout', 15);
   const [unlimitedBatchTimeout, setUnlimitedBatchTimeout] = usePersistedState('unlimitedBatchTimeout', true);
   const [mobileBreakpoint, setMobileBreakpoint] = usePersistedState('mobileBreakpoint', 768);
@@ -93,8 +112,8 @@ export default function App() {
   // Reader / Chat top-level view
   const [viewMode, setViewMode] = usePersistedState('viewMode', 'reader');
   const [selectedModel, setSelectedModel] = usePersistedState('selectedModel', '');
-  const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', 'streaming');
-  const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', true);
+  const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', deploymentDefaults.chatTtsMode);
+  const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', deploymentDefaults.chatAutoTts);
   // Composer in-progress state lives here (not in ChatView) so switching tabs —
   // which unmounts ChatView — doesn't discard a half-typed message. The text
   // draft is persisted (survives a reload too); pending image attachments are
@@ -102,10 +121,6 @@ export default function App() {
   // Per signed-in user: the next user on this browser never sees it.
   const [chatDraft, setChatDraft] = useUserDraft(signedInUserId);
   const [chatPendingAttachments, setChatPendingAttachments] = useState([]);
-  // Per-model Ollama inference settings (context window, keep-alive, thinking
-  // level, max reply tokens). Keyed by model name because a 9.7B and a 3B want
-  // different context sizes on the same machine.
-  const [inferenceByModel, setInferenceByModel] = usePersistedState('inferenceByModel', {});
   // Distraction-free reading: hides Header, sidebars, mobile bottom nav, and
   // the PdfViewer toolbar so only the page content + a small floating exit
   // pill remain. Persisted across reloads (some users prefer the immersive
@@ -116,7 +131,9 @@ export default function App() {
   // model's `think` setting the first time we see the model, so upgrading
   // users keep the thinking behaviour they had. Read straight from
   // localStorage rather than from React state — the `enableThinking` state is
-  // deleted in Task 4 and this effect must keep working after that.
+  // deleted in Task 4 and this effect must keep working after that. Only an
+  // old "on" is a choice worth carrying: seeding "off" stored it for every
+  // model ever selected, so a deployment thinking default could never apply.
   useEffect(() => {
     if (!selectedModel) return;
     setInferenceByModel(prev => {
@@ -125,13 +142,17 @@ export default function App() {
       try {
         legacy = JSON.parse(localStorage.getItem('neural-pdf-enableThinking') || 'false');
       } catch { legacy = false; }
-      return patchForModel(prev, selectedModel, { think: migrateLegacyThinking(legacy) });
+      return legacy ? patchForModel(prev, selectedModel, { think: migrateLegacyThinking(legacy) }) : prev;
     });
   }, [selectedModel, setInferenceByModel]);
 
+  const inferenceBase = useMemo(
+    () => ({ ...INFERENCE_DEFAULTS, think: deploymentDefaults.think }),
+    [deploymentDefaults.think]
+  );
   const inference = useMemo(
-    () => resolveForModel(inferenceByModel, selectedModel),
-    [inferenceByModel, selectedModel]
+    () => resolveForModel(inferenceByModel, selectedModel, inferenceBase),
+    [inferenceByModel, selectedModel, inferenceBase]
   );
 
   // --- TRANSIENT UI STATE ---
@@ -258,7 +279,15 @@ export default function App() {
   // a capability-free view, listed in useViewModeGuard's CAP_FREE_VIEWS so the
   // guard doesn't bounce it to reader for lack of a matching capability.
   const inLibrary = viewMode === 'library';
-  const inSettings = viewMode === 'settings';
+  // Settings is a dialog over the current view (it used to be a view of its
+  // own, which unmounted the reader and stopped the narration). The last tab
+  // opened is remembered; `settingsOpen` says whether the dialog is showing.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = usePersistedState('settingsTab', 'voice');
+  const openSettings = useCallback((tab) => {
+    if (tab) setSettingsTab(tab);
+    setSettingsOpen(true);
+  }, [setSettingsTab]);
 
   // Capabilities granted to the current user. The auth gate below already
   // guarantees at least one of reader/chat/admin once the app renders, but
@@ -267,7 +296,23 @@ export default function App() {
   const canReader = caps.includes('reader');
   const canChat = caps.includes('chat');
   const canAdmin = caps.includes('admin');
-  const versionOld = useVersionStatus({ apiHost, apiPort, docId: currentDocId, enabled: Boolean(canReader), refreshKey: projectsVersion });
+
+  // Chat beside the page (ChatSidePanel): the reader on a wide screen only;
+  // a phone has no room for both, so its Chat button opens the Chat view
+  // (where the narration keeps playing anyway). Open/closed is remembered.
+  const [chatPanelOpen, setChatPanelOpen] = usePersistedState('chatPanelOpen', false);
+  const chatPanelAvailable = canChat && !effectiveIsMobile;
+  const showChatPanel = viewMode === 'reader' && chatPanelAvailable && chatPanelOpen && !distractionFree;
+  // Where "Ask about this page / selection" lands: beside the page when it
+  // can, else the Chat view.
+  const showChat = useCallback(() => {
+    if (viewMode === 'reader' && chatPanelAvailable) setChatPanelOpen(true);
+    else setViewMode('chat');
+  }, [viewMode, chatPanelAvailable, setChatPanelOpen, setViewMode]);
+  // The open document's banner item, and the projects it is filed in (the chat's scope menu offers them).
+  const { old: versionOld, projects: docProjects } = useVersionStatus({
+    apiHost, apiPort, docId: currentDocId, enabled: Boolean(canReader), refreshKey: projectsVersion,
+  });
 
   // Boot coercion (admin-console spec §3, generalized to all three views): a
   // persisted viewMode the user no longer (or never did) have the capability
@@ -305,13 +350,12 @@ export default function App() {
     apiHost, apiPort, requestTimeout, unlimitedBatchTimeout,
     backendAvailable, pdfFileName,
     setStatus, showToast,
-    enabled: !inChat && !inAdmin && !inLibrary && !inSettings,
   });
 
   const {
     isPlaying, isDownloading, isReadingSelection, isPreviewingVoice,
-    downloadingMessageId, bookProgress,
-    handlePlayPause, stopPlayback, skipToNextSentence,
+    downloadingMessageId, bookProgress, pausedForChat, narrationHeld,
+    handlePlayPause, pauseNarration, stopPlayback, skipToNextSentence,
     readSelection, stopSelectionRead,
     previewVoice, stopVoicePreview, downloadPageAudio, downloadTextAudio,
     downloadBookAudio, cancelBookDownload, clearCache,
@@ -344,9 +388,12 @@ export default function App() {
     stopSpeaking,
     sessions: chatSessions,
     activeSessionId: chatActiveSessionId,
-    docUse: chatDocUse,
+    scope: chatScope,
+    setScope: chatSetScope,
+    startProjectChat: chatStartProjectChat,
     events: chatEvents,
     newSession: chatNewSession,
+    activeSession: chatActiveSession,
     switchToSession: chatSwitchToSession,
     deleteSession: chatDeleteSession,
     renameSession: chatRenameSession,
@@ -354,6 +401,12 @@ export default function App() {
     addPin: chatAddPin,
     removePin: chatRemovePin,
   } = chatEngine;
+
+  // Library → a project → "Ask about this project": a new chat about it, in the Chat view.
+  const handleAskProject = useCallback((project) => {
+    chatStartProjectChat(project);
+    setViewMode('chat');
+  }, [chatStartProjectChat, setViewMode]);
 
   // Model ids became `provider:name` in C1. Carry a saved pre-C1 selection
   // ("qwen2.5:7b") and its per-model settings over to the matching id once.
@@ -366,22 +419,33 @@ export default function App() {
     setSelectedModel(next);
   }, [availableModels, selectedModel, setSelectedModel, setInferenceByModel]);
 
+  // A reply keeps streaming, and keeps being read aloud, whichever view is
+  // open: the chat engine lives here, not in ChatView. One voice at a time:
+  // a reply read aloud pauses the narration (useTtsEngine), and starting the
+  // narration stops the reply's read-aloud.
+  const narrationPlayPause = () => {
+    if (!isPlaying) stopSpeaking();
+    handlePlayPause();
+  };
+
+  // Opening another document pauses the narration. It used to stop on its
+  // own, because the Library (where most opens start) switched it off; now
+  // that it plays in every view, it would carry on into the new document.
+  const narratedLoadRef = useRef(docLoadId);
+  useEffect(() => {
+    if (narratedLoadRef.current === docLoadId) return;
+    narratedLoadRef.current = docLoadId;
+    pauseNarration();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docLoadId]);
+
   useKeyboardShortcuts({
-    handlePlayPause, stopPlayback, skipToNextSentence,
+    handlePlayPause: narrationPlayPause, stopPlayback, skipToNextSentence,
     setCurrentSentenceIndex, setCurrentPage, setScale, setDarkMode,
     setDistractionFree,
     numPages,
     viewMode,
   });
-
-  // Stop chat audio + abort any in-flight stream when leaving chat mode.
-  useEffect(() => {
-    if (!inChat) {
-      chatStopStream();
-      stopChatPlayback();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inChat]);
 
   // True when any document (PDF, .txt, or .md) is loaded — used as a gate by UI
   // bits that don't care about file type. pdfDoc stays the source of truth for
@@ -447,15 +511,15 @@ export default function App() {
   // out at the window level so the reader's DragOverlay never appears and the
   // file isn't routed through processFile() (which expects PDF/TXT).
   const handleDragOver = (e) => {
-    if (inChat || inAdmin || inLibrary || inSettings) return;
+    if (inChat || inAdmin || inLibrary || settingsOpen) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(true);
   };
   const handleDragLeave = (e) => {
-    if (inChat || inAdmin || inLibrary || inSettings) return;
+    if (inChat || inAdmin || inLibrary || settingsOpen) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
   };
   const handleDrop = (e) => {
-    if (inChat || inAdmin || inLibrary || inSettings) return;
+    if (inChat || inAdmin || inLibrary || settingsOpen) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
     const files = e.dataTransfer.files;
     if (files.length === 0) return;
@@ -494,6 +558,7 @@ export default function App() {
 
   const handleMobileSentenceClick = (index) => {
     setCurrentSentenceIndex(index - 1);
+    stopSpeaking();
     ttsEngine.setIsPlaying(true);
     if (effectiveIsMobile) setSidebarOpen(false);
   };
@@ -506,6 +571,7 @@ export default function App() {
   const continueFromHere = (sentenceIndex) => {
     setCurrentSentenceIndex(sentenceIndex - 1);
     playbackIndexRef.current = sentenceIndex - 1;
+    stopSpeaking();
     ttsEngine.setIsPlaying(true);
     setContextMenu(null);
     setStatus(`Starting from sentence ${sentenceIndex + 1}`);
@@ -547,8 +613,8 @@ export default function App() {
       : fullText;
     const docId = await ensureDocHash();
     chatAddPin(makePin({ doc_id: docId, fileName: pdfFileName, page, kind: 'page', text }));
-    setViewMode('chat');
-  }, [pdfFileName, textItems, ensureDocHash, setViewMode, showToast, chatAddPin]);
+    showChat();
+  }, [pdfFileName, textItems, ensureDocHash, showChat, showToast, chatAddPin]);
 
   const handleAskAboutSelection = useCallback(async () => {
     const sel = (typeof window !== 'undefined') ? window.getSelection() : null;
@@ -563,8 +629,8 @@ export default function App() {
       : selectedText;
     const docId = await ensureDocHash();
     chatAddPin(makePin({ doc_id: docId, fileName: pdfFileName, page: currentPage, kind: 'selection', text }));
-    setViewMode('chat');
-  }, [pdfFileName, currentPage, ensureDocHash, setViewMode, showToast, chatAddPin]);
+    showChat();
+  }, [pdfFileName, currentPage, ensureDocHash, showChat, showToast, chatAddPin]);
 
   // Synthesize the WHOLE document as a single audiobook .wav.
   // Pulls per-page text via the existing extractAllChunks helper (works for
@@ -572,38 +638,25 @@ export default function App() {
   // synthesizes one batch per page and concatenates the WAVs client-side.
   const handleDownloadBookAudio = useCallback(async () => {
     if (!pdfFileName) return;
-    if (!isLocalhost) {
-      showToast('Audiobook export requires the Kokoro backend.', 5000);
-      return;
-    }
-    let chunks;
-    try {
-      chunks = await extractAllChunks();
-    } catch (e) {
-      console.error('Chunk extraction failed:', e);
-      showToast(`Could not extract text: ${e.message}`, 5000);
-      return;
-    }
-    if (!chunks || chunks.length === 0) {
-      showToast('No extractable text in this document.', 4000);
-      return;
-    }
     // extractAllChunks returns one chunk per page for PDF/TXT and one per
     // block for MD. Group by page so each `downloadBookAudio` iteration is a
-    // page-sized batch — a single MD page can have many blocks.
-    const byPage = new Map();
-    for (const c of chunks) {
-      const p = c.page ?? 0;
-      const prev = byPage.get(p) || '';
-      byPage.set(p, prev ? `${prev}\n\n${c.text}` : c.text);
-    }
-    const pages = Array.from(byPage.entries())
-      .sort((a, b) => a[0] - b[0])
-      .map(([page, text]) => ({ page, text }));
-
+    // page-sized batch — a single MD page can have many blocks. Passed as a
+    // loader so reading a long book shows progress and can be cancelled.
+    const loadPages = async () => {
+      const chunks = await extractAllChunks();
+      const byPage = new Map();
+      for (const c of chunks || []) {
+        const p = c.page ?? 0;
+        const prev = byPage.get(p) || '';
+        byPage.set(p, prev ? `${prev}\n\n${c.text}` : c.text);
+      }
+      return Array.from(byPage.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([page, text]) => ({ page, text }));
+    };
     const base = pdfFileName.replace(/\.(pdf|txt|md|markdown)$/i, '');
-    await downloadBookAudio(pages, `${base}_audiobook`);
-  }, [pdfFileName, isLocalhost, extractAllChunks, downloadBookAudio, showToast]);
+    await downloadBookAudio(loadPages, `${base}_audiobook`);
+  }, [pdfFileName, extractAllChunks, downloadBookAudio]);
 
   // Synthesize a single chat message into a downloadable .wav. Filename is
   // derived from the active session title and message position so multiple
@@ -1047,6 +1100,40 @@ export default function App() {
   }
 
   // --- RENDER ---
+  // The chat, as the Chat view and as the column beside the page.
+  const chatViewProps = {
+    theme,
+    darkMode,
+    effectiveIsMobile,
+    messages: chatMessages,
+    isStreaming: chatIsStreaming,
+    selectedModel,
+    inferenceBudget: chatInferenceBudget,
+    reachable: ollamaReachable,
+    sendMessage: chatSendMessage,
+    stopStream: chatStopStream,
+    speakingMessageId,
+    speakMessage,
+    stopSpeaking,
+    downloadingMessageId,
+    downloadMessageAudio: isLocalhost ? handleDownloadMessageAudio : null,
+    showToast,
+    pins: chatPins,
+    onRemovePin: chatRemovePin,
+    numCtx: inference.numCtx,
+    draft: chatDraft,
+    setDraft: setChatDraft,
+    pendingAttachments: chatPendingAttachments,
+    setPendingAttachments: setChatPendingAttachments,
+    onOpenCitation: handleOpenCitation,
+    openDocName: currentDocId ? pdfFileName : null,
+    openDocVersion: currentDocId && versionOld ? versionOld.version : null,
+    openDocProjects: docProjects,
+    scope: chatScope,
+    setScope: chatSetScope,
+    loadProjects: projectApi.list,
+  };
+
   return (
     <div
       className={`flex flex-col h-screen ${theme.bg} ${theme.text} font-sans ${theme.selection} transition-colors duration-300`}
@@ -1078,12 +1165,14 @@ export default function App() {
       />
 
       <ReadSelectionButton
-        hasDocument={hasDocument}
+        hasDocument={hasDocument && !settingsOpen}
         isReadingSelection={isReadingSelection}
         darkMode={darkMode}
         onReadSelection={readSelection}
         onStopSelectionRead={stopSelectionRead}
         onAskAboutSelection={inChat ? null : handleAskAboutSelection}
+        besideChatPanel={showChatPanel}
+        inChat={inChat}
       />
 
       {!distractionFree && (
@@ -1104,7 +1193,7 @@ export default function App() {
           sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen}
           showShortcuts={showShortcuts} setShowShortcuts={setShowShortcuts}
           fileInputRef={fileInputRef}
-          handlePlayPause={handlePlayPause}
+          handlePlayPause={narrationPlayPause}
           stopPlayback={stopPlayback}
           skipToNextSentence={skipToNextSentence}
           skipToPrevSentence={skipToPrevSentence}
@@ -1121,11 +1210,32 @@ export default function App() {
           workspaceName={workspace?.rootName}
           onCloseWorkspace={() => { setOwnedWorkspace(null); setWorkspaceEntryPath(null); clearWorkspaceState(); }}
           user={auth.user}
+          apiHost={apiHost} apiPort={apiPort}
           onLogout={auth.logout}
+          narration={{ held: narrationHeld, docName: pdfFileName, currentPage, numPages, pausedForChat }}
+          onOpenSettings={openSettings}
+          chatPanelOpen={showChatPanel}
+          onToggleChatPanel={chatPanelAvailable && canReader ? () => setChatPanelOpen((v) => !v) : null}
         />
       )}
 
       <KeyboardShortcutsModal show={showShortcuts} theme={theme} onClose={() => setShowShortcuts(false)} />
+
+      <SettingsDialog
+        theme={theme}
+        tab={settingsOpen ? settingsTab : null}
+        onTab={setSettingsTab}
+        onClose={() => setSettingsOpen(false)}
+        profile={auth.user ? (
+          <ProfilePanel theme={theme} apiHost={apiHost} apiPort={apiPort} user={auth.user}
+            onUserChanged={auth.patchUser} showToast={showToast} />
+        ) : null}
+        voiceSettings={{ selectedVoice, setSelectedVoice, playbackSpeed, setPlaybackSpeed, volume, setVolume, isLocalhost, setIsLocalhost, requestTimeout, setRequestTimeout, unlimitedBatchTimeout, setUnlimitedBatchTimeout, isPreviewingVoice, previewVoice, stopVoicePreview, clearCache }}
+        chatSettings={{ chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, inferenceByModel, setInferenceByModel, inferenceBase, availableModels, selectedModel }}
+        connectionSettings={{ apiHost, setApiHost, apiPort, setApiPort, backendAvailable }}
+        appearanceSettings={{ darkMode, setDarkMode, layoutMode, setLayoutMode, mobileBreakpoint, setMobileBreakpoint, showHeaderControlsOnMobile, setShowHeaderControlsOnMobile }}
+        accountProps={{ apiHost, apiPort, user: auth.user }}
+      />
 
       <main className="flex-1 flex overflow-hidden relative">
         {/* Mobile sidebar overlay */}
@@ -1160,7 +1270,7 @@ export default function App() {
             deleteSession={chatDeleteSession}
             renameSession={chatRenameSession}
           />
-        ) : inAdmin || inLibrary || inSettings ? null : (
+        ) : inAdmin || inLibrary ? null : (
         canReader && <Sidebar
           theme={theme}
           darkMode={darkMode}
@@ -1184,35 +1294,7 @@ export default function App() {
           // Mount gate mirroring the admin console below: hiding via
           // ViewSwitcher is cosmetic, this is the render-time boundary that
           // covers the brief window before useViewModeGuard's effect fires.
-          canChat && <ChatView
-            theme={theme}
-            darkMode={darkMode}
-            effectiveIsMobile={effectiveIsMobile}
-            messages={chatMessages}
-            isStreaming={chatIsStreaming}
-            selectedModel={selectedModel}
-            inferenceBudget={chatInferenceBudget}
-            reachable={ollamaReachable}
-            sendMessage={chatSendMessage}
-            stopStream={chatStopStream}
-            speakingMessageId={speakingMessageId}
-            speakMessage={speakMessage}
-            stopSpeaking={stopSpeaking}
-            downloadingMessageId={downloadingMessageId}
-            downloadMessageAudio={isLocalhost ? handleDownloadMessageAudio : null}
-            showToast={showToast}
-            pins={chatPins}
-            onRemovePin={chatRemovePin}
-            numCtx={inference.numCtx}
-            draft={chatDraft}
-            setDraft={setChatDraft}
-            pendingAttachments={chatPendingAttachments}
-            setPendingAttachments={setChatPendingAttachments}
-            onOpenCitation={handleOpenCitation}
-            openDocName={currentDocId ? pdfFileName : null}
-            openDocVersion={currentDocId && versionOld ? versionOld.version : null}
-            docUse={chatDocUse}
-          />
+          canChat && <ChatView {...chatViewProps} />
         ) : inAdmin ? (
           // Mount gate: the console renders nothing when the current user
           // isn't an admin — hiding is cosmetic, server rails are the
@@ -1235,16 +1317,9 @@ export default function App() {
             showToast={showToast}
             onOpen={handleOpenLibraryDoc}
             currentUserId={auth.user?.id}
+            isAdmin={canAdmin}
             onProjectsChanged={() => setProjectsVersion((v) => v + 1)}
-          />
-        ) : inSettings ? (
-          <SettingsPage
-            theme={theme}
-            voiceSettings={{ selectedVoice, setSelectedVoice, playbackSpeed, setPlaybackSpeed, volume, setVolume, isLocalhost, setIsLocalhost, requestTimeout, setRequestTimeout, unlimitedBatchTimeout, setUnlimitedBatchTimeout, isPreviewingVoice, previewVoice, stopVoicePreview, clearCache }}
-            chatSettings={{ chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, inferenceByModel, setInferenceByModel, availableModels, selectedModel }}
-            connectionSettings={{ apiHost, setApiHost, apiPort, setApiPort, backendAvailable }}
-            appearanceSettings={{ darkMode, setDarkMode, layoutMode, setLayoutMode, mobileBreakpoint, setMobileBreakpoint, showHeaderControlsOnMobile, setShowHeaderControlsOnMobile }}
-            accountProps={{ apiHost, apiPort, user: auth.user }}
+            onAskProject={canChat ? handleAskProject : undefined}
           />
         ) : (
         // Mount gate mirroring the admin console above: hiding via
@@ -1306,6 +1381,19 @@ export default function App() {
         </WorkspaceProvider>
         )
         )}
+        {showChatPanel && (
+          <ChatSidePanel
+            theme={theme}
+            title={chatActiveSession?.title || 'New chat'}
+            selectedModel={selectedModel} setSelectedModel={setSelectedModel}
+            availableModels={availableModels}
+            onNewChat={chatNewSession}
+            onExpand={() => setViewMode('chat')}
+            onClose={() => setChatPanelOpen(false)}
+          >
+            <ChatView {...chatViewProps} compact effectiveIsMobile={false} />
+          </ChatSidePanel>
+        )}
       </main>
 
       <DoclingConvertDialog
@@ -1323,13 +1411,13 @@ export default function App() {
         <MobileBottomNav
           theme={theme}
           effectiveIsMobile={effectiveIsMobile}
-          hasDocument={hasDocument && !inChat && !inAdmin && !inLibrary && !inSettings}
+          hasDocument={hasDocument && !inChat && !inAdmin && !inLibrary}
           currentPage={currentPage} setCurrentPage={setCurrentPage}
           numPages={numPages}
           currentSentenceIndex={currentSentenceIndex}
           textItems={textItems}
           isPlaying={isPlaying}
-          handlePlayPause={handlePlayPause}
+          handlePlayPause={narrationPlayPause}
           skipToNextSentence={skipToNextSentence}
           skipToPrevSentence={skipToPrevSentence}
           goToNextPage={goToNextPage}
@@ -1346,7 +1434,7 @@ export default function App() {
           hasDocument={hasDocument}
           inChat={inChat}
           isPlaying={isPlaying}
-          handlePlayPause={handlePlayPause}
+          handlePlayPause={narrationPlayPause}
           skipToNextSentence={skipToNextSentence}
           skipToPrevSentence={skipToPrevSentence}
           currentPage={currentPage}

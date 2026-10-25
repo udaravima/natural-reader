@@ -5,6 +5,7 @@ import logging
 import os
 import secrets
 import uuid
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from datetime import datetime, timezone
@@ -17,7 +18,8 @@ from ..auth.capabilities import KNOWN_CAPABILITIES
 from ..auth.config import load_auth_config
 from ..auth.kc_admin import KCAdminError
 from ..llm.router import get_router
-from ..services import assistant_profile, doc_content, inference_budget, model_router, people
+from ..services import (assistant_profile, chat_options, doc_content, inference_budget, model_router, people,
+                        user_defaults, web_search as web_search_service)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -66,7 +68,7 @@ async def _other_active_admins(conn, user_id: str) -> int:
 
 @router.get("/users")
 async def list_all(
-    _: deps.Principal = Depends(deps.require_admin), conn=Depends(deps.get_conn)
+    _: deps.Principal = Depends(deps.require_admin), conn=Depends(deps.get_conn, scope="function")
 ):
     return await users.list_users(conn)
 
@@ -76,7 +78,7 @@ async def patch_user(
     user_id: str,
     body: UserPatchIn,
     _: deps.Principal = Depends(deps.require_admin),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
     kc=Depends(deps.get_kc_admin),
 ):
     # exclude_unset distinguishes "field absent" (untouched) from "explicit
@@ -157,7 +159,7 @@ async def patch_user(
 @router.get("/projects")
 async def list_projects(ownerless: bool = False,
                         _: deps.Principal = Depends(deps.require_admin),
-                        conn=Depends(deps.get_conn)):
+                        conn=Depends(deps.get_conn, scope="function")):
     """Every project (A0 §9.5): owners, member and document counts, and
     whether it is ownerless (its last Owner was deleted) — the recovery list.
     Admins see owners' emails as labels' last resort, like the Users list."""
@@ -189,7 +191,7 @@ async def list_projects(ownerless: bool = False,
 async def enroll_user(
     body: UserEnrollIn,
     _: deps.Principal = Depends(deps.require_admin),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
     kc=Depends(deps.get_kc_admin),
 ):
     """Pre-provision an account. When a Keycloak admin client is configured,
@@ -263,7 +265,7 @@ async def enroll_user(
 async def delete_user(
     user_id: str,
     principal: deps.Principal = Depends(deps.require_admin),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
     kc=Depends(deps.get_kc_admin),
 ):
     """Hard delete (admin-console spec §4): sessions, PATs, usage, library
@@ -342,10 +344,53 @@ async def inference_config(
 async def inference_usage(
     days: int = 7,
     _: deps.Principal = Depends(deps.require_admin),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
 ):
     days = max(1, min(90, days))
     return await inference_budget.admin_usage(conn, days=days)
+
+
+# ---------- deployment defaults for user preferences ----------
+
+class UserDefaultsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    values: dict[str, Any]
+
+
+@router.get("/defaults")
+async def get_user_defaults(
+    _: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    return await user_defaults.admin_view(conn)
+
+
+@router.put("/defaults")
+async def put_user_defaults(
+    body: UserDefaultsIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    try:
+        await user_defaults.save(conn, body.values, updated_by=str(principal.user_id))
+    except user_defaults.DefaultsError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return await user_defaults.admin_view(conn)
+
+
+@router.post("/defaults/{name}/apply-to-everyone")
+async def apply_user_default_to_everyone(
+    name: str,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Every browser drops its user's own choice for this setting the next
+    time it loads the defaults."""
+    try:
+        await user_defaults.apply_to_everyone(conn, name, updated_by=str(principal.user_id))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown setting")
+    return await user_defaults.admin_view(conn)
 
 
 # ---------- the assistant profile (v2.4 Task A2) ----------
@@ -358,16 +403,21 @@ class AssistantProfileIn(BaseModel):
 async def _assistant_view(conn) -> dict:
     """What the admin console shows: the profile, where it comes from, and
     the full system message a sample turn would get (an indexed 10-page
-    document, every tool, no pins), so an admin sees the profile next to the
-    app's rules before users do."""
+    document, no pins, the tools that turn is offered under the deployment's
+    web search mode), so an admin sees the profile next to the app's rules
+    before users do."""
     from ..chat.context import today_line
     from ..chat.prompt import system_rules
-    from ..chat.tools import REGISTRY
+    from ..chat.tools import ToolContext, available_tools
     from ..services.doc_search import ReadableDoc
 
     profile = await assistant_profile.load_profile(conn)
     sample = ReadableDoc("0" * 64, "Example.pdf", "indexed", 10)
-    preview = system_rules(sample, REGISTRY, has_pins=False, profile=profile.text,
+    # The same call a real document chat makes (chat/orchestrator.py), so the preview can't show a combination
+    # no turn has (web_search beside the offer sentence); a project chat's document_outline isn't offered.
+    options = await chat_options.load_chat_options(conn)
+    offered = available_tools(ToolContext("", sample, web_mode=options.web_search))
+    preview = system_rules(sample, offered, has_pins=False, profile=profile.text,
                            today=today_line(datetime.now(timezone.utc), "UTC"))
     # `text` is the effective profile, from the file too: the editor starts
     # from it, and saving it unchanged is the console's job to skip.
@@ -380,7 +430,7 @@ async def _assistant_view(conn) -> dict:
 @router.get("/assistant")
 async def get_assistant_profile(
     _: deps.Principal = Depends(deps.require_admin),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
 ):
     return await _assistant_view(conn)
 
@@ -389,8 +439,42 @@ async def get_assistant_profile(
 async def put_assistant_profile(
     body: AssistantProfileIn,
     principal: deps.Principal = Depends(deps.require_admin),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
 ):
     """Save the profile; empty text clears it (the file, or none, applies)."""
     await assistant_profile.save_profile(conn, body.text, updated_by=str(principal.user_id))
     return await _assistant_view(conn)
+
+
+# ---------- chat options (C2.1 Task 13) ----------
+
+class ChatOptionsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # Required: null resets the setting (the environment, or "ask", applies again), so a body without the
+    # field must not do it by accident.
+    web_search: Literal["ask", "auto", "off"] | None
+
+
+def _chat_options_view(options: chat_options.ChatOptions) -> dict:
+    # `searxng`: false only when a deployer set SEARXNG_URL empty; the console then shows the control disabled.
+    return {"web_search": options.web_search, "source": options.source,
+            "searxng": bool(web_search_service.SEARXNG_URL)}
+
+
+@router.get("/chat-options")
+async def get_chat_options(
+    _: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    return _chat_options_view(await chat_options.load_chat_options(conn))
+
+
+@router.put("/chat-options")
+async def put_chat_options(
+    body: ChatOptionsIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Save how web search asks; null resets it. Applies from the next chat message."""
+    saved = await chat_options.save_chat_options(conn, body.web_search, updated_by=str(principal.user_id))
+    return _chat_options_view(saved)

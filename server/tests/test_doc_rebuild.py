@@ -333,3 +333,210 @@ async def test_the_profile_is_recorded_only_when_every_chunk_embedded(db_conn, m
     state, profile, _ = await _state(db_conn)
     assert state == "indexed"                                         # what did embed is searchable
     assert profile == (None if fail_one else embeddings.current_profile())
+
+
+# ---- C2.1 Task 6: code chunks for existing documents, reusing embeddings ----
+
+GUIDE = (b"# Guide\n\nRun the server with the command below. It listens on port 8000 by default.\n\n"
+         b"```sh\n./startup.sh quickstart\n```\n\n## Notes\n\nStop it with Ctrl-C when you are done.\n")
+GUIDE_DOC = hashlib.sha256(GUIDE).hexdigest()
+GUIDE_CODE = "./startup.sh quickstart"
+OLD_VECTOR = [2.0] + [0.0] * (embeddings.EMBEDDING_DIM - 1)
+
+
+def _profile_with(chunker: str, current: str | None = None) -> str:
+    """The current profile with its last field (the chunker version) replaced."""
+    return (current or embeddings.current_profile()).rsplit("|", 1)[0] + "|" + chunker
+
+
+async def _index_guide_before_code_chunks(db_conn, owner, store, *, profile):
+    """GUIDE as an earlier version indexed it: its prose chunks, embedded, no code chunk."""
+    path = store / f"{GUIDE_DOC}.md"
+    path.write_bytes(GUIDE)
+    await seed.seed_doc(db_conn, GUIDE_DOC, owner, file_name="Guide.md", file_type="markdown",
+                        state="indexed", bytes_path=path, extracted_by="server")
+    prose = [c for c in extract.split_chunks(extract.extract_markdown(GUIDE.decode()).chunks)
+             if c.chunk_type != extract.CODE]
+    await doc_pipeline.replace_chunks(db_conn, GUIDE_DOC, prose, embeddings=[OLD_VECTOR] * len(prose),
+                                      model="nomic-embed-text")
+    await db_conn.execute("UPDATE documents SET embedding_model = 'nomic-embed-text', embedding_profile = %s "
+                          "WHERE doc_id = %s", (profile, GUIDE_DOC))
+    return prose
+
+
+async def _guide_profile(db_conn):
+    cur = await db_conn.execute("SELECT embedding_profile FROM documents WHERE doc_id = %s", (GUIDE_DOC,))
+    return (await cur.fetchone())[0]
+
+
+async def _guide_rows(db_conn):
+    cur = await db_conn.execute("SELECT chunk_type, text, embedding::text, embedding_model FROM doc_chunks "
+                                "WHERE doc_id = %s ORDER BY ord", (GUIDE_DOC,))
+    return await cur.fetchall()
+
+
+def _record_embeddings(monkeypatch):
+    inputs: list[str] = []
+
+    async def record(texts):
+        inputs.extend(texts)
+        return [[1.0] + [0.0] * (embeddings.EMBEDDING_DIM - 1) for _ in texts]
+
+    monkeypatch.setattr(doc_pipeline, "embed_documents", record)
+    return inputs
+
+
+async def test_rebuild_after_chunker_change_embeds_only_new_text(db_conn, monkeypatch, store):
+    """C2.1 spec 5.3 requirement: the upgrade that adds code chunks must not
+    re-embed the prose that already has a vector."""
+    build_docs_app(db_conn, monkeypatch, storage_dir=store)
+    monkeypatch.setenv("EMBEDDING_MODEL", "nomic-embed-text")
+    owner = await _member(db_conn, "owner")
+    old_profile = _profile_with("split1:1200:200")
+    prose = await _index_guide_before_code_chunks(db_conn, owner.user_id, store, profile=old_profile)
+    assert old_profile != embeddings.current_profile()
+    inputs = _record_embeddings(monkeypatch)
+
+    await doc_pipeline.run_rebuild(GUIDE_DOC)
+
+    assert inputs == [GUIDE_CODE]
+    rows = await _guide_rows(db_conn)
+    assert [r[1] for r in rows if r[0] != extract.CODE] == [c.text for c in prose]     # the prose is all still there
+    assert [r[1] for r in rows if r[0] == extract.CODE] == [GUIDE_CODE]
+    assert all(r[2] is not None and r[3] == "nomic-embed-text" for r in rows)
+    reused = [r[2] for r in rows if r[0] != extract.CODE]
+    assert reused and all(v.startswith("[2,") for v in reused)                         # the OLD vectors, not new ones
+    assert [r[2] for r in rows if r[0] == extract.CODE][0].startswith("[1,")
+    assert await _guide_profile(db_conn) == embeddings.current_profile()
+
+
+async def test_a_rebuild_saves_the_documents_outline(db_conn, monkeypatch, store):
+    build_docs_app(db_conn, monkeypatch, storage_dir=store)
+    owner = await _member(db_conn, "owner")
+    await _index_guide_before_code_chunks(db_conn, owner.user_id, store, profile=_profile_with("split1:1200:200"))
+    _record_embeddings(monkeypatch)
+
+    await doc_pipeline.run_rebuild(GUIDE_DOC)
+
+    from server.services.doc_outlines import load_outlines
+    outline = (await load_outlines(db_conn, [GUIDE_DOC]))[GUIDE_DOC]
+    assert [(e.level, e.text, e.page) for e in outline.entries] == [(1, "Guide", 1), (2, "Notes", 1)]
+    assert outline.source == "headings" and outline.opening == "Guide"
+
+
+@pytest.mark.parametrize("old_model,old_prefixes", [
+    ("mxbai-embed-large", "''|''"),                              # another model
+    ("nomic-embed-text", "'old: '|''"),                          # the same model, another document prefix
+])
+async def test_rebuild_with_a_changed_embedding_model_embeds_everything(db_conn, monkeypatch, store, old_model,
+                                                                       old_prefixes):
+    """A vector is only comparable with its own model and prefix: nothing is reused."""
+    build_docs_app(db_conn, monkeypatch, storage_dir=store)
+    monkeypatch.setenv("EMBEDDING_MODEL", "nomic-embed-text")
+    owner = await _member(db_conn, "owner")
+    old_profile = f"{old_model}|{old_prefixes}|{embeddings.current_profile().rsplit('|', 1)[1]}"
+    prose = await _index_guide_before_code_chunks(db_conn, owner.user_id, store, profile=old_profile)
+    inputs = _record_embeddings(monkeypatch)
+
+    await doc_pipeline.run_rebuild(GUIDE_DOC)
+
+    expected = {c.text for c in prose} | {GUIDE_CODE}
+    assert sorted(inputs) == sorted(expected)
+    rows = await _guide_rows(db_conn)
+    assert all(r[2].startswith("[1,") for r in rows)                                    # every vector is a new one
+    assert await _guide_profile(db_conn) == embeddings.current_profile()
+
+
+async def test_a_document_with_no_recorded_profile_reuses_nothing(db_conn, monkeypatch, store):
+    build_docs_app(db_conn, monkeypatch, storage_dir=store)
+    owner = await _member(db_conn, "owner")
+    prose = await _index_guide_before_code_chunks(db_conn, owner.user_id, store, profile=None)
+    inputs = _record_embeddings(monkeypatch)
+
+    await doc_pipeline.run_rebuild(GUIDE_DOC)
+
+    assert len(inputs) == len(prose) + 1
+
+
+async def test_reused_vectors_are_read_per_text_and_only_for_the_same_embedding(db_conn, monkeypatch, store):
+    build_docs_app(db_conn, monkeypatch, storage_dir=store)
+    monkeypatch.setenv("EMBEDDING_MODEL", "nomic-embed-text")
+    owner = await _member(db_conn, "owner")
+    await seed.seed_doc(db_conn, DOC, owner.user_id, file_type="text", state="indexed")
+    vec = "[" + ",".join(["1"] + ["0"] * (embeddings.EMBEDDING_DIM - 1)) + "]"
+    for i, (text, v, model) in enumerate((("embedded", vec, "nomic-embed-text"),
+                                          ("not embedded", None, None),
+                                          ("other model", vec, "mxbai-embed-large"),
+                                          ("no model", vec, None))):
+        await db_conn.execute(
+            "INSERT INTO doc_chunks (doc_id, ord, page, chunk_type, text, text_hash, embedding, embedding_model) "
+            "VALUES (%s, %s, 1, 'page', %s, %s, %s::vector, %s)", (DOC, i, text, f"h{i}", v, model))
+    same = _profile_with("split1:1:1")
+    assert list(await doc_pipeline._reusable_vectors(db_conn, DOC, same)) == ["embedded"]
+    assert await doc_pipeline._reusable_vectors(db_conn, DOC, None) == {}
+    assert await doc_pipeline._reusable_vectors(db_conn, DOC, "other-model|''|''|split1:1:1") == {}
+
+
+async def test_a_vector_made_by_another_model_is_not_kept_even_under_the_documents_profile(db_conn, monkeypatch,
+                                                                                         store):
+    """A document whose re-index partly failed can hold a vector from the old
+    model under the new profile: the row's own model decides, not only the
+    document's profile."""
+    build_docs_app(db_conn, monkeypatch, storage_dir=store)
+    monkeypatch.setenv("EMBEDDING_MODEL", "nomic-embed-text")
+    owner = await _member(db_conn, "owner")
+    prose = await _index_guide_before_code_chunks(db_conn, owner.user_id, store,
+                                                  profile=_profile_with("split1:1200:200"))
+    await db_conn.execute("UPDATE doc_chunks SET embedding_model = 'mxbai-embed-large' "
+                          "WHERE doc_id = %s AND ord = 0", (GUIDE_DOC,))
+    inputs = _record_embeddings(monkeypatch)
+
+    await doc_pipeline.run_rebuild(GUIDE_DOC)
+
+    assert sorted(inputs) == sorted([prose[0].text, GUIDE_CODE])                       # that one and the code, no more
+    rows = await _guide_rows(db_conn)
+    assert all(r[3] == "nomic-embed-text" for r in rows)
+    assert [r[2][:3] for r in rows if r[1] == prose[0].text] == ["[1,"]                 # re-embedded, not the old [2,
+
+
+def test_the_embedding_part_of_a_profile_leaves_out_the_chunker():
+    assert doc_pipeline._embedding_part("m|'d: '|'q: '|split1:1200:200:code1") == "m|'d: '|'q: '"
+    assert doc_pipeline._embedding_part(None) is None
+    current = embeddings.current_profile()
+    assert doc_pipeline._embedding_part(current) == doc_pipeline._embedding_part(_profile_with("old"))
+
+
+def test_the_chunker_version_marks_code_chunks():
+    assert extract.CHUNKER_VERSION == f"split1:{extract.CHUNK_MAX_CHARS}:{extract.CHUNK_OVERLAP_CHARS}:code1:cells1"
+    assert embeddings.current_profile().endswith("|" + extract.CHUNKER_VERSION)
+
+
+async def test_a_legacy_document_without_stored_bytes_gets_an_outline_of_source_none(db_conn, embedded):
+    from server.services.doc_outlines import load_outlines
+    owner = await _member(db_conn, "owner")
+    await _old_index(db_conn, owner.user_id, None, extracted_by="client")
+    await db_conn.execute("UPDATE doc_chunks SET text = %s WHERE doc_id = %s", (LONG.decode(), DOC))
+    await doc_pipeline.run_rebuild(DOC)
+    outline = (await load_outlines(db_conn, [DOC]))[DOC]
+    assert (outline.entries, outline.source) == ((), "none")
+    assert outline.opening == LONG.decode()[:extract.OPENING_CHARS]
+
+
+async def test_a_rebuild_dropped_because_the_document_changed_saves_no_outline(db_conn, monkeypatch, store):
+    """The guard that drops a stale rebuild covers the outline too: it is
+    written inside the same transaction as the chunk swap."""
+    build_docs_app(db_conn, monkeypatch, storage_dir=store)
+    owner = await _member(db_conn, "owner")
+    await _index_guide_before_code_chunks(db_conn, owner.user_id, store, profile=_profile_with("split1:1200:200"))
+
+    async def embed_and_reset(texts):
+        await db_conn.execute("UPDATE documents SET state = 'stored' WHERE doc_id = %s", (GUIDE_DOC,))
+        return [[1.0] + [0.0] * (embeddings.EMBEDDING_DIM - 1) for _ in texts]
+
+    monkeypatch.setattr(doc_pipeline, "embed_documents", embed_and_reset)
+
+    await doc_pipeline.run_rebuild(GUIDE_DOC)
+
+    cur = await db_conn.execute("SELECT count(*) FROM doc_outlines WHERE doc_id = %s", (GUIDE_DOC,))
+    assert (await cur.fetchone())[0] == 0
+    assert not any(r[0] == extract.CODE for r in await _guide_rows(db_conn))

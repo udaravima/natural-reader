@@ -47,7 +47,7 @@ describe('read-aloud cache across a page change', () => {
         playbackIndexRef: { current: -1 }, currentPage: 1, setCurrentPage: vi.fn(), numPages: 2,
         selectedVoice: 'v', playbackSpeed: 1, isLocalhost: true, volume: 1, apiHost: '', apiPort: '',
         requestTimeout: 30, unlimitedBatchTimeout: false, backendAvailable: true, pdfFileName: 'a.pdf',
-        setStatus: vi.fn(), showToast: vi.fn(), enabled: true,
+        setStatus: vi.fn(), showToast: vi.fn(),
     });
 
     it('a clip that finishes after the page changed is discarded, not cached for the new page', async () => {

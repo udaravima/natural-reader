@@ -2,6 +2,184 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+## [2.4.0] - 2026-10-25
+
+**Ask a whole project.** A chat can cover every current document in a
+project, and each fact names the document and page it came from. **Web search
+asks first:** the assistant offers a search on a card you can edit, and
+nothing leaves the server until you press **Search the web**. Also: Settings
+opens as a window, the narration keeps playing in every view, the chat sits
+beside the page on a wide screen, and there's a profile with a picture and
+your signed-in browsers. **A write is now committed before its response is
+sent**, which fixes v2.3.0's known issue.
+
+Behavior changes: web search no longer runs on its own (`CHAT_WEB_SEARCH=auto`
+restores that); `POST /v1/tools/web_search` returns results without page
+summaries; auto-read is off by default. Two migrations (`020`, `021`), both
+additive. The compose Keycloak image moves to 26.8.0. Release notes:
+[docs/Release_notes/RELEASE_NOTES_v2.4.0.md](docs/Release_notes/RELEASE_NOTES_v2.4.0.md).
+
+### Added
+
+- **Settings is a window, not a page.** It opens over whatever you have open
+  (tabs: Profile, Voice & reading, Chat, Appearance, Connection, Access
+  tokens), so changing the voice or turning thinking off no longer stops the
+  narration or a reply. A browser left on the old Settings view opens the
+  reader.
+- **The narration plays in every view.** Chat, Library and Admin show a small
+  header control (pause, stop, back to the page). Opening another document
+  pauses it. One voice at a time: reading a reply aloud pauses the narration.
+- **Chat beside the page.** In the reader on a wide screen, the chat opens in
+  a column next to the page; **Ask page** and **Ask AI** on a selection land
+  there instead of switching views.
+- **Profile.** A profile picture (cropped and shrunk to 256 px in the browser,
+  stored in the new `user_avatars` table, migration 020), a **Manage your
+  account** link to the sign-in provider's account page (Keycloak's account
+  console by default; `OIDC_ACCOUNT_URL` overrides or hides it), and the list
+  of signed-in browsers with **Sign out** and **Sign out everywhere else**.
+  `PUT`/`DELETE /v1/auth/me/avatar`, `GET /v1/users/{id}/avatar`,
+  `GET /v1/auth/sessions`, `DELETE /v1/auth/sessions/{id}`,
+  `POST /v1/auth/sessions/sign-out-others`; `/v1/auth/me` adds `name`,
+  `first_name`, `last_name`, `username`, `avatar_url` and `account_url`.
+- **Admins find people by part of a name.** Adding a project member or
+  sharing a document, a site admin gets type-ahead over every account (emails
+  shown, accounts awaiting approval included) whatever `USER_DIRECTORY_MODE`
+  says; with the default `exact` mode they used to need a full email address.
+  In every mode, "First Last" typed together matches the full name.
+- **Admin → Defaults.** An admin sets what auto-read, the read-aloud timing,
+  thinking, the voice and the reading speed are for anyone who hasn't chosen
+  them. People keep their own choice; **Apply to everyone** replaces it the
+  next time each person opens the app. `GET /v1/settings/defaults` (any
+  signed-in user), `GET`/`PUT /v1/admin/defaults`,
+  `POST /v1/admin/defaults/{name}/apply-to-everyone`.
+- **Sessions end when unused.** `SESSION_IDLE_HOURS` (default 12; 0 = off)
+  ends a sign-in the browser hasn't used for that long. `SESSION_TTL_HOURS`
+  (168) stays the absolute cap.
+- **Ask a whole project.** **Ask about this project** on a project page
+  (Library → Projects) starts a chat about all of the project's current
+  documents; the chat's scope chip reads **Project: *name***. The assistant
+  gets a map of the project (each document's name, pages and headings),
+  searches across the documents as one ranked list, and tells you which
+  document and page each fact came from. The chip also takes a project from
+  inside any chat (**Choose a project…**), and the chat list shows a project
+  chat's project. A project you can no longer see reads **Project
+  unavailable**; the next message is refused with "This project doesn't exist
+  or you don't have access." and the chat goes back to no project. Documents
+  still being indexed are listed but not searchable yet; old versions are
+  never searched.
+- **Citations and source chips name the document.** In a project chat a fact
+  is cited **(Guide.md, page 7)** and the link opens that document at that
+  page; joined citations, page lists and ranges count. The chips under a
+  reply are grouped by document (**Guide.md · p. 3 · p. 6**).
+- **A reader goes through many pages for one goal.** For "every command, in
+  order" the assistant hands the pages to a separate small model call that
+  returns only the facts, each with a quote the app checks against the page
+  and drops if it isn't there. `extract_from_documents` reads up to
+  `CHAT_EXTRACT_MAX_PAGES` pages a call (the closest to the goal when there are
+  more) and lists what it didn't read. It also reads the web pages the
+  assistant picks. Set `READER_MODEL=chat` on a CPU-only Ollama so no second
+  model is loaded. Its model calls count toward the person's daily token
+  budget and show in the admin's usage figures, using the provider's token
+  counts, or an estimate (characters ÷ 4) when it reports none.
+- **Web search asks first.** By default the assistant can only offer a web
+  search: a card, **Search the web?**, shows its reason and the query in an
+  editable box, with **Search the web** and **Not now**. Yes runs exactly the
+  query on the card, for that one answer; a different search needs a new
+  card. Facts from the web cite their site, **(example.com)**, and the pages
+  read show as links under **Web sources**. `CHAT_WEB_SEARCH=ask|auto|off`
+  sets the starting mode.
+- **Admin → Chat options → Web search.** *Ask first*, *Search without
+  asking* or *Off*, for everyone, from the next message. It says whether the
+  value was set there, comes from `CHAT_WEB_SEARCH`, or is the default, and
+  **Use the server setting** hands control back to the server setting.
+  `GET`/`PUT /v1/admin/chat-options` (`PUT {"web_search": "ask"|"auto"|"off"|null}`;
+  `null` resets).
+- **Code blocks, outlines and table cells are searchable.** A Markdown code
+  block is its own passage on the page it sits on, so a command can be found
+  and read; each document's headings (or a PDF's bookmarks) are stored as its
+  outline. Existing documents are re-chunked in the background on first use;
+  only text with no embedding yet is embedded. Migration `021` adds
+  `chat_sessions.scope_project_id` and `doc_outlines`.
+- New settings, all with defaults in `.env.example` and
+  [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): `CHAT_PROJECT_MAP_CHARS` (6000),
+  `CHAT_PROJECT_MAX_TOOL_ROUNDS` (5), `CHAT_PROJECT_FUSION_DEPTH` (50),
+  `CHAT_SEARCH_PER_DOC` (2), `CHAT_EXTRACT_MAX_PAGES` (12),
+  `CHAT_EXTRACT_OUTPUT_CHARS` (4000), `CHAT_WEB_SEARCH` (`ask`),
+  `READER_MODEL`, `READER_INPUT_CHARS` (12000), `READER_OUTPUT_CHARS` (1200),
+  `READER_MAX_CONCURRENCY` (2) and `READER_TIMEOUT_S` (60).
+- API: chat turns accept `context.project_id` (an id sets the chat's project,
+  `null` clears it, absent keeps it) and `context.web` (`{query}`, the
+  approved search); session list and record carry `scopeProject`.
+
+### Changed
+
+- **The compose Keycloak image is 26.8.0** (was 26.0), and **Docling must be
+  2.142 or newer** (`requirements-docling.txt`, installed only when the
+  backend is built with `WITH_DOCLING=true`).
+- **Auto-read is off by default, and replies are read once complete**
+  (were on, and while streaming). Existing browsers forget their stored value
+  for these two once, because until now every setting saved its default on
+  first load as if it had been chosen.
+- **A setting stores only a choice.** One you never touched follows the
+  current default (the admin's, else the built-in), and changing one model
+  setting no longer saves the others' defaults with it.
+- **Web search asks first by default.** It used to run on its own whenever
+  SearXNG was configured. A deployment that wants that again sets
+  `CHAT_WEB_SEARCH=auto` (or an admin picks *Search without asking*).
+- **`web_search` lists results; it no longer fetches or summarizes pages.**
+  A result is its title, site, address and snippet. Reading a page is
+  `read_web_pages`, through the reader, which takes the passages that match
+  the goal from anywhere on the page (it used to cut each page at its first
+  6,000 characters). **`WEB_SEARCH_MAX_PAGE_CHARS` is no longer read.**
+  `POST /v1/tools/web_search` follows: it returns `{title, url, site,
+  snippet}` per result, not `{title, url, summary, source}`. Nothing in the
+  app calls it, but it is public API. `WEB_SEARCH_SUMMARY_MODEL` and
+  `WEB_SEARCH_SUMMARY_TIMEOUT_S` remain only as fallbacks for `READER_MODEL`
+  and `READER_TIMEOUT_S`.
+- **The "Use this document" chip became the scope chip.** One menu: *No
+  document*, *This document: name*, a project, or *Choose a project…*.
+- **The assistant may fill a gap from general knowledge,** if it says the
+  part isn't from the documents and gives it no page, and it offers a web
+  search when the answer needs current or outside facts. It used to be told
+  never to fill a gap from memory. This applies to a single document too.
+- **Search matches part of a query.** When no passage has every word, passages
+  with at least half of the query's informative words rank (document chats
+  too).
+- **Read Selection and Ask AI no longer float over the Chat view,** where they
+  covered the Send button. To hear a reply, use its own **Read aloud** button.
+  A selection already being read keeps its **Stop**, at the top of the view.
+
+### Fixed
+
+- **Words in a Markdown table cell can be found.** Cells ran together
+  (`OIDC_ISSUERhttp://x` was one word); they are now separated in the
+  searchable text. The reader's pages don't move.
+- **Leaving Chat no longer stops the reply.** A deliberate effect aborted the
+  stream and its read-aloud whenever you left the Chat view (and the narration
+  stopped on leaving the reader); both now carry on.
+- **A text page fits beside the chat.** Text and Markdown pages were sized
+  to the window (80 vw), and a page wider than its column was cut off on the
+  left, out of reach of the scrollbar; they now size to their column, and an
+  oversized page scrolls from its left edge.
+- **A write is committed before its response is sent.** Every route took its
+  database connection with FastAPI's default "request" scope, which commits
+  only after the response and its background tasks: an immediate re-read could
+  miss the change (measured 3 of 30; now 0 of 60), and each running index held
+  one of the 10 pool connections until it finished. Connections are now
+  `scope="function"`, and a test fails any route that forgets.
+- **Cancelling an audiobook stops the server.** Cancel aborted the browser's
+  requests, but the server synthesized every cancelled page anyway, holding
+  the one Kokoro lock: a one-word read right after Cancel waited 76.8 s (now
+  0.3 s). The server checks between sentences and before taking the lock. The
+  audiobook also shows progress while it reads the document, can be cancelled
+  then, and has a Cancel item in the narrow-screen menu, which had none.
+- **Thinking "off" turns thinking off on OpenRouter.** "Off" was sent as
+  nothing, and OpenRouter then applies the model's default, which for many is
+  on. It is now `reasoning: {"effort": "none"}` for a model OpenRouter lists
+  as reasoning (not for one whose reasoning is mandatory).
+
 ## [2.3.0] - 2026-10-17
 
 **Access tokens can be limited** to what they're for: read aloud, documents,

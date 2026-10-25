@@ -11,7 +11,7 @@ import { ROLES, roleLabel } from '../../lib/projectRoles';
  * the header). Every control is disabled while its request is in flight,
  * and a refusal shows the server's notice and reloads the project.
  */
-export default function MembersTab({ theme, api, project, currentUserId, showToast, onRefused, onChanged }) {
+export default function MembersTab({ theme, api, project, currentUserId, showToast, onRefused, onChanged, isAdmin = false }) {
   const [members, setMembers] = useState(null);
   const [error, setError] = useState(null);
   const [busyId, setBusyId] = useState(null);
@@ -84,7 +84,7 @@ export default function MembersTab({ theme, api, project, currentUserId, showToa
               <button onClick={() => setPicked(null)} className="underline">Choose someone else</button>
             </div>
           ) : (
-            <PeoplePicker theme={theme} lookup={api.lookup} onPick={setPicked} label="Find a person to add"
+            <PeoplePicker theme={theme} lookup={api.lookup} onPick={setPicked} searchEveryone={isAdmin} label="Find a person to add"
               excludeIds={(members || []).map((m) => m.user_id)} excludedLabel="Already a member of this project." />
           )}
           <button onClick={() => { setAdding(false); setPicked(null); }} className="self-start text-[10px] underline">Close</button>

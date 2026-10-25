@@ -12,7 +12,7 @@ const can = (over = {}) => ({ edit: false, manage_members: false, manage_owners:
 const proj = (over = {}) => ({ id: 'p1', name: 'Q3 Audit', description: 'Evidence', my_role: 'contributor',
   member_count: 2, doc_count: 0, created_by: null, can: can(), ...over });
 
-function mount(routes) {
+function mount(routes, extra = {}) {
   apiFetch.mockImplementation(async (h, p, path, opts = {}) => {
     const key = `${opts.method || 'GET'} ${path}`;
     const hit = routes[key];
@@ -21,9 +21,20 @@ function mount(routes) {
     return json(404, {});
   });
   const props = { theme, apiHost: '', apiPort: '', projectId: 'p1', currentUserId: 'me',
-    showToast: vi.fn(), onBack: vi.fn(), onChanged: vi.fn(), onOpenDoc: vi.fn() };
+    showToast: vi.fn(), onBack: vi.fn(), onChanged: vi.fn(), onOpenDoc: vi.fn(), ...extra };
   render(<ProjectPage {...props} />);
   return props;
+}
+
+// mount() for one project; also hands back the render's unmount, for tests that mount several in a row.
+function render_(project, extra) {
+  apiFetch.mockImplementation(async (h, p, path) => {
+    if (path === '/v1/projects/p1') return json(200, project);
+    if (path.startsWith('/v1/docs')) return json(200, []);
+    return json(404, {});
+  });
+  return render(<ProjectPage theme={theme} apiHost="" apiPort="" projectId="p1" currentUserId="me"
+    showToast={vi.fn()} onBack={vi.fn()} onChanged={vi.fn()} onOpenDoc={vi.fn()} {...extra} />);
 }
 
 describe('ProjectPage', () => {
@@ -80,6 +91,44 @@ describe('ProjectPage', () => {
     expect(props.onChanged).toHaveBeenCalled();
     expect(props.onChanged.mock.invocationCallOrder[0]).toBeLessThan(props.onBack.mock.invocationCallOrder[0]);
     expect(props.showToast).toHaveBeenCalledWith("This project doesn't exist or you don't have access.", 5000);
+  });
+
+  it('Ask about this project calls onAskProject with the project', async () => {
+    const onAskProject = vi.fn();
+    mount({ 'GET /v1/projects/p1': json(200, proj({ my_role: 'reader' })) }, { onAskProject });
+    const button = await screen.findByRole('button', { name: 'Ask about this project' });
+    expect(button.textContent).toContain('Ask about this project');
+    fireEvent.click(button);
+    expect(onAskProject).toHaveBeenCalledWith({ id: 'p1', name: 'Q3 Audit' });
+  });
+
+  it('offers no Ask button where chat is not available', async () => {
+    mount({ 'GET /v1/projects/p1': json(200, proj()) });
+    await screen.findByRole('heading', { name: /Q3 Audit/ });
+    expect(screen.queryByRole('button', { name: 'Ask about this project' })).toBeNull();
+  });
+
+  // The server answers a project chat only for a member (admin_ok=False): a site admin looking at a project
+  // they aren't in sees the page, with admin powers (`can`), but has no role (`my_role` is null).
+  it('a member with chat sees the Ask button, at every role', async () => {
+    for (const role of ['reader', 'contributor', 'maintainer', 'owner']) {
+      const { unmount } = render_(proj({ my_role: role }), { onAskProject: vi.fn() });
+      expect(await screen.findByRole('button', { name: 'Ask about this project' })).toBeTruthy();
+      unmount();
+    }
+  });
+
+  it('a site admin who is not a member does not see the Ask button, though they can manage the project', async () => {
+    const adminCan = can({ edit: true, manage_members: true, manage_owners: true, remove_docs: true, delete: true, leave: false });
+    render_(proj({ my_role: null, can: adminCan }), { onAskProject: vi.fn(), isAdmin: true });
+    expect(await screen.findByRole('button', { name: 'Delete project' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Ask about this project' })).toBeNull();
+  });
+
+  it('a member without the chat capability does not see the Ask button', async () => {
+    render_(proj({ my_role: 'owner', can: can({ delete: true }) }), {});
+    expect(await screen.findByRole('button', { name: 'Delete project' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Ask about this project' })).toBeNull();
   });
 
   it('an Owner deletes the project after confirming', async () => {

@@ -2,4 +2,4 @@
 # DOCLING_ENABLED=true. Pulls in transformers + torch; the first conversion
 # downloads layout/table models (~500 MB to ~2 GB). The container installs
 # this only when built with WITH_DOCLING=true (startup.sh matches .env).
-docling>=2.0
+docling>=2.142

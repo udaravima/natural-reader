@@ -40,6 +40,12 @@ export function useKeyboardShortcuts({
             // Don't trigger shortcuts when typing in inputs
             const tag = e.target.tagName;
             if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+            // Nor inside a dialog (Settings), a menu (the chat's scope chip) or
+            // anything marked data-own-keys (the chat's web offer card): Space
+            // there presses its buttons, and Escape closes it or means nothing
+            // to it, rather than stopping the narration. A plain button elsewhere
+            // still plays/pauses.
+            if (e.target.closest?.('[role="dialog"], [role="menu"], [data-own-keys]')) return;
 
             const cb = callbacksRef.current;
             // Reader-only shortcuts (play/skip/page-nav) — dark-mode + zoom still

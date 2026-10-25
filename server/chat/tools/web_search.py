@@ -1,5 +1,11 @@
-"""web_search: SearXNG + page summaries (spec §5.3). Moved from
-src/lib/chatTools/webSearch.js; the service's SSRF guards are unchanged."""
+"""web_search: SearXNG results, numbered across the turn (spec §5.3, C2.1 §5.8). Moved from
+src/lib/chatTools/webSearch.js; the service's SSRF guards are unchanged.
+
+It returns title, address, site and a short snippet for each result, and reads no page: the model picks the
+results worth reading and read_web_pages reads them. A result's number is how the model names it later, so it
+is numbered across all the turn's searches and a URL found twice keeps its first number. Titles and snippets
+are someone else's text: they reach the model as one inert line and as fenced text.
+"""
 from __future__ import annotations
 
 import re
@@ -8,6 +14,7 @@ from typing import Any
 from ...llm.types import ToolSpec
 from ...services import web_search as web_search_service
 from ...services.web_search import RESULT_COUNT, web_search
+from ..prompt import display_name, fence
 
 # Review focus 4: document text never leaves the server through a web query.
 QUERY_MAX_CHARS = 300
@@ -21,6 +28,7 @@ COPIED = ("That query copies text from the document or an earlier answer. Search
           "the topic in a few words, not text from the document.")
 TOO_LONG = (f"That query is over {QUERY_MAX_CHARS} characters. Search the web with the topic in a "
             "few words, not text from the document.")
+SNIPPET_MAX_CHARS = 300
 _WORD = re.compile(rf"[^\W{_NO_SPACES}]+")
 _UNSPACED = re.compile(rf"[{_NO_SPACES}]+")
 
@@ -50,7 +58,8 @@ _SPEC = ToolSpec(
         "Search the internet for current or outside information: news, prices, weather, recent events, "
         "facts that can't be in the user's document. Not for the open document's contents: a name or "
         "term you don't recognise is probably from the document, so search the document first. The "
-        "query is the topic in a few words, never text copied from the document."),
+        "query is the topic in a few words, never text copied from the document. It lists each result's "
+        "title, address and a short snippet; the snippets are not the pages."),
     parameters={
         "type": "object",
         "properties": {
@@ -63,13 +72,46 @@ _SPEC = ToolSpec(
 )
 
 
+def _snippet(text: Any) -> str:
+    """A snippet as the model reads it: fenced, and at most SNIPPET_MAX_CHARS characters."""
+    text = fence(str(text or "")).strip()
+    return text if len(text) <= SNIPPET_MAX_CHARS else text[:SNIPPET_MAX_CHARS - 1].rstrip() + "…"
+
+
+def _numbered(found: dict[str, Any], query: str, web_results: dict[int, dict]) -> dict[str, Any]:
+    """`found` (the service's result) with each result numbered and made inert. A new URL takes the next number
+    after the turn's highest and is recorded in `web_results`; one the turn has seen keeps its number, and is
+    listed once however often the engine returns it."""
+    number_of = {entry["url"]: n for n, entry in web_results.items()}
+    listed: dict[int, dict[str, Any]] = {}
+    for r in found.get("results") or []:
+        url = r.get("url") or ""
+        if not url:
+            continue
+        n = number_of.get(url)
+        if n is None:
+            n = number_of[url] = max(web_results, default=0) + 1
+            web_results[n] = {"title": r.get("title") or url, "url": url, "site": r.get("site") or "",
+                              "query": query, "read": False}
+        if n not in listed:
+            listed[n] = {"n": n, "title": display_name(web_results[n]["title"]), "url": url,
+                         "site": web_results[n]["site"], "snippet": _snippet(r.get("snippet"))}
+    return {**found, "results": list(listed.values())}
+
+
 class _WebSearch:
     name = "web_search"
     spec = _SPEC
     source = "web"
 
     def available(self, ctx) -> bool:
-        return bool(web_search_service.SEARXNG_URL)
+        """Only where the deployment searches without asking ("auto"). In "ask" mode every search is a yes the user
+        gave to a query they saw, and the app runs that one itself (chat/web_consent.py): the model is never
+        handed a way to run another. That is the enforcement of "ask first": the tool simply isn't there.
+        With no turn at all (`ctx` None: the evals ask whether web search is set up here) only the engine counts."""
+        if ctx is None:
+            return bool(web_search_service.SEARXNG_URL)
+        return bool(web_search_service.SEARXNG_URL) and ctx.web_mode == "auto"
 
     async def execute(self, args: dict[str, Any], ctx) -> dict[str, Any]:
         query = str(args.get("query") or "").strip()
@@ -82,7 +124,8 @@ class _WebSearch:
         count = args.get("count", RESULT_COUNT)
         if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= 10:
             return {"error": "count must be between 1 and 10."}
-        return await web_search(query, count)
+        found = await web_search(query, count)
+        return _numbered(found, query, ctx.web_results if ctx is not None else {})
 
     def summarize(self, args: dict[str, Any], result: dict[str, Any], ctx) -> dict[str, Any]:
         n = len(result.get("results") or [])

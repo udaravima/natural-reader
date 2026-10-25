@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
     Trash2, RefreshCw, MessageSquare, Bot,
-    Plus, Pencil, ChevronDown, ChevronRight, ScrollText, Check, X,
+    Plus, Pencil, ChevronDown, ChevronRight, ScrollText, Check, X, Folder,
 } from 'lucide-react';
 import { groupByProvider, modelLabel } from '../lib/modelIds';
 
@@ -198,6 +198,13 @@ export default function ChatSidebar({
                                                         <p className={`text-[9px] ${theme.textMuted}`}>
                                                             {s.messageCount} msg · {formatTimeAgo(s.updatedAt)}
                                                         </p>
+                                                        {s.scopeProject && (
+                                                            // A project chat. The name is null when the reader can no longer see the project.
+                                                            <p className="flex items-center gap-1 min-w-0 text-[9px] text-blue-500">
+                                                                <Folder size={9} className="shrink-0" aria-hidden="true" />
+                                                                <span className="truncate">{s.scopeProject.name || 'Project unavailable'}</span>
+                                                            </p>
+                                                        )}
                                                     </button>
                                                     <button
                                                         onClick={(e) => { e.stopPropagation(); setRenamingId(s.id); setDraftTitle(s.title || ''); }}

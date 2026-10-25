@@ -1,30 +1,73 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { getLibraryOwner, readingProgressKey } from '../db';
+import { useLatest } from './useLatest';
 
 const PREFIX = 'neural-pdf-';
+const RESET_EVENT = 'neural-pdf-reset';
+
+function readStored(key) {
+    try {
+        const stored = localStorage.getItem(`${PREFIX}${key}`);
+        return stored === null ? undefined : JSON.parse(stored);
+    } catch (e) {
+        console.warn(`Failed to load ${key} from localStorage`, e);
+        return undefined;
+    }
+}
 
 /**
- * A useState variant that persists the value to localStorage.
- * Replaces the 12+ identical useEffect blocks that were in App.jsx.
+ * A useState variant that persists the user's CHOICE to localStorage.
+ *
+ * Only a value set through the setter is stored; until then the hook shows
+ * `defaultValue`, and follows it when it changes (an admin's deployment
+ * default arriving after load, say). It used to store its default on first
+ * load as if chosen, so a changed default never reached a browser that had
+ * opened the app once. A choice equal to the default is still a choice.
  */
 export function usePersistedState(key, defaultValue) {
-    const [value, setValue] = useState(() => {
-        try {
-            const stored = localStorage.getItem(`${PREFIX}${key}`);
-            if (stored !== null) {
-                return JSON.parse(stored);
-            }
-        } catch (e) {
-            console.warn(`Failed to load ${key} from localStorage`, e);
-        }
-        return defaultValue;
-    });
+    const [stored, setStored] = useState(() => readStored(key));
+    const value = stored === undefined ? defaultValue : stored;
+    const defaultRef = useLatest(defaultValue);
 
     useEffect(() => {
-        localStorage.setItem(`${PREFIX}${key}`, JSON.stringify(value));
-    }, [key, value]);
+        if (stored !== undefined) localStorage.setItem(`${PREFIX}${key}`, JSON.stringify(stored));
+    }, [key, stored]);
+
+    // resetPersisted(key): drop the choice in every hook showing this key.
+    useEffect(() => {
+        const onReset = (e) => { if (e.detail === key) setStored(undefined); };
+        window.addEventListener(RESET_EVENT, onReset);
+        return () => window.removeEventListener(RESET_EVENT, onReset);
+    }, [key]);
+
+    const setValue = useCallback((next) => {
+        setStored((prev) => {
+            const current = prev === undefined ? defaultRef.current : prev;
+            return typeof next === 'function' ? next(current) : next;
+        });
+    }, [defaultRef]);
 
     return [value, setValue];
+}
+
+/** Forget the user's choice for `key`: it follows the default again. */
+export function resetPersisted(key) {
+    try {
+        localStorage.removeItem(`${PREFIX}${key}`);
+    } catch (e) {
+        console.warn(`Failed to reset ${key} in localStorage`, e);
+    }
+    window.dispatchEvent(new CustomEvent(RESET_EVENT, { detail: key }));
+}
+
+/** Run a one-time browser migration `id` (before the hooks read). */
+export function runOnce(id, fn) {
+    const k = `${PREFIX}migrations`;
+    let done = [];
+    try { done = JSON.parse(localStorage.getItem(k) || '[]'); } catch { done = []; }
+    if (done.includes(id)) return;
+    fn();
+    try { localStorage.setItem(k, JSON.stringify([...done, id])); } catch { /* storage full or blocked */ }
 }
 
 /**

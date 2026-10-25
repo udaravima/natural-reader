@@ -6,8 +6,8 @@ import httpx
 import pytest
 
 from server.llm import router as llm_router
-from server.llm.router import Router, UnknownModel, load_provider_configs
-from server.llm.types import Capabilities, CallSettings, Message
+from server.llm.router import Received, Router, UnknownModel, load_provider_configs
+from server.llm.types import Capabilities, CallSettings, Message, ProviderUnavailable, Usage
 from server.tests.llm_fakes import FakeUpstream, ndjson
 
 DONE = {"message": {"content": ""}, "done": True, "done_reason": "stop", "eval_count": 1, "prompt_eval_count": 1}
@@ -179,6 +179,29 @@ async def test_complete_concatenates_text():
     r, up = _router()
     assert await r.complete("local:qwen2.5:7b", [Message("user", "hi")]) == "Hi there"
     assert "think" not in up.bodies("/api/chat")[0]   # /api/show says no thinking: field omitted
+
+
+async def test_complete_fills_what_it_received_and_returns_the_same_text():
+    """Final review I1: the reader bills each call, so a caller can pass a Received that `complete` fills as the
+    stream arrives (the text, and the provider's own usage). Without one, a caller gets what it always got."""
+    r, _ = _router()
+    got = Received()
+    assert await r.complete("local:qwen2.5:7b", [Message("user", "hi")], received=got) == "Hi there"
+    assert got.text == "Hi there" and got.usage == Usage(1, 1, detail={})
+
+
+async def test_complete_that_breaks_off_still_shows_what_it_received():
+    """A stream that breaks off raises as before, and the text that came first is in the Received: the part of a
+    call that failed or timed out that was produced, which is what it is charged for."""
+    configs = load_provider_configs({"INFERENCE_PROVIDERS": "local", "INFERENCE_LOCAL_KIND": "ollama",
+                                     "INFERENCE_LOCAL_URL": "http://ollama.test"})
+    up = (FakeUpstream()
+          .on("POST", "/api/show", lambda: httpx.Response(200, json={"capabilities": []}))
+          .on("POST", "/api/chat", lambda: ndjson({"message": {"content": "Half a"}})))   # no "done": cut off
+    got = Received()
+    with pytest.raises(ProviderUnavailable):
+        await Router(configs, up.client()).complete("local:m", [Message("user", "hi")], received=got)
+    assert got.text == "Half a" and got.usage is None
 
 
 async def test_lifecycle_uses_env_and_transport(monkeypatch):

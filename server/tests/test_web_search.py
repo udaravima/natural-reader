@@ -1,6 +1,11 @@
 import asyncio
+import logging
+import os
 import socket
+import subprocess
+import sys
 import time
+from pathlib import Path
 
 import httpx
 import pytest
@@ -66,7 +71,7 @@ async def test_searxng_search_parses_and_caps(monkeypatch):
 
 
 @respx.mock
-async def test_fetch_and_extract_returns_clean_text(resolve_pub_test):
+async def test_fetch_page_text_returns_clean_text(resolve_pub_test):
     html = (
         "<html><head><title>T</title></head><body><nav>home about</nav>"
         "<article><h1>Findings</h1>"
@@ -78,7 +83,7 @@ async def test_fetch_and_extract_returns_clean_text(resolve_pub_test):
     respx.get("http://pub.test/a").mock(return_value=httpx.Response(200, html=html))
     await ws.start_client()
     try:
-        text = await ws.fetch_and_extract("http://pub.test/a")
+        text = await ws.fetch_page_text("http://pub.test/a")
     finally:
         await ws.stop_client()
     assert text is not None
@@ -87,38 +92,42 @@ async def test_fetch_and_extract_returns_clean_text(resolve_pub_test):
 
 
 @respx.mock
-async def test_fetch_and_extract_truncates_to_max_page_chars(monkeypatch, resolve_pub_test):
-    monkeypatch.setattr(ws, "MAX_PAGE_CHARS", 50)
-    para = "This sentence provides ample readable content for extraction. " * 40
-    html = f"<html><body><article><h1>Doc</h1><p>{para}</p></article></body></html>"
+async def test_fetch_page_text_returns_the_whole_page_with_no_character_cut(resolve_pub_test):
+    # 40 paragraphs, 7,000+ characters: the old fetch cut at 6,000 (WEB_SEARCH_MAX_PAGE_CHARS).
+    paras = "".join(f"<p>Paragraph number {i} gives ample readable content for extraction here.</p>"
+                    for i in range(40))
+    tail = "<p>The very last paragraph says the answer is forty-two.</p>"
+    html = f"<html><body><article><h1>Doc</h1>{paras * 3}{tail}</article></body></html>"
     respx.get("http://pub.test/big").mock(return_value=httpx.Response(200, html=html))
     await ws.start_client()
     try:
-        text = await ws.fetch_and_extract("http://pub.test/big")
+        text = await ws.fetch_page_text("http://pub.test/big")
     finally:
         await ws.stop_client()
     assert text is not None
-    assert len(text) == 50
+    assert len(text) > 6000
+    assert "the answer is forty-two" in text
+    assert not hasattr(ws, "MAX_PAGE_CHARS")
 
 
 @respx.mock
-async def test_fetch_and_extract_blocks_redirect_to_private(resolve_pub_test):
+async def test_fetch_page_text_blocks_redirect_to_private(resolve_pub_test):
     respx.get("http://pub.test/redir").mock(
         return_value=httpx.Response(302, headers={"location": "http://169.254.169.254/"})
     )
     await ws.start_client()
     try:
-        text = await ws.fetch_and_extract("http://pub.test/redir")
+        text = await ws.fetch_page_text("http://pub.test/redir")
     finally:
         await ws.stop_client()
     assert text is None
 
 
-async def test_fetch_and_extract_blocks_private_url_without_request():
+async def test_fetch_page_text_blocks_private_url_without_request():
     # No respx route registered — if it tried to fetch, respx would raise.
     await ws.start_client()
     try:
-        text = await ws.fetch_and_extract("http://127.0.0.1/secret")
+        text = await ws.fetch_page_text("http://127.0.0.1/secret")
     finally:
         await ws.stop_client()
     assert text is None
@@ -131,7 +140,7 @@ def _mock_transport_client(handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
-async def test_fetch_and_extract_streams_and_stops_at_the_cap(monkeypatch, resolve_pub_test):
+async def test_fetch_page_text_streams_and_stops_at_the_cap(monkeypatch, resolve_pub_test):
     """An endless body must not be buffered in full — the fix streams the
     final hop and stops once MAX_RESPONSE_BYTES is reached. Pre-fix, this
     calls resp.content on a fully-buffered response, which never returns for
@@ -154,7 +163,7 @@ async def test_fetch_and_extract_streams_and_stops_at_the_cap(monkeypatch, resol
     client = _mock_transport_client(handler)
     monkeypatch.setattr(ws, "_client", client)
     try:
-        text = await asyncio.wait_for(ws.fetch_and_extract("http://pub.test/endless"), timeout=2)
+        text = await asyncio.wait_for(ws.fetch_page_text("http://pub.test/endless"), timeout=2)
     finally:
         await client.aclose()
     assert text is not None
@@ -164,7 +173,7 @@ async def test_fetch_and_extract_streams_and_stops_at_the_cap(monkeypatch, resol
     assert chunks_yielded < 20
 
 
-async def test_fetch_and_extract_body_trickling_past_deadline_returns_none(monkeypatch, resolve_pub_test):
+async def test_fetch_page_text_body_trickling_past_deadline_returns_none(monkeypatch, resolve_pub_test):
     """A body that trickles in slowly — each chunk arriving well inside the
     per-request timeout — must still be cut off by the total fetch deadline
     (WEB_SEARCH_FETCH_TOTAL_S), not allowed to run indefinitely."""
@@ -182,7 +191,7 @@ async def test_fetch_and_extract_body_trickling_past_deadline_returns_none(monke
     monkeypatch.setattr(ws, "_client", client)
     try:
         start = time.monotonic()
-        text = await asyncio.wait_for(ws.fetch_and_extract("http://pub.test/trickle"), timeout=2)
+        text = await asyncio.wait_for(ws.fetch_page_text("http://pub.test/trickle"), timeout=2)
         elapsed = time.monotonic() - start
     finally:
         await client.aclose()
@@ -190,7 +199,7 @@ async def test_fetch_and_extract_body_trickling_past_deadline_returns_none(monke
     assert elapsed < 1.0  # deadline (0.3s) plus a generous margin
 
 
-async def test_fetch_and_extract_skips_non_text_content_type_without_reading_body(monkeypatch, resolve_pub_test):
+async def test_fetch_page_text_skips_non_text_content_type_without_reading_body(monkeypatch, resolve_pub_test):
     """A non-text Content-Type (e.g. application/pdf) must short-circuit
     before the body is read at all — not just before it's decoded."""
     body_was_read = False
@@ -206,14 +215,14 @@ async def test_fetch_and_extract_skips_non_text_content_type_without_reading_bod
     client = _mock_transport_client(handler)
     monkeypatch.setattr(ws, "_client", client)
     try:
-        text = await ws.fetch_and_extract("http://pub.test/doc.pdf")
+        text = await ws.fetch_page_text("http://pub.test/doc.pdf")
     finally:
         await client.aclose()
     assert text is None
     assert body_was_read is False
 
 
-async def test_fetch_and_extract_still_extracts_normal_html_via_mock_transport(monkeypatch, resolve_pub_test):
+async def test_fetch_page_text_still_extracts_normal_html_via_mock_transport(monkeypatch, resolve_pub_test):
     """Sanity check that the streamed final hop still produces normal output
     for an ordinary, fully-buffered HTML page."""
     html = (
@@ -233,7 +242,7 @@ async def test_fetch_and_extract_still_extracts_normal_html_via_mock_transport(m
     client = _mock_transport_client(handler)
     monkeypatch.setattr(ws, "_client", client)
     try:
-        text = await ws.fetch_and_extract("http://pub.test/normal")
+        text = await ws.fetch_page_text("http://pub.test/normal")
     finally:
         await client.aclose()
     assert text is not None
@@ -241,47 +250,349 @@ async def test_fetch_and_extract_still_extracts_normal_html_via_mock_transport(m
     assert "home about" not in text
 
 
-async def test_summarize_one_goes_through_the_router(monkeypatch):
-    from server.llm.types import CallSettings
+async def test_page_fetches_share_the_services_concurrency_bound(monkeypatch):
+    """fetch_page_text is what read_web_pages fans out over, so the bound lives in it, not in its callers."""
+    monkeypatch.setattr(ws, "_semaphore", asyncio.Semaphore(2))
+    running, peak = 0, 0
 
-    calls = {}
+    async def slow_get(url):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.02)
+        running -= 1
+        return None
 
-    class _FakeRouter:
-        async def complete(self, model_id, messages, settings=CallSettings()):
-            calls["model"] = model_id
-            calls["prompt"] = messages[0].content
-            return "  A short summary.  "
-
-    monkeypatch.setenv("SUMMARIZE_MODEL", "llama3.2:3b")
-    monkeypatch.setattr(ws, "get_router", lambda: _FakeRouter())
-    out = await ws.summarize_one("what is x", "long page text about x")
-    assert out == "A short summary."
-    assert calls["model"] == "llama3.2:3b"            # bare name: the router sends it to the first ollama provider
-    assert "what is x" in calls["prompt"] and "long page text about x" in calls["prompt"]
+    monkeypatch.setattr(ws, "_safe_get", slow_get)
+    results = await asyncio.gather(*(ws.fetch_page_text(f"http://pub.test/{i}") for i in range(6)))
+    assert results == [None] * 6 and peak == 2
 
 
-async def test_web_search_fans_out_with_snippet_fallback(monkeypatch):
+def test_the_summary_machinery_is_gone():
+    for name in ("summarize_one", "_SUMMARY_PROMPT", "MAX_PAGE_CHARS", "SUMMARY_TIMEOUT_S", "fetch_and_extract"):
+        assert not hasattr(ws, name), name
+
+
+def _no_fetch_no_model(monkeypatch):
+    """Anything that fetches a page or calls a model fails the test. Patched where a call would land, whichever
+    way the service reaches it: the HTTP client every page fetch uses; the router, both as a module attribute
+    (an import made at call time) and as a name the service imported at the top (the old summary code did, so
+    it is patched here if it is there again); and the router's two ways to a model."""
+    from server.llm import router as llm_router
+
+    async def no_fetch(*a, **k):
+        raise AssertionError("web_search must not fetch a page")
+
+    def no_client():
+        raise AssertionError("web_search must not use the HTTP client for a page")
+
+    def no_model(*a, **k):
+        raise AssertionError("web_search must not call a model")
+
+    monkeypatch.setattr(ws, "fetch_page_text", no_fetch)
+    monkeypatch.setattr(ws, "_safe_get", no_fetch)
+    monkeypatch.setattr(ws, "_fetch_capped", no_fetch)
+    monkeypatch.setattr(ws, "_get_client", no_client)
+    monkeypatch.setattr(llm_router, "get_router", no_model)
+    monkeypatch.setattr(ws, "get_router", no_model, raising=False)
+    monkeypatch.setattr(llm_router.Router, "complete", no_model)
+    monkeypatch.setattr(llm_router.Router, "stream_chat", no_model)
+
+
+async def test_web_search_makes_no_page_fetch_and_no_model_call(monkeypatch):
     async def fake_search(query, count):
         return [
-            {"title": "T1", "url": "http://one.test", "snippet": "snip1"},
-            {"title": "T2", "url": "http://two.test", "snippet": "snip2"},
+            {"title": "T1", "url": "http://one.test/a", "snippet": "snip1"},
+            {"title": "T2", "url": "https://WWW.Two.Test/b", "snippet": "snip2"},
         ]
 
-    async def fake_fetch(url):
-        return "page text" if url == "http://one.test" else None
-
-    async def fake_summarize(query, text):
-        return "SUMMARY"
-
     monkeypatch.setattr(ws, "searxng_search", fake_search)
-    monkeypatch.setattr(ws, "fetch_and_extract", fake_fetch)
-    monkeypatch.setattr(ws, "summarize_one", fake_summarize)
+    _no_fetch_no_model(monkeypatch)
 
     out = await ws.web_search("q", 5)
-    assert out["query"] == "q"
-    assert len(out["results"]) == 2
-    first, second = out["results"]
-    assert first == {"title": "T1", "url": "http://one.test",
-                     "summary": "SUMMARY", "source": "page"}
-    assert second == {"title": "T2", "url": "http://two.test",
-                      "summary": "snip2", "source": "snippet"}
+    assert out == {"query": "q", "results": [
+        {"title": "T1", "url": "http://one.test/a", "site": "one.test", "snippet": "snip1"},
+        {"title": "T2", "url": "https://WWW.Two.Test/b", "site": "two.test", "snippet": "snip2"},
+    ]}
+
+
+@pytest.mark.parametrize("url,site", [
+    ("https://www.example.com/a/b?x=1", "example.com"),
+    ("https://WWW.Example.COM/", "example.com"),
+    ("http://sub.example.org:8080/x", "sub.example.org"),
+    ("https://wwwx.example.net/", "wwwx.example.net"),    # only a leading "www." goes
+    ("https://docs.www.example.net/", "docs.www.example.net"),
+    ("notaurl", ""),
+    ("", ""),
+])
+def test_site_is_the_lowercased_hostname_without_a_leading_www(url, site):
+    assert ws.site_of(url) == site
+
+
+async def test_web_search_clamps_the_count(monkeypatch):
+    asked = []
+
+    async def fake_search(query, count):
+        asked.append(count)
+        return []
+
+    monkeypatch.setattr(ws, "searxng_search", fake_search)
+    assert await ws.web_search("q", 99) == {"query": "q", "results": []}
+    await ws.web_search("q", 0)
+    assert asked == [10, 1]
+
+
+# ---- page_passages: the part of a page worth reading ----
+#
+# trafilatura.extract puts one paragraph, heading or list item per line, separated by a single "\n" and never a
+# blank line, so these pages do too.
+
+def _line(head: str, size: int = 600) -> str:
+    """One line of exactly `size` characters that starts with `head`. Two never fit one passage (the packing
+    limit is 1,000), so each is a passage of its own."""
+    return (head + " " + "filler " * 200)[:size - 1] + "."
+
+
+def _para(i: int) -> str:
+    return f"Section {i} of the manual. " + "Plain filler sentence about nothing in particular. " * 12
+
+
+def test_page_passages_find_text_past_six_thousand_characters():
+    """The old fetch kept the first 6,000 characters, so an answer on page two of a long article was never
+    seen. The passages are chosen from the whole page."""
+    answer = "To change the listening port, edit server.toml and set port = 8080 under [network]."
+    page = "\n".join([_para(i) for i in range(30)] + [answer] + [_para(i) for i in range(30, 40)])
+    assert page.index(answer) > 6000
+    picked = ws.page_passages(page, "change listening port", "the config setting for the port", 3000)
+    assert sum(answer in p for p in picked) == 1             # whole, in one passage
+    assert sum(len(p) for p in picked) + 2 * (len(picked) - 1) <= 3000
+
+
+def test_page_passages_come_back_in_page_order():
+    lines = [_line("intro words"), _line("alpha beta gamma"), _line("nothing here"), _line("beta gamma delta epsilon")]
+    page = "\n".join(lines)
+    need = "alpha beta gamma delta epsilon"
+    assert ws.page_passages(page, "", need, 10_000) == lines
+    assert ws.page_passages(page, "", need, 1300) == [lines[1], lines[3]]      # the best two, in page order
+
+
+def test_page_passages_score_distinct_casefolded_words_of_need_and_query():
+    lines = [_line("Port PORT port"), _line("install the Port"), _line("unrelated")]
+    # Room for one. "port" three times counts once (1 point); "install" + "port" count twice, and the query's
+    # words are added to the need's.
+    assert ws.page_passages("\n".join(lines), "install", "port", 650) == [lines[1]]
+
+
+def test_page_passages_break_ties_by_earlier_position():
+    lines = [_line("one needle here"), _line("two needle here"), _line("six needle here")]
+    page = "\n".join(lines)
+    assert ws.page_passages(page, "needle", "", 600) == [lines[0]]
+    assert ws.page_passages(page, "needle", "", 1202) == lines[:2]
+    assert ws.page_passages(page, "needle", "", 1804) == lines
+
+
+def test_page_passages_take_the_top_of_the_page_when_nothing_matches():
+    lines = [_line("first block"), _line("second block"), _line("third block"), _line("fourth block")]
+    page = "\n".join(lines)
+    assert ws.page_passages(page, "zzz", "yyy", 1300) == lines[:2]
+    assert ws.page_passages(page, "", "", 10_000) == lines
+
+
+def test_the_top_of_the_page_fallback_stops_at_the_first_passage_that_does_not_fit():
+    """No gaps: a short passage further down must not jump the one that didn't fit. (When passages do match,
+    a smaller one may fill the room a bigger one left: that is ranking, not reading from the top.)"""
+    big, wide, short = _line("first", 600), _line("second", 900), _line("third", 100)
+    page = "\n".join([big, wide, short])
+    assert ws.page_passages(page, "zzz", "yyy", 1300) == [big]
+    a, b, c = _line("alpha beta", 600), _line("alpha", 900), _line("beta", 100)
+    assert ws.page_passages("\n".join([a, b, c]), "", "alpha beta", 1300) == [a, c]
+
+
+def test_page_passages_count_the_joins_in_the_budget():
+    page = "\n".join([_line("aaaa needle"), _line("bbbb needle")])    # 600 + 2 + 600
+    assert len(ws.page_passages(page, "needle", "", 1202)) == 2
+    assert len(ws.page_passages(page, "needle", "", 1201)) == 1
+
+
+def test_page_passages_pack_adjacent_lines_up_to_about_a_thousand_characters():
+    lines = [f"{i:02d} " + "x" * 96 for i in range(30)]               # 99 characters each
+    page = "\n".join(lines)
+    picked = ws.page_passages(page, "", "", 100_000)
+    assert [p.count("\n") + 1 for p in picked] == [10, 10, 10]         # 10 * 99 + 9 = 999
+    assert all(len(p) <= 1000 for p in picked)
+    assert "\n".join(picked) == page                                   # nothing lost, nothing repeated, in order
+
+
+def test_page_passages_ignore_blank_lines_and_surrounding_space():
+    assert ws.page_passages("  one \n\n   \n two\r\n\n three  ", "", "", 1000) == ["one\ntwo\nthree"]
+
+
+def test_a_passage_never_starts_or_ends_mid_line_unless_the_line_is_over_a_thousand():
+    short = [f"Row {i}: " + "data " * (i % 40) + "end" for i in range(90)]      # 8 to 203 characters
+    long_line = "A long statement about the row. " * 80                       # 2,560 characters, in sentences
+    lines = short[:45] + [long_line.strip()] + short[45:]
+    picked = ws.page_passages("\n".join(lines), "", "", 1_000_000)
+    seen = [part for p in picked for part in p.split("\n")]
+    cut = [part for part in seen if part not in short]
+    assert set(short) <= set(seen)                                           # every short line, whole
+    assert cut and all(part in long_line and len(part) <= 1000 for part in cut)
+    assert " ".join(cut) == long_line.strip()                                # the long line, cut at sentence ends
+
+
+def test_page_passages_split_a_long_line_at_sentence_ends():
+    sentences = [f"Sentence number {i:02d} says something of about this length. " for i in range(40)]
+    page = "".join(sentences).strip()
+    assert len(page) > 2000 and "\n" not in page
+    picked = ws.page_passages(page, "", "Sentence", 100_000)
+    assert len(picked) >= 2
+    assert all(len(p) <= 1000 for p in picked)
+    assert all(p.endswith(".") for p in picked)                       # cut at sentence ends
+    assert " ".join(picked) == page                                    # nothing lost, nothing repeated
+
+
+def test_page_passages_split_a_long_line_with_no_sentence_end_at_spaces_then_anywhere():
+    page = "word " * 600                                              # 3,000 characters, no sentence end
+    picked = ws.page_passages(page, "", "word", 100_000)
+    assert len(picked) >= 3 and all(0 < len(p) <= 1000 for p in picked)
+    assert "".join(p.replace(" ", "") for p in picked) == "word" * 600
+    unbroken = ws.page_passages("x" * 2500, "", "x", 100_000)
+    assert [len(p) for p in unbroken] == [1000, 1000, 500]
+
+
+def test_page_passages_never_return_a_passage_longer_than_the_budget():
+    picked = ws.page_passages("y" * 900, "", "y", 500)
+    assert picked and all(len(p) <= 500 for p in picked)
+
+
+def test_page_passages_of_no_text_are_none():
+    assert ws.page_passages("", "q", "n", 1000) == []
+    assert ws.page_passages(" \n\n \n ", "q", "n", 1000) == []
+
+
+async def test_a_list_page_as_trafilatura_gives_it_keeps_the_answers_row_whole(monkeypatch, resolve_pub_test):
+    """The page shape that matters: trafilatura output has no blank lines, and a 120-row list is one run of
+    lines. The row with the answer (97) must come back whole, inside one passage, so a quote of it verifies."""
+    rows = "".join(f"<li>Item {i}: key{i} is set to value{i} (default: unset)</li>" for i in range(120))
+    html = ("<html><head><title>Guide</title></head><body><nav>home about</nav><article>"
+            "<h1>Configuration guide</h1>"
+            "<p>This guide explains every setting of the product in detail. Read it before changing anything.</p>"
+            f"<h2>Settings</h2><ul>{rows}</ul>"
+            "<p>That is all there is to know about the settings, thank you for reading.</p></article></body></html>")
+
+    async def handler(request):
+        return httpx.Response(200, headers={"content-type": "text/html; charset=utf-8"}, content=html.encode())
+
+    client = _mock_transport_client(handler)
+    monkeypatch.setattr(ws, "_client", client)
+    try:
+        text = await ws.fetch_page_text("http://pub.test/guide")
+    finally:
+        await client.aclose()
+    assert text is not None and "\n\n" not in text and text.count("\n") > 100     # the real shape
+    lines = text.split("\n")
+    row = next(line for line in lines if "key97 " in line)
+    assert len(text) > 6000 and text.index(row) > 4000
+
+    picked = ws.page_passages(text, "config", "the value that key97 is set to", 3000)
+    holding = [p for p in picked if row in p]
+    assert len(holding) == 1                                   # the row, whole, in one passage
+    assert all(part in lines for p in picked for part in p.split("\n"))       # no row cut anywhere
+    assert sum(len(p) for p in picked) + 2 * (len(picked) - 1) <= 3000
+    assert picked == sorted(picked, key=text.index)             # page order
+
+
+# ---- Task 22 (g): the numeric WEB_SEARCH_* settings warn and default ----
+
+DEFAULTS = ws.WebSearchSettings(result_count=5, max_concurrency=4, fetch_timeout_s=8.0, fetch_total_s=15.0,
+                                max_response_bytes=2_000_000)
+
+
+def test_the_defaults_when_nothing_is_set():
+    assert ws.load_web_search_settings({}) == DEFAULTS
+
+
+def test_valid_values_are_used():
+    env = {"WEB_SEARCH_RESULT_COUNT": "7", "WEB_SEARCH_MAX_CONCURRENCY": "8", "WEB_SEARCH_FETCH_TIMEOUT_S": "2.5",
+           "WEB_SEARCH_FETCH_TOTAL_S": "30", "WEB_SEARCH_MAX_RESPONSE_BYTES": "500000"}
+    assert ws.load_web_search_settings(env) == ws.WebSearchSettings(7, 8, 2.5, 30.0, 500_000)
+
+
+@pytest.mark.parametrize("key,field", [
+    ("WEB_SEARCH_RESULT_COUNT", "result_count"), ("WEB_SEARCH_MAX_CONCURRENCY", "max_concurrency"),
+    ("WEB_SEARCH_FETCH_TIMEOUT_S", "fetch_timeout_s"), ("WEB_SEARCH_FETCH_TOTAL_S", "fetch_total_s"),
+    ("WEB_SEARCH_MAX_RESPONSE_BYTES", "max_response_bytes")])
+@pytest.mark.parametrize("raw", ["abc", "5 results", "nan", "inf", "0x10"])
+def test_a_value_that_is_not_a_number_warns_and_uses_the_default(key, field, raw, caplog):
+    with caplog.at_level(logging.WARNING, logger=ws.logger.name):
+        got = ws.load_web_search_settings({key: raw})
+    assert got == DEFAULTS
+    assert [r.getMessage() for r in caplog.records if key in r.getMessage()], caplog.text
+
+
+@pytest.mark.parametrize("key", ["WEB_SEARCH_RESULT_COUNT", "WEB_SEARCH_MAX_CONCURRENCY", "WEB_SEARCH_MAX_RESPONSE_BYTES"])
+def test_a_fraction_for_a_whole_number_setting_is_not_a_number_to_it(key, caplog):
+    """"5.5" is a number, but not one of these settings can take: it is the not-a-number path (the same message as
+    chat/config.py), and the default is used."""
+    with caplog.at_level(logging.WARNING, logger=ws.logger.name):
+        assert ws.load_web_search_settings({key: "5.5"}) == DEFAULTS
+    messages = [r.getMessage() for r in caplog.records]
+    assert len(messages) == 1 and messages[0].startswith(f"{key}='5.5' is not a number; using ")
+
+
+@pytest.mark.parametrize("key,field,bad", [
+    ("WEB_SEARCH_RESULT_COUNT", "result_count", ["0", "11", "-3"]),
+    ("WEB_SEARCH_MAX_CONCURRENCY", "max_concurrency", ["0", "33", "-1"]),
+    ("WEB_SEARCH_FETCH_TIMEOUT_S", "fetch_timeout_s", ["0", "0.5", "121", "-8"]),
+    ("WEB_SEARCH_FETCH_TOTAL_S", "fetch_total_s", ["0", "0.9", "301", "-15"]),
+    ("WEB_SEARCH_MAX_RESPONSE_BYTES", "max_response_bytes", ["0", "9999", "50000001", "-1"])])
+def test_a_value_out_of_range_warns_and_uses_the_default(key, field, bad, caplog):
+    for raw in bad:
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger=ws.logger.name):
+            got = ws.load_web_search_settings({key: raw})
+        assert got == DEFAULTS, (key, raw)
+        assert any(key in r.getMessage() for r in caplog.records), (key, raw)
+
+
+@pytest.mark.parametrize("key,low,high,field", [
+    ("WEB_SEARCH_RESULT_COUNT", "1", "10", "result_count"),
+    ("WEB_SEARCH_MAX_CONCURRENCY", "1", "32", "max_concurrency"),
+    ("WEB_SEARCH_FETCH_TIMEOUT_S", "1", "120", "fetch_timeout_s"),
+    ("WEB_SEARCH_FETCH_TOTAL_S", "1", "300", "fetch_total_s"),
+    ("WEB_SEARCH_MAX_RESPONSE_BYTES", "10000", "50000000", "max_response_bytes")])
+def test_the_ends_of_each_range_are_allowed(key, low, high, field, caplog):
+    cast = float if key.endswith("_S") else int
+    with caplog.at_level(logging.WARNING, logger=ws.logger.name):
+        for raw in (low, high):
+            assert getattr(ws.load_web_search_settings({key: raw}), field) == cast(raw)
+    assert not caplog.records
+
+
+@pytest.mark.parametrize("raw", ["", "   "])
+def test_an_empty_value_is_the_default_and_says_nothing(raw, caplog):
+    env = {k: raw for k in ("WEB_SEARCH_RESULT_COUNT", "WEB_SEARCH_MAX_CONCURRENCY", "WEB_SEARCH_FETCH_TIMEOUT_S",
+                            "WEB_SEARCH_FETCH_TOTAL_S", "WEB_SEARCH_MAX_RESPONSE_BYTES")}
+    with caplog.at_level(logging.WARNING, logger=ws.logger.name):
+        assert ws.load_web_search_settings(env) == DEFAULTS
+    assert not caplog.records
+
+
+def test_one_bad_value_does_not_spoil_the_others(caplog):
+    env = {"WEB_SEARCH_RESULT_COUNT": "many", "WEB_SEARCH_MAX_CONCURRENCY": "2", "WEB_SEARCH_FETCH_TOTAL_S": "20"}
+    with caplog.at_level(logging.WARNING, logger=ws.logger.name):
+        got = ws.load_web_search_settings(env)
+    assert (got.result_count, got.max_concurrency, got.fetch_total_s) == (5, 2, 20.0)
+
+
+def test_the_server_still_starts_with_a_typo_in_a_web_search_setting():
+    """Import-time reads were bare int()/float(): a typo stopped the server. A fresh interpreter, so the module's
+    own import is what runs."""
+    env = {**os.environ, "WEB_SEARCH_RESULT_COUNT": "ten", "WEB_SEARCH_FETCH_TIMEOUT_S": "fast",
+           "WEB_SEARCH_MAX_RESPONSE_BYTES": "1e99"}
+    out = subprocess.run(
+        [sys.executable, "-c", "import server.services.web_search as w; "
+         "print(w.RESULT_COUNT, w.FETCH_TIMEOUT_S, w.MAX_RESPONSE_BYTES, w.MAX_CONCURRENCY, w.FETCH_TOTAL_S)"],
+        env=env, capture_output=True, text=True, cwd=str(Path(__file__).resolve().parents[2]))
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split() == ["5", "8.0", "2000000", "4", "15.0"]
+    assert "WEB_SEARCH_RESULT_COUNT" in out.stderr and "WEB_SEARCH_FETCH_TIMEOUT_S" in out.stderr

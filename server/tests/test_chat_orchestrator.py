@@ -9,20 +9,35 @@ from server.chat import context as ctx_mod
 from server.chat import orchestrator, store
 from server.chat.config import ChatConfig
 from server.chat.context import Prefetch
+from server.chat import reader
+from server.chat.reader import BatchCall
 from server.chat.orchestrator import TurnRequest, run_turn
+from server.chat.tools import TurnTools
+from server.chat.tools import extract_from_documents as ex_tool
 from server.chat.tools import search_documents as sd_tool
 from server.chat.tools import web_search as ws_tool
 from server.services.doc_search import ReadableDoc
-from server.llm.types import (CallSettings, Capabilities, FeatureDropped, Finish, ProviderError,
+from server.services.inference_limits import InferenceLimits
+from server.llm.types import (CallSettings, Capabilities, FeatureDropped, Finish, Message, ProviderError,
                               ProviderTimeout, ProviderUnavailable, ReasoningDelta, TextDelta,
                               ToolCall, ToolCallReady, Usage)
 from server.tests.chat_harness import FakeRouter, assert_fixture, member, reply, shim_pool
+from server.tests.test_chat_extract import by_label
+from server.tests.test_chat_project_scope import A2, B, _project_turn, _search_step
+from server.tests.test_chat_web import PAGE, hit, url, use_router, web  # noqa: F401 — web and use_router are fixtures
 
 
 @pytest.fixture
 def conn(db_conn, monkeypatch):
     shim_pool(monkeypatch, db_conn, store, orchestrator, ctx_mod, sd_tool)
     return db_conn
+
+
+@pytest.fixture
+def web_auto(monkeypatch):
+    """The deployment searches without asking (CHAT_WEB_SEARCH=auto): for the tests of the web tools' turn
+    mechanics. The default, "ask", is covered by test_chat_web_consent.py."""
+    monkeypatch.setenv("CHAT_WEB_SEARCH", "auto")
 
 
 async def fake_web_search(query, count):
@@ -68,7 +83,7 @@ def types(events):
     return [e["type"] for e in events]
 
 
-async def test_plain_reply_streams_saves_and_releases(conn):
+async def test_plain_reply_streams_saves_and_releases(conn, web_auto):
     router = FakeRouter(steps=[[TextDelta("Hello "), TextDelta("there."), Usage(10, 3), Finish("stop")]])
     alice = await member(conn, "alice")
     events, claim = await _run(conn, router, user=alice)
@@ -85,7 +100,7 @@ async def test_plain_reply_streams_saves_and_releases(conn):
     assert await _one(conn, "SELECT prompt_tokens, eval_tokens FROM inference_usage WHERE user_id=%s",
                       (alice.user_id,)) == (10, 3)
     sent = router.calls[0]
-    assert sent["tools"] == ["web_search"]                  # no open document: no search_documents
+    assert sent["tools"] == ["web_search", "read_web_pages"]                  # no open document: no search_documents
     # v2.3: the rules are the one leading system message, and name only the
     # tool offered. v2.4: the date is in them; the user message is what they typed.
     system, only = sent["messages"]
@@ -104,7 +119,7 @@ async def test_reasoning_closes_before_text(conn):
     assert (await _msg(conn, claim.turn_id))[3] == "think"
 
 
-async def test_one_tool_round_then_answer(conn, monkeypatch):
+async def test_one_tool_round_then_answer(conn, monkeypatch, web_auto):
     monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
     router = FakeRouter(steps=[
         [TextDelta("Let me search."), ToolCallReady(ToolCall("c1", "web_search", {"query": "news"})),
@@ -141,16 +156,16 @@ async def test_silent_final_step_after_the_cap_is_max_steps(conn, monkeypatch):
     assert events[-1]["type"] == "finish" and events[-1]["finishReason"] == "max-steps"
 
 
-async def test_two_rounds_when_the_cap_allows_it(conn, monkeypatch):
+async def test_two_rounds_when_the_cap_allows_it(conn, monkeypatch, web_auto):
     monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
     call = lambda i: [ToolCallReady(ToolCall(f"c{i}", "web_search", {"query": "a"})), Usage(1, 1), Finish("tool_calls")]
     router = FakeRouter(steps=[call(1), call(2), reply("done")])
     events, _ = await _run(conn, router, cfg=ChatConfig(max_tool_rounds=2))
-    assert [c["tools"] for c in router.calls] == [["web_search"], ["web_search"], []]
+    assert [c["tools"] for c in router.calls] == [["web_search", "read_web_pages"], ["web_search", "read_web_pages"], []]
     assert events[-1]["finishReason"] == "stop"
 
 
-async def test_tool_error_is_reported_and_turn_continues(conn):
+async def test_tool_error_is_reported_and_turn_continues(conn, web_auto):
     router = FakeRouter(steps=[
         [ToolCallReady(ToolCall("c1", "made_up", {})), ToolCallReady(ToolCall("c2", "web_search", {})),
          Usage(1, 1), Finish("tool_calls")],
@@ -217,7 +232,7 @@ async def test_disconnect_mid_step_saves_aborted(conn):
     assert "aborted" in await _log(conn)
 
 
-async def test_cancel_during_tool_saves_aborted_and_releases_claim(conn, monkeypatch):
+async def test_cancel_during_tool_saves_aborted_and_releases_claim(conn, monkeypatch, web_auto):
     started = asyncio.Event()
 
     async def slow_web_search(query, count):
@@ -268,8 +283,8 @@ async def test_dropped_feature_becomes_a_notice_and_a_log_line(conn):
 async def test_prefetch_note_comes_before_the_first_step_and_is_saved(conn, monkeypatch):
     note = {"kind": "prefetch", "docId": "d" * 64, "docName": "Thesis.pdf", "count": 1, "topScore": 0.9, "pages": [3]}
 
-    async def fake_prefetch(doc, question, cfg):
-        return Prefetch([{"page": 3, "score": 0.9, "text": "passage"}], 0.9, note)
+    async def fake_prefetch(scope, question, cfg):
+        return Prefetch([{"ref": 1, "doc_id": "d" * 64, "page": 3, "score": 0.9, "text": "passage"}], 0.9, note)
 
     monkeypatch.setattr(ctx_mod, "prefetch", fake_prefetch)
     events, claim = await _run(conn, FakeRouter())
@@ -378,7 +393,7 @@ async def test_provider_error_mid_text_still_records_usage(conn):
     assert row is not None and row[0] > 0 and row[1] > 0
 
 
-async def test_completed_step_before_cancellation_is_not_double_recorded(conn, monkeypatch):
+async def test_completed_step_before_cancellation_is_not_double_recorded(conn, monkeypatch, web_auto):
     """Item 2's guard: a step whose usage was already recorded normally (here,
     the tool round) must not be charged again just because the turn is later
     cancelled mid-tool-call."""
@@ -498,8 +513,8 @@ async def test_a_silent_step_adds_no_separator(conn, monkeypatch):
 async def test_the_prefetch_metric_is_logged_at_debug_per_turn(conn, monkeypatch, caplog, hit, calls, want):
     """M1 (spec §5.2.1): whether search_documents still ran after a prefetch,
     so a deployer can tune CHAT_PREFETCH_MIN_SCORE. No user text in it."""
-    async def fake_prefetch(doc, question, cfg):
-        return Prefetch([{"page": 1, "score": 0.9, "text": "p"}], 0.9,
+    async def fake_prefetch(scope, question, cfg):
+        return Prefetch([{"ref": 1, "doc_id": "d", "page": 1, "score": 0.9, "text": "p"}], 0.9,
                         {"kind": "prefetch", "docId": "d", "docName": "D", "count": 1, "topScore": 0.9, "pages": [1]}
                         ) if hit else Prefetch()
 
@@ -545,19 +560,19 @@ def open_doc(monkeypatch):
     async def fake_open_doc(req):
         return OPEN_DOC
 
-    async def fake_prefetch(doc, question, cfg):
+    async def fake_prefetch(scope, question, cfg):
         return Prefetch()
 
     async def fake_embed_one(text):
         return [0.0]
 
-    async def fake_search_chunks(conn, doc_id, qvec, k, text=None):
+    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0, exclude=()):
         return []
 
     monkeypatch.setattr(orchestrator, "_open_doc", fake_open_doc)
     monkeypatch.setattr(ctx_mod, "prefetch", fake_prefetch)
     monkeypatch.setattr(sd_tool, "embed_query", fake_embed_one)
-    monkeypatch.setattr(sd_tool, "search_chunks", fake_search_chunks)
+    monkeypatch.setattr(sd_tool, "search_scope", fake_search_scope)
 
 
 TEXT_CALL = '{"name": "search_documents", "parameters": {"query": "the main finding"}}'
@@ -567,7 +582,7 @@ def _in_pieces(text: str, size: int = 7) -> list:
     return [TextDelta(text[i:i + size]) for i in range(0, len(text), size)]
 
 
-async def test_the_last_round_says_so_in_its_results_and_the_rules_never_change(conn, open_doc):
+async def test_the_last_round_says_so_in_its_results_and_the_rules_never_change(conn, open_doc, web_auto):
     """v2.3 Task A: the final step offers no tools, and the rules (stable for
     the turn, for the prefix cache) can't say that, so the last round's tool
     results do. Nothing ever tells the model to call a tool it doesn't have."""
@@ -576,7 +591,7 @@ async def test_the_last_round_says_so_in_its_results_and_the_rules_never_change(
         reply("The result is X (page 3).")])
     events, claim = await _run(conn, router, cfg=ChatConfig(max_tool_rounds=1), text="what is the result?")
     first, final = router.calls
-    assert first["tools"] == ["search_documents", "read_document_pages", "web_search"] and final["tools"] == []
+    assert first["tools"] == ["search_documents", "read_document_pages", "extract_from_documents", "web_search", "read_web_pages"] and final["tools"] == []
     assert first["messages"][0].role == "system"
     assert final["messages"][0].content == first["messages"][0].content    # same rules on every step
     tool_msg = final["messages"][-1]
@@ -603,13 +618,27 @@ async def test_no_tool_is_named_when_the_turn_offers_none(conn, open_doc, why):
         assert name not in system
 
 
-async def test_no_note_while_rounds_remain(conn, open_doc):
+async def test_the_tool_context_carries_the_turns_model(conn, monkeypatch):
+    """C2.1 Task 11: the reader sub-agent reads with the turn's own model when READER_MODEL=chat."""
+    seen = []
+
+    class Spy(orchestrator.TurnTools):
+        def __init__(self, ctx):
+            seen.append(ctx.model)
+            super().__init__(ctx)
+
+    monkeypatch.setattr(orchestrator, "TurnTools", Spy)
+    await _run(conn, FakeRouter(steps=[reply("Hi there.")]))
+    assert seen == ["ollama:m"]
+
+
+async def test_no_note_while_rounds_remain(conn, open_doc, web_auto):
     router = FakeRouter(steps=[
         [ToolCallReady(ToolCall("c1", "search_documents", {"query": "a"})), Usage(5, 5), Finish("tool_calls")],
         reply("Done (page 1).")])
     await _run(conn, router, cfg=ChatConfig(max_tool_rounds=2), text="q")
     assert "note" not in json.loads(router.calls[1]["messages"][-1].content)
-    assert router.calls[1]["tools"] == ["search_documents", "read_document_pages", "web_search"]
+    assert router.calls[1]["tools"] == ["search_documents", "read_document_pages", "extract_from_documents", "web_search", "read_web_pages"]
 
 
 async def test_a_tool_call_written_as_text_is_run_not_saved(conn, open_doc, caplog):
@@ -770,18 +799,20 @@ async def test_prefetched_passages_are_not_repeated_by_a_search_and_the_floor_co
         conn, open_doc, monkeypatch):
     """The prefetch block already holds chunk 11; a search that finds it again
     returns only its page. CHAT_SEARCH_MIN_SCORE reaches the tool."""
-    async def fake_prefetch(doc, question, cfg):
-        return Prefetch([{"id": 11, "page": 3, "score": 0.8, "text": "prefetched"}], 0.8,
+    async def fake_prefetch(scope, question, cfg):
+        doc = scope[0].doc
+        return Prefetch([{"id": 11, "ref": 1, "doc_id": doc.doc_id, "page": 3, "score": 0.8, "text": "prefetched"}], 0.8,
                         {"kind": "prefetch", "docId": doc.doc_id, "docName": doc.name, "count": 1,
                          "topScore": 0.8, "pages": [3]})
 
-    async def fake_search_chunks(conn, doc_id, qvec, k, text=None):
-        return [{"id": 11, "page": 3, "score": 0.8, "text": "prefetched"},
-                {"id": 12, "page": 5, "score": 0.6, "text": "new"},
-                {"id": 13, "page": 8, "score": 0.5, "text": "below this config's floor"}]
+    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0, exclude=()):
+        return [{"doc_id": doc_ids[0], **r} for r in (
+            {"id": 11, "page": 3, "score": 0.8, "text": "prefetched"},
+            {"id": 12, "page": 5, "score": 0.6, "text": "new"},
+            {"id": 13, "page": 8, "score": 0.5, "text": "below this config's floor"})]
 
     monkeypatch.setattr(ctx_mod, "prefetch", fake_prefetch)
-    monkeypatch.setattr(sd_tool, "search_chunks", fake_search_chunks)
+    monkeypatch.setattr(sd_tool, "search_scope", fake_search_scope)
     router = FakeRouter(steps=[
         [ToolCallReady(ToolCall("c1", "search_documents", {"query": "more"})), Usage(5, 5), Finish("tool_calls")],
         reply("Done (page 5).")])
@@ -809,3 +840,278 @@ async def test_the_deployment_profile_leads_the_system_message(conn):
     system = router.calls[0]["messages"][0]
     assert system.role == "system"
     assert system.content.startswith("You are Ada, the reading-room assistant.\n\nYou are working in Natural Reader")
+
+
+# ---- C2.1 Task 15: sources by document, and web sources ----
+
+SCOPE_NOTE = {"kind": "scope", "documents": [{"ref": 1, "docId": A2, "name": "Alpha.md"},
+                                             {"ref": 2, "docId": B, "name": "Beta.md"}]}
+
+
+def _event(events, kind):
+    return next(e for e in events if e["type"] == kind)
+
+
+def _last(kinds, kind):
+    """The position of the last `kind`: a multi-step turn has several text-end events, and the notes come after the final one."""
+    return len(kinds) - 1 - kinds[::-1].index(kind)
+
+
+def _notes(row):
+    return (row[5] or {}).get("notes", [])
+
+
+async def test_project_turn_saves_scope_and_sources_notes(db_conn, monkeypatch):
+    router = FakeRouter(steps=[_search_step(0), reply("Both cover ZEPHYR-9 (Alpha.md, page 1; Beta.md, page 4).")])
+    events, claim = await _project_turn(db_conn, monkeypatch, router)
+    # The scope note is the first thing the client gets, in data-context, before any model step.
+    kinds = types(events)
+    assert kinds.index("data-context") < kinds.index("start-step")
+    assert _event(events, "data-context")["items"] == [SCOPE_NOTE]
+    # The sources arrive after the answer is written, before `finish`; one entry per document.
+    sources = {"documents": [{"docId": A2, "docName": "Alpha.md", "pages": [1], "used": True},
+                             {"docId": B, "docName": "Beta.md", "pages": [4], "used": True}]}
+    event = _event(events, "data-sources")
+    assert {k: v for k, v in event.items() if k not in ("type", "seq")} == sources
+    assert _last(kinds, "text-end") < kinds.index("data-sources") < kinds.index("finish")
+    assert "data-web-sources" not in kinds
+    row = await _msg(db_conn, claim.turn_id)
+    assert _notes(row) == [SCOPE_NOTE, {"kind": "sources", **sources}]
+
+
+async def test_a_project_turn_without_document_text_saves_only_the_scope(db_conn, monkeypatch):
+    events, claim = await _project_turn(db_conn, monkeypatch, FakeRouter(steps=[reply("Hello!")]))
+    assert "data-sources" not in types(events)
+    assert _notes(await _msg(db_conn, claim.turn_id)) == [SCOPE_NOTE]
+
+
+async def test_a_citation_of_an_unknown_name_makes_no_chip(db_conn, monkeypatch):
+    router = FakeRouter(steps=[_search_step(0), reply("It is in (Gamma.md, page 2) and (Alpha.md (9), page 1).")])
+    events, claim = await _project_turn(db_conn, monkeypatch, router)
+    documents = _event(events, "data-sources")["documents"]
+    assert [d["docName"] for d in documents] == ["Alpha.md", "Beta.md"]          # searched, in the scope's order
+    assert not any(d["used"] for d in documents)                                  # nothing cited that it was given
+    assert [n for n in _notes(await _msg(db_conn, claim.turn_id)) if n["kind"] == "sources"][0]["documents"] == documents
+
+
+async def test_a_project_turn_with_no_documents_still_saves_an_empty_scope(db_conn, monkeypatch):
+    from server.tests import seed
+
+    shim_pool(monkeypatch, db_conn, store, orchestrator, ctx_mod, sd_tool)
+    alice = await member(db_conn, "alice")
+    pid = await seed.make_project(db_conn, alice.user_id, "Empty")
+    claim = await store.begin_turn(session_id="s-1", user_id=alice.user_id, model_id="ollama:m", text="q",
+                                   attachments=[], new_session_pins=None, scope_project_id=pid)
+    req = TurnRequest(user_id=alice.user_id, session_id="s-1", model_id="ollama:m", text="q", attachments=(),
+                      settings=CallSettings(), doc_id=None, timezone="UTC", project_id=pid)
+    events = [e async for e in run_turn(req, claim, router=FakeRouter(), cfg=ChatConfig(), deployment_budget=None)]
+    assert _event(events, "data-context")["items"] == [{"kind": "scope", "documents": []}]
+    assert "data-sources" not in types(events)
+
+
+def _web_turn_steps(answer, results=(1, 2), query="port"):
+    return [[ToolCallReady(ToolCall("w1", "web_search", {"query": query})), Usage(5, 5), Finish("tool_calls")],
+            [ToolCallReady(ToolCall("w2", "read_web_pages", {"results": list(results), "need": "the port"})),
+             Usage(5, 5), Finish("tool_calls")],
+            reply(answer)]
+
+
+async def test_web_pages_with_facts_become_web_sources(conn, web, use_router, web_auto):
+    web.searches["port"] = [hit("a"), hit("b")]
+    web.pages[url("a")] = web.pages[url("b")] = PAGE
+    use_router(by_label({"[web 2]": ("The port is 8080", "set port = 8080")}))        # page 1 holds no fact
+    events, claim = await _run(conn, FakeRouter(steps=_web_turn_steps("It is 8080 (b.test).")), text="Which port?")
+    kinds = types(events)
+    pages = [{"n": 2, "title": "Title b", "url": url("b")}]
+    event = _event(events, "data-web-sources")
+    assert {k: v for k, v in event.items() if k not in ("type", "seq")} == {"pages": pages}
+    assert _last(kinds, "text-end") < kinds.index("data-web-sources") < kinds.index("finish")
+    assert "data-sources" not in kinds                                                # no document in this chat
+    assert _notes(await _msg(conn, claim.turn_id)) == [{"kind": "web_sources", "pages": pages}]
+
+
+async def test_a_page_that_was_searched_but_not_read_is_no_web_source(conn, web, use_router, web_auto):
+    web.searches["port"] = [hit("a"), hit("b")]
+    steps = [_web_turn_steps("Not found.")[0], reply("The search only listed pages.")]
+    events, claim = await _run(conn, FakeRouter(steps=steps), text="Which port?")
+    assert "data-web-sources" not in types(events)
+    assert _notes(await _msg(conn, claim.turn_id)) == []
+
+
+async def test_a_javascript_url_is_never_a_web_source(conn, web, use_router, web_auto):
+    """A search engine can list anything; a link the client renders must never run script."""
+    evil = {"title": "Evil", "url": "javascript:alert(1)", "snippet": "s"}
+    web.searches["port"] = [evil, hit("b")]
+    web.pages["javascript:alert(1)"] = web.pages[url("b")] = PAGE
+    use_router(by_label({"[web 1]": ("The port is 8080", "set port = 8080"),
+                         "[web 2]": ("The port is 8080", "set port = 8080")}))
+    events, claim = await _run(conn, FakeRouter(steps=_web_turn_steps("It is 8080 (b.test).")), text="Which port?")
+    pages = [{"n": 2, "title": "Title b", "url": url("b")}]
+    assert _event(events, "data-web-sources")["pages"] == pages
+    assert "javascript" not in json.dumps(_notes(await _msg(conn, claim.turn_id)))
+
+
+async def test_only_unsafe_urls_means_no_web_sources_event_at_all(conn, web, use_router, web_auto):
+    web.searches["port"] = [{"title": "Evil", "url": "data:text/html,<b>x</b>", "snippet": "s"}]
+    web.pages["data:text/html,<b>x</b>"] = PAGE
+    use_router(by_label({"[web 1]": ("The port is 8080", "set port = 8080")}))
+    events, claim = await _run(conn, FakeRouter(steps=_web_turn_steps("It is 8080.", results=(1,))), text="Which port?")
+    assert "data-web-sources" not in types(events)
+    assert _notes(await _msg(conn, claim.turn_id)) == []
+
+
+async def test_a_result_dropped_for_the_budget_is_never_a_web_source(conn, web, use_router, web_auto):
+    """TurnTools throws a result that doesn't fit unseen and takes back the `read` mark: the model never got those
+    facts, so the answer can't have drawn on the page."""
+    fact = "The port is set in server.toml, " + "and the manual repeats it at length. " * 14
+    use_router(by_label({"[web 1]": (fact, "set port = 8080")}))
+    web.searches["port"] = [hit(n) for n in "abcde"]
+    web.pages[url("a")] = PAGE
+    events, claim = await _run(conn, FakeRouter(steps=_web_turn_steps("Unsure.", results=(1,))),
+                               cfg=ChatConfig(tool_result_budget_chars=1200), text="Which port?")
+    read = [e for e in events if e["type"] == "tool-output-available"][1]
+    assert read["output"]["summary_text"] == TurnTools.BUDGET_USED
+    assert "data-web-sources" not in types(events)
+    assert _notes(await _msg(conn, claim.turn_id)) == []
+
+
+# ---- the reader's model calls are charged to the user (final review I1) ----
+
+def _spy_charges(monkeypatch) -> list:
+    """Every (user_id, BatchCall) the turn hands to its reader charge; the real charge still runs."""
+    seen = []
+    real = orchestrator._charge_reader
+
+    async def spy(user_id, call):
+        seen.append((user_id, call))
+        await real(user_id, call)
+
+    monkeypatch.setattr(orchestrator, "_charge_reader", spy)
+    return seen
+
+
+async def _usage(conn, user_id):
+    return await _one(conn, "SELECT prompt_tokens, eval_tokens, requests FROM inference_usage WHERE user_id=%s",
+                      (user_id,))
+
+
+async def test_a_read_web_pages_turn_charges_its_reader_calls_to_the_user(conn, web, use_router, web_auto, monkeypatch):
+    """Each page read is one reader call: the provider's own count is added to the user's totals for the day,
+    one request each, with the reader model named. The reply's own usage stays the chat model's."""
+    monkeypatch.setenv("READER_MODEL", "reader-model")
+    web.searches["port"] = [hit("a"), hit("b")]
+    web.pages[url("a")] = web.pages[url("b")] = PAGE
+    use_router(by_label({"[web 2]": ("The port is 8080", "set port = 8080")})).usage = Usage(400, 30)
+    charged = _spy_charges(monkeypatch)
+    alice = await member(conn, "alice")
+    events, _ = await _run(conn, FakeRouter(steps=_web_turn_steps("It is 8080 (b.test).")), user=alice,
+                           text="Which port?")
+    assert [(user, call.model, call.usage) for user, call in charged] == [(alice.user_id, "reader-model", Usage(400, 30))] * 2
+    # Chat steps 5+5, 5+5 and 10+3 (three requests); reader 2 × (400+30) (two requests).
+    assert await _usage(conn, alice.user_id) == (20 + 800, 13 + 60, 5)
+    assert events[-1]["usage"] == {"promptTokens": 20, "completionTokens": 13, "estimated": False}
+
+
+async def test_an_extract_from_documents_turn_charges_its_reader_calls_to_the_user(db_conn, monkeypatch, web, use_router):
+    monkeypatch.setenv("READER_MODEL", "reader-model")
+    shim_pool(monkeypatch, db_conn, ex_tool)
+    use_router(by_label({"[1, page 1]": ("Alpha uses ZEPHYR-9 nodes", "ZEPHYR-9 nodes")})).usage = Usage(900, 50)
+    charged = _spy_charges(monkeypatch)
+    steps = [[ToolCallReady(ToolCall("x1", "extract_from_documents", {"documents": [1], "need": "the node type"})),
+              Usage(5, 5), Finish("tool_calls")],
+             reply("Alpha uses ZEPHYR-9 nodes (Alpha.md, page 1).")]
+    events, claim = await _project_turn(db_conn, monkeypatch, FakeRouter(steps=steps))
+    assert next(e for e in events if e["type"] == "tool-output-available")["output"]["summary_text"] == (
+        "Found 1 fact on page 1 of Alpha.md.")
+    [(user, call)] = charged
+    assert (call.model, call.usage, call.finished) == ("reader-model", Usage(900, 50), True)
+    assert await _usage(db_conn, user) == (5 + 10 + 900, 5 + 3 + 50, 3)
+
+
+async def test_reader_usage_counts_toward_the_daily_budget(conn, web, use_router, web_auto):
+    """Budget 100 tokens. The first step spends 10; the read's two reader calls spend 860, and the read runs to the
+    end (no refusal in the middle of a tool). The next step's own check then stops the turn. Without the reader's
+    charge the turn would have spent 20 and gone on."""
+    web.searches["port"] = [hit("a"), hit("b")]
+    web.pages[url("a")] = web.pages[url("b")] = PAGE
+    use_router(by_label({"[web 2]": ("The port is 8080", "set port = 8080")})).usage = Usage(400, 30)
+    alice = await member(conn, "alice")
+    await conn.execute("UPDATE users SET inference_daily_token_budget = 100 WHERE id = %s", (alice.user_id,))
+    router = FakeRouter(steps=_web_turn_steps("It is 8080 (b.test)."))
+    events, claim = await _run(conn, router, user=alice, text="Which port?")
+    read = [e for e in events if e["type"] == "tool-output-available"][1]
+    assert read["output"]["summary_text"].startswith("Found facts on 1 of 2 page(s)")
+    assert (events[-1]["type"], events[-1]["code"]) == ("error", "budget_exhausted")
+    assert len(router.calls) == 2
+    assert await _usage(conn, alice.user_id) == (10 + 800, 10 + 60, 4)
+
+
+SENT = (Message("system", "x" * 400), Message("user", "y" * 401))     # 801 characters: an estimate of 201 tokens
+
+
+@pytest.mark.parametrize("call,row", [
+    # A finished call: the provider's own count, else the chars/4 estimate _record_usage makes for a chat step.
+    (BatchCall("m", SENT, "z" * 10, Usage(500, 20), True), (500, 20, 1)),
+    (BatchCall("m", SENT, "z" * 10, None, True), (201, 3, 1)),
+    # One that failed or timed out: only if it produced something (_billable), the count if one came.
+    (BatchCall("m", SENT, "", None, False), None),
+    (BatchCall("m", SENT, "z" * 5, None, False), (201, 2, 1)),
+    (BatchCall("m", SENT, "", Usage(300, 0), False), (300, 0, 1)),
+])
+async def test_the_reader_charge_follows_the_chat_steps_rule(conn, call, row):
+    alice = await member(conn, "alice")
+    await orchestrator._charge_reader(alice.user_id, call)
+    assert await _usage(conn, alice.user_id) == row
+
+
+async def test_a_project_turn_has_document_sources_then_web_sources(db_conn, monkeypatch, web, use_router):
+    monkeypatch.setenv("CHAT_WEB_SEARCH", "auto")
+    web.searches["port"] = [hit("a")]
+    web.pages[url("a")] = PAGE
+    use_router(by_label({"[web 1]": ("The port is 8080", "set port = 8080")}))
+    steps = [_search_step(0), *_web_turn_steps("Alpha says so (Alpha.md, page 1); the web says 8080 (a.test).",
+                                                results=(1,))]
+    events, claim = await _project_turn(db_conn, monkeypatch, FakeRouter(steps=steps))
+    kinds = types(events)
+    assert kinds.index("data-sources") < kinds.index("data-web-sources") < kinds.index("finish")
+    assert [n["kind"] for n in _notes(await _msg(db_conn, claim.turn_id))] == ["scope", "sources", "web_sources"]
+    assert _event(events, "data-sources")["documents"][0]["docName"] == "Alpha.md"
+
+
+async def test_a_turn_that_ends_with_an_offer_still_gets_its_sources(db_conn, monkeypatch):
+    """The offer ends the turn (no further model step), but the document pages it read before are still sources:
+    data-sources follows data-web-offer, before `finish`, and the notes are saved in that order."""
+    from server.services import web_search as ws
+
+    monkeypatch.setattr(ws, "SEARXNG_URL", "http://searx.test")
+    monkeypatch.delenv("CHAT_WEB_SEARCH", raising=False)                      # the default: ask
+    offer = {"query": "ZEPHYR-9 rollout dates", "reason": "The documents give no dates."}
+    router = FakeRouter(steps=[
+        _search_step(0),
+        [TextDelta("Alpha covers ZEPHYR-9 (Alpha.md, page 1), but no dates. "),
+         ToolCallReady(ToolCall("o1", "offer_web_search", offer)), Usage(5, 5), Finish("tool_calls")],
+        reply("SHOULD NEVER BE SENT")])
+    events, claim = await _project_turn(db_conn, monkeypatch, router)
+    kinds = types(events)
+    assert len(router.calls) == 2                                              # the offer ended the turn
+    assert _event(events, "data-web-offer")["query"] == offer["query"]
+    assert kinds.index("data-web-offer") < kinds.index("data-sources") < kinds.index("finish")
+    documents = _event(events, "data-sources")["documents"]
+    assert [(d["docName"], d["pages"], d["used"]) for d in documents] == [("Alpha.md", [1], True), ("Beta.md", [4], False)]
+    assert [n["kind"] for n in _notes(await _msg(db_conn, claim.turn_id))] == ["scope", "web_offer", "sources"]
+
+
+async def test_web_sources_come_with_a_document_scope_chat_too(conn, open_doc, web, use_router, web_auto):
+    """Any scope: a chat about one open document that reads the web saves the web sources, and no document sources
+    are invented for it (nothing was read from the document)."""
+    web.searches["port"] = [hit("a"), hit("b")]
+    web.pages[url("a")] = web.pages[url("b")] = PAGE
+    use_router(by_label({"[web 1]": ("The port is 8080", "set port = 8080")}))
+    events, claim = await _run(conn, FakeRouter(steps=_web_turn_steps("It is 8080 (a.test).", results=(1,))),
+                               text="Which port?")
+    kinds = types(events)
+    pages = [{"n": 1, "title": "Title a", "url": url("a")}]
+    assert _event(events, "data-web-sources")["pages"] == pages
+    assert _last(kinds, "text-end") < kinds.index("data-web-sources") < kinds.index("finish")
+    assert "data-sources" not in kinds
+    assert _notes(await _msg(conn, claim.turn_id)) == [{"kind": "web_sources", "pages": pages}]

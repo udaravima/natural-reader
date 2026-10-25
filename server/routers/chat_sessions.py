@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, Field, ValidationError
 
-from ..auth.authz import assert_owns_session
+from ..auth.authz import assert_owns_session, visible_projects_params, visible_projects_where
 from ..auth.deps import Principal, require_capability
 from ..chat import store as chat_store
 from ..chat.config import get_chat_config
@@ -68,8 +68,20 @@ def _row_to_session_meta(row: dict[str, Any]) -> dict[str, Any]:
         "createdAt": _epoch_ms(row["created_at"]),
         "updatedAt": _epoch_ms(row["updated_at"]),
         "messageCount": row["message_count"],
+        "scopeProject": _scope_project(row["scope_project_id"], row["scope_project_name"]),
         "source": "pg",
     }
+
+
+# The project a chat is scoped to (C2.1 spec §5.12): its name only while the
+# caller is a member, so a project they left isn't named. Needs `LEFT JOIN
+# projects sp ON sp.id = s.scope_project_id`; bind visible_projects_params first.
+_SCOPE_COLS = (f"s.scope_project_id, CASE WHEN {visible_projects_where('sp')} THEN sp.name END "
+               "AS scope_project_name")
+
+
+def _scope_project(project_id, name) -> dict[str, Any] | None:
+    return {"id": str(project_id), "name": name} if project_id is not None else None
 
 
 def _epoch_ms(ts) -> int:
@@ -111,17 +123,18 @@ async def list_sessions(
     pool = get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            """
+            f"""
             SELECT s.id, s.title, s.model, s.created_at, s.updated_at,
-                   COALESCE(m.cnt, 0) AS message_count
+                   COALESCE(m.cnt, 0) AS message_count, {_SCOPE_COLS}
             FROM chat_sessions s
             LEFT JOIN (
                 SELECT session_id, COUNT(*) AS cnt FROM chat_messages GROUP BY session_id
             ) m ON m.session_id = s.id
+            LEFT JOIN projects sp ON sp.id = s.scope_project_id
             WHERE s.user_id = %s
             ORDER BY s.updated_at DESC
             """,
-            (principal.user_id,),
+            [*visible_projects_params(principal.user_id), principal.user_id],
         )
         rows = await cur.fetchall()
         cols = [d.name for d in cur.description]
@@ -185,7 +198,7 @@ async def import_session(
 
 @router.get("/{session_id}")
 async def get_session(
-    session_id: str, _owner: Principal = Depends(_require_session_owner)
+    session_id: str, owner: Principal = Depends(_require_session_owner)
 ) -> dict[str, Any]:
     _ensure_ready()
     try:
@@ -196,8 +209,9 @@ async def get_session(
     pool = get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT id, title, model, created_at, updated_at, pins FROM chat_sessions WHERE id = %s",
-            (session_id,),
+            f"SELECT s.id, s.title, s.model, s.created_at, s.updated_at, s.pins, {_SCOPE_COLS} "
+            "FROM chat_sessions s LEFT JOIN projects sp ON sp.id = s.scope_project_id WHERE s.id = %s",
+            [*visible_projects_params(owner.user_id), session_id],
         )
         srow = await cur.fetchone()
         if not srow:
@@ -272,6 +286,7 @@ async def get_session(
         "messages": messages,
         "events": events,
         "pins": srow[5] or [],
+        "scopeProject": _scope_project(srow[6], srow[7]),
         "source": "pg",
     }
 

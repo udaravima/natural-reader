@@ -22,6 +22,9 @@ class AuthConfig:
     oidc_redirect_url: str | None
     session_secret: str | None
     session_ttl_hours: int
+    # Unused this long, a session ends (0 = never by idleness). The TTL above
+    # is the absolute cap from sign-in.
+    session_idle_hours: int
     cookie_secure: bool
     cookie_domain: str | None
     bootstrap_admin_email: str | None
@@ -42,6 +45,7 @@ def load_auth_config(env: Mapping[str, str]) -> AuthConfig:
         oidc_redirect_url=env.get("OIDC_REDIRECT_URL"),
         session_secret=env.get("SESSION_SECRET"),
         session_ttl_hours=int(env.get("SESSION_TTL_HOURS", "168")),
+        session_idle_hours=max(0, int(env.get("SESSION_IDLE_HOURS", "12"))),
         cookie_secure=flag("COOKIE_SECURE", True),
         cookie_domain=env.get("COOKIE_DOMAIN"),
         bootstrap_admin_email=env.get("BOOTSTRAP_ADMIN_EMAIL"),

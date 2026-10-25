@@ -75,9 +75,9 @@ A full end-to-end walkthrough lives in [docs/CHAT_WITH_PDF.md](docs/CHAT_WITH_PD
 - **Ask AI on a selection** — Highlight any text on the rendered page and *pin* just that snippet. Paired with the existing "Read Selection" TTS button.
 - **Pinned context** — Ask page / Ask AI create **pins**: excerpts that stay attached to the conversation and are re-sent to the model on **every** turn — positioned at the very top of the prompt so they never get buried — until you remove them. Multiple pins accumulate as removable chips, dedupe by content, are bounded (**6 pins / ~12 000 chars**), and are **saved with the chat session** (restored on reload). Whole-document breadth comes from autonomous retrieval (below), not a giant pin.
 - **Index this document** — Backed by **Postgres + pgvector**. The file is uploaded, and the **server** extracts per-page (PDF), per-block (Markdown) or per-pseudo-page (TXT) chunks on the reader's own pagination, embeds them via Ollama's `nomic-embed-text` (768-dim) and stores them in an HNSW-indexed `vector` column. A file that's already indexed on the server is indexed for you at once.
-- **Autonomous tool calling** — When a doc is indexed and the chat model reports tool support, the model gets a `search_documents` tool it can invoke on its own; `web_search` is offered too when SearXNG is configured. The turn runs server-side (`server/chat/`): the server executes the call, hands the result back, and the model streams the final answer. Up to 3 tool rounds by default (`CHAT_MAX_TOOL_ROUNDS`), so the model can follow a trail through the document, then one last step with tools switched off, so the turn always ends in an answer. Tool results share a per-answer budget (`CHAT_TOOL_RESULT_BUDGET_CHARS`), and web search refuses queries that copy the document; a model without tool support just never sees the tool. Tool calls are persisted in a `tool_calls` JSONB column and re-rendered as a 🔎 disclosure on the assistant bubble.
+- **Autonomous tool calling** — When a doc is indexed and the chat model reports tool support, the model gets a `search_documents` tool it can invoke on its own, plus tools to read pages and go through many of them for one goal; when SearXNG is configured it can also offer a web search (see Web search below). The turn runs server-side (`server/chat/`): the server executes the call, hands the result back, and the model streams the final answer. Up to 3 tool rounds by default (`CHAT_MAX_TOOL_ROUNDS`; 5 in a chat about a whole project, `CHAT_PROJECT_MAX_TOOL_ROUNDS`), so the model can follow a trail through the document, then one last step with tools switched off, so the turn always ends in an answer. Tool results share a per-answer budget (`CHAT_TOOL_RESULT_BUDGET_CHARS`), and web search refuses queries that copy the document; a model without tool support just never sees the tool. Tool calls are persisted in a `tool_calls` JSONB column and re-rendered as a 🔎 disclosure on the assistant bubble.
 - **Postgres-backed chat sessions** — Sessions previously stored in IndexedDB now write to Postgres via a new `src/lib/sessionStore.js` abstraction. Legacy IDB sessions stay readable with a small **LOCAL** badge; the first message you send on one copies it onto the server (`POST /v1/chat/sessions/import`), leaving the original intact.
-- **Server-side tool registry** — `server/chat/tools/` houses one tool per file (`search_documents`, `read_document_pages`, `web_search`). Adding a tool later is one new file + one registry line; there is no browser-side tool code anymore.
+- **Server-side tool registry** — `server/chat/tools/` houses one tool per file (`search_documents`, `read_document_pages`, `extract_from_documents`, `document_outline`, `web_search`, `read_web_pages`, `offer_web_search`). Adding a tool later is one new file + one registry line; there is no browser-side tool code anymore.
 
 ### 👥 Accounts, Document Library & App Shell *(new in `v2.0.0`)*
 
@@ -87,8 +87,19 @@ Natural Reader is now a **multi-user, authenticated application**. End-user walk
 - **Capabilities (reader / chat / admin)** — Feature access is governed by Keycloak realm roles enforced on the server and reflected in the UI: you only see the views you're entitled to, and an activated user with no capabilities gets a clear "access not yet granted" screen.
 - **Admin console** — A dedicated Admin view (shield icon in the top switcher, admins only): enroll users (invite or one-time temp password), edit capabilities, disable/delete — propagated to Keycloak, with a last-active-admin guard so you can't lock the org out.
 - **Model providers & daily budgets** — Chat always runs on the server, never in the browser. An admin configures one or more model providers in `.env` (native Ollama by default, plus any OpenAI-compatible server — see [.env.example](.env.example)); there's a deployment **model allowlist** per provider and an optional **per-user daily token budget** (a "N tokens left today" meter; send disables at zero; a reply you stop or that fails still counts, from the provider's own count or an estimate).
-- **Document Library** — Documents are private by default. The server verifies every upload, and a file someone already indexed is added to your library instantly. In the app you can create a project (Library → New project) and file documents you uploaded into any project you can see (a project's owner can remove them). Adding members to a project and sharing a document with one person are API-only until the project-management screen ships. A **Library** view lists, searches and filters your documents by project and tags, and shows what was shared with you and by whom. Removing a document only removes your copy. Non-readers get a 404, never a hint that the document exists.
-- **Consolidated Settings + profile menu** — Voice, chat/inference (per-model), connection, appearance, and account (tokens) settings live on one **Settings** page, reached from a header gear and a profile menu (identity, Settings, dark mode, log out). The reader and chat sidebars are trimmed to navigation and model/sessions. The chat composer draft now survives switching tabs.
+- **Document Library** — Documents are private by default. The server verifies every upload, and a file someone already indexed is added to your library instantly. In the app you can create a project (Library → New project), add people to it with a role (Reader, Contributor, Maintainer, Owner; **Members → + Add people**), file your uploads into it, keep every version of a document (upload a new version, restore or merge; the Library shows only the current one), and share a single document with one person (**Share** in the Library). A **Library** view lists, searches and filters your documents by project and tags, and shows what was shared with you and by whom. Removing a document only removes your copy. Non-readers get a 404, never a hint that the document exists.
+- **Consolidated Settings + profile menu** — Voice, chat/inference (per-model), connection, appearance, and account (tokens) settings live in one **Settings** window that opens over whatever you have open, so changing a setting never stops the narration or a reply. It's reached from a header gear and a profile menu (identity, Settings, dark mode, log out). The reader and chat sidebars are trimmed to navigation and model/sessions. The chat composer draft survives switching tabs.
+
+### 🗂️ Project Chat, Web Search That Asks & Profile *(new in `v2.4.0`)*
+
+- **Ask a whole project** — **Ask about this project** on a project page (or **Choose a project…** on any chat's scope chip) starts a chat about all of the project's current documents. The assistant gets a map of the project (names, pages, headings), searches every document as one ranked list, and cites each fact as **(Guide.md, page 7)**; the link opens that document at that page, and the source chips are grouped by document. Old versions are never searched.
+- **A reader for "every step, in order"** — For questions that need many pages, a separate model call (the *reader*) reads them for one goal and returns only facts whose quotes the server finds on the page. Its calls count toward the daily token budget. `READER_MODEL=chat` reuses the chat model, so a CPU-only box loads one model.
+- **Web search asks first** — By default the assistant can only *offer* a search: a **Search the web?** card shows its reason and the query in an editable box, and nothing leaves the server until you press **Search the web**. Facts from the web cite their site. Admins pick *Ask first*, *Search without asking* or *Off* under **Admin → Chat options**; `CHAT_WEB_SEARCH` sets the starting value. In a project chat the card doesn't always appear; typing "search the web for …" brings it up.
+- **Code blocks, outlines and table cells are searchable** — A Markdown code block is its own passage, so an exact command can be found and quoted.
+- **Narration everywhere, chat beside the page** — The narration keeps playing in Chat, Library and Admin, with a small header control. On a wide screen the chat opens in a column next to the page.
+- **Profile** — A profile picture, a **Manage your account** link to the sign-in provider, and your signed-in browsers with **Sign out everywhere else**. Admins set defaults for everyone (voice, speed, auto-read, thinking) under **Admin → Defaults**.
+
+Walkthroughs: [docs/USER_GUIDE.md](docs/USER_GUIDE.md#asking-a-whole-project); operator knobs: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#project-chat-the-reader-and-web-search).
 
 ### 🎨 User Experience
 - **Dark Mode** — Beautiful dark/light theme toggle with smooth transitions
@@ -333,7 +344,7 @@ ollama pull qwen2.5    # or llama3.1 / llama3.2 / mistral / gemma2
 
 ### 6. (Optional) Web search (`web_search` tool)
 
-The chat model can search the live web via a self-hosted **SearXNG** instance. For each result it fetches the page, extracts the readable text, and summarizes it with a small model (`llama3.2:3b` by default); the summaries go back to the chat model, which writes the final answer and cites sources.
+The chat can use the live web via a self-hosted **SearXNG** instance. A search returns numbered results (title, site, address, snippet) and fetches nothing. By default the assistant only *offers* a search: a card under its reply shows the query in an editable box, and nothing leaves the server until you press **Search the web**. After a yes it can read 1-3 of the results: a small separate model call (the reader, `llama3.2:3b` by default) reads each page for the assistant's goal and returns only facts with quotes the server has checked against the page, and the answer cites the sites. Admins choose how it asks under **Admin → Chat options → Web search** (*Ask first*, *Search without asking*, *Off*); `CHAT_WEB_SEARCH=ask|auto|off` is the starting value.
 
 > `./startup.sh up` does the `settings.yml` bootstrap below automatically (copies the
 > template and injects a `secret_key`) and brings SearXNG up alongside Postgres.
@@ -347,7 +358,7 @@ sed -i "s/CHANGE_ME_openssl_rand_hex_32/$(openssl rand -hex 32)/" searxng/settin
 # Start SearXNG on 127.0.0.1:18043 (settings.yml is gitignored — it holds the secret_key)
 docker-compose up -d searxng
 
-# Pull the summary model
+# Pull the reader's model (skip it with READER_MODEL=chat, which reads with the chat model)
 ollama pull llama3.2:3b
 
 # Verify JSON search works — must return JSON, not a 403/HTML page
@@ -356,7 +367,7 @@ curl -s "http://localhost:18043/search?q=test&format=json" | head -c 80
 
 **A 403 means SearXNG's JSON format is disabled** — check that `searxng/settings.yml` lists `json` under `search.formats`.
 
-All knobs are optional; see the `WEB_SEARCH_*` and `SEARXNG_URL` entries in `.env.example`. The most impactful is `WEB_SEARCH_RESULT_COUNT` (default 5): each result is a full page fetch plus a model call, so it dominates latency.
+All knobs are optional; see the `WEB_SEARCH_*` and `SEARXNG_URL` entries in `.env.example`. `WEB_SEARCH_RESULT_COUNT` (default 5) is how many results one search lists; pages are fetched only when the assistant reads them. The reader's knobs are the `READER_*` entries; see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#project-chat-the-reader-and-web-search).
 
 **Security note:** the backend only fetches URLs whose host resolves to a public IP — private/loopback/link-local addresses (including cloud metadata endpoints) are refused, and every redirect hop is re-checked.
 
@@ -834,7 +845,7 @@ natural-reader/
 │   │   ├── context.py         # Stage 0: document prefetch, time-in-prompt, history trimming
 │   │   ├── store.py           # Turn claims/heartbeat/recovery, message + event persistence
 │   │   ├── config.py          # CHAT_* env knobs (tool rounds, prefetch, trimming, request size cap)
-│   │   └── tools/              # search_documents, read_document_pages, web_search — one file per tool, server-side only
+│   │   └── tools/              # search_documents, read_document_pages, extract_from_documents, document_outline, web_search, read_web_pages, offer_web_search — one file per tool, server-side only
 │   ├── llm/                   # Model provider layer (C1)
 │   │   ├── router.py          # Loads INFERENCE_PROVIDERS config, resolves "<provider>:<model>" ids
 │   │   ├── types.py           # Internal message/event types every adapter maps to/from
@@ -843,7 +854,7 @@ natural-reader/
 │       ├── embeddings.py      # httpx client → Ollama /api/embeddings via model_router, Semaphore(4), dim assertion
 │       ├── model_router.py    # Legacy single-Ollama config: allowlist, task models (summarize/embed), daily budget
 │       ├── inference_budget.py # per-user daily token accounting (UTC days) — also charges stopped/failed replies
-│       ├── web_search.py      # SearXNG + SSRF-guarded fetch + summarize (model via the llm/ router)
+│       ├── web_search.py      # SearXNG results + SSRF-guarded page fetch and passage picking
 │       └── docling_convert.py # PDF → per-page Markdown via Docling (Fast/Standard/Accurate presets)
 ├── data/
 │   └── pdfs/                  # Retained PDF bytes (one file per doc_id; created on first conversion)
@@ -906,8 +917,8 @@ python scripts/eval_doc_qa.py --model ollama:llama3.2:3b
 
 The backend logs to **both the console and a size-rotating file** at
 `logs/server.log` (10 MB × 5 backups; `logs/` is gitignored). This captures TTS,
-chat, embedding, and `web_search` activity — including SSRF blocks and per-page
-fetch/summary fallbacks. Tune it with env vars (see `.env.example`):
+chat, embedding, and `web_search` activity — including SSRF blocks, failed or
+slow page fetches, and the reader's failed or timed-out calls and dropped facts (counts and error types, never page text). Tune it with env vars (see `.env.example`):
 
 | Var | Default | Controls |
 |-----|---------|----------|

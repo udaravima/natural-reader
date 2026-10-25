@@ -86,3 +86,73 @@ describe('data-sources (v2.4 Task D)', () => {
         expect(applyEvent({}, ev).docContext.notes).toEqual([note]);
     });
 });
+
+describe('tool status for the project tools (C2.1)', () => {
+    it.each([
+        ['extract_from_documents', 'Reading pages…'],
+        ['document_outline', 'Reading an outline…'],
+        ['read_web_pages', 'Reading web pages…'],
+        ['offer_web_search', 'Offering a web search…'],
+    ])('%s says "%s"', (toolName, label) => {
+        expect(toolStatusFor(toolName, 1)).toBe(label);
+        expect(applyEvent({}, { type: 'tool-input-available', toolCallId: 'c', toolName, round: 1 }).toolStatus).toBe(label);
+        expect(toolStatusFor(toolName, 2)).toBe('Still searching… (round 2)');
+    });
+});
+
+describe('data-sources for a project reply (C2.1)', () => {
+    const documents = [
+        { docId: 'a', docName: 'Guide.md', pages: [1, 3], used: true },
+        { docId: 'b', docName: 'Notes.txt', pages: [2], used: false },
+    ];
+
+    it('saves the per-document shape as a sources note', () => {
+        const m = applyEvent({ docContext: { notes: [{ kind: 'scope', documents: [] }] } }, { type: 'data-sources', documents });
+        expect(m.docContext.notes).toEqual([{ kind: 'scope', documents: [] }, { kind: 'sources', documents }]);
+    });
+
+    it('still saves the document-scope shape the old way', () => {
+        const m = applyEvent({}, { type: 'data-sources', docId: 'd', docName: 'T.pdf', pages: [3], used: true });
+        expect(m.docContext.notes).toEqual([{ kind: 'sources', docId: 'd', docName: 'T.pdf', pages: [3], used: true }]);
+    });
+
+    it('takes a malformed documents field for the old shape rather than throwing', () => {
+        const m = applyEvent({}, { type: 'data-sources', documents: 'oops' });
+        expect(m.docContext.notes[0]).toMatchObject({ kind: 'sources', pages: [], used: false });
+        expect(m.docContext.notes[0].documents).toBeUndefined();
+    });
+});
+
+describe('web notes (C2.1)', () => {
+    it('data-web-sources adds a web_sources note', () => {
+        const pages = [{ n: 1, title: 'A page', url: 'https://www.example.com/a' }];
+        const m = applyEvent({ docContext: { notes: [{ kind: 'prefetch' }] } }, { type: 'data-web-sources', pages });
+        expect(m.docContext.notes).toEqual([{ kind: 'prefetch' }, { kind: 'web_sources', pages }]);
+        expect(applyEvent({}, { type: 'data-web-sources' }).docContext.notes).toEqual([{ kind: 'web_sources', pages: [] }]);
+    });
+
+    it('data-web-offer adds a web_offer note and changes nothing else', () => {
+        const before = { id: 'm', content: 'Not in the documents.', status: 'streaming' };
+        const m = applyEvent(before, { type: 'data-web-offer', query: 'zephyr 9 release', reason: 'The files are silent on it.' });
+        expect(m.docContext.notes).toEqual([{ kind: 'web_offer', query: 'zephyr 9 release', reason: 'The files are silent on it.' }]);
+        expect(m.status).toBe('streaming'); // the reply is still to finish, as the server sends `finish` next
+        expect(m.error).toBeUndefined();
+        expect(m.content).toBe(before.content);
+    });
+
+    it('a reply with an offer ends complete, not errored or streaming', () => {
+        const events = [
+            { type: 'start', messageId: 'srv' },
+            { type: 'tool-input-available', toolCallId: 'c', toolName: 'offer_web_search', round: 1, input: { query: 'q', reason: 'r' } },
+            { type: 'tool-output-available', toolCallId: 'c', output: { ok: true, summary_text: 'Offered.' } },
+            { type: 'data-web-offer', query: 'q', reason: 'r' },
+            { type: 'text-delta', delta: 'I could not find it.' },
+            { type: 'finish', finishReason: 'stop' },
+        ];
+        const m = reduce(events);
+        expect(m.status).toBe('complete');
+        expect(m.error).toBeUndefined();
+        expect(m.toolStatus).toBeUndefined();
+        expect(m.docContext.notes).toEqual([{ kind: 'web_offer', query: 'q', reason: 'r' }]);
+    });
+});

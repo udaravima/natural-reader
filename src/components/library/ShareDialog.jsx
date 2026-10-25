@@ -7,7 +7,7 @@ import PeoplePicker from '../people/PeoplePicker';
  * 6). Shares are read-only and can't be passed on (A1 §5). Lists the people
  * I already shared it with, each removable.
  */
-export default function ShareDialog({ theme, api, doc, showToast, onClose }) {
+export default function ShareDialog({ theme, api, doc, showToast, onClose, isAdmin = false }) {
   const [shares, setShares] = useState(null);
   const [busyId, setBusyId] = useState(null);
   // Set when the share list fails to load; distinct from a genuinely empty list.
@@ -45,7 +45,7 @@ export default function ShareDialog({ theme, api, doc, showToast, onClose }) {
         <button onClick={onClose} aria-label="Close sharing" className={theme.textSecondary}><X size={12} /></button>
       </div>
       <p className={`text-[10px] ${theme.textMuted}`}>People you share with can read this document. They can't share it on.</p>
-      <PeoplePicker theme={theme} lookup={api.lookup} label={`Share ${doc.file_name} with`} disabled={busyId !== null}
+      <PeoplePicker theme={theme} lookup={api.lookup} searchEveryone={isAdmin} label={`Share ${doc.file_name} with`} disabled={busyId !== null}
         excludeIds={(shares || []).map((s) => s.user_id)} excludedLabel="Already shared with them."
         onPick={(p) => run(p.id, () => api.share(doc.doc_id, p.id), `Shared ${doc.file_name} with ${p.name}.`)} />
       {error ? (

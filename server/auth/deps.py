@@ -35,8 +35,14 @@ class Principal:
 
 
 async def get_conn():
-    """Yield a pooled connection. Overridden in tests to inject a transactional
-    test connection."""
+    """Yield a pooled connection; it commits when the route function returns.
+    Overridden in tests to inject a transactional test connection.
+
+    Always take it as Depends(get_conn, scope="function"). With FastAPI's
+    default "request" scope this block exits only after the response is sent
+    and its background tasks have run: a client re-reading at once missed its
+    own write, and an upload kept its connection checked out for the whole
+    background index. tests/test_conn_commits_before_response.py enforces it."""
     pool = get_pool()
     async with pool.connection() as conn:
         yield conn
@@ -52,7 +58,7 @@ def _principal(row: dict) -> Principal:
                      scopes=scopes, account_capabilities=account)
 
 
-async def get_current_user(request: Request, conn=Depends(get_conn)) -> Principal:
+async def get_current_user(request: Request, conn=Depends(get_conn, scope="function")) -> Principal:
     cfg = load_auth_config(os.environ)
     host = os.environ.get("HOST", "127.0.0.1")
     if dev_bypass_allowed(cfg, host):
@@ -66,7 +72,7 @@ async def get_current_user(request: Request, conn=Depends(get_conn)) -> Principa
     if row is None:
         cookie = request.cookies.get(COOKIE_NAME)
         if cookie:
-            row = await sessions.resolve_session(conn, cookie)
+            row = await sessions.resolve_session(conn, cookie, idle_hours=cfg.session_idle_hours)
     if row is None:
         raise HTTPException(status_code=401, detail="Authentication required")
     if row["status"] != "active":

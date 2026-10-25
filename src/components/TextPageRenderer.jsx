@@ -20,7 +20,7 @@ export default function TextPageRenderer({
             className={`${darkMode ? 'bg-slate-900' : 'bg-white'} ${theme.text} px-6 md:px-12 py-8 md:py-12 leading-relaxed`}
             style={{
                 fontSize: `${fontSize}px`,
-                width: effectiveIsMobile ? '100%' : 'min(820px, 80vw)',
+                width: effectiveIsMobile ? '100%' : 'min(820px, 100cqw)',
                 minHeight: '60vh',
             }}
         >

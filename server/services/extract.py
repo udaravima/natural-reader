@@ -6,6 +6,11 @@ ITS page with that number. So this module replicates the reader's rules
 exactly — JavaScript's whitespace class, UTF-16 string lengths, mdast block
 boundaries and mdast-util-to-string's text — and the committed fixtures in
 server/tests/fixtures/segmentation pin it.
+
+One addition that is not the reader's: a Markdown code block becomes a `code`
+chunk on the page it already occupies (C2.1). Leave those out and what remains
+is the reader's layout exactly. Extraction also reports an outline (headings or
+PDF bookmarks, with pages) and the document's opening line.
 """
 from __future__ import annotations
 
@@ -14,6 +19,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 from markdown_it import MarkdownIt
 from mdit_py_plugins.footnote import footnote_plugin
@@ -24,6 +30,13 @@ SENTENCES_PER_PAGE = 40  # src/constants.js SENTENCES_PER_TEXT_PAGE
 # chunk_type suffix of a split part after a page's first (v2.3 Task E): it
 # starts with the end of the part before it, and a reader drops that repeat.
 CONTINUATION_SUFFIX = "+cont"
+# chunk_type of a fenced or indented code block (C2.1 Task 5). Not part of the
+# reader's layout: the reader packs code blocks onto their page but has no
+# chunk for them, so a code chunk only adds a row on the page it already sits on.
+CODE = "code"
+OUTLINE_MAX_LEVEL = 3
+OUTLINE_TEXT_CHARS = 120   # characters (code points), not UTF-16 units
+OPENING_CHARS = 120
 
 # JavaScript's \s and String.prototype.trim set. Python's \s differs both ways:
 # it lacks U+FEFF and adds \x1c-\x1f.
@@ -47,9 +60,18 @@ class Chunk:
 
 
 @dataclass(frozen=True)
+class OutlineEntry:
+    level: int   # 1-3: heading depth (a PDF bookmark's nesting, from 1)
+    text: str    # collapsed, at most OUTLINE_TEXT_CHARS characters
+    page: int    # reader page, 1-based
+
+
+@dataclass(frozen=True)
 class Extraction:
     chunks: list[Chunk]
     page_count: int
+    outline: tuple[OutlineEntry, ...] = ()
+    opening: str = ""   # first OPENING_CHARS characters of the first prose chunk
 
 
 def _js_trim(s: str) -> str:
@@ -63,6 +85,23 @@ def _js_len(s: str) -> int:
 
 def _collapse(s: str) -> str:
     return _js_trim(_WS_RUN.sub(" ", s))
+
+
+def _is_code(chunk_type: str) -> bool:
+    return chunk_type in (CODE, CODE + CONTINUATION_SUFFIX)
+
+
+def opening_line(chunks: list[Chunk]) -> str:
+    """The first non-code chunk's text, cut at OPENING_CHARS code points. Python
+    slices code points, so an astral character (an emoji) is never split."""
+    for c in chunks:
+        if not _is_code(c.chunk_type):
+            return c.text[:OPENING_CHARS]
+    return ""
+
+
+def _outline_text(raw: str) -> str:
+    return _collapse(raw.replace("\x00", ""))[:OUTLINE_TEXT_CHARS]   # Postgres TEXT cannot hold NUL
 
 
 # ---------- plain text (usePdfEngine segmentSentences + paginateSentences) ----------
@@ -80,7 +119,7 @@ def extract_text(raw: str) -> Extraction:
         text = _collapse(" ".join(page))
         if text:
             chunks.append(Chunk(len(chunks), pi + 1, "page", text))
-    return Extraction(chunks, len(pages))
+    return Extraction(chunks, len(pages), opening=opening_line(chunks))
 
 
 # ---------- markdown (segmentMarkdown + paginateMarkdownBlocks + splitSentences) ----------
@@ -117,10 +156,19 @@ def _inline_text(inline, strip_task: bool) -> str:
     return "".join(parts)
 
 
-def _block_text(tokens) -> str:
+def _block_text(tokens, separate_cells: bool = False) -> str:
+    """The block's text by mdast-util-to-string's rules: runs concatenated with
+    nothing between them, so a table's cells come out glued ("OIDC_ISSUERhttp://x").
+    With `separate_cells`, a table cell ends in a space and a table row in a
+    newline: the reader's text plus whitespace, never different words. That is
+    the text to search and show; the reader's own text still decides the pages."""
     parts: list[str] = []
     for i, t in enumerate(tokens):
-        if t.type == "inline":
+        if separate_cells and t.type in ("th_close", "td_close"):
+            parts.append(" ")
+        elif separate_cells and t.type == "tr_close":
+            parts.append("\n")
+        elif t.type == "inline":
             strip_task = (i >= 2 and tokens[i - 1].type == "paragraph_open"
                           and tokens[i - 2].type == "list_item_open")
             parts.append(_inline_text(t, strip_task))
@@ -149,35 +197,83 @@ def _top_level_blocks(tokens):
             i += 1
 
 
+def _headings(tokens, atx_only: bool = False):
+    """(level, text) of each h1-h3 in a token run, in order. A heading's text is
+    the inline run that follows its heading_open; `atx_only` drops setext
+    headings (text over === or ---)."""
+    for i, t in enumerate(tokens):
+        if t.type != "heading_open" or t.tag not in ("h1", "h2", "h3"):
+            continue
+        if atx_only and not t.markup.startswith("#"):
+            continue
+        if i + 1 < len(tokens) and tokens[i + 1].type == "inline":
+            text = _outline_text(_inline_text(tokens[i + 1], False))
+            if text:
+                yield int(t.tag[1]), text
+
+
+class _Block(NamedTuple):
+    plain: str                              # the block's text, cells of a table apart ("" for code)
+    sentences: int                          # what the page packing counts, from the reader's own text
+    code: str | None                        # the code, verbatim, when the block is a code block
+    headings: tuple[tuple[int, str], ...]   # (level, text) of its h1-h3, for the outline
+
+
 def extract_markdown(raw: str) -> Extraction:
-    blocks = []  # (plain, sentence_count, is_code)
+    blocks: list[_Block] = []
     for first, toks in _top_level_blocks(_parser().parse(raw)):
-        is_code = first.type in ("fence", "code_block")
-        plain = "" if is_code else _block_text(toks)
-        blocks.append((plain, 0 if is_code else len(_split_sentences(plain)), is_code))
+        if first.type in ("fence", "code_block"):
+            # content ends with the newline before the closing fence (and any blank
+            # lines before it): not part of the code. Nothing else is touched.
+            blocks.append(_Block("", 0, first.content.rstrip("\n"), ()))
+        else:
+            # The reader's text (table cells glued) is what the pages are counted on, so a
+            # page never moves; the chunk gets the same text with the cells kept apart.
+            glued = _block_text(toks)
+            has_table = any(t.type == "table_open" for t in toks)
+            plain = _block_text(toks, separate_cells=True) if has_table else glued
+            blocks.append(_Block(plain, len(_split_sentences(glued)), None, tuple(_headings(toks))))
     # Greedy packing: close a page when the next block would push it past the
     # cap. Zero-sentence blocks (code, hr) still occupy the page they land on.
-    pages: list[list[tuple[str, int, bool]]] = []
-    current: list[tuple[str, int, bool]] = []
+    pages: list[list[_Block]] = []
+    current: list[_Block] = []
     count = 0
     for block in blocks:
-        if current and count + block[1] > SENTENCES_PER_PAGE:
+        if current and count + block.sentences > SENTENCES_PER_PAGE:
             pages.append(current)
             current, count = [], 0
         current.append(block)
-        count += block[1]
+        count += block.sentences
     if current:
         pages.append(current)
     pages = pages or [[]]
     chunks: list[Chunk] = []
+    outline: list[OutlineEntry] = []
     for pi, page in enumerate(pages):
-        for plain, _n, is_code in page:
-            if is_code:
+        for block in page:
+            outline.extend(OutlineEntry(level, text, pi + 1) for level, text in block.headings)
+            if block.code is not None:
+                # Interleaved with the prose in document order (R2): a procedure
+                # reads as written. The reader has no chunk for code, so this is
+                # the only place the page's code is searchable or readable.
+                if _js_trim(block.code):
+                    chunks.append(Chunk(len(chunks), pi + 1, CODE, block.code))
                 continue
-            text = _collapse(plain)
+            text = _collapse(block.plain)
             if text:
                 chunks.append(Chunk(len(chunks), pi + 1, "block", text))
-    return Extraction(chunks, len(pages))
+    return Extraction(chunks, len(pages), tuple(outline), opening_line(chunks))
+
+
+def outline_from_markdown_pages(pages: list[tuple[int, str]]) -> tuple[OutlineEntry, ...]:
+    """Outline of a converted document (Docling stores one Markdown string per
+    page): the ATX headings `#` to `###` of each (page number, markdown). The
+    Markdown is parsed, not scanned by line, so a `# comment` inside a code
+    fence is not a heading."""
+    parser = _parser()
+    return tuple(OutlineEntry(level, text, page)
+                 for page, md in pages
+                 for level, text in _headings(parser.parse(md), atx_only=True))
 
 
 # ---------- PDF (one chunk per non-empty page, like pdf.js in the reader) ----------
@@ -201,6 +297,56 @@ def _pdf_page_texts(path: Path) -> tuple[list[str], int]:
         pdf.close()
 
 
+class _TocItem(NamedTuple):
+    level: int               # 0 = top level
+    title: str
+    page_index: int | None   # 0-based; None when the bookmark points at no page
+
+
+def _pdf_toc_items(path: Path) -> list[_TocItem]:
+    """The document's bookmarks as (level, title, page_index). pypdfium2 5.x
+    yields PdfBookmark handles (level, get_title(), get_dest().get_index());
+    4.x yielded ready tuples with .level/.title/.page_index. Both are read."""
+    import pypdfium2 as pdfium
+
+    pdf = pdfium.PdfDocument(str(path))
+    try:
+        items: list[_TocItem] = []
+        for item in pdf.get_toc():
+            if hasattr(item, "get_title"):
+                dest = item.get_dest()
+                items.append(_TocItem(item.level, item.get_title(), dest.get_index() if dest else None))
+            else:
+                items.append(_TocItem(item.level, item.title, item.page_index))
+        return items
+    finally:
+        pdf.close()
+
+
+def toc_entries(items) -> tuple[OutlineEntry, ...]:
+    """Outline entries from bookmark items (attributes level, title, page_index):
+    level 0 becomes 1, anything deeper than OUTLINE_MAX_LEVEL is left out, the
+    page is page_index + 1, and a bookmark with no page or no title is skipped."""
+    out: list[OutlineEntry] = []
+    for item in items:
+        level = item.level + 1
+        if level > OUTLINE_MAX_LEVEL or item.page_index is None or item.page_index < 0:
+            continue
+        text = _outline_text(item.title)
+        if text:
+            out.append(OutlineEntry(level, text, item.page_index + 1))
+    return tuple(out)
+
+
+def _pdf_outline(path: Path) -> tuple[OutlineEntry, ...]:
+    # The outline is a bonus: a malformed bookmark tree must not fail the text.
+    try:
+        return toc_entries(_pdf_toc_items(path))
+    except Exception:
+        logger.warning("PDF outline unreadable; indexing without it", exc_info=True)
+        return ()
+
+
 def extract_pdf(path: Path) -> Extraction:
     texts, page_count = _pdf_page_texts(path)
     chunks: list[Chunk] = []
@@ -208,7 +354,7 @@ def extract_pdf(path: Path) -> Extraction:
         text = _collapse(raw.replace("\x00", ""))  # Postgres TEXT cannot hold NUL
         if text:
             chunks.append(Chunk(len(chunks), pi + 1, "page", text))
-    return Extraction(chunks, page_count)
+    return Extraction(chunks, page_count, _pdf_outline(path), opening_line(chunks))
 
 
 def extract_file(path: Path, file_type: str) -> Extraction:
@@ -275,8 +421,16 @@ def chunk_settings(env) -> tuple[int, int]:
 # read_document_pages joins a page's parts dropping at most the CURRENT
 # overlap, so old parts made with a longer one show their extra overlap twice.
 # Harmless (the text is right, only repeated) and gone after the swap.
+#
+# The trailing "code1" marks the extraction that indexes code blocks and saves
+# outlines (C2.1): bump it when what extraction produces changes, so existing
+# documents are re-chunked on their next use. The rebuild embeds only text that
+# has no vector yet (doc_pipeline._reusable_vectors), so such a bump costs the
+# new chunks, not the whole library. "cells1" marks the extraction that keeps a
+# Markdown table's cells apart in the chunk text (before it, "OIDC_ISSUER|http://x"
+# became one unsearchable word); only the table chunks get new text.
 CHUNK_MAX_CHARS, CHUNK_OVERLAP_CHARS = chunk_settings(os.environ)
-CHUNKER_VERSION = f"split1:{CHUNK_MAX_CHARS}:{CHUNK_OVERLAP_CHARS}"
+CHUNKER_VERSION = f"split1:{CHUNK_MAX_CHARS}:{CHUNK_OVERLAP_CHARS}:code1:cells1"
 
 
 def _cut(text: str, start: int, limit: int) -> int:

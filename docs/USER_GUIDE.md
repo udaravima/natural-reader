@@ -8,9 +8,13 @@ the [README](../README.md).)
 
 - [Signing in](#signing-in)
 - [Where things live: Settings, profile menu, Admin](#where-things-live-settings-profile-menu-admin)
-- [Account: your profile and personal access tokens](#account-your-profile-and-personal-access-tokens)
+- [Listening while you do something else](#listening-while-you-do-something-else)
+- [Profile: your picture, password and signed-in browsers](#profile-your-picture-password-and-signed-in-browsers)
+- [Access tokens](#access-tokens)
 - [Admin console (admins only)](#admin-console-admins-only)
 - [Chat: models and streaming](#chat-models-and-streaming)
+- [Asking a whole project](#asking-a-whole-project)
+- [When the assistant offers a web search](#when-the-assistant-offers-a-web-search)
 - [The daily token budget](#the-daily-token-budget)
 - [FAQ](#faq)
 
@@ -30,8 +34,10 @@ Depending on your account state you may see one of these screens instead:
 | **Account disabled** | An admin disabled your account | Contact an admin |
 | **Backend error / not responding** | The server is down or unreachable | Check with whoever runs the deployment |
 
-You stay signed in on that browser (a cookie, valid ~7 days by default) until
-you click **Log out** in the **profile menu** (top-right of the header).
+You stay signed in on that browser until you click **Log out** in the
+**profile menu** (top-right of the header), until you haven't used it for 12
+hours, or for at most 7 days (both are your deployment's defaults:
+`SESSION_IDLE_HOURS`, `SESSION_TTL_HOURS`).
 
 ## Where things live: Settings, profile menu, Admin
 
@@ -39,20 +45,69 @@ Accounts, tokens, and settings are **not in the sidebar** — the sidebars hold
 navigation (reader) and the model picker + sessions (chat). Everything about
 *you* lives at the top of the window:
 
-- **Profile menu** — the person icon at the top-right of the header. Your
-  identity, a **Settings** shortcut, the dark-mode toggle, and **Log out**.
-- **Settings** page — open it from the header **gear**, or from the profile
-  menu. One page with sections for Voice & reading, Chat & inference,
-  Connection, Appearance, and **Account** (your email + role and **personal
-  access tokens** — the only place tokens are created).
+- **Profile menu** — your picture (or a person icon) at the top-right of the
+  header. Your name, **Profile**, **Settings**, the dark-mode toggle, and
+  **Log out**.
+- **Settings** — a window over whatever you have open, from the header
+  **gear** or the profile menu, so the narration, a reply being written and
+  your place in the document all carry on underneath. Tabs: **Profile**,
+  **Voice & reading**, **Chat**, **Appearance**, **Connection** and **Access
+  tokens** (the only place tokens are created). **Esc**, the **×** or a click
+  outside closes it; it opens on the tab you used last.
 - **Admin** console — a separate view opened from the **shield** button in the
   top view switcher (Reader / Chat / Library / Admin). Only admins see it. User
   management only; **no token creation happens here.**
 
-## Account: your profile and personal access tokens
+## Listening while you do something else
 
-Open **Settings** (header gear, or the profile menu) and go to the **Account**
-section. The first line shows `your@email · role` (role is `admin` or `member`).
+The narration keeps reading whichever view you open: Chat, Library, Admin or
+Settings. Outside the reader, a small control in the header shows the
+document and page with **pause**, **stop**, and the name, which takes you back
+to the page being read. Pause keeps the control there; Stop removes it.
+Opening a different document pauses the narration.
+
+A reply you asked for keeps being written when you leave Chat, and is there
+when you come back.
+
+**Chat beside the page.** In the reader, the **speech-bubbles button** in the
+header opens the chat in a column beside the page: the same chats as the Chat
+view, with its own model picker, **New chat**, and **Open in the Chat view**.
+With it open, **Ask page** and **Ask AI** on a selection add the page or text
+to it and keep you in the reader. It needs a wide screen; on a phone those
+open the Chat view instead (the narration carries on there too).
+
+**One voice at a time.** Reading a reply aloud pauses the narration, and the
+header says **Paused for the chat reply**. Press **Read** (or the play button)
+to carry on; that also stops the reply's read-aloud.
+
+**Read Selection.** Select text in the reader and **Read Selection** reads it
+aloud (**Ask AI** beside it sends it to the chat). The two buttons don't show
+in the Chat view, where they covered the Send button: to hear a reply, use the
+reply's own **Read aloud** button. A selection still being read when you
+switch to Chat keeps its **Stop** at the top of the view.
+
+## Profile: your picture, password and signed-in browsers
+
+Open **Profile** from the profile menu (or the Profile tab in Settings).
+
+- **Picture:** **Add a picture** takes any image; it is cropped to a square
+  and shrunk to 256 px in your browser before upload. It shows in the header.
+  **Remove** takes it away.
+- **Name, email, password and two-step sign-in** belong to the account you
+  sign in with (Keycloak), and your name and email here follow it each time
+  you sign in. **Manage your account** opens that account's own page, where
+  you change them.
+- **Signed-in browsers** lists each browser signed in to your account (marked
+  **this browser** for the one you're using), when it was last used, and a
+  **Sign out** for each other one, or **Sign out everywhere else**. That ends
+  the browser's session here. A browser still signed in to your sign-in
+  account can come back without a password until that ends too: end it under
+  **Manage your account**.
+
+## Access tokens
+
+Open **Settings → Access tokens**. Your email and role (`admin` or `member`)
+are on the first line.
 
 Below that is the **token manager**: what the token may do (**Access**), when
 it expires, a name box, a **Create** button, and your list of tokens. Each
@@ -83,7 +138,7 @@ purely optional.
 
 ### Creating one
 
-1. Open **Settings** and go to the **Account** section.
+1. Open **Settings** and go to the **Access tokens** tab.
 2. Under **Access**, tick only what the token is for. **Read aloud** is ticked
    by default, and that's all the extension needs.
 3. Pick when it **Expires**: 30 days, 90 days, 1 year (the default) or Never.
@@ -179,6 +234,19 @@ Notes:
     shows about how many tokens), and up to 8,000 characters are allowed.
   - Don't name the app's tools (`web_search` and so on): describe the
     behaviour you want. The section warns you if you do.
+- **Chat options** has one setting so far, **Web search**: **Ask first** (the
+  default: the assistant can only offer a search and the person says yes on a
+  card), **Search without asking**, or **Off**.
+  - A change applies from each person's next message and shows a notice
+    ("Web search: Ask first. Applies from the next message.").
+  - The line under the choices says where the current value comes from: **Set
+    here.**, **From the server setting CHAT_WEB_SEARCH.** or **The default.**
+    When it was set here, **Use the server setting** removes your choice, so the
+    deployer's value applies again.
+  - With no search engine configured on the server, the choices are disabled and
+    the section says *Web search isn't set up on this server (SEARXNG_URL).*
+  - After a change, the Assistant section's **What the model receives** updates
+    to show the rules a document chat gets in that mode.
 
 **Projects.** Every project, with its owners and counts. **Ownerless only**
 shows projects whose last Owner was deleted; **Add me as Owner** takes one
@@ -222,7 +290,9 @@ Maintainer, for roles up to Maintainer) can change it for you.
 **Adding people.** On a project page, open **Members → + Add people**, type a
 name or their full email address, pick the person, choose a role and press
 **Add**. Whether typing a name finds people depends on your organisation's
-setting; a full email address always works. "Awaiting approval" means the
+setting; a full email address always works. An admin always finds people by
+two letters of a first name, last name, username or email (or "First Last"),
+and sees their email addresses. "Awaiting approval" means the
 account exists but an admin hasn't activated it yet. A person whose account an
 admin has disabled shows "disabled": their role can't be changed, but a
 Maintainer or Owner can still remove them.
@@ -260,9 +330,13 @@ sharing. If the list of people can't be loaded, the panel shows the error and a
 **Leaving.** **Leave** in the project header. Documents you had in your own
 library stay there.
 
-What you can't do yet: chat with a whole project at once (planned), compare two
-versions or review a version before it becomes current (planned), or rename a
-document without uploading a new version.
+**Asking the project.** The **Ask about this project** button in the project
+header (shown to members who have the chat permission) starts a chat about all
+of its documents at once; see [Asking a whole project](#asking-a-whole-project).
+
+What you can't do yet: compare two versions or review a version before it
+becomes current (planned), or rename a document without uploading a new
+version.
 
 ## Chat: models and streaming
 
@@ -279,34 +353,49 @@ still being written somewhere else (another tab or device), you'll see
 chat at a time — sending again while one is still streaming is blocked until
 it finishes or you stop it.
 
-**Use this document:** with a document open, a chip above the chat box
-shows its name and **Use this document**. Click it to switch the document
-off for this chat: the assistant then doesn't search or read it (the chip
-says **Not used**, with the name struck through), so a general question
-isn't answered from the document, and messages are lighter. The choice is
-kept per chat and per signed-in user; a new chat starts with it on. Pins
-you added still go with each message, and citations in earlier replies
-still open the document.
+**What the chat is about.** A chip above the chat box says what the assistant
+may look at. Click it for the menu:
+
+- **No document**: the assistant doesn't search or read any document in this
+  chat, so a general question isn't answered from a document, and messages are
+  lighter.
+- **This document: *name***, listed while a document is open in the reader: the
+  assistant can search and read that document. A new chat starts with this
+  when a document is open. For an old version the chip adds *v2 (old
+  version)*.
+- One entry per project that holds the open document, shown as the project's name. Picking it makes the chip read **Project: *name***.
+- **Choose a project…**, which lists the projects you belong to (or says
+  *You're not in any project yet.*).
+
+The project you pick is saved with the chat, so it is the same on every device
+and the chat list shows its name under the chat. Choosing **No document** or
+**This document** takes the chat out of the project. Whether the open document
+is used is remembered per chat, in this browser. Pins you added still go with
+each message, and citations in earlier replies still open their documents, even
+after you change what the chat is about. See [Asking a whole
+project](#asking-a-whole-project) for what a project chat does.
 
 **Sources:** under a reply that used your document, chips such as
 **Sources: p. 3 · p. 8** open the pages the answer came from, even when the
 reply doesn't cite them itself. When nothing in the reply matches a page
 (for example "the document doesn't cover this"), the chips read
-**Searched (not cited)** and list the pages that were looked at.
+**Searched (not cited)** and list the pages that were looked at. In a project
+chat each document gets its own chip (**Guide.md · p. 3 · p. 6**), and pages
+from the web show as links under **Web sources**.
 
 **Citations:** when a reply used your document, the page numbers it cites
 ("page 4", "(page 4)") are links. Clicking one opens that document in the
 reader at that page, opening it from the server first if it isn't the one
 you have open. If you can no longer read the document, a notice says so
-and you stay in chat. Like any switch to the reader, clicking a citation
-while a reply is still streaming stops that reply (it's kept, marked
-**Stopped**).
+and you stay in chat. A reply still streaming when you click a citation
+keeps going, and is there when you come back to Chat. In a project chat a
+citation names its document, "(Guide.md, page 7)", and opens that document.
 
 **Picking a model:** the model picker in the chat sidebar is grouped by
 **provider**, each group labelled with the provider's name as your deployment
 configured it (for example `ollama` or `local`, plus any other server your
 deployment has) and shows what each model can do — whether it supports thinking,
-tools, images, and so on. On the **Settings** page (Chat & inference section),
+tools, images, and so on. In **Settings → Chat**,
 the per-model controls (context window, keep-alive, thinking level, max reply
 tokens) only show the knobs the selected model's provider actually supports.
 
@@ -324,6 +413,115 @@ removes, or reconfigures providers in the server's `.env` file and restarts
 it. If you want a model that isn't in the picker, ask whoever runs your
 deployment to add it.
 
+## Asking a whole project
+
+A project is a shelf of documents for a team. A project chat lets you ask the
+shelf instead of one file: "What are the features?", "How do I deploy and test
+this, step by step?", "Which document says what the default is?". The assistant
+looks across all of the project's documents and tells you where each fact came
+from.
+
+**Start one**
+
+1. Open **Library** and its **Projects** tab, and click a project.
+2. Click **Ask about this project** in the project header.
+3. The Chat view opens with a new chat whose chip reads **Project: *name***.
+   Type your question.
+
+You can also change an existing chat: click the chip, then the project (listed
+when the document you have open is in it) or **Choose a project…**.
+
+You need the chat permission and to be a member of the project. The button
+shows only for members who have the chat permission. A site admin who is not a
+member can open and manage the project but doesn't see the button, because the
+assistant answers about a project's documents only for its members; add the
+admin to the project first.
+
+**What the assistant sees.** It is given a list of the project's documents (each
+one's name, page count and headings) and can search them together, read exact
+pages, and go through many pages for one goal, such as collecting every command
+in order. A second, small model call does the bulk reading and hands back only
+the facts, each with a quote the app has checked against the page, so the
+assistant is not working from a paraphrase. Only each document's **current
+version** is used. A document that is still being indexed, or failed to index,
+is listed but can't be searched yet, and the assistant says so if your question
+needs it. Reading many pages takes longer than a one-document question, most of
+all on a slow model.
+
+**Reading the answer**
+
+- Each fact from a document is followed by its document and page, such as
+  **(Guide.md, page 7)**. Click it and that document opens at that page in the
+  reader. A document name that isn't in the project is plain text, not a link.
+- Under the answer, **Sources** has a chip per document with the pages the
+  answer used (**Guide.md · p. 3 · p. 6**); click a page to open it.
+  **Searched (not cited)** lists documents and pages that were looked at but
+  not used.
+- When the project's documents don't cover part of your question, the
+  assistant says so. It may add what it knows in general, introduced as not
+  from the documents and never with a page. If it needs current or outside
+  facts, it may offer a web search; see the next section, which also says what
+  to do when it doesn't.
+
+**Chats in the sidebar.** A project chat shows the project's name in blue under
+its title in the chat list, and opens with the same project on any device.
+
+**If you lose access to the project.** The chip and the list show **Project
+unavailable**. Send a message anyway and you get the notice "This project
+doesn't exist or you don't have access."; that message isn't sent (it goes back
+into the box), and the chat is no longer about the project, so send it again as
+a general chat or pick another scope.
+
+**What isn't possible yet.** A chat is about one project at a time: asking all of
+your documents at once, whatever project they are in, is planned and not built.
+Older versions of a project's documents aren't searched.
+
+## When the assistant offers a web search
+
+By default the assistant **asks before it searches the web**. Nothing leaves
+the server until you say yes. When it needs facts that its documents and its own
+knowledge can't give (news, prices, a version number, a system the documents
+don't mention), it writes what it can say without the web and then shows a card
+under its reply:
+
+> **Search the web?**  
+> *the assistant's reason*  
+> [ the search it proposes ]  
+> **Search the web** · **Not now**
+
+**The card doesn't always come, most of all in a project chat.** The assistant
+may answer from the documents and what it knows in general, say what the
+documents don't cover, and stop there without offering. If you want the web
+then, type **search the web for** and what you want, such as "search the web
+for RHEL 9 packages for Python 3.13". The card comes back with a query; the
+assistant may word it differently from what you typed, and you can edit it
+before you press **Search the web**.
+
+- **The search box is yours to edit.** Change the words, up to 300 characters,
+  and what you see is exactly what is searched. Press **Search the web** or
+  Enter in the box.
+- **Search the web** sends the message "Search the web for: ..." and runs that
+  one search for the next answer. The assistant then reads up to three of the
+  results and answers. Each fact from a web page is followed by its site,
+  **(example.com)**, and the pages it read show as links under **Web sources**.
+- **Approval is for one search.** If the assistant wants a different search, it
+  shows a new card. Only the newest reply's card can be answered; an older one
+  reads *Offered a web search*.
+- **If you press Stop** while the assistant is writing the answer above the
+  card, you keep the text so far but get no card for that reply. Ask again, or
+  type "search the web for ..." with what you want, to bring the card back.
+- **Not now** closes the card and sends nothing; the chat carries on. If you
+  reload the chat while that reply is still the newest, the card is back.
+- The card only shows what is searched, so read it: the query is the only text
+  that leaves the server. The app stops the assistant from copying passages of
+  your documents into a query, but it can't judge meaning, and a short sensitive
+  phrase could still slip into one.
+
+Your admin can change this under **Admin → Chat options → Web search**. With
+**Search without asking**, there is no card: the assistant searches and reads on
+its own and cites sites the same way. With **Off**, the assistant says it can't
+look things up here. If the server has no search engine set up, no card appears.
+
 ## The daily token budget
 
 Your deployment may cap how many tokens each user may spend per day (UTC day —
@@ -333,7 +531,9 @@ while you chat.
 A reply you stop partway through, or one that fails, still counts against
 this budget — using the token count the provider reported, or an estimate
 based on how much text was generated if it didn't report one. Stopping early
-doesn't refund the tokens already spent.
+doesn't refund the tokens already spent. The reading the assistant hands to
+its separate reader, going through many pages of a project or reading web
+pages, counts too.
 
 When you run out:
 
@@ -349,8 +549,8 @@ legitimately need more, ask yours.
 ## FAQ
 
 **Where do I create a personal access token?**
-On the **Settings** page, in the **Account** section (open Settings from the
-header gear or the profile menu). The Admin console has no token features at all.
+In **Settings → Access tokens** (open Settings from the header gear or the
+profile menu). The Admin console has no token features at all.
 
 **Do I need a personal access token to use the app or the extension?**
 App: no. Extension: yes — it's the only way it can authenticate.
@@ -376,6 +576,17 @@ to it. To properly offboard: **Disable** them in the Admin section first
 for a future user, the old app row must be removed by an operator
 (database-level today; an admin-side "delete user" UI is a planned follow-up).
 
+**The assistant asked me before searching the web. Can I turn that off?**
+That is the default on purpose. An admin can change it under **Admin → Chat
+options** (**Search without asking**), but only an admin: it applies to
+everyone on the server.
+
+**The chip says "Project unavailable".**
+The chat is about a project you can no longer see (you were removed, or it was
+deleted). Pick another scope from the chip; sending a message in that state
+shows "This project doesn't exist or you don't have access." and unlinks the
+project from the chat.
+
 **I was made admin but don't see the Admin button.**
 Reload the page — the app refreshes your role when it re-checks your account.
 
@@ -386,4 +597,4 @@ in the toast and the sidebar.
 
 ---
 
-*UI references: `src/components/settings/SettingsPage.jsx`, `src/components/ProfileMenu.jsx`, `src/components/account/AccountPanel.jsx`, `src/components/admin/AdminConsole.jsx`, `src/components/Header.jsx`, `src/components/ViewSwitcher.jsx`, `src/components/chat/InferenceRow.jsx`, `src/components/ChatSidebar.jsx`.*
+*UI references: `src/components/settings/SettingsDialog.jsx`, `src/components/ProfileMenu.jsx`, `src/components/account/ProfilePanel.jsx`, `src/components/account/AccountPanel.jsx`, `src/components/chat/ChatSidePanel.jsx`, `src/components/chat/ScopeChip.jsx`, `src/components/chat/WebOfferCard.jsx`, `src/components/projects/ProjectPage.jsx`, `src/components/admin/ChatOptionsSection.jsx`, `src/components/NarrationMiniPlayer.jsx`, `src/components/admin/AdminConsole.jsx`, `src/components/Header.jsx`, `src/components/ViewSwitcher.jsx`, `src/components/chat/InferenceRow.jsx`, `src/components/ChatSidebar.jsx`.*

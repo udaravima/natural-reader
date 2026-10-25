@@ -16,6 +16,7 @@ from ..auth.scopes import REQUIRES, SCOPES
 from ..auth.capabilities import caps_from_claims
 from ..auth.config import load_auth_config
 from ..auth.oidc import build_oauth
+from ..services import avatars, people
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ async def login(request: Request, next: str = "/"):
 
 
 @router.get("/callback")
-async def callback(request: Request, conn=Depends(deps.get_conn),
+async def callback(request: Request, conn=Depends(deps.get_conn, scope="function"),
                    kc=Depends(deps.get_kc_admin)):
     # Keycloak can redirect back with an error instead of a code — an expired
     # auth flow (temporarily_unavailable / authentication_expired), a cancelled
@@ -139,7 +140,7 @@ async def callback(request: Request, conn=Depends(deps.get_conn),
 
 
 @router.post("/logout")
-async def logout(request: Request, conn=Depends(deps.get_conn)):
+async def logout(request: Request, conn=Depends(deps.get_conn, scope="function")):
     cookie = request.cookies.get(deps.COOKIE_NAME)
     if cookie:
         await sessions.revoke_session(conn, cookie)
@@ -180,7 +181,7 @@ async def _post_logout_url(request: Request) -> str:
 
 
 @router.get("/logout")
-async def logout_redirect(request: Request, conn=Depends(deps.get_conn)):
+async def logout_redirect(request: Request, conn=Depends(deps.get_conn, scope="function")):
     # Navigation form of POST /logout: the browser must actually visit the
     # IdP so the IdP can clear its own cookie on its own origin. A fetch would
     # follow the redirect server-side, where cross-origin Set-Cookie never
@@ -199,15 +200,40 @@ async def logout_redirect(request: Request, conn=Depends(deps.get_conn)):
     return resp
 
 
+def account_url(env=os.environ) -> str | None:
+    """The sign-in provider's own account page (name, password, two-step
+    sign-in, its signed-in devices). OIDC_ACCOUNT_URL wins when set ("off"
+    hides the link); otherwise a Keycloak issuer (…/realms/<realm>) gives its
+    account console, and any other provider gives none."""
+    explicit = (env.get("OIDC_ACCOUNT_URL") or "").strip()
+    if explicit:
+        return None if explicit.lower() == "off" else explicit
+    issuer = (load_auth_config(env).oidc_issuer or "").strip().rstrip("/")
+    if "/realms/" in urlsplit(issuer).path:
+        return f"{issuer}/account"
+    return None
+
+
 @router.get("/me")
-async def me(principal: deps.Principal = Depends(deps.get_current_user)):
+async def me(principal: deps.Principal = Depends(deps.get_current_user),
+             conn=Depends(deps.get_conn, scope="function")):
     """Who the credential acts as. For a scoped token, role and capabilities
     are already narrowed to its scopes; read_aloud says whether the TTS routes
-    will accept it (the extension's Test connection asks this)."""
+    will accept it (the extension's Test connection asks this). `name` is the
+    one label others see (people.person_label); `avatar_url` is null without
+    a picture."""
+    row = await users.get_user(conn, principal.user_id) or {}
+    name = people.person_label(first_name=row.get("first_name"), last_name=row.get("last_name"),
+                               display_name=row.get("display_name"), username=row.get("username"),
+                               email=principal.email, show_email=True)
     return {"id": principal.user_id, "email": principal.email,
             "role": principal.role, "capabilities": sorted(principal.capabilities),
             "scopes": sorted(principal.scopes) if principal.scopes is not None else None,
-            "read_aloud": principal.can_read_aloud}
+            "read_aloud": principal.can_read_aloud,
+            "name": name, "first_name": row.get("first_name"), "last_name": row.get("last_name"),
+            "username": row.get("username"),
+            "avatar_url": avatars.url(principal.user_id, await avatars.updated_at(conn, principal.user_id)),
+            "account_url": account_url()}
 
 
 # ---------- Personal access tokens ----------
@@ -249,7 +275,7 @@ class TokenCreateIn(BaseModel):
 async def create_pat(
     body: TokenCreateIn,
     principal: deps.Principal = Depends(deps.require_full_credential),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
 ):
     # Narrowing can't add, but a scope the account lacks would be a token that
     # silently does nothing: refuse it here instead.
@@ -269,7 +295,7 @@ async def create_pat(
 @router.get("/tokens")
 async def list_pats(
     principal: deps.Principal = Depends(deps.require_full_credential),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
 ):
     return await pat.list_tokens(conn, principal.user_id)
 
@@ -278,7 +304,7 @@ async def list_pats(
 async def revoke_pat(
     token_id: str,
     principal: deps.Principal = Depends(deps.require_full_credential),
-    conn=Depends(deps.get_conn),
+    conn=Depends(deps.get_conn, scope="function"),
 ):
     if not await pat.revoke_token(conn, principal.user_id, token_id):
         raise HTTPException(status_code=404, detail="Token not found")

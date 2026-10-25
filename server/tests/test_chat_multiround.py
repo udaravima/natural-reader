@@ -17,7 +17,7 @@ from server.chat.tools import web_search as ws_tool
 from server.llm.types import Finish, ToolCall, ToolCallReady, Usage
 from server.services.doc_search import ReadableDoc
 from server.tests.chat_harness import FakeRouter, member, reply
-from server.tests.test_chat_orchestrator import _msg, _run, conn, open_doc  # noqa: F401 — fixtures
+from server.tests.test_chat_orchestrator import _msg, _run, conn, open_doc, web_auto  # noqa: F401 — fixtures
 
 DOC = ReadableDoc("d" * 64, "Thesis.pdf", "indexed", 40)
 CORPUS = {   # query -> the passages a search for it finds
@@ -40,12 +40,12 @@ def corpus(open_doc, monkeypatch):
     async def fake_embed_one(text):
         return [text]
 
-    async def fake_search_chunks(conn, doc_id, qvec, k, text=None):
+    async def fake_search_scope(conn, doc_ids, qvec, k, text=None, *, per_doc=None, depth=0, exclude=()):
         runs.append(qvec[0])
-        return [dict(r) for r in CORPUS.get(qvec[0], [])]
+        return [{"doc_id": doc_ids[0], **r} for r in CORPUS.get(qvec[0], [])]
 
     monkeypatch.setattr(sd_tool, "embed_query", fake_embed_one)
-    monkeypatch.setattr(sd_tool, "search_chunks", fake_search_chunks)
+    monkeypatch.setattr(sd_tool, "search_scope", fake_search_scope)
     monkeypatch.setattr(ws_tool, "web_search", _fake_web())
     return runs
 
@@ -188,13 +188,14 @@ async def test_web_search_refuses_document_text_and_allows_the_topic(query, refu
         assert "error" not in result
 
 
-async def test_every_kind_of_document_text_is_guarded(conn, open_doc, monkeypatch):
+async def test_every_kind_of_document_text_is_guarded(conn, open_doc, monkeypatch, web_auto):
     """The prefetch block, pins and passages from an earlier round are all
     document text the model has; none may reach the web."""
     pinned = "Pinned: the quarterly revenue of the northern division fell by twelve percent overall."
 
-    async def fake_prefetch(doc, question, cfg):
-        return Prefetch([{"id": 1, "page": 2, "score": 0.9, "text": PASSAGE}], 0.9,
+    async def fake_prefetch(scope, question, cfg):
+        doc = scope[0].doc
+        return Prefetch([{"id": 1, "ref": 1, "doc_id": doc.doc_id, "page": 2, "score": 0.9, "text": PASSAGE}], 0.9,
                         {"kind": "prefetch", "docId": doc.doc_id, "docName": doc.name, "count": 1,
                          "topScore": 0.9, "pages": [2]})
 
@@ -221,7 +222,7 @@ async def test_every_kind_of_document_text_is_guarded(conn, open_doc, monkeypatc
 
 
 async def test_passages_from_an_earlier_round_are_guarded(conn, corpus):
-    ctx = ToolContext("u", DOC)
+    ctx = ToolContext("u", DOC, web_mode="auto")
     tools = TurnTools(ctx)
     offered = available_tools(ctx)
     await tools.run(ToolCall("c1", "search_documents", {"query": "MIMIC-IV collected by"}), offered)
@@ -250,7 +251,7 @@ async def test_the_guard_works_for_scripts_written_without_spaces(query, refused
     assert ("error" in result) == refused
 
 
-async def test_quotes_in_the_models_earlier_answers_are_guarded(conn, open_doc, monkeypatch):
+async def test_quotes_in_the_models_earlier_answers_are_guarded(conn, open_doc, monkeypatch, web_auto):
     """Review I2: the model's own earlier answers in this chat often quote the
     document; their text is document text too. The user's own words are not."""
     from server.chat.store import StoredMessage
@@ -283,7 +284,7 @@ async def test_a_result_too_big_for_the_budget_is_not_run_again(conn, corpus, mo
     assert _tool_results(router.calls[2]) == [{"message": TurnTools.BUDGET_USED}] * 2
 
 
-async def test_a_call_that_failed_can_be_retried(conn, corpus, monkeypatch):
+async def test_a_call_that_failed_can_be_retried(conn, corpus, monkeypatch, web_auto):
     """Review M3: "Already searched: see the results above" is wrong when the
     result above is an error."""
     calls = []
@@ -314,6 +315,20 @@ async def test_the_pages_an_uncited_answer_drew_on_are_sent_and_saved(conn, corp
     doc_context = (await _msg(conn, claim.assistant_message_id))[5]
     assert {"kind": "sources", "docId": DOC.doc_id, "docName": "Thesis.pdf", "pages": [18, 22],
             "used": True} in doc_context["notes"]
+
+
+async def test_document_scope_keeps_its_source_shapes_byte_for_byte(conn, corpus):
+    """C2.1 Task 15 adds the by-document shape for projects; a chat about one document still sends and saves
+    {docId, docName, pages, used}, with no scope note and no `documents` list, so saved chats keep their chips."""
+    router = FakeRouter(steps=[_call("c1", "chapter 3 method"), reply("It uses MIMIC-IV (page 18).")])
+    events, claim = await _run(conn, router, text="Which dataset?")
+    src = next(e for e in events if e["type"] == "data-sources")
+    assert {k: v for k, v in src.items() if k != "seq"} == {
+        "type": "data-sources", "docId": DOC.doc_id, "docName": "Thesis.pdf", "pages": [18], "used": True}
+    assert list(src) == ["type", "seq", "docId", "docName", "pages", "used"]
+    notes = (await _msg(conn, claim.assistant_message_id))[5]["notes"]
+    assert notes == [{"kind": "sources", "docId": DOC.doc_id, "docName": "Thesis.pdf", "pages": [18], "used": True}]
+    assert "data-web-sources" not in [e["type"] for e in events]
 
 
 async def test_a_refusal_shows_the_pages_searched_as_retrieved(conn, corpus):

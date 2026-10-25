@@ -2,16 +2,21 @@
 
 run_turn is an async generator of event dicts (spec §6); routers/chat_turns.py
 frames them as SSE. Per step: stream one model call; if it asked for tools, run
-them and go again; after CHAT_MAX_TOOL_ROUNDS rounds, one last step with tools
-OFF, so the turn always ends in an answer (the OpenAI Agents SDK max_turns
-idea). Provider and tool failures become an `error` event or a tool error the
-model sees; they never escape. A disconnect (the Stop button, a closed tab)
-arrives as cancellation: the partial reply is saved `aborted` and the claim is
-released, even though the task is being torn down (spec §5.4).
+them and go again; after CHAT_MAX_TOOL_ROUNDS rounds (CHAT_PROJECT_MAX_TOOL_ROUNDS
+in a project chat), one last step with tools OFF, so the turn always ends in
+an answer (the OpenAI Agents SDK max_turns idea). An offer to search the web
+ends the turn; if its round wrote no text, the model first gets that same
+tools-off step to write its answer, and the card follows the text (C2.1 Task
+22). Provider and tool failures become an `error` event or a tool error the
+model sees; they never escape. A
+disconnect (the Stop button, a closed tab) arrives as cancellation: the
+partial reply is saved `aborted` and the claim is released, even though the
+task is being torn down (spec §5.4).
 """
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import math
@@ -27,15 +32,23 @@ from ..llm.router import UnknownModel
 from ..llm.types import (Attachment, CallSettings, Capabilities, FeatureDropped, Finish, Message,
                          ProviderError, ProviderTimeout, ProviderUnavailable, ReasoningDelta,
                          TextDelta, ToolCall, ToolCallReady, Usage)
-from ..services import assistant_profile, inference_budget
+from ..services import assistant_profile, chat_options, inference_budget
 from ..services import doc_pipeline
+from ..services.doc_outlines import Outline, load_outlines
 from ..services.doc_search import ReadableDoc, readable_doc
 from . import store
 from .config import ChatConfig
 from .context import TurnInput, build_context
-from .sources import answer_sources
+from .project_map import ProjectMap, build_map
+from .project_scope import ProjectScope, load_project_scope
+from .prompt import document_tools_offered
+from .reader import BatchCall
+from .sources import answer_sources, sources_by_document, web_sources
 from .store import TurnClaim, title_from_prompt
-from .tools import ToolContext, TurnTools, available_tools, result_text
+from .tools import ToolContext, ToolRun, TurnTools, available_tools, result_text
+from .tools.scope import scope_docs
+from .web_consent import (APP_WEB_CALL_ID, app_web_exchange, app_web_search, clean_query, offer_note, search_possible,
+                          web_offer)
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +69,8 @@ _FEATURE_NOTICE = {
 }
 _FEATURE_LOG = {"tools": "tool-fallback", "thinking": "think-fallback", "think_level": "think-fallback",
                 "system": "system-fallback"}
+# The notice sent when the daily budget keeps an offer turn from writing its answer (the card is still shown).
+ANSWER_SKIPPED_NOTICE = "Daily inference budget exhausted — no written answer for this offer."
 # Added to the results of the last tool round (v2.3 Task A). Worded to match
 # the rule in server/chat/prompt.py ("When a tool result says the tool rounds
 # are over, answer from what you already have").
@@ -96,6 +111,11 @@ class TurnRequest:
     settings: CallSettings
     doc_id: str | None
     timezone: str | None
+    # A project chat (C2.1 spec §5.1): access checked by the route this turn.
+    # The document tools then read the project's documents, not the open one.
+    project_id: str | None = None
+    # The user said yes to this web search (context.web, C2.1 spec 5.8): the app runs it before the first step.
+    web_query: str | None = None
 
 
 @dataclass
@@ -120,6 +140,9 @@ class _State:
     pending_output: str = ""
     pending_usage: Usage | None = None
     step_recorded: bool = True
+
+    def add_note(self, note: dict[str, Any]) -> None:
+        self.doc_context = {"notes": [*((self.doc_context or {}).get("notes") or []), note]}
 
     def add(self, usage: Usage, finish: str) -> None:
         self.prompt_tokens += usage.prompt_tokens
@@ -214,6 +237,11 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         seq += 1
         return {"type": kind, "seq": seq, **fields}
 
+    def tool_result(run: ToolRun) -> dict[str, Any]:
+        if run.ok:
+            return ev("tool-output-available", toolCallId=run.call_id, output=run.summary["result_summary"])
+        return ev("tool-output-error", toolCallId=run.call_id, errorText=run.result["error"])
+
     state = _State()
     started = time.monotonic()
     outcome = "error"   # complete | aborted | error
@@ -224,37 +252,83 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                  userMessageId=claim.user_message_id, messageId=claim.assistant_message_id)
         await _log_sent(claim, req)
         caps = await _capabilities(router, req.model_id)
-        doc = await _open_doc(req)
+        project = await _project_scope(req) if req.project_id else None
+        doc = None if req.project_id else await _open_doc(req)
         pins, history = await store.load_turn_context(
             claim.session_id, exclude=(claim.user_message_id, claim.assistant_message_id))
         # One primary-key read per turn: right across several workers, and an
         # admin's edit applies from the next message, with no cache to clear.
         async with get_pool().connection() as conn:
             profile = await assistant_profile.load_profile(conn)
+        options = await _chat_options()
+        # What was approved is what the user saw: a query with hidden characters is cleaned first, and one with
+        # nothing visible left is no approval (chat/web_consent.py).
+        web_query = clean_query(req.web_query) if req.web_query else None
+        if req.web_query and not web_query:
+            logger.info("An approved web search was ignored: its query had nothing visible in it")   # never the query itself
+        if web_query and options.web_search == "off":
+            logger.info("An approved web search was ignored: web search is off")   # never the query itself
+            web_query = None
         # Tools first: the system rules describe exactly the tools this turn
         # offers (server/chat/prompt.py), so none is ever named in vain.
-        tool_ctx = ToolContext(req.user_id, doc, cfg=cfg)
+        # A project chat gets a map of the project in the system message; if it had to be shortened,
+        # document_outline is offered for the turn (chat/project_map.py), and the map says to call it only
+        # when this turn offers tools at all.
+        max_rounds = cfg.project_max_tool_rounds if req.project_id else cfg.max_tool_rounds
+        tools_on = caps.tools is not False and max_rounds > 0
+        project_map, outlines = await _project_map(project, cfg, tools_on) if project else (None, {})
+        tool_ctx = ToolContext(req.user_id, doc, cfg=cfg, project=project, question=req.text,
+                               map_shortened=bool(project_map and project_map.shortened), outlines=outlines,
+                               model=req.model_id, web_mode=options.web_search, web_approved=bool(web_query),
+                               charge=functools.partial(_charge_reader, req.user_id))
         offered = [] if caps.tools is False else available_tools(tool_ctx)
+        app_exchange = ()
+        if web_query and tools_on and search_possible():
+            # The user's yes: search before the model's first step and hand it the result as a tool exchange.
+            yield ev("tool-input-available", toolCallId=APP_WEB_CALL_ID, toolName="web_search",
+                     input={"query": web_query}, round=0)
+            web_run = await app_web_search(tool_ctx, web_query)
+            state.tool_calls.append(web_run.summary)
+            yield tool_result(web_run)
+            app_exchange = app_web_exchange(web_run)
+        elif web_query:
+            logger.info("An approved web search was not run: the model has no tools this turn, or no search engine is set up")
         built = await build_context(TurnInput(
             user_id=req.user_id, text=req.text, attachments=req.attachments, doc=doc,
             timezone=req.timezone, pins=pins, history=history,
             window=_window(router, req, caps), now=datetime.now(timezone.utc),
-            tools=tuple(offered if cfg.max_tool_rounds > 0 else ()), tool_ctx=tool_ctx,
-            profile=profile.text), cfg)
+            tools=tuple(offered if max_rounds > 0 else ()), tool_ctx=tool_ctx,
+            profile=profile.text, scope=tuple(scope_docs(tool_ctx)),
+            project_map=project_map.text if project_map else "", app_exchange=app_exchange), cfg)
         tool_ctx.shown.update(built.shown_chunk_ids)
         # Document text the model already has: the web search guard's reference.
         tool_ctx.seen_text.extend(built.shown_texts)
         tool_ctx.evidence.extend(built.evidence)
         tool_ctx.seen_text.extend(str(p.get("text") or "") for p in pins if isinstance(p, dict))
+        if project_map:   # its openings and headings are document text too
+            tool_ctx.seen_text.append(project_map.text)
         # The model's earlier answers in this chat often quote the document.
         # (The user's own messages are theirs to search with.)
         tool_ctx.seen_text.extend(m.content for m in history if m.role == "assistant")
         turn_tools = TurnTools(tool_ctx)
-        if built.notes:
-            state.doc_context = {"notes": built.notes}
-            yield ev("data-context", items=built.notes)
+        # A project reply's citations name documents: the names it was told, saved with it, are what the client
+        # links against (spec 5.7).
+        notes = [*built.notes, *([_scope_note(project)] if project is not None else [])]
+        if notes:
+            state.doc_context = {"notes": notes}
+            yield ev("data-context", items=notes)
         messages = list(built.messages)
         rounds = 0
+        # The offer of a round that wrote no text (spec 5.8): the turn takes one more step, tools off, to write its
+        # answer, and then ends with the card. Set when that round's results are in; the card is not sent before.
+        pending_offer: dict[str, Any] | None = None
+
+        def end_with_offer(offer: dict[str, Any], finish_reason: str = "stop") -> list[dict[str, Any]]:
+            """The end of a turn that offered a web search: the card is saved as a note and sent, and the
+            turn is over (stats.doneReason agrees with finish_reason: the turn ended here)."""
+            state.add_note(offer)
+            state.last_finish = state.finish_reason = finish_reason
+            return [ev("data-web-offer", query=offer["query"], reason=offer["reason"])]
 
         def say(delta: str) -> list[dict[str, Any]]:
             """Show `delta` as this step's text: text-start before its first
@@ -280,12 +354,23 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
 
         while True:
             if await _over_budget(req.user_id, deployment_budget):
-                yield ev("error", code="budget_exhausted", message=ERROR_TEXT["budget_exhausted"])
+                if pending_offer is None:
+                    yield ev("error", code="budget_exhausted", message=ERROR_TEXT["budget_exhausted"])
+                    await _log_event(claim.session_id, "budget", "daily token budget exhausted")
+                    return
+                # The answer step is held back like any step, but the card costs nothing and the user was
+                # offered it: an error here would hide it. The reason is not silent: a notice (the user's next
+                # message would fail at once) and the session log's `budget` line, as for the error.
+                logger.info("The answer step after an offer was skipped: the daily token budget is used")
                 await _log_event(claim.session_id, "budget", "daily token budget exhausted")
-                return
+                yield ev("data-notice", code="budget_exhausted_no_answer", message=ANSWER_SKIPPED_NOTICE)
+                for e in end_with_offer(pending_offer):
+                    yield e
+                await _save(claim, state)
+                break
             state.steps += 1
             step = state.steps
-            tools_now = offered if rounds < cfg.max_tool_rounds else []
+            tools_now = offered if rounds < max_rounds and pending_offer is None else []
             # rounds > 0: "max-steps" means a tool round actually ran and got
             # capped, not merely that CHAT_MAX_TOOL_ROUNDS=0 kept tools off
             # from the first step (fix round 1, item 3).
@@ -302,48 +387,58 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             open_text = open_reasoning = tools_dropped = False
             probe = _TextProbe(active=bool(tools_now))   # nothing to recover on a tools-off step
             last_flush = time.monotonic()
-            async with aclosing(router.stream_chat(req.model_id, messages, [t.spec for t in tools_now],
-                                                   req.settings)) as stream:
-                async for chunk in stream:
-                    if isinstance(chunk, ReasoningDelta):
-                        if not open_reasoning:
-                            open_reasoning = True
-                            yield ev("reasoning-start", id=f"r{step}")
-                        reasoning += chunk.text
-                        state.thinking += chunk.text
-                        # Set before the yield, not after: a cancellation lands
-                        # AT a yield, and by then this chunk's text must already
-                        # be reflected — same reason state.content is set before
-                        # its yield too (fix round 1, item 2).
-                        state.pending_output = text + probe.held + reasoning
-                        yield ev("reasoning-delta", id=f"r{step}", delta=chunk.text)
-                    elif isinstance(chunk, TextDelta):
-                        if open_reasoning:
-                            open_reasoning = False
-                            yield ev("reasoning-end", id=f"r{step}")
-                        shown = probe.feed(chunk.text)
-                        state.pending_output = text + probe.held + reasoning
-                        for e in say(shown):
-                            yield e
-                    elif isinstance(chunk, ToolCallReady):
-                        if tools_now:   # a tools-off step cannot call tools
-                            calls.append(chunk.call)
-                    elif isinstance(chunk, Usage):
-                        usage = chunk
-                        state.pending_usage = chunk
-                    elif isinstance(chunk, Finish):
-                        finish = chunk.reason
-                    elif isinstance(chunk, FeatureDropped):
-                        if chunk.feature == "tools":   # this step's reply can't be a tool call
-                            tools_dropped = True
-                            for e in say(probe.release()):
+            failed = False
+            try:
+                async with aclosing(router.stream_chat(req.model_id, messages, [t.spec for t in tools_now],
+                                                       req.settings)) as stream:
+                    async for chunk in stream:
+                        if isinstance(chunk, ReasoningDelta):
+                            if not open_reasoning:
+                                open_reasoning = True
+                                yield ev("reasoning-start", id=f"r{step}")
+                            reasoning += chunk.text
+                            state.thinking += chunk.text
+                            # Set before the yield, not after: a cancellation lands
+                            # AT a yield, and by then this chunk's text must already
+                            # be reflected — same reason state.content is set before
+                            # its yield too (fix round 1, item 2).
+                            state.pending_output = text + probe.held + reasoning
+                            yield ev("reasoning-delta", id=f"r{step}", delta=chunk.text)
+                        elif isinstance(chunk, TextDelta):
+                            if open_reasoning:
+                                open_reasoning = False
+                                yield ev("reasoning-end", id=f"r{step}")
+                            shown = probe.feed(chunk.text)
+                            state.pending_output = text + probe.held + reasoning
+                            for e in say(shown):
                                 yield e
-                        code, notice = _FEATURE_NOTICE[chunk.feature]
-                        await _log_event(claim.session_id, _FEATURE_LOG[chunk.feature], notice)
-                        yield ev("data-notice", code=code, message=notice)
-                    if time.monotonic() - last_flush >= store.FLUSH_EVERY_S:
-                        await _save(claim, state)   # a reload mid-reply shows the text so far
-                        last_flush = time.monotonic()
+                        elif isinstance(chunk, ToolCallReady):
+                            if tools_now:   # a tools-off step cannot call tools
+                                calls.append(chunk.call)
+                        elif isinstance(chunk, Usage):
+                            usage = chunk
+                            state.pending_usage = chunk
+                        elif isinstance(chunk, Finish):
+                            finish = chunk.reason
+                        elif isinstance(chunk, FeatureDropped):
+                            if chunk.feature == "tools":   # this step's reply can't be a tool call
+                                tools_dropped = True
+                                for e in say(probe.release()):
+                                    yield e
+                            code, notice = _FEATURE_NOTICE[chunk.feature]
+                            await _log_event(claim.session_id, _FEATURE_LOG[chunk.feature], notice)
+                            yield ev("data-notice", code=code, message=notice)
+                        if time.monotonic() - last_flush >= store.FLUSH_EVERY_S:
+                            await _save(claim, state)   # a reload mid-reply shows the text so far
+                            last_flush = time.monotonic()
+            except (ProviderUnavailable, ProviderTimeout, ProviderError) as e:
+                if pending_offer is None:
+                    raise
+                # The offer is the turn's answer and the text before it was a courtesy: end with the card, keeping
+                # what came, as a step that finished (it is billed below like one cut short).
+                failed, finish = True, "error"
+                logger.warning("The answer step after an offer failed (%s): the turn ends with the offer",
+                               type(e).__name__)
             if open_reasoning:
                 yield ev("reasoning-end", id=f"r{step}")
             recovered = (None if calls or tools_dropped or not probe.held
@@ -363,12 +458,20 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             # during the pool's commit) can't stop the row landing, and _finalize
             # must never charge this step a second time.
             state.step_recorded = True
-            usage = await asyncio.shield(_record_usage(req.user_id, usage, messages,
-                                                       text + probe.held + reasoning))
+            if failed and not _billable(usage, text + probe.held + reasoning):
+                usage = Usage(0, 0)   # refused before generating anything: nothing to charge (as _finalize)
+            else:
+                usage = await asyncio.shield(_record_usage(req.user_id, usage, messages,
+                                                           text + probe.held + reasoning))
             state.add(usage, finish)
             yield ev("finish-step", step=step, usage=_usage_json(usage), finishReason=finish)
             await _save(claim, state)
             if not calls:
+                if pending_offer is not None:   # the answer step is over: the card follows its text
+                    for e in end_with_offer(pending_offer, "length" if finish == "length" else "stop"):
+                        yield e
+                    await _save(claim, state)
+                    break
                 state.finish_reason = ("max-steps" if capped and not text.strip()
                                        else "length" if finish == "length" else "stop")
                 break
@@ -378,30 +481,42 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                              f"{len(calls)} tool call{'s' if len(calls) > 1 else ''}")
             # The last round says so in its results: the next step offers no
             # tools, and the rules (stable for the turn) can't say that.
-            last_round = rounds >= cfg.max_tool_rounds
+            last_round = rounds >= max_rounds
+            runs = []
+            offer = None
             for call in calls:
                 yield ev("tool-input-available", toolCallId=call.id, toolName=call.name, input=call.arguments,
                          round=rounds)
                 run = await turn_tools.run(call, tools_now)
+                runs.append(run)
                 state.tool_calls.append(run.summary)
-                if run.ok:
-                    yield ev("tool-output-available", toolCallId=call.id, output=run.summary["result_summary"])
+                yield tool_result(run)
+                first_offer = offer is None and (offer := web_offer(runs)) is not None
+                if first_offer and not text.strip():
+                    # The model offers without having written anything: its next step is the answer.
+                    result = {**run.result, "note": offer_note(
+                        project is not None, document_tools_offered(t.name for t in offered))}
+                elif last_round:
+                    result = {**run.result, "note": LAST_ROUND_NOTE}
                 else:
-                    yield ev("tool-output-error", toolCallId=call.id, errorText=run.result["error"])
-                result = {**run.result, "note": LAST_ROUND_NOTE} if last_round else run.result
+                    result = run.result
                 messages.append(Message("tool", result_text(result),
                                         tool_call_id=call.id, name=call.name))
+            # An offer to search the web ends the turn: the user answers it, and their yes is the next turn. With
+            # the model's text before it, the turn ends here; without, after one more step that writes the answer.
+            if offer and text.strip():
+                for e in end_with_offer(offer):
+                    yield e
             await _save(claim, state)
-        # v2.4 Task D: the pages the answer drew on, as source chips, even when
-        # the model wrote no "(page N)". Pins aren't evidence here: a pin may
-        # come from another document than the open one these chips open.
-        if doc is not None and tool_ctx.evidence:
-            pages, kind = answer_sources(state.content, tool_ctx.evidence)
-            if pages:
-                note = {"kind": "sources", "docId": doc.doc_id, "docName": doc.name, "pages": pages,
-                        "used": kind == "used"}
-                state.doc_context = {"notes": [*((state.doc_context or {}).get("notes") or []), note]}
-                yield ev("data-sources", docId=doc.doc_id, docName=doc.name, pages=pages, used=kind == "used")
+            if offer and text.strip():
+                break
+            if offer:
+                pending_offer = offer
+        # v2.4 Task D: the pages the answer drew on, as source chips, even when the model wrote no "(page N)".
+        # C2.1 Task 15: by document in a project chat, and the web pages the answer read in any chat.
+        for note in _source_notes(state.content, tool_ctx, project=project, doc=doc):
+            state.add_note(note)
+            yield ev("data-" + note["kind"].replace("_", "-"), **{k: v for k, v in note.items() if k != "kind"})
         # Spec §5.2.1: did the model still search after a prefetch hit? Lets a
         # deployer tune CHAT_PREFETCH_MIN_SCORE. DEBUG, and no user text.
         logger.debug("chat turn %s prefetch_hit=%s search_documents_called=%s", claim.turn_id,
@@ -470,7 +585,7 @@ async def _finalize(claim: TurnClaim, state: _State, outcome: str, req: TurnRequ
             # (aborted) after the prompt was already processed. A provider
             # that refuses before generating anything (e.g. HTTP 400 on an
             # invalid model) leaves nothing to charge (walk fix 2).
-            if outcome == "aborted" or state.pending_usage is not None or state.pending_output:
+            if outcome == "aborted" or _billable(state.pending_usage, state.pending_output):
                 await _record_usage(req.user_id, state.pending_usage, state.pending_messages, state.pending_output)
             state.step_recorded = True
         if outcome == "aborted":
@@ -574,6 +689,53 @@ def _window(router: Any, req: TurnRequest, caps: Capabilities) -> int | None:
     return caps.context_window
 
 
+async def _project_scope(req: TurnRequest) -> ProjectScope:
+    """The project's documents. Not caught: a project turn without them would
+    answer as if the project were empty."""
+    async with get_pool().connection() as conn:
+        return await load_project_scope(conn, req.user_id, req.project_id, open_doc_id=req.doc_id)
+
+
+async def _project_map(project: ProjectScope, cfg: ChatConfig,
+                       tools_on: bool) -> tuple[ProjectMap, dict[str, Outline]]:
+    """The map of the project, and the outlines it was built from (for document_outline). Only indexed
+    documents' outlines are loaded: the map shows no other (a revert leaves a stale row behind). Not
+    caught, like the scope: the database is there or the turn can't run."""
+    async with get_pool().connection() as conn:
+        outlines = await load_outlines(conn, [d.doc.doc_id for d in project.searchable])
+    return build_map(project, outlines, cfg.project_map_chars, tool_offered=tools_on), outlines
+
+
+def _scope_note(project: ProjectScope) -> dict[str, Any]:
+    """The documents a project reply can cite, with the names the model was given (the map's, inert)."""
+    return {"kind": "scope", "documents": [{"ref": d.ref, "docId": d.doc.doc_id, "name": d.name}
+                                           for d in project.docs]}
+
+
+def _source_notes(answer: str, ctx: ToolContext, *, project: ProjectScope | None,
+                  doc: ReadableDoc | None) -> list[dict[str, Any]]:
+    """The notes saved, and sent as data-<kind> events, at the end of the turn (chat/sources.py has the rules):
+    - "sources", for a project the pages by document ({documents}); for one open document {docId, docName, pages,
+      used}, the shape saved chats already hold. Pins aren't evidence: a pin may come from another document than
+      the one these chips open;
+    - "web_sources", in any chat: the web pages the reader returned facts from."""
+    notes: list[dict[str, Any]] = []
+    if project is not None:
+        documents = sources_by_document(answer, ctx.evidence, [(d.doc.doc_id, d.name) for d in project.docs])
+        if documents:
+            notes.append({"kind": "sources", "documents": documents})
+    elif doc is not None:
+        pages, kind = answer_sources(answer, [(page, text) for doc_id, page, text in ctx.evidence
+                                              if doc_id == doc.doc_id])
+        if pages:
+            notes.append({"kind": "sources", "docId": doc.doc_id, "docName": doc.name, "pages": pages,
+                          "used": kind == "used"})
+    web = web_sources(ctx.web_results)
+    if web:
+        notes.append({"kind": "web_sources", "pages": web})
+    return notes
+
+
 async def _open_doc(req: TurnRequest) -> ReadableDoc | None:
     if not req.doc_id:
         return None
@@ -587,6 +749,17 @@ async def _open_doc(req: TurnRequest) -> ReadableDoc | None:
         return None
 
 
+async def _chat_options() -> chat_options.ChatOptions:
+    """The deployment's chat options, read once per turn. A turn never fails because of them: if the row can't
+    be read, the environment's value applies, then the default."""
+    try:
+        async with get_pool().connection() as conn:
+            return await chat_options.load_chat_options(conn)
+    except Exception:  # noqa: BLE001 — see above
+        logger.warning("Chat options couldn't be read: using CHAT_WEB_SEARCH, else the default", exc_info=True)
+        return chat_options.from_env()
+
+
 async def _over_budget(user_id: str, deployment_budget: int | None) -> bool:
     try:
         async with get_pool().connection() as conn:
@@ -594,6 +767,27 @@ async def _over_budget(user_id: str, deployment_budget: int | None) -> bool:
     except Exception:
         logger.warning("Budget check failed (fail-open)", exc_info=True)
         return False
+
+
+def _billable(usage: Usage | None, output: str) -> bool:
+    """A step that was cut short or failed is charged only if the provider did something billable: it sent a Usage
+    chunk, or it produced output (text or reasoning). One that refused before generating anything (e.g. HTTP 400 on
+    an invalid model) leaves nothing to charge. The one rule for _finalize and for the answer step after an offer."""
+    return usage is not None or bool(output)
+
+
+async def _charge_reader(user_id: str, call: BatchCall) -> None:
+    """One reader call (chat/reader.py: extract_from_documents, read_web_pages) recorded against the turn's user by
+    the same writer as a chat step, so the next step's budget check counts it and the admin's usage page shows it:
+    the provider's own count when it sent one, else the chars/4 estimate (`_record_usage`). A call that failed or
+    timed out is charged only if it produced something, by the rule of a step cut short (`_billable`). It only adds
+    to the day's totals: it refuses nothing (the next step's check does), and it is not part of the reply's own
+    usage, which is the chat model's. The usage table has no model column: the log line names the reader model."""
+    if not call.finished and not _billable(call.usage, call.output):
+        return
+    usage = await asyncio.shield(_record_usage(user_id, call.usage, list(call.messages), call.output))
+    logger.info("reader usage user=%s model=%s tokens=%d+%d estimated=%s", user_id, call.model,
+                usage.prompt_tokens, usage.completion_tokens, usage.estimated)
 
 
 async def _record_usage(user_id: str, usage: Usage | None, messages: list[Message], output: str) -> Usage:
