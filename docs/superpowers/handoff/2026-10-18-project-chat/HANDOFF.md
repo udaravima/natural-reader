@@ -5,21 +5,34 @@
 
 ## Summary
 
-A person can now ask one chat about every current document in a project: Library → Projects → open a project → **Ask about this project**, or the chat's scope chip → **Choose a project…**. The assistant gets a map of the project, searches all its documents as one ranked list, hands bulk reading to a separate model call whose quotes the app verifies, and cites each fact as **(Guide.md, page 7)**, a link that opens that file at that page. The web is searched only after the user clicks **Search the web** on an offer card (default mode `ask`); an admin can switch the mode to `auto` or `off` under Admin → Chat options. On the cloud model it still misses two of the spec's four §2 targets: right-document citations 87.9% on the 9-document project and 82.1% on the 50-document one against 90%, and one invented page in 6 gap turns (the code case, 18/18, and unapproved web calls, 0 of 87 turns, are met). Two answer-quality gaps are open on purpose: "What are the features?" cites README.md alone (1 turn of 9 passes), and the RHEL question gets its text-plus-card answer in 4 of 6 eval runs but 1 of 4 chats in the running app; Task 22 is done, the final whole-branch review is pending, and the local `gemma4:e4b` run waits for the user's go-ahead.
+A person can now ask one chat about every current document in a project: Library → Projects → open a project → **Ask about this project**, or the chat's scope chip → **Choose a project…**. The assistant gets a map of the project, searches all its documents as one ranked list, hands bulk reading to a separate model call whose quotes the app verifies, and cites each fact as **(Guide.md, page 7)**, a link that opens that file at that page. The web is searched only after the user clicks **Search the web** on an offer card (default mode `ask`); an admin can switch the mode to `auto` or `off` under Admin → Chat options. On the cloud model it still misses two of the spec's four §2 targets: right-document citations 87.9% on the 9-document project and 82.1% on the 50-document one against 90%, and one invented page in 6 gap turns (the code case, 18/18, and unapproved web calls, 0 of 87 turns, are met). Two answer-quality gaps are open on purpose: "What are the features?" cites README.md alone (1 turn of 9 passes), and the RHEL question gets its text-plus-card answer in 4 of 6 eval runs but 1 of 4 chats in the running app; Task 22 and the final whole-branch review (with its fix round) are done, and the local `gemma4:e4b` run waits for the user's go-ahead.
 
 ## Gate
 
-Final gates ran at `cd0e956` (ledger, "Final gates"). HEAD has moved since only by docs commits, `b8bc2df` and `6a29499` (`git diff --stat cd0e956..HEAD` touches `docs/CHAT_WITH_PDF.md` and `WALK.md` and nothing else), so the gates hold for HEAD.
+Final gates ran at `9a580c9`, the last code commit (after the final review's fix round). Later commits touch only this file.
 
-| Check | Result at `cd0e956` |
+| Check | Result at `9a580c9` |
 |---|---|
-| Backend `.venv/bin/python -m pytest server/tests -q` | 2106 passed, 16 skipped, 2 deselected (container-marked, excluded by `pytest.ini`), 2 warnings, both third-party deprecation notices (Authlib, Starlette's httpx) |
-| Frontend `npx vitest run` | 1010 passed, 106 files |
+| Backend `.venv/bin/python -m pytest server/tests -q` | 2131 passed, 16 skipped, 2 deselected (container-marked, excluded by `pytest.ini`), 2 warnings, both third-party deprecation notices (Authlib, Starlette's httpx) |
+| Frontend `npx vitest run` | 1011 passed, 106 files |
 | `npx eslint .` | clean |
 
 For scale, the plan started at 1308 backend and 658 frontend tests (`04e9633`).
 
-The final whole-branch review is **pending**: <!-- FINAL REVIEW: filled by the controller -->
+**Final whole-branch review** (most capable model, 5bff936..7f5b0c3): *With fixes*, no Critical. It traced every ask-mode path to the web (offer, approved turn, answer step, text-tool-call probe, history replay, public endpoint) and found none that searches without the user's click, and no way for a project tool to read outside the project. Its findings and what happened to them:
+
+| Finding | Outcome |
+|---|---|
+| I1 Reader calls never charged to the daily budget or usage | Fixed in `9a580c9`: each reader batch is recorded through the existing usage writer (counts at the next step's budget check; the reader model shows in the `reader usage` log line, since `inference_usage` has no model column) |
+| I2 Document tools say "the open document" in a project chat | Built, measured, **reverted**: next to a same-day control it was 1 pass worse on v9, 3 on v50, and gave 2 of 6 RHEL cards against 4 of 6; no eval call left `document` out, so its benefit can't be shown here. Patch kept in the plan workspace; follow-up |
+| I3 The guide treated the web card as reliable | Fixed: it says the card doesn't always come in a project chat and how to ask for one ("search the web for …") |
+| M1 Long colliding names lost their " (2)" (a citation could open the wrong document) | Fixed: names are capped before the suffix and never re-capped |
+| M3 Admin Off didn't cover `POST /v1/tools/web_search` | Fixed: 403 "Web search is off on this server." |
+| M5 Read Selection hidden in the Chat view undocumented | Fixed in CHANGELOG and USER_GUIDE |
+| M6 6d marked Fixed | Corrected to "Partly fixed" |
+| M2 A tools-off project chat gets passages but no citation rules; M4 reader passages not delimited | Deferred to the next deliberate prompt change |
+
+The scoped re-review found every finding addressed and nothing new broken. **Measurement caveat it surfaced:** on the same code, variant 9 scored 38/42 on 2026-10-20 and 33/42 on 2026-10-25, so day-to-day cloud-model drift is about five passes per variant; only same-day comparisons separate a code change from drift.
 
 ## What was built
 
@@ -582,7 +595,7 @@ Each entry: what was decided, why, and the cost if it was wrong. "Cost not state
 
 ## Parked and deferred
 
-None of these blocks the merge on the ledger's own triage. The **final whole-branch review is pending** (see the Gate section); the items the ledger tags "for the final review" are marked below and are what it should judge. Controller doc edits made outside the review loop, which the final review should also see (L531): `8d65886` (`CHAT_WITH_PDF.md:432` button wording, the spec's §5.9 source sentence for the non-member-admin refusal, the spec's §8 "J1–J8" now J1–J9), `26ace78` (USER_GUIDE Stop line) and `b8bc2df` (`CHAT_WITH_PDF.md` §3 prerequisites).
+None of these blocks the merge on the ledger's own triage. The final whole-branch review (see the Gate section) triaged every item below as fine to defer, except `POST /v1/tools/web_search` ignoring Off, which was fixed before merge. Controller doc edits made outside the review loop, which the final review also saw (L531): `8d65886` (`CHAT_WITH_PDF.md:432` button wording, the spec's §5.9 source sentence for the non-member-admin refusal, the spec's §8 "J1–J8" now J1–J9), `26ace78` (USER_GUIDE Stop line) and `b8bc2df` (`CHAT_WITH_PDF.md` §3 prerequisites).
 
 ### Parked by review, by area
 
