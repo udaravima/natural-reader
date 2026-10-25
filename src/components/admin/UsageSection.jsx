@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../utils/apiFetch';
 
-/** Inference usage: tokens per user per UTC day. Moved out of AdminConsole unchanged. */
+/** Inference usage: tokens per user per day. The server counts a day in the deployment's timezone. */
 
 const DAY_OPTIONS = [1, 7, 14, 30, 90];
 
@@ -45,7 +45,7 @@ export function UsageSection({ theme, apiHost, apiPort, showToast }) {
             <thead>
               <tr className={`${theme.textMuted} text-left`}>
                 <th className="py-1 pr-2">Email</th>
-                <th className="py-1 pr-2">Day (UTC)</th>
+                <th className="py-1 pr-2">Day</th>
                 <th className="py-1 pr-2 text-right">Prompt</th>
                 <th className="py-1 pr-2 text-right">Eval</th>
                 <th className="py-1 pr-2 text-right">Requests</th>
@@ -54,7 +54,7 @@ export function UsageSection({ theme, apiHost, apiPort, showToast }) {
             </thead>
             <tbody>
               {usage.map((r, i) => (
-                // day is an ISO UTC date string — render as-is, never
+                // day is already a YYYY-MM-DD in the deployment's zone: render as-is, never
                 // new Date(day) (local-midnight assumptions).
                 <tr key={`${r.user_id}-${r.day}-${i}`} className={`border-t ${theme.border}`}>
                   <td className="py-1 pr-2 truncate">{r.email}</td>
@@ -67,6 +67,11 @@ export function UsageSection({ theme, apiHost, apiPort, showToast }) {
               ))}
             </tbody>
           </table>
+        )}
+        {usage !== null && usage.length > 0 && (
+          <p className={`text-[10px] ${theme.textSecondary}`}>
+            Each day is counted in the deployment&apos;s timezone. Changing it doesn&apos;t move days already counted.
+          </p>
         )}
       </section>
   );

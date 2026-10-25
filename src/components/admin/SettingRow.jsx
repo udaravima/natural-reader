@@ -11,6 +11,11 @@ const SOURCE_LINE = {
   default: () => 'The default.',
 };
 
+// Also the source line of a read-only value (the Deployment list), so the wording lives here once.
+export function SourceLine({ source, envName }) {
+  return <>{(SOURCE_LINE[source] ?? (() => source))(envName)}</>;
+}
+
 export function SettingRow({ theme, id, label, help, source, envName, canUseServer, onUseServer, children }) {
   return (
     <div className="flex flex-col gap-1">
@@ -19,7 +24,7 @@ export function SettingRow({ theme, id, label, help, source, envName, canUseServ
       {children}
       <div className="flex flex-wrap items-center gap-3 text-[10px]">
         <span id={`${id}-source`} className={theme.textSecondary}>
-          {(SOURCE_LINE[source] ?? (() => source))(envName)}
+          <SourceLine source={source} envName={envName} />
         </span>
         {canUseServer && (
           <button

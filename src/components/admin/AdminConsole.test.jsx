@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { AdminConsole } from './AdminConsole';
 
 vi.mock('../../utils/apiFetch', () => ({ apiFetch: vi.fn() }));
@@ -24,7 +24,7 @@ const user = (over = {}) => ({
 // returns the raw created-user row (the shape older/simpler tests assert on).
 // extra(path, opts) answers routes of its own first (undefined = fall through).
 // section is the tab opened after mounting (the console opens on Overview); null stays on Overview.
-function mount({ users, usage = [], config = {}, showToast = vi.fn(), currentUserId = 'me', enrollResponse, extra, section = 'People' } = {}) {
+function mount({ users, usage = [], deployment = { settings: { timezone: { value: 'UTC', source: 'default', env: 'TZ', fallback: 'UTC', fallback_source: 'default' } }, info: [] }, showToast = vi.fn(), currentUserId = 'me', enrollResponse, extra, section = 'People' } = {}) {
   apiFetch.mockImplementation(async (host, port, path, opts) => {
     const answered = extra?.(path, opts);   // a test's own routes (chat options, the assistant) win
     if (answered) return answered;
@@ -44,7 +44,7 @@ function mount({ users, usage = [], config = {}, showToast = vi.fn(), currentUse
     }
     if (path === '/v1/admin/users') return json(200, users);
     if (path.startsWith('/v1/admin/inference/usage')) return json(200, usage);
-    if (path === '/v1/admin/inference/config') return json(200, config);
+    if (path === '/v1/admin/settings/deployment') return json(200, deployment);
     if (path.startsWith('/v1/admin/projects')) return json(200, []);
     if (path === '/v1/admin/overview') return json(200, { checks: [] });
     return json(404, {});
@@ -285,6 +285,13 @@ describe('AdminConsole — overview', () => {
 describe('AdminConsole — usage', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('says days are counted in the deployment timezone', async () => {
+    mount({ users: [user()], usage: [{ email: 'a@x.io', user_id: 'u1', day: '2026-09-17', prompt_tokens: 1, eval_tokens: 1, requests: 1, tokens: 2 }] });
+    openSection('Usage');
+    expect(await screen.findByRole('columnheader', { name: 'Day' })).toBeInTheDocument();
+    expect(screen.getByText("Each day is counted in the deployment's timezone. Changing it doesn't move days already counted.")).toBeInTheDocument();
+  });
+
   it('renders ISO day rows as-is', async () => {
     mount({
       users: [user()],
@@ -306,58 +313,66 @@ describe('AdminConsole — usage', () => {
   });
 });
 
-describe('AdminConsole — config', () => {
+describe('AdminConsole — deployment', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('renders read-only values, with "all models allowed" for an empty allowlist', async () => {
+  it('lists the providers from the server settings, never a key', async () => {
     mount({
       users: [user()],
-      config: {
-        ollama_url: 'http://ollama:11434', timeout_s: 120, allowed_models: null,
-        summarize_model: 'sum', embed_model: 'emb', daily_token_budget: null,
-      },
-    });
-    openSection('Deployment');
-    expect(await screen.findByText('http://ollama:11434')).toBeInTheDocument();
-    expect(screen.getByText('all models allowed')).toBeInTheDocument();
-    expect(screen.getByText('unlimited (unset)')).toBeInTheDocument();
-  });
-
-  it('renders an explicit allowlist', async () => {
-    mount({
-      users: [user()],
-      config: { ollama_url: 'http://x:11434', timeout_s: 60, allowed_models: ['llama3.2:3b', 'qwen3.5'], summarize_model: null, embed_model: null, daily_token_budget: 1000 },
-    });
-    openSection('Deployment');
-    expect(await screen.findByText('llama3.2:3b, qwen3.5')).toBeInTheDocument();
-    expect(screen.getByText('1000 tokens/day')).toBeInTheDocument();
-  });
-
-  it('lists each model provider with its host and model count, never a key', async () => {
-    mount({
-      users: [user()],
-      config: {
-        ollama_url: 'http://x:11434', timeout_s: 60, allowed_models: null, summarize_model: null,
-        embed_model: null, daily_token_budget: null,
-        providers: [
-          { name: 'local', kind: 'ollama', url_host: 'gpu.example.com', models: 1 },
-          { name: 'cloud', kind: 'openai', url_host: 'openrouter.example.com', models: null },
+      deployment: {
+        settings: { timezone: { value: 'UTC', source: 'default', env: 'TZ', fallback: 'UTC', fallback_source: 'default' } },
+        info: [
+          { id: 'provider:cloud', label: 'Provider cloud', value: 'openai · https://llm.example.com/v1', env: 'INFERENCE_CLOUD_URL', source: 'env' },
+          { id: 'provider_key:cloud', label: 'Provider cloud key', value: 'set', env: 'INFERENCE_CLOUD_API_KEY', source: 'env' },
         ],
       },
     });
     openSection('Deployment');
-    expect(await screen.findByText('local · ollama · gpu.example.com · 1 model')).toBeInTheDocument();
-    expect(screen.getByText('cloud · openai · openrouter.example.com · unreachable')).toBeInTheDocument();
+    expect(await screen.findByText('openai · https://llm.example.com/v1')).toBeInTheDocument();
+    expect(screen.getByText('set')).toBeInTheDocument();
+    expect(apiFetch).not.toHaveBeenCalledWith('', '', '/v1/admin/inference/config');
   });
 
-  it('says so when no provider is configured', async () => {
+  it('asks before leaving Deployment with an unsaved zone', async () => {
+    mount({ users: [user()], section: null });
+    openSection('Deployment');
+    fireEvent.change(await screen.findByLabelText('Timezone'), { target: { value: 'Asia/Colombo' } });
+    openSection('People');
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Deployment.');
+    expect(screen.getByRole('tab', { name: 'Deployment' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it("shows a person's created date in the deployment zone", async () => {
     mount({
-      users: [user()],
-      config: { ollama_url: 'http://x:11434', timeout_s: 60, allowed_models: null, summarize_model: null,
-                embed_model: null, daily_token_budget: null, providers: [] },
+      users: [user({ created_at: '2026-09-17T20:00:00Z' })],
+      deployment: { settings: { timezone: { value: 'Asia/Colombo', source: 'admin', env: 'TZ', fallback: 'UTC', fallback_source: 'default' } }, info: [] },
+    });
+    expect(await screen.findByText(/2026-09-18/)).toBeInTheDocument();
+  });
+
+  it('uses a zone saved in Deployment for the dates in People', async () => {
+    const saved = { settings: { timezone: { value: 'Asia/Colombo', source: 'admin', env: 'TZ', fallback: 'UTC', fallback_source: 'default' } }, info: [] };
+    mount({
+      users: [user({ created_at: '2026-09-17T20:00:00Z' })],
+      extra: (path, opts) => (path === '/v1/admin/settings/deployment' && opts?.method === 'PUT' ? json(200, saved) : undefined),
+      section: null,
     });
     openSection('Deployment');
-    expect(await screen.findByText('none configured')).toBeInTheDocument();
+    fireEvent.change(await screen.findByLabelText('Timezone'), { target: { value: 'Asia/Colombo' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.getByLabelText('Timezone')).toHaveValue('Asia/Colombo'));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled());
+    await act(async () => {});   // the section's "no unsaved changes" reaches the console in an effect, a tick after the button disables
+    openSection('People');
+    expect(await screen.findByText(/2026-09-18/)).toBeInTheDocument();
+  });
+
+  it('counts People dates in UTC when the zone cannot be loaded', async () => {
+    mount({
+      users: [user({ created_at: '2026-09-17T20:00:00Z' })],
+      extra: (path) => (path === '/v1/admin/settings/deployment' ? json(500, {}) : undefined),
+    });
+    expect(await screen.findByText(/2026-09-17/)).toBeInTheDocument();
   });
 });
 

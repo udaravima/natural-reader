@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
+import { formatDay } from '../../lib/zoneFormat';
 
 /**
  * People: the user list, the enroll form, per-user budget / project limit /
@@ -52,7 +53,7 @@ function ProjectLimitField({ u, theme, onSet }) {
   );
 }
 
-export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToast }) {
+export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToast, zone = 'UTC' }) {
   const [users, setUsers] = useState(null);
 
   // Enroll form
@@ -303,7 +304,7 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
                   )}
                 </span>
                 <span className={`text-[10px] ${theme.textMuted} whitespace-nowrap`}>
-                  {u.role}/{u.status}{u.created_at ? ` · ${String(u.created_at).slice(0, 10)}` : ''}
+                  {u.role}/{u.status}{u.created_at ? ` · ${formatDay(u.created_at, zone)}` : ''}
                 </span>
                 <span className="flex flex-wrap gap-2 items-center">
                   <BudgetField
