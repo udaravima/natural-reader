@@ -4,7 +4,71 @@
 
 ---
 
-## 2026-10-25 — v2.4.0 released; six post-release fixes; eval "drift" diagnosed; admin console v2 designed (START HERE)
+## 2026-10-26 — Admin console v2, phase 1 built and walked (START HERE)
+
+**Branch:** `feat/admin-console-v2`, cut from `328f68f` (the plan's commit; merge-base with `development` is `9459201`). **Commits:** `c717754` through `1100e71` (`git log --oneline 9459201..HEAD` lists all 20, the plan's commit first) plus the commit that added this entry and the docs. **Not merged into `development`. Nothing deployed.** **Pushed:** not by us. Something pushed this branch to origin four times with nobody running `git push` here: `328f68f` at 23:34:59 on 2026-10-25, then `7637c9a` (00:02:31), `469d2d8` (00:07:14) and `292a0ce` (00:07:47) on 2026-10-26 (from `git reflog show origin/feat/admin-console-v2`, all "update by push"). The cause is unknown (no git hook or Claude hook pushes this repo; VS Code's publish/sync is the suspect). Everything after `292a0ce`, including this docs commit, is local only. The owner never granted a push.
+
+**Gates at the docs commit (2026-10-26):** backend `2278 passed, 16 skipped, 2 deselected` (was 2139 passed at `9127981`), frontend `1115 passed` in 117 files (was 1022), `npx eslint src` clean.
+
+### What a person can do now (and where)
+
+Admins open the console with the **shield button in the header** (the profile menu has no Admin entry; the plan text said it had). It opens on **Overview**, with sections Overview, People, Projects, Documents, Chat, Defaults for users, Usage, Deployment (a picker on a phone).
+
+- **See whether the deployment works.** Overview runs six checks (providers, reader, context windows, embeddings, Docling, web search), each OK / Warning / Problem / Off, in at most 5 seconds each, concurrently. **Check again** reruns them.
+- **Set the deployment's timezone** (Deployment section). It decides the daily token budget's day (reset at the next local midnight, also on a daylight-saving night), the usage days, the "Today is" line without a browser zone, and People's dates. Console value, then `TZ`, then UTC. `tzdata` is now in `requirements.txt` (Windows).
+- **Limit Docling conversion** (Documents section): who may convert, presets, OCR, picture descriptions, a page limit. The convert dialog greys out what is off ("Turned off by your admin"), and the server refuses a request that breaks a rule (403 `convert_not_allowed`).
+- **Every setting in those sections has one look**: a source line (Set here. / From the server setting `VAR`. / The default.), **Use the server setting**, one Save, an unsaved-changes prompt. Each saved change writes an audit line.
+- **No migration.** Settings are `app_settings` rows `deployment` and `documents`.
+
+**What a user still can't do until a later phase:** choose the reader model or context sizes in the console (phase 2a), change the embedding model in the console (2b), see usage by model (3). The reader/context problems found on 2026-10-25 (a local model silently cut to 4k; the reader reloading the model) are still unfixed: they are 2a.
+
+### Rulings that changed the plan (full text in `.superpowers/sdd/2026-10-25-admin-console-v2-phase1/progress.md`)
+
+- **"Who may convert" is `readers` or `role`**, not "admins". `role` means people with the new **`docling` capability, a Keycloak realm role** (admins can always convert); the default `readers` keeps today's behaviour. `DOCLING_CONVERT_BY=readers|role`. The owner hadn't answered the question when Task 4 came up, so this was built on the recommendation: if wrong, revert the vocabulary entry, the realm-export role and the People checkbox and swap "role" back to "admins" (one task's worth).
+- **The `documents` token scope carries `docling`** (conversion is document work), so a role holder's documents-scoped token converts. Other scopes don't.
+- **OCR off refuses Accurate too**, because `docling_convert` runs OCR for Accurate whatever the flag.
+- **An existing Keycloak realm must have the `docling` realm role created by hand.** The realm export only seeds a fresh database. Until then ticking docling under People fails at the Keycloak write (a 502, capability unchanged) while the Keycloak admin client is configured. A role granted in Keycloak applies at the person's next login; one ticked in People applies at once. Only needed for `role` mode.
+- **The Overview reads the database first, then runs the network checks** (a check cancelled mid-query would break the connection).
+- **Env fallbacks:** `DOCLING_CONVERT_BY=readers`, `DOCLING_PRESETS=fast,standard,accurate`, `DOCLING_ALLOW_OCR=true`, `DOCLING_ALLOW_PICTURE_DESCRIPTION=true`, `DOCLING_MAX_PAGES=0` (0 = no limit). The env value is the outer bound; the console can only narrow it.
+- **The walk backend ran on port 8100**, never 8000: nginx on this host proxies the live site's `/v1` to 8000, and an `AUTH_ENABLED=false` backend there would serve the seed admin to the public.
+- **44 px targets** were brought to the moved sections (People, Projects, Chat, Defaults, Usage) with sizing classes only, after the walk measured 13-34 px there (`1100e71`).
+- Task 6's profile test asserts `>= n + 900`, not the plan's `n + 1000` (the plan's arithmetic was wrong; the delta is 999 tokens).
+
+### What was walked, and what wasn't
+
+Walked in the running app (headless Chromium, scratch database on 5434, `AUTH_ENABLED=false`, report at `.superpowers/sdd/2026-10-25-admin-console-v2-phase1/task-13a-walk-report.md`): Overview and each state; `/api/ps` really carries an integer `context_length` and a `name` (nomic-embed-text: 2048); Check again; the timezone, the unsaved prompt (Keep editing, Escape, phone variant), Save, reload, People's dates in Colombo, Use the server setting; Documents with OCR off and a limit of 2; the Convert dialog's greyed options and page gate, then a real 2-page conversion; the server's 403s by `curl` (6 pages, Accurate with OCR off, forced OCR); phone picker; keyboard (Arrow, Home, End, wrap); a canary `SESSION_SECRET` found nowhere in the page or the API payload.
+
+**Not walked:**
+- **A non-admin refused by "Only people with the Docling role."** It needs a second signed-in user, which `AUTH_ENABLED=false` can't give. Covered by `test_convert_limits.py` only. Walk it with the throwaway Keycloak on `:18081`, never the compose one.
+- **The Context windows row of a *loaded* local chat model.** The `/api/ps` shape is confirmed live; the row itself is tested with fakes. Load a local model with one message, then Check again: it should read "Loaded now (Ollama)."
+- **The 44 px fix** (`1100e71`) is class-tested (`phoneTargets.test.jsx`) but not re-measured in a browser; the walk predates it.
+- Dark mode; the Keycloak write when a `docling` role doesn't exist yet.
+
+### Open items
+
+1. **Merge** `feat/admin-console-v2` into `development` (then push? and find out what pushes this branch).
+2. **Deploy** is a separate decision (v2.4.0 itself is also not deployed; see the 2026-10-25 entry). This work needs no migration. For `role` mode, create the `docling` realm role first.
+3. **Deferred review findings** (minor, none blocks; the ledger has the rest):
+   - `GET /v1/admin/inference/config` (`admin.py`, from before this work) calls `urlsplit(...).hostname` unguarded: a malformed provider URL is a 500.
+   - The embeddings check goes through `embed_one`'s shared semaphore, so a busy-but-healthy embedder during heavy indexing can read "Didn't answer within 5 seconds"; a 404 (model not pulled) reads "Can't reach the embedding model".
+   - A scheme-less URL (`OLLAMA_URL=localhost:11434`) shows an empty host in the Overview and Deployment lists.
+   - A page limit with a PDF pdfium can't open skips the limit; a range starting past the end counts negative pages.
+   - A day boundary in a zone whose local midnight doesn't exist (a DST gap at 00:00, e.g. America/Havana) is about an hour off.
+   - Console a11y: `Check again` loses focus while it runs and there is no live region; small amber/green text is about 3:1 contrast; "Use the server setting" unmounts and drops focus; two `<h1>`s while the console is open (pre-existing).
+   - An invalid page-limit text alone doesn't count as unsaved; edits made during a save need a second Save with no prompt.
+   - Some scoped tokens (`read_aloud`, `chat`) drop `docling` by design; only `documents` carries it.
+4. **Phase 2a** (reader falls back to the chat model, one context size per local model) is next in the spec; the §7 decisions are approved.
+5. The old plan workspace `.superpowers/sdd/2026-10-25-admin-console-v2-phase1/` can be kept or deleted; the `nr-c21-testpg` scratch container is still running.
+
+### Where to look
+
+- `CHANGELOG.md` `## [Unreleased]` (written for users), `docs/USER_GUIDE.md` § Admin console, `docs/ARCHITECTURE.md` (the five new services `console_settings`, `deployment_settings`, `deployment_info`, `docling_limits`, `console_overview`; routes `GET`/`PUT /v1/admin/settings/{section}`, `GET /v1/admin/overview`, `GET /v1/settings/docling`), `docs/IDENTITY_AND_ROLES.md` § The `docling` capability, `docs/TESTING.md` § Admin console v2, phase 1.
+- Spec: `docs/superpowers/specs/2026-10-25-admin-console-v2-design.md` (phase 1 is §6 item 1). Plan: `docs/superpowers/plans/2026-10-25-admin-console-v2-phase1.md`.
+- The environment and safety rules in the 2026-10-25 entry below still apply unchanged (scratch DB on 5434, never 5433, never the compose Keycloak, never `pkill -f run.py`).
+
+---
+
+## 2026-10-25 — v2.4.0 released; six post-release fixes; eval "drift" diagnosed; admin console v2 designed
 
 **Branch:** `fix/folder-index-docling-progress-doc-refs`, cut from `development` at `955231d`. **Commits on it:** `6ef6ef5`, `9127981`, and the commit that added this entry and the spec. **Not merged into `development`, not pushed.** **Tests at `9127981`:** backend 2139 passed and 16 skipped, frontend 1022 passed, eslint clean. **Releases:** v2.4.0 is on `master` (`ff71f75`), tagged, pushed, and is the GitHub release marked Latest; v2.3.0 also has a GitHub release now. **The live site is NOT redeployed** (see "Deploying 2.4.0" below).
 

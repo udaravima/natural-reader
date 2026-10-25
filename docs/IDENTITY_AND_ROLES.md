@@ -76,7 +76,7 @@ Consequences worth holding onto:
    mapper only targets the access token; see
    [Where roles actually live](#where-roles-actually-live-keycloak-realm-roles--userscapabilities)).
    `caps_from_claims` (`server/auth/capabilities.py`) intersects that role list
-   with the app's known capability vocabulary (`reader`/`chat`/`admin`),
+   with the app's known capability vocabulary (`reader`/`chat`/`admin`/`docling`),
    dropping Keycloak built-ins like `offline_access`.
 4. `resolve_or_provision_user(conn, iss=…, sub=…, email=…, email_verified=…,
    capabilities=…)` maps the identity to a `users` row (three branches, next
@@ -130,8 +130,9 @@ hand once (the comment at the top of the SQL file has the exact `psql` command).
 ## Where roles actually live (Keycloak realm roles → `users.capabilities`)
 
 This used to say "Keycloak does not know about roles at all" — that changed.
-**Roles now live in Keycloak**, as three plain **realm roles**:
-`reader`, `chat`, `admin` (`deploy/keycloak/realm-export.json` §`roles.realm`).
+**Roles now live in Keycloak**, as four plain **realm roles**:
+`reader`, `chat`, `admin` and `docling` (`deploy/keycloak/realm-export.json` §`roles.realm`;
+`docling` is [described below](#the-docling-capability)).
 No group defaults them onto anyone — a brand-new Keycloak user, and a
 brand-new app row, both start with **zero capabilities**. Someone with the
 `admin` capability has to grant them, either through this app's admin console
@@ -181,6 +182,35 @@ Keycloak is the **source of truth**; the app keeps a **mirror**:
   `require_read_aloud`, which accepts `read_aloud` or `documents` on an account
   holding `reader`. Scoped tokens can't reach `/v1/auth/tokens`
   (`require_full_credential`). See `server/auth/scopes.py`.
+
+### The `docling` capability
+
+`docling` decides who may start a Docling conversion (PDF/Office/HTML → Markdown), and
+only when an admin has limited conversion to it: the admin console's **Documents**
+section has **Who may convert**, either **Everyone who can read** (`readers`, the
+default and what the app always did) or **Only people with the Docling role** (`role`).
+`DOCLING_CONVERT_BY=readers|role` sets the starting value. In `role` mode a person
+needs `docling`; **an admin may always convert**, which is why the bootstrap admin set
+(`admin`, `reader`, `chat`) doesn't include it. In `readers` mode the role does
+nothing. It grants nothing else: no route other than the conversion checks it.
+
+- **Where to give it.** Tick **docling** beside the person under **People** (or when
+  enrolling them), or give them the `docling` realm role in Keycloak. A tick under
+  **People** applies at once; a role granted in Keycloak applies at the person's next
+  login (login sync, above).
+- **A personal access token** carries it through the `documents` scope (conversion is
+  document work), not through `read_aloud`, `chat` or `admin`. A full-access token
+  carries whatever its owner holds. A token never widens its owner: the owner must
+  hold the role.
+- **An existing realm needs the role created by hand.** `--import-realm` only seeds a
+  fresh database (see "Why the mapping used to break" above), so a running realm does not have it.
+  Create it once: Keycloak admin console, realm `natural-reader`, **Realm roles**,
+  **Create role**, name `docling`, Save. Until then, ticking **docling** under
+  **People** fails at the Keycloak write (the capability-edit rule above: Keycloak
+  first, the app's mirror only after it succeeds), a 502 with the capability
+  unchanged, **while the service account (`KC_ADMIN_*`) is configured**. With it
+  unset, the tick only writes the app's mirror, and the next login reverts it to
+  what Keycloak says. You only need any of this if you want `role` mode.
 
 ### The service account that makes admin-console edits real
 

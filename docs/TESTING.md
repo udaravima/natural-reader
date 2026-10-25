@@ -23,6 +23,7 @@ spot a feature that shipped without coverage.
   - [Budgets: service + enforcement](#budgets-service--enforcement)
   - [Server-side routing through model_router](#server-side-routing-through-model_router)
   - [Security hardening (SEC fixes)](#security-hardening-sec-fixes)
+  - [Admin console v2, phase 1](#admin-console-v2-phase-1)
   - [Frontend: auth UI](#frontend-auth-ui)
   - [Frontend: chat streaming](#frontend-chat-streaming)
   - [Frontend: budget UX](#frontend-budget-ux)
@@ -38,10 +39,10 @@ spot a feature that shipped without coverage.
 # Backend — REQUIRES Postgres up (conftest migrates natural_reader_test on a
 # real connection; without the DB every test errors, not skips).
 podman-compose up -d postgres          # or: env -u XDG_DATA_HOME .venv/bin/podman-compose ...
-.venv/bin/python -m pytest server/tests/ -q          # 2131 passed, 16 skipped, 2 deselected @ 2026-10-25
+.venv/bin/python -m pytest server/tests/ -q          # 2278 passed, 16 skipped, 2 deselected @ 2026-10-26
 
 # Frontend (vitest, jsdom — no services needed)
-npx vitest run                                       # 1011 passed (106 files) @ 2026-10-25
+npx vitest run                                       # 1115 passed (117 files) @ 2026-10-26
 
 # Lint
 npm run lint
@@ -229,7 +230,7 @@ no `_UsageTap` any more; usage accounting lives in the orchestrator.
 
 | File | Case | Asserts |
 |---|---|---|
-| `test_inference_budget.py` | *(suite)* | record/spent/state/over/effective/admin_usage: UTC-day computation (Python, not SQL), per-user override vs deployment default, aggregation |
+| `test_inference_budget.py` | *(suite)* | record/spent/state/over/effective/admin_usage: day computed in Python, not SQL, in the deployment's timezone; per-user override vs deployment default, aggregation. Since admin console v2: `reset_is_the_next_local_midnight`, `reset_on_the_night_the_clocks_change` (New York, 2026-11-01, reset at 05:00Z), `usage_counts_toward_the_deployment_day` (20:00Z in Colombo is the next day), `admin_usage_window_starts_on_the_deployment_day` |
 | `test_chat_turns.py` | budget_already_spent_is_429_with_reset_time | 429 pre-check with `{remaining_tokens, reset_at}` detail, before a turn is even claimed |
 | `test_inference_router.py` | models_includes_budget / models_budget_absent_when_unlimited | budget state rides `GET /v1/inference/models` |
 | `test_chat_orchestrator.py` | budget_runs_out_between_steps | checked before **every** step, not just once up front |
@@ -275,6 +276,35 @@ document routers over real Postgres.
 | `LibraryPage.test.jsx` | chips show the version a project is on and the name opens the project; × asks first when there are several versions; the "has a newer version" line with Open current |
 | `OldVersionBanner.test.jsx`, `useVersionStatus.test.jsx`, `versions.test.js` | the banner's text and Open current, nothing when current, in normal flow (never over the toolbar); the hook refetches on a new version; the rule "old somewhere and current nowhere" (the README case shows no banner) |
 | `ActivityTab.test.jsx` | the four version events render as sentences |
+
+### Admin console v2, phase 1
+
+The sections, the one row pattern, the Overview, the deployment timezone and the Docling limits (spec:
+[superpowers/specs/2026-10-25-admin-console-v2-design.md](superpowers/specs/2026-10-25-admin-console-v2-design.md)).
+Backend counts below are collected cases (parametrized ones expanded).
+
+| File | Pins |
+|---|---|
+| `test_console_settings.py` (10) | the row pattern: console value beats env beats default; `narrow` keeps a console value inside the env's bound; an invalid env value is warned once and ignored; an unusable stored value is ignored; **a save keeps keys it never loaded** (a second admin's, or a newer version's); a reset removes only that key and the last reset deletes the row; a refused value saves nothing; one audit line per changed setting; the view's shape |
+| `test_deployment_settings.py` (12) | zone names are checked against the zone database (a path like `../etc/passwd` is refused); UTC with nothing set; `TZ`; the console wins over `TZ`; a POSIX `TZ` string is ignored with one warning |
+| `test_deployment_info.py` (5) | the read-only rows: **a secret never appears** (set / not set only); a URL loses user info, query and fragment; each row names its variable or "default"; values come from the env it is given; a malformed URL shows a placeholder, not a 500 |
+| `test_console_overview.py` (23) | each check's states; **a check that hangs answers "Didn't answer within 5 seconds." while the others still answer**; a check that raises names the kind of failure; fixed order; the real dimension-mismatch error still carries the count; a local Ollama model that isn't loaded is "Unknown", never its maximum; an Ollama cloud model gets its maximum; the project-turn estimate; the embedding model isn't listed as a chat model; **a malformed `INFERENCE_*` value costs one line, not the page**; the route is admin-only |
+| `test_admin_settings.py` (7) | `GET`/`PUT /v1/admin/settings/{section}`: shape, set then reset the timezone, an invalid zone is a 422 `invalid_setting` naming the setting and writing nothing, an unknown section is 404, an unknown body field is 422, a member gets 403, a malformed URL in the env doesn't break the GET |
+| `test_docling_limits.py` (51) | parsing of each setting and its env text; narrowing (presets intersected, switches ANDed, the lower page limit, `role` wins over `readers`); `check` for every refusal and its `option`; **OCR off refuses Accurate**; `user_view`; the info rows |
+| `test_convert_limits.py` (18) | the rules at `POST /v1/docs/{id}/convert`: **an unknown page count is counted from the stored file** (a long file is refused, a short one isn't), a recorded count is used without opening the file, no page limit means the file isn't opened, an uncountable file is left to Docling; `role` mode refuses a reader without the role and lets role holders and admins through; **a `documents`-scoped token carries the role**; **an env bound refuses what the console allowed**; a bad range is a 422; `GET /v1/settings/docling` and its auth. Not covered: the "Only people with the Docling role" refusal was never walked with a second signed-in user |
+| `test_capabilities.py`, `test_auth_token_scopes.py`, `test_admin_router.py` | `docling` is read from the realm roles; the `documents` scope lets `docling` through and `read_aloud` doesn't; `PATCH` accepts the `docling` capability |
+| `test_llm_ollama.py` | `loaded_context_lengths` reads `/api/ps` `context_length` and is empty on any error |
+| `test_chat_context.py`, `test_chat_orchestrator.py` | the "Today is" line falls back to the deployment zone; a turn gets the deployment zone as its default; UTC when it can't be read |
+| `AdminConsole.test.jsx`, `ConsoleShell.test.jsx` | the section list and the phone picker; arrow keys, Home, End and wrap; **the unsaved-changes prompt** (Keep editing, Discard changes, Escape, focus); sections open from Overview's links; the moved sections behave as before |
+| `useSectionSettings.test.js`, `SettingRow.test.jsx` | drafts, one Save, reset shows the fallback before anything is sent, **edits made during an in-flight save survive**, one save at a time; the source line wording and **Use the server setting** |
+| `OverviewSection.test.jsx`, `DeploymentSection.test.jsx`, `DocumentsSection.test.jsx` | the states and **Check again**; the timezone row and the read-only list; Documents: who may convert, presets (at least one), OCR (**Accurate off with it**), the page limit's validation, narrowing by the env shown with its reason |
+| `DoclingConvertDialog.limits.test.jsx`, `useConvertLimits.test.js` | the dialog greys out what is off with "Turned off by your admin"; Convert waits for a page range that fits the limit; a person who may not convert sees why |
+| `zoneFormat.test.js` | a day formatted in the deployment's zone; the zone list |
+| `phoneTargets.test.jsx` | **44 px targets below `md`** in the console's sections (class assertions: jsdom has no layout; the measured heights are in the walk below) |
+
+**Walked in the running app on 2026-10-26** (scratch database, `AUTH_ENABLED=false`, headless Chromium, desktop and 390 px):
+Overview and every check state; `/api/ps`'s `context_length` is a number on the installed Ollama; Check again; the timezone, the unsaved prompt and People's dates in Colombo; Documents with OCR off and a 2-page limit; the Convert dialog's greyed options and its page-range gate, then a real 2-page conversion; the server's 403s by `curl` (6 pages, Accurate with OCR off, forced OCR); the phone picker; keyboard; a canary `SESSION_SECRET` found nowhere in the page or the API payload. The 44 px check failed on the moved sections the first time and was fixed in `1100e71`.
+**Not walked:** a non-admin refused by the `role` rule (needs a second signed-in user: tests only); the Context windows row of a *loaded* local chat model (the `/api/ps` shape was confirmed live, the row is tested with fakes); dark mode.
 
 ### Frontend: auth UI
 

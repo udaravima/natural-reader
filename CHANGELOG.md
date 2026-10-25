@@ -4,6 +4,66 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **The admin console is split into sections.** **Overview**, **People**,
+  **Projects**, **Documents**, **Chat**, **Defaults for users**, **Usage**
+  and **Deployment**, in a list down the side (a picker on a phone), the way
+  Settings is laid out. People, Projects, Chat, Defaults for users and Usage
+  work as before; they moved. Open the console with the shield button in the
+  header. It uses arrow keys, Home and End to move between sections, and its
+  buttons are at least 44 px tall on a phone.
+- **Overview checks that the deployment works.** One line each for model
+  providers, the reading model, context windows, embeddings, Docling and web
+  search, with a state (OK, Warning, Problem, Off) and a button to look
+  again. A check that hangs is cut off after 5 seconds and says so, without
+  holding up the others. **Context windows** lists each chat model with its
+  window and whether a project-chat turn fits in it. It is read from the
+  provider, or from Ollama for a model that is loaded right now.
+- **One look for every console setting.** A setting shows where its value
+  comes from: **Set here.**, **From the server setting** `NAME`, or **The
+  default.**. **Use the server setting** drops what you set. A section has one
+  **Save**, and leaving it with unsaved changes asks first (**Keep editing** or
+  **Discard changes**). Every saved change is written to the audit log.
+- **A timezone for the deployment.** Under **Deployment**, pick the zone the
+  daily token budget, the usage days and the chat's "Today is" line use. It
+  applies from the next request. Without a choice here, the `TZ` variable is
+  used, then UTC (before this, these were always UTC). The same section lists
+  the server's own values (providers, storage, Docling, web search, workers)
+  read-only; secrets only show as set or not set.
+- **Limits on Docling conversion.** Under **Documents**, an admin chooses who
+  may convert (everyone who can read, or only people with the new `docling`
+  role; admins always can), which presets are offered, whether OCR and picture
+  descriptions are allowed, and the most pages one conversion may cover. The
+  convert dialog greys out what is off with "Turned off by your admin", and
+  Convert waits for a page range that fits. The server enforces the same
+  rules when a conversion starts. When OCR is off, **Accurate** is off too,
+  because it runs OCR. `DOCLING_CONVERT_BY`, `DOCLING_PRESETS`,
+  `DOCLING_ALLOW_OCR`, `DOCLING_ALLOW_PICTURE_DESCRIPTION` and
+  `DOCLING_MAX_PAGES` set the starting values; the console can only narrow
+  what they allow.
+- **A `docling` role.** Tick it for a person under **People**, or give them
+  the `docling` realm role in Keycloak. It only matters when conversion is
+  limited to that role. A personal access token with the `documents` scope
+  carries it.
+
+### Upgrade notes
+
+- No database migration.
+- **An existing Keycloak realm needs the `docling` realm role created by hand**
+  (Realm roles, Create role, name `docling`). The realm export only seeds a
+  new database, so a running realm doesn't get it. Until it exists, ticking
+  **docling** under **People** fails at the Keycloak write while the
+  Keycloak admin client is configured. You only need this if you want
+  "only people with the Docling role". A role given in Keycloak applies at the
+  person's next login; one ticked under **People** applies at once.
+- `tzdata` is added to `requirements.txt` so Windows has a zone database.
+- Nothing changes until an admin changes it: conversion stays open to
+  everyone who can read, with every preset, OCR and picture descriptions on,
+  and no page limit.
+- Not yet in the console: choosing the reading model or context sizes,
+  changing the embedding model, and usage by model. Those are later phases.
+
 ### Fixed
 
 - **A file opened from a folder can be indexed.** Index on a Markdown or

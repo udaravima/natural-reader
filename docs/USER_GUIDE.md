@@ -182,8 +182,25 @@ screenshot, or just cleaning house.
 ## Admin console (admins only)
 
 If you see a **shield** button in the top view switcher (Reader / Chat /
-Library / Admin), you're an admin — click it to open the Admin console. It
-lists every account with buttons per user:
+Library / Admin), you're an admin — click it to open the Admin console. (It's
+that button only; the profile menu has no Admin entry.) It opens on
+**Overview** and is split into sections, in a list down the left side. On a
+phone the list becomes a picker at the top. With the list focused, **Up** and
+**Down** move between sections (wrapping at the ends), **Home** and **End**
+jump to the first and last.
+
+| Section | What it holds |
+|---|---|
+| **Overview** | Whether the deployment works right now ([below](#overview-does-it-work-right-now)) |
+| **People** | Every account, enrollment, roles, budgets, project limits |
+| **Projects** | Every project, ownerless ones, taking one over |
+| **Documents** | Limits on Docling conversion ([below](#documents-what-a-conversion-may-use)) |
+| **Chat** | The assistant's profile and the web search mode |
+| **Defaults for users** | What read-aloud, voice, speed and thinking show for someone who hasn't chosen them |
+| **Usage** | Token use per user and per day |
+| **Deployment** | The deployment timezone, and the server's own values read-only |
+
+**People** lists every account with buttons per user:
 
 | Button | Effect |
 |---|---|
@@ -210,16 +227,16 @@ Notes:
 - Per-user inference budget and the usage dashboard are server-side already;
   the UI for them is a planned follow-up (admins can currently manage budgets
   only via the API).
-- The Admin console's **Deployment config** section lists every configured
-  model provider (name, kind, host, and either how many models it has or
-  "unreachable") so you can see at a glance what's wired up without reading
-  `.env` on the server — API keys are never shown here or anywhere else. The
-  row that used to say "Ollama URL" is now **"Embeddings (Ollama) URL"**,
-  since that's the only thing that setting still controls (chat models come
-  from the provider list above it). There's still no button here to add or
-  change a provider — that's a `.env` + restart task for whoever runs the
-  server.
-- The **Assistant** section sets the assistant's profile: its name,
+- The **Deployment** section lists every configured model provider (name,
+  kind, host, and either how many models it has or "unreachable") so you can
+  see at a glance what's wired up without reading `.env` on the server — API
+  keys are never shown here or anywhere else. The row that used to say "Ollama
+  URL" is now **"Embeddings (Ollama) URL"**, since that's the only thing that
+  setting still controls (chat models come from the provider list above it).
+  There's still no button here to add or change a provider — that's a `.env` +
+  restart task for whoever runs the server. The [full list](#deployment-the-timezone-and-the-servers-own-values)
+  is below.
+- The **Assistant profile** (in **Chat**) sets the assistant's profile: its name,
   personality, tone and house rules (for example "You are Ada, the
   reading-room assistant. Answer warmly and briefly, in British English.").
   - It goes first in every chat, from the next message on; the app's own
@@ -234,7 +251,7 @@ Notes:
     shows about how many tokens), and up to 8,000 characters are allowed.
   - Don't name the app's tools (`web_search` and so on): describe the
     behaviour you want. The section warns you if you do.
-- **Chat options** has one setting so far, **Web search**: **Ask first** (the
+- **Chat options** (also in **Chat**) has one setting so far, **Web search**: **Ask first** (the
   default: the assistant can only offer a search and the person says yes on a
   card), **Search without asking**, or **Off**.
   - A change applies from each person's next message and shows a notice
@@ -247,6 +264,109 @@ Notes:
     the section says *Web search isn't set up on this server (SEARXNG_URL).*
   - After a change, the Assistant section's **What the model receives** updates
     to show the rules a document chat gets in that mode.
+
+### Settings that share one look
+
+Every setting in **Chat options**, **Documents** and **Deployment** works the
+same way:
+
+- A line under the setting says where its value comes from: **Set here.**
+  (you chose it in the console), **From the server setting** `NAME` (the
+  deployer's `.env`), or **The default.**
+- **Use the server setting** appears once you've set one here. It removes
+  your choice, so the deployer's value (or the default) applies again.
+- A section has **one Save**, for everything you changed in it. Nothing is
+  written until you press it. **Discard changes** puts the section back as saved.
+- Leaving a section with unsaved changes (another section, a phone's picker, or
+  Back to reader) asks first: **Keep editing** stays and keeps your changes,
+  **Discard changes** leaves without them. **Esc** is the same as Keep editing.
+- A change applies at once, on every worker: the next request, message or
+  conversion reads it. There is no restart.
+- **The console can only narrow what the server allows.** If `.env` allows
+  only the Fast and Standard presets, ticking Accurate here changes nothing,
+  and the section says the server setting turned it off.
+- Every saved change writes a line to the audit log: who, which setting, the
+  value before and after.
+
+### Overview: does it work right now?
+
+**Overview** runs a check for each part of the deployment that can be quietly
+broken, and shows a state for each: **OK**, **Warning**, **Problem** or
+**Off**, then one line of why. **Check again** runs them again. A check that
+hangs (a provider or a search server that accepts the connection and then goes
+silent) is cut off after 5 seconds with "Didn't answer within 5 seconds.", and
+the others still show. A line's **Open …** link jumps to the section that
+changes it.
+
+| Check | What it looks at |
+|---|---|
+| **Model providers** | Which providers answer, and how many models each lists |
+| **Reader** | The model that reads documents for the assistant: is it pulled on its provider (`READER_MODEL`)? A **Warning** means it is only the built-in fallback |
+| **Context windows** | Each chat model's window, where the number comes from, and whether a project-chat turn fits in it |
+| **Embeddings** | Whether the embedding model answers, and returns the width (768) the database holds; and how many documents are waiting to be rebuilt |
+| **Docling** | Whether conversion is on |
+| **Web search** | Whether the search server answers |
+
+A local Ollama model shows **Unknown** for its window until it has been loaded
+once; Ollama chooses the size when it loads the model. After one chat message to
+it, **Check again** reads **Loaded now (Ollama)** with the real number. A
+cloud model shows its maximum.
+
+### Documents: what a conversion may use
+
+Docling turns a PDF (or Word, PowerPoint, HTML, images) into Markdown. It is
+the heaviest job the server does, so **Documents** lets you narrow it. It
+appears only as a limit: the server's `DOCLING_ENABLED` (see the Deployment
+list) still decides whether conversion exists at all.
+
+| Setting | Choices | Server setting (default) |
+|---|---|---|
+| **Who may convert** | **Everyone who can read**, or **Only people with the Docling role** (admins always can) | `DOCLING_CONVERT_BY` (`readers`) |
+| **Presets** | Fast, Standard, Accurate; at least one | `DOCLING_PRESETS` (`fast,standard,accurate`) |
+| **Allow OCR** | on / off | `DOCLING_ALLOW_OCR` (`true`) |
+| **Allow picture descriptions** | on / off | `DOCLING_ALLOW_PICTURE_DESCRIPTION` (`true`) |
+| **Largest conversion** | Pages one conversion may cover; empty or 0 = no limit | `DOCLING_MAX_PAGES` (`0`) |
+
+- **Accurate runs OCR, so it's off whenever OCR is off.** The section says so
+  and the stored choice of presets is kept: allow OCR again and Accurate comes
+  back.
+- **The Docling role** is the `docling` capability. Give it to someone with
+  its checkbox under **People** (it applies at once), or as a realm role in
+  Keycloak (it applies at their next login). See
+  [IDENTITY_AND_ROLES.md](IDENTITY_AND_ROLES.md#the-docling-capability).
+- Under the settings, the section lists the server's upload limits
+  (`PDF_UPLOAD_MAX_MB`, `TEXT_UPLOAD_MAX_MB`); those are read-only.
+- **What people see.** In the reader's **Convert** dialog, an option that is
+  off is greyed out with **Turned off by your admin**. With a page limit, Convert
+  stays disabled with "This server converts at most N pages at a time. Choose a
+  page range of N pages or fewer." until the range fits. A person who isn't
+  allowed to convert at all sees "Only people your admin has given the Docling
+  role can convert documents on this server." instead.
+- **The server enforces it, not just the dialog.** A request that breaks a rule
+  (a script, an old tab) is refused with 403 `convert_not_allowed` and a reason
+  naming the rule; nothing starts converting.
+- A PDF whose page count isn't known yet is counted from the stored file, so
+  neither a 600-page file slips past a limit nor a 3-page one is refused.
+
+### Deployment: the timezone and the server's own values
+
+**Timezone** decides where a day starts and ends for three things: the daily
+token budget (it resets at the next **local** midnight, including the night
+the clocks change), the days in **Usage**, and the "Today is …" line a chat
+falls back to when the browser sent no zone. It also sets the day shown beside
+each account in **People**. Pick a zone by its name (`Asia/Colombo`). Its source
+line reads **Set here.**, **From the server setting** `TZ`, or **The default.**
+(UTC; before this setting existed these days were always UTC). It applies from
+the next request.
+
+Under **Server settings (read-only)** the section lists what the server runs
+with and which variable sets each: model providers, allowed models, chat
+timeout, daily token budget, reading model, embedding model and server,
+document storage, Docling, web search server, and server workers. These can
+only be changed in `.env` on the server, with a restart. **Nothing secret
+shows:** the session secret, sign-in client secret and Keycloak admin client
+secret read only **set** or **not set**, and a URL never shows a password or
+query.
 
 **Projects.** Every project, with its owners and counts. **Ownerless only**
 shows projects whose last Owner was deleted; **Add me as Owner** takes one
@@ -524,8 +644,9 @@ look things up here. If the server has no search engine set up, no card appears.
 
 ## The daily token budget
 
-Your deployment may cap how many tokens each user may spend per day (UTC day —
-resets at UTC midnight). The chat sidebar shows **"N tokens left today"**
+Your deployment may cap how many tokens each user may spend per day (a day in
+the deployment's timezone, UTC unless an admin set another under **Deployment**
+— it resets at that zone's midnight). The chat sidebar shows **"N tokens left today"**
 while you chat.
 
 A reply you stop partway through, or one that fails, still counts against
@@ -591,10 +712,11 @@ project from the chat.
 Reload the page — the app refreshes your role when it re-checks your account.
 
 **Budget says "0 tokens left" but I haven't chatted today.**
-The day is measured in **UTC**, not your timezone — "today" can end (or not
-have started) at what feels like an odd hour. The reset time is always shown
+The day is measured in the **deployment's** timezone (UTC unless an admin set
+another), not yours — "today" can end (or not have started) at what feels like
+an odd hour. The reset time is always shown
 in the toast and the sidebar.
 
 ---
 
-*UI references: `src/components/settings/SettingsDialog.jsx`, `src/components/ProfileMenu.jsx`, `src/components/account/ProfilePanel.jsx`, `src/components/account/AccountPanel.jsx`, `src/components/chat/ChatSidePanel.jsx`, `src/components/chat/ScopeChip.jsx`, `src/components/chat/WebOfferCard.jsx`, `src/components/projects/ProjectPage.jsx`, `src/components/admin/ChatOptionsSection.jsx`, `src/components/NarrationMiniPlayer.jsx`, `src/components/admin/AdminConsole.jsx`, `src/components/Header.jsx`, `src/components/ViewSwitcher.jsx`, `src/components/chat/InferenceRow.jsx`, `src/components/ChatSidebar.jsx`.*
+*UI references: `src/components/settings/SettingsDialog.jsx`, `src/components/ProfileMenu.jsx`, `src/components/account/ProfilePanel.jsx`, `src/components/account/AccountPanel.jsx`, `src/components/chat/ChatSidePanel.jsx`, `src/components/chat/ScopeChip.jsx`, `src/components/chat/WebOfferCard.jsx`, `src/components/projects/ProjectPage.jsx`, `src/components/admin/ChatOptionsSection.jsx`, `src/components/NarrationMiniPlayer.jsx`, `src/components/admin/AdminConsole.jsx`, `src/components/admin/ConsoleShell.jsx`, `src/components/admin/OverviewSection.jsx`, `src/components/admin/DocumentsSection.jsx`, `src/components/admin/DeploymentSection.jsx`, `src/components/DoclingConvertDialog.jsx`, `src/components/Header.jsx`, `src/components/ViewSwitcher.jsx`, `src/components/chat/InferenceRow.jsx`, `src/components/ChatSidebar.jsx`.*
