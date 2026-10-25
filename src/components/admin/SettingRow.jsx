@@ -1,0 +1,64 @@
+/**
+ * Admin console: the row every setting shares (admin console v2 spec §3). A label,
+ * its help, the control (children), where the value comes from, and a way back to
+ * the server's own value, so no screen leaves a setting the admin can't undo.
+ * SectionSaveBar is the one Save a section has; rows only draft (useSectionSettings).
+ */
+
+const SOURCE_LINE = {
+  admin: () => 'Set here.',
+  env: (envName) => <>From the server setting <code>{envName}</code>.</>,
+  default: () => 'The default.',
+};
+
+export function SettingRow({ theme, id, label, help, source, envName, canUseServer, onUseServer, children }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor={id} className={`text-xs font-bold ${theme.text}`}>{label}</label>
+      {help && <p id={`${id}-help`} className={`text-[10px] ${theme.textSecondary}`}>{help}</p>}
+      {children}
+      <div className="flex flex-wrap items-center gap-3 text-[10px]">
+        <span id={`${id}-source`} className={theme.textSecondary}>
+          {(SOURCE_LINE[source] ?? (() => source))(envName)}
+        </span>
+        {canUseServer && (
+          <button
+            type="button"
+            onClick={onUseServer}
+            className="min-h-11 md:min-h-0 underline text-blue-500"
+          >
+            Use the server setting
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function SectionSaveBar({ theme, dirty, saving, error, onSave, onDiscard }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-3 text-xs">
+        <button
+          type="button"
+          onClick={onSave}
+          disabled={!dirty || saving}
+          className="min-h-11 md:min-h-0 px-3 py-1 rounded bg-blue-500 text-white font-bold disabled:opacity-40"
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        {dirty && (
+          <button
+            type="button"
+            onClick={onDiscard}
+            disabled={saving}
+            className={`min-h-11 md:min-h-0 underline ${theme.textSecondary} disabled:opacity-40 disabled:no-underline`}
+          >
+            Discard changes
+          </button>
+        )}
+      </div>
+      {error && <p role="alert" className="text-xs text-red-500">{error}</p>}
+    </div>
+  );
+}
