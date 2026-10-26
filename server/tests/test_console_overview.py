@@ -204,6 +204,32 @@ async def test_the_reader_hint_counts_only_the_models_offered(db_conn):
     assert c.summary == "The chat model of each conversation (the default)."
 
 
+class _HangingList(_Router):
+    """A router whose model listing never answers; each provider still answers for itself."""
+    async def list_models(self):
+        await asyncio.sleep(10)
+
+
+async def test_chat_reader_stays_ok_when_a_provider_hangs(db_conn, monkeypatch):
+    monkeypatch.setattr(console_overview, "CHECK_TIMEOUT_S", 1.0)
+    started = time.monotonic()
+    c = (await _by_id(db_conn, _HangingList(_Provider("local"))))["reader"]
+    assert time.monotonic() - started < 2
+    assert (c.state, c.summary) == ("ok", "The chat model of each conversation (the default).")   # no hint, no error
+
+
+async def test_chat_reader_stays_ok_when_config_is_malformed(db_conn):
+    c = (await _by_id(db_conn, _router(), {"INFERENCE_DAILY_TOKEN_BUDGET": "lots"}))["reader"]
+    assert (c.state, c.summary) == ("ok", "The chat model of each conversation (the default).")
+
+
+async def test_a_named_reader_stays_ok_when_the_model_list_hangs(db_conn, monkeypatch):
+    monkeypatch.setattr(console_overview, "CHECK_TIMEOUT_S", 1.0)
+    # only the reader's own provider decides a named reader's state
+    c = (await _by_id(db_conn, _HangingList(_Provider("local")), {"READER_MODEL": "m"}))["reader"]
+    assert (c.state, c.summary) == ("ok", "m, from READER_MODEL.")
+
+
 async def test_a_named_reader_is_ok_with_where_it_was_set(db_conn):
     c = (await _by_id(db_conn, _router(), {"SUMMARIZE_MODEL": "m"}))["reader"]
     assert (c.state, c.summary) == ("ok", "m, from SUMMARIZE_MODEL.")
@@ -410,10 +436,9 @@ def test_a_local_ollama_model_not_loaded_gets_the_deployments_size():
 
 
 def test_with_no_size_set_a_local_ollama_model_gets_the_default_clamped():
-    unset = "16,384 tokens unless a person sets their own in Settings (no deployment size is set)."
-    assert _win(_ollama()) == (16384, unset)
-    low = InferenceLimits(num_ctx_max=8192, keep_alive_max_s=1800)
-    assert _win(_ollama(), limits=low) == (8192, unset)
+    assert _win(_ollama()) == (16384, "16,384 tokens unless a person sets their own in Settings (no deployment size is set).")
+    low = InferenceLimits(num_ctx_max=8192, keep_alive_max_s=1800)   # P10: the copy names the number that applies
+    assert _win(_ollama(), limits=low) == (8192, "8,192 tokens unless a person sets their own in Settings (no deployment size is set).")
 
 
 def test_sizing_follows_the_ollama_not_its_host():   # P4: a remote GPU box on a public name still loads at 4,096

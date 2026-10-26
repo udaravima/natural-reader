@@ -102,19 +102,30 @@ async def _offered_models(llm, env: Mapping[str, str], ms: model_settings.Models
     return model_settings.offered(model_router.offered_chat_models(models, embed_model), ms)
 
 
+_QUOTA_HINT = (" Reader calls then count against a cloud model's quota; a small local reader, chosen in Models, "
+               "keeps them off it.")
+
+
+async def _quota_hint(llm, ms: model_settings.ModelsSettings, env: Mapping[str, str]) -> str:
+    """The cloud-quota hint for a reader that is the chat model: a cost question (is_local), not whether a model
+    needs a context size (sizes_context). Best effort under its own bound: a provider that hangs, or a malformed
+    INFERENCE_* value, costs the hint and never the reader line, which is fine without it."""
+    try:
+        offered = await asyncio.wait_for(_offered_models(llm, env, ms), timeout=CHECK_TIMEOUT_S / 2)
+        if any(not model_settings.is_local(llm.providers[m.provider].config, m.name, ms.provider_locality)
+               for m in offered):
+            return _QUOTA_HINT
+    except (Exception, asyncio.TimeoutError):
+        logger.warning("The Overview's reader line couldn't tell whether a cloud model is offered", exc_info=True)
+    return ""
+
+
 async def _reader(llm, ms: model_settings.ModelsSettings, env: Mapping[str, str]) -> Check:
     model = ms.reader
     if model == "chat":
         text = ("The chat model of each conversation (the default)." if ms.reader_source == "default"
                 else "The chat model of each conversation.")
-        # A reader that is the chat model spends the chat model's quota. That is a cost question (is_local), not
-        # whether the model needs a context size (sizes_context).
-        offered = await _offered_models(llm, env, ms)
-        if any(not model_settings.is_local(llm.providers[m.provider].config, m.name, ms.provider_locality)
-               for m in offered):
-            text += (" Reader calls then count against a cloud model's quota; a small local reader, chosen in "
-                     "Models, keeps them off it.")
-        return _check("reader", "ok", text)
+        return _check("reader", "ok", text + await _quota_hint(llm, ms, env))
     try:
         provider, name = llm.resolve(model)
     except UnknownModel:
@@ -218,9 +229,8 @@ def window_for(model: ModelInfo, loaded: dict[str, int], ms: model_settings.Mode
             return size, {"model": "The context size set for this model in Models.",
                           "admin": "The deployment's context size, set in Models.",
                           "env": "The deployment's context size, from INFERENCE_LOCAL_NUM_CTX."}[where]
-        return (clamp(model_settings.DEFAULT_LOCAL_NUM_CTX, None, limits)[0],
-                f"{model_settings.DEFAULT_LOCAL_NUM_CTX:,} tokens unless a person sets their own in Settings "
-                "(no deployment size is set).")
+        window = clamp(model_settings.DEFAULT_LOCAL_NUM_CTX, None, limits)[0]
+        return window, f"{window:,} tokens unless a person sets their own in Settings (no deployment size is set)."
     if model.kind == "ollama" and is_ollama_cloud(model.name) and maximum:
         return maximum, "The model's maximum (Ollama cloud)."
     if maximum:
