@@ -102,23 +102,8 @@ async def record_usage(conn, user_id: str, prompt_tokens: int, eval_tokens: int,
 
 
 async def admin_usage(conn, days: int = 7) -> list[dict]:
-    """One dict per user per day, summed over model and kind."""
-    since = await today(conn) - timedelta(days=days - 1)
-    cur = await conn.execute(
-        "SELECT u.email, s.user_id, s.day, SUM(s.prompt_tokens)::bigint, SUM(s.eval_tokens)::bigint, "
-        "SUM(s.requests)::bigint "
-        "FROM inference_usage s JOIN users u ON u.id = s.user_id "
-        "WHERE s.day >= %s GROUP BY u.email, s.user_id, s.day ORDER BY s.day DESC, u.email",
-        (since,),
-    )
-    keys = ["email", "user_id", "day", "prompt_tokens", "eval_tokens", "requests"]
-    out = []
-    for r in await cur.fetchall():
-        d = dict(zip(keys, r))
-        d["user_id"] = str(d["user_id"])
-        d["tokens"] = d["prompt_tokens"] + d["eval_tokens"]
-        out.append(d)
-    return out
+    """One dict per user per day, summed over model and kind: the `user_day` grouping (the route's old shape)."""
+    return await admin_usage_grouped(conn, days=days, group="user_day", user_id=None, model=None)
 
 
 _GROUPS = ("user_day", "model", "user", "day")

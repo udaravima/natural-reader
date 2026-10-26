@@ -131,7 +131,7 @@ async def test_admin_usage_window_starts_on_the_deployment_day(db_conn, monkeypa
     for day in (date(2026, 10, 26), date(2026, 10, 25)):
         await db_conn.execute("INSERT INTO inference_usage (user_id, day, model, kind, prompt_tokens, eval_tokens, "
                               "requests) VALUES (%s, %s, '', '', 1, 1, 1)", (U, day))
-    assert [r["day"] for r in await ib.admin_usage(db_conn, days=1)] == [date(2026, 10, 26)]
+    assert [r["day"] for r in await ib.admin_usage(db_conn, days=1)] == ["2026-10-26"]
 
 
 async def test_record_usage_splits_by_model_and_kind(db_conn):
@@ -187,4 +187,4 @@ async def test_admin_usage_default_shape_sums_models(db_conn):
     assert len(rows) == 1
     assert set(rows[0]) == {"email", "user_id", "day", "prompt_tokens", "eval_tokens", "requests", "tokens"}
     assert (rows[0]["prompt_tokens"], rows[0]["eval_tokens"], rows[0]["requests"], rows[0]["tokens"]) == (13, 7, 2, 20)
-    assert isinstance(rows[0]["user_id"], str) and isinstance(rows[0]["day"], date)
+    assert isinstance(rows[0]["user_id"], str) and isinstance(rows[0]["day"], str)
