@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NUM_CTX_OPTIONS, KEEP_ALIVE_OPTIONS, withinLimit, shownValue } from './inferenceLimits';
+import { NUM_CTX_OPTIONS, KEEP_ALIVE_OPTIONS, withinLimit, shownValue, serverContextSize, withAutoLabel } from './inferenceLimits';
 
 describe('inference limits in the Settings page (v2.4 Task F)', () => {
     it('offers only context sizes up to the limit', () => {
@@ -21,5 +21,28 @@ describe('inference limits in the Settings page (v2.4 Task F)', () => {
         const ka = withinLimit(KEEP_ALIVE_OPTIONS, 1800, 'keepAlive');
         expect(shownValue('-1', ka, 'keepAlive')).toBe('30m');
         expect(shownValue('1h', ka, 'keepAlive')).toBe('30m');
+    });
+});
+
+describe('the context size the server will use (admin console v2, Task 8)', () => {
+    it('reads the server\'s snake_case context_size into camelCase', () => {
+        expect(serverContextSize({ context_size: { fixed: 8192, auto: 16384 } }))
+            .toEqual({ fixedNumCtx: 8192, autoNumCtx: 16384 });
+        expect(serverContextSize({ context_size: { fixed: null, auto: 16384 } }))
+            .toEqual({ fixedNumCtx: null, autoNumCtx: 16384 });
+    });
+
+    it('has none for a model the server does not size (cloud, openai) or a malformed value', () => {
+        expect(serverContextSize({ id: 'x' })).toBeNull();
+        expect(serverContextSize(undefined)).toBeNull();
+        expect(serverContextSize({ context_size: null })).toBeNull();
+        expect(serverContextSize({ context_size: { fixed: null, auto: 'big' } })).toBeNull();
+    });
+
+    it('labels the Auto option with the size, leaving other options alone', () => {
+        const out = withAutoLabel(NUM_CTX_OPTIONS, 16384);
+        expect(out[0]).toEqual(['auto', 'Auto (16,384 on this server)']);
+        expect(out.slice(1)).toEqual(NUM_CTX_OPTIONS.slice(1));
+        expect(withAutoLabel(NUM_CTX_OPTIONS, null)).toBe(NUM_CTX_OPTIONS);
     });
 });

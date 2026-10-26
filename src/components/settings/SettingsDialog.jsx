@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { KOKORO_VOICES } from '../../constants';
 import { PlayCircle, Square, Clock, VolumeX, Volume1, Volume2, Moon, Sun, Zap, X } from 'lucide-react';
 import { InferenceRow } from '../chat/InferenceRow';
-import { KEEP_ALIVE_OPTIONS, NUM_CTX_OPTIONS, shownValue, withinLimit } from '../../lib/inferenceLimits';
+import { KEEP_ALIVE_OPTIONS, NUM_CTX_OPTIONS, serverContextSize, shownValue, withAutoLabel, withinLimit } from '../../lib/inferenceLimits';
 import { AccountPanel } from '../account/AccountPanel';
 import { resolveForModel, patchForModel } from '../../hooks/inference';
 import { groupByProvider, migrateModelId, modelLabel, supportedKnobs } from '../../lib/modelIds';
@@ -247,7 +247,12 @@ function ChatPanel({ theme, ch }) {
     const configEntry = ch.availableModels.find((m) => m.id === configModel);
     const knobs = supportedKnobs(configEntry);
     // v2.4 Task F: only the context sizes and keep-alive times the server will honour.
-    const ctxOptions = withinLimit(NUM_CTX_OPTIONS, configEntry?.limits?.numCtxMax, 'numCtx');
+    // Admin console v2: a self-hosted Ollama model also says the size the server will load it with.
+    // A fixed size locks the row but leaves the person's own value stored: it applies again if the admin unsets it.
+    const serverCtx = serverContextSize(configEntry);
+    const ctxFixed = serverCtx?.fixedNumCtx ?? null;
+    const ctxOptions = withAutoLabel(
+        withinLimit(NUM_CTX_OPTIONS, configEntry?.limits?.numCtxMax, 'numCtx'), ctxFixed === null ? serverCtx?.autoNumCtx : null);
     const keepOptions = withinLimit(KEEP_ALIVE_OPTIONS, configEntry?.limits?.keepAliveMaxS, 'keepAlive');
     const input = inputClass(theme);
     return (
@@ -284,7 +289,8 @@ function ChatPanel({ theme, ch }) {
                             </>}
                     </select>
                     <div className="flex flex-col gap-2 mt-1">
-                        {knobs.numCtx && <InferenceRow theme={theme} label="Context window" disabled={!configModel}
+                        {knobs.numCtx && <InferenceRow theme={theme} label="Context window" disabled={!configModel || ctxFixed !== null}
+                            help={ctxFixed !== null ? `Set by your admin: ${ctxFixed.toLocaleString('en-US')} tokens.` : null}
                             value={shownValue(inf.numCtx === null ? 'auto' : String(inf.numCtx), ctxOptions, 'numCtx')}
                             onChange={(val) => setInf({ numCtx: val === 'auto' ? null : Number(val) })}
                             options={ctxOptions} />}

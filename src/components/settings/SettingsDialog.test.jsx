@@ -191,3 +191,49 @@ describe('SettingsDialog — deployment limits (v2.4 Task F)', () => {
     expect(ka.value).toBe('30m');
   });
 });
+
+describe('SettingsDialog — the context size the server will use (admin console v2, Task 8)', () => {
+  const local = (contextSize) => ({
+    id: 'ollama:gemma4', provider: 'ollama', kind: 'ollama', name: 'gemma4', capabilities: {},
+    limits: { numCtxMax: 32768, keepAliveMaxS: null },
+    ...(contextSize ? { context_size: contextSize } : {}),
+  });
+  const open = (model, stored = {}) => {
+    const b = bags({ tab: 'chat' });
+    b.chatSettings = { ...b.chatSettings, availableModels: [model], selectedModel: model.id,
+      inferenceByModel: { [model.id]: stored } };
+    render(<SettingsDialog {...b} />);
+    return b;
+  };
+
+  it('disables the row and says the admin set it when the size is fixed, keeping the stored value', () => {
+    const b = open(local({ fixed: 16384, auto: 16384 }), { numCtx: 8192 });
+    const ctx = screen.getByLabelText('Context window');
+    expect(ctx).toBeDisabled();
+    expect(screen.getByText('Set by your admin: 16,384 tokens.')).toBeInTheDocument();
+    expect(ctx).toHaveAccessibleDescription('Set by your admin: 16,384 tokens.');
+    expect(b.chatSettings.setInferenceByModel).not.toHaveBeenCalled();
+  });
+
+  it('formats a larger fixed size with a thousands separator', () => {
+    open(local({ fixed: 32768, auto: 16384 }));
+    expect(screen.getByText('Set by your admin: 32,768 tokens.')).toBeInTheDocument();
+  });
+
+  it('names the size Auto resolves to when nothing is fixed, and the row stays usable', () => {
+    open(local({ fixed: null, auto: 16384 }));
+    const ctx = screen.getByLabelText('Context window');
+    expect(ctx).not.toBeDisabled();
+    expect([...ctx.options].find((o) => o.value === 'auto').textContent).toBe('Auto (16,384 on this server)');
+    expect(screen.queryByText(/Set by your admin/)).toBeNull();
+  });
+
+  it('leaves the row as it was for a model without context_size', () => {
+    open(local(null));
+    const ctx = screen.getByLabelText('Context window');
+    expect(ctx).not.toBeDisabled();
+    expect([...ctx.options].find((o) => o.value === 'auto').textContent).toBe('Auto');
+    expect(screen.queryByText(/Set by your admin/)).toBeNull();
+  });
+});
+
