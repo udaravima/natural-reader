@@ -6,7 +6,7 @@
 
 ## 2026-10-26 — Admin console v2, phase 2a built and review-clean; the in-app walk is pending (START HERE)
 
-**Branch:** `feat/admin-console-v2-phase2a`, cut from `development` at `2fadfa2`. **Not merged, not pushed, not deployed, no version bump** (CHANGELOG entries sit under `[Unreleased]`). Plan: `docs/superpowers/plans/2026-10-26-admin-console-v2-phase2a.md`. Workspace ledger (rulings, every review finding and which ones were deferred): `.superpowers/sdd/2026-10-26-admin-console-v2-phase2a/progress.md`, with each task's brief, report and review diff beside it. Spec: `docs/superpowers/specs/2026-10-25-admin-console-v2-design.md`.
+**Branch:** `feat/admin-console-v2-phase2a`, cut from `development` at `2fadfa2`. **Not merged, not pushed, no version bump** (CHANGELOG entries sit under `[Unreleased]`). **Deployed anyway:** the live site has run this branch since 2026-10-26 11:39, from an image built at `0f9aec7` (before the final review); the final-review fixes are not deployed yet. Plan: `docs/superpowers/plans/2026-10-26-admin-console-v2-phase2a.md`. Workspace ledger (rulings, every review finding and which ones were deferred): `.superpowers/sdd/2026-10-26-admin-console-v2-phase2a/progress.md`, with each task's brief, report and review diff beside it. Spec: `docs/superpowers/specs/2026-10-25-admin-console-v2-design.md`.
 
 **Commits** (`git log --oneline 2fadfa2..HEAD`, newest first; the docs commit that carries this entry follows them):
 
@@ -70,6 +70,8 @@ Made during the build (P, ledger):
 
 Made in the final fix (the ledger reuses the numbers P11 and P12; these are the later ones):
 - **P11.** `sizes_context` ignores the admin's Local/Cloud mark; Cloud is cost-only. Sized = `ollama`-kind, model not `-cloud`/`:cloud`, host not ollama.com. Cost if wrong: a hosted, non-ollama.com Ollama endpoint marked Cloud is sent a `num_ctx` (it loads at our size instead of its own default).
+- **P12.** Saving a Reader that is not "chat" and not allowed by the deployer's allow-lists (`is_allowed`, as the chat path) is refused with 422 ("That model isn't in this deployment's model list."); the Overview's Reader line is an error when the reader, from any source, names such a model. Chat turns are unchanged. Cost: one check.
+- **P13.** A Context window row locked by an admin size shows that size; the person's stored value is kept and applies again when the admin clears it. Cost: one display line.
 
 ### What was NOT verified
 
