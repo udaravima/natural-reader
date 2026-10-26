@@ -124,6 +124,7 @@ def test_latest_suffix_does_not_matter():
     ("http://gpu.example.com:11434", "qwen3:8b", {}, False),
     ("http://[::1", "qwen3:8b", {}, False),                          # malformed: never an exception
     ("", "qwen3:8b", {}, False),
+    ("http://.:11434", "qwen3:8b", {}, False),                       # a bare dot is no host
 ])
 def test_is_local(url, name, override, local):
     cfg = ProviderConfig(name="gpu" if "gpu" in url else "ollama", kind="ollama", url=url, models=None)
