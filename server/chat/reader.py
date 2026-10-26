@@ -17,6 +17,11 @@ ended, to the `charge` callback the orchestrator wires up (ToolContext.charge, o
 module never touches the database. The charge records the provider's own token count when it sent one, else the
 chat steps' estimate (characters / 4, rounded up), against the daily budget the next step checks.
 
+The reader model is the console's Models setting, else READER_MODEL (or its older names), else the chat model itself
+("chat"): no second model to load into RAM. The orchestrator settles it once per turn (ToolContext.reader_cfg) and
+sizes the reader's context the way it sizes the chat's (services/model_settings.py): one `num_ctx` for every call of
+the turn, so Ollama doesn't reload the model between calls, and `fit_input_chars` cuts each batch to fit it.
+
 Logs carry counts and error types only, never source text or quotes.
 """
 from __future__ import annotations
@@ -34,18 +39,18 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from ..llm.router import Received, get_router
 from ..llm.types import CallSettings, Message, Usage
-from ..services.inference_limits import clamp, get_limits
 from .prompt import fence
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "llama3.2:3b"
 FACT_MAX_CHARS = 600      # a "fact" longer than this is a paragraph copied out, not a fact
 MIN_QUOTE_CHARS = 4       # a shorter quote must be the whole passage (see _occurs)
 MIN_QUOTE_CHARS_CJK = 2   # ...and 2 when it has a Han, Hiragana or Katakana character: about a word each
 NUM_CTX_MARGIN = 512      # tokens of slack on top of the estimate
 CHARS_PER_TOKEN = 3       # a pessimistic estimate, so the window is not cut short
 CHARS_PER_OUTPUT_TOKEN = 2   # the reply cap: JSON with quotes tokenises badly
+MAX_BATCH_PASSAGES = 16   # passages in one batch: the label lines are counted for this many (fit_input_chars)
+LABEL_ALLOWANCE = 32      # characters one passage adds beyond its text: its label, a newline, the blank line after
 
 # The brief is fixed (pinned by test_reader_brief_is_exact); only {output_chars} is filled in, with
 # str.replace because the text has literal JSON braces.
@@ -103,11 +108,13 @@ _UNFINISHED = ("provider_error", "timeout")
 
 @dataclass(frozen=True)
 class ReaderConfig:
-    model: str                  # a model id, or "chat" for the turn's own model
-    input_chars: int = 12000    # source characters per batch (about 3,000 tokens)
+    model: str = "chat"         # a model id, or "chat" for the turn's own model
+    input_chars: int = 12000    # source characters per batch, at most (about 3,000 tokens); a small window cuts it
     output_chars: int = 1200    # the reply a batch may take
     max_concurrency: int = 2    # batches in flight at once (a CPU Ollama serves them one by one anyway)
     timeout_s: float = 60.0     # seconds one batch's model call may take
+    num_ctx: int | None = None  # tokens: the context size every call of the turn sends; None sends none (the model's
+                                # own window applies: Ollama cloud, any openai-kind provider, which ignores it)
 
 
 # ---- config ----------------------------------------------------------------------------------------------
@@ -141,13 +148,16 @@ def reader_model_source(env: Mapping[str, str]) -> str | None:
 
 
 def load_reader_config(env: Mapping[str, str]) -> ReaderConfig:
-    d = ReaderConfig(model=DEFAULT_MODEL)
+    """The reader's settings from the environment. `model` is the environment's answer only (default "chat"); the
+    turn's reader model is the console's, then this one (orchestrator, services/model_settings.py), and `num_ctx`
+    is set there too: it has no environment variable."""
+    d = ReaderConfig()
 
     def num(key: str, default, cast: Callable, lo, hi):
         value = _number(env, key, cast, lo, hi)
         return default if value is None else value
 
-    model = DEFAULT_MODEL
+    model = d.model
     source = reader_model_source(env)
     if source:
         value = env[source].strip()
@@ -174,15 +184,32 @@ def get_reader_config() -> ReaderConfig:
 
 
 def resolve_model(cfg: ReaderConfig, chat_model: str) -> str:
-    """READER_MODEL=chat reads with the turn's own model: no second model to load into RAM."""
+    """A reader model of "chat" (the default) reads with the turn's own model: no second model to load into RAM."""
     return chat_model if cfg.model == "chat" else cfg.model
 
 
 # ---- batching --------------------------------------------------------------------------------------------
 
+def fit_input_chars(cfg: ReaderConfig, question: str, need: str) -> int:
+    """The source text one batch may hold: `cfg.input_chars` with no window to respect (`cfg.num_ctx` is None),
+    else the most that keeps one call within `cfg.num_ctx`, at most `cfg.input_chars` and at least 500.
+    A call needs its input (the brief, the question and goal, the label lines and the text, at CHARS_PER_TOKEN),
+    NUM_CTX_MARGIN, and room for the reply it may write (the `num_predict` it is sent). The label lines are
+    counted for MAX_BATCH_PASSAGES passages (`batches` never packs more). A question and goal so long that
+    nothing is left still get 500: that call is over the window, and the model cuts its start, as it would
+    with any prompt over its window."""
+    if cfg.num_ctx is None:
+        return cfg.input_chars
+    system, user = reader_messages(question, need, [], cfg.output_chars)
+    tokens = cfg.num_ctx - NUM_CTX_MARGIN - math.ceil(cfg.output_chars / CHARS_PER_OUTPUT_TOKEN)
+    room = tokens * CHARS_PER_TOKEN - len(system.content) - len(user.content) - MAX_BATCH_PASSAGES * LABEL_ALLOWANCE
+    return min(cfg.input_chars, max(500, room))
+
+
 def batches(passages: list[Passage], max_chars: int) -> list[list[Passage]]:
-    """The passages in order, packed into batches of at most `max_chars` of text. A passage longer than that is
-    a batch of its own, cut to `max_chars`; the reader then only sees (and can only quote) the part kept."""
+    """The passages in order, packed into batches of at most `max_chars` of text and MAX_BATCH_PASSAGES passages.
+    A passage longer than `max_chars` is a batch of its own, cut to `max_chars`; the reader then only sees (and can
+    only quote) the part kept."""
     out: list[list[Passage]] = []
     current: list[Passage] = []
     size = 0
@@ -193,7 +220,7 @@ def batches(passages: list[Passage], max_chars: int) -> list[list[Passage]]:
                 current, size = [], 0
             out.append([dataclasses.replace(p, text=p.text[:max_chars])])
             continue
-        if current and size + len(p.text) > max_chars:
+        if current and (size + len(p.text) > max_chars or len(current) == MAX_BATCH_PASSAGES):
             out.append(current)
             current, size = [], 0
         current.append(p)
@@ -326,11 +353,9 @@ async def read_batch(question: str, need: str, batch: list[Passage], *, chat_mod
     `received` is filled with what the call brings back as it arrives (llm/router.py), for its charge."""
     model = resolve_model(cfg, chat_model)
     system, user = reader_messages(question, need, batch, cfg.output_chars)
-    # The window is set explicitly: a provider's default can be smaller than the batch, which would cut it
-    # silently. Sized from what is actually sent, plus room for the reply.
-    chars = len(system.content) + len(user.content) + cfg.output_chars
-    num_ctx = clamp(math.ceil(chars / CHARS_PER_TOKEN) + NUM_CTX_MARGIN, None, get_limits())[0]
-    settings = CallSettings(think="off", num_ctx=num_ctx,
+    # One window for every call of the turn (cfg.num_ctx, decided with the model: services/model_settings.py), not one
+    # per batch: Ollama reloads a model when the size asked for changes. The batch was cut to fit it (fit_input_chars).
+    settings = CallSettings(think="off", num_ctx=cfg.num_ctx,
                             num_predict=math.ceil(cfg.output_chars / CHARS_PER_OUTPUT_TOKEN))
     try:
         reply = await get_router().complete(model, [system, user], settings, received=received)

@@ -23,7 +23,7 @@ from ...llm.types import ToolSpec
 from ...services import web_search as web_search_service
 from ...services.web_search import PASSAGE_JOIN, fetch_page_text, page_passages
 from ..prompt import display_name, fence
-from ..reader import Passage, ReaderResult, get_reader_config, read_many
+from ..reader import Passage, ReaderResult, fit_input_chars, get_reader_config, read_many
 from .read_document_pages import page_number
 
 logger = logging.getLogger(__name__)
@@ -152,12 +152,13 @@ class _ReadWebPages:
             numbers = _numbers(args.get("results"), ctx)
         except _Refused as refused:
             return {"error": str(refused)}
-        reader_cfg = get_reader_config()    # per call: the knobs are read from the environment
+        reader_cfg = ctx.reader_cfg or get_reader_config()    # the turn's, else the environment's knobs
+        input_chars = fit_input_chars(reader_cfg, ctx.question, need)    # a batch that fits the reader's window
 
         entries = {n: ctx.web_results[n] for n in numbers}
         texts = dict(zip(numbers, await asyncio.gather(*(_text(e["url"]) for e in entries.values()))))
         batches = {n: [Passage(f"[web {n}]", p)
-                       for p in page_passages(texts[n], entries[n]["query"], need, reader_cfg.input_chars)]
+                       for p in page_passages(texts[n], entries[n]["query"], need, input_chars)]
                    for n in numbers if texts[n]}
         results = dict(zip(batches, await read_many(ctx.question, need, list(batches.values()),
                                                     chat_model=ctx.model, cfg=reader_cfg, charge=ctx.charge)))

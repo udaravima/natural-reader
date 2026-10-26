@@ -13,10 +13,11 @@ import pytest
 
 from server.chat import reader
 from server.chat.prompt import fence
-from server.chat.reader import (BatchCall, Fact, Passage, ReaderConfig, ReaderResult, batches, load_reader_config,
-                                normalise, read_batch, read_many, reader_messages, resolve_model, verify)
+from server.chat.reader import (BatchCall, CHARS_PER_OUTPUT_TOKEN, CHARS_PER_TOKEN, Fact, NUM_CTX_MARGIN, Passage,
+                                ReaderConfig, ReaderResult, batches, fit_input_chars, load_reader_config, normalise,
+                                read_batch, read_many, reader_messages, resolve_model, verify)
 from server.llm.types import CallSettings, ProviderError, Usage
-from server.services.inference_limits import InferenceLimits
+from server.services import model_router
 
 CFG = ReaderConfig(model="reader-model")
 
@@ -206,6 +207,41 @@ def test_batches_an_exact_fit_stays_together_and_nothing_gives_nothing():
     assert [[p.label for p in b] for b in out] == [["[a]", "[b]"], ["[c]"]]
 
 
+# ---- fitting a batch to the reader's window --------------------------------------------------------------
+
+def _estimate(cfg, question, need, batch):
+    """What one reader call over `batch` needs, by the rule the window is sized with: input tokens, the margin,
+    and the reply's own cap."""
+    system, user = reader_messages(question, need, batch, cfg.output_chars)
+    chars = len(system.content) + len(user.content)
+    return -(-chars // CHARS_PER_TOKEN) + NUM_CTX_MARGIN + -(-cfg.output_chars // CHARS_PER_OUTPUT_TOKEN)
+
+
+def _passages_of_mixed_lengths():
+    lengths = [1, 5, 12, 30, 45, 200, 900, 3000, 14000, 2, 8, 60, 33, 7, 40, 2500, 17, 90, 4, 21] * 6
+    return [Passage(f"[{i % 7 + 1}, page {i + 1}]", "x" * n, i % 7 + 1, i + 1) for i, n in enumerate(lengths)]
+
+
+@pytest.mark.parametrize("num_ctx", [2048, 4096, 16384])
+def test_fit_input_chars_keeps_every_batch_within_the_window(num_ctx):
+    cfg = ReaderConfig(model="m", num_ctx=num_ctx, output_chars=600, input_chars=200_000)
+    question, need = "q" * 300, "n" * 300
+    fit = fit_input_chars(cfg, question, need)
+    assert fit >= 500
+    groups = batches(_passages_of_mixed_lengths(), fit)
+    assert len(groups) > 1
+    for group in groups:
+        assert _estimate(cfg, question, need, group) <= num_ctx
+
+
+def test_fit_input_chars_is_the_knob_without_a_size_and_never_beyond_it():
+    assert fit_input_chars(ReaderConfig(model="m", input_chars=7000), "q", "n") == 7000
+    # a big window doesn't make batches bigger than READER_INPUT_CHARS asks for
+    assert fit_input_chars(ReaderConfig(model="m", input_chars=7000, num_ctx=32768), "q", "n") == 7000
+    # a window too small for even the brief still reads something
+    assert fit_input_chars(ReaderConfig(model="m", num_ctx=2048), "q" * 5000, "n" * 5000) == 500
+
+
 # ---- the brief -------------------------------------------------------------------------------------------
 
 BRIEF = """You read source text for another assistant. It gives you a goal; you return only what serves it.
@@ -273,8 +309,6 @@ class FakeRouter:
 
 @pytest.fixture
 def use_router(monkeypatch):
-    monkeypatch.setattr(reader, "get_limits", lambda: InferenceLimits(32768, 1800))
-
     def install(router):
         monkeypatch.setattr(reader, "get_router", lambda: router)
         return router
@@ -286,30 +320,37 @@ GOOD = ('{"found": true, "facts": [{"fact": "Install with dnf", "quote": "dnf in
         '"from": "[1, page 2]"}]}')
 
 
-async def test_read_batch_sets_num_ctx_and_parses_fenced_json(use_router):
+async def test_read_batch_parses_fenced_json_and_sends_the_configured_size(use_router):
     router = use_router(FakeRouter("Sure!\n```json\n" + GOOD + "\n```\nHope that helps."))
-    cfg = ReaderConfig(model="reader-model", output_chars=1000)
+    cfg = ReaderConfig(model="reader-model", output_chars=1000, num_ctx=16384)
     result = await read_batch("How?", "the install command", [PAGE], chat_model="the-chat-model", cfg=cfg)
 
     assert result == ReaderResult(True, (Fact("Install with dnf", "dnf install python3.13", "[1, page 2]", 1, 2),),
                                   0, None)
     model, messages, settings = router.calls[0]
     assert model == "reader-model" and [m.role for m in messages] == ["system", "user"]
-    size = len(messages[0].content) + len(messages[1].content)
-    assert settings == CallSettings(think="off", num_ctx=-(-(size + 1000) // 3) + 512, num_predict=500)
+    assert settings == CallSettings(think="off", num_ctx=16384, num_predict=500)
+
+
+async def test_read_batch_sends_the_configured_size_never_a_per_batch_one(use_router):
+    router = use_router(FakeRouter(GOOD))
+    small, big = [PAGE], [Passage("[1, page 2]", "y" * 20000, 1, 2)]
+    sized = ReaderConfig(model="m", num_ctx=16384)
+    await read_batch("q", "n", small, chat_model="m", cfg=sized)
+    await read_batch("q", "n", big, chat_model="m", cfg=sized)
+    assert [c[2].num_ctx for c in router.calls] == [16384, 16384]      # the batches differ 500-fold; the size doesn't
+
+    router.calls.clear()
+    unsized = ReaderConfig(model="m", num_ctx=None)
+    await read_batch("q", "n", small, chat_model="m", cfg=unsized)
+    await read_batch("q", "n", big, chat_model="m", cfg=unsized)
+    assert [c[2].num_ctx for c in router.calls] == [None, None]        # none sent: cloud and openai ignore it
 
 
 async def test_read_batch_uses_the_turns_model_when_the_reader_model_is_chat(use_router):
     router = use_router(FakeRouter(GOOD))
     await read_batch("q", "n", [PAGE], chat_model="ollama:gemma4:e4b", cfg=ReaderConfig(model="chat"))
     assert router.calls[0][0] == "ollama:gemma4:e4b"
-
-
-async def test_read_batch_clamps_num_ctx_to_the_deployment_limit(use_router, monkeypatch):
-    router = use_router(FakeRouter(GOOD))
-    monkeypatch.setattr(reader, "get_limits", lambda: InferenceLimits(2048, None))
-    await read_batch("q", "n", [Passage("[1]", "y" * 30000)], chat_model="m", cfg=CFG)
-    assert router.calls[0][2].num_ctx == 2048
 
 
 @pytest.mark.parametrize("bad", [
@@ -549,8 +590,13 @@ async def test_a_charge_that_fails_never_fails_the_read(use_router, caplog):
 
 # ---- config ----------------------------------------------------------------------------------------------
 
+def test_reader_defaults_to_the_chat_model():
+    assert load_reader_config({}).model == "chat"
+    assert model_router.load_inference_config({}).summarize_model == "chat"
+
+
 def test_model_chain_and_chat():
-    assert load_reader_config({}).model == "llama3.2:3b"
+    assert load_reader_config({}).model == "chat"
     assert load_reader_config({"WEB_SEARCH_SUMMARY_MODEL": "old"}).model == "old"
     assert load_reader_config({"WEB_SEARCH_SUMMARY_MODEL": "old", "SUMMARIZE_MODEL": "mid"}).model == "mid"
     assert load_reader_config({"WEB_SEARCH_SUMMARY_MODEL": "old", "SUMMARIZE_MODEL": "mid",
@@ -559,7 +605,7 @@ def test_model_chain_and_chat():
     assert load_reader_config({"READER_MODEL": "", "SUMMARIZE_MODEL": "  ", "WEB_SEARCH_SUMMARY_MODEL": "old"}
                               ).model == "old"
     assert load_reader_config({"READER_MODEL": "", "SUMMARIZE_MODEL": "", "WEB_SEARCH_SUMMARY_MODEL": ""}
-                              ).model == "llama3.2:3b"
+                              ).model == "chat"
     cfg = load_reader_config({"READER_MODEL": "chat", "SUMMARIZE_MODEL": "mid"})
     assert cfg.model == "chat"
     assert resolve_model(cfg, "ollama:gemma4:e4b") == "ollama:gemma4:e4b"

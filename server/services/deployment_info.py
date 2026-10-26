@@ -26,6 +26,7 @@ def _host(netloc: str) -> str:
 
 
 NOT_A_URL = "Not a valid URL"
+CHAT_READER = "The chat model of each conversation"    # what a reader model of "chat" is called on screen
 
 
 def safe_url(url: str) -> str:
@@ -90,7 +91,7 @@ def readonly_rows(env: Mapping[str, str] = os.environ) -> list[dict]:
         _row("daily_budget", "Daily token budget", budget if budget not in ("", "0") else "Unlimited",
              "INFERENCE_DAILY_TOKEN_BUDGET", _set(env, "INFERENCE_DAILY_TOKEN_BUDGET")),
         _row("reader_model", "Reading model",
-             "The chat model of each conversation" if reader_model == "chat" else reader_model,
+             CHAT_READER if reader_model == "chat" else reader_model,
              reader_var, reader_var is not None),
         _row("embedding_model", "Embedding model", (env.get("EMBEDDING_MODEL") or "").strip() or "nomic-embed-text",
              "EMBEDDING_MODEL", _set(env, "EMBEDDING_MODEL")),

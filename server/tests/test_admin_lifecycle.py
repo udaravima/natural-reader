@@ -217,6 +217,26 @@ async def test_config_admin_view(db_conn, monkeypatch):
     assert body["embed_model"] == "embed-model"
 
 
+async def test_config_shows_the_reader_the_models_settings_resolve_to(db_conn, monkeypatch):
+    """The key keeps its old name (summarize_model); its value follows the console, then the environment, then
+    the chat model, in the words the Overview uses."""
+    from server.services import console_settings, model_settings
+    for var in ("READER_MODEL", "SUMMARIZE_MODEL", "WEB_SEARCH_SUMMARY_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    admin, p = await _admin(db_conn)
+
+    async def shown():
+        async with _client(_app(db_conn, p)) as client:
+            return (await client.get("/v1/admin/inference/config")).json()["summarize_model"]
+
+    assert await shown() == "The chat model of each conversation"
+    monkeypatch.setenv("SUMMARIZE_MODEL", "env-reader")
+    assert await shown() == "env-reader"
+    await console_settings.save(db_conn, model_settings.SECTION, {"reader": "ollama:console-reader"},
+                                updated_by=admin["id"])
+    assert await shown() == "ollama:console-reader"
+
+
 async def test_config_unset_allowlist_renders_null(db_conn, monkeypatch):
     for var in ("INFERENCE_MODELS", "INFERENCE_DAILY_TOKEN_BUDGET"):
         monkeypatch.delenv(var, raising=False)

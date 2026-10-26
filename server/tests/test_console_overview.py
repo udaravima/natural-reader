@@ -153,8 +153,8 @@ async def test_reader_states(db_conn):
     assert (c.state, c.summary) == ("ok", "m, from SUMMARIZE_MODEL.")
 
     c = (await _by_id(db_conn, _router()))["reader"]
-    assert c.state == "warn"
-    assert c.summary == ("The built-in fallback llama3.2:3b. Set READER_MODEL on the server, or READER_MODEL=chat.")
+    # the default is the chat model now, so there is no built-in fallback to warn about (Task 6 words this line anew)
+    assert (c.state, c.summary) == ("ok", "The chat model of each conversation (READER_MODEL=chat).")
 
     c = (await _by_id(db_conn, _router(), {"READER_MODEL": "gone"}))["reader"]
     assert (c.state, c.summary) == ("error", "gone isn't on local: every reader call fails until it's pulled or READER_MODEL changes.")

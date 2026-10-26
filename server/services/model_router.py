@@ -60,7 +60,7 @@ def load_inference_config(env: Mapping[str, str]) -> InferenceConfig:
         summarize_model=(
             env.get("SUMMARIZE_MODEL")
             or env.get("WEB_SEARCH_SUMMARY_MODEL")
-            or "llama3.2:3b"
+            or "chat"    # the chat model of each conversation
         ),
         embed_model=embed_model,
         # Spec §4.3: 0/unset = unlimited, so a falsy budget collapses to None.

@@ -334,11 +334,14 @@ async def overview(
 
 @router.get("/inference/config")
 async def inference_config(
-    _: deps.Principal = Depends(deps.require_admin),
+    _: deps.Principal = Depends(deps.require_admin), conn=Depends(deps.get_conn, scope="function"),
 ):
     """Read-only view of the effective inference config — why a model 422s,
-    without shell access. Never includes API keys (spec §4.5)."""
+    without shell access. Never includes API keys (spec §4.5). `summarize_model` keeps its name for old
+    consumers; it is the reader the Models settings resolve to (the console's, else the environment's, else
+    the chat model), worded as the Overview words it."""
     cfg = model_router.get_config()
+    reader = (await model_settings.load_models_settings(conn, os.environ)).reader
     llm = get_router()
     models, failed = await llm.list_models()
     counts: dict[str, int] = {}
@@ -350,7 +353,7 @@ async def inference_config(
         "allowed_models": (
             list(cfg.allowed_models) if cfg.allowed_models is not None else None
         ),
-        "summarize_model": cfg.summarize_model,
+        "summarize_model": deployment_info.CHAT_READER if reader == "chat" else reader,
         "embed_model": cfg.embed_model,
         "daily_token_budget": cfg.daily_token_budget,
         "providers": [

@@ -5,6 +5,7 @@ The reader's router is faked (it returns scripted JSON per batch); documents and
 test database, as for the other chat tool tests."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 
@@ -20,7 +21,6 @@ from server.chat.tools import read_document_pages as rp_tool
 from server.llm.types import CallSettings, ToolCall
 from server.services import doc_search
 from server.services.embeddings import EMBEDDING_DIM, current_profile
-from server.services.inference_limits import InferenceLimits
 from server.tests import seed
 from server.tests.chat_harness import member, shim_pool
 
@@ -111,7 +111,6 @@ class Env:
 @pytest.fixture
 async def env(db_conn, monkeypatch):
     shim_pool(monkeypatch, db_conn, ex_tool, rp_tool)
-    monkeypatch.setattr(reader, "get_limits", lambda: InferenceLimits(32768, 1800))
     for key in ("READER_MODEL", "SUMMARIZE_MODEL", "WEB_SEARCH_SUMMARY_MODEL", "READER_INPUT_CHARS",
                 "READER_OUTPUT_CHARS", "READER_MAX_CONCURRENCY", "READER_TIMEOUT_S",
                 "WEB_SEARCH_SUMMARY_TIMEOUT_S"):
@@ -622,6 +621,18 @@ async def test_the_turns_model_reaches_the_reader(env, use_router, monkeypatch):
     assert seen["chat_model"] == "ollama:gemma4:e4b" and seen["question"] == "How do I install it?"
     assert seen["need"] == "the commands" and seen["cfg"].model == "chat"      # the reader's config is read per call
     assert router.calls[0][0] == "ollama:gemma4:e4b"
+
+
+async def test_the_turns_reader_config_names_the_model_and_the_window_the_pages_are_cut_to(env, use_router):
+    await env.add_doc(PA, "Alpha.md", {1: " ".join(f"Line {i} of the handbook." for i in range(1500))})
+    router = use_router(NOTHING)
+    ctx = await env.ctx()
+    ctx = dataclasses.replace(ctx, reader_cfg=reader.ReaderConfig(model="ollama:small", num_ctx=2048))
+    await _extract(ctx, {"documents": [1], "need": "the handbook's lines"})
+    model, messages, settings = router.calls[0]
+    assert model == "ollama:small" and settings.num_ctx == 2048
+    chars = sum(len(m.content) for m in messages)
+    assert -(-chars // reader.CHARS_PER_TOKEN) + reader.NUM_CTX_MARGIN + 600 <= 2048     # 1200 reply chars at 2 a token
 
 
 # ---- arguments and scope ----------------------------------------------------------------------------------

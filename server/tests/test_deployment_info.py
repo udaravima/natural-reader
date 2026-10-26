@@ -26,7 +26,7 @@ def test_safe_url_drops_user_info_query_and_fragment():
 
 def test_sources_name_the_variable_or_the_default():
     rows = _by_id({})
-    assert rows["reader_model"]["value"] == "llama3.2:3b"
+    assert rows["reader_model"]["value"] == "The chat model of each conversation"
     assert rows["reader_model"]["source"] == "default" and rows["reader_model"]["env"] is None
     row = _by_id({"SUMMARIZE_MODEL": "m"})["reader_model"]
     assert (row["value"], row["env"], row["source"]) == ("m", "SUMMARIZE_MODEL", "env")

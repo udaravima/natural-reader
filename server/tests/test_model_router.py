@@ -6,7 +6,7 @@ def test_defaults():
     assert cfg.ollama_url == "http://localhost:11434"
     assert cfg.timeout_s == 300
     assert cfg.allowed_models is None          # unset = allow everything
-    assert cfg.summarize_model == "llama3.2:3b"
+    assert cfg.summarize_model == "chat"
     assert cfg.embed_model == "nomic-embed-text"
     assert cfg.daily_token_budget is None      # unset = unlimited
 
@@ -22,7 +22,7 @@ def test_empty_allowlist_means_all():
 
 
 def test_summarize_model_precedence():
-    assert load_inference_config({}).summarize_model == "llama3.2:3b"
+    assert load_inference_config({}).summarize_model == "chat"
     assert load_inference_config(
         {"WEB_SEARCH_SUMMARY_MODEL": "old"}).summarize_model == "old"
     assert load_inference_config({

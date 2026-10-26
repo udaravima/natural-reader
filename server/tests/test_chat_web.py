@@ -5,6 +5,7 @@ No network and no model: SearXNG, the page fetch and the reader's router are scr
 guards of the fetch itself are tested in test_web_search.py."""
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pytest
@@ -16,7 +17,6 @@ from server.chat.tools import read_web_pages as rwp
 from server.chat.tools import web_search as ws_tool
 from server.llm.types import ToolCall
 from server.services import web_search as ws
-from server.services.inference_limits import InferenceLimits
 from server.tests.test_chat_extract import NOTHING, ScriptedRouter, facts_json
 
 CHAT_MODEL = "ollama:chat-model"
@@ -60,7 +60,6 @@ def web(monkeypatch):
     monkeypatch.setattr(ws, "SEARXNG_URL", "http://searx.test")
     monkeypatch.setattr(ws, "searxng_search", searx)
     monkeypatch.setattr(rwp, "fetch_page_text", fetch)
-    monkeypatch.setattr(reader, "get_limits", lambda: InferenceLimits(32768, 1800))
     for key in ("READER_MODEL", "SUMMARIZE_MODEL", "WEB_SEARCH_SUMMARY_MODEL", "READER_INPUT_CHARS",
                 "READER_OUTPUT_CHARS", "READER_MAX_CONCURRENCY", "READER_TIMEOUT_S",
                 "WEB_SEARCH_SUMMARY_TIMEOUT_S"):
@@ -342,6 +341,18 @@ async def test_the_reader_uses_the_turns_chat_model_when_asked(web, use_router, 
     web.pages[url("a")] = PAGE
     await _read(ctx, [1])
     assert router.calls[0][0] == CHAT_MODEL
+
+
+async def test_the_turns_reader_config_names_the_model_and_the_window_the_pages_are_cut_to(web, use_router):
+    router = use_router(NOTHING)
+    ctx = dataclasses.replace(await searched(web, "a"), reader_cfg=reader.ReaderConfig(model="ollama:small", num_ctx=2048))
+    web.pages[url("a")] = "\n".join(f"Paragraph {i} on the listening port setting, with more words. " * 3
+                                    for i in range(400))
+    await _read(ctx, [1], need="the listening port setting")
+    model, messages, settings = router.calls[0]
+    assert model == "ollama:small" and settings.num_ctx == 2048
+    chars = sum(len(m.content) for m in messages)
+    assert -(-chars // reader.CHARS_PER_TOKEN) + reader.NUM_CTX_MARGIN + 600 <= 2048     # 1200 reply chars at 2 a token
 
 
 async def test_a_page_that_cannot_be_fetched_is_an_error_entry_and_the_rest_are_read(web, use_router):

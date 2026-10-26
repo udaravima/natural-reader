@@ -44,7 +44,7 @@ from .context import TurnInput, build_context
 from .project_map import ProjectMap, build_map
 from .project_scope import ProjectScope, load_project_scope
 from .prompt import document_tools_offered
-from .reader import BatchCall
+from .reader import BatchCall, ReaderConfig, get_reader_config, resolve_model
 from .sources import answer_sources, sources_by_document, web_sources
 from .store import TurnClaim, title_from_prompt
 from .tools import ToolContext, ToolRun, TurnTools, available_tools, result_text, tool_spec
@@ -291,7 +291,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         tool_ctx = ToolContext(req.user_id, doc, cfg=cfg, project=project, question=req.text,
                                map_shortened=bool(project_map and project_map.shortened), outlines=outlines,
                                model=req.model_id, web_mode=options.web_search, web_approved=bool(web_query),
-                               charge=functools.partial(_charge_reader, req.user_id))
+                               charge=functools.partial(_charge_reader, req.user_id),
+                               reader_cfg=_turn_reader(router, models_cfg, req.model_id, model_key, settings))
         offered = [] if caps.tools is False else available_tools(tool_ctx)
         app_exchange = ()
         if web_query and tools_on and search_possible():
@@ -773,6 +774,31 @@ async def _chat_options() -> chat_options.ChatOptions:
     except Exception:  # noqa: BLE001 — see above
         logger.warning("Chat options couldn't be read: using CHAT_WEB_SEARCH, else the default", exc_info=True)
         return chat_options.from_env()
+
+
+def _turn_reader(router, models_cfg: model_settings.ModelsSettings, chat_id: str, chat_key: str,
+                 chat_settings: CallSettings) -> ReaderConfig:
+    """The reader's settings for this turn, fixed once: the knobs from the environment, the model from the Models
+    settings ("chat" is the turn's own model), and the context size it is loaded with. That size is the chat's
+    when the reader is the chat model, so one model is loaded once; the reader model's own (num_ctx_for, with
+    none of the person's value: it is their chat's) when it is another model that needs one named (any Ollama you
+    host); none for any other (Ollama cloud and openai-kind providers send none). A reader model the router
+    can't place keeps its name and gets no size: its calls fail as the reader's own provider_error result,
+    never the turn."""
+    cfg = replace(get_reader_config(), model=models_cfg.reader)
+    named = resolve_model(cfg, chat_id)
+    cfg = replace(cfg, model=named)
+    try:
+        provider, name = router.resolve(named)
+    except UnknownModel:
+        return cfg
+    key = f"{provider.config.name}:{name}"
+    if model_settings.same_model(key, chat_key):
+        return replace(cfg, num_ctx=chat_settings.num_ctx)
+    if model_settings.sizes_context(provider.config, name, models_cfg.provider_locality):
+        return replace(cfg, num_ctx=model_settings.num_ctx_for(
+            models_cfg, key, local=True, user_value=None, limits=get_limits()))
+    return cfg
 
 
 async def _models_settings() -> model_settings.ModelsSettings:

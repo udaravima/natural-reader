@@ -2,6 +2,7 @@ import asyncio
 import dataclasses
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,8 @@ from server.chat.tools import web_search as ws_tool
 from server.services import console_settings, model_settings
 from server.services.doc_search import ReadableDoc
 from server.services.inference_limits import InferenceLimits
+from server.llm.providers.base import ProviderConfig
+from server.llm.router import UnknownModel
 from server.llm.types import (CallSettings, Capabilities, FeatureDropped, Finish, Message, ProviderError,
                               ProviderTimeout, ProviderUnavailable, ReasoningDelta, TextDelta,
                               ToolCall, ToolCallReady, Usage)
@@ -749,6 +752,99 @@ async def test_the_tool_context_carries_the_turns_model(conn, monkeypatch):
     monkeypatch.setattr(orchestrator, "TurnTools", Spy)
     await _run(conn, FakeRouter(steps=[reply("Hi there.")]))
     assert seen == ["ollama:m"]
+
+
+# ---- admin console v2 phase 2a, Task 3: the reader's model and size ----
+
+@pytest.fixture
+def reader_env(monkeypatch):
+    for var in ("READER_MODEL", "SUMMARIZE_MODEL", "WEB_SEARCH_SUMMARY_MODEL", "INFERENCE_LOCAL_NUM_CTX",
+                "INFERENCE_NUM_CTX_MAX"):
+        monkeypatch.delenv(var, raising=False)
+
+
+class _TwoKinds(FakeRouter):
+    """`vllm:` ids belong to an openai-kind provider, `gone` to none, everything else to the Ollama."""
+    def resolve(self, model_id):
+        if model_id == "gone":
+            raise UnknownModel(model_id)
+        if model_id.startswith("vllm:"):
+            return SimpleNamespace(config=ProviderConfig("vllm", "openai", "http://vllm.example.com/v1")), model_id[5:]
+        return super().resolve(model_id)
+
+
+async def _reader_cfg_of(conn, monkeypatch, router=None, *, model_id="ollama:m", num_ctx=None):
+    """The ToolContext.reader_cfg a one-step turn hands to its tools."""
+    seen = []
+
+    class Spy(orchestrator.TurnTools):
+        def __init__(self, ctx):
+            seen.append(ctx.reader_cfg)
+            super().__init__(ctx)
+
+    monkeypatch.setattr(orchestrator, "TurnTools", Spy)
+    claim, req = await _start(await member(conn, "alice"), model_id=model_id, settings=CallSettings(num_ctx=num_ctx))
+    events = [e async for e in run_turn(req, claim, router=router or FakeRouter(), cfg=ChatConfig(),
+                                        deployment_budget=None)]
+    assert events[-1]["type"] == "finish"
+    [cfg] = seen
+    return cfg
+
+
+async def test_turn_reader_is_sized_to_its_own_model(conn, monkeypatch, reader_env):
+    # the reader is the chat model (the default): the chat's size, whatever decided it
+    cfg = await _reader_cfg_of(conn, monkeypatch)
+    assert (cfg.model, cfg.num_ctx) == ("ollama:m", 16384)
+    cfg = await _reader_cfg_of(conn, monkeypatch, num_ctx=4096)
+    assert (cfg.model, cfg.num_ctx) == ("ollama:m", 4096)
+    # ... and ":latest" doesn't make it another model
+    await _save_models(conn, reader="ollama:m:latest")
+    assert (await _reader_cfg_of(conn, monkeypatch, num_ctx=4096)).num_ctx == 4096
+
+    # a different local model, the person's chat value 4096 and no admin size: its own default, not the person's
+    await _save_models(conn, reader="ollama:other")
+    cfg = await _reader_cfg_of(conn, monkeypatch, num_ctx=4096)
+    assert (cfg.model, cfg.num_ctx) == ("ollama:other", 16384)
+    # ... or the admin's size for that model
+    await _save_models(conn, context_sizes={"ollama:other": 8192})
+    assert (await _reader_cfg_of(conn, monkeypatch, num_ctx=4096)).num_ctx == 8192
+
+    # the chat is a cloud model and so is the reader (chat): nothing to send
+    await _save_models(conn, reader="chat")
+    cfg = await _reader_cfg_of(conn, monkeypatch, model_id="ollama:gemma4:31b-cloud")
+    assert (cfg.model, cfg.num_ctx) == ("ollama:gemma4:31b-cloud", None)
+    # a cloud chat with a local reader: the reader is sized, the chat isn't
+    await _save_models(conn, reader="ollama:other")
+    assert (await _reader_cfg_of(conn, monkeypatch, model_id="ollama:gemma4:31b-cloud")).num_ctx == 8192
+
+
+async def test_a_reader_that_ignores_num_ctx_is_sent_none(conn, monkeypatch, reader_env):
+    await _save_models(conn, reader="vllm:small")
+    cfg = await _reader_cfg_of(conn, monkeypatch, _TwoKinds())
+    assert (cfg.model, cfg.num_ctx) == ("vllm:small", None)
+    await _save_models(conn, reader="ollama:gemma4:31b-cloud")
+    assert (await _reader_cfg_of(conn, monkeypatch, _TwoKinds())).num_ctx is None
+
+
+async def test_an_unresolvable_reader_never_fails_the_turn(conn, monkeypatch, reader_env):
+    await _save_models(conn, reader="gone")
+    cfg = await _reader_cfg_of(conn, monkeypatch, _TwoKinds())
+    assert (cfg.model, cfg.num_ctx) == ("gone", None)       # the reader's own provider_error result handles it later
+
+
+async def test_console_reader_wins_over_env(conn, monkeypatch, reader_env):
+    monkeypatch.setenv("READER_MODEL", "chat")
+    await _save_models(conn, reader="ollama:gemma4:e4b")
+    cfg = await _reader_cfg_of(conn, monkeypatch)
+    assert cfg.model == "ollama:gemma4:e4b"
+    assert cfg.num_ctx == 16384
+
+
+async def test_the_reader_keeps_its_knobs_from_the_environment(conn, monkeypatch, reader_env):
+    monkeypatch.setenv("READER_INPUT_CHARS", "8000")
+    monkeypatch.setenv("READER_TIMEOUT_S", "90")
+    cfg = await _reader_cfg_of(conn, monkeypatch)
+    assert (cfg.input_chars, cfg.timeout_s) == (8000, 90.0)
 
 
 async def test_no_note_while_rounds_remain(conn, open_doc, web_auto):
