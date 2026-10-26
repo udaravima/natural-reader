@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+from server.auth.users import SEED_ADMIN_ID
 from server.chat import context as ctx_mod
 from server.chat import orchestrator, store
 from server.chat.config import ChatConfig
@@ -16,6 +17,7 @@ from server.chat.tools import TurnTools
 from server.chat.tools import extract_from_documents as ex_tool
 from server.chat.tools import search_documents as sd_tool
 from server.chat.tools import web_search as ws_tool
+from server.services import console_settings, model_settings
 from server.services.doc_search import ReadableDoc
 from server.services.inference_limits import InferenceLimits
 from server.llm.types import (CallSettings, Capabilities, FeatureDropped, Finish, Message, ProviderError,
@@ -44,11 +46,11 @@ async def fake_web_search(query, count):
     return {"query": query, "results": [{"title": "t", "url": "https://example.com", "summary": "s"}]}
 
 
-async def _start(user, text="Hi", sid="s-1"):
-    claim = await store.begin_turn(session_id=sid, user_id=user.user_id, model_id="ollama:m", text=text,
+async def _start(user, text="Hi", sid="s-1", model_id="ollama:m", settings=CallSettings()):
+    claim = await store.begin_turn(session_id=sid, user_id=user.user_id, model_id=model_id, text=text,
                                    attachments=[], new_session_pins=None)
-    req = TurnRequest(user_id=user.user_id, session_id=sid, model_id="ollama:m", text=text, attachments=(),
-                      settings=CallSettings(), doc_id=None, timezone="UTC")
+    req = TurnRequest(user_id=user.user_id, session_id=sid, model_id=model_id, text=text, attachments=(),
+                      settings=settings, doc_id=None, timezone="UTC")
     return claim, req
 
 
@@ -546,6 +548,96 @@ async def test_num_ctx_sets_the_trimming_window_only_for_ollama_providers(conn, 
     req = dataclasses.replace(req, settings=CallSettings(num_ctx=1024))
     [_ async for _ in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)]
     assert seen["window"] == want
+
+
+# ---- admin console v2 phase 2a, Task 2: one context size per local model ----
+
+@pytest.fixture
+def window_spy(monkeypatch):
+    """The window each turn's context is built with; the env has no INFERENCE_LOCAL_NUM_CTX unless a test sets it."""
+    for var in ("INFERENCE_LOCAL_NUM_CTX", "INFERENCE_NUM_CTX_MAX", "INFERENCE_VLLM_CONTEXT_WINDOW"):
+        monkeypatch.delenv(var, raising=False)
+    seen = []
+    real = orchestrator.build_context
+
+    async def spy(turn, cfg):
+        seen.append(turn.window)
+        return await real(turn, cfg)
+
+    monkeypatch.setattr(orchestrator, "build_context", spy)
+    return seen
+
+
+async def _sizes_turn(conn, router, *, model_id="ollama:m", num_ctx=None):
+    """A two-step turn (one tool round), so 'every call' means more than one. Returns the num_ctx each
+    stream_chat call carried."""
+    router.steps = [
+        [ToolCallReady(ToolCall("c1", "web_search", {"query": "news"})), Usage(5, 2), Finish("tool_calls")],
+        reply()]
+    claim, req = await _start(await member(conn, "alice"), model_id=model_id, settings=CallSettings(num_ctx=num_ctx))
+    [_ async for _ in run_turn(req, claim, router=router, cfg=ChatConfig(max_tool_rounds=1), deployment_budget=None)]
+    assert len(router.calls) == 2
+    return [c["settings"].num_ctx for c in router.calls]
+
+
+async def _save_models(conn, **changes):
+    await console_settings.save(conn, model_settings.SECTION, changes, updated_by=SEED_ADMIN_ID)
+
+
+async def test_local_ollama_turn_sends_16384_without_any_setting(conn, monkeypatch, web_auto, window_spy):
+    monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
+    assert await _sizes_turn(conn, FakeRouter()) == [16384, 16384]
+    assert window_spy == [16384]
+
+
+async def test_self_hosted_remote_ollama_is_sized_too(conn, monkeypatch, web_auto, window_spy):
+    monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
+    router = FakeRouter(url="http://gpu.example.com:11434")
+    assert await _sizes_turn(conn, router, model_id="ollama:qwen3:8b") == [16384, 16384]
+    assert window_spy == [16384]
+
+
+async def test_admin_size_beats_personal_value_and_unset_keeps_it(conn, monkeypatch, web_auto, window_spy):
+    monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
+    await _save_models(conn, context_size=8192)
+    assert await _sizes_turn(conn, FakeRouter(), num_ctx=4096) == [8192, 8192]
+    assert window_spy == [8192]
+    await _save_models(conn, context_size=None)
+    assert await _sizes_turn(conn, FakeRouter(), num_ctx=4096) == [4096, 4096]
+    assert window_spy[-1] == 4096
+
+
+async def test_cloud_model_keeps_the_personal_value(conn, monkeypatch, web_auto, window_spy):
+    monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
+    cloud = "ollama:gemma4:31b-cloud"
+    assert await _sizes_turn(conn, FakeRouter(), model_id=cloud, num_ctx=4096) == [4096, 4096]
+    assert await _sizes_turn(conn, FakeRouter(caps=Capabilities(tools=True, context_window=262144)),
+                             model_id=cloud) == [None, None]
+    assert window_spy[-1] == 262144     # nothing sent, so the model's own window trims
+
+
+async def test_openai_model_trims_to_a_declared_window(conn, window_spy):
+    await _save_models(conn, context_windows={"vllm:m": 9000})
+    router = FakeRouter(kind="openai", provider_name="vllm")      # reports no window
+    claim, req = await _start(await member(conn, "alice"), model_id="vllm:m")
+    [_ async for _ in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)]
+    assert window_spy == [9000]
+    assert router.calls[0]["settings"].num_ctx is None                # openai ignores num_ctx: none is sent
+
+
+async def test_unreadable_models_row_falls_back_to_env(conn, monkeypatch, caplog, window_spy):
+    monkeypatch.setenv("INFERENCE_LOCAL_NUM_CTX", "6144")
+
+    async def broken(conn, env=None):
+        raise RuntimeError("no pool")
+
+    monkeypatch.setattr(model_settings, "load_models_settings", broken)
+    router = FakeRouter()
+    claim, req = await _start(await member(conn, "alice"))
+    events = [e async for e in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)]
+    assert events[-1]["type"] == "finish"
+    assert router.calls[0]["settings"].num_ctx == 6144 and window_spy == [6144]
+    assert any(r.levelname == "WARNING" for r in caplog.records)
 
 
 async def test_a_turn_gets_the_deployment_zone_as_its_default(conn, monkeypatch):

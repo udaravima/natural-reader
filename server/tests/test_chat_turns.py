@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -11,6 +12,7 @@ from server.auth import deps
 from server.chat import context as ctx_mod
 from server.chat import orchestrator, store
 from server.chat.tools import search_documents as sd_tool
+from server.llm.providers.base import ProviderConfig
 from server.llm.types import Capabilities, Finish, TextDelta, Usage
 from server.routers import chat_turns
 from server.services import inference_budget
@@ -231,6 +233,9 @@ class _StuckRouter:
 
     def provider_kind(self, model_id: str) -> str | None:
         return "ollama"
+
+    def resolve(self, model_id: str):
+        return SimpleNamespace(config=ProviderConfig("ollama", "ollama", "http://localhost:11434")), model_id.removeprefix("ollama:")
 
     def stream_chat(self, model_id, messages, tools, settings):
         return self._gen()

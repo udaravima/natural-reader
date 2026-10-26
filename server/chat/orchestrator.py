@@ -20,10 +20,11 @@ import functools
 import json
 import logging
 import math
+import os
 import re
 import time
 from contextlib import aclosing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
@@ -32,10 +33,11 @@ from ..llm.router import UnknownModel
 from ..llm.types import (Attachment, CallSettings, Capabilities, FeatureDropped, Finish, Message,
                          ProviderError, ProviderTimeout, ProviderUnavailable, ReasoningDelta,
                          TextDelta, ToolCall, ToolCallReady, Usage)
-from ..services import assistant_profile, chat_options, deployment_settings, inference_budget
+from ..services import assistant_profile, chat_options, deployment_settings, inference_budget, model_settings
 from ..services import doc_pipeline
 from ..services.doc_outlines import Outline, load_outlines
 from ..services.doc_search import ReadableDoc, readable_doc
+from ..services.inference_limits import get_limits
 from . import store
 from .config import ChatConfig
 from .context import TurnInput, build_context
@@ -261,6 +263,15 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         async with get_pool().connection() as conn:
             profile = await assistant_profile.load_profile(conn)
         options = await _chat_options()
+        # One context size per self-hosted Ollama model, for every call of the turn and for the trimming window:
+        # Ollama loads a model at 4,096 tokens unless the request names a size (services/model_settings.py).
+        # `models_cfg` and `settings` are what the turn's other parts (the reader) are handed.
+        models_cfg = await _models_settings()
+        provider, model_name = router.resolve(req.model_id)     # the route already resolved it: never UnknownModel
+        model_key = f"{provider.config.name}:{model_name}"
+        sized = model_settings.sizes_context(provider.config, model_name, models_cfg.provider_locality)
+        settings = replace(req.settings, num_ctx=model_settings.num_ctx_for(
+            models_cfg, model_key, local=sized, user_value=req.settings.num_ctx, limits=get_limits()))
         # What was approved is what the user saw: a query with hidden characters is cleaned first, and one with
         # nothing visible left is no approval (chat/web_consent.py).
         web_query = clean_query(req.web_query) if req.web_query else None
@@ -296,7 +307,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         built = await build_context(TurnInput(
             user_id=req.user_id, text=req.text, attachments=req.attachments, doc=doc,
             timezone=req.timezone, pins=pins, history=history,
-            window=_window(router, req, caps), now=datetime.now(timezone.utc),
+            window=_window(provider.config, model_key, settings, caps, models_cfg), now=datetime.now(timezone.utc),
             tools=tuple(offered if max_rounds > 0 else ()), tool_ctx=tool_ctx,
             profile=profile.text, scope=tuple(scope_docs(tool_ctx)),
             project_map=project_map.text if project_map else "", app_exchange=app_exchange,
@@ -391,7 +402,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             failed = False
             try:
                 async with aclosing(router.stream_chat(req.model_id, messages, [tool_spec(t, tool_ctx) for t in tools_now],
-                                                       req.settings)) as stream:
+                                                       settings)) as stream:
                     async for chunk in stream:
                         if isinstance(chunk, ReasoningDelta):
                             if not open_reasoning:
@@ -681,13 +692,16 @@ async def _capabilities(router: Any, model_id: str) -> Capabilities:
         return Capabilities()
 
 
-def _window(router: Any, req: TurnRequest, caps: Capabilities) -> int | None:
-    """The trimming window (ruling R14): num_ctx is an Ollama option, so it
-    counts only when the model's provider is Ollama. A value left over from an
-    Ollama model must not trim an OpenAI-kind chat (final review M4)."""
-    if req.settings.num_ctx and router.provider_kind(req.model_id) == "ollama":
-        return req.settings.num_ctx
-    return caps.context_window
+def _window(provider: Any, model_key: str, settings: CallSettings, caps: Capabilities,
+            models_cfg: model_settings.ModelsSettings) -> int | None:
+    """The trimming window (ruling R14): num_ctx is an Ollama option, so it counts only when the model's provider is
+    Ollama (final review M4) and a size is sent. Otherwise the model's own reported window, then the one the admin
+    or the environment declared for a model that reports none (model_settings.declared_window)."""
+    if settings.num_ctx and provider.kind == "ollama":
+        return settings.num_ctx
+    if caps.context_window:
+        return caps.context_window
+    return model_settings.declared_window(models_cfg, model_key, provider.name, os.environ)[0]
 
 
 async def _project_scope(req: TurnRequest) -> ProjectScope:
@@ -759,6 +773,17 @@ async def _chat_options() -> chat_options.ChatOptions:
     except Exception:  # noqa: BLE001 — see above
         logger.warning("Chat options couldn't be read: using CHAT_WEB_SEARCH, else the default", exc_info=True)
         return chat_options.from_env()
+
+
+async def _models_settings() -> model_settings.ModelsSettings:
+    """The admin's model settings, read once per turn. Fail-open like _chat_options: if the row can't be read, the
+    environment's values apply (INFERENCE_LOCAL_NUM_CTX, then the default)."""
+    try:
+        async with get_pool().connection() as conn:
+            return await model_settings.load_models_settings(conn, os.environ)
+    except Exception:  # noqa: BLE001 — see above
+        logger.warning("The model settings couldn't be read: using the environment's", exc_info=True)
+        return model_settings.from_env()
 
 
 async def _deployment_timezone() -> str:
