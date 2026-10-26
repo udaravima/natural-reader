@@ -1242,8 +1242,10 @@ def _spy_charges(monkeypatch) -> list:
 
 
 async def _usage(conn, user_id):
-    return await _one(conn, "SELECT prompt_tokens, eval_tokens, requests FROM inference_usage WHERE user_id=%s",
-                      (user_id,))
+    """The user's day, summed over model and kind (a turn with a reader writes one row of each)."""
+    row = await _one(conn, "SELECT SUM(prompt_tokens)::bigint, SUM(eval_tokens)::bigint, SUM(requests)::bigint "
+                           "FROM inference_usage WHERE user_id=%s", (user_id,))
+    return None if row[0] is None else row
 
 
 async def test_a_read_web_pages_turn_charges_its_reader_calls_to_the_user(conn, web, use_router, web_auto, monkeypatch):
@@ -1257,7 +1259,7 @@ async def test_a_read_web_pages_turn_charges_its_reader_calls_to_the_user(conn, 
     alice = await member(conn, "alice")
     events, _ = await _run(conn, FakeRouter(steps=_web_turn_steps("It is 8080 (b.test).")), user=alice,
                            text="Which port?")
-    assert [(user, call.model, call.usage) for user, call in charged] == [(alice.user_id, "reader-model", Usage(400, 30))] * 2
+    assert [(user, call.model, call.usage) for user, call in charged] == [(alice.user_id, "ollama:reader-model", Usage(400, 30))] * 2
     # Chat steps 5+5, 5+5 and 10+3 (three requests); reader 2 × (400+30) (two requests).
     assert await _usage(conn, alice.user_id) == (20 + 800, 13 + 60, 5)
     assert events[-1]["usage"] == {"promptTokens": 20, "completionTokens": 13, "estimated": False}
@@ -1275,7 +1277,7 @@ async def test_an_extract_from_documents_turn_charges_its_reader_calls_to_the_us
     assert next(e for e in events if e["type"] == "tool-output-available")["output"]["summary_text"] == (
         "Found 1 fact on page 1 of Alpha.md.")
     [(user, call)] = charged
-    assert (call.model, call.usage, call.finished) == ("reader-model", Usage(900, 50), True)
+    assert (call.model, call.usage, call.finished) == ("ollama:reader-model", Usage(900, 50), True)
     assert await _usage(db_conn, user) == (5 + 10 + 900, 5 + 3 + 50, 3)
 
 
@@ -1366,3 +1368,82 @@ async def test_web_sources_come_with_a_document_scope_chat_too(conn, open_doc, w
     assert _last(kinds, "text-end") < kinds.index("data-web-sources") < kinds.index("finish")
     assert "data-sources" not in kinds
     assert _notes(await _msg(conn, claim.turn_id)) == [{"kind": "web_sources", "pages": pages}]
+
+
+# ---- admin console v2 phase 3, Task 2: every usage write names its model and kind ----
+
+async def _usage_rows(conn, user_id):
+    """Every row of the user's usage today: (model, kind, prompt, eval, requests, estimated_tokens), sorted."""
+    cur = await conn.execute("SELECT model, kind, prompt_tokens, eval_tokens, requests, estimated_tokens "
+                             "FROM inference_usage WHERE user_id=%s ORDER BY model, kind", (user_id,))
+    return await cur.fetchall()
+
+
+async def test_chat_step_records_model_and_kind(conn):
+    router = FakeRouter(steps=[[TextDelta("Hi."), Usage(10, 3), Finish("stop")]])
+    alice = await member(conn, "alice")
+    await _run(conn, router, user=alice)
+    assert await _usage_rows(conn, alice.user_id) == [("ollama:m", "chat", 10, 3, 1, 0)]
+
+
+async def test_cut_short_step_records_model_and_kind(conn):
+    """_finalize charges the step a disconnect cut short: under the turn's model, as chat."""
+    router = FakeRouter(steps=[[TextDelta("Part"), TextDelta("ial"), Usage(1, 1), Finish("stop")]])
+    alice = await member(conn, "alice")
+    claim, req = await _start(alice, model_id="ollama:cut")
+    agen = run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)
+    async for e in agen:
+        if e["type"] == "text-delta":
+            break
+    await agen.aclose()
+    [(model, kind, prompt, evaluated, requests, _)] = await _usage_rows(conn, alice.user_id)
+    assert (model, kind, requests) == ("ollama:cut", "chat", 1) and prompt > 0 and evaluated > 0
+
+
+async def test_estimated_usage_marks_estimated_tokens(conn):
+    """A provider that sends no usage is charged the chars/4 estimate, and the row says those tokens are estimated."""
+    router = FakeRouter(steps=[[TextDelta("x" * 40), Finish("stop")]])
+    alice = await member(conn, "alice")
+    await _run(conn, router, user=alice)
+    [(model, kind, prompt, evaluated, requests, estimated)] = await _usage_rows(conn, alice.user_id)
+    assert (model, kind, requests) == ("ollama:m", "chat", 1)
+    assert estimated == prompt + evaluated and estimated > 0
+
+
+async def test_reader_batch_records_reader_kind(db_conn, monkeypatch, web, use_router):
+    """An extract_from_documents batch is a reader row under the reader model's canonical id, beside the chat's."""
+    shim_pool(monkeypatch, db_conn, ex_tool)
+    await _save_models(db_conn, reader="ollama:reader-model")
+    use_router(by_label({"[1, page 1]": ("Alpha uses ZEPHYR-9 nodes", "ZEPHYR-9 nodes")})).usage = Usage(900, 50)
+    steps = [[ToolCallReady(ToolCall("x1", "extract_from_documents", {"documents": [1], "need": "the node type"})),
+              Usage(5, 5), Finish("tool_calls")],
+             reply("Alpha uses ZEPHYR-9 nodes (Alpha.md, page 1).")]
+    _, claim = await _project_turn(db_conn, monkeypatch, FakeRouter(steps=steps))
+    cur = await db_conn.execute("SELECT user_id FROM chat_sessions WHERE id=%s", (claim.session_id,))
+    [(user_id,)] = await cur.fetchall()
+    assert await _usage_rows(db_conn, str(user_id)) == [
+        ("ollama:m", "chat", 5 + 10, 5 + 3, 2, 0),
+        ("ollama:reader-model", "reader", 900, 50, 1, 0)]
+
+
+async def test_reader_bare_name_lands_canonical(conn, monkeypatch, reader_env):
+    """The same reader model under two spellings is one row: the bare name the router places on ollama, and the
+    canonical key, both record `ollama:m2`. A reader the router can't place keeps its name."""
+    await _save_models(conn, reader="m2")
+    assert (await _reader_cfg_of(conn, monkeypatch)).model == "ollama:m2"
+    await _save_models(conn, reader="ollama:m2")
+    assert (await _reader_cfg_of(conn, monkeypatch)).model == "ollama:m2"
+    await _save_models(conn, reader="vllm:small")
+    assert (await _reader_cfg_of(conn, monkeypatch, _TwoKinds())).model == "vllm:small"     # an unsized path too
+    await _save_models(conn, reader="gone")
+    assert (await _reader_cfg_of(conn, monkeypatch, _TwoKinds())).model == "gone"
+
+
+async def test_a_bare_reader_name_is_charged_under_its_canonical_id(conn, monkeypatch, reader_env):
+    """From the setting to the row: reader='m2' charges `ollama:m2`, as reader."""
+    await _save_models(conn, reader="m2")
+    cfg = await _reader_cfg_of(conn, monkeypatch)
+    alice = await member(conn, "alice")
+    await orchestrator._charge_reader(alice.user_id, BatchCall(cfg.model, SENT, "z", Usage(7, 2), True))
+    rows = await _usage_rows(conn, alice.user_id)       # the turn that made the config left its own chat row
+    assert [r for r in rows if r[1] == "reader"] == [("ollama:m2", "reader", 7, 2, 1, 0)]

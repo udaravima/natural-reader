@@ -475,7 +475,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                 usage = Usage(0, 0)   # refused before generating anything: nothing to charge (as _finalize)
             else:
                 usage = await asyncio.shield(_record_usage(req.user_id, usage, messages,
-                                                           text + probe.held + reasoning))
+                                                           text + probe.held + reasoning,
+                                                           model=req.model_id, kind="chat"))
             state.add(usage, finish)
             yield ev("finish-step", step=step, usage=_usage_json(usage), finishReason=finish)
             await _save(claim, state)
@@ -599,7 +600,8 @@ async def _finalize(claim: TurnClaim, state: _State, outcome: str, req: TurnRequ
             # that refuses before generating anything (e.g. HTTP 400 on an
             # invalid model) leaves nothing to charge (walk fix 2).
             if outcome == "aborted" or _billable(state.pending_usage, state.pending_output):
-                await _record_usage(req.user_id, state.pending_usage, state.pending_messages, state.pending_output)
+                await _record_usage(req.user_id, state.pending_usage, state.pending_messages, state.pending_output,
+                                    model=req.model_id, kind="chat")
             state.step_recorded = True
         if outcome == "aborted":
             await _log_event(claim.session_id, "aborted", "user stopped the stream")
@@ -785,7 +787,8 @@ def _turn_reader(router, models_cfg: model_settings.ModelsSettings, chat_id: str
     named (any Ollama you host); none for any other (Ollama cloud and openai-kind send none, even when the person
     set a size for a cloud chat). A reader model the router
     can't place keeps its name and gets no size: its calls fail as the reader's own provider_error result,
-    never the turn."""
+    never the turn. A model the router can place is named by its canonical `provider:name` on every path, so the
+    usage rows count `gemma4:e4b` and `ollama:gemma4:e4b` as one model."""
     cfg = replace(get_reader_config(), model=models_cfg.reader)
     named = resolve_model(cfg, chat_id)
     cfg = replace(cfg, model=named)
@@ -794,6 +797,7 @@ def _turn_reader(router, models_cfg: model_settings.ModelsSettings, chat_id: str
     except UnknownModel:
         return cfg
     key = f"{provider.config.name}:{name}"
+    cfg = replace(cfg, model=key)
     if not model_settings.sizes_context(provider.config, name):
         return cfg      # a cloud or openai-kind model needs none (the person's chat value is not the reader's to send)
     if model_settings.same_model(key, chat_key):
@@ -846,17 +850,21 @@ async def _charge_reader(user_id: str, call: BatchCall) -> None:
     the provider's own count when it sent one, else the chars/4 estimate (`_record_usage`). A call that failed or
     timed out is charged only if it produced something, by the rule of a step cut short (`_billable`). It only adds
     to the day's totals: it refuses nothing (the next step's check does), and it is not part of the reply's own
-    usage, which is the chat model's. The usage table has no model column: the log line names the reader model."""
+    usage, which is the chat model's. The row is the reader's own: `call.model` (the canonical id `_turn_reader`
+    resolved), kind "reader", so the admin's usage page can tell it from the chat's. The log line names it too."""
     if not call.finished and not _billable(call.usage, call.output):
         return
-    usage = await asyncio.shield(_record_usage(user_id, call.usage, list(call.messages), call.output))
+    usage = await asyncio.shield(_record_usage(user_id, call.usage, list(call.messages), call.output,
+                                               model=call.model, kind="reader"))
     logger.info("reader usage user=%s model=%s tokens=%d+%d estimated=%s", user_id, call.model,
                 usage.prompt_tokens, usage.completion_tokens, usage.estimated)
 
 
-async def _record_usage(user_id: str, usage: Usage | None, messages: list[Message], output: str) -> Usage:
-    """Record the step's usage now. A provider that sends no counts is charged
-    an estimate (chars/4), so it can't be used for free (spec §5.6)."""
+async def _record_usage(user_id: str, usage: Usage | None, messages: list[Message], output: str, *,
+                        model: str, kind: str) -> Usage:
+    """Record the step's usage now, under `model` (canonical `provider:name`) and `kind` ("chat" or "reader").
+    A provider that sends no counts is charged an estimate (chars/4), so it can't be used for free (spec §5.6); the
+    row marks those tokens as estimated."""
     if usage is None:
         prompt = math.ceil(sum(len(m.content) for m in messages) / 4)
         usage = Usage(prompt, math.ceil(len(output) / 4), estimated=True)
@@ -864,7 +872,8 @@ async def _record_usage(user_id: str, usage: Usage | None, messages: list[Messag
                        usage.prompt_tokens, usage.completion_tokens)
     try:
         async with get_pool().connection() as conn:
-            await inference_budget.record_usage(conn, user_id, usage.prompt_tokens, usage.completion_tokens)
+            await inference_budget.record_usage(conn, user_id, usage.prompt_tokens, usage.completion_tokens,
+                                                model=model, kind=kind, estimated=usage.estimated)
     except Exception:
         logger.warning("Usage accounting failed (fail-open)", exc_info=True)
     return usage
