@@ -412,14 +412,39 @@ async def inference_config(
     }
 
 
+def _model_tag(model: str, providers: Mapping[str, Any], locality: Mapping[str, str]) -> str:
+    """`local`, `cloud` or `unknown` for a stored model id, from its provider's mark as it is now (so changing a
+    mark re-tags history). `''` (written before migration 023) and an id whose provider is no longer configured,
+    including a bare reader name the router could not place, are `unknown`."""
+    prefix, _, name = model.partition(":")
+    provider = providers.get(prefix) if name else None
+    if provider is None:
+        return "unknown"
+    return "local" if model_settings.is_local(provider.config, name, locality) else "cloud"
+
+
 @router.get("/inference/usage")
 async def inference_usage(
     days: int = 7,
+    group: Literal["user_day", "model", "user", "day"] = "user_day",
+    user_id: uuid.UUID | None = None,
+    model: str | None = None,
     _: deps.Principal = Depends(deps.require_admin),
     conn=Depends(deps.get_conn, scope="function"),
 ):
+    """Usage over the last `days` (clamped 1..90) deployment days, summed by `group` (see
+    `inference_budget.admin_usage_grouped`). `group` absent is `user_day`: the list this route always returned.
+    `user_id` and `model` filter before grouping; `model=` (empty) is the rows from before the upgrade. The
+    `model` group adds `tag`: `local`, `cloud` or `unknown`, read per request from the Models section's marks."""
     days = max(1, min(90, days))
-    return await inference_budget.admin_usage(conn, days=days)
+    rows = await inference_budget.admin_usage_grouped(
+        conn, days=days, group=group, user_id=str(user_id) if user_id else None, model=model)
+    if group == "model":
+        ms = await model_settings.load_models_settings(conn, os.environ)
+        providers = get_router().providers
+        for r in rows:
+            r["tag"] = _model_tag(r["model"], providers, ms.provider_locality)
+    return rows
 
 
 # ---------- deployment defaults for user preferences ----------

@@ -119,3 +119,68 @@ async def admin_usage(conn, days: int = 7) -> list[dict]:
         d["tokens"] = d["prompt_tokens"] + d["eval_tokens"]
         out.append(d)
     return out
+
+
+_GROUPS = ("user_day", "model", "user", "day")
+
+
+async def admin_usage_grouped(conn, *, days: int, group: str, user_id: str | None, model: str | None) -> list[dict]:
+    """The console's usage numbers over the last `days` deployment days (ending today, `today(conn)`), summed by
+    `group`:
+
+    - `user_day`: one row per person per day, `admin_usage`'s shape (email, user_id, day, prompt_tokens,
+      eval_tokens, requests, tokens), newest day first;
+    - `model`: one row per stored model id, biggest `tokens` first, then `model`;
+    - `user`: one row per person (user_id, email), biggest `tokens` first, then `email`;
+    - `day`: one row per day (YYYY-MM-DD), newest first.
+
+    `user_id` and `model` filter before grouping and combine with any group; `model=""` matches the rows written
+    before migration 023 (model unknown). The `model`, `user` and `day` rows also carry `chat_tokens` and
+    `reader_tokens` (the per-kind split; rows of kind `''` count in `tokens` only) and `estimated_tokens` (tokens
+    counted by the chars/4 estimate rather than reported by the provider). `tokens` is prompt plus eval. The local
+    or cloud tag is not stored: the route adds it at read time from the provider's current mark."""
+    if group not in _GROUPS:
+        raise ValueError(f"group must be one of {_GROUPS}, not {group!r}")
+    since = await today(conn) - timedelta(days=days - 1)
+    where, params = ["s.day >= %s"], [since]
+    if user_id is not None:
+        where.append("s.user_id = %s")
+        params.append(user_id)
+    if model is not None:
+        where.append("s.model = %s")
+        params.append(model)
+    dims = {
+        "user_day": (["u.email", "s.user_id", "s.day"], "s.day DESC, u.email"),
+        "model": (["s.model"], "SUM(s.prompt_tokens + s.eval_tokens) DESC, s.model"),
+        "user": (["u.email", "s.user_id"], "SUM(s.prompt_tokens + s.eval_tokens) DESC, u.email"),
+        "day": (["s.day"], "s.day DESC"),
+    }
+    cols, order = dims[group]
+    sums = [
+        ("prompt_tokens", "SUM(s.prompt_tokens)::bigint"),
+        ("eval_tokens", "SUM(s.eval_tokens)::bigint"),
+        ("requests", "SUM(s.requests)::bigint"),
+    ]
+    if group != "user_day":
+        sums += [
+            ("chat_tokens", "COALESCE(SUM(s.prompt_tokens + s.eval_tokens) FILTER (WHERE s.kind = 'chat'), 0)::bigint"),
+            ("reader_tokens", "COALESCE(SUM(s.prompt_tokens + s.eval_tokens) FILTER (WHERE s.kind = 'reader'), 0)::bigint"),
+            ("estimated_tokens", "SUM(s.estimated_tokens)::bigint"),
+        ]
+    join = "JOIN users u ON u.id = s.user_id " if any(c.startswith("u.") for c in cols) else ""
+    cur = await conn.execute(
+        f"SELECT {', '.join(cols)}, {', '.join(e for _, e in sums)} FROM inference_usage s {join}"
+        f"WHERE {' AND '.join(where)} GROUP BY {', '.join(cols)} ORDER BY {order}",
+        params,
+    )
+    keys = [c.split(".")[1] for c in cols] + [k for k, _ in sums]
+    out = []
+    for r in await cur.fetchall():
+        d = dict(zip(keys, r))
+        if "user_id" in d:
+            d["user_id"] = str(d["user_id"])
+        if "day" in d:
+            d["day"] = d["day"].isoformat()
+        d["tokens"] = d["prompt_tokens"] + d["eval_tokens"]
+        out.append(d)
+    return out

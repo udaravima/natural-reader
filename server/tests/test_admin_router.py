@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import httpx
 from fastapi import FastAPI
 from httpx import ASGITransport
@@ -75,6 +77,156 @@ async def test_admin_inference_usage_clamps_days(db_conn):
     async with _client(_app(db_conn, p)) as client:
         r = await client.get("/v1/admin/inference/usage?days=99999")
     assert r.status_code == 200  # clamped to 90, not an error
+
+
+# ---------- GET /v1/admin/inference/usage?group=...: usage by model, person and day ----------
+
+async def _usage_world(db_conn, monkeypatch, marks=None):
+    """Two providers on the router (a host-local `ollama`, a cloud-hosted `openrouter`) and, optionally, the
+    Models section's provider_locality marks."""
+    from server.services import console_settings, model_settings
+    admin, p = await _admin(db_conn)
+    router = _CatalogRouter([_CatalogProvider("ollama", "ollama", "http://ollama:11434"),
+                             _CatalogProvider("openrouter", "openai", "https://openrouter.example.com/api/v1")], [])
+    monkeypatch.setattr(admin_router, "get_router", lambda: router)
+    if marks:
+        await console_settings.save(db_conn, model_settings.SECTION, {"provider_locality": marks},
+                                    updated_by=str(admin["id"]))
+    return admin, p
+
+
+async def _usage(db_conn, p, query):
+    async with _client(_app(db_conn, p)) as client:
+        return await client.get(f"/v1/admin/inference/usage?{query}")
+
+
+async def _use(db_conn, user, model, kind, p=10, e=5, estimated=False):
+    from server.services import inference_budget as ib
+    await ib.record_usage(db_conn, user["id"], p, e, model=model, kind=kind, estimated=estimated)
+
+
+async def test_usage_group_model_tags(db_conn, monkeypatch):
+    admin, p = await _usage_world(db_conn, monkeypatch, marks={"ollama": "local"})
+    await _use(db_conn, admin, "ollama:gemma4:e4b", "chat", 100, 50)
+    await _use(db_conn, admin, "openrouter:some/model", "chat", 10, 5)
+    await db_conn.execute(
+        "INSERT INTO inference_usage (user_id, day, model, kind, prompt_tokens, eval_tokens, requests) "
+        "VALUES (%s, (SELECT max(day) FROM inference_usage), '', '', 1, 1, 1)", (admin["id"],))
+    r = await _usage(db_conn, p, "group=model")
+    assert r.status_code == 200
+    assert [(x["model"], x["tag"], x["tokens"]) for x in r.json()] == [
+        ("ollama:gemma4:e4b", "local", 150), ("openrouter:some/model", "cloud", 15), ("", "unknown", 2)]
+
+
+async def test_usage_group_model_follows_the_provider_mark(db_conn, monkeypatch):
+    admin, p = await _usage_world(db_conn, monkeypatch, marks={"ollama": "cloud", "openrouter": "local"})
+    await _use(db_conn, admin, "ollama:m", "chat")
+    await _use(db_conn, admin, "openrouter:m", "chat")
+    tags = {x["model"]: x["tag"] for x in (await _usage(db_conn, p, "group=model")).json()}
+    assert tags == {"ollama:m": "cloud", "openrouter:m": "local"}
+
+
+async def test_usage_group_model_removed_provider_unknown(db_conn, monkeypatch):
+    admin, p = await _usage_world(db_conn, monkeypatch)
+    await _use(db_conn, admin, "gone:m", "chat")
+    await _use(db_conn, admin, "gemma4:e4b", "reader")    # a bare reader name the router could not place
+    r = await _usage(db_conn, p, "group=model")
+    assert r.status_code == 200
+    assert {x["model"]: x["tag"] for x in r.json()} == {"gone:m": "unknown", "gemma4:e4b": "unknown"}
+
+
+async def test_usage_group_user_with_model_filter(db_conn, monkeypatch):
+    admin, p = await _usage_world(db_conn, monkeypatch)
+    other = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io")
+    await _use(db_conn, admin, "ollama:a", "chat", 10, 0)
+    await _use(db_conn, admin, "ollama:b", "chat", 1000, 0)
+    await _use(db_conn, other, "ollama:a", "chat", 40, 0)
+    await _use(db_conn, other, "ollama:b", "chat", 2000, 0)
+    rows = (await _usage(db_conn, p, "group=user&model=ollama:a")).json()
+    assert [(x["email"], x["user_id"], x["tokens"]) for x in rows] == [
+        ("b@x.io", str(other["id"]), 40), ("a@x.io", str(admin["id"]), 10)]
+
+
+async def test_usage_user_filter_group_model(db_conn, monkeypatch):
+    admin, p = await _usage_world(db_conn, monkeypatch)
+    other = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io")
+    await _use(db_conn, admin, "ollama:a", "chat", 10, 0)
+    await _use(db_conn, admin, "ollama:b", "chat", 30, 0)
+    await _use(db_conn, other, "ollama:a", "chat", 500, 0)
+    rows = (await _usage(db_conn, p, f"group=model&user_id={admin['id']}")).json()
+    assert [(x["model"], x["tokens"]) for x in rows] == [("ollama:b", 30), ("ollama:a", 10)]
+
+
+async def test_usage_model_filter_empty_matches_unknown(db_conn, monkeypatch):
+    admin, p = await _usage_world(db_conn, monkeypatch)
+    await _use(db_conn, admin, "ollama:a", "chat")
+    await db_conn.execute(
+        "INSERT INTO inference_usage (user_id, day, model, kind, prompt_tokens, eval_tokens, requests) "
+        "VALUES (%s, (SELECT max(day) FROM inference_usage), '', '', 7, 0, 1)", (admin["id"],))
+    rows = (await _usage(db_conn, p, "group=model&model=")).json()
+    assert [(x["model"], x["tag"], x["tokens"]) for x in rows] == [("", "unknown", 7)]
+
+
+async def test_usage_group_day(db_conn, monkeypatch):
+    from server.services import inference_budget as ib
+    admin, p = await _usage_world(db_conn, monkeypatch)
+    today = await ib.today(db_conn)
+    await _use(db_conn, admin, "ollama:a", "chat", 10, 5)
+    await _use(db_conn, admin, "ollama:b", "reader", 1, 1)
+    await db_conn.execute(
+        "INSERT INTO inference_usage (user_id, day, model, kind, prompt_tokens, eval_tokens, requests) "
+        "VALUES (%s, %s, 'ollama:a', 'chat', 100, 0, 1)", (admin["id"], today - timedelta(days=1)))
+    await db_conn.execute(
+        "INSERT INTO inference_usage (user_id, day, model, kind, prompt_tokens, eval_tokens, requests) "
+        "VALUES (%s, %s, 'ollama:a', 'chat', 9, 0, 1)", (admin["id"], today - timedelta(days=8)))   # outside 7 days
+    rows = (await _usage(db_conn, p, "group=day&days=7")).json()
+    assert [(x["day"], x["tokens"], x["requests"]) for x in rows] == [
+        (today.isoformat(), 17, 2), ((today - timedelta(days=1)).isoformat(), 100, 1)]
+    assert set(rows[0]) == {"day", "prompt_tokens", "eval_tokens", "tokens", "requests", "chat_tokens",
+                            "reader_tokens", "estimated_tokens"}
+
+
+async def test_usage_chat_reader_split(db_conn, monkeypatch):
+    admin, p = await _usage_world(db_conn, monkeypatch)
+    await _use(db_conn, admin, "ollama:a", "chat", 10, 5, estimated=True)
+    await _use(db_conn, admin, "ollama:a", "reader", 3, 2)
+    await db_conn.execute(
+        "INSERT INTO inference_usage (user_id, day, model, kind, prompt_tokens, eval_tokens, requests) "
+        "VALUES (%s, (SELECT max(day) FROM inference_usage), 'ollama:a', '', 100, 0, 1)", (admin["id"],))
+    (row,) = (await _usage(db_conn, p, "group=model")).json()
+    assert (row["tokens"], row["chat_tokens"], row["reader_tokens"]) == (120, 15, 5)   # '' counts in tokens only
+    assert (row["prompt_tokens"], row["eval_tokens"], row["requests"], row["estimated_tokens"]) == (113, 7, 3, 15)
+    assert all(type(row[k]) is int for k in ("tokens", "chat_tokens", "reader_tokens", "estimated_tokens"))
+
+
+async def test_usage_bad_group_422(db_conn, monkeypatch):
+    _, p = await _usage_world(db_conn, monkeypatch)
+    assert (await _usage(db_conn, p, "group=nope")).status_code == 422
+
+
+async def test_usage_bad_user_id_422(db_conn, monkeypatch):
+    _, p = await _usage_world(db_conn, monkeypatch)
+    assert (await _usage(db_conn, p, "user_id=not-a-uuid")).status_code == 422
+
+
+async def test_usage_default_shape_unchanged(db_conn, monkeypatch):
+    admin, p = await _usage_world(db_conn, monkeypatch)
+    await _use(db_conn, admin, "ollama:a", "chat", 10, 5)
+    await _use(db_conn, admin, "ollama:b", "reader", 1, 1)
+    plain = (await _usage(db_conn, p, "days=7")).json()
+    explicit = (await _usage(db_conn, p, "days=7&group=user_day")).json()
+    assert plain == explicit
+    assert len(plain) == 1 and set(plain[0]) == {"email", "user_id", "day", "prompt_tokens", "eval_tokens",
+                                                 "requests", "tokens"}
+    assert (plain[0]["tokens"], plain[0]["requests"], plain[0]["user_id"]) == (17, 2, str(admin["id"]))
+
+
+async def test_usage_grouped_requires_admin(db_conn, monkeypatch):
+    await _usage_world(db_conn, monkeypatch)
+    m = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io")
+    p = deps.Principal(user_id=m["id"], email=m["email"], role="member")
+    for g in ("user_day", "model", "user", "day"):
+        assert (await _usage(db_conn, p, f"group={g}")).status_code == 403
 
 
 async def test_patch_sets_and_clears_budget(db_conn):
