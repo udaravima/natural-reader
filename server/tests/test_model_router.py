@@ -6,7 +6,6 @@ def test_defaults():
     assert cfg.ollama_url == "http://localhost:11434"
     assert cfg.timeout_s == 300
     assert cfg.allowed_models is None          # unset = allow everything
-    assert cfg.summarize_model == "chat"
     assert cfg.embed_model == "nomic-embed-text"
     assert cfg.daily_token_budget is None      # unset = unlimited
 
@@ -19,16 +18,6 @@ def test_allowlist_parses_comma_separated_with_whitespace():
 def test_empty_allowlist_means_all():
     cfg = load_inference_config({"INFERENCE_MODELS": "  "})
     assert cfg.allowed_models is None
-
-
-def test_summarize_model_precedence():
-    assert load_inference_config({}).summarize_model == "chat"
-    assert load_inference_config(
-        {"WEB_SEARCH_SUMMARY_MODEL": "old"}).summarize_model == "old"
-    assert load_inference_config({
-        "WEB_SEARCH_SUMMARY_MODEL": "old",
-        "SUMMARIZE_MODEL": "new",
-    }).summarize_model == "new"
 
 
 def test_budget_zero_and_unset_mean_unlimited():

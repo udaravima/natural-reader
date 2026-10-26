@@ -66,8 +66,8 @@ All notable changes to this project will be documented in this file.
     provider reports no window (most OpenAI-compatible servers).
     `INFERENCE_<NAME>_CONTEXT_WINDOW` sets one for a whole provider.
   - **Providers**: **Auto**, **Local** or **Cloud** for each provider. This is
-    the cost flag (the Overview's quota hint, and later usage); **Cloud** also
-    stops a provider's Ollama models from being sized.
+    the cost flag (the Overview's quota hint, and later usage) and nothing
+    else: a self-hosted Ollama marked **Cloud** is still sized.
   - **Chat models offered**: tick the models people may choose. It can only
     narrow what `INFERENCE_MODELS` and the providers' allow-lists permit; none
     ticked means every model the server allows. If every ticked model has

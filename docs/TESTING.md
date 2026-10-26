@@ -63,10 +63,10 @@ spot a feature that shipped without coverage.
 # Backend — REQUIRES Postgres up (conftest migrates natural_reader_test on a
 # real connection; without the DB every test errors, not skips). Run it with
 # the two TEST_* variables above exported, or it uses 5433.
-.venv/bin/python -m pytest server/tests/ -q          # 2417 passed, 16 skipped, 2 deselected @ 2026-10-26 (phase 2a, 88484f4)
+.venv/bin/python -m pytest server/tests/ -q          # 2418 passed, 16 skipped, 2 deselected @ 2026-10-26 (phase 2a, final fix)
 
 # Frontend (vitest, jsdom — no services needed)
-npx vitest run                                       # 1167 passed (118 files) @ 2026-10-26 (phase 2a, 88484f4)
+npx vitest run                                       # 1170 passed (118 files) @ 2026-10-26 (phase 2a, final fix)
 
 # Lint
 npx eslint src                                       # clean (npm run lint is the same)
@@ -237,10 +237,9 @@ spans several files:
 
 | Case | Asserts |
 |---|---|
-| defaults | unset → all-models allowlist (dev), `chat` (the chat model of each conversation) for `summarize_model`, `nomic-embed-text` embed, 300s timeout |
+| defaults | unset → all-models allowlist (dev), `nomic-embed-text` embed, 300s timeout |
 | allowlist_parses_comma_separated_with_whitespace | CSV parsing |
 | empty_allowlist_means_all | unset/blank = allow everything |
-| summarize_model_precedence | `SUMMARIZE_MODEL` > `WEB_SEARCH_SUMMARY_MODEL` > default |
 | budget_zero_and_unset_mean_unlimited | falsy budget → None |
 | ollama_url_trailing_slash_stripped | URL normalization |
 
@@ -347,7 +346,7 @@ Counts are collected cases (parametrized ones expanded) in the whole file, new a
 | `test_admin_router.py` (37) | `GET /v1/admin/models` (shape; lists models the console's own selection left out; needs admin); **`GET /v1/admin/users` search**: name, email, username and full name; `%` and `_` are literal; status and capability filters; paging with `X-Total-Count`; **no parameters returns the whole table as before**; bad parameters are 422; admin only |
 | `test_console_overview.py` (41) | the default reader is **OK**, never a warning; a reader of `chat` from the environment or the console is OK; **the quota hint asks about cost (`is_local`), counts only models offered, and never costs the reader line when a provider hangs or `INFERENCE_*` is malformed;** a named reader is checked and says where it was set; a model that isn't listed says how to fix it; **the context window of a sized model is the size requests send, whatever its host; a loaded model reports what is loaded;** other providers report their number, a declared one, or Unknown; the console's selection applies; an unreadable row uses the environment |
 | `test_app_wiring.py`, `test_admin_settings.py`, `test_deployment_info.py` | CORS exposes `X-Total-Count`; the `models` section round-trips through `PUT`/`GET /v1/admin/settings/models`; Deployment's read-only list has no "Reading model" row |
-| `ModelsSection.test.jsx` (24, new) | the six rows from a settings payload and a catalog; Save off for an invalid size (with the reason, and clearing once fixed) and for an invalid deployment size; a per-model size adds or removes only its key; a declared window below 1,024 is refused; **a provider set to Cloud drops its models from the per-model sizes**, a hidden invalid size no longer blocks Save, a valid one is kept; an Ollama cloud model or an ollama.com provider is never sized; **Auto** names what the host rule detected; none ticked says every allowed model is offered, and a stored id the catalog no longer lists survives a toggle; a catalog that fails leaves the settings rows; the current reader stays choosable; `role="alert"` on a refusal; help and source lines tied to each control; the toast "applies from the next message" |
+| `ModelsSection.test.jsx` (24, new) | the six rows from a settings payload and a catalog; Save off for an invalid size (with the reason, and clearing once fixed) and for an invalid deployment size; a per-model size adds or removes only its key; a declared window below 1,024 is refused; **a model whose provider is set to Cloud keeps its per-model size box** (Cloud is cost-only); an Ollama cloud model or an ollama.com provider is never sized; **Auto** names what the host rule detected; none ticked says every allowed model is offered, and a stored id the catalog no longer lists survives a toggle; a catalog that fails leaves the settings rows; the current reader stays choosable; `role="alert"` on a refusal; help and source lines tied to each control; the toast "applies from the next message" |
 | `AdminConsole.test.jsx` | a Models tab between Projects and Documents; Overview's **Open models** opens it; the unsaved-changes prompt covers Models; **People search**: first page of 50 and the total, one request 300 ms after typing stops with `q`, status and capability apply at once and combine, **Show more** appends and disappears when all are loaded, "No one matches.", **a late answer to an older search never overwrites the newest**, a reload after an edit keeps the search and the pages loaded |
 | `SettingsDialog.test.jsx`, `inferenceLimits.test.js` | a fixed size disables **Context window**, says "Set by your admin: N tokens." and keeps the person's stored value; a thousands separator; **Auto** names the size it resolves to; a model with no `context_size` is as before; the snake_case payload is read into camelCase; the Auto label is the only option changed |
 | `phoneTargets.test.jsx` | 44 px classes on Models' controls and on People's search, filters and **Show more** (class assertions: jsdom has no layout) |

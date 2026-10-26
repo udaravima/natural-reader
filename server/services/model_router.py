@@ -1,7 +1,7 @@
 """Model-router config — the single place that knows which model serves which
 task and what this deployment is allowed to run (gateway spec §4.2). Since C1
-it owns only what isn't chat: embeddings, the budget, the timeout and the
-summary model; provider lists and allow-lists live in server/llm/router.py
+it owns only what isn't chat: embeddings, the budget and the timeout (the
+reader's model is server/services/model_settings.py's); provider lists and allow-lists live in server/llm/router.py
 (spec §4.6).
 
 Everything is pure env parsing so tests can pass a dict. get_config() re-reads
@@ -20,7 +20,6 @@ class InferenceConfig:
     ollama_url: str
     timeout_s: float
     allowed_models: tuple[str, ...] | None   # None = allow everything (dev)
-    summarize_model: str
     embed_model: str
     daily_token_budget: int | None           # None = unlimited
     # Text put before what is embedded (v2.3 Task E). Retrieval-trained models
@@ -55,13 +54,6 @@ def load_inference_config(env: Mapping[str, str]) -> InferenceConfig:
         ollama_url=env.get("OLLAMA_URL", "http://localhost:11434").rstrip("/"),
         timeout_s=float(env.get("INFERENCE_TIMEOUT_S", "300")),
         allowed_models=_csv("INFERENCE_MODELS"),
-        # SUMMARIZE_MODEL is the canonical name; WEB_SEARCH_SUMMARY_MODEL is the
-        # pre-gateway var kept working so existing deployments don't break.
-        summarize_model=(
-            env.get("SUMMARIZE_MODEL")
-            or env.get("WEB_SEARCH_SUMMARY_MODEL")
-            or "chat"    # the chat model of each conversation
-        ),
         embed_model=embed_model,
         # Spec §4.3: 0/unset = unlimited, so a falsy budget collapses to None.
         daily_token_budget=budget if budget else None,

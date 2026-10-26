@@ -17,7 +17,6 @@ from server.chat.reader import (BatchCall, CHARS_PER_OUTPUT_TOKEN, CHARS_PER_TOK
                                 ReaderConfig, ReaderResult, batches, fit_input_chars, load_reader_config, normalise,
                                 read_batch, read_many, reader_messages, resolve_model, verify)
 from server.llm.types import CallSettings, ProviderError, Usage
-from server.services import model_router
 
 CFG = ReaderConfig(model="reader-model")
 
@@ -592,7 +591,6 @@ async def test_a_charge_that_fails_never_fails_the_read(use_router, caplog):
 
 def test_reader_defaults_to_the_chat_model():
     assert load_reader_config({}).model == "chat"
-    assert model_router.load_inference_config({}).summarize_model == "chat"
 
 
 def test_model_chain_and_chat():

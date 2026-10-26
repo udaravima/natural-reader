@@ -4,12 +4,17 @@
 
 ---
 
-## 2026-10-26 — Admin console v2, phase 2a built and review-clean; the in-app walk is pending (START HERE)
+## 2026-10-26 — Admin console v2, phase 2a built, walked and final-reviewed; awaiting the merge decision (START HERE)
 
 **Branch:** `feat/admin-console-v2-phase2a`, cut from `development` at `2fadfa2`. **Not merged, not pushed, no version bump** (CHANGELOG entries sit under `[Unreleased]`). **Deployed anyway:** the live site has run this branch since 2026-10-26 11:39, from an image built at `0f9aec7` (before the final review); the final-review fixes are not deployed yet. Plan: `docs/superpowers/plans/2026-10-26-admin-console-v2-phase2a.md`. Workspace ledger (rulings, every review finding and which ones were deferred): `.superpowers/sdd/2026-10-26-admin-console-v2-phase2a/progress.md`, with each task's brief, report and review diff beside it. Spec: `docs/superpowers/specs/2026-10-25-admin-console-v2-design.md`.
 
 **Commits** (`git log --oneline 2fadfa2..HEAD`, newest first; the docs commit that carries this entry follows them):
 
+- `87a74bb` docs: the handover says live runs this branch, and records P11-P13 (renumbered P15-P17 below)
+- `aec2add` fix(settings): show the whole Auto label, and the admin's size on a locked row
+- `3f3ded4` fix(admin): the console's Reader must be a model the deployment allows
+- `772d0b5` fix(models): the Cloud mark is cost-only; a self-hosted Ollama is always sized
+- `fd7a659`, `cc325e1`, `571dc5b`, `fbc23f0`, `0f9aec7` docs: phase 2a docs and their review rounds
 - `88484f4` feat(admin): search and filter People on the server
 - `658423e` feat(settings): show the context size the server will use for a local model
 - `0c0bdfc` fix(admin): a hidden invalid size no longer blocks Save in Models
@@ -28,20 +33,22 @@
 - `03acb1d` docs: admin console v2 phase 2a plan (Models, People search)
 - `42bdcd6` fix(admin): say which Keycloak role to create when a capability's realm role is missing
 
-**Gates at `88484f4` (the last code commit, 2026-10-26, measured for this entry):** backend `2417 passed, 16 skipped, 2 deselected` (was 2281 at the end of phase 1), run with `TEST_DATABASE_URL` and `TEST_ADMIN_DATABASE_URL` pointing at the scratch Postgres on 5434 (the live 5433 was not listening); frontend `1167 passed` in 118 files (was 1121 in 117); `npx eslint src` clean. Each task was reviewed on its own diff and ended review-clean; the ledger records no whole-branch final review, so run one before merging.
+**Gates on the final tree (2026-10-26, after the final-review fixes and the `summarize_model` removal):** backend `2418 passed, 16 skipped, 2 deselected` (was 2281 at the end of phase 1), run with `TEST_DATABASE_URL` and `TEST_ADMIN_DATABASE_URL` pointing at the scratch Postgres on 5434; frontend `1170 passed` in 118 files (was 1121 in 117); `npx eslint .` clean. Every task was reviewed on its own diff; the whole-branch final review (opus, `final-review.md` in the workspace) found no Critical and two Important issues, both fixed and re-reviewed (`final-fix-rereview.md`).
 
 ### What a person can do now (and where)
 
 - **Choose the reader** (Admin → Models → **Reader**): the chat model of each conversation (the default) or any listed model. With none of `READER_MODEL`, `SUMMARIZE_MODEL`, `WEB_SEARCH_SUMMARY_MODEL` set, the reader is the chat model, no longer `llama3.2:3b`.
 - **Set the context size of self-hosted Ollama models** (Models → **Context size for local Ollama models**, and **Per-model sizes**). Every request to such a model names a size (the per-model size, else the deployment's, else the person's own value, else 16,384; at most `INFERENCE_NUM_CTX_MAX`), history is trimmed to it, and a reader that is the chat model uses it too, so Ollama stops reloading the model between chat and reader calls. Env fallback: `INFERENCE_LOCAL_NUM_CTX`.
 - **Declare a context window** for a model whose provider reports none (Models → **Declared context windows**, or `INFERENCE_<NAME>_CONTEXT_WINDOW` for a provider). Without one, history for that model is not trimmed and the Overview says "Unknown".
-- **Mark a provider local or cloud** (Models → **Providers**: Auto / Local / Cloud). Cost flag only (the Overview's quota hint, later usage); it never changes sizing, so a self-hosted Ollama marked Cloud is still sized (final-fix ruling P11).
+- **Mark a provider local or cloud** (Models → **Providers**: Auto / Local / Cloud). Cost flag only (the Overview's quota hint, later usage); it never changes sizing, so a self-hosted Ollama marked Cloud is still sized (final-fix ruling P15).
 - **Narrow the chat models offered** (Models → **Chat models offered**). Intersected with the environment's allow-lists, never unioned. The turn route refuses a model outside it (422 `model_not_allowed`), and the picker lists only the ticked models.
 - **Search People** (Admin → People: **Search people**, **Status**, **Capability**, 50 at a time with **Show more**, "Showing N of M").
 - **Settings → Chat → Context window** shows "Set by your admin: N tokens." (locked) for a self-hosted Ollama model whose size the admin fixed, otherwise **Auto** names the size the server will use.
 - Overview's **Reader** line is **OK** by default (it was a warning for the fallback); its **Context windows** line reports the size a request sends. Deployment's read-only list no longer has "Reading model".
 
-**Still not possible without `.env` and a restart:** adding or changing a provider; changing the embedding model (phase 2b); usage by model (phase 3). **No migration** (`models` is one more `app_settings` row).
+**`SUMMARIZE_MODEL` and `WEB_SEARCH_SUMMARY_MODEL` are only older names for the Reader** (the reader's env chain is `READER_MODEL`, then those two). There is no separate summary model: the unused `InferenceConfig.summarize_model` field was removed; `GET /v1/admin/inference/config` still reports the reader under the old `summarize_model` key.
+
+**Still not possible without `.env` and a restart:** adding or changing a provider; changing the embedding model (phase 2b). **Not possible at all yet:** usage by model or by person and model (phase 3: the usage table has no model column, so past days can't be split later). **No migration** (`models` is one more `app_settings` row).
 
 **Upgrade notes** (also in CHANGELOG and DEPLOYMENT): the reader moves to the chat model (cloud chat model: reader calls count against its quota; pick a local reader in Models); local Ollama models get 16,384 tokens instead of Ollama's 4,096, which reserves more memory when the model loads (size it down in Models or with `INFERENCE_LOCAL_NUM_CTX`), and a model already loaded at another size reloads once; a person's own context size stops applying to those models once the admin sets one.
 
@@ -66,27 +73,31 @@ Made during the build (P, ledger):
 - **P8.** The model list's `context_size` key stays snake_case beside camelCase `limits`. Cost: one inconsistent payload, one route and one parser to rename.
 - **P9.** Deployment's read-only list drops "Reading model" (it reads only the environment and would contradict a console choice). Cost: one row.
 - **P10.** The Overview's unset-size copy prints the window actually used ("8,192 tokens unless …" when the ceiling is 8,192). Cost: one string.
-- **P11 (Task 7, superseded).** A valid per-model size whose provider is flipped to Cloud stays in the map. Moot since the final-fix P11 below: flipping to Cloud no longer hides the box.
+- **P11 (Task 7).** A valid per-model size whose provider is flipped to Cloud stays in the map. Moot since P15: flipping to Cloud no longer hides the box.
+- **P12 (Task 10).** Docs review minors fixed in the docs round.
 
-Made in the final fix (the ledger reuses the numbers P11 and P12; these are the later ones):
-- **P11.** `sizes_context` ignores the admin's Local/Cloud mark; Cloud is cost-only. Sized = `ollama`-kind, model not `-cloud`/`:cloud`, host not ollama.com. Cost if wrong: a hosted, non-ollama.com Ollama endpoint marked Cloud is sent a `num_ctx` (it loads at our size instead of its own default).
-- **P12.** Saving a Reader that is not "chat" and not allowed by the deployer's allow-lists (`is_allowed`, as the chat path) is refused with 422 ("That model isn't in this deployment's model list."); the Overview's Reader line is an error when the reader, from any source, names such a model. Chat turns are unchanged. Cost: one check.
-- **P13.** A Context window row locked by an admin size shows that size; the person's stored value is kept and applies again when the admin clears it. Cost: one display line.
+Made in the final fix:
+- **P15.** `sizes_context` ignores the admin's Local/Cloud mark; Cloud is cost-only. Sized = `ollama`-kind, model not `-cloud`/`:cloud`, host not ollama.com. Cost if wrong: a hosted, non-ollama.com Ollama endpoint marked Cloud is sent a `num_ctx` (it loads at our size instead of its own default).
+- **P16.** Saving a Reader that is not "chat" and not allowed by the deployer's allow-lists (`is_allowed`, as the chat path) is refused with 422 ("That model isn't in this deployment's model list."); the Overview's Reader line is an error when the reader, from any source, names such a model. Chat turns are unchanged. Cost: one check.
+- **P17.** A Context window row locked by an admin size shows that size; the person's stored value is kept and applies again when the admin clears it. Cost: one display line.
+- **P18.** The app header's sideways scroll at 375 px (walk bug W3) is parked: the header is unchanged on this branch, so the bug predates it. Cost: a later small CSS fix.
 
-### What was NOT verified
+### What was walked, and what was NOT verified
 
-- **The in-app walk (plan Task 11) has not run.** Everything above is backend tests with fakes and jsdom component tests. Not seen in a browser: the Models section end to end (save, reload, **Use the server setting**), People search and **Show more** against real data, the Settings lock, the phone layout and the 44 px targets (class-tested only), dark mode, a screen reader. Walk with the backend on port 8100 and a scratch database, never 8000 or 5433.
-- **Ollama's reload behaviour was not measured here.** "One size per turn stops the reload" rests on the spec's reading of Ollama's scheduler (`sched.go`); no timing was taken with a real model. The 16,384 default's memory cost on the owner's machine is likewise unmeasured.
+- **Walked in the running app (plan Task 11, before the final fix; `task-11-walk-report.md`):** backend on 8100, scratch DB, Vite, auth off, the owner's Ollama. A document chat on `gemma4:e4b` loaded it once at 16,384 tokens (`/api/ps` and Ollama's journal: one runner, three `/api/chat` calls at `n_ctx_slot=16384`) and the reader call ran in the same runner, so **no reload between chat and reader**; an overflowing chat logged "history trimmed … (window 16384)". Models: set, save, reload, **Use the server setting** for Reader, Context size (validation too), Per-model sizes, Providers, Chat models offered; narrowing to one model left one in the picker and a turn on another got 422 `model_not_allowed`. Settings lock strings. People search by first and last name and Pending, **Show more** to 61 of 61. 0 of 542 Models/People controls under 44 px at 375 px.
+- **Walk bugs:** W1 (clipped Auto label) and W2 (locked row showed the stored personal value) fixed in `aec2add`; W3 (header sideways scroll at 375 px) parked, P18.
+- **Not walked:** the final-review fixes themselves (Cloud-marked sizing, Reader refusal, the two Settings fixes are unit-tested only); dark mode; a non-admin refused the admin routes in the browser; the Overview's env-sourced strings; Declared context windows (both walk models report their own window, so the row had no box).
 - **No cloud eval was run.** Spec §5 requires one before a release, on `ollama:gemma4:31b-cloud` or OpenRouter (never local `llama3.2:3b`); it needs the owner's go-ahead. The one final local `gemma4:e4b` run is still owed too.
-- **Walk checks left by reviews:** the locked Context window select shows the person's stored value (e.g. 8192) beside "Set by your admin: 16,384 tokens." (two numbers); "Auto (16,384 on this server)" may clip in the `w-32` select; the Models context-size help says 16,384 while the catalog is still loading, even if the ceiling is lower.
+- **The 16,384 default's memory cost on the owner's machine** was not measured.
 - **Deferred minor review findings** (none blocks; ledger has the rest): `test_inference_router.py` defines the `client` fixture twice and the later one wins, so every test in it runs as the seed admin; a SQL error reading the `models` row on `GET /v1/inference/models` aborts that request's transaction, so the budget is omitted too, and `GET /v1/admin/inference/config` returns 500 if the row is unreadable; the turn route holds one extra pool connection per turn; the client ignores `num_ctx_max` when validating a size (the server refuses; a toast); People: a reload racing **Show more** can drop the appended page, a failed load reads "Showing 0 of 0", a search containing a NUL character is likely a 500 not a 422, past 200 loaded rows a reload after an edit collapses to the first 200; the Overview logs a warning with a traceback per load while a provider hangs.
 
 ### Open items
 
-1. **Task 11, the walk** (above), then a whole-branch review.
-2. **Merge into `development`** (fast-forward, as phase 1) and **push**: both need the owner's go-ahead. `development` is still unpushed from phase 1; v2.4.0 is not deployed.
-3. **Release and deploy** are separate decisions. Phase 1's `TZ` upgrade note still applies, and a deployment that sets no reader gets the chat model as its reader on deploy.
-4. **Phase 2b** (embedding engine and model) and **phase 3** (usage by model) are next in the spec.
+1. **Merge into `development`** (fast-forward, as phase 1) and **push**: both need the owner's go-ahead. `development` is still unpushed from phase 1; v2.4.0 is not deployed.
+2. **Deploy the final-review fixes.** Live runs `0f9aec7` (since 11:39), which has the I1 bug (a self-hosted Ollama marked Cloud gets no size) and accepts any Reader through the API. Rebuilding from this branch's head fixes both.
+3. **Live config worth setting now:** one deployment context size under Models (two people with different personal sizes otherwise reload the same model between their turns); a small local Reader if people chat on a cloud model (reader calls count against its quota) or on a large local one (every batch runs through it, slow on CPU), with `OLLAMA_MAX_LOADED_MODELS` ≥ 3 so the chat, reader and embedding models don't evict each other.
+4. **Phase 3 (usage by model) is planned:** `docs/superpowers/plans/2026-10-26-admin-console-v2-phase3.md`, branch `feat/admin-console-v2-phase3` from this branch's head; awaiting the owner's review of the plan. **Phase 2b** (embedding engine and model) follows.
+5. **The live Keycloak still lacks the `docling` realm role** (needed only for `DOCLING_CONVERT_BY=role`); People now says how to create it. W3, the header scroll at 375 px, is open.
 
 ---
 
