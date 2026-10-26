@@ -207,8 +207,13 @@ nothing. It grants nothing else: no route other than the conversion checks it.
   Create it once: Keycloak admin console, realm `natural-reader`, **Realm roles**,
   **Create role**, name `docling`, Save. Until then, ticking **docling** under
   **People** fails at the Keycloak write (the capability-edit rule above: Keycloak
-  first, the app's mirror only after it succeeds), a 502 with the capability
-  unchanged, **while the service account (`KC_ADMIN_*`) is configured**. With it
+  first, the app's mirror only after it succeeds) with the capability unchanged,
+  **while the service account (`KC_ADMIN_*`) is configured**. The server answers
+  409 `{"reason": "kc_role_missing", "role": "docling"}` and People says which role
+  to create; enrolling someone with the tick is refused the same way (the
+  half-created Keycloak user is removed). The app does not create the role itself:
+  that needs `manage-realm`, which would let the service account change the whole
+  realm, so it keeps `manage-users`, `view-realm` and `query-users` only. With it
   unset, the tick only writes the app's mirror, and the next login reverts it to
   what Keycloak says. You only need any of this if you want `role` mode.
 

@@ -98,6 +98,34 @@ describe('AdminConsole — users', () => {
 
   beforeEach(() => vi.clearAllMocks());
 
+  // A realm imported before the docling role existed: Keycloak can't grant it.
+  const roleMissing = () => json(409, { detail: { reason: 'kc_role_missing', role: 'docling' } });
+  const ROLE_MISSING_MSG = 'Keycloak has no “docling” role yet. Create it in the Keycloak admin console (Realm roles → Create role, name: docling), then try again.';
+
+  it('says which Keycloak role to create when ticking a capability the realm lacks', async () => {
+    const showToast = vi.fn();
+    mount({
+      users: [user({ capabilities: ['reader'] })], showToast,
+      extra: (path, opts) => (path.startsWith('/v1/admin/users/') && opts?.method === 'PATCH' ? roleMissing() : undefined),
+    });
+    const row = await screen.findByTestId('user-row-u1');
+    fireEvent.click(within(row).getByRole('checkbox', { name: 'docling' }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(ROLE_MISSING_MSG, 8000));
+  });
+
+  it('says which Keycloak role to create when enrolling with a capability the realm lacks', async () => {
+    mount({
+      users: [user()],
+      extra: (path, opts) => (path === '/v1/admin/users' && opts?.method === 'POST' ? roleMissing() : undefined),
+    });
+    fireEvent.change(await screen.findByLabelText('Enroll email'), { target: { value: 'n@example.com' } });
+    const enrollCaps = screen.getAllByRole('checkbox', { name: 'docling' })[0];
+    fireEvent.click(enrollCaps);
+    fireEvent.click(screen.getByRole('button', { name: 'Enroll' }));
+    expect(await screen.findByText(ROLE_MISSING_MSG)).toBeInTheDocument();
+    expect(screen.queryByText('That email is already taken.')).not.toBeInTheDocument();
+  });
+
   it('renders rows and the awaiting-first-login badge for unlinked rows', async () => {
     mount({ users: [user(), user({ id: 'u2', email: 'b@x.io', oidc_sub: null, status: 'pending' })] });
     expect(await screen.findByText('a@x.io')).toBeInTheDocument();

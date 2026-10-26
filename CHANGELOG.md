@@ -45,7 +45,10 @@ All notable changes to this project will be documented in this file.
 - **A `docling` role.** Tick it for a person under **People**, or give them
   the `docling` realm role in Keycloak. It only matters when conversion is
   limited to that role. A personal access token with the `documents` scope
-  carries it.
+  carries it. A Keycloak realm set up before this release doesn't have the
+  role: create it once (**Realm roles → Create role**, name `docling`). Until
+  then, ticking it under **People** says so and changes nothing, instead of a
+  bare "HTTP 502".
 
 ### Upgrade notes
 

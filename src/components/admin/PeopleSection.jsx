@@ -10,6 +10,15 @@ import { formatDay } from '../../lib/zoneFormat';
 
 const CAPABILITIES = ['reader', 'chat', 'admin', 'docling'];
 
+// A capability is a Keycloak realm role; a realm imported before a role was
+// added to the export lacks it, and the app can't create roles (no
+// manage-realm), so say which one to create. null for any other refusal.
+function roleMissingMessage(body) {
+  const detail = body?.detail;
+  if (detail?.reason !== 'kc_role_missing') return null;
+  return `Keycloak has no “${detail.role}” role yet. Create it in the Keycloak admin console (Realm roles → Create role, name: ${detail.role}), then try again.`;
+}
+
 // Per-user budget editor. PATCH exclude_unset semantics: the field is only
 // sent when the admin presses Set — empty = explicit clear (null →
 // deployment default), 0 = unlimited, number = tokens/day. The parent keys
@@ -92,6 +101,10 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
+      if (res.status === 409) {
+        const missing = roleMissingMessage(await res.json().catch(() => null));
+        if (missing) { showToast(missing, 8000); return; }
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       await loadUsers();
     } catch (e) {
@@ -134,7 +147,8 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
         body: JSON.stringify(body),
       });
       if (res.status === 409) {
-        setEnrollNote({ kind: 'err', text: 'That email is already taken.' });
+        const missing = roleMissingMessage(await res.json().catch(() => null));
+        setEnrollNote({ kind: 'err', text: missing ?? 'That email is already taken.' });
         return;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

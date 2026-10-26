@@ -342,7 +342,9 @@ list) still decides whether conversion exists at all.
   back.
 - **The Docling role** is the `docling` capability. Give it to someone with
   its checkbox under **People** (it applies at once), or as a realm role in
-  Keycloak (it applies at their next login). See
+  Keycloak (it applies at their next login). On a Keycloak set up before this
+  release, create the `docling` realm role once first; until then the tick says
+  "Keycloak has no “docling” role yet" and changes nothing. See
   [IDENTITY_AND_ROLES.md](IDENTITY_AND_ROLES.md#the-docling-capability).
 - Under the settings, the section lists the server's upload limits
   (`PDF_UPLOAD_MAX_MB`, `TEXT_UPLOAD_MAX_MB`); those are read-only.

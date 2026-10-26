@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..auth import deps, users
 from ..auth.capabilities import KNOWN_CAPABILITIES
 from ..auth.config import load_auth_config
-from ..auth.kc_admin import KCAdminError
+from ..auth.kc_admin import KCAdminError, KCRoleMissing
 from ..llm.router import get_router
 from ..http_errors import refusal
 from ..services import (assistant_profile, chat_options, console_overview, console_settings, deployment_info, deployment_settings,
@@ -48,6 +48,11 @@ class UserEnrollIn(BaseModel):
     status: str = "pending"
     inference_daily_token_budget: int | None = None
     capabilities: list[str] = []
+
+
+def _role_missing(e: KCRoleMissing) -> dict:
+    """409 detail for a capability whose realm role the realm lacks."""
+    return {"reason": "kc_role_missing", "role": e.role}
 
 
 async def _other_active_admins(conn, user_id: str) -> int:
@@ -135,6 +140,8 @@ async def patch_user(
                     await kc.remove_realm_roles(sub, to_remove)
                 if to_add:
                     await kc.assign_realm_roles(sub, to_add)
+            except KCRoleMissing as e:
+                raise HTTPException(status_code=409, detail=_role_missing(e))
             except Exception as e:
                 logger.warning("KC role reconcile failed for %s: %s", sub, e)
                 raise HTTPException(
@@ -257,6 +264,8 @@ async def enroll_user(
             pass
         if isinstance(e, ValueError):
             raise HTTPException(status_code=409, detail="email already exists")
+        if isinstance(e, KCRoleMissing):
+            raise HTTPException(status_code=409, detail=_role_missing(e))
         raise HTTPException(status_code=502, detail=f"enroll failed: {e}")
     out = {"user": user, "onboarding": onboarding}
     if temp:

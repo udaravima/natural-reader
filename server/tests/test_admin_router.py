@@ -268,6 +268,41 @@ async def test_patch_accepts_the_docling_capability(db_conn):
     assert kc.assigned == [("sub-d", ["docling"])]
 
 
+class _FakeKCNoDocling(_FakeKC):
+    """A realm that predates the `docling` role: granting it fails at the lookup."""
+    def __init__(self):
+        super().__init__(); self.assigned = []
+    async def assign_realm_roles(self, sub, names):
+        from server.auth.kc_admin import KCRoleMissing
+        if "docling" in names:
+            raise KCRoleMissing("docling")
+        self.assigned.append((sub, list(names)))
+    async def remove_realm_roles(self, sub, names): pass
+
+
+async def test_patch_docling_without_the_realm_role_says_which_role(db_conn):
+    _, p = await _admin(db_conn)
+    from server.auth.users import enroll_linked_user, get_user
+    u = await enroll_linked_user(db_conn, iss="i", sub="sub-m", email="m@x.io",
+                                 capabilities=["reader"], status="active")
+    async with _client(_app_kc(db_conn, p, _FakeKCNoDocling())) as c:
+        r = await c.patch(f"/v1/admin/users/{u['id']}", json={"capabilities": ["reader", "docling"]})
+    assert r.status_code == 409
+    assert r.json()["detail"] == {"reason": "kc_role_missing", "role": "docling"}
+    assert (await get_user(db_conn, u["id"]))["capabilities"] == ["reader"]
+
+
+async def test_enroll_with_docling_without_the_realm_role_compensates(db_conn):
+    _, p = await _admin(db_conn)
+    kc = _FakeKCNoDocling()
+    async with _client(_app_kc(db_conn, p, kc)) as c:
+        r = await c.post("/v1/admin/users", json={
+            "email": "n@x.io", "capabilities": ["reader", "docling"], "status": "active"})
+    assert r.status_code == 409
+    assert r.json()["detail"] == {"reason": "kc_role_missing", "role": "docling"}
+    assert kc.deleted == ["sub-n@x.io"]
+
+
 async def test_disable_propagates_enabled_false(db_conn):
     _, p = await _admin(db_conn)
     from server.auth.users import enroll_linked_user

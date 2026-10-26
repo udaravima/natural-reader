@@ -153,7 +153,7 @@ A **change of chunker** (`CHUNKER_VERSION`, part of the rebuild key) produces ne
 
 What a conversion may use. `POST /v1/docs/{id}/convert` enforces it, and a refusal says which option the admin turned off. The convert dialog greys disallowed options out with "Turned off by your admin".
 
-- **Who may convert:** everyone with the reader capability (the default, as today), or admins only.
+- **Who may convert:** everyone with the reader capability (the default, as today), or only people with the `docling` capability, a Keycloak realm role an admin grants under People (admins can always convert). *Changed from "admins only" during phase 1 (ruling P4); the owner confirmed it on 2026-10-26.*
 - **Presets allowed:** fast / standard / accurate.
 - **OCR allowed:** yes/no.
 - **Picture description allowed:** yes/no. It runs a vision model per picture.
