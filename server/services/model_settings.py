@@ -5,19 +5,22 @@ setting (services/console_settings.py): the console's value, then the environmen
 
 Why this exists: Ollama loads a local model at 4,096 tokens on a machine with under 24 GiB of VRAM unless the
 request names a `num_ctx`, so a chat that never says one silently loses most of its context. `num_ctx_for` is the
-one place that decides what a request sends. For a *local* Ollama model it resolves, first match wins:
+one place that decides what a request sends. For a model that `sizes_context` accepts (any Ollama you host
+yourself, on whatever host) it resolves, first match wins:
 1. the console's size for that model (`context_sizes`);
 2. the deployment's size (`context_size`: the console's, else INFERENCE_LOCAL_NUM_CTX);
 3. the person's own Settings value;
 4. DEFAULT_LOCAL_NUM_CTX;
-and clamps the result to INFERENCE_NUM_CTX_MAX. A model that is not local (Ollama cloud, any `openai`-kind
+and clamps the result to INFERENCE_NUM_CTX_MAX. Any other model (Ollama cloud, any `openai`-kind
 provider) keeps the person's value, clamped, and gets none when they sent none: cloud Ollama already gives its
 whole context and `openai` ignores the option.
 
-Locality (`is_local`) is a guess from the provider's URL that the admin can override per provider: localhost, a
-private, loopback or 100.64.0.0/10 (Tailscale) address, a single-label name (`ollama`), or a .local, .lan,
-.internal or .home.arpa name counts as local; any other host is cloud. Model ids are
-`provider:name`; a trailing `:latest` on either side of a comparison doesn't matter (`same_model`, `lookup`).
+Two predicates, for two questions. `sizes_context` says whether a request must name its own context size: any
+Ollama provider not marked cloud by the admin, except Ollama cloud models and ollama.com. `is_local` is the
+cost-side flag (reader hint, usage, the catalog's "Auto" label), a guess from the provider's URL that the admin can
+override per provider: after one trailing dot is stripped (`localhost.` is `localhost`), localhost, a private,
+loopback or 100.64.0.0/10 (Tailscale) address, a single-label name (`ollama`), or a .local, .lan, .internal or
+.home.arpa name counts as local; any other host is cloud. Model ids are `provider:name`; a trailing `:latest` on either side of a comparison doesn't matter (`same_model`, `lookup`).
 
 Nothing here is cached: `load_models_settings` is one primary-key read per request, and every function takes the
 settings it works from.
@@ -240,14 +243,20 @@ _PRIVATE_SUFFIXES = (".local", ".lan", ".internal", ".home.arpa")
 _CGNAT = ipaddress.ip_network("100.64.0.0/10")
 
 
-def _host_is_local(url: str) -> bool:
+def _hostname(url: str) -> str:
+    """The host of a provider URL in lower case, one trailing dot stripped (`localhost.` is `localhost`); "" when
+    there is none or the URL is malformed."""
     try:
         host = urlsplit(url if "://" in url else f"//{url}").hostname
-    except ValueError:    # a malformed URL (http://[::1): not a host we can call local
-        return False
+    except ValueError:    # a malformed URL (http://[::1)
+        return ""
+    return (host or "").removesuffix(".")
+
+
+def _host_is_local(url: str) -> bool:
+    host = _hostname(url)
     if not host:
         return False
-    host = host.removesuffix(".")    # `localhost.` is `localhost`
     if host == "localhost":
         return True
     try:
@@ -259,13 +268,15 @@ def _host_is_local(url: str) -> bool:
 
 
 def is_local(provider: ProviderConfig, model_name: str, locality: Mapping[str, str]) -> bool:
-    """Whether the model runs on hardware the deployer controls, first match wins:
+    """The cost-side flag: whether the model runs on hardware the deployer controls (the reader's cloud hint, usage,
+    the catalog's "Auto" label). It is not the question "does this model need a context size": that is
+    `sizes_context`. First match wins:
     1. an Ollama model whose name ends in -cloud or :cloud is cloud on any host;
     2. the admin's override for the provider;
-    3. the provider's host: localhost, a loopback, private or 100.64.0.0/10 IP, a single-label name, or a name ending
-       in .local, .lan, .internal or .home.arpa is local (private-network names a deployer reaches without a
-       cloud bill; the admin can still override per provider);
-    4. anything else is cloud.
+    3. the provider's host, after one trailing dot is stripped: localhost, a loopback, private or 100.64.0.0/10 IP,
+       a single-label name, or a name ending in .local, .lan, .internal or .home.arpa is local (private-network
+       names a deployer reaches without a cloud bill; the admin can still override per provider);
+    4. anything else (including no usable host) is cloud.
     An empty `model_name` skips step 1, which answers for the provider alone."""
     if provider.kind == "ollama" and is_ollama_cloud(model_name):
         return False
@@ -273,6 +284,21 @@ def is_local(provider: ProviderConfig, model_name: str, locality: Mapping[str, s
     if override in ("local", "cloud"):
         return override == "local"
     return _host_is_local(provider.url)
+
+
+def sizes_context(provider: ProviderConfig, model_name: str, locality: Mapping[str, str]) -> bool:
+    """Whether a request to this model must name its own `num_ctx`: the value to pass to `num_ctx_for(local=...)`.
+    Ollama's 4,096-token default hits any Ollama you host yourself, whatever its host name (a remote GPU box on a
+    dotted public name included), so this doesn't look at the host the way `is_local` does. True when all hold:
+    the provider is an Ollama; the model isn't Ollama cloud (-cloud / :cloud); the host isn't ollama.com or a
+    subdomain (Ollama's hosted API, which gives the model's whole context); the admin hasn't marked the provider
+    "cloud". An `openai`-kind provider is always False: it ignores `num_ctx`."""
+    if provider.kind != "ollama" or is_ollama_cloud(model_name):
+        return False
+    host = _hostname(provider.url)
+    if host == "ollama.com" or host.endswith(".ollama.com"):
+        return False
+    return locality.get(provider.name) != "cloud"
 
 
 # ---------- the context size a request sends ----------
@@ -290,7 +316,8 @@ def deployment_num_ctx(ms: ModelsSettings, model_id: str, limits: InferenceLimit
 
 def num_ctx_for(ms: ModelsSettings, model_id: str, *, local: bool, user_value: int | None,
                 limits: InferenceLimits) -> int | None:
-    """The `num_ctx` to send for `model_id`, or None to send none (see the module docstring for the order)."""
+    """The `num_ctx` to send for `model_id`, or None to send none (see the module docstring for the order).
+    Callers pass `local=sizes_context(...)`, not `is_local(...)`: the parameter's name is older than that rule."""
     if not local:
         return clamp(user_value, None, limits)[0]
     size, _ = deployment_num_ctx(ms, model_id, limits)
