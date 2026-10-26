@@ -180,31 +180,26 @@ describe('ModelsSection', () => {
     expect(body()).toEqual({ changes: { context_windows: { 'openrouter:some/model': 8192 } } });
   });
 
-  it('setting a provider to Cloud removes its models from the per-model sizes list before saving', async () => {
-    mount();
+  it('a Cloud-marked Ollama provider still gets a per-model size box: the mark is cost-only (P11)', async () => {
+    mount({ initial: view({ provider_locality: row(null, { ollama: 'cloud' }, {}, { source: 'admin' }) }) });
     await ready();
+    expect(screen.getByLabelText('ollama')).toHaveValue('cloud');
     expect(within(sizes()).getByLabelText('ollama:gemma4:e4b')).toBeTruthy();
-    fireEvent.change(screen.getByLabelText('ollama'), { target: { value: 'cloud' } });
-    expect(within(sizes()).queryByLabelText('ollama:gemma4:e4b')).toBeNull();
-    fireEvent.click(save());
-    await waitFor(() => expect(puts()).toHaveLength(1));
-    expect(body()).toEqual({ changes: { provider_locality: { ollama: 'cloud' } } });
+    expect(within(sizes()).getByLabelText('ollama:qwen3:8b')).toBeTruthy();
   });
 
-  it('a hidden invalid size no longer blocks Save: flipping its provider to Cloud takes the box and its hold off', async () => {
+  it('flipping a provider to Cloud keeps its models in the per-model sizes list, and an invalid size still holds Save', async () => {
     mount();
     await ready();
     fireEvent.change(within(sizes()).getByLabelText('ollama:gemma4:e4b'), { target: { value: '100' } });
     expect(save()).toBeDisabled();
     fireEvent.change(screen.getByLabelText('ollama'), { target: { value: 'cloud' } });
-    expect(screen.queryByText('Must be a whole number of tokens from 2,048 to 2,097,152.')).toBeNull();
-    expect(save()).toBeEnabled();
-    fireEvent.change(screen.getByLabelText('ollama'), { target: { value: 'local' } });   // back: the box and its error return
+    expect(within(sizes()).getByLabelText('ollama:gemma4:e4b')).toBeTruthy();
     expect(screen.getByText('Must be a whole number of tokens from 2,048 to 2,097,152.')).toBeTruthy();
     expect(save()).toBeDisabled();
   });
 
-  it('keeps a valid drafted size when its provider flips to Cloud (the server ignores it while unsized)', async () => {
+  it('saves a drafted size and a Cloud mark together', async () => {
     mount();
     await ready();
     fireEvent.change(within(sizes()).getByLabelText('ollama:gemma4:e4b'), { target: { value: '12288' } });
@@ -250,7 +245,7 @@ describe('ModelsSection', () => {
     expect(screen.getAllByText("Can't be reached.")).toHaveLength(1);
     expect(screen.getByLabelText('lab')).toHaveAccessibleDescription(expect.stringContaining("Can't be reached."));
     expect(text('models-provider-locality-help')).toBe(
-      "Local or cloud decides what counts as cloud usage. A cloud provider's Ollama models are not sized.",
+      "Local or cloud decides what counts as cloud usage.",
     );
   });
 

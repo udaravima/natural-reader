@@ -600,6 +600,16 @@ async def test_self_hosted_remote_ollama_is_sized_too(conn, monkeypatch, web_aut
     assert window_spy == [16384]
 
 
+async def test_a_cloud_marked_self_hosted_ollama_is_still_sized(conn, monkeypatch, web_auto, window_spy):
+    """Ruling P11: marking a self-hosted Ollama "cloud" changes only what counts as cloud usage. Its Ollama still
+    loads at 4,096 tokens unless told, so the turn still sends 16,384 and trims to it, not to the model's maximum."""
+    monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
+    await _save_models(conn, provider_locality={"ollama": "cloud"})
+    router = FakeRouter(caps=Capabilities(tools=True, context_window=131072))     # /api/show's maximum
+    assert await _sizes_turn(conn, router) == [16384, 16384]
+    assert window_spy == [16384]
+
+
 async def test_admin_size_beats_personal_value_and_unset_keeps_it(conn, monkeypatch, web_auto, window_spy):
     monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
     await _save_models(conn, context_size=8192)

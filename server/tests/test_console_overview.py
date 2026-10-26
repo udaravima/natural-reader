@@ -443,8 +443,10 @@ def test_with_no_size_set_a_local_ollama_model_gets_the_default_clamped():
 
 def test_sizing_follows_the_ollama_not_its_host():   # P4: a remote GPU box on a public name still loads at 4,096
     assert _win(_ollama(), cfg=_GPU)[0] == 16384
+    # P11: the Cloud mark is cost-only, so a marked self-hosted Ollama still gets the size it is sent, not /api/show's maximum
     marked_cloud = dataclasses.replace(_MS, provider_locality={"ollama": "cloud"})
-    assert _win(_ollama(), marked_cloud) == (131072, "Reported by the provider.")
+    assert _win(_ollama(), marked_cloud) == (
+        16384, "16,384 tokens unless a person sets their own in Settings (no deployment size is set).")
     hosted = ProviderConfig(name="ollama", kind="ollama", url="https://ollama.com")
     assert _win(_ollama(), cfg=hosted) == (131072, "Reported by the provider.")
 

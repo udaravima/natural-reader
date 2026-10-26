@@ -131,22 +131,27 @@ def test_is_local(url, name, override, local):
     assert model_settings.is_local(cfg, name, override) is local
 
 
-@pytest.mark.parametrize("kind,url,name,override,sizes", [
-    ("ollama", "http://localhost:11434", "gemma4:e4b", {}, True),
-    ("ollama", "http://gpu.example.com:11434", "qwen3:8b", {}, True),      # a remote self-hosted Ollama: still 4k
-    ("ollama", "http://127.0.0.1:11434", "gemma4:31b-cloud", {}, False),
-    ("ollama", "http://localhost:11434", "gpt-oss:120b:cloud", {}, False),
-    ("ollama", "https://ollama.com", "gpt-oss:120b", {}, False),
-    ("ollama", "https://api.ollama.com/", "gpt-oss:120b", {}, False),
-    ("ollama", "https://notollama.com", "qwen3:8b", {}, True),             # a suffix match is not a subdomain
-    ("ollama", "http://localhost:11434", "gemma4:e4b", {"ollama": "cloud"}, False),
-    ("ollama", "http://gpu.example.com:11434", "qwen3:8b", {"ollama": "local"}, True),
-    ("openai", "http://localhost:8000", "qwen3", {}, False),
-    ("openai", "http://localhost:8000", "qwen3", {"ollama": "local"}, False),
+@pytest.mark.parametrize("kind,url,name,sizes", [
+    ("ollama", "http://localhost:11434", "gemma4:e4b", True),
+    ("ollama", "http://gpu.example.com:11434", "qwen3:8b", True),      # a remote self-hosted Ollama: still 4k
+    ("ollama", "http://127.0.0.1:11434", "gemma4:31b-cloud", False),
+    ("ollama", "http://localhost:11434", "gpt-oss:120b:cloud", False),
+    ("ollama", "https://ollama.com", "gpt-oss:120b", False),
+    ("ollama", "https://api.ollama.com/", "gpt-oss:120b", False),
+    ("ollama", "https://notollama.com", "qwen3:8b", True),             # a suffix match is not a subdomain
+    ("openai", "http://localhost:8000", "qwen3", False),
 ])
-def test_sizes_context(kind, url, name, override, sizes):
+def test_sizes_context(kind, url, name, sizes):
     cfg = ProviderConfig(name="ollama", kind=kind, url=url)
-    assert model_settings.sizes_context(cfg, name, override) is sizes
+    assert model_settings.sizes_context(cfg, name) is sizes
+
+
+def test_a_cloud_mark_doesnt_stop_sizing_a_self_hosted_ollama():
+    """Ruling P11: the mark is cost-only. A self-hosted Ollama marked "cloud" still loads at 4,096 tokens unless told
+    otherwise, so it is still sized; it just stops counting as local."""
+    cfg = ProviderConfig(name="ollama", kind="ollama", url="http://localhost:11434")
+    assert model_settings.sizes_context(cfg, "gemma4:e4b") is True
+    assert model_settings.is_local(cfg, "gemma4:e4b", {"ollama": "cloud"}) is False
 
 
 def test_is_local_answers_for_the_provider_alone_with_an_empty_model_name():

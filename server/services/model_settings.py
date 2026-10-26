@@ -16,8 +16,8 @@ provider) keeps the person's value, clamped, and gets none when they sent none: 
 whole context and `openai` ignores the option.
 
 Two predicates, for two questions. `sizes_context` says whether a request must name its own context size: any
-Ollama provider not marked cloud by the admin, except Ollama cloud models and ollama.com. `is_local` is the
-cost-side flag (reader hint, usage, the catalog's "Auto" label), a guess from the provider's URL that the admin can
+Ollama provider, except Ollama cloud models and ollama.com. The admin's local/cloud mark doesn't change it (ruling
+P11): the mark only decides what counts as cloud usage. `is_local` is the cost-side flag (reader hint, usage, the catalog's "Auto" label), a guess from the provider's URL that the admin can
 override per provider: after one trailing dot is stripped (`localhost.` is `localhost`), localhost, a private,
 loopback or 100.64.0.0/10 (Tailscale) address, a single-label name (`ollama`), or a .local, .lan, .internal or
 .home.arpa name counts as local; any other host is cloud. Model ids are `provider:name`; a trailing `:latest` on either side of a comparison doesn't matter (`same_model`, `lookup`).
@@ -287,19 +287,18 @@ def is_local(provider: ProviderConfig, model_name: str, locality: Mapping[str, s
     return _host_is_local(provider.url)
 
 
-def sizes_context(provider: ProviderConfig, model_name: str, locality: Mapping[str, str]) -> bool:
+def sizes_context(provider: ProviderConfig, model_name: str) -> bool:
     """Whether a request to this model must name its own `num_ctx`: the value to pass to `num_ctx_for(local=...)`.
     Ollama's 4,096-token default hits any Ollama you host yourself, whatever its host name (a remote GPU box on a
     dotted public name included), so this doesn't look at the host the way `is_local` does. True when all hold:
     the provider is an Ollama; the model isn't Ollama cloud (-cloud / :cloud); the host isn't ollama.com or a
-    subdomain (Ollama's hosted API, which gives the model's whole context); the admin hasn't marked the provider
-    "cloud". An `openai`-kind provider is always False: it ignores `num_ctx`."""
+    subdomain (Ollama's hosted API, which gives the model's whole context). The admin's local/cloud mark is not
+    asked (ruling P11): marking a rented GPU box "cloud" counts its usage as cloud, and its Ollama still loads at
+    4,096 tokens unless told otherwise. An `openai`-kind provider is always False: it ignores `num_ctx`."""
     if provider.kind != "ollama" or is_ollama_cloud(model_name):
         return False
     host = _hostname(provider.url)
-    if host == "ollama.com" or host.endswith(".ollama.com"):
-        return False
-    return locality.get(provider.name) != "cloud"
+    return not (host == "ollama.com" or host.endswith(".ollama.com"))
 
 
 # ---------- the context size a request sends ----------

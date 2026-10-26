@@ -223,7 +223,7 @@ def window_for(model: ModelInfo, loaded: dict[str, int], ms: model_settings.Mode
         for name, size in loaded.items():
             if name.removesuffix(":latest") == mine:
                 return size, "Loaded now (Ollama)."
-    if model_settings.sizes_context(provider_cfg, model.name, ms.provider_locality):
+    if model_settings.sizes_context(provider_cfg, model.name):
         size, where = model_settings.deployment_num_ctx(ms, model.id, limits)
         if size is not None:
             return size, {"model": "The context size set for this model in Models.",

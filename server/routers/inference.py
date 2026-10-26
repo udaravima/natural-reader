@@ -66,7 +66,7 @@ def _entry(m, llm, ms: model_settings.ModelsSettings, limits: inference_limits.I
     out = m.to_json()
     if m.kind == "ollama":
         out["limits"] = limits_out
-    if model_settings.sizes_context(llm.providers[m.provider].config, m.name, ms.provider_locality):
+    if model_settings.sizes_context(llm.providers[m.provider].config, m.name):
         fixed, _ = model_settings.deployment_num_ctx(ms, m.id, limits)
         auto, _ = inference_limits.clamp(model_settings.DEFAULT_LOCAL_NUM_CTX, None, limits)
         out["context_size"] = {"fixed": fixed, "auto": auto}

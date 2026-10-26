@@ -340,12 +340,13 @@ where it came from. First match wins:
 
 1. a self-hosted Ollama model that is loaded right now: **Loaded now (Ollama)**,
    with the size it was loaded at;
-2. a self-hosted Ollama model that isn't loaded: the size requests to it send:
-   its own size, or the deployment's size, set in **Models** or by
-   `INFERENCE_LOCAL_NUM_CTX`; with neither, 16,384 tokens (lower if
-   `INFERENCE_NUM_CTX_MAX` is lower), "unless a person sets their own in
-   Settings";
-3. an Ollama cloud model: its maximum;
+2. a self-hosted Ollama model that isn't loaded, whether its provider is marked
+   **Local** or **Cloud**: the size requests to it send: its own size, or the
+   deployment's size, set in **Models** or by `INFERENCE_LOCAL_NUM_CTX`; with
+   neither, 16,384 tokens (lower if `INFERENCE_NUM_CTX_MAX` is lower), "unless a
+   person sets their own in Settings";
+3. an Ollama cloud model (a name ending `-cloud` or `:cloud`, or the ollama.com
+   host): its maximum;
 4. any other model: what its provider reports;
 5. else what you declared under **Models -> Declared context windows** (or
    `INFERENCE_<NAME>_CONTEXT_WINDOW`);
@@ -379,10 +380,12 @@ models.** if that fails (the settings still show, with empty model lists).
 **Which models get a context size.** Ollama loads a model at 4,096 tokens on a
 machine with under 24 GiB of VRAM unless each request names a size, and cuts the
 start of a long prompt without saying so. So the app names one on every request
-to a **self-hosted Ollama model**, whatever its host name. Not sized: Ollama
-cloud models (a name ending `-cloud` or `:cloud`, or the ollama.com host), a
-provider you marked **Cloud**, and every model on an OpenAI-compatible provider
-(that API has no such option). For those the app never sets a size of its own.
+to a **self-hosted Ollama model**, whatever its host name and whether you marked
+its provider **Local** or **Cloud**. Not sized: Ollama cloud models (a name
+ending `-cloud` or `:cloud`, or the ollama.com host), the only Ollama models
+without a size, which get the window their provider reports; and every model on
+an OpenAI-compatible provider (that API has no such option). For those the app
+never sets a size of its own.
 A person's own Settings value, if they chose one, is still passed on with each
 chat message (clamped to the ceiling; an OpenAI-compatible provider ignores
 it). For those models the reader's calls send none; a reader on a sized model
@@ -416,8 +419,8 @@ that names no reader. The price is for a cloud chat model: reader calls count
 against that model's quota (and the daily budget either way). To keep them off
 it, pick a small local model: it loads at a size from the list above without
 step 3 (its per-model size, else the deployment's, else 16,384, clamped), never
-the person's. A reader on a model the app doesn't size (Ollama cloud, a provider
-you marked **Cloud**, an OpenAI-compatible provider) sends no size. Each
+the person's. A reader on a model the app doesn't size (Ollama cloud, an
+OpenAI-compatible provider) sends no size. Each
 reader batch is cut to fit its model's window: never above `READER_INPUT_CHARS`,
 and at most 16 passages.
 
@@ -426,9 +429,10 @@ Overview's quota hint, usage figures to come, and the **Auto** label. **Auto**
 guesses from the provider's address: `localhost`, a private or loopback
 address, `100.64.0.0/10` (Tailscale), a single-word name such as `ollama`, or a
 name ending `.local`, `.lan`, `.internal` or `.home.arpa` is local; anything else
-is cloud. Choose **Local** or **Cloud** if the guess is wrong. The one case
-where the flag changes sizing: **Cloud** on an Ollama provider stops its models
-from being sized.
+is cloud. Choose **Local** or **Cloud** if the guess is wrong. The flag never
+changes sizing: an Ollama you host is sized even when you mark it **Cloud** (a
+rented GPU box whose usage should count as cloud, say), because its Ollama still
+loads at 4,096 tokens unless told otherwise.
 
 **Chat models offered.** The picker in Chat and **Settings -> Chat** shows only
 the ticked models, and a request for another is refused ("That model isn't

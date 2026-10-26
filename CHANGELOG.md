@@ -124,8 +124,9 @@ All notable changes to this project will be documented in this file.
 - **A person's own context size stops applying to local Ollama models** once
   the admin sets one (in **Models**, or `INFERENCE_LOCAL_NUM_CTX`). Their value
   stays stored and applies again if the admin unsets it. It still applies to
-  models the app does not size (Ollama cloud models, and providers the admin
-  marked Cloud).
+  models the app does not size (Ollama cloud models). The admin's Local/Cloud
+  mark on a provider decides only what counts as cloud usage: an Ollama the
+  deployer hosts is sized whichever way it is marked.
 - **The Deployment section no longer lists "Reading model".** The reader is set
   in **Models**, and the Overview's Reader line shows what it resolves to.
 
@@ -148,9 +149,9 @@ All notable changes to this project will be documented in this file.
   one (**Models -> Declared context windows**, or
   `INFERENCE_<NAME>_CONTEXT_WINDOW`), and the Overview says "Unknown" until
   one is declared.
-- **A reader on a cloud model sends no context size.** A person's own size for
-  a cloud chat model is no longer passed on to the reader, which would have
-  shrunk its batches for nothing.
+- **A reader on a model the app doesn't size sends no context size** (Ollama
+  cloud models, `kind=openai` providers); it used to send one per batch. Those
+  models get the window their provider reports, and each batch is cut to fit it.
 - **A file opened from a folder can be indexed.** Index on a Markdown or
   text file opened with **Open folder** used to refuse ("open the file
   itself with Choose File"). The reader now keeps the file's bytes when it

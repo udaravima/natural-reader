@@ -35,7 +35,7 @@
 - **Choose the reader** (Admin → Models → **Reader**): the chat model of each conversation (the default) or any listed model. With none of `READER_MODEL`, `SUMMARIZE_MODEL`, `WEB_SEARCH_SUMMARY_MODEL` set, the reader is the chat model, no longer `llama3.2:3b`.
 - **Set the context size of self-hosted Ollama models** (Models → **Context size for local Ollama models**, and **Per-model sizes**). Every request to such a model names a size (the per-model size, else the deployment's, else the person's own value, else 16,384; at most `INFERENCE_NUM_CTX_MAX`), history is trimmed to it, and a reader that is the chat model uses it too, so Ollama stops reloading the model between chat and reader calls. Env fallback: `INFERENCE_LOCAL_NUM_CTX`.
 - **Declare a context window** for a model whose provider reports none (Models → **Declared context windows**, or `INFERENCE_<NAME>_CONTEXT_WINDOW` for a provider). Without one, history for that model is not trimmed and the Overview says "Unknown".
-- **Mark a provider local or cloud** (Models → **Providers**: Auto / Local / Cloud). Cost flag only (the Overview's quota hint, later usage), except that Cloud also stops an Ollama provider's models from being sized.
+- **Mark a provider local or cloud** (Models → **Providers**: Auto / Local / Cloud). Cost flag only (the Overview's quota hint, later usage); it never changes sizing, so a self-hosted Ollama marked Cloud is still sized (final-fix ruling P11).
 - **Narrow the chat models offered** (Models → **Chat models offered**). Intersected with the environment's allow-lists, never unioned. The turn route refuses a model outside it (422 `model_not_allowed`), and the picker lists only the ticked models.
 - **Search People** (Admin → People: **Search people**, **Status**, **Capability**, 50 at a time with **Show more**, "Showing N of M").
 - **Settings → Chat → Context window** shows "Set by your admin: N tokens." (locked) for a self-hosted Ollama model whose size the admin fixed, otherwise **Auto** names the size the server will use.
@@ -66,7 +66,10 @@ Made during the build (P, ledger):
 - **P8.** The model list's `context_size` key stays snake_case beside camelCase `limits`. Cost: one inconsistent payload, one route and one parser to rename.
 - **P9.** Deployment's read-only list drops "Reading model" (it reads only the environment and would contradict a console choice). Cost: one row.
 - **P10.** The Overview's unset-size copy prints the window actually used ("8,192 tokens unless …" when the ceiling is 8,192). Cost: one string.
-- **P11.** A valid per-model size whose provider is flipped to Cloud stays in the map (ignored while unsized, applies again if flipped back); only invalid typed text for a hidden input is dropped. Cost: a stale map key.
+- **P11 (Task 7, superseded).** A valid per-model size whose provider is flipped to Cloud stays in the map. Moot since the final-fix P11 below: flipping to Cloud no longer hides the box.
+
+Made in the final fix (the ledger reuses the numbers P11 and P12; these are the later ones):
+- **P11.** `sizes_context` ignores the admin's Local/Cloud mark; Cloud is cost-only. Sized = `ollama`-kind, model not `-cloud`/`:cloud`, host not ollama.com. Cost if wrong: a hosted, non-ollama.com Ollama endpoint marked Cloud is sent a `num_ctx` (it loads at our size instead of its own default).
 
 ### What was NOT verified
 

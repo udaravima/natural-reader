@@ -269,7 +269,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         models_cfg = await _models_settings()
         provider, model_name = router.resolve(req.model_id)     # the route already resolved it: never UnknownModel
         model_key = f"{provider.config.name}:{model_name}"
-        sized = model_settings.sizes_context(provider.config, model_name, models_cfg.provider_locality)
+        sized = model_settings.sizes_context(provider.config, model_name)
         settings = replace(req.settings, num_ctx=model_settings.num_ctx_for(
             models_cfg, model_key, local=sized, user_value=req.settings.num_ctx, limits=get_limits()))
         # What was approved is what the user saw: a query with hidden characters is cleaned first, and one with
@@ -794,7 +794,7 @@ def _turn_reader(router, models_cfg: model_settings.ModelsSettings, chat_id: str
     except UnknownModel:
         return cfg
     key = f"{provider.config.name}:{name}"
-    if not model_settings.sizes_context(provider.config, name, models_cfg.provider_locality):
+    if not model_settings.sizes_context(provider.config, name):
         return cfg      # a cloud or openai-kind model needs none (the person's chat value is not the reader's to send)
     if model_settings.same_model(key, chat_key):
         return replace(cfg, num_ctx=chat_settings.num_ctx)

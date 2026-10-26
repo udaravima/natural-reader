@@ -420,8 +420,9 @@ Full `.env.example` block: [`../.env.example`](../.env.example), just after
 Ollama loads a model at **4,096 tokens** on a machine with under 24 GiB of VRAM
 unless the request names a size, and quietly cuts the start of a longer prompt.
 So the server names a size on every request to a **self-hosted Ollama model**
-(any `kind=ollama` provider that is not marked Cloud, whatever its host, except
-`-cloud` / `:cloud` models and the ollama.com host). It is the first of these
+(any `kind=ollama` provider, whatever its host, except `-cloud` / `:cloud` models
+and the ollama.com host; the admin's Local/Cloud mark in **Models → Providers**
+affects cost labelling only, never the size). It is the first of these
 that is set, clamped to `INFERENCE_NUM_CTX_MAX` (32768 tokens unless set):
 
 1. the admin's size for that model (**Admin console → Models → Per-model sizes**);
@@ -433,10 +434,10 @@ that is set, clamped to `INFERENCE_NUM_CTX_MAX` (32768 tokens unless set):
 Chat history is trimmed to that same number, and the reader uses it too (next
 section). A larger size reserves more memory when the model loads, and a model
 already loaded at another size reloads once on the next message, so size it down
-on a machine short of RAM. Nothing is sent for Ollama cloud models, providers
-the admin marked Cloud, and `kind=openai` providers (`num_ctx` is an Ollama
-option); a person's own value for an Ollama cloud model or a Cloud-marked
-provider is still passed on.
+on a machine short of RAM. Nothing is sent for Ollama cloud models (the only
+Ollama models without a size: they get the window their provider reports) and
+`kind=openai` providers (`num_ctx` is an Ollama option); a person's own value
+for an Ollama cloud model is still passed on.
 
 A model whose provider reports no context window (most OpenAI-compatible
 servers) is never trimmed until a window is declared:
@@ -583,7 +584,7 @@ person's own value if they chose one rather than Auto, else 16384, clamped), so
 Ollama doesn't reload it between chat and reader calls. A different
 model gets the same steps without the person's value (its per-model size, else
 the deployment's, else 16384, clamped). A reader on a model that isn't sized
-(Ollama cloud, a provider the admin marked Cloud, `kind=openai`) sends no size.
+(Ollama cloud, `kind=openai`) sends no size.
 Batches are cut to fit.
 
 **The reader is the chat model unless you say otherwise.** With none of

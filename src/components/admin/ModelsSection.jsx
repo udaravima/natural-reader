@@ -41,12 +41,12 @@ const hostName = (host) => String(host ?? '').toLowerCase().replace(/:\d+$/, '')
 
 // Whether a request to this model must name its own context size, so it gets a per-model size here. Mirrors
 // `sizes_context` in server/services/model_settings.py: an Ollama model that isn't Ollama cloud, on a host that
-// isn't ollama.com or a subdomain, whose provider the admin hasn't marked cloud (`locality` is the drafted map).
-function sizesContext(model, provider, locality) {
+// isn't ollama.com or a subdomain. The Local/Cloud mark doesn't enter into it: it only decides what counts as
+// cloud usage (ruling P11).
+function sizesContext(model, provider) {
   if (model.kind !== 'ollama' || model.cloud_name) return false;
   const host = hostName(provider?.host);
-  if (host === 'ollama.com' || host.endsWith('.ollama.com')) return false;
-  return locality[model.provider] !== 'cloud';
+  return !(host === 'ollama.com' || host.endsWith('.ollama.com'));
 }
 
 export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChange }) {
@@ -87,7 +87,7 @@ export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChang
   const chatModels = s.value('chat_models') ?? [];
   const reader = s.value('reader') ?? 'chat';
   const providerByName = Object.fromEntries(providers.map((p) => [p.name, p]));
-  const sizedModels = models.filter((m) => sizesContext(m, providerByName[m.provider], locality));
+  const sizedModels = models.filter((m) => sizesContext(m, providerByName[m.provider]));
   const unreportedModels = models.filter((m) => m.reported_window == null);
   const readerIds = [...new Set([...models.map((m) => m.id), reader].filter((id) => id !== 'chat'))];
 
@@ -97,8 +97,8 @@ export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChang
     const text = typedFor(name, id);
     return text !== undefined && text !== '' && !validNumber(name, text);
   };
-  // Only a box that is on screen can hold Save off: its error line is the reason. A model that leaves the sizes
-  // list (its provider was set to Cloud) keeps what was typed, and counts again if it comes back.
+  // Only a box that is on screen can hold Save off: its error line is the reason. A model that leaves the list
+  // (its provider stops answering, so the catalog drops it) keeps what was typed, and counts again if it comes back.
   const anyInvalid = invalid('context_size')
     || sizedModels.some((m) => invalid('context_sizes', m.id))
     || unreportedModels.some((m) => invalid('context_windows', m.id));
@@ -247,7 +247,7 @@ export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChang
             </SettingRow>
 
             <SettingRow {...row('provider_locality', 'models-provider-locality', 'Providers', {
-              help: "Local or cloud decides what counts as cloud usage. A cloud provider's Ollama models are not sized.",
+              help: 'Local or cloud decides what counts as cloud usage.',
               group: true,
             })}>
               <div role="group" aria-labelledby="models-provider-locality-label"
