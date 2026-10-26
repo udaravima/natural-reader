@@ -237,7 +237,7 @@ spans several files:
 
 | Case | Asserts |
 |---|---|
-| defaults | unset → all-models allowlist (dev), `llama3.2:3b` for the legacy `summarize_model` field (the reader no longer defaults to it: its default is the chat model, see `test_chat_reader.py`), `nomic-embed-text` embed, 300s timeout |
+| defaults | unset → all-models allowlist (dev), `chat` (the chat model of each conversation) for `summarize_model`, `nomic-embed-text` embed, 300s timeout |
 | allowlist_parses_comma_separated_with_whitespace | CSV parsing |
 | empty_allowlist_means_all | unset/blank = allow everything |
 | summarize_model_precedence | `SUMMARIZE_MODEL` > `WEB_SEARCH_SUMMARY_MODEL` > default |

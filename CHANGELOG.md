@@ -7,19 +7,21 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - **The admin console is split into sections.** **Overview**, **People**,
-  **Projects**, **Documents**, **Chat**, **Defaults for users**, **Usage**
-  and **Deployment**, in a list down the side (a picker on a phone), the way
+  **Projects**, **Models**, **Documents**, **Chat**, **Defaults for users**,
+  **Usage** and **Deployment**, in a list down the side (a picker on a phone), the way
   Settings is laid out. People, Projects, Chat, Defaults for users and Usage
   work as before; they moved. Open the console with the shield button in the
   header. It uses arrow keys, Home and End to move between sections, and its
   buttons are at least 44 px tall on a phone.
 - **Overview checks that the deployment works.** One line each for model
-  providers, the reading model, context windows, embeddings, Docling and web
+  providers, the reader, context windows, embeddings, Docling and web
   search, with a state (OK, Warning, Problem, Off) and a button to look
   again. A check that hangs is cut off after 5 seconds and says so, without
   holding up the others. **Context windows** lists each chat model with its
-  window and whether a project-chat turn fits in it. It is read from the
-  provider, or from Ollama for a model that is loaded right now.
+  window and whether a project-chat turn fits in it. A self-hosted Ollama
+  model's window is the size requests to it send (or what it is loaded with
+  right now), never Ollama's maximum; other models report what their provider
+  says, else what an admin declared under **Models**, else "Unknown".
 - **One look for every console setting.** A setting shows where its value
   comes from: **Set here.**, **From the server setting** `NAME`, or **The
   default.**. **Use the server setting** drops what you set. A section has one
