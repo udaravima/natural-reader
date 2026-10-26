@@ -54,6 +54,7 @@ def create_app() -> FastAPI:
         allow_credentials=cors_allow_credentials(cors_origins),
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Total-Count"],   # People: total matches for "Show more"
     )
 
     # Signed cookie holding the transient OIDC flow state (Authlib uses

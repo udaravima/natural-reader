@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { AdminConsole } from './AdminConsole';
 
@@ -16,6 +16,20 @@ const user = (over = {}) => ({
   project_limit: null, username: null, first_name: null, last_name: null,
   ...over,
 });
+
+// The People list asks for a page: ?q=&status=&capability=&limit=&offset=. This answers it like the
+// server does (substring on email/name, filters, paging) and reports the total in X-Total-Count.
+function usersPage(all, path) {
+  const params = new URL(path, 'http://x').searchParams;
+  const q = (params.get('q') ?? '').toLowerCase();
+  const rows = all.filter((u) =>
+    (!q || [u.email, u.username, u.display_name].some((v) => v?.toLowerCase().includes(q)))
+    && (!params.get('status') || u.status === params.get('status'))
+    && (!params.get('capability') || u.capabilities.includes(params.get('capability'))));
+  const offset = Number(params.get('offset') ?? 0);
+  const limit = Number(params.get('limit') ?? 50);
+  return { ...json(200, rows.slice(offset, offset + limit)), headers: { get: (h) => (h.toLowerCase() === 'x-total-count' ? String(rows.length) : null) } };
+}
 
 // Mounts the console with a mutable user list so PATCH/POST/DELETE handlers
 // can mutate it and the reload reflects the change, like the real backend.
@@ -43,6 +57,7 @@ function mount({ users, usage = [], deployment = { settings: { timezone: { value
       return noContent();
     }
     if (path === '/v1/admin/users') return json(200, users);
+    if (path.startsWith('/v1/admin/users?')) return usersPage(users, path);
     if (path.startsWith('/v1/admin/inference/usage')) return json(200, usage);
     if (path === '/v1/admin/settings/deployment') return json(200, deployment);
     if (path.startsWith('/v1/admin/projects')) return json(200, []);
@@ -625,5 +640,130 @@ describe('AdminConsole — chat options', () => {
     fireEvent.click(await screen.findByRole('radio', { name: 'Search without asking' }));
     expect(await screen.findByText('Rules: web_search, read_web_pages.')).toBeInTheDocument();
     expect(screen.queryByText('Rules: offer_web_search.')).toBeNull();
+  });
+});
+
+describe('AdminConsole — searching people', () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.useRealTimers());
+
+  const usersCalls = () =>
+    apiFetch.mock.calls.filter(([, , path, opts]) => path.startsWith('/v1/admin/users?') && !opts?.method).map(([, , path]) => new URL(path, 'http://x').searchParams);
+  const many = (n) => Array.from({ length: n }, (_, i) => user({ id: `m${i}`, email: `member${String(i).padStart(3, '0')}@x.io` }));
+  // Fake timers only around the typing: RTL's waitFor polls with timers and would hang under them.
+  const typeAndWait = async (label, value, ms = 300) => {
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+    vi.useRealTimers();
+  };
+
+  it('loads the first page of 50 and says how many exist', async () => {
+    mount({ users: many(120) });
+    expect(await screen.findByText('Showing 50 of 120')).toBeInTheDocument();
+    const first = usersCalls()[0];
+    expect(first.get('limit')).toBe('50');
+    expect(first.get('offset')).toBe('0');
+    expect(first.has('q')).toBe(false);
+    expect(screen.getByPlaceholderText('Name, email or username')).toBe(screen.getByLabelText('Search people'));
+  });
+
+  it('typing sends one request with q, 300 ms after typing stops', async () => {
+    mount({ users: [user({ email: 'ada@x.io' }), user({ id: 'u2', email: 'bob@x.io' })] });
+    await screen.findByText('ada@x.io');
+    const before = usersCalls().length;
+    vi.useFakeTimers();
+    for (const v of ['b', 'bo', 'bob']) {
+      fireEvent.change(screen.getByLabelText('Search people'), { target: { value: v } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    }
+    expect(usersCalls().length).toBe(before);                     // still typing: nothing sent
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    vi.useRealTimers();
+    await waitFor(() => expect(usersCalls().length).toBe(before + 1));
+    expect(usersCalls().at(-1).get('q')).toBe('bob');
+    expect(await screen.findByText('Showing 1 of 1')).toBeInTheDocument();
+    expect(screen.queryByText('ada@x.io')).toBeNull();
+  });
+
+  it('the status and capability selects search at once and combine', async () => {
+    mount({ users: [
+      user({ id: 'u1', email: 'a@x.io', status: 'active', capabilities: ['reader'] }),
+      user({ id: 'u2', email: 'b@x.io', status: 'pending', capabilities: ['reader'] }),
+      user({ id: 'u3', email: 'c@x.io', status: 'pending', capabilities: ['chat'] }),
+    ] });
+    await screen.findByText('Showing 3 of 3');
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'pending' } });
+    await screen.findByText('Showing 2 of 2');
+    expect(usersCalls().at(-1).get('status')).toBe('pending');
+    fireEvent.change(screen.getByLabelText('Capability'), { target: { value: 'reader' } });
+    await screen.findByText('Showing 1 of 1');
+    expect(usersCalls().at(-1).get('capability')).toBe('reader');
+    expect(usersCalls().at(-1).get('status')).toBe('pending');
+    expect(screen.getByText('b@x.io')).toBeInTheDocument();
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(
+      expect.arrayContaining(['All', 'Active', 'Pending', 'Disabled', 'Any', 'reader', 'chat', 'admin', 'docling']));
+  });
+
+  it('Show more appends the next 50 and goes away when everything is loaded', async () => {
+    mount({ users: many(120) });
+    fireEvent.click(await screen.findByRole('button', { name: 'Show more' }));
+    expect(await screen.findByText('Showing 100 of 120')).toBeInTheDocument();
+    expect(usersCalls().at(-1).get('offset')).toBe('50');
+    expect(screen.getByText('member000@x.io')).toBeInTheDocument();   // the first page is still there
+    expect(screen.getByText('member099@x.io')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    expect(await screen.findByText('Showing 120 of 120')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
+  });
+
+  it('says "No one matches." for an empty result', async () => {
+    mount({ users: [user()] });
+    await screen.findByText('a@x.io');
+    await typeAndWait('Search people', 'zzz');
+    expect(await screen.findByText('No one matches.')).toBeInTheDocument();
+    expect(screen.getByText('Showing 0 of 0')).toBeInTheDocument();
+  });
+
+  it('a late answer to an older search does not overwrite the newest one', async () => {
+    const pending = {};
+    mount({
+      users: [user({ email: 'ada@x.io' }), user({ id: 'u2', email: 'bob@x.io' })],
+      extra: (path) => {
+        const q = path.startsWith('/v1/admin/users?') && new URL(path, 'http://x').searchParams.get('q');
+        if (!q) return undefined;
+        return new Promise((resolve) => { pending[q] = resolve; });
+      },
+    });
+    await screen.findByText('ada@x.io');
+    await typeAndWait('Search people', 'ad');
+    await typeAndWait('Search people', 'bo');
+    await waitFor(() => expect(Object.keys(pending).sort()).toEqual(['ad', 'bo']));
+    await act(async () => { pending.bo(json(200, [user({ id: 'u2', email: 'bob@x.io' })])); });
+    expect(await screen.findByText('bob@x.io')).toBeInTheDocument();
+    await act(async () => { pending.ad(json(200, [user({ email: 'ada@x.io' })])); });   // the older one, arriving late
+    expect(screen.getByText('bob@x.io')).toBeInTheDocument();
+    expect(screen.queryByText('ada@x.io')).toBeNull();
+  });
+
+  it('reloads with the same search after an edit', async () => {
+    mount({ users: [user({ email: 'ada@x.io' }), user({ id: 'u2', email: 'bob@x.io', status: 'pending' })] });
+    await screen.findByText('Showing 2 of 2');
+    await typeAndWait('Search people', 'bob');
+    await screen.findByText('Showing 1 of 1');
+    const before = usersCalls().length;
+    fireEvent.click(screen.getByRole('button', { name: 'Activate' }));
+    await waitFor(() => expect(usersCalls().length).toBe(before + 1));
+    expect(usersCalls().at(-1).get('q')).toBe('bob');
+  });
+
+  it('a reload after an edit keeps the pages already loaded', async () => {
+    mount({ users: many(120) });
+    fireEvent.click(await screen.findByRole('button', { name: 'Show more' }));
+    await screen.findByText('Showing 100 of 120');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Disable' })[0]);
+    await waitFor(() => expect(usersCalls().at(-1).get('limit')).toBe('100'));
+    expect(usersCalls().at(-1).get('offset')).toBe('0');
+    expect(await screen.findByText('Showing 100 of 120')).toBeInTheDocument();
   });
 });

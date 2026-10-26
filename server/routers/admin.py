@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..auth import deps, users
@@ -74,11 +74,33 @@ async def _other_active_admins(conn, user_id: str) -> int:
     return (await cur.fetchone())[0]
 
 
+_USER_QUERY_PARAMS = ("q", "status", "capability", "limit", "offset")
+_CAPABILITY_PATTERN = "^(" + "|".join(sorted(KNOWN_CAPABILITIES)) + ")?$"
+
+
 @router.get("/users")
 async def list_all(
+    request: Request,
+    response: Response,
+    q: str | None = Query(None, max_length=200),
+    status: str | None = Query(None, pattern="^(active|pending|disabled)?$"),
+    capability: str | None = Query(None, pattern=_CAPABILITY_PATTERN),
+    limit: int | None = Query(None, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     _: deps.Principal = Depends(deps.require_admin), conn=Depends(deps.get_conn, scope="function")
 ):
-    return await users.list_users(conn)
+    """Every user as a list. With no parameters that is the whole table (the
+    older AdminPanel reads it so). With any of q/status/capability/limit/offset
+    it is one page (limit defaults to 50) and `X-Total-Count` carries the number
+    of matches before paging."""
+    if not any(k in request.query_params for k in _USER_QUERY_PARAMS):
+        return await users.list_users(conn)
+    rows, total = await users.search_users(
+        conn, q=q, status=status or None, capability=capability or None,
+        limit=limit or 50, offset=offset,
+    )
+    response.headers["X-Total-Count"] = str(total)
+    return rows
 
 
 @router.patch("/users/{user_id}")

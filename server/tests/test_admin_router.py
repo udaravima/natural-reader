@@ -563,3 +563,130 @@ async def test_admin_models_needs_admin(monkeypatch):
     member = deps.Principal(user_id="u2", email="b@x.io", role="member")
     async with _client(_catalog_app(member)) as client:
         assert (await client.get("/v1/admin/models")).status_code == 403
+
+
+# --- People search / filter / paging (GET /v1/admin/users with parameters) ---
+
+
+async def _people(db_conn):
+    """The admin plus four people to search among; returns (principal, {key: row})."""
+    from server.auth import users as users_mod
+
+    admin, p = await _admin(db_conn)
+    rows = {}
+    for key, kw in {
+        "ada": dict(email="ada@example.com", display_name="Ada L.", username="countess",
+                    first_name="Ada", last_name="Lovelace", status="active",
+                    capabilities=["reader", "chat"]),
+        "bob": dict(email="bob@example.com", username="builder", first_name="Bob",
+                    last_name="Smith", status="pending", capabilities=["reader"]),
+        "cy": dict(email="cy@example.com", display_name="Cy Twombly", status="disabled",
+                   capabilities=["docling"]),
+        "pct": dict(email="100%_sure@example.com", status="active"),
+    }.items():
+        rows[key] = await users_mod.enroll_user(db_conn, **kw)
+    return p, rows
+
+
+async def test_admin_users_search_matches_name_email_username_and_full_name(db_conn):
+    p, rows = await _people(db_conn)
+    async with _client(_app(db_conn, p)) as c:
+        async def ids(q):
+            r = await c.get("/v1/admin/users", params={"q": q})
+            assert r.status_code == 200
+            return {u["id"] for u in r.json()}
+
+        ada = {rows["ada"]["id"]}
+        assert await ids("ADA@exa") == ada            # email, case-insensitive substring
+        assert await ids("countess") == ada           # username
+        assert await ids("ada l.") == ada             # display_name
+        assert await ids("lovel") == ada              # last_name
+        assert await ids("Ada Lovelace") == ada       # first_name || ' ' || last_name
+        assert await ids("a lov") == ada              # spans the join
+        assert await ids("twombly") == {rows["cy"]["id"]}
+        assert await ids("nobody-matches-this") == set()
+        r = await c.get("/v1/admin/users", params={"q": "bob"})
+        assert set(r.json()[0]) >= {"id", "email", "capabilities", "created_at", "project_limit"}
+        assert r.headers["X-Total-Count"] == "1"
+
+
+async def test_admin_users_search_escapes_like_wildcards(db_conn):
+    p, rows = await _people(db_conn)
+    async with _client(_app(db_conn, p)) as c:
+        for q, want in (("%", "pct"), ("_", "pct"), ("0%_s", "pct")):
+            r = await c.get("/v1/admin/users", params={"q": q})
+            assert [u["id"] for u in r.json()] == [rows[want]["id"]], q
+        r = await c.get("/v1/admin/users", params={"q": "\\"})
+        assert r.status_code == 200 and r.json() == []
+        assert r.headers["X-Total-Count"] == "0"
+
+
+async def test_admin_users_filters_status_and_capability(db_conn):
+    p, rows = await _people(db_conn)
+    me = p.user_id   # the bootstrapped admin: active, has reader, chat and admin
+    async with _client(_app(db_conn, p)) as c:
+        async def ids(**params):
+            r = await c.get("/v1/admin/users", params=params)
+            assert r.status_code == 200, r.text
+            return {u["id"] for u in r.json()}
+
+        assert await ids(status="pending") >= {rows["bob"]["id"]}
+        assert rows["ada"]["id"] not in await ids(status="pending")
+        assert await ids(status="disabled") == {rows["cy"]["id"]}
+        assert await ids(capability="docling") == {rows["cy"]["id"]}
+        assert await ids(capability="reader") == {me, rows["ada"]["id"], rows["bob"]["id"]}
+        assert await ids(capability="admin") == {me}
+        # filters combine with each other and with q
+        assert await ids(capability="reader", status="active") == {me, rows["ada"]["id"]}
+        assert await ids(capability="reader", q="smith") == {rows["bob"]["id"]}
+        assert await ids(capability="docling", status="active") == set()
+
+
+async def test_admin_users_pages_with_total_header(db_conn):
+    p, rows = await _people(db_conn)
+    async with _client(_app(db_conn, p)) as c:
+        everyone = (await c.get("/v1/admin/users")).json()   # admin + 4
+        assert len(everyone) == 5
+        seen = []
+        for offset in (0, 2, 4):
+            r = await c.get("/v1/admin/users", params={"limit": 2, "offset": offset})
+            assert r.status_code == 200
+            assert r.headers["X-Total-Count"] == "5"
+            seen += [u["id"] for u in r.json()]
+        assert len(seen) == 5 and set(seen) == {u["id"] for u in everyone}
+        # a bare limit works too; the default page size is 50, so all 5 fit
+        r = await c.get("/v1/admin/users", params={"offset": 1})
+        assert len(r.json()) == 4 and r.headers["X-Total-Count"] == "5"
+        # past the end: an empty page, the total still honest
+        r = await c.get("/v1/admin/users", params={"limit": 2, "offset": 50})
+        assert r.json() == [] and r.headers["X-Total-Count"] == "5"
+
+
+async def test_admin_users_without_params_is_unchanged(db_conn):
+    p, rows = await _people(db_conn)
+    async with _client(_app(db_conn, p)) as c:
+        r = await c.get("/v1/admin/users")
+        assert r.status_code == 200 and isinstance(r.json(), list)
+        assert len(r.json()) == 5                      # every user, not a 50-row page
+        assert "x-total-count" not in r.headers
+
+
+async def test_admin_users_rejects_bad_params(db_conn):
+    p, _ = await _people(db_conn)
+    async with _client(_app(db_conn, p)) as c:
+        for params in (
+            {"status": "bogus"}, {"capability": "root"}, {"limit": 0}, {"limit": 201},
+            {"limit": "x"}, {"offset": -1}, {"q": "x" * 201},
+        ):
+            r = await c.get("/v1/admin/users", params=params)
+            assert r.status_code == 422, params
+        assert (await c.get("/v1/admin/users", params={"q": "x" * 200})).status_code == 200
+        assert (await c.get("/v1/admin/users", params={"limit": 200})).status_code == 200
+
+
+async def test_admin_users_search_requires_admin(db_conn):
+    await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="a@x.io")
+    m = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io")
+    p = deps.Principal(user_id=m["id"], email=m["email"], role="member")
+    async with _client(_app(db_conn, p)) as c:
+        assert (await c.get("/v1/admin/users", params={"q": "a"})).status_code == 403

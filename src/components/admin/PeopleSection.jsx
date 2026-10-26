@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
 import { formatDay } from '../../lib/zoneFormat';
@@ -9,6 +9,18 @@ import { formatDay } from '../../lib/zoneFormat';
  */
 
 const CAPABILITIES = ['reader', 'chat', 'admin', 'docling'];
+
+const PAGE = 50;               // rows per request; the server's default page too
+const MAX_PAGE = 200;          // the server's ceiling for `limit`
+const SEARCH_DELAY_MS = 300;   // typing pauses this long before a search is sent
+
+// How many people match, before paging: the server's X-Total-Count. A server
+// (or a mock) that sends none is taken to have sent everything.
+function totalOf(res, rows) {
+  const header = res.headers?.get?.('X-Total-Count');
+  const n = header == null ? NaN : Number(header);
+  return Number.isFinite(n) ? n : rows.length;
+}
 
 // A capability is a Keycloak realm role; a realm imported before a role was
 // added to the export lacks it, and the app can't create roles (no
@@ -65,6 +77,20 @@ function ProjectLimitField({ u, theme, onSet }) {
 export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToast, zone = 'UTC' }) {
   const [users, setUsers] = useState(null);
 
+  // Search. `query` is what the box shows; `term` follows it 300 ms after typing stops,
+  // and is what is sent. Status and capability apply at once.
+  const [query, setQuery] = useState('');
+  const [term, setTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [capFilter, setCapFilter] = useState('');
+  const [total, setTotal] = useState(0);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // Sequence number of the newest list request. An answer carrying an older number is
+  // dropped, so a slow reply to "ad" can never overwrite the list for "ada".
+  const latest = useRef(0);
+  const loadedCount = useRef(0);   // rows on screen, so a reload after an edit keeps them
+
   // Enroll form
   const [enrollEmail, setEnrollEmail] = useState('');
   const [enrollName, setEnrollName] = useState('');
@@ -81,18 +107,65 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
   const [deleteTarget, setDeleteTarget] = useState(null); // user id
   const [deleteTyped, setDeleteTyped] = useState('');
 
-  const loadUsers = useCallback(async () => {
+  useEffect(() => {
+    const t = setTimeout(() => setTerm(query.trim()), SEARCH_DELAY_MS);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  useEffect(() => { loadedCount.current = users?.length ?? 0; }, [users]);
+
+  const pageUrl = useCallback((offset, limit) => {
+    const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (term) params.set('q', term);
+    if (statusFilter) params.set('status', statusFilter);
+    if (capFilter) params.set('capability', capFilter);
+    return `/v1/admin/users?${params}`;
+  }, [term, statusFilter, capFilter]);
+
+  // Loads from the top with the current search. After an edit (fresh = false) it asks for as
+  // many rows as are on screen, so pages opened with Show more don't collapse back to 50.
+  const loadUsers = useCallback(async (fresh = false) => {
+    const mine = ++latest.current;
     try {
-      const res = await apiFetch(apiHost, apiPort, '/v1/admin/users');
+      const limit = fresh ? PAGE : Math.min(MAX_PAGE, Math.max(PAGE, loadedCount.current));
+      const res = await apiFetch(apiHost, apiPort, pageUrl(0, limit));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setUsers(await res.json());
+      const rows = await res.json();
+      if (mine !== latest.current) return;
+      setUsers(rows);
+      setTotal(totalOf(res, rows));
+      setLoadFailed(false);
     } catch (e) {
+      if (mine !== latest.current) return;
       setUsers([]);
+      setTotal(0);
+      setLoadFailed(true);
       showToast(`Could not load users: ${e.message}`, 5000);
     }
-  }, [apiHost, apiPort, showToast]);
+  }, [apiHost, apiPort, showToast, pageUrl]);
 
-  useEffect(() => { loadUsers(); }, [loadUsers]);
+  // Runs on mount and whenever the search changes.
+  useEffect(() => { loadUsers(true); }, [loadUsers]);
+
+  const showMore = async () => {
+    const mine = latest.current;
+    setLoadingMore(true);
+    try {
+      const res = await apiFetch(apiHost, apiPort, pageUrl(users.length, PAGE));
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const rows = await res.json();
+      if (mine !== latest.current) return;   // the search changed while this was in flight
+      setUsers((prev) => {
+        const have = new Set(prev.map((u) => u.id));
+        return [...prev, ...rows.filter((u) => !have.has(u.id))];
+      });
+      setTotal(totalOf(res, rows));
+    } catch (e) {
+      if (mine === latest.current) showToast(`Could not load more: ${e.message}`, 5000);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const patchUser = async (id, body) => {
     try {
@@ -300,9 +373,48 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
           )}
         </form>
 
+        {/* Search and filters */}
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="search" value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Name, email or username"
+            aria-label="Search people"
+            maxLength={200}
+            className={`min-h-11 md:min-h-0 px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-w-[200px] flex-1`}
+          />
+          <label className="flex items-center gap-1 text-[10px]">
+            <span className={theme.textMuted}>Status</span>
+            <select
+              value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}
+              className={`min-h-11 md:min-h-0 px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg}`}
+            >
+              <option value="">All</option>
+              <option value="active">Active</option>
+              <option value="pending">Pending</option>
+              <option value="disabled">Disabled</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-1 text-[10px]">
+            <span className={theme.textMuted}>Capability</span>
+            <select
+              value={capFilter} onChange={(e) => setCapFilter(e.target.value)}
+              className={`min-h-11 md:min-h-0 px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg}`}
+            >
+              <option value="">Any</option>
+              {CAPABILITIES.map((cap) => <option key={cap} value={cap}>{cap}</option>)}
+            </select>
+          </label>
+        </div>
+        {users !== null && (
+          <p role="status" className={`text-[10px] ${theme.textMuted}`}>Showing {users.length} of {total}</p>
+        )}
+
         {/* User rows */}
         {users === null ? (
           <p className={`text-xs ${theme.textMuted}`}>Loading…</p>
+        ) : users.length === 0 && !loadFailed ? (
+          <p className={`text-xs ${theme.textMuted}`}>No one matches.</p>
         ) : users.map((u) => {
           const isSelf = u.id === currentUserId;
           const deleting = deleteTarget === u.id;
@@ -389,6 +501,15 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
             </div>
           );
         })}
+
+        {users !== null && users.length < total && (
+          <button
+            onClick={showMore} disabled={loadingMore}
+            className="min-h-11 md:min-h-0 self-start text-xs underline text-blue-500 flex items-center gap-1 disabled:opacity-60 disabled:no-underline"
+          >
+            {loadingMore ? (<><Loader2 size={12} className="animate-spin" /> Loading…</>) : 'Show more'}
+          </button>
+        )}
       </section>
   );
 }

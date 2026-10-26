@@ -92,7 +92,11 @@ const desktopChanged = (container) => [
 describe('Admin console: 44 px tap targets below md', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    apiFetch.mockImplementation(async (h, p, path) => (path in ROUTES ? json(200, ROUTES[path]) : json(404, {})));
+    apiFetch.mockImplementation(async (h, p, path) => {
+      // People asks for a page: /v1/admin/users?limit=50&offset=0
+      const key = path.startsWith('/v1/admin/users?') ? '/v1/admin/users' : path;
+      return key in ROUTES ? json(200, ROUTES[key]) : json(404, {});
+    });
   });
 
   for (const [name, { ui, ready }] of Object.entries(SECTIONS)) {
@@ -110,6 +114,16 @@ describe('Admin console: 44 px tap targets below md', () => {
     await screen.findByLabelText('Enroll email');
     fireEvent.click(screen.getAllByRole('button', { name: 'Delete' })[0]);
     expect(screen.getByLabelText('Confirm email')).toBeTruthy();
+    expect(unsized(container)).toEqual([]);
+    expect(desktopChanged(container)).toEqual([]);
+  });
+
+  it('People: Show more too, which appears only while the list is longer than what is loaded', async () => {
+    apiFetch.mockImplementation(async (h, p, path) => (path.startsWith('/v1/admin/users?')
+      ? { ...json(200, ROUTES['/v1/admin/users']), headers: { get: () => '120' } }
+      : json(404, {})));
+    const { container } = render(SECTIONS.People.ui);
+    await screen.findByRole('button', { name: 'Show more' });
     expect(unsized(container)).toEqual([]);
     expect(desktopChanged(container)).toEqual([]);
   });
