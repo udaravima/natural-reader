@@ -111,6 +111,17 @@ def test_latest_suffix_does_not_matter():
     ("http://localhost:11434", "m:cloud", {"ollama": "local"}, False),   # the model name beats the override
     ("http://[::1]:11434", "qwen3:8b", {}, True),
     ("http://8.8.8.8:11434", "qwen3:8b", {}, False),
+    ("http://host.docker.internal:11434", "qwen3:8b", {}, True),
+    ("http://host.containers.internal:11434", "qwen3:8b", {}, True),
+    ("http://x.local:11434", "qwen3:8b", {}, True),
+    ("http://x.lan:11434", "qwen3:8b", {}, True),
+    ("http://x.internal:11434", "qwen3:8b", {}, True),
+    ("http://x.home.arpa:11434", "qwen3:8b", {}, True),
+    ("http://100.64.0.1:11434", "qwen3:8b", {}, True),
+    ("http://100.127.255.254:11434", "qwen3:8b", {}, True),
+    ("http://localhost.:11434", "qwen3:8b", {}, True),
+    ("http://100.128.0.1:11434", "qwen3:8b", {}, False),
+    ("http://gpu.example.com:11434", "qwen3:8b", {}, False),
     ("http://[::1", "qwen3:8b", {}, False),                          # malformed: never an exception
     ("", "qwen3:8b", {}, False),
 ])

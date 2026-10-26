@@ -14,7 +14,9 @@ and clamps the result to INFERENCE_NUM_CTX_MAX. A model that is not local (Ollam
 provider) keeps the person's value, clamped, and gets none when they sent none: cloud Ollama already gives its
 whole context and `openai` ignores the option.
 
-Locality (`is_local`) is a guess from the provider's URL that the admin can override per provider. Model ids are
+Locality (`is_local`) is a guess from the provider's URL that the admin can override per provider: localhost, a
+private, loopback or 100.64.0.0/10 (Tailscale) address, a single-label name (`ollama`), or a .local, .lan,
+.internal or .home.arpa name counts as local; any other host is cloud. Model ids are
 `provider:name`; a trailing `:latest` on either side of a comparison doesn't matter (`same_model`, `lookup`).
 
 Nothing here is cached: `load_models_settings` is one primary-key read per request, and every function takes the
@@ -233,6 +235,11 @@ def is_ollama_cloud(name: str) -> bool:
     return name.endswith(("-cloud", ":cloud"))
 
 
+# Private-network names and the shared address space (CGNAT, which Tailscale uses): ipaddress calls the latter public
+_PRIVATE_SUFFIXES = (".local", ".lan", ".internal", ".home.arpa")
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+
 def _host_is_local(url: str) -> bool:
     try:
         host = urlsplit(url if "://" in url else f"//{url}").hostname
@@ -240,20 +247,24 @@ def _host_is_local(url: str) -> bool:
         return False
     if not host:
         return False
+    host = host.removesuffix(".")    # `localhost.` is `localhost`
     if host == "localhost":
         return True
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
-        return "." not in host    # a single-label name is a container service (`ollama`); a dotted one is the internet
-    return ip.is_loopback or ip.is_private
+        # a single-label name is a container service (`ollama`); a dotted one is local only under a private-network suffix
+        return "." not in host or host.endswith(_PRIVATE_SUFFIXES)
+    return ip.is_loopback or ip.is_private or ip in _CGNAT
 
 
 def is_local(provider: ProviderConfig, model_name: str, locality: Mapping[str, str]) -> bool:
     """Whether the model runs on hardware the deployer controls, first match wins:
     1. an Ollama model whose name ends in -cloud or :cloud is cloud on any host;
     2. the admin's override for the provider;
-    3. the provider's host: localhost, a loopback or private IP, or a single-label name is local;
+    3. the provider's host: localhost, a loopback, private or 100.64.0.0/10 IP, a single-label name, or a name ending
+       in .local, .lan, .internal or .home.arpa is local (private-network names a deployer reaches without a
+       cloud bill; the admin can still override per provider);
     4. anything else is cloud.
     An empty `model_name` skips step 1, which answers for the provider alone."""
     if provider.kind == "ollama" and is_ollama_cloud(model_name):
