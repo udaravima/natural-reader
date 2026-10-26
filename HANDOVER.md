@@ -6,9 +6,9 @@
 
 ## 2026-10-26 — Admin console v2, phase 1 built and walked (START HERE)
 
-**Branch:** `feat/admin-console-v2`, cut from `328f68f` (the plan's commit; merge-base with `development` is `9459201`). **Commits:** `c717754` through `1100e71` (`git log --oneline 9459201..HEAD` lists all 20, the plan's commit first) plus the commit that added this entry and the docs. **Not merged into `development`. Nothing deployed.** **Pushed:** not by us. Something pushed this branch to origin four times with nobody running `git push` here: `328f68f` at 23:34:59 on 2026-10-25, then `7637c9a` (00:02:31), `469d2d8` (00:07:14) and `292a0ce` (00:07:47) on 2026-10-26 (from `git reflog show origin/feat/admin-console-v2`, all "update by push"). The cause is unknown (no git hook or Claude hook pushes this repo; VS Code's publish/sync is the suspect). Everything after `292a0ce`, including this docs commit, is local only. The owner never granted a push.
+**Branch:** `feat/admin-console-v2`, cut from `development` at `9459201`. **Fast-forward merged into `development` on 2026-10-26** (`git log --oneline 9459201..development` lists the plan's commit first, then the tasks, the final-review fixes and this entry). **`development` is not pushed** (origin/development is still `955231d`). **Nothing deployed.** **The feature branch was pushed:** not by us. Something pushed this branch to origin four times with nobody running `git push` here: `328f68f` at 23:34:59 on 2026-10-25, then `7637c9a` (00:02:31), `469d2d8` (00:07:14) and `292a0ce` (00:07:47) on 2026-10-26 (from `git reflog show origin/feat/admin-console-v2`, all "update by push"). The cause is unknown (no git hook or Claude hook pushes this repo; VS Code's publish/sync is the suspect). Everything after `292a0ce`, including this docs commit, is local only. The owner never granted a push.
 
-**Gates at the docs commit (2026-10-26):** backend `2278 passed, 16 skipped, 2 deselected` (was 2139 passed at `9127981`), frontend `1115 passed` in 117 files (was 1022), `npx eslint src` clean.
+**Gates at `9a3f569` (the last code commit, 2026-10-26):** backend `2281 passed, 16 skipped, 2 deselected` (was 2139 passed at `9127981`), frontend `1121 passed` in 117 files (was 1022), `npx eslint src` clean.
 
 ### What a person can do now (and where)
 
@@ -46,7 +46,7 @@ Walked in the running app (headless Chromium, scratch database on 5434, `AUTH_EN
 
 ### Open items
 
-1. **Merge** `feat/admin-console-v2` into `development` (then push? and find out what pushes this branch).
+1. ~~Merge into `development`~~ (done 2026-10-26, fast-forward). Still open: push `development`, and find out what pushed the feature branch.
 2. **Deploy** is a separate decision (v2.4.0 itself is also not deployed; see the 2026-10-25 entry). This work needs no migration. For `role` mode, create the `docling` realm role first. **Upgrade note: if the backend's environment sets `TZ` (this host's `.env` does), the daily token budget and the usage days follow it from the deploy, with no console action: budgets reset at local midnight instead of UTC midnight, the switch day gives an early or late reset, and usage days shift. To keep UTC days, choose UTC under Deployment.**
 3. **Deferred review findings** (minor, none blocks; the ledger has the rest):
    - `GET /v1/admin/inference/config` (`admin.py`, from before this work) calls `urlsplit(...).hostname` unguarded: a malformed provider URL is a 500.
@@ -59,6 +59,19 @@ Walked in the running app (headless Chromium, scratch database on 5434, `AUTH_EN
    - Some scoped tokens (`read_aloud`, `chat`) drop `docling` by design; only `documents` carries it.
 4. **Phase 2a** (reader falls back to the chat model, one context size per local model) is next in the spec; the §7 decisions are approved.
 5. The old plan workspace `.superpowers/sdd/2026-10-25-admin-console-v2-phase1/` can be kept or deleted; the `nr-c21-testpg` scratch container is still running.
+
+### Research note: Docling can already drive DeepSeek-OCR (read from the installed code, not run)
+
+The installed Docling 2.142.1 ships a VLM-convert preset `deepseek_ocr` (`docling/datamodel/stage_model_specs.py` `VLM_CONVERT_DEEPSEEK_OCR`): the VLM pipeline renders each page at scale 2.0 and sends it to Ollama's OpenAI-compatible `/v1/chat/completions` with model `deepseek-ocr:3b` (pulled locally, 6.7 GB), prompt `<|grounding|>Convert the document to markdown.`, `max_tokens` 4096, and parses the reply with `ResponseFormat.DEEPSEEKOCR_MARKDOWN`. Docling 2.142 also has a legacy `ApiVlmOptions` form, `vlm_model_specs.DEEPSEEKOCR_OLLAMA` (timeout 90 s, concurrency 4).
+
+Our code does not use it. `docling_convert._build_converter` gives **Accurate** a bare `VlmPipelineOptions()`, whose default is the `granite_docling` preset run in-process (transformers, on this CPU-only machine). Wiring DeepSeek in as a preset needs four things:
+
+- **`enable_remote_services=True`**: Docling refuses any API VLM without it, even on localhost.
+- **The Ollama URL from our own config.** The preset defaults to `localhost:11434`, which inside the backend container is the container itself.
+- **A per-page timeout sized for CPU.** No timing has been measured.
+- **A place in the console's allow-list.** It reads page images, so the "OCR off" rule should refuse it too.
+
+It also loads a 6.7 GB model into the same Ollama as chat and embeddings, which is the reload problem phase 2a deals with. Backlog item 3 (DeepSeek-OCR vs Docling) starts here.
 
 ### Where to look
 
