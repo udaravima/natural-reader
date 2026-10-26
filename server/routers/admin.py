@@ -595,6 +595,18 @@ async def get_settings_section(
     return await _section_view(conn, section)
 
 
+def _refuse_a_reader_the_deployment_disallows(value: Any) -> None:
+    """The console can only narrow (spec §2): a reader other than "chat" must be a model the deployer's allow-lists
+    let the chat use (INFERENCE_MODELS, INFERENCE_<NAME>_MODELS), the same check as the turn route's. A value of the
+    wrong shape is left to the section's own parser to refuse."""
+    try:
+        name = model_settings.parse_reader(value)
+    except ValueError:
+        return
+    if name != "chat" and not get_router().is_allowed(name):
+        raise refusal(422, "invalid_setting", "That model isn't in this deployment's model list.", setting="reader")
+
+
 @router.put("/settings/{section}")
 async def put_settings_section(
     section: str,
@@ -604,6 +616,8 @@ async def put_settings_section(
 ):
     """Save some settings of one section; null resets one. One refused value saves nothing. Applies at once."""
     spec, _info = _section(section)
+    if section == "models":
+        _refuse_a_reader_the_deployment_disallows(body.changes.get("reader"))
     try:
         await console_settings.save(conn, spec, body.changes, updated_by=str(principal.user_id),
                                     env=_section_env(section))

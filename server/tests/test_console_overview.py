@@ -28,8 +28,9 @@ from server.tests import seed
 
 
 class _Provider:
-    def __init__(self, name, names=("m", "llama3.2:3b"), kind="ollama", fails=False, url="http://gpu.example.com:11434"):
-        self.config = ProviderConfig(name=name, kind=kind, url=url)
+    def __init__(self, name, names=("m", "llama3.2:3b"), kind="ollama", fails=False, url="http://gpu.example.com:11434",
+                 allow=None):
+        self.config = ProviderConfig(name=name, kind=kind, url=url, models=allow)   # allow: the env allow-list
         self._names, self._fails = list(names), fails
 
     async def list_models(self):
@@ -53,6 +54,13 @@ class _Router:
             if p.config.kind == "ollama":
                 return p, model_id
         raise UnknownModel(model_id)
+
+    def is_allowed(self, model_id):     # as Router.is_allowed
+        try:
+            provider, name = self.resolve(model_id)
+        except UnknownModel:
+            return False
+        return provider.config.models is None or name in provider.config.models
 
     async def list_models(self):
         models, failed = [], []
@@ -180,6 +188,23 @@ async def test_a_reader_of_chat_set_in_the_environment_or_here_is_ok(db_conn):
     await _save_models(db_conn, reader="chat")
     c = (await _by_id(db_conn, _router()))["reader"]
     assert (c.state, c.summary) == ("ok", "The chat model of each conversation." + _HINT)
+
+
+async def test_a_reader_outside_the_deployments_model_list_is_an_error_from_any_source(db_conn):   # ruling P12
+    narrowed = _Router(_Provider("local", names=("m", "llama3.2:3b"), allow=("m",)))
+    want = ("error", "llama3.2:3b isn't in this deployment's model list. Choose another reader in Models.")
+    # from the environment, and the default chain's own variables
+    for env in ({"READER_MODEL": "local:llama3.2:3b"}, {"SUMMARIZE_MODEL": "llama3.2:3b"}):
+        c = (await _by_id(db_conn, narrowed, env))["reader"]
+        assert (c.state, c.summary, c.section) == (*want, "models")
+    # set in Models before the environment narrowed the list under it
+    await _save_models(db_conn, reader="local:llama3.2:3b")
+    c = (await _by_id(db_conn, narrowed))["reader"]
+    assert (c.state, c.summary) == want
+    # an allowed reader is still fine
+    await _save_models(db_conn, reader="local:m")
+    c = (await _by_id(db_conn, narrowed))["reader"]
+    assert (c.state, c.summary) == ("ok", "m, set in Models.")
 
 
 async def test_the_reader_hint_asks_whether_a_model_costs_money_not_whether_it_needs_a_size(db_conn):

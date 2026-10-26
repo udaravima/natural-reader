@@ -132,6 +132,10 @@ async def _reader(llm, ms: model_settings.ModelsSettings, env: Mapping[str, str]
         return _check("reader", "error", f"{model} can't be used: no Ollama provider is configured, "
                                          "so a bare model name has nowhere to go.")
     where = provider.config.name
+    # From any source: an env change can narrow the list under a reader set in Models (ruling P12)
+    if not llm.is_allowed(model):
+        return _check("reader", "error", f"{name} isn't in this deployment's model list. "
+                                         "Choose another reader in Models.")
     # The provider's own listing, not Router.is_listed: that one reports an unreachable provider as listed.
     try:
         names = await provider.list_models()

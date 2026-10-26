@@ -94,7 +94,9 @@ def _locality(value: Any, _fallback: Any = None) -> str:
     raise ValueError(_LOCALITY_ERROR)
 
 
-def _reader(value: Any, _fallback: Any = None) -> str:
+def parse_reader(value: Any, _fallback: Any = None) -> str:
+    """A reader setting's value: "chat", or a model id of a sane shape. Whether the deployment allows that model is
+    the PUT route's check (routers/admin.py), which needs the router."""
     name = value.strip() if isinstance(value, str) else ""
     if name.lower() == "chat":
         return "chat"
@@ -149,7 +151,7 @@ def _model_list(value: Any, _fallback: Any = None) -> list[str]:
 
 SECTION = Section("models", (
     # `env` is the first variable of the reader's chain; models_env() puts the chain's winner under this name
-    Setting("reader", env="READER_MODEL", default="chat", parse=_reader, parse_env=_reader),
+    Setting("reader", env="READER_MODEL", default="chat", parse=parse_reader, parse_env=parse_reader),
     Setting("context_size", env="INFERENCE_LOCAL_NUM_CTX", default=None, parse=_size, parse_env=_size_env),
     Setting("context_sizes", env=None, default={}, parse=_number_map(_size), parse_env=_number_map(_size)),
     Setting("context_windows", env=None, default={}, parse=_number_map(_window), parse_env=_number_map(_window)),

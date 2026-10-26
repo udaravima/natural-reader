@@ -56,7 +56,9 @@ All notable changes to this project will be documented in this file.
   one Save, applying from the next message:
   - **Reader**: the model that reads documents and web pages for the chat
     model. **The chat model of each conversation** (the default) or any model
-    the providers list.
+    the providers list. A model outside the deployment's allow-list
+    (`INFERENCE_MODELS`, `INFERENCE_<NAME>_MODELS`) is refused on Save, and the
+    Overview's Reader line is an error if the reader, from any source, names one.
   - **Context size for local Ollama models**: one size for every request to a
     self-hosted Ollama model, so it loads once. **Per-model sizes** override it
     for one model. Both are clamped to `INFERENCE_NUM_CTX_MAX`.

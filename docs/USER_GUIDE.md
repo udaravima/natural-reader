@@ -329,7 +329,7 @@ changes it.
 | Check | What it looks at |
 |---|---|
 | **Model providers** | Which providers answer, and how many models each lists |
-| **Reader** | The model that reads documents and web pages for the assistant, and where it comes from. The chat model itself is **OK**; a named model is checked: is it pulled on its provider? When the reader is the chat model and some chat model is a cloud one, the line adds that reader calls count against that model's quota, and points to **Models** |
+| **Reader** | The model that reads documents and web pages for the assistant, and where it comes from. The chat model itself is **OK**; a named model is checked: is it in the deployment's model list (`INFERENCE_MODELS` or the provider's own list; an **Error** if not, from wherever the reader is set), and is it pulled on its provider? When the reader is the chat model and some chat model is a cloud one, the line adds that reader calls count against that model's quota, and points to **Models** |
 | **Context windows** | Each chat model's window, where the number comes from, and whether a project-chat turn fits in it |
 | **Embeddings** | Whether the embedding model answers, and returns the width (768) the database holds; and how many documents are waiting to be rebuilt |
 | **Docling** | Whether conversion is on |
@@ -370,7 +370,7 @@ models.** if that fails (the settings still show, with empty model lists).
 
 | Setting (the label on screen) | What it does | Server setting (default) |
 |---|---|---|
-| **Reader** | The model that reads documents and web pages for the chat model. **The chat model of each conversation**, or a model from the list (a model the console doesn't list stays selectable if it is already set) | `READER_MODEL`, then `SUMMARIZE_MODEL`, then `WEB_SEARCH_SUMMARY_MODEL` (the chat model) |
+| **Reader** | The model that reads documents and web pages for the chat model. **The chat model of each conversation**, or a model from the list (a model the console doesn't list stays selectable if it is already set). Save refuses a model outside the deployment's model list: "That model isn't in this deployment's model list." | `READER_MODEL`, then `SUMMARIZE_MODEL`, then `WEB_SEARCH_SUMMARY_MODEL` (the chat model) |
 | **Context size for local Ollama models** | One size, in tokens, for every request to a model the app sizes (below). A whole number from 2,048 to 2,097,152 (Save stays off while a box holds anything else); the line under it names the ceiling `INFERENCE_NUM_CTX_MAX` | `INFERENCE_LOCAL_NUM_CTX` (unset: each person's own setting, else 16,384) |
 | **Per-model sizes** | A size for one model, which beats the size above. One box per model the app sizes; empty = the size above | none |
 | **Declared context windows** | The window history is trimmed to for a model whose provider reports none. One box per such model; 1,024 to 10,000,000 | `INFERENCE_<NAME>_CONTEXT_WINDOW` per provider (`<NAME>` as in `INFERENCE_<NAME>_URL`) |

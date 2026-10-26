@@ -1,3 +1,5 @@
+import httpx
+
 from server.auth import deps
 from server.tests.test_chat_options import _app, _client, _principal
 
@@ -87,3 +89,43 @@ async def test_models_section_round_trips(db_conn, monkeypatch):
         r = await c.put("/v1/admin/settings/models", json={"changes": {"context_size": 100}})
     assert r.status_code == 422 and r.json()["detail"]["setting"] == "context_size"
     assert "2,048" in r.json()["detail"]["message"]
+
+
+def _allow_list_router(monkeypatch, env):
+    """A real Router over `env`'s providers (no request is made: is_allowed reads only the configs)."""
+    from server.llm.router import Router, load_provider_configs
+    from server.routers import admin as admin_router
+    router = Router(load_provider_configs(env), httpx.AsyncClient())
+    monkeypatch.setattr(admin_router, "get_router", lambda: router)
+    return router
+
+
+async def test_a_reader_outside_the_deployments_model_list_is_refused(db_conn, monkeypatch):   # ruling P12
+    _allow_list_router(monkeypatch, {
+        "INFERENCE_PROVIDERS": "ollama,openrouter",
+        "INFERENCE_OLLAMA_KIND": "ollama", "INFERENCE_OLLAMA_URL": "http://localhost:11434",
+        "INFERENCE_OLLAMA_MODELS": "gemma4:e4b",
+        "INFERENCE_OPENROUTER_KIND": "openai", "INFERENCE_OPENROUTER_URL": "https://openrouter.example.com/api/v1",
+        "INFERENCE_OPENROUTER_MODELS": "some/cheap-model"})
+    async with _client(_app(db_conn, await _admin(db_conn))) as c:
+        for refused in ("openrouter:some/expensive-model", "ollama:qwen3:8b", "qwen3:8b", "nowhere:x"):
+            r = await c.put("/v1/admin/settings/models", json={"changes": {"reader": refused}})
+            assert r.status_code == 422, refused
+            assert r.json()["detail"] == {"error": "invalid_setting", "setting": "reader",
+                                          "message": "That model isn't in this deployment's model list."}
+        cur = await db_conn.execute("SELECT 1 FROM app_settings WHERE key = 'models'")
+        assert await cur.fetchone() is None                               # one refused value saves nothing
+
+        for allowed in ("openrouter:some/cheap-model", "ollama:gemma4:e4b", "gemma4:e4b", "chat", "Chat"):
+            r = await c.put("/v1/admin/settings/models", json={"changes": {"reader": allowed}})
+            assert r.status_code == 200, allowed
+        assert r.json()["settings"]["reader"]["value"] == "chat"
+        r = await c.put("/v1/admin/settings/models", json={"changes": {"reader": None}})    # a reset is never refused
+        assert r.status_code == 200
+
+
+async def test_with_no_allow_list_any_model_of_a_provider_may_be_the_reader(db_conn, monkeypatch):
+    _allow_list_router(monkeypatch, {"OLLAMA_URL": "http://localhost:11434"})
+    async with _client(_app(db_conn, await _admin(db_conn))) as c:
+        r = await c.put("/v1/admin/settings/models", json={"changes": {"reader": "ollama:anything"}})
+    assert r.status_code == 200 and r.json()["settings"]["reader"]["value"] == "ollama:anything"
