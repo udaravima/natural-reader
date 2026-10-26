@@ -15,6 +15,7 @@ import binascii
 import inspect
 import json
 import logging
+import os
 from typing import Annotated, Any, AsyncGenerator, AsyncIterator, Awaitable, Callable, Literal
 from uuid import UUID
 
@@ -33,7 +34,7 @@ from ..http_body import read_capped_body
 from ..http_errors import refusal
 from ..llm.router import get_router
 from ..llm.types import Attachment, CallSettings, Capabilities
-from ..services import inference_budget, inference_limits, model_router
+from ..services import inference_budget, inference_limits, model_router, model_settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/chat/sessions", tags=["chat-turns"])
@@ -144,6 +145,21 @@ async def _budget_state_if_over(user_id: str, budget: int | None) -> dict | None
         # Fail open — chat must survive a Postgres hiccup here (today's gateway rule).
         logger.warning("Budget pre-check failed (fail-open)", exc_info=True)
     return None
+
+
+async def _models_settings() -> model_settings.ModelsSettings:
+    """The admin's model settings, read once per turn on a short connection of its own (this route streams, so it
+    holds none). Fail-open: if the row can't be read, the environment's values apply."""
+    try:
+        async with get_pool().connection() as conn:
+            return await model_settings.load_models_settings(conn, os.environ)
+    except Exception:  # noqa: BLE001 — chat must survive a Postgres hiccup here
+        logger.warning("The model settings couldn't be read: using the environment's", exc_info=True)
+        return model_settings.from_env()
+
+
+def _console_allows(ms: model_settings.ModelsSettings, model_id: str) -> bool:
+    return not ms.chat_models or any(model_settings.same_model(model_id, chosen) for chosen in ms.chat_models)
 
 
 async def _check_project(session_id: str, principal: Principal, project_id: str, session_exists: bool) -> None:
@@ -309,6 +325,9 @@ async def post_turn(session_id: SessionId, request: Request,
     if not llm.is_allowed(body.model):
         raise refusal(422, "model_not_allowed", "That model isn't available on this server.")
     model_id = llm.canonical_id(body.model)
+    # The console can only narrow the env's list; an empty selection leaves it as it is.
+    if not _console_allows(await _models_settings(), model_id):
+        raise refusal(422, "model_not_allowed", "That model isn't available on this server.")
     if not await llm.is_listed(model_id):
         raise refusal(422, "model_not_allowed", "This model isn't available.")
     caps = await _capabilities(llm, model_id)

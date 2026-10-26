@@ -106,6 +106,48 @@ async def test_model_not_allowed_is_422(db_conn, app):
     assert r.status_code == 422 and r.json()["detail"]["error"] == "model_not_allowed"
 
 
+async def _select_chat_models(db_conn, models):
+    from server.auth.users import SEED_ADMIN_ID
+    from server.services import console_settings, model_settings
+    await console_settings.save(db_conn, model_settings.SECTION, {"chat_models": models}, updated_by=SEED_ADMIN_ID)
+
+
+async def test_turn_refuses_a_model_the_console_left_out(db_conn, app):
+    """The console narrows the env's list: a model outside a non-empty selection is refused before the turn is
+    claimed, with the same refusal as a model the env forbids."""
+    await _select_chat_models(db_conn, ["ollama:other"])
+    r = await _post(app, await member(db_conn, "alice"))
+    assert r.status_code == 422
+    assert r.json()["detail"] == {"error": "model_not_allowed", "message": "That model isn't available on this server."}
+    assert await _one(db_conn, "SELECT 1 FROM chat_sessions WHERE id='s-1'") is None
+    assert await _one(db_conn, "SELECT 1 FROM chat_messages") is None
+    assert app[1].calls == []
+
+
+async def test_turn_allows_a_model_the_console_selected(db_conn, app):
+    """Checked against the canonical id (a bare name resolves to ollama:), and ':latest' doesn't matter."""
+    await _select_chat_models(db_conn, ["ollama:m:latest"])
+    r = await _post(app, await member(db_conn, "alice"), body={**BODY, "model": "m"})
+    assert r.status_code == 200 and app[1].calls[0]["model"] == "ollama:m"
+
+
+async def test_turn_with_no_console_selection_allows_what_the_env_allows(db_conn, app):
+    r = await _post(app, await member(db_conn, "alice"))
+    assert r.status_code == 200
+
+
+async def test_turn_survives_an_unreadable_models_row(db_conn, app, monkeypatch):
+    """Fail-open: the environment's settings apply, so the turn still runs."""
+    from server.services import model_settings
+
+    async def boom(conn, env=None):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(model_settings, "load_models_settings", boom)
+    r = await _post(app, await member(db_conn, "alice"))
+    assert r.status_code == 200
+
+
 async def test_model_not_in_the_providers_list_is_422_before_claiming(db_conn, app):
     """A saved id can resolve to a real provider (is_allowed passes: no
     allow-list configured) yet name a model that provider doesn't actually
