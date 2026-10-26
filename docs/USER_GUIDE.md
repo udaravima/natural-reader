@@ -383,8 +383,9 @@ to a **self-hosted Ollama model**, whatever its host name. Not sized: Ollama
 cloud models (a name ending `-cloud` or `:cloud`, or the ollama.com host), a
 provider you marked **Cloud**, and every model on an OpenAI-compatible provider
 (that API has no such option). For those the app never sets a size of its own.
-A person's own Settings value, if they chose one, is still passed on (clamped
-to the ceiling); an OpenAI-compatible provider ignores it.
+A person's own Settings value, if they chose one, is still passed on with each
+chat message (clamped to the ceiling; an OpenAI-compatible provider ignores
+it). The reader's calls send none (see **The reader** below).
 
 For a sized model the size is the first of these that is set, then clamped to
 `INFERENCE_NUM_CTX_MAX` (32,768 unless changed):
@@ -400,8 +401,8 @@ of RAM lower it here rather than leaving 16,384.
 
 **What the person sees.** In **Settings -> Chat**, a self-hosted Ollama model's
 **Context window** row reads "Set by your admin: N tokens." and is locked when
-steps 1 or 2 set a size (their own value stays stored, and applies again if you, the admin, clear
-the size). Otherwise its **Auto** option reads "Auto (16,384 on this
+steps 1 or 2 set a size (their own value stays stored, and applies again once neither **Models**, the
+server's `INFERENCE_LOCAL_NUM_CTX` nor a per-model size sets one for that model). Otherwise its **Auto** option reads "Auto (16,384 on this
 server)", the size it will really get.
 
 **The reader.** With **The chat model of each conversation** the reader uses the
