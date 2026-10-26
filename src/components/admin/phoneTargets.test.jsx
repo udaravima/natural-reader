@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { PeopleSection } from './PeopleSection';
 import { AdminProjectsSection } from './AdminProjectsSection';
 import { AssistantProfileSection } from './AssistantProfileSection';
@@ -25,6 +25,10 @@ const person = (over) => ({
   inference_daily_token_budget: null, project_limit: null, created_at: '2026-09-17T00:00:00Z', ...over,
 });
 const project = (over) => ({ id: 'p1', name: 'Orphan', member_count: 0, doc_count: 1, owners: [], ownerless: true, ...over });
+
+const USAGE_ROW = (over) => ({
+  prompt_tokens: 1, eval_tokens: 2, tokens: 3, requests: 1, chat_tokens: 3, reader_tokens: 0, estimated_tokens: 0, ...over,
+});
 
 // Minimal answers for every route these sections call; a section ignores the ones it doesn't use.
 const ROUTES = {
@@ -55,7 +59,10 @@ const ROUTES = {
     ],
     limits: { num_ctx_max: 32768 },
   },
-  '/v1/admin/inference/usage?days=7': [{ user_id: 'u1', email: 'a@x.io', day: '2026-10-25', prompt_tokens: 1, eval_tokens: 2, requests: 1, tokens: 3 }],
+  '/v1/admin/inference/usage?days=7&group=model': [USAGE_ROW({ model: 'ollama:a', tag: 'local' })],
+  '/v1/admin/inference/usage?days=7&group=user': [USAGE_ROW({ user_id: 'u1', email: 'a@x.io' })],
+  '/v1/admin/inference/usage?days=7&group=day': [USAGE_ROW({ day: '2026-10-25' })],
+  '/v1/admin/inference/usage?days=7&group=model&user_id=u1': [USAGE_ROW({ model: 'ollama:a', tag: 'local' })],
 };
 
 const SECTIONS = {
@@ -108,6 +115,23 @@ describe('Admin console: 44 px tap targets below md', () => {
       expect(desktopChanged(container)).toEqual([]);
     });
   }
+
+  it('Usage: the view toggles, Model filter and a person disclosure too', async () => {
+    const { container } = render(SECTIONS.Usage.ui);
+    await screen.findByText('ollama:a');
+    expect(screen.getAllByRole('button').length).toBe(3);   // By model, By person, By day
+    fireEvent.click(screen.getByRole('button', { name: 'By person' }));
+    await screen.findByLabelText('Models for a@x.io');
+    expect(screen.getByLabelText('Model')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Models for a@x.io'));
+    await waitFor(() => expect(container.querySelectorAll('table').length).toBe(2));
+    expect(unsized(container)).toEqual([]);
+    expect(desktopChanged(container)).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: 'By day' }));
+    await screen.findByText('2026-10-25');
+    expect(unsized(container)).toEqual([]);
+    expect(desktopChanged(container)).toEqual([]);
+  });
 
   it('People: the delete confirmation controls too', async () => {
     const { container } = render(SECTIONS.People.ui);

@@ -408,6 +408,7 @@ describe('AdminConsole — usage', () => {
   it('says days are counted in the deployment timezone', async () => {
     mount({ users: [user()], usage: [{ email: 'a@x.io', user_id: 'u1', day: '2026-09-17', prompt_tokens: 1, eval_tokens: 1, requests: 1, tokens: 2 }] });
     openSection('Usage');
+    fireEvent.click(await screen.findByRole('button', { name: 'By day' }));
     expect(await screen.findByRole('columnheader', { name: 'Day' })).toBeInTheDocument();
     expect(screen.getByText("Each day is counted in the deployment's timezone. Changing it doesn't move days already counted.")).toBeInTheDocument();
   });
@@ -418,6 +419,7 @@ describe('AdminConsole — usage', () => {
       usage: [{ email: 'a@x.io', user_id: 'u1', day: '2026-09-17', prompt_tokens: 10, eval_tokens: 5, requests: 2, tokens: 15 }],
     });
     openSection('Usage');
+    fireEvent.click(await screen.findByRole('button', { name: 'By day' }));
     expect(await screen.findByText('2026-09-17')).toBeInTheDocument();
     expect(screen.getByText('15')).toBeInTheDocument();
   });
@@ -428,7 +430,7 @@ describe('AdminConsole — usage', () => {
     expect(await screen.findByText('No usage recorded yet.')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/usage days/i), { target: { value: '30' } });
     await waitFor(() =>
-      expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/admin/inference/usage?days=30')
+      expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/admin/inference/usage?days=30&group=model')
     );
   });
 });
