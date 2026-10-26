@@ -65,3 +65,25 @@ async def test_get_survives_a_malformed_url_in_the_environment(db_conn, monkeypa
         r = await c.get("/v1/admin/settings/deployment")
     assert r.status_code == 200
     assert {row["value"] for row in r.json()["info"] if row["id"] in ("searxng", "provider:x")} == {"Not a valid URL"}
+
+
+async def test_models_section_round_trips(db_conn, monkeypatch):
+    for var in ("READER_MODEL", "SUMMARIZE_MODEL", "WEB_SEARCH_SUMMARY_MODEL", "INFERENCE_LOCAL_NUM_CTX"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("SUMMARIZE_MODEL", "ollama:small")
+    async with _client(_app(db_conn, await _admin(db_conn))) as c:
+        body = (await c.get("/v1/admin/settings/models")).json()
+        assert set(body["settings"]) == {"reader", "context_size", "context_sizes", "context_windows",
+                                         "provider_locality", "chat_models"}
+        assert {row["id"] for row in body["info"]} == {"num_ctx_max", "keep_alive_max"}
+        assert body["settings"]["reader"]["value"] == "ollama:small"
+        assert body["settings"]["reader"]["env"] == "SUMMARIZE_MODEL"   # the chain's winner, not READER_MODEL
+        assert body["settings"]["context_size"]["source"] == "default"
+        r = await c.put("/v1/admin/settings/models", json={"changes": {"context_size": 12288}})
+        assert r.json()["settings"]["context_size"]["value"] == 12288
+        assert r.json()["settings"]["context_size"]["source"] == "admin"
+        r = await c.put("/v1/admin/settings/models", json={"changes": {"context_size": None}})
+        assert r.json()["settings"]["context_size"]["source"] == "default"
+        r = await c.put("/v1/admin/settings/models", json={"changes": {"context_size": 100}})
+    assert r.status_code == 422 and r.json()["detail"]["setting"] == "context_size"
+    assert "2,048" in r.json()["detail"]["message"]

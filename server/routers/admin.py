@@ -5,7 +5,7 @@ import logging
 import os
 import secrets
 import uuid
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Mapping
 from urllib.parse import urlsplit
 
 from datetime import datetime, timezone
@@ -20,7 +20,7 @@ from ..auth.kc_admin import KCAdminError, KCRoleMissing
 from ..llm.router import get_router
 from ..http_errors import refusal
 from ..services import (assistant_profile, chat_options, console_overview, console_settings, deployment_info, deployment_settings,
-                        doc_content, docling_limits, inference_budget, model_router, people, user_defaults,
+                        doc_content, docling_limits, inference_budget, model_router, model_settings, people, user_defaults,
                         web_search as web_search_service)
 from ..services.console_settings import Section, SettingError
 
@@ -507,6 +507,7 @@ async def put_chat_options(
 _SECTIONS: dict[str, tuple[Section, Callable[[], list[dict]]]] = {
     "deployment": (deployment_settings.SECTION, deployment_info.readonly_rows),
     "documents": (docling_limits.SECTION, docling_limits.info_rows),
+    "models": (model_settings.SECTION, model_settings.info_rows),
 }
 
 
@@ -522,10 +523,16 @@ def _section(key: str) -> tuple[Section, Callable[[], list[dict]]]:
     return _SECTIONS[key]
 
 
+def _section_env(key: str) -> Mapping[str, str]:
+    """The environment a section resolves against: the models section reads the reader's three-variable chain."""
+    return model_settings.models_env(os.environ) if key == "models" else os.environ
+
+
 async def _section_view(conn, key: str) -> dict:
     section, info = _section(key)
-    values = await console_settings.load(conn, section)
-    return {"settings": console_settings.view(section, values), "info": info()}
+    values = await console_settings.load(conn, section, _section_env(key))
+    settings = model_settings.view(values) if key == "models" else console_settings.view(section, values)
+    return {"settings": settings, "info": info()}
 
 
 @router.get("/settings/{section}")
@@ -547,7 +554,8 @@ async def put_settings_section(
     """Save some settings of one section; null resets one. One refused value saves nothing. Applies at once."""
     spec, _info = _section(section)
     try:
-        await console_settings.save(conn, spec, body.changes, updated_by=str(principal.user_id))
+        await console_settings.save(conn, spec, body.changes, updated_by=str(principal.user_id),
+                                    env=_section_env(section))
     except SettingError as e:
         raise refusal(422, "invalid_setting", str(e), setting=e.name) from None
     return await _section_view(conn, section)

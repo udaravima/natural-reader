@@ -34,6 +34,7 @@ from ..llm.router import ModelInfo, UnknownModel
 from . import assistant_profile, chat_options, docling_convert, embeddings, model_router, web_search
 from .deployment_info import NOT_A_URL, url_host
 from .doc_search import ReadableDoc
+from .model_settings import is_ollama_cloud   # moved there (locality needs it); re-exported here
 
 CHECK_TIMEOUT_S = 5.0
 SEARXNG_TIMEOUT_S = 3.0
@@ -174,10 +175,6 @@ async def _web_search(http: httpx.AsyncClient, mode: str) -> Check:
     if resp.status_code != 200:
         return broken
     return _check("web_search", "ok", f"SearXNG at {host} answers.")
-
-
-def is_ollama_cloud(name: str) -> bool:
-    return name.endswith(("-cloud", ":cloud"))
 
 
 def window_for(model: ModelInfo, loaded: dict[str, int]) -> tuple[int | None, str]:
