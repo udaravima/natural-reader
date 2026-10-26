@@ -20,7 +20,7 @@ from ..auth.kc_admin import KCAdminError, KCRoleMissing
 from ..llm.router import get_router
 from ..http_errors import refusal
 from ..services import (assistant_profile, chat_options, console_overview, console_settings, deployment_info, deployment_settings,
-                        doc_content, docling_limits, inference_budget, model_router, model_settings, people, user_defaults,
+                        doc_content, docling_limits, inference_budget, inference_limits, model_router, model_settings, people, user_defaults,
                         web_search as web_search_service)
 from ..services.console_settings import Section, SettingError
 
@@ -330,6 +330,32 @@ async def overview(
     """The Overview page's health checks: each part of the deployment, one line, never a hang."""
     checks = await console_overview.run_checks(conn, get_router())
     return {"checks": [c.to_json() for c in checks]}
+
+
+@router.get("/models")
+async def models_catalog(_: deps.Principal = Depends(deps.require_admin)):
+    """What the console's Models section chooses from: every provider (an unreachable one is listed, with no
+    models) and every chat model the environment allows. The console's own chat-model selection does not narrow
+    this list; the admin picks from it. `detected` is what "Auto" means for a provider before any choice: the host
+    rule alone, with no model name and no override."""
+    llm = get_router()
+    models, failed = await llm.list_models()
+    offered = model_router.offered_chat_models(models, model_router.get_config().embed_model)
+    return {
+        "providers": [
+            {"name": name, "kind": p.config.kind, "host": deployment_info.url_host(p.config.url),
+             "detected": "local" if model_settings.is_local(p.config, "", {}) else "cloud",
+             "reachable": name not in failed}
+            for name, p in llm.providers.items()
+        ],
+        "models": [
+            {"id": m.id, "provider": m.provider, "kind": m.kind, "name": m.name,
+             "reported_window": m.capabilities.context_window,
+             "cloud_name": m.kind == "ollama" and model_settings.is_ollama_cloud(m.name)}
+            for m in offered
+        ],
+        "limits": {"num_ctx_max": inference_limits.get_limits().num_ctx_max},
+    }
 
 
 @router.get("/inference/config")

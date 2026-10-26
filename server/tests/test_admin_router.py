@@ -5,6 +5,7 @@ from httpx import ASGITransport
 from server.auth import deps
 from server.auth.users import resolve_or_provision_user
 from server.routers import admin as admin_router
+from server.services import deployment_info
 
 
 def _app(db_conn, principal):
@@ -471,3 +472,94 @@ async def test_capability_revoke_hard_fails_on_kc_error(db_conn):
         r = await c.patch(f"/v1/admin/users/{u['id']}", json={"capabilities": ["reader"]})
     assert r.status_code == 502
     assert set((await get_user(db_conn, u["id"]))["capabilities"]) == {"reader", "chat"}
+
+
+# ---------- GET /v1/admin/models: the catalog the Models section chooses from ----------
+
+class _CatalogProvider:
+    def __init__(self, name, kind, url, fails=False):
+        from server.llm.providers.base import ProviderConfig
+        self.config = ProviderConfig(name=name, kind=kind, url=url)
+        self.fails = fails
+
+
+class _CatalogRouter:
+    """Stands in for the real router: `models` is (provider, name, context_window) and an unreachable provider
+    lands in the failed list, as `Router.list_models` reports it."""
+    def __init__(self, providers, models):
+        self.providers = {p.config.name: p for p in providers}
+        self._models = models
+
+    async def list_models(self):
+        from server.llm.router import ModelInfo
+        from server.llm.types import Capabilities
+        listed = [ModelInfo(f"{prov}:{name}", prov, self.providers[prov].config.kind, name,
+                            Capabilities(context_window=window))
+                  for prov, name, window in self._models if not self.providers[prov].fails]
+        return listed, [n for n, p in self.providers.items() if p.fails]
+
+
+def _catalog_app(principal):
+    app = FastAPI()      # no get_conn override: the route must not need a database
+    app.dependency_overrides[deps.get_current_user] = lambda: principal
+    app.include_router(admin_router.router)
+    return app
+
+
+_ADMIN = deps.Principal(user_id="u1", email="a@x.io", role="admin")
+
+
+async def test_admin_models_catalog_shape(monkeypatch):
+    from server.services import model_router
+    local = _CatalogProvider("ollama", "ollama", "http://ollama:11434")
+    cloud = _CatalogProvider("openrouter", "openai", "https://openrouter.example.com/api/v1")
+    down = _CatalogProvider("lab", "openai", "http://[::1", fails=True)
+    router = _CatalogRouter([local, cloud, down], [
+        ("ollama", "gemma4:e4b", 131072),
+        ("ollama", "gpt-oss:120b-cloud", None),
+        ("ollama", model_router.get_config().embed_model, None),   # the embedding model is not a chat model
+        ("openrouter", "some/model", 8192),
+        ("lab", "hidden", 4096),                                    # a down provider contributes nothing
+    ])
+    monkeypatch.setattr(admin_router, "get_router", lambda: router)
+    monkeypatch.setenv("INFERENCE_NUM_CTX_MAX", "24576")
+    async with _client(_catalog_app(_ADMIN)) as client:
+        r = await client.get("/v1/admin/models")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["providers"] == [
+        {"name": "ollama", "kind": "ollama", "host": "ollama:11434", "detected": "local", "reachable": True},
+        {"name": "openrouter", "kind": "openai", "host": "openrouter.example.com", "detected": "cloud",
+         "reachable": True},
+        {"name": "lab", "kind": "openai", "host": deployment_info.NOT_A_URL, "detected": "cloud",
+         "reachable": False},
+    ]
+    assert body["models"] == [
+        {"id": "ollama:gemma4:e4b", "provider": "ollama", "kind": "ollama", "name": "gemma4:e4b",
+         "reported_window": 131072, "cloud_name": False},
+        {"id": "ollama:gpt-oss:120b-cloud", "provider": "ollama", "kind": "ollama", "name": "gpt-oss:120b-cloud",
+         "reported_window": None, "cloud_name": True},
+        {"id": "openrouter:some/model", "provider": "openrouter", "kind": "openai", "name": "some/model",
+         "reported_window": 8192, "cloud_name": False},
+    ]
+    assert body["limits"] == {"num_ctx_max": 24576}
+
+
+async def test_admin_models_lists_models_the_console_left_out(db_conn, monkeypatch):
+    from server.services import console_settings, model_settings
+    admin = await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="a@x.io")
+    p = _CatalogProvider("ollama", "ollama", "http://ollama:11434")
+    router = _CatalogRouter([p], [("ollama", "a", None), ("ollama", "b", None)])
+    monkeypatch.setattr(admin_router, "get_router", lambda: router)
+    await console_settings.save(db_conn, model_settings.SECTION, {"chat_models": ["ollama:a"]},
+                                updated_by=str(admin["id"]))      # the console narrows the chat models to a
+    async with _client(_catalog_app(_ADMIN)) as client:
+        names = [m["name"] for m in (await client.get("/v1/admin/models")).json()["models"]]
+    assert names == ["a", "b"]    # the admin chooses from everything the env allows
+
+
+async def test_admin_models_needs_admin(monkeypatch):
+    monkeypatch.setattr(admin_router, "get_router", lambda: _CatalogRouter([], []))
+    member = deps.Principal(user_id="u2", email="b@x.io", role="member")
+    async with _client(_catalog_app(member)) as client:
+        assert (await client.get("/v1/admin/models")).status_code == 403
