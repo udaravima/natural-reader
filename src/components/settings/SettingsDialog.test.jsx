@@ -215,6 +215,26 @@ describe('SettingsDialog — the context size the server will use (admin console
     expect(b.chatSettings.setInferenceByModel).not.toHaveBeenCalled();
   });
 
+  it('a locked row shows the admin\'s size, not the stored one, and saving another knob keeps the stored 8192 (P13)', () => {
+    const b = open(local({ fixed: 12288, auto: 16384 }), { numCtx: 8192 });
+    const ctx = screen.getByLabelText('Context window');
+    expect(ctx).toBeDisabled();
+    expect(ctx.options[ctx.selectedIndex].textContent).toBe('12,288');
+    expect(screen.getByText('Set by your admin: 12,288 tokens.')).toBeInTheDocument();
+    expect(b.chatSettings.setInferenceByModel).not.toHaveBeenCalled();
+    // another knob saves through the same per-model patch: the stored context value rides along untouched
+    fireEvent.change(screen.getByLabelText('Max reply tokens'), { target: { value: '1024' } });
+    const update = b.chatSettings.setInferenceByModel.mock.calls.at(-1)[0];
+    const next = typeof update === 'function' ? update({ 'ollama:gemma4': { numCtx: 8192 } }) : update;
+    expect(next['ollama:gemma4']).toMatchObject({ numCtx: 8192, numPredict: 1024 });
+  });
+
+  it('a locked row with no stored value shows the admin\'s size too, never "Auto"', () => {
+    open(local({ fixed: 20000, auto: 16384 }));
+    const ctx = screen.getByLabelText('Context window');
+    expect(ctx.options[ctx.selectedIndex].textContent).toBe('20,000');
+  });
+
   it('formats a larger fixed size with a thousands separator', () => {
     open(local({ fixed: 32768, auto: 16384 }));
     expect(screen.getByText('Set by your admin: 32,768 tokens.')).toBeInTheDocument();

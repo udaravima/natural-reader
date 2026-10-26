@@ -248,11 +248,13 @@ function ChatPanel({ theme, ch }) {
     const knobs = supportedKnobs(configEntry);
     // v2.4 Task F: only the context sizes and keep-alive times the server will honour.
     // Admin console v2: a self-hosted Ollama model also says the size the server will load it with.
-    // A fixed size locks the row but leaves the person's own value stored: it applies again if the admin unsets it.
+    // A fixed size locks the row and shows the admin's number, the same one the help line names (ruling P13). The
+    // person's own value stays stored, untouched: it applies again if the admin unsets the size.
     const serverCtx = serverContextSize(configEntry);
     const ctxFixed = serverCtx?.fixedNumCtx ?? null;
-    const ctxOptions = withAutoLabel(
-        withinLimit(NUM_CTX_OPTIONS, configEntry?.limits?.numCtxMax, 'numCtx'), ctxFixed === null ? serverCtx?.autoNumCtx : null);
+    const ctxOptions = ctxFixed !== null
+        ? [[String(ctxFixed), ctxFixed.toLocaleString('en-US')]]
+        : withAutoLabel(withinLimit(NUM_CTX_OPTIONS, configEntry?.limits?.numCtxMax, 'numCtx'), serverCtx?.autoNumCtx);
     const keepOptions = withinLimit(KEEP_ALIVE_OPTIONS, configEntry?.limits?.keepAliveMaxS, 'keepAlive');
     const input = inputClass(theme);
     return (
@@ -291,7 +293,8 @@ function ChatPanel({ theme, ch }) {
                     <div className="flex flex-col gap-2 mt-1">
                         {knobs.numCtx && <InferenceRow theme={theme} label="Context window" disabled={!configModel || ctxFixed !== null}
                             help={ctxFixed !== null ? `Set by your admin: ${ctxFixed.toLocaleString('en-US')} tokens.` : null}
-                            value={shownValue(inf.numCtx === null ? 'auto' : String(inf.numCtx), ctxOptions, 'numCtx')}
+                            value={ctxFixed !== null ? String(ctxFixed)
+                                : shownValue(inf.numCtx === null ? 'auto' : String(inf.numCtx), ctxOptions, 'numCtx')}
                             onChange={(val) => setInf({ numCtx: val === 'auto' ? null : Number(val) })}
                             options={ctxOptions} />}
                         {knobs.keepAlive && <InferenceRow theme={theme} label="Keep model warm" disabled={!configModel}

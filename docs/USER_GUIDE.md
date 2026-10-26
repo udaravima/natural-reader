@@ -404,7 +404,7 @@ A bigger size reserves more memory when the model loads, so on a machine short
 of RAM lower it here rather than leaving 16,384.
 
 **What the person sees.** In **Settings -> Chat**, a self-hosted Ollama model's
-**Context window** row reads "Set by your admin: N tokens." and is locked when
+**Context window** row reads "Set by your admin: N tokens." and is locked at N when
 steps 1 or 2 set a size (their own value stays stored, and applies again once neither **Models**, the
 server's `INFERENCE_LOCAL_NUM_CTX` nor a per-model size sets one for that model). Otherwise its **Auto** option reads "Auto (16,384 on this
 server)", the size it will really get.
