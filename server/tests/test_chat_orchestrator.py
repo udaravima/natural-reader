@@ -818,6 +818,32 @@ async def test_turn_reader_is_sized_to_its_own_model(conn, monkeypatch, reader_e
     assert (await _reader_cfg_of(conn, monkeypatch, model_id="ollama:gemma4:31b-cloud")).num_ctx == 8192
 
 
+async def test_cloud_chat_with_a_personal_size_gives_the_reader_none(conn, monkeypatch, reader_env):
+    """The chat model is Ollama cloud: the person's 4096 is sent to it, but it isn't a size the reader (the same
+    model) may send: a cloud model needs none, and without one its batches are full-size."""
+    cfg = await _reader_cfg_of(conn, monkeypatch, model_id="ollama:gemma4:31b-cloud", num_ctx=4096)
+    assert (cfg.model, cfg.num_ctx) == ("ollama:gemma4:31b-cloud", None)
+    calls = []
+
+    class Router:
+        async def complete(self, model_id, messages, settings, *, received=None):
+            calls.append((model_id, settings))
+            return '{"found": false, "facts": []}'
+
+    monkeypatch.setattr(reader, "get_router", lambda: Router())
+    await reader.read_batch("q", "n", [reader.Passage("[1]", "text")], chat_model="ollama:gemma4:31b-cloud", cfg=cfg)
+    [(model, settings)] = calls
+    assert model == "ollama:gemma4:31b-cloud" and settings.num_ctx is None
+    assert reader.fit_input_chars(cfg, "q", "n") == cfg.input_chars
+
+
+async def test_a_different_local_reader_is_held_to_the_ceiling(conn, monkeypatch, reader_env):
+    monkeypatch.setenv("INFERENCE_NUM_CTX_MAX", "8192")
+    await _save_models(conn, reader="ollama:other")
+    cfg = await _reader_cfg_of(conn, monkeypatch, num_ctx=4096)
+    assert (cfg.model, cfg.num_ctx) == ("ollama:other", 8192)      # its 16384 default, clamped
+
+
 async def test_a_reader_that_ignores_num_ctx_is_sent_none(conn, monkeypatch, reader_env):
     await _save_models(conn, reader="vllm:small")
     cfg = await _reader_cfg_of(conn, monkeypatch, _TwoKinds())

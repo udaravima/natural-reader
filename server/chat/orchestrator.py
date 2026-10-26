@@ -781,8 +781,9 @@ def _turn_reader(router, models_cfg: model_settings.ModelsSettings, chat_id: str
     """The reader's settings for this turn, fixed once: the knobs from the environment, the model from the Models
     settings ("chat" is the turn's own model), and the context size it is loaded with. That size is the chat's
     when the reader is the chat model, so one model is loaded once; the reader model's own (num_ctx_for, with
-    none of the person's value: it is their chat's) when it is another model that needs one named (any Ollama you
-    host); none for any other (Ollama cloud and openai-kind providers send none). A reader model the router
+    none of the person's value: it is their chat's) when it is another model. Both only for a model that needs one
+    named (any Ollama you host); none for any other (Ollama cloud and openai-kind send none, even when the person
+    set a size for a cloud chat). A reader model the router
     can't place keeps its name and gets no size: its calls fail as the reader's own provider_error result,
     never the turn."""
     cfg = replace(get_reader_config(), model=models_cfg.reader)
@@ -793,12 +794,12 @@ def _turn_reader(router, models_cfg: model_settings.ModelsSettings, chat_id: str
     except UnknownModel:
         return cfg
     key = f"{provider.config.name}:{name}"
+    if not model_settings.sizes_context(provider.config, name, models_cfg.provider_locality):
+        return cfg      # a cloud or openai-kind model needs none (the person's chat value is not the reader's to send)
     if model_settings.same_model(key, chat_key):
         return replace(cfg, num_ctx=chat_settings.num_ctx)
-    if model_settings.sizes_context(provider.config, name, models_cfg.provider_locality):
-        return replace(cfg, num_ctx=model_settings.num_ctx_for(
-            models_cfg, key, local=True, user_value=None, limits=get_limits()))
-    return cfg
+    return replace(cfg, num_ctx=model_settings.num_ctx_for(
+        models_cfg, key, local=True, user_value=None, limits=get_limits()))
 
 
 async def _models_settings() -> model_settings.ModelsSettings:
