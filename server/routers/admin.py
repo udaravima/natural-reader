@@ -379,7 +379,7 @@ async def inference_config(
         "allowed_models": (
             list(cfg.allowed_models) if cfg.allowed_models is not None else None
         ),
-        "summarize_model": deployment_info.CHAT_READER if reader == "chat" else reader,
+        "summarize_model": model_settings.CHAT_READER if reader == "chat" else reader,
         "embed_model": cfg.embed_model,
         "daily_token_budget": cfg.daily_token_budget,
         "providers": [

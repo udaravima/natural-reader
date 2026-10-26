@@ -24,13 +24,17 @@ def test_safe_url_drops_user_info_query_and_fragment():
     assert safe_url("http://a:b@h.example.com:1/p?x=1#f") == "http://h.example.com:1/p"
 
 
+def test_the_reading_model_isnt_a_read_only_row():
+    # the Models section owns the reader now; a row that read only the environment would contradict a console choice
+    assert "reader_model" not in _by_id({})
+    assert "reader_model" not in _by_id({"SUMMARIZE_MODEL": "m"})
+
+
 def test_sources_name_the_variable_or_the_default():
-    rows = _by_id({})
-    assert rows["reader_model"]["value"] == "The chat model of each conversation"
-    assert rows["reader_model"]["source"] == "default" and rows["reader_model"]["env"] is None
-    row = _by_id({"SUMMARIZE_MODEL": "m"})["reader_model"]
-    assert (row["value"], row["env"], row["source"]) == ("m", "SUMMARIZE_MODEL", "env")
-    assert _by_id({"READER_MODEL": "chat"})["reader_model"]["value"] == "The chat model of each conversation"
+    d = _by_id({})
+    assert d["chat_timeout"]["source"] == "default" and d["chat_timeout"]["env"] == "INFERENCE_TIMEOUT_S"
+    e = _by_id({"INFERENCE_TIMEOUT_S": "60"})["chat_timeout"]
+    assert (e["value"], e["env"], e["source"]) == ("60 s", "INFERENCE_TIMEOUT_S", "env")
 
 
 def test_defaults_and_env_values_come_from_the_given_env():

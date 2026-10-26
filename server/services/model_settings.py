@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 
 V = TypeVar("V")
 
+CHAT_READER = "The chat model of each conversation"    # what a reader model of "chat" is called on screen
 DEFAULT_LOCAL_NUM_CTX = 16384        # tokens
 NUM_CTX_RANGE = (2048, 2_097_152)    # tokens: what an admin may set a context size to
 WINDOW_RANGE = (1024, 10_000_000)    # tokens: what an admin may declare a model's window to be

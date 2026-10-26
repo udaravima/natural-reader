@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import importlib.util
 import json
 import time
@@ -17,7 +18,10 @@ from server.llm.providers.base import ProviderConfig
 from server.llm.router import ModelInfo, UnknownModel
 from server.llm.types import Capabilities
 from server.routers import admin as admin_router
-from server.services import chat_options, console_overview, docling_convert, embeddings, web_search
+from server.auth.users import SEED_ADMIN_ID
+from server.services import (chat_options, console_overview, console_settings, docling_convert, embeddings, model_settings,
+                             web_search)
+from server.services.inference_limits import InferenceLimits
 from server.chat.config import ChatConfig
 from server.services.console_overview import project_turn_tokens, run_checks, window_for
 from server.tests import seed
@@ -130,7 +134,7 @@ async def test_checks_come_in_a_fixed_order(db_conn):
 async def test_providers_states(db_conn):
     two = _Router(_Provider("local", names=("a", "b")), _Provider("cloud", names=("c",), kind="openai"))
     c = (await _by_id(db_conn, two))["providers"]
-    assert (c.state, c.title, c.section) == ("ok", "Model providers", "deployment")
+    assert (c.state, c.title, c.section) == ("ok", "Model providers", "models")
     assert c.summary == "2 reachable: local (2 models), cloud (1 model)"
 
     some = _Router(_Provider("local"), _Provider("cloud", kind="openai", fails=True))
@@ -145,20 +149,80 @@ async def test_providers_states(db_conn):
     assert (c.state, c.summary) == ("error", "No model provider is configured (INFERENCE_PROVIDERS or OLLAMA_URL).")
 
 
-async def test_reader_states(db_conn):
-    c = (await _by_id(db_conn, _router(), {"READER_MODEL": "chat"}))["reader"]
-    assert (c.state, c.summary) == ("ok", "The chat model of each conversation (READER_MODEL=chat).")
+async def _save_models(db_conn, **changes):
+    await console_settings.save(db_conn, model_settings.SECTION, changes, updated_by=SEED_ADMIN_ID)
 
+
+def _local_router(*names):
+    return _Router(_Provider("local", names=names or ("m", "llama3.2:3b"), url="http://localhost:11434"))
+
+
+_HINT = (" Reader calls then count against a cloud model's quota; a small local reader, chosen in Models, "
+         "keeps them off it.")
+
+
+async def test_the_default_reader_is_ok_never_warn(db_conn):   # R5
+    c = (await _by_id(db_conn, _local_router()))["reader"]
+    assert (c.state, c.summary) == ("ok", "The chat model of each conversation (the default).")
+    assert c.section == "models"
+
+    # models that aren't local add the quota hint, and the line is still ok
+    c = (await _by_id(db_conn, _router()))["reader"]
+    assert (c.state, c.summary) == ("ok", "The chat model of each conversation (the default)." + _HINT)
+
+
+async def test_a_reader_of_chat_set_in_the_environment_or_here_is_ok(db_conn):
+    c = (await _by_id(db_conn, _local_router(), {"READER_MODEL": "chat"}))["reader"]
+    assert (c.state, c.summary) == ("ok", "The chat model of each conversation.")
+    c = (await _by_id(db_conn, _router(), {"SUMMARIZE_MODEL": "chat"}))["reader"]
+    assert (c.state, c.summary) == ("ok", "The chat model of each conversation." + _HINT)
+
+    await _save_models(db_conn, reader="chat")
+    c = (await _by_id(db_conn, _router()))["reader"]
+    assert (c.state, c.summary) == ("ok", "The chat model of each conversation." + _HINT)
+
+
+async def test_the_reader_hint_asks_whether_a_model_costs_money_not_whether_it_needs_a_size(db_conn):
+    # an Ollama on a dotted public host still needs a context size, but the admin says it's theirs: no cloud quota
+    await _save_models(db_conn, provider_locality={"local": "local"})
+    c = (await _by_id(db_conn, _router()))["reader"]
+    assert c.summary == "The chat model of each conversation (the default)."
+
+    # and the other way round: a localhost provider the admin marks cloud brings the hint
+    await _save_models(db_conn, provider_locality={"local": "cloud"})
+    c = (await _by_id(db_conn, _local_router()))["reader"]
+    assert c.summary == "The chat model of each conversation (the default)." + _HINT
+
+
+async def test_the_reader_hint_counts_only_the_models_offered(db_conn):
+    two = _Router(_Provider("local", names=("a",), url="http://localhost:11434"),
+                  _Provider("cloud", names=("b",), kind="openai", url="https://api.example.com/v1"))
+    c = (await _by_id(db_conn, two))["reader"]
+    assert c.summary.endswith(_HINT)
+    await _save_models(db_conn, chat_models=["local:a"])
+    c = (await _by_id(db_conn, two))["reader"]
+    assert c.summary == "The chat model of each conversation (the default)."
+
+
+async def test_a_named_reader_is_ok_with_where_it_was_set(db_conn):
     c = (await _by_id(db_conn, _router(), {"SUMMARIZE_MODEL": "m"}))["reader"]
     assert (c.state, c.summary) == ("ok", "m, from SUMMARIZE_MODEL.")
 
-    c = (await _by_id(db_conn, _router()))["reader"]
-    # the default is the chat model now, so there is no built-in fallback to warn about (Task 6 words this line anew)
-    assert (c.state, c.summary) == ("ok", "The chat model of each conversation (READER_MODEL=chat).")
+    await _save_models(db_conn, reader="m")
+    c = (await _by_id(db_conn, _router(), {"SUMMARIZE_MODEL": "llama3.2:3b"}))["reader"]
+    assert (c.state, c.summary) == ("ok", "m, set in Models.")
 
-    c = (await _by_id(db_conn, _router(), {"READER_MODEL": "gone"}))["reader"]
-    assert (c.state, c.summary) == ("error", "gone isn't on local: every reader call fails until it's pulled or READER_MODEL changes.")
 
+async def test_a_reader_model_that_isnt_listed_says_how_to_fix_it(db_conn):
+    for env in ({"READER_MODEL": "gone"}, {}):
+        if not env:
+            await _save_models(db_conn, reader="gone")
+        c = (await _by_id(db_conn, _router(), env))["reader"]
+        assert (c.state, c.summary) == ("error", "gone isn't on local: every reader call fails until it's pulled "
+                                                 "or another reader is chosen in Models.")
+
+
+async def test_a_reader_that_cannot_be_checked(db_conn):
     down = _Router(_Provider("local", fails=True))
     c = (await _by_id(db_conn, down, {"READER_MODEL": "m"}))["reader"]
     assert (c.state, c.summary) == ("error", "Can't reach local to check m.")
@@ -308,22 +372,71 @@ async def test_overview_route_is_admin_only(db_conn, monkeypatch):
     assert [x["id"] for x in r.json()["checks"]] == ["providers", "reader", "context", "embeddings", "docling", "web_search"]
 
 
-def test_a_local_ollama_model_not_loaded_is_unknown_never_its_maximum():
-    m = ModelInfo("ollama:gemma4:e4b", "ollama", "ollama", "gemma4:e4b", Capabilities(context_window=131072))
-    assert window_for(m, {}) == (None, "Unknown: Ollama picks the size when it loads the model (4,096 tokens on a machine with under 24 GiB of VRAM).")
-    assert window_for(m, {"gemma4:e4b": 4096}) == (4096, "Loaded now (Ollama).")
+_LIMITS = InferenceLimits(num_ctx_max=32768, keep_alive_max_s=1800)
+_MS = model_settings.from_env({})
+_GPU = ProviderConfig(name="ollama", kind="ollama", url="http://gpu.example.com:11434")   # a dotted public host
+
+
+def _ollama(name="gemma4:e4b", window=131072):
+    return ModelInfo(f"ollama:{name}", "ollama", "ollama", name, Capabilities(context_window=window))
+
+
+def _openai(window=None, provider="oa"):
+    return ModelInfo(f"{provider}:gpt", provider, "openai", "gpt", Capabilities(context_window=window))
+
+
+def _win(model, ms=_MS, loaded=None, cfg=_GPU, env=None, limits=_LIMITS):
+    return window_for(model, loaded or {}, ms, cfg, env or {}, limits)
+
+
+def test_a_loaded_ollama_model_reports_what_is_loaded():
+    assert _win(_ollama(), loaded={"gemma4:e4b": 4096}) == (4096, "Loaded now (Ollama).")
+    assert _win(_ollama("x:latest"), loaded={"x": 8192}) == (8192, "Loaded now (Ollama).")
+
+
+def test_a_local_ollama_model_not_loaded_gets_the_size_set_for_it():
+    ms = dataclasses.replace(_MS, context_sizes={"ollama:gemma4:e4b": 24000})
+    assert _win(_ollama(), ms) == (24000, "The context size set for this model in Models.")
+    # a size above the ceiling is clamped, as the request will clamp it
+    ms = dataclasses.replace(_MS, context_sizes={"ollama:gemma4:e4b": 100000})
+    assert _win(_ollama(), ms) == (32768, "The context size set for this model in Models.")
+
+
+def test_a_local_ollama_model_not_loaded_gets_the_deployments_size():
+    ms = dataclasses.replace(_MS, context_size=20000, context_size_source="admin")
+    assert _win(_ollama(), ms) == (20000, "The deployment's context size, set in Models.")
+    ms = model_settings.from_env({"INFERENCE_LOCAL_NUM_CTX": "20000"})
+    assert _win(_ollama(), ms) == (20000, "The deployment's context size, from INFERENCE_LOCAL_NUM_CTX.")
+
+
+def test_with_no_size_set_a_local_ollama_model_gets_the_default_clamped():
+    unset = "16,384 tokens unless a person sets their own in Settings (no deployment size is set)."
+    assert _win(_ollama()) == (16384, unset)
+    low = InferenceLimits(num_ctx_max=8192, keep_alive_max_s=1800)
+    assert _win(_ollama(), limits=low) == (8192, unset)
+
+
+def test_sizing_follows_the_ollama_not_its_host():   # P4: a remote GPU box on a public name still loads at 4,096
+    assert _win(_ollama(), cfg=_GPU)[0] == 16384
+    marked_cloud = dataclasses.replace(_MS, provider_locality={"ollama": "cloud"})
+    assert _win(_ollama(), marked_cloud) == (131072, "Reported by the provider.")
+    hosted = ProviderConfig(name="ollama", kind="ollama", url="https://ollama.com")
+    assert _win(_ollama(), cfg=hosted) == (131072, "Reported by the provider.")
 
 
 def test_an_ollama_cloud_model_gets_its_maximum():
-    m = ModelInfo("ollama:gemma4:31b-cloud", "ollama", "ollama", "gemma4:31b-cloud", Capabilities(context_window=262144))
-    assert window_for(m, {}) == (262144, "The model's maximum (Ollama cloud).")
+    m = _ollama("gemma4:31b-cloud", 262144)
+    assert _win(m) == (262144, "The model's maximum (Ollama cloud).")
 
 
-def test_other_providers_report_their_own_number_or_none():
-    m = ModelInfo("oa:gpt", "oa", "openai", "gpt", Capabilities(context_window=131072))
-    assert window_for(m, {}) == (131072, "Reported by the provider.")
-    m = ModelInfo("oa:gpt", "oa", "openai", "gpt", Capabilities())
-    assert window_for(m, {}) == (None, "Unknown: the provider doesn't report one.")
+def test_other_providers_report_their_own_number_or_are_declared_or_unknown():
+    oa = ProviderConfig(name="oa", kind="openai", url="https://api.example.com/v1")
+    assert _win(_openai(131072), cfg=oa) == (131072, "Reported by the provider.")
+    ms = dataclasses.replace(_MS, context_windows={"oa:gpt": 64000})
+    assert _win(_openai(), ms, cfg=oa) == (64000, "Declared in Models.")
+    assert _win(_openai(), cfg=oa, env={"INFERENCE_OA_CONTEXT_WINDOW": "50000"}) == (
+        50000, "From INFERENCE_OA_CONTEXT_WINDOW.")
+    assert _win(_openai(), cfg=oa) == (None, "Unknown: the provider doesn't report one. Declare it in Models.")
 
 
 def test_a_project_turn_is_larger_than_its_fixed_budgets():
@@ -349,10 +462,11 @@ async def test_context_check_warns_on_a_small_or_unknown_window(db_conn):
     models = [ModelInfo("local:small", "local", "ollama", "small", Capabilities(context_window=131072)),
               ModelInfo("local:idle", "local", "ollama", "idle", Capabilities(context_window=131072))]
     c = (await _by_id(db_conn, _Caps(models, p)))["context"]
-    assert c.state == "warn" and c.summary.startswith("0 of 2 chat models have room")
-    assert [i["enough"] for i in c.items] == [False, False]
-    assert c.items[0]["window"] == 4096 and c.items[1]["window"] is None
-    assert (c.title, c.section) == ("Context windows", None)
+    assert c.state == "warn" and c.summary.startswith("1 of 2 chat models have room")
+    assert [i["enough"] for i in c.items] == [False, True]
+    assert c.items[0]["window"] == 4096 and c.items[1]["window"] == 16384
+    assert c.items[1]["source"].startswith("16,384 tokens unless a person sets their own")
+    assert (c.title, c.section) == ("Context windows", "models")
 
 
 async def test_context_check_ok_when_every_window_fits(db_conn):
@@ -361,6 +475,34 @@ async def test_context_check_ok_when_every_window_fits(db_conn):
     llm = _Caps(models, _Provider("local"), _Provider("oa", kind="openai"))
     c = (await _by_id(db_conn, llm))["context"]
     assert c.state == "ok" and all(i["enough"] for i in c.items)
+
+
+async def test_context_applies_the_console_selection(db_conn):
+    models = [ModelInfo("local:a", "local", "ollama", "a", Capabilities(context_window=131072)),
+              ModelInfo("local:b", "local", "ollama", "b", Capabilities(context_window=131072))]
+    llm = _Caps(models, _Provider("local"))
+    await _save_models(db_conn, chat_models=["local:b"], context_sizes={"local:b": 24000})
+    c = (await _by_id(db_conn, llm))["context"]
+    assert [(i["model"], i["window"]) for i in c.items] == [("local:b", 24000)]
+    assert c.items[0]["source"] == "The context size set for this model in Models."
+    assert c.summary.startswith("1 of 1 chat models")
+
+    await _save_models(db_conn, chat_models=["local:gone"])   # a selection that leaves nothing
+    c = (await _by_id(db_conn, llm))["context"]
+    assert (c.state, c.summary) == ("warn", "None of the chat models chosen in Models is listed by a provider: nobody can chat.")
+    assert c.items == ()
+
+    await _save_models(db_conn, chat_models=None)   # no selection: the environment's list
+    assert len((await _by_id(db_conn, llm))["context"].items) == 2
+
+
+async def test_the_overview_reads_the_environment_when_the_models_row_cannot_be_read(db_conn, monkeypatch):
+    async def broken(conn, env=None):
+        raise RuntimeError("no row")
+    monkeypatch.setattr(model_settings, "load_models_settings", broken)
+    checks = await _by_id(db_conn, _local_router(), {"SUMMARIZE_MODEL": "m"})
+    assert checks["reader"].summary == "m, from SUMMARIZE_MODEL."
+    assert checks["context"].state in ("ok", "warn")
 
 
 async def test_context_check_warns_when_no_chat_models(db_conn):

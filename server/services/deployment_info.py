@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Mapping
 from urllib.parse import urlsplit
 
-from ..chat import reader
 from ..llm.router import load_provider_configs
 
 _DEFAULT_OLLAMA_URL = "http://localhost:11434"
@@ -26,7 +25,6 @@ def _host(netloc: str) -> str:
 
 
 NOT_A_URL = "Not a valid URL"
-CHAT_READER = "The chat model of each conversation"    # what a reader model of "chat" is called on screen
 
 
 def safe_url(url: str) -> str:
@@ -79,8 +77,6 @@ def readonly_rows(env: Mapping[str, str] = os.environ) -> list[dict]:
             rows.append(_secret(env, f"provider_key:{cfg.name}", f"Key for “{cfg.name}”", f"INFERENCE_{key}_API_KEY"))
 
     budget = (env.get("INFERENCE_DAILY_TOKEN_BUDGET") or "").strip()
-    reader_var = reader.reader_model_source(env)
-    reader_model = reader.load_reader_config(env).model
     storage = env.get("DOC_STORAGE_DIR") or env.get("PDF_STORAGE_DIR") or "./data/pdfs"
     searxng = (env.get("SEARXNG_URL", _DEFAULT_SEARXNG_URL) or "").strip()
     rows += [
@@ -90,9 +86,6 @@ def readonly_rows(env: Mapping[str, str] = os.environ) -> list[dict]:
              "INFERENCE_TIMEOUT_S", _set(env, "INFERENCE_TIMEOUT_S")),
         _row("daily_budget", "Daily token budget", budget if budget not in ("", "0") else "Unlimited",
              "INFERENCE_DAILY_TOKEN_BUDGET", _set(env, "INFERENCE_DAILY_TOKEN_BUDGET")),
-        _row("reader_model", "Reading model",
-             CHAT_READER if reader_model == "chat" else reader_model,
-             reader_var, reader_var is not None),
         _row("embedding_model", "Embedding model", (env.get("EMBEDDING_MODEL") or "").strip() or "nomic-embed-text",
              "EMBEDDING_MODEL", _set(env, "EMBEDDING_MODEL")),
         _row("embedding_url", "Embedding server", safe_url((env.get("OLLAMA_URL") or _DEFAULT_OLLAMA_URL)),

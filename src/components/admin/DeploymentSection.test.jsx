@@ -13,7 +13,7 @@ const view = (timezone = tz(), info = []) => ({ settings: { timezone }, info });
 
 const INFO = [
   { id: 'provider:cloud', label: 'Provider cloud', value: 'openai · https://llm.example.com/v1', env: 'INFERENCE_CLOUD_URL', source: 'env' },
-  { id: 'reader_model', label: 'Reader model', value: 'kokoro', env: null, source: 'default' },
+  { id: 'embedding_model', label: 'Embedding model', value: 'nomic-embed-text', env: null, source: 'default' },
   { id: 'session_secret', label: 'Session secret', value: 'set', env: 'SESSION_SECRET', source: 'env' },
   { id: 'oidc_client_secret', label: 'OIDC client secret', value: 'not set', env: 'OIDC_CLIENT_SECRET', source: 'default' },
 ];
@@ -91,7 +91,7 @@ describe('DeploymentSection', () => {
     expect(within(cloud).getByText('openai · https://llm.example.com/v1')).toBeInTheDocument();
     expect(cloud).toHaveTextContent('From the server setting INFERENCE_CLOUD_URL.');
     expect(cloud.querySelector('code')).toHaveTextContent('INFERENCE_CLOUD_URL');
-    expect(screen.getByTestId('info-reader_model')).toHaveTextContent('The default.');
+    expect(screen.getByTestId('info-embedding_model')).toHaveTextContent('The default.');
     expect(within(screen.getByTestId('info-session_secret')).getByText('set')).toBeInTheDocument();
     expect(within(screen.getByTestId('info-oidc_client_secret')).getByText('not set')).toBeInTheDocument();
   });
