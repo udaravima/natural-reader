@@ -4,9 +4,9 @@
 
 ---
 
-## 2026-10-26 — Admin console v2, phase 2a built, walked and final-reviewed; awaiting the merge decision (START HERE)
+## 2026-10-26 — Admin console v2, phase 2a built, walked and final-reviewed; merged into development (START HERE)
 
-**Branch:** `feat/admin-console-v2-phase2a`, cut from `development` at `2fadfa2`. **Not merged, not pushed, no version bump** (CHANGELOG entries sit under `[Unreleased]`). **Deployed anyway:** the live site has run this branch since 2026-10-26 11:39, from an image built at `0f9aec7` (before the final review); the final-review fixes are not deployed yet. Plan: `docs/superpowers/plans/2026-10-26-admin-console-v2-phase2a.md`. Workspace ledger (rulings, every review finding and which ones were deferred): `.superpowers/sdd/2026-10-26-admin-console-v2-phase2a/progress.md`, with each task's brief, report and review diff beside it. Spec: `docs/superpowers/specs/2026-10-25-admin-console-v2-design.md`.
+**Branch:** `feat/admin-console-v2-phase2a`, cut from `development` at `2fadfa2`. **Fast-forward merged into `development` on 2026-10-26; `development` is not pushed; no version bump** (CHANGELOG entries sit under `[Unreleased]`). **The feature branch reached origin without anyone running `git push` here** (`git reflog show origin/feat/admin-console-v2-phase2a`: seven "update by push" entries from 10:13 to 16:22, each a few minutes after a commit), as happened to phase 1's branch; the branch config carries `vscode-merge-base`, so VS Code's sync is the suspect. **Deployed anyway:** the live site has run this branch since 2026-10-26 11:39, from an image built at `0f9aec7` (before the final review); the final-review fixes are not deployed yet. Plan: `docs/superpowers/plans/2026-10-26-admin-console-v2-phase2a.md`. Workspace ledger (rulings, every review finding and which ones were deferred): `.superpowers/sdd/2026-10-26-admin-console-v2-phase2a/progress.md`, with each task's brief, report and review diff beside it. Spec: `docs/superpowers/specs/2026-10-25-admin-console-v2-design.md`.
 
 **Commits** (`git log --oneline 2fadfa2..HEAD`, newest first; the docs commit that carries this entry follows them):
 
@@ -93,10 +93,10 @@ Made in the final fix:
 
 ### Open items
 
-1. **Merge into `development`** (fast-forward, as phase 1) and **push**: both need the owner's go-ahead. `development` is still unpushed from phase 1; v2.4.0 is not deployed.
+1. **Push `development`**: needs the owner's go-ahead. It carries phase 1 and phase 2a; v2.4.0 is not deployed. Find what auto-pushes feature branches before the next one.
 2. **Deploy the final-review fixes.** Live runs `0f9aec7` (since 11:39), which has the I1 bug (a self-hosted Ollama marked Cloud gets no size) and accepts any Reader through the API. Rebuilding from this branch's head fixes both.
 3. **Live config worth setting now:** one deployment context size under Models (two people with different personal sizes otherwise reload the same model between their turns); a small local Reader if people chat on a cloud model (reader calls count against its quota) or on a large local one (every batch runs through it, slow on CPU), with `OLLAMA_MAX_LOADED_MODELS` ≥ 3 so the chat, reader and embedding models don't evict each other.
-4. **Phase 3 (usage by model) is planned:** `docs/superpowers/plans/2026-10-26-admin-console-v2-phase3.md`, branch `feat/admin-console-v2-phase3` from this branch's head; awaiting the owner's review of the plan. **Phase 2b** (embedding engine and model) follows.
+4. **Phase 3 (usage by model) is planned:** `docs/superpowers/plans/2026-10-26-admin-console-v2-phase3.md`, branch `feat/admin-console-v2-phase3` from `development`; awaiting the owner's review of the plan. **Phase 2b** (embedding engine and model) follows.
 5. **The live Keycloak still lacks the `docling` realm role** (needed only for `DOCLING_CONVERT_BY=role`); People now says how to create it. W3, the header scroll at 375 px, is open.
 
 ---
