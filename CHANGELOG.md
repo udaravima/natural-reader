@@ -9,10 +9,39 @@ All notable changes to this project will be documented in this file.
 - **The admin console is split into sections.** **Overview**, **People**,
   **Projects**, **Models**, **Documents**, **Chat**, **Defaults for users**,
   **Usage** and **Deployment**, in a list down the side (a picker on a phone), the way
-  Settings is laid out. People, Projects, Chat, Defaults for users and Usage
-  work as before; they moved. Open the console with the shield button in the
+  Settings is laid out. People, Projects, Chat and Defaults for users
+  work as before; they moved. Usage moved too and changed (see below). Open the console with the shield button in the
   header. It uses arrow keys, Home and End to move between sections, and its
   buttons are at least 44 px tall on a phone.
+- **Usage by model, person and day.** **Admin console -> Usage** now opens on
+  **By model**: one row per model with **Where** (**Local**, **Cloud** or
+  **Unknown**), **Chat** and **Reader** tokens, **Requests**, **Total** and
+  **Estimated**. **By person** lists each person; the arrow on a row (**Models
+  for** their address) opens that person's own per-model rows. **By day** lists
+  the days of the range. On **By person** and **By day** a **Model** select
+  narrows the list to one model (or **Unknown**); an opened person's rows follow
+  it. The **Usage days** select (last 1, 7, 14, 30 or 90 days) applies to all
+  three views and resets the **Model** select to **All models**. Things to know
+  when reading it:
+  - Reader tokens are booked to the reader model's own row, so the chat model's
+    row can read **Reader** 0 while another row carries the reader.
+  - Usage recorded before this upgrade can't be split. It shows as model
+    **Unknown** with **Chat** and **Reader** 0 but its tokens in **Total**, so
+    **Chat** plus **Reader** can be less than **Total**. It still counts toward
+    each person's budget for that day, so an upgrade mid-day changes nobody's
+    remaining budget.
+  - **Where** follows the provider's mark **now** (**Models -> Providers**:
+    Auto, Local or Cloud), not the mark when the tokens were spent. Changing a
+    mark re-labels history. A model whose provider was removed from the
+    configuration shows **Unknown**.
+  - **Estimated** is the share of a row's tokens counted from text length
+    (characters / 4) because the provider sent no counts. Ollama always sends
+    counts, so with Ollama it normally reads a dash. A reader model the router
+    can't place is recorded under its bare name and shows **Unknown**.
+  - `GET /v1/admin/inference/usage` takes `group` (`user_day`, `model`, `user`
+    or `day`), `user_id` and `model` (empty means the **Unknown** rows). Without
+    `group` it returns the old one-row-per-person-per-day list, so scripts keep
+    working. A bad `group` or `user_id` is a 422.
 - **Overview checks that the deployment works.** One line each for model
   providers, the reader, context windows, embeddings, Docling and web
   search, with a state (OK, Warning, Problem, Off) and a button to look
@@ -66,8 +95,8 @@ All notable changes to this project will be documented in this file.
     provider reports no window (most OpenAI-compatible servers).
     `INFERENCE_<NAME>_CONTEXT_WINDOW` sets one for a whole provider.
   - **Providers**: **Auto**, **Local** or **Cloud** for each provider. This is
-    the cost flag (the Overview's quota hint, and later usage) and nothing
-    else: a self-hosted Ollama marked **Cloud** is still sized.
+    the cost flag (the Overview's quota hint and the **Where** column in
+    **Usage**) and nothing else: a self-hosted Ollama marked **Cloud** is still sized.
   - **Chat models offered**: tick the models people may choose. It can only
     narrow what `INFERENCE_MODELS` and the providers' allow-lists permit; none
     ticked means every model the server allows. If every ticked model has
@@ -92,7 +121,12 @@ All notable changes to this project will be documented in this file.
 
 ### Upgrade notes
 
-- No database migration.
+- **Migration 023 changes `inference_usage`** (applied on start): the key becomes
+  `(user_id, day, model, kind)` and `model`, `kind` and `estimated_tokens` are
+  added. Rows already there keep their tokens as model `''`, kind `''` (shown as
+  **Unknown**). Rolling back needs the manual merge described in the file's
+  header, because the old one-row-per-day key can't be restored while per-model
+  rows exist. Back up the database first.
 - **An existing Keycloak realm needs the `docling` realm role created by hand**
   (Realm roles, Create role, name `docling`). The realm export only seeds a
   new database, so a running realm doesn't get it. Until it exists, ticking
@@ -110,8 +144,7 @@ All notable changes to this project will be documented in this file.
 - Apart from that, nothing changes until an admin changes it: conversion stays
   open to everyone with the reader capability, with every preset, OCR and
   picture descriptions on, and no page limit.
-- Not yet in the console: changing the embedding model, and usage by model.
-  Those are later phases.
+- Not yet in the console: changing the embedding model, a later phase.
 - **The reader moves to the chat model** on a deployment that sets none of
   `READER_MODEL`, `SUMMARIZE_MODEL` or `WEB_SEARCH_SUMMARY_MODEL`. It used to
   be `llama3.2:3b`. With a cloud chat model, reader calls count against its

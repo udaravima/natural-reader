@@ -198,7 +198,7 @@ jump to the first and last.
 | **Documents** | Limits on Docling conversion ([below](#documents-what-a-conversion-may-use)) |
 | **Chat** | The assistant's profile and the web search mode |
 | **Defaults for users** | What read-aloud, voice, speed and thinking show for someone who hasn't chosen them |
-| **Usage** | Token use per user and per day |
+| **Usage** | Token use by model, by person and by day ([below](#usage-who-spent-tokens-on-which-model)) |
 | **Deployment** | The deployment timezone, and the server's own values read-only |
 
 **People** lists every account, 50 at a time. Over the list:
@@ -244,7 +244,7 @@ Notes:
   fact this application owns.
 - Each person's daily token budget is the **Budget** box on their row under
   **People** (empty = the deployment default, 0 = unlimited; press **Set**).
-  **Usage** shows tokens per person and per day.
+  **Usage** shows tokens by model, by person and by day.
 - The **Deployment** section's read-only list shows every configured model
   provider as `kind · URL` (for example `ollama · http://host:11434`), so you
   can see at a glance what's wired up without reading `.env` on the server.
@@ -425,7 +425,7 @@ reader batch is cut to fit its model's window: never above `READER_INPUT_CHARS`,
 and at most 16 passages.
 
 **Providers: local or cloud.** This flag is about cost, not sizing: the
-Overview's quota hint, usage figures to come, and the **Auto** label. **Auto**
+Overview's quota hint, the **Where** column in **Usage**, and the **Auto** label. **Auto**
 guesses from the provider's address: `localhost`, a private or loopback
 address, `100.64.0.0/10` (Tailscale), a single-word name such as `ollama`, or a
 name ending `.local`, `.lan`, `.internal` or `.home.arpa` is local; anything else
@@ -443,6 +443,52 @@ untick or choose others (the Overview warns).
 
 **Not here.** Adding or changing a provider is still a `.env` and restart task,
 and so is the embedding model.
+
+### Usage: who spent tokens on which model
+
+**Usage** counts every token the server spent for chat replies and for the
+reader's calls (the sub-agent that reads documents and web pages). It opens on
+**By model**, and the **Usage days** select above the table (last 1, 7, 14, 30
+or 90 days) applies to all three views. The three buttons switch the view:
+
+- **By model** has one row per model: **Model**, **Where** (**Local**, **Cloud**
+  or **Unknown**), **Chat** and **Reader** tokens, **Requests**, **Total** and
+  **Estimated**.
+- **By person** has one row per person with the same figures. The arrow at the
+  end of a row (its label is **Models for** that person's address) opens that
+  person's own per-model rows beneath it; click it again to close.
+- **By day** has one row per day, newest first, in the deployment's timezone
+  (see **Deployment** below).
+
+On **By person** and **By day** the **Model** select next to the buttons narrows
+the list to one model (**All models** is the default; **Unknown** picks usage
+with no model, below). An opened person's rows follow it, so they add up to the
+filtered row above them. Changing **Usage days** puts the **Model** select back
+to **All models**, because the new range may not contain that model.
+
+Read it with these in mind:
+
+- **Reader tokens sit on the reader model's own row.** If the reader is a
+  different model from the one people chat with, the chat model's row shows
+  **Reader** 0 and the reader model's row carries them. A chat request and a
+  reader batch each count as one request.
+- **Usage from before the upgrade shows as Unknown and can't be split.** It was
+  recorded with no model and no chat/reader split, so its row shows **Chat** 0
+  and **Reader** 0 while **Total** holds the tokens: **Chat** plus **Reader**
+  can be less than **Total**. A note under the table appears whenever the range
+  contains such usage. It still counts toward each person's daily budget.
+- **Where** follows the provider's mark **today**. It uses the **Providers**
+  setting in **Models** (Auto, Local or Cloud), so changing a mark re-labels
+  the whole history, not only new usage. A model whose provider is no longer
+  configured is **Unknown**, as is a reader model the server couldn't place
+  (it is recorded under its bare name).
+- **Estimated** is the share of that row's tokens counted from text length
+  (characters divided by 4) because the provider sent no token counts. It reads
+  a whole percent, **<1%** for a small share, or a dash for none. Ollama always
+  sends counts, so with Ollama it is normally a dash.
+
+A script can read the same figures from `GET /v1/admin/inference/usage`;
+[ARCHITECTURE.md](ARCHITECTURE.md#routers) lists its parameters.
 
 ### Documents: what a conversion may use
 

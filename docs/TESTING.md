@@ -25,6 +25,7 @@ spot a feature that shipped without coverage.
   - [Security hardening (SEC fixes)](#security-hardening-sec-fixes)
   - [Admin console v2, phase 1](#admin-console-v2-phase-1)
   - [Admin console v2, phase 2a](#admin-console-v2-phase-2a)
+  - [Admin console v2, phase 3 (usage by model)](#admin-console-v2-phase-3-usage-by-model)
   - [Frontend: auth UI](#frontend-auth-ui)
   - [Frontend: chat streaming](#frontend-chat-streaming)
   - [Frontend: budget UX](#frontend-budget-ux)
@@ -63,10 +64,10 @@ spot a feature that shipped without coverage.
 # Backend — REQUIRES Postgres up (conftest migrates natural_reader_test on a
 # real connection; without the DB every test errors, not skips). Run it with
 # the two TEST_* variables above exported, or it uses 5433.
-.venv/bin/python -m pytest server/tests/ -q          # 2418 passed, 16 skipped, 2 deselected @ 2026-10-26 (phase 2a, final fix)
+.venv/bin/python -m pytest server/tests/ -q          # 2447 passed, 16 skipped, 2 deselected @ 2026-10-26 (phase 3)
 
 # Frontend (vitest, jsdom — no services needed)
-npx vitest run                                       # 1170 passed (118 files) @ 2026-10-26 (phase 2a, final fix)
+npx vitest run                                       # 1190 passed (119 files) @ 2026-10-26 (phase 3)
 
 # Lint
 npx eslint src                                       # clean (npm run lint is the same)
@@ -125,9 +126,14 @@ Backend test conventions that matter when writing new cases:
 | | new_doc_carries_owner | inserted docs stamp owner |
 | `test_migration_006.py` | sessions_table_shape | columns/timestamps present |
 | | pat_table_shape | + `token_hash` unique |
-| `test_migration_007.py` | inference_usage_shape | PK (user_id, day), counters |
+| `test_migration_007.py` | inference_usage_shape | the table and its counters (its PK was `(user_id, day)` until migration 023, which the next section's `test_migration_023.py` covers) |
 | | users_budget_column_exists | `inference_daily_token_budget` nullable |
 | | usage_round_trip | upsert + read-back |
+| `test_migration_023.py` (5, new) | 023_keeps_old_rows_as_unknown_model_and_kind | old rows survive as model `''`, kind `''`, 0 estimated, with version 23 recorded |
+| | 023_primary_key_is_user_day_model_kind | the PK columns, in that order |
+| | 023_kind_accepts_only_chat_reader_or_empty | `kind='other'` is a `CheckViolation`; `chat`, `reader` and `''` are accepted |
+| | 023_drops_the_defaults_so_a_forgetful_writer_fails_loudly | an INSERT without `model`, or without `kind`, is a `NotNullViolation` |
+| | 023_indexes_day_and_is_safe_to_run_twice | the `day` index exists and running the file again is safe |
 
 ### Users & JIT provisioning
 
@@ -199,6 +205,7 @@ scripted dance (see ledger below) and the rig in `deploy/README.md`.
 | | inference_usage_admin_only | usage endpoint gated |
 | | admin_inference_usage_returns_rows | per-day rows, per-user |
 | | admin_inference_usage_clamps_days | `?days=` clamped 1..90 |
+| | *(phase 3, 12 new `usage` cases)* | see [phase 3](#admin-console-v2-phase-3-usage-by-model) |
 | | patch_sets_and_clears_budget | set / explicit-null-clears distinction |
 | | patch_budget_round_trip | set → read-back |
 | | patch_rejects_negative_budget | validation → 422 |
@@ -255,12 +262,14 @@ no `_UsageTap` any more; usage accounting lives in the orchestrator.
 | File | Case | Asserts |
 |---|---|---|
 | `test_inference_budget.py` | *(suite)* | record/spent/state/over/effective/admin_usage: day computed in Python, not SQL, in the deployment's timezone; per-user override vs deployment default, aggregation. Since admin console v2: `reset_is_the_next_local_midnight`, `reset_on_the_night_the_clocks_change` (New York, 2026-11-01, reset at 05:00Z), `usage_counts_toward_the_deployment_day` (20:00Z in Colombo is the next day), `admin_usage_window_starts_on_the_deployment_day` |
+| `test_inference_budget.py` (21) | *(phase 3, new cases)* | `record_usage_splits_by_model_and_kind`; `record_usage_same_key_accumulates` (two upserts on one key: `requests` 2, tokens summed, which catches an `ON CONFLICT` target left on the old key); `record_usage_estimated_tokens` counts only writes flagged estimated; `record_usage_rejects_unknown_kind` (`''` and `CHAT` too, no row written); **`test_spent_today_sums_all_rows`** (a pre-migration `''`/`''` row plus new rows, and `budget_state`'s remaining: migrating mid-day changes nobody's budget); `admin_usage_default_shape_sums_models` (one dict per person per day, the old keys) |
 | `test_chat_turns.py` | budget_already_spent_is_429_with_reset_time | 429 pre-check with `{remaining_tokens, reset_at}` detail, before a turn is even claimed |
 | `test_inference_router.py` | models_includes_budget / models_budget_absent_when_unlimited | budget state rides `GET /v1/inference/models` |
 | `test_chat_orchestrator.py` | budget_runs_out_between_steps | checked before **every** step, not just once up front |
 | | missing_usage_is_estimated_and_recorded | a provider with no usage in its response is charged the chars/4 estimate |
 | | disconnect_mid_step_still_records_usage | **C1 behavior change**: a client disconnect still charges for the partial reply |
 | | provider_error_mid_text_still_records_usage | a mid-turn provider error still charges for what was generated before it failed |
+| | *(phase 3, 6 new)* | `chat_step_records_model_and_kind` (`req.model_id`, `chat`); `cut_short_step_records_model_and_kind` (the `_finalize` path); `estimated_usage_marks_estimated_tokens`; `reader_batch_records_reader_kind` (chat and reader rows side by side, the reader on its own model); **`reader_bare_name_lands_canonical`** (`m2` and `ollama:m2` give one row `ollama:m2`; `vllm:small` and an unplaceable `gone` keep their names); `a_bare_reader_name_is_charged_under_its_canonical_id` (the `_charge_reader` write) |
 
 ### Server-side routing through model_router
 
@@ -355,6 +364,33 @@ Counts are collected cases (parametrized ones expanded) in the whole file, new a
 pending; everything above is jsdom or backend tests with fakes. See HANDOVER's
 2026-10-26 phase 2a entry for what is unverified.
 
+### Admin console v2, phase 3 (usage by model)
+
+Usage per model and kind: migration 023, the writers, the grouped route and the
+rebuilt Usage section (plan:
+[superpowers/plans/2026-10-26-admin-console-v2-phase3.md](superpowers/plans/2026-10-26-admin-console-v2-phase3.md)).
+Counts are collected cases in the whole file, new and old. Run the backend with
+the two `TEST_*` variables set (see [How to run](#how-to-run)).
+
+| File | Pins |
+|---|---|
+| `test_migration_023.py` (5, new) | an old row survives as `''`/`''`/0 and version 23 is recorded; the PK is `(user_id, day, model, kind)`; the kind CHECK; no defaults left on `model` and `kind`; the `day` index and a safe re-run |
+| `test_inference_budget.py` (21) | six new cases: the split by model and kind; **two upserts on one key both count**; estimated tokens; an unknown kind is refused before any write; **`spent_today` sums old and new rows, so an upgrade mid-day leaves everyone's remaining budget alone**; `admin_usage` is still the one-row-per-person-per-day shape |
+| `test_chat_orchestrator.py` (103) | six new cases: a chat step, a cut-short step and a reader batch each record their model and kind; the chars/4 fallback marks `estimated_tokens`; **a reader named bare or canonical lands in one row, an unplaceable one keeps its name**; the `usage` helper in the file now sums rows (a turn with a reader writes two) |
+| `test_admin_router.py` (49) | twelve new `usage` cases: `group=model` rows carry `tag`; **the tag follows the provider's mark (changing it re-tags)**; **a model whose provider was removed, and a bare name, are `unknown`, not a 500**; `user_id` and `model` filters, and `model=` empty matching the Unknown rows; `group=day` and its window; the chat/reader split as integers with kind `''` only in `tokens`; **a bad `group` or `user_id` is a 422**; **no `group` is exactly the old key set**; a member gets 403 on all four groups |
+| `UsageSection.test.jsx` (19, new) | By model is the default and renders **Where**; a model-less row reads Unknown and Total is not chat + reader; tables sit in `overflow-x-auto`; **By person** and **By day** request their group, with `aria-pressed` following the buttons, and a day is shown as given; the per-person disclosure fetches once, sets `aria-expanded` and doesn't refetch on reopen; a range change clears expansions; the **Model** select lists every model, sends no `model` for **All models** and encodes a pick; **an opened person's rows follow the Model select without another request (R5)**; the Unknown note shows in any view only when the range has a model-less row; **Estimated** as a whole percent, `<1%` and a dash; the empty state; the load-failure toast; **three race tests, each shown red with its guard removed:** a slow reply for an old range, a slow By person reply after the Model select changed, and an expansion answered after the range changed |
+| `phoneTargets.test.jsx` (12), `AdminConsole.test.jsx` | 44 px classes on the three view buttons, the **Model** select and the disclosure (class assertions: jsdom has no layout); the three older Usage tests now click **By day** and expect `?days=30&group=model` |
+
+**Walked in the running app (plan Task 6, before the last fix):** the Usage tab
+at 1280 px and 375 px against a scratch database and real turns on a local and
+a cloud Ollama model, with one seeded pre-upgrade row. **Not walked:** the final
+change (a person's rows following the **Model** select); more than one person;
+the **Estimated** percentage (only the unit tests render it, Ollama always
+sends counts); a provider's mark changing a tag, or a removed provider, in the
+browser (both are backend-tested); a production build (the first open sent
+`group=model` twice in the dev server, likely StrictMode); dark mode. See
+HANDOVER's phase 3 entry.
+
 ### Frontend: auth UI
 
 | File | Case count | Asserts |
@@ -430,8 +466,9 @@ Actually executed (not just designed), with results:
 - **No concurrency tests** for first-user-admin beyond the row-lock design
   comment (hard to test meaningfully without a second connection; the
   conditional UPDATE is the guarantee).
-- **Admin UI for usage/budgets doesn't exist yet** — API covered, UI is the
-  admin-console spec's job.
+- **Usage figures have a UI now** (admin console v2 phase 3); per-user budgets
+  are set under People. What no test or walk covers: the **Estimated** column
+  with real provider-estimated rows, and more than one person in **By person**.
 - **User deletion doesn't exist** (API or UI) — also admin-console scope;
   today's remedy for orphans is documented in IDENTITY_AND_ROLES.md.
 - Frontend has **no E2E** (Playwright etc.) — all UI tests are jsdom-level;

@@ -4,7 +4,75 @@
 
 ---
 
-## 2026-10-26 — Admin console v2, phase 2a built, walked and final-reviewed; merged into development (START HERE)
+## 2026-10-26 — Admin console v2, phase 3 (usage by model) built and walked; on its branch, not merged (START HERE)
+
+**Branch:** `feat/admin-console-v2-phase3`, cut from `development` at `8e13803` (phase 2a merged). **Not merged into `development`, not deployed, no version bump; nobody here ran `git push`** (CHANGELOG entries sit under `[Unreleased]`). The owner's "Go ahead" on the subagent-driven plan was read as approval of its per-task commits on this feature branch (ledger opening ruling). **The branch is on origin up to `99a0bc0` anyway** (`git reflog show origin/feat/admin-console-v2-phase3`: one "update by push"), the same unidentified pusher as for phases 1 and 2a (see the entry below; VS Code's sync is the suspect). Everything after `99a0bc0`, including this docs commit, was local when this was written. Plan: `docs/superpowers/plans/2026-10-26-admin-console-v2-phase3.md`. Workspace ledger (rulings, every review finding and which were deferred): `.superpowers/sdd/2026-10-26-admin-console-v2-phase3/progress.md`, with each task's brief, report and review diff beside it, and the walk in `task-6-walk-report.md`. Spec: `docs/superpowers/specs/2026-10-25-admin-console-v2-design.md`.
+
+**Commits** (`git log --oneline 8e13803..HEAD`, newest first; the docs commit that carries this entry follows them):
+
+- `9e7fd7f` fix(admin): a person's models follow the Model filter (R5)
+- `94a08f3` test(admin): Usage race tests flush and can fail
+- `d561de3` feat(admin): Usage by model, person and day
+- `a1aea8a` refactor(usage): admin_usage is the user_day grouping
+- `f68fc68` feat(admin): usage grouped by model, person and day, tagged local or cloud
+- `99a0bc0` feat(usage): chat and reader writes name their model and kind
+- `78ba314` feat(usage): record usage per model and kind (migration 023)
+
+**Gates on the final code tree (`9e7fd7f`, 2026-10-26):** backend `2447 passed, 16 skipped, 2 deselected` (was 2418 at the end of phase 2a), run with `TEST_DATABASE_URL` and `TEST_ADMIN_DATABASE_URL` pointing at the scratch Postgres on 5434; frontend `1190 passed` in 119 files (was 1170 in 118); `npx eslint .` clean. Every task was reviewed on its own diff and ended review-clean. **No whole-branch final review is recorded yet.**
+
+### What a person can do now (and where)
+
+- **See usage by model** (Admin -> **Usage**, which now opens on **By model**): one row per model with **Where** (Local / Cloud / Unknown), **Chat** and **Reader** tokens, **Requests**, **Total** and **Estimated**.
+- **See usage by person** (**By person**) and open one person's own per-model rows (the arrow on their row, label **Models for** their address).
+- **See usage by day** (**By day**), days counted in the deployment's timezone.
+- **Narrow By person and By day to one model** (the **Model** select: **All models**, a model, or **Unknown**). An opened person's rows follow it.
+- **Change the range** (the **Usage days** select: last 1, 7, 14, 30 or 90 days). It applies to all three views and resets the **Model** select to **All models**.
+- **Read the same figures by script:** `GET /v1/admin/inference/usage?days=&group=user_day|model|user|day&user_id=&model=`. No `group` returns the old per-person-per-day list (U5). `model=` empty means the Unknown rows. A bad `group` or `user_id` is a 422. `tag` appears on `group=model` rows only.
+- Reading it, an admin should know: **reader tokens are booked to the reader model's own row** (the chat model's row can show **Reader** 0); **usage from before the upgrade shows as model Unknown and can't be split** (**Chat** and **Reader** read 0 while **Total** doesn't, so Chat + Reader can be less than Total); **Where follows the provider's current Local/Cloud mark**, so changing the mark re-tags history; **Estimated** is the share of tokens counted from text length because the provider sent no counts (Ollama always sends counts, so with Ollama it is normally a dash); a reader model the router can't place is recorded under its bare name and shows Unknown.
+
+**Not possible yet:** per-person *budgets* per model, usage charts, export, or an alert when a model's spend jumps. The budget is still one number per person per day, summed over every model and kind.
+
+**Upgrade note:** migration `023_usage_by_model.sql` runs on start and rewrites `inference_usage`'s primary key to `(user_id, day, model, kind)`. Old rows keep their tokens as model `''`, kind `''` and still count toward each person's budget that day (tested: migrating mid-day changes nobody's remaining budget). **There is no automatic Down**: the file header says to merge each person-day's rows first. Back up the database before deploying, as for 2a. The live site does not run this branch.
+
+### Rulings (full text in the ledger and the plan; "cost" = what changing it later touches)
+
+Made while building (R, ledger):
+- **R1.** Task 1 left the orchestrator's writer call alone, so 16 orchestrator tests were red between Task 1 and Task 2. Cost: bisect noise on one commit (`78ba314`).
+- **R2.** The "Usage recorded before this version has no model and shows as Unknown." note shows whenever the range's By model data contains a model-less row, in any view. Cost: harmless copy on a view whose rows show no Unknown.
+- **R3.** The walk seeds usage with real turns on cloud or already-pulled small models, never local `llama3.2:3b`. Cost: the walk proved the UI on mostly writer-produced rows plus one seeded pre-upgrade row.
+- **R4.** The walk ran before the docs, so the docs describe the journey as walked. Cost: none beyond order.
+- **R5.** A person's expanded rows filter the cached per-person rows client-side to the **Model** select (still one fetch per person per range). Replaced an earlier "expansion ignores the filter". Cost: an admin who wants all of a person's models clears the select (one click).
+
+Decisions in the plan (U):
+- **U1.** Old rows get model `''` and kind `''`, both shown as Unknown (they mix chat and reader, so calling them chat would misreport).
+- **U2.** The model is stored canonical (`provider:name`), so `gemma4:e4b` and `ollama:gemma4:e4b` are one row; an unplaceable reader keeps its name.
+- **U3.** The tag is computed at read time from the provider's current mark, not stored. Cost: history re-tags; storing it would freeze the old mark.
+- **U4.** Estimated = estimated tokens / tokens, shown as a whole percent, a dash for none, `<1%` for a small share.
+- **U5.** No `group` means the old shape.
+
+### What was walked, and what was NOT verified
+
+- **Walked in the running app (plan Task 6, at `94a08f3`, `task-6-walk-report.md`):** backend on 8100 against a scratch database (migrated 001-023 by the app), Vite, auth off, Playwright at 1280 and 375 px. **Admin** button -> **Usage** tab -> **By model** (both models with right tags, the cloud one carrying the Reader figure), **By person** with the **Models for admin@localhost** disclosure (matched By model), the **Model** select on By person and By day, the **Usage days** select, and 375 px (no Usage table scrolls sideways; every control at least 44 px). Seeded: one pre-upgrade row; everything else was written by real turns.
+- **Walk defect W1** (a person's expansion ignored the **Model** select) was fixed afterwards in `9e7fd7f` (R5).
+- **Not verified:**
+  - **W1 re-walk.** The fix is unit-tested only; **re-walk the filter plus expansion in the running app after the final review** (owed).
+  - **The Estimated percentage.** Seen only in unit tests: Ollama always sends counts, so the walk saw only dashes.
+  - **A production build.** The first open of the tab sent `group=model` twice in the dev server (likely React StrictMode); not checked in a built bundle.
+  - More than one person (auth off gives one admin), so By person ordering and expansion for several people; a removed provider and a changed Local/Cloud mark in the browser (backend-tested); a non-admin refused; dark mode.
+  - No cloud eval was run for this phase. It touches the reader's model string (now the canonical `provider:name` key the router resolves) but no prompt; the spec's pre-release eval is still owed for the release.
+- **Walk observations, not fixed:** the page is 390 px wide at 375 px on every admin view, from the app header's button group (pre-existing, phase 2a W3, not Usage); model names wrap mid-word at 375 px (`break-all`); table text is 10 px; the Estimated note shows whenever rows exist, even when every cell is a dash.
+- **Deferred minor review findings** (none blocks; ledger has the rest): `KINDS` is defined mid-module in `inference_budget.py`; no router test pins the day window to `today(conn)` (it would pass with `CURRENT_DATE`); equal-token tie-breaks, `user_day` with `user_id`/`model`, and the days clamp with `group` are untested; the `group` vocabulary lives in three places; in By person and By day a failed load shows two toasts and "No usage recorded yet."; the disclosure has no `aria-controls` and the nested table no label; if the By model fetch fails the **Model** select collapses to **All models** unexplained; the **Model** select persists across the view buttons; an expansion filtered to nothing says "No usage recorded yet."; one orchestrator test doesn't assert `estimated_tokens` on the `_finalize` path.
+
+### Open items
+
+1. **Final whole-branch review, then re-walk W1** (above), then merge `feat/admin-console-v2-phase3` into `development`: merge and push both need the owner's go-ahead. `development` itself is still unpushed with phases 1 and 2a on it.
+2. **Docs outside the brief that still say the old thing:** `docs/DEPLOYMENT.md` (the "Reader calls count toward the daily budget and show in usage" paragraph, around line 612) says "The usage figures don't say which model a batch ran on". Usage now does; the server log's `reader usage` line still exists. Fix with the release docs. The older `docs/superpowers/handoff/2026-10-18-project-chat/HANDOFF.md` and the design spec's problem statement keep "no model column" as history, on purpose.
+3. **Deploy:** needs a database backup first (migration 023, no automatic Down). As of the phase 2a entry, live ran a build from before that phase's final fixes; check what it runs now.
+4. **Phase 2b** (embedding engine and model) is next in the design; the header scroll at 375 px (W3) is still open.
+
+---
+
+## 2026-10-26 — Admin console v2, phase 2a built, walked and final-reviewed; merged into development
 
 **Branch:** `feat/admin-console-v2-phase2a`, cut from `development` at `2fadfa2`. **Fast-forward merged into `development` on 2026-10-26; `development` is not pushed; no version bump** (CHANGELOG entries sit under `[Unreleased]`). **The feature branch reached origin without anyone running `git push` here** (`git reflog show origin/feat/admin-console-v2-phase2a`: seven "update by push" entries from 10:13 to 16:22, each a few minutes after a commit), as happened to phase 1's branch; the branch config carries `vscode-merge-base`, so VS Code's sync is the suspect. **Deployed anyway:** the live site has run this branch since 2026-10-26 11:39, from an image built at `0f9aec7` (before the final review); the final-review fixes are not deployed yet. Plan: `docs/superpowers/plans/2026-10-26-admin-console-v2-phase2a.md`. Workspace ledger (rulings, every review finding and which ones were deferred): `.superpowers/sdd/2026-10-26-admin-console-v2-phase2a/progress.md`, with each task's brief, report and review diff beside it. Spec: `docs/superpowers/specs/2026-10-25-admin-console-v2-design.md`.
 
@@ -48,7 +116,7 @@
 
 **`SUMMARIZE_MODEL` and `WEB_SEARCH_SUMMARY_MODEL` are only older names for the Reader** (the reader's env chain is `READER_MODEL`, then those two). There is no separate summary model: the unused `InferenceConfig.summarize_model` field was removed; `GET /v1/admin/inference/config` still reports the reader under the old `summarize_model` key.
 
-**Still not possible without `.env` and a restart:** adding or changing a provider; changing the embedding model (phase 2b). **Not possible at all yet:** usage by model or by person and model (phase 3: the usage table has no model column, so past days can't be split later). **No migration** (`models` is one more `app_settings` row).
+**Still not possible without `.env` and a restart:** adding or changing a provider; changing the embedding model (phase 2b). **Not possible at all yet:** usage by model or by person and model (phase 3, written afterwards, adds it: the usage table had no model column, so usage from before that migration can't be split). **No migration** (`models` is one more `app_settings` row).
 
 **Upgrade notes** (also in CHANGELOG and DEPLOYMENT): the reader moves to the chat model (cloud chat model: reader calls count against its quota; pick a local reader in Models); local Ollama models get 16,384 tokens instead of Ollama's 4,096, which reserves more memory when the model loads (size it down in Models or with `INFERENCE_LOCAL_NUM_CTX`), and a model already loaded at another size reloads once; a person's own context size stops applying to those models once the admin sets one.
 
