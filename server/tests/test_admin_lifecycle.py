@@ -96,7 +96,7 @@ async def test_delete_user_happy_path_cascades(db_conn):
         "INSERT INTO personal_access_tokens (user_id, name, token_hash) VALUES (%s, %s, %s)",
         (victim, "t", "hash1"),
     )
-    await ib.record_usage(db_conn, victim, 10, 5)
+    await ib.record_usage(db_conn, victim, 10, 5, model="ollama:test", kind="chat", estimated=False)
     await db_conn.execute(
         "INSERT INTO chat_sessions (id, user_id) VALUES (%s, %s)", ("cs1", victim)
     )

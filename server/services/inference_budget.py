@@ -1,5 +1,8 @@
 """Per-user daily inference budgets (gateway spec §4.3).
 
+Usage rows are per user, day, model and kind (`chat` or `reader`; `''` for rows written before migration 023,
+whose model and kind are unknown). The budget is still per user and day: `spent_today` sums every row of the day.
+
 A day is the deployment's (services/deployment_settings.py: the console's timezone, else TZ, else UTC),
 computed in Python — a SQL `DEFAULT CURRENT_DATE` would use the Postgres server's timezone and silently shift
 the reset time. Rows already written keep their days: changing the zone moves the boundary from then on and
@@ -47,13 +50,14 @@ async def effective_budget(conn, user_id: str, deployment_budget: int | None) ->
 
 
 async def spent_today(conn, user_id: str) -> tuple[int, int]:
+    """(prompt, eval) tokens spent today, summed over every model and kind."""
     cur = await conn.execute(
-        "SELECT prompt_tokens, eval_tokens FROM inference_usage "
+        "SELECT COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(eval_tokens), 0) FROM inference_usage "
         "WHERE user_id = %s AND day = %s",
         (user_id, await today(conn)),
     )
     row = await cur.fetchone()
-    return (row[0] or 0, row[1] or 0) if row else (0, 0)
+    return (int(row[0]), int(row[1]))
 
 
 async def budget_state(conn, user_id: str, deployment_budget: int | None) -> dict:
@@ -75,24 +79,36 @@ async def over_budget(conn, user_id: str, deployment_budget: int | None) -> bool
     return remaining is not None and remaining <= 0
 
 
-async def record_usage(conn, user_id: str, prompt_tokens: int, eval_tokens: int) -> None:
+KINDS = ("chat", "reader")
+
+
+async def record_usage(conn, user_id: str, prompt_tokens: int, eval_tokens: int, *,
+                       model: str, kind: str, estimated: bool) -> None:
+    """Add one request to today's row for (user, model, kind). `model` is the canonical provider:name; `estimated`
+    marks tokens counted by the chars/4 estimate rather than reported by the provider."""
+    if kind not in KINDS:
+        raise ValueError(f"kind must be one of {KINDS}, not {kind!r}")
+    estimated_tokens = prompt_tokens + eval_tokens if estimated else 0
     await conn.execute(
-        "INSERT INTO inference_usage (user_id, day, prompt_tokens, eval_tokens, requests) "
-        "VALUES (%s, %s, %s, %s, 1) "
-        "ON CONFLICT (user_id, day) DO UPDATE SET "
+        "INSERT INTO inference_usage (user_id, day, model, kind, prompt_tokens, eval_tokens, requests, "
+        "estimated_tokens) VALUES (%s, %s, %s, %s, %s, %s, 1, %s) "
+        "ON CONFLICT (user_id, day, model, kind) DO UPDATE SET "
         "prompt_tokens = inference_usage.prompt_tokens + EXCLUDED.prompt_tokens, "
         "eval_tokens = inference_usage.eval_tokens + EXCLUDED.eval_tokens, "
-        "requests = inference_usage.requests + 1",
-        (user_id, await today(conn), prompt_tokens, eval_tokens),
+        "requests = inference_usage.requests + 1, "
+        "estimated_tokens = inference_usage.estimated_tokens + EXCLUDED.estimated_tokens",
+        (user_id, await today(conn), model, kind, prompt_tokens, eval_tokens, estimated_tokens),
     )
 
 
 async def admin_usage(conn, days: int = 7) -> list[dict]:
+    """One dict per user per day, summed over model and kind."""
     since = await today(conn) - timedelta(days=days - 1)
     cur = await conn.execute(
-        "SELECT u.email, s.user_id, s.day, s.prompt_tokens, s.eval_tokens, s.requests "
+        "SELECT u.email, s.user_id, s.day, SUM(s.prompt_tokens)::bigint, SUM(s.eval_tokens)::bigint, "
+        "SUM(s.requests)::bigint "
         "FROM inference_usage s JOIN users u ON u.id = s.user_id "
-        "WHERE s.day >= %s ORDER BY s.day DESC, u.email",
+        "WHERE s.day >= %s GROUP BY u.email, s.user_id, s.day ORDER BY s.day DESC, u.email",
         (since,),
     )
     keys = ["email", "user_id", "day", "prompt_tokens", "eval_tokens", "requests"]

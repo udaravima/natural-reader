@@ -62,7 +62,7 @@ async def test_admin_inference_usage_returns_rows(db_conn):
     from server.services import inference_budget as ib
 
     admin, p = await _admin(db_conn)
-    await ib.record_usage(db_conn, admin["id"], 10, 5)
+    await ib.record_usage(db_conn, admin["id"], 10, 5, model="ollama:test", kind="chat", estimated=False)
     async with _client(_app(db_conn, p)) as client:
         rows = (await client.get("/v1/admin/inference/usage?days=1")).json()
     assert len(rows) == 1

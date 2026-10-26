@@ -196,7 +196,7 @@ async def test_pins_only_message_is_allowed(db_conn, app):
 async def test_budget_already_spent_is_429_with_reset_time(db_conn, app):
     alice = await member(db_conn, "alice")
     await db_conn.execute("UPDATE users SET inference_daily_token_budget = 10 WHERE id = %s", (alice.user_id,))
-    await inference_budget.record_usage(db_conn, alice.user_id, 10, 0)
+    await inference_budget.record_usage(db_conn, alice.user_id, 10, 0, model="ollama:test", kind="chat", estimated=False)
     r = await _post(app, alice)
     detail = r.json()["detail"]
     assert r.status_code == 429 and detail["error"] == "budget_exhausted"
