@@ -24,6 +24,7 @@ spot a feature that shipped without coverage.
   - [Server-side routing through model_router](#server-side-routing-through-model_router)
   - [Security hardening (SEC fixes)](#security-hardening-sec-fixes)
   - [Admin console v2, phase 1](#admin-console-v2-phase-1)
+  - [Admin console v2, phase 2a](#admin-console-v2-phase-2a)
   - [Frontend: auth UI](#frontend-auth-ui)
   - [Frontend: chat streaming](#frontend-chat-streaming)
   - [Frontend: budget UX](#frontend-budget-ux)
@@ -35,17 +36,40 @@ spot a feature that shipped without coverage.
 
 ## How to run
 
+> **Warning: a bare `pytest` connects to port 5433.** With `TEST_DATABASE_URL`
+> and `TEST_ADMIN_DATABASE_URL` unset, the suite uses the defaults
+> `postgresql://natural_reader:natural_reader@127.0.0.1:5433/...`, which is the
+> port the app's own compose Postgres uses. On a machine that also runs the app,
+> that is the live server: the suite creates `natural_reader_test` on it, applies
+> migrations there, and its migration tests create and drop scratch databases
+> beside your real one. Point both
+> variables at a scratch Postgres first, in the same shell as the run:
+>
+> ```bash
+> # a scratch container on another port (any Postgres with pgvector works)
+> podman run -d --name nr-test-pg -p 127.0.0.1:5434:5432 \
+>   -e POSTGRES_USER=natural_reader -e POSTGRES_PASSWORD=<scratch-password> \
+>   -e POSTGRES_DB=postgres pgvector/pgvector:pg16
+>
+> export TEST_ADMIN_DATABASE_URL=postgresql://natural_reader:<scratch-password>@127.0.0.1:5434/postgres
+> export TEST_DATABASE_URL=postgresql://natural_reader:<scratch-password>@127.0.0.1:5434/natural_reader_test
+> ```
+>
+> `TEST_ADMIN_DATABASE_URL` is the maintenance database the suite connects to in
+> order to create `natural_reader_test`; `TEST_DATABASE_URL` is the test database
+> itself. Never put a real password in a file you commit.
+
 ```bash
 # Backend — REQUIRES Postgres up (conftest migrates natural_reader_test on a
-# real connection; without the DB every test errors, not skips).
-podman-compose up -d postgres          # or: env -u XDG_DATA_HOME .venv/bin/podman-compose ...
-.venv/bin/python -m pytest server/tests/ -q          # 2278 passed, 16 skipped, 2 deselected @ 2026-10-26
+# real connection; without the DB every test errors, not skips). Run it with
+# the two TEST_* variables above exported, or it uses 5433.
+.venv/bin/python -m pytest server/tests/ -q          # 2417 passed, 16 skipped, 2 deselected @ 2026-10-26 (phase 2a, 88484f4)
 
 # Frontend (vitest, jsdom — no services needed)
-npx vitest run                                       # 1115 passed (117 files) @ 2026-10-26
+npx vitest run                                       # 1167 passed (118 files) @ 2026-10-26 (phase 2a, 88484f4)
 
 # Lint
-npm run lint
+npx eslint src                                       # clean (npm run lint is the same)
 
 # Opt-in, slow: build and run the real backend image and the compose Keycloak
 # entrypoint (deselected by default via pytest.ini addopts)
@@ -70,8 +94,9 @@ Backend test conventions that matter when writing new cases:
   arrives pre-consumed (`StreamConsumed`).
 - Budget tests need a real `users` row (FK target) — provision with
   `resolve_or_provision_user`.
-- Reset a poisoned test DB:
-  `psql "postgresql://natural_reader:natural_reader@127.0.0.1:5433/postgres" -c 'DROP DATABASE IF EXISTS natural_reader_test;'`
+- Reset a poisoned test DB, on the scratch server only (the same URL as
+  `TEST_ADMIN_DATABASE_URL`):
+  `psql "$TEST_ADMIN_DATABASE_URL" -c 'DROP DATABASE IF EXISTS natural_reader_test;'`
 
 ## Feature → test ownership
 
@@ -212,7 +237,7 @@ spans several files:
 
 | Case | Asserts |
 |---|---|
-| defaults | unset → all-models allowlist (dev), `llama3.2:3b` summarize, `nomic-embed-text` embed, 300s timeout |
+| defaults | unset → all-models allowlist (dev), `llama3.2:3b` for the legacy `summarize_model` field (the reader no longer defaults to it: its default is the chat model, see `test_chat_reader.py`), `nomic-embed-text` embed, 300s timeout |
 | allowlist_parses_comma_separated_with_whitespace | CSV parsing |
 | empty_allowlist_means_all | unset/blank = allow everything |
 | summarize_model_precedence | `SUMMARIZE_MODEL` > `WEB_SEARCH_SUMMARY_MODEL` > default |
@@ -305,6 +330,31 @@ Backend counts below are collected cases (parametrized ones expanded).
 **Walked in the running app on 2026-10-26** (scratch database, `AUTH_ENABLED=false`, headless Chromium, desktop and 390 px):
 Overview and every check state; `/api/ps`'s `context_length` is a number on the installed Ollama; Check again; the timezone, the unsaved prompt and People's dates in Colombo; Documents with OCR off and a 2-page limit; the Convert dialog's greyed options and its page-range gate, then a real 2-page conversion; the server's 403s by `curl` (6 pages, Accurate with OCR off, forced OCR); the phone picker; keyboard; a canary `SESSION_SECRET` found nowhere in the page or the API payload. The 44 px check failed on the moved sections the first time and was fixed in `1100e71`.
 **Not walked:** a non-admin refused by the `role` rule (needs a second signed-in user: tests only); the Context windows row of a *loaded* local chat model (the `/api/ps` shape was confirmed live, the row is tested with fakes); dark mode.
+
+### Admin console v2, phase 2a
+
+The Models section, the per-turn model resolution, and People's search (plan:
+[superpowers/plans/2026-10-26-admin-console-v2-phase2a.md](superpowers/plans/2026-10-26-admin-console-v2-phase2a.md)).
+Counts are collected cases (parametrized ones expanded) in the whole file, new and old.
+
+| File | Pins |
+|---|---|
+| `test_model_settings.py` (74, new) | the six settings' parsing and the console's refusals (a size outside 2,048-2,097,152, a window outside 1,024-10,000,000, a locality that isn't local/cloud); maps stored sorted, lists unique in order; console beats env and a reset returns to it; the reader chain names the variable that decided it; **`num_ctx_for`'s order: per-model size, deployment size, the person's value, 16,384, always clamped**; a non-sized model ignores the deployment sizes and passes the person's value; **`sizes_context`**: any self-hosted Ollama is sized whatever its host, Ollama cloud names / ollama.com / a provider marked Cloud / `openai`-kind are not; **`is_local`**: localhost, private, loopback and 100.64.0.0/10, single-label and `.local/.lan/.internal/.home.arpa` hosts, one trailing dot ignored, the admin's override; `:latest` doesn't matter; declared windows (console, then `INFERENCE_<NAME>_CONTEXT_WINDOW`, a bad value ignored with one warning); `offered` narrows and a selection whose models are all gone offers nothing |
+| `test_chat_orchestrator.py` (96) | **a local Ollama turn sends 16,384 with no setting; a remote self-hosted one is sized too; the admin's size beats the person's, and unset keeps theirs; a cloud model keeps the personal value;** history is trimmed to a declared window for an `openai`-kind model; an unreadable `models` row falls back to the environment; **the reader is sized to its own model, gets none on a cloud chat model even when the person set a size, is held to the ceiling, gets none when its model ignores `num_ctx`;** an unresolvable reader never fails the turn; the console's reader beats the environment's; the reader keeps its other knobs |
+| `test_chat_reader.py` (78) | **`fit_input_chars` keeps every batch inside the window (a property over many sizes), is `READER_INPUT_CHARS` with no window and never exceeds it;** the configured size is sent on every batch, never a per-batch one; a reader of `chat` uses the turn's model; the default reader is the chat model; a batch holds at most 16 passages |
+| `test_chat_turns.py` (27) | a model the console left out is refused (422 `model_not_allowed`), one it selected is allowed, no selection allows what the environment allows, an unreadable `models` row doesn't stop a turn |
+| `test_inference_router.py` (15) | `GET /v1/inference/models` follows the console's selection; a self-hosted Ollama model reports `context_size {fixed, auto}`, a cloud or `openai`-kind one has none; a self-hosted Ollama on a public host gets the entry; an unreadable row falls back to the environment. Note: the file defines the `client` fixture twice and the later one wins, so every test in it runs as the seed admin, not `u1` (a deferred review finding) |
+| `test_admin_router.py` (37) | `GET /v1/admin/models` (shape; lists models the console's own selection left out; needs admin); **`GET /v1/admin/users` search**: name, email, username and full name; `%` and `_` are literal; status and capability filters; paging with `X-Total-Count`; **no parameters returns the whole table as before**; bad parameters are 422; admin only |
+| `test_console_overview.py` (41) | the default reader is **OK**, never a warning; a reader of `chat` from the environment or the console is OK; **the quota hint asks about cost (`is_local`), counts only models offered, and never costs the reader line when a provider hangs or `INFERENCE_*` is malformed;** a named reader is checked and says where it was set; a model that isn't listed says how to fix it; **the context window of a sized model is the size requests send, whatever its host; a loaded model reports what is loaded;** other providers report their number, a declared one, or Unknown; the console's selection applies; an unreadable row uses the environment |
+| `test_app_wiring.py`, `test_admin_settings.py`, `test_deployment_info.py` | CORS exposes `X-Total-Count`; the `models` section round-trips through `PUT`/`GET /v1/admin/settings/models`; Deployment's read-only list has no "Reading model" row |
+| `ModelsSection.test.jsx` (24, new) | the six rows from a settings payload and a catalog; Save off for an invalid size (with the reason, and clearing once fixed) and for an invalid deployment size; a per-model size adds or removes only its key; a declared window below 1,024 is refused; **a provider set to Cloud drops its models from the per-model sizes**, a hidden invalid size no longer blocks Save, a valid one is kept; an Ollama cloud model or an ollama.com provider is never sized; **Auto** names what the host rule detected; none ticked says every allowed model is offered, and a stored id the catalog no longer lists survives a toggle; a catalog that fails leaves the settings rows; the current reader stays choosable; `role="alert"` on a refusal; help and source lines tied to each control; the toast "applies from the next message" |
+| `AdminConsole.test.jsx` | a Models tab between Projects and Documents; Overview's **Open models** opens it; the unsaved-changes prompt covers Models; **People search**: first page of 50 and the total, one request 300 ms after typing stops with `q`, status and capability apply at once and combine, **Show more** appends and disappears when all are loaded, "No one matches.", **a late answer to an older search never overwrites the newest**, a reload after an edit keeps the search and the pages loaded |
+| `SettingsDialog.test.jsx`, `inferenceLimits.test.js` | a fixed size disables **Context window**, says "Set by your admin: N tokens." and keeps the person's stored value; a thousands separator; **Auto** names the size it resolves to; a model with no `context_size` is as before; the snake_case payload is read into camelCase; the Auto label is the only option changed |
+| `phoneTargets.test.jsx` | 44 px classes on Models' controls and on People's search, filters and **Show more** (class assertions: jsdom has no layout) |
+
+**Walked in the running app:** not yet. Task 11 of the plan (the in-app walk) is
+pending; everything above is jsdom or backend tests with fakes. See HANDOVER's
+2026-10-26 phase 2a entry for what is unverified.
 
 ### Frontend: auth UI
 

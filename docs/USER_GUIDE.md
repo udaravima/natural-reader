@@ -194,13 +194,31 @@ jump to the first and last.
 | **Overview** | Whether the deployment works right now ([below](#overview-does-it-work-right-now)) |
 | **People** | Every account, enrollment, roles, budgets, project limits |
 | **Projects** | Every project, ownerless ones, taking one over |
+| **Models** | The reader, context sizes, windows, which providers are local, which chat models are offered ([below](#models-the-reader-context-sizes-and-which-models-people-get)) |
 | **Documents** | Limits on Docling conversion ([below](#documents-what-a-conversion-may-use)) |
 | **Chat** | The assistant's profile and the web search mode |
 | **Defaults for users** | What read-aloud, voice, speed and thinking show for someone who hasn't chosen them |
 | **Usage** | Token use per user and per day |
 | **Deployment** | The deployment timezone, and the server's own values read-only |
 
-**People** lists every account with buttons per user:
+**People** lists every account, 50 at a time. Over the list:
+
+- **Search people** (the box that says "Name, email or username") finds
+  accounts as you type, after a short pause (300 ms). It matches part of an
+  email, username, display name, first or last name, or the two together
+  ("Ada Lovelace"), in any letter case. The server does the searching, so it
+  covers every account, not only the ones already on screen.
+- **Status** (All, Active, Pending, Disabled) and **Capability** (Any, or one
+  capability such as `docling`) narrow the list. They combine with the search:
+  a person has to match all of them.
+- A line under them reads "Showing 50 of 212": how many are on screen, and how
+  many match. **Show more** loads the next 50. With nothing matching, the list
+  says "No one matches."
+- Changing someone (a button, a capability tick, a budget) keeps your search
+  and filters, and the rows you had opened with **Show more**, up to 200 rows;
+  past 200 the list reloads as its first 200.
+
+Each row has buttons per user:
 
 | Button | Effect |
 |---|---|
@@ -270,9 +288,9 @@ Notes:
 
 ### Settings that share one look
 
-Every setting in **Chat options**, **Documents** and **Deployment** says where
-its value comes from and can go back to the server's, the same way. **Documents**
-and **Deployment** also share one Save; **Chat options** saves each choice as you
+Every setting in **Chat options**, **Models**, **Documents** and **Deployment**
+says where its value comes from and can go back to the server's, the same way.
+**Models**, **Documents** and **Deployment** also share one Save; **Chat options** saves each choice as you
 pick it (see above), so it has no Save, no draft and no unsaved-changes question.
 The **Assistant profile** and **Defaults for users** keep their own Save buttons.
 
@@ -281,7 +299,7 @@ The **Assistant profile** and **Defaults for users** keep their own Save buttons
   deployer's `.env`), or **The default.**
 - **Use the server setting** appears once you've set one here. It removes
   your choice, so the deployer's value (or the default) applies again.
-- In **Documents** and **Deployment**, a section has **one Save**, for
+- In **Models**, **Documents** and **Deployment**, a section has **one Save**, for
   everything you changed in it. Nothing is written until you press it.
   **Discard changes** puts the section back as saved.
 - Leaving a section with unsaved changes (another section, a phone's picker,
@@ -311,16 +329,109 @@ changes it.
 | Check | What it looks at |
 |---|---|
 | **Model providers** | Which providers answer, and how many models each lists |
-| **Reader** | The model that reads documents for the assistant: is it pulled on its provider (`READER_MODEL`)? A **Warning** means it is only the built-in fallback |
+| **Reader** | The model that reads documents and web pages for the assistant, and where it comes from. The chat model itself is **OK**; a named model is checked: is it pulled on its provider? When the reader is the chat model and some chat model is a cloud one, the line adds that reader calls count against that model's quota, and points to **Models** |
 | **Context windows** | Each chat model's window, where the number comes from, and whether a project-chat turn fits in it |
 | **Embeddings** | Whether the embedding model answers, and returns the width (768) the database holds; and how many documents are waiting to be rebuilt |
 | **Docling** | Whether conversion is on |
 | **Web search** | Whether the search server answers |
 
-A local Ollama model shows **Unknown** for its window until it has been loaded
-once; Ollama chooses the size when it loads the model. After one chat message to
-it, **Check again** reads **Loaded now (Ollama)** with the real number. A
-cloud model shows its maximum.
+**Context windows** gives each model the number the app works with, and says
+where it came from. First match wins:
+
+1. a self-hosted Ollama model that is loaded right now: **Loaded now (Ollama)**,
+   with the size it was loaded at;
+2. a self-hosted Ollama model that isn't loaded: the size requests to it send:
+   its own size, or the deployment's size, set in **Models** or by
+   `INFERENCE_LOCAL_NUM_CTX`; with neither, 16,384 tokens (lower if
+   `INFERENCE_NUM_CTX_MAX` is lower), "unless a person sets their own in
+   Settings";
+3. an Ollama cloud model: its maximum;
+4. any other model: what its provider reports;
+5. else what you declared under **Models -> Declared context windows** (or
+   `INFERENCE_<NAME>_CONTEXT_WINDOW`);
+6. else **Unknown: the provider doesn't report one. Declare it in Models.**
+
+Ollama's own maximum for a local model (131,072, say) is never shown as its
+window: Ollama loads the model at a smaller size, and the number the app trims
+history to must be the one it was loaded with. If every chat model chosen in
+**Models** has gone from the providers' lists, the line is a **Warning**: "None
+of the chat models chosen in Models is listed by a provider: nobody can chat."
+
+### Models: the reader, context sizes, and which models people get
+
+**Admin console -> Models** sets how the server uses the models it can reach.
+A change applies from the next message, on every worker, with no restart. The
+section saves once (**Save**, **Discard changes**), and each setting's source
+line and **Use the server setting** work as [above](#settings-that-share-one-look).
+The models and providers it lists come from the providers themselves: above the
+settings it says **Loading the models...** while it asks, or **Couldn't load the
+models.** if that fails (the settings still show, with empty model lists).
+
+| Setting (the label on screen) | What it does | Server setting (default) |
+|---|---|---|
+| **Reader** | The model that reads documents and web pages for the chat model. **The chat model of each conversation**, or a model from the list (a model the console doesn't list stays selectable if it is already set) | `READER_MODEL`, then `SUMMARIZE_MODEL`, then `WEB_SEARCH_SUMMARY_MODEL` (the chat model) |
+| **Context size for local Ollama models** | One size, in tokens, for every request to a model the app sizes (below). A whole number from 2,048 to 2,097,152 (Save stays off while a box holds anything else); the line under it names the ceiling `INFERENCE_NUM_CTX_MAX` | `INFERENCE_LOCAL_NUM_CTX` (unset: each person's own setting, else 16,384) |
+| **Per-model sizes** | A size for one model, which beats the size above. One box per model the app sizes; empty = the size above | none |
+| **Declared context windows** | The window history is trimmed to for a model whose provider reports none. One box per such model; 1,024 to 10,000,000 | `INFERENCE_<NAME>_CONTEXT_WINDOW` per provider (`<NAME>` as in `INFERENCE_<NAME>_URL`) |
+| **Providers** | **Auto**, **Local** or **Cloud** for each provider; **Auto** names what it guessed from the address ("Auto (cloud)") | none |
+| **Chat models offered** | Tick the models people may chat with. None ticked = every model the server allows | none (`INFERENCE_MODELS` and each provider's own allow-list still apply) |
+
+**Which models get a context size.** Ollama loads a model at 4,096 tokens on a
+machine with under 24 GiB of VRAM unless each request names a size, and cuts the
+start of a long prompt without saying so. So the app names one on every request
+to a **self-hosted Ollama model**, whatever its host name. Not sized: Ollama
+cloud models (a name ending `-cloud` or `:cloud`, or the ollama.com host), a
+provider you marked **Cloud**, and every model on an OpenAI-compatible provider
+(that API has no such option). Those get no size from the app, except a
+person's own Settings value for an Ollama cloud model, which is passed on as
+they chose it.
+
+For a sized model the size is the first of these that is set, then clamped to
+`INFERENCE_NUM_CTX_MAX` (32,768 unless changed):
+
+1. **Per-model sizes** for that model;
+2. **Context size for local Ollama models** (the console's, else
+   `INFERENCE_LOCAL_NUM_CTX`);
+3. the person's own **Settings -> Chat -> Context window**;
+4. 16,384.
+
+A bigger size reserves more memory when the model loads, so on a machine short
+of RAM lower it here rather than leaving 16,384.
+
+**What the person sees.** In **Settings -> Chat**, a self-hosted Ollama model's
+**Context window** row reads "Set by your admin: N tokens." and is locked when
+steps 1 or 2 set a size (their own value stays stored and comes back if you
+clear yours). Otherwise its **Auto** option reads "Auto (16,384 on this
+server)", the size it will really get.
+
+**The reader.** With **The chat model of each conversation** the reader uses the
+model already loaded, at the chat's size, so Ollama doesn't swap models or
+reload one between chat and reader calls; it is the default on a deployment
+that names no reader. The price is for a cloud chat model: reader calls count
+against that model's quota (and the daily budget either way). To keep them off
+it, pick a small local model: it loads at its own size from the list above, not
+the person's. A reader on a model the app doesn't size sends no size. Each
+reader batch is cut to fit its model's window: never above `READER_INPUT_CHARS`,
+and at most 16 passages.
+
+**Providers: local or cloud.** This flag is about cost, not sizing: the
+Overview's quota hint, usage figures to come, and the **Auto** label. **Auto**
+guesses from the provider's address: `localhost`, a private or loopback
+address, `100.64.0.0/10` (Tailscale), a single-word name such as `ollama`, or a
+name ending `.local`, `.lan`, `.internal` or `.home.arpa` is local; anything else
+is cloud. Choose **Local** or **Cloud** if the guess is wrong. The one case
+where the flag changes sizing: **Cloud** on an Ollama provider stops its models
+from being sized.
+
+**Chat models offered.** The picker in Chat and **Settings -> Chat** shows only
+the ticked models, and a request for another is refused ("That model isn't
+available on this server."). The console can only narrow: the list is
+intersected with what the server allows, never widened. If you tick models and
+they later disappear from the providers, people are offered no model until you
+untick or choose others (the Overview warns).
+
+**Not here.** Adding or changing a provider is still a `.env` and restart task,
+and so is the embedding model.
 
 ### Documents: what a conversion may use
 
@@ -373,7 +484,7 @@ the next request.
 
 Under **Server settings (read-only)** the section lists what the server runs
 with and which variable sets each: model providers, allowed models, chat
-timeout, daily token budget, reading model, embedding model and server,
+timeout, daily token budget, embedding model and server,
 document storage, Docling, web search server, and server workers. These can
 only be changed in `.env` on the server, with a restart. **Nothing secret
 shows:** the session secret, sign-in client secret and Keycloak admin client
@@ -530,6 +641,9 @@ deployment has) and shows what each model can do — whether it supports thinkin
 tools, images, and so on. In **Settings → Chat**,
 the per-model controls (context window, keep-alive, thinking level, max reply
 tokens) only show the knobs the selected model's provider actually supports.
+Your admin may have narrowed the list to some models (**Admin console → Models**),
+and may have fixed the context size of the models you host: then **Context
+window** says "Set by your admin: 16,384 tokens." and can't be changed.
 
 **When a reply fails at the provider:** the message says why. "This model is
 busy or rate-limited" (common with free models) means try again shortly or

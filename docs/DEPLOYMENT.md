@@ -415,6 +415,58 @@ restart, same as any other config in this file.
 Full `.env.example` block: [`../.env.example`](../.env.example), just after
 `INFERENCE_TIMEOUT_S`.
 
+### Context sizes, windows and the Models section
+
+Ollama loads a model at **4,096 tokens** on a machine with under 24 GiB of VRAM
+unless the request names a size, and quietly cuts the start of a longer prompt.
+So the server names a size on every request to a **self-hosted Ollama model**
+(any `kind=ollama` provider that is not marked Cloud, whatever its host, except
+`-cloud` / `:cloud` models and the ollama.com host). It is the first of these
+that is set, clamped to `INFERENCE_NUM_CTX_MAX` (32768 tokens unless set):
+
+1. the admin's size for that model (**Admin console → Models → Per-model sizes**);
+2. the deployment's size: **Models → Context size for local Ollama models**, else
+   `INFERENCE_LOCAL_NUM_CTX` (2048-2097152 tokens);
+3. the person's own **Settings → Chat → Context window**;
+4. 16384 tokens.
+
+Chat history is trimmed to that same number, and the reader uses it too (next
+section). A larger size reserves more memory when the model loads, and a model
+already loaded at another size reloads once on the next message, so size it down
+on a machine short of RAM. Nothing is sent for Ollama cloud models and
+`kind=openai` providers (`num_ctx` is an Ollama option); a person's own value
+for an Ollama cloud model is still passed on.
+
+A model whose provider reports no context window (most OpenAI-compatible
+servers) is never trimmed until a window is declared:
+`INFERENCE_<NAME>_CONTEXT_WINDOW` (1024-10000000 tokens, `<NAME>` as in
+`INFERENCE_<NAME>_URL`, so `INFERENCE_OLLAMA_CONTEXT_WINDOW` when
+`INFERENCE_PROVIDERS` is unset) declares one for the whole provider, and
+**Models → Declared context windows** for one model (that wins). A window the
+provider reports always wins over a declared one.
+
+**Admin console → Models** sets the same things without a restart, and wins over
+the environment: the deployment's size and per-model sizes, declared windows,
+the reader, which providers count as local (a cost flag; **Cloud** also stops an
+Ollama provider's models from being sized), and which chat models are offered
+(it can only narrow `INFERENCE_MODELS` and each provider's allow-list).
+`INFERENCE_NUM_CTX_MAX` is not editable there; Models shows it as the ceiling.
+It applies from the next message, on every worker.
+[USER_GUIDE.md](USER_GUIDE.md#models-the-reader-context-sizes-and-which-models-people-get)
+has the screen.
+
+**Upgrading to this release changes three defaults** (no migration):
+- The reader moves to the chat model on a deployment that sets none of
+  `READER_MODEL`, `SUMMARIZE_MODEL` or `WEB_SEARCH_SUMMARY_MODEL`. It used to be
+  `llama3.2:3b`. With a cloud chat model, reader calls count against its quota;
+  choose a local reader under **Models → Reader** to keep them off it.
+- Self-hosted Ollama models get 16384 tokens instead of Ollama's 4096 (on under
+  24 GiB of VRAM), unless a person or the admin sets a size. A larger context
+  reserves more memory when the model loads: size it down under **Models**, or
+  with `INFERENCE_LOCAL_NUM_CTX`, on a machine short of RAM.
+- A person's own context size stops applying to those models once the admin
+  sets one.
+
 ### Streaming through a proxy
 
 > Replies stream as `text/event-stream`. nginx honours the
@@ -446,7 +498,7 @@ Full `.env.example` block: [`../.env.example`](../.env.example), just after
   land before closing the database pool, so a restart during a reply doesn't
   usually leave it stuck `streaming` until the next startup sweep.
 - **Model names without a `provider:` prefix** (the pre-C1 `SUMMARIZE_MODEL`,
-  `llama3.2:3b`, and `READER_MODEL`) resolve to the first configured provider
+  a bare name such as `llama3.2:3b`, and `READER_MODEL`) resolve to the first configured provider
   of kind `ollama`. Web search no longer summarizes pages; the reader does the
   reading (next section).
 
@@ -516,25 +568,31 @@ them are in [`../.env.example`](../.env.example).
 
 | Variable | Default | Range | What it does |
 |---|---|---|---|
-| `READER_MODEL` | none: falls back to `SUMMARIZE_MODEL`, then `WEB_SEARCH_SUMMARY_MODEL`, then `llama3.2:3b` | a model id | The model that reads. `chat` (any letter case) means the model of the turn itself; `SUMMARIZE_MODEL=chat` means the same for the reader. |
-| `READER_INPUT_CHARS` | `12000` characters (about 3,000 tokens) | 500-200000 | Source text in one reader batch. A document page longer than this is read in pieces that overlap by 200 characters; a web page is cut into passages of about 1,000 characters and the best-matching ones are kept up to this size. |
+| `READER_MODEL` | none: falls back to `SUMMARIZE_MODEL`, then `WEB_SEARCH_SUMMARY_MODEL`, then the chat model of the turn | a model id | The model that reads. `chat` (any letter case) means the model of the turn itself, which is also what you get when none of the three is set; `SUMMARIZE_MODEL=chat` means the same for the reader. **Admin console → Models → Reader** wins over all three. |
+| `READER_INPUT_CHARS` | `12000` characters (about 3,000 tokens) | 500-200000 | The most source text in one reader batch: a ceiling, never exceeded. A batch is cut shorter to fit the reader's context window when that is smaller (never below 500), and holds at most 16 passages. A document page longer than this is read in pieces that overlap by 200 characters; a web page is cut into passages of about 1,000 characters and the best-matching ones are kept up to this size. |
 | `READER_OUTPUT_CHARS` | `1200` characters | 100-20000 | The most one batch may return. The reader is told to stay under it and its reply is capped at about that length; a reply cut off mid-way counts as a failed batch. |
 | `READER_MAX_CONCURRENCY` | `2` batches | 1-32 | Batches running at once. |
 | `READER_TIMEOUT_S` | `60` seconds | 1-3600 | Time one batch may take. `WEB_SEARCH_SUMMARY_TIMEOUT_S` is read when this is unset; with both unset, the reader uses 60 seconds. A batch that fails is listed under `failed` in the result (documents; `not_read` is only for pages left out by the page cap) or falls back to a short excerpt (web). |
 
-Every reader call sets its context size from what it sends, clamped by
-`INFERENCE_NUM_CTX_MAX`, rather than leaving the provider's default, which on
-Ollama can be smaller than the batch and would cut it without a word.
+A reader on a self-hosted Ollama model is loaded at the size described under
+[Context sizes](#context-sizes-windows-and-the-models-section), the same for
+every call of the turn: the chat's size when the reader is the chat model, so
+Ollama doesn't reload it between chat and reader calls, and the model's own size
+(never the person's) when it is a different model. A reader on a model that isn't
+sized (Ollama cloud, `kind=openai`) sends no size. Batches are cut to fit.
 
-**CPU-only Ollama: set `READER_MODEL=chat`.** With the default the reader runs
-on `llama3.2:3b`, a second model that Ollama loads into RAM next to the chat
-model, and on a CPU swapping them costs seconds to minutes on every project
-question. `READER_MODEL=chat` reads with the model already loaded. The price is
-that the chat model does the reading too, so a slow chat model makes `extract`
-slow; on a CPU the batches run one after another whatever
-`READER_MAX_CONCURRENCY` says. Keep a separate small model when the chat model
-is a large or paid one: every batch is a full model call, and a small model is
-cheaper and faster for it.
+**The reader is the chat model unless you say otherwise.** With none of
+`READER_MODEL`, `SUMMARIZE_MODEL` or `WEB_SEARCH_SUMMARY_MODEL` set (and no
+choice in **Models → Reader**) the reader uses the model of the conversation:
+no second model is loaded into RAM, which on a CPU-only Ollama would otherwise
+cost seconds to minutes of swapping on every project question. The price: the
+chat model does the reading too, so a slow chat model makes `extract` slow (on a
+CPU the batches run one after another whatever `READER_MAX_CONCURRENCY` says),
+and with a **cloud** chat model every reader batch is a call counted against its
+quota. Name a small model in `READER_MODEL`, or under **Models → Reader**, when
+the chat model is a large or paid one: every batch is a full model call, and a
+small model is cheaper and faster for it. (Before this release the default was
+`llama3.2:3b`.)
 
 **Reader calls count toward the daily budget and show in usage.** Each batch
 is recorded against the person who asked, in the same daily totals as their

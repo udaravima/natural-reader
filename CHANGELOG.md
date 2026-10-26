@@ -49,6 +49,42 @@ All notable changes to this project will be documented in this file.
   role: create it once (**Realm roles → Create role**, name `docling`). Until
   then, ticking it under **People** says so and changes nothing, instead of a
   bare "HTTP 502".
+- **A Models section in the admin console** (**Admin console -> Models**).
+  Six settings, each with the usual source line, **Use the server setting** and
+  one Save, applying from the next message:
+  - **Reader**: the model that reads documents and web pages for the chat
+    model. **The chat model of each conversation** (the default) or any model
+    the providers list.
+  - **Context size for local Ollama models**: one size for every request to a
+    self-hosted Ollama model, so it loads once. **Per-model sizes** override it
+    for one model. Both are clamped to `INFERENCE_NUM_CTX_MAX`.
+  - **Declared context windows**: what history is trimmed to for a model whose
+    provider reports no window (most OpenAI-compatible servers).
+    `INFERENCE_<NAME>_CONTEXT_WINDOW` sets one for a whole provider.
+  - **Providers**: **Auto**, **Local** or **Cloud** for each provider. This is
+    the cost flag (the Overview's quota hint, and later usage); **Cloud** also
+    stops a provider's Ollama models from being sized.
+  - **Chat models offered**: tick the models people may choose. It can only
+    narrow what `INFERENCE_MODELS` and the providers' allow-lists permit; none
+    ticked means every model the server allows. If every ticked model has
+    gone from the providers, nobody is offered a model and the Overview's
+    **Context windows** line says so.
+- **People can be searched and filtered.** A box over the list finds a person
+  by name, email or username (the server does the searching, not the
+  browser), and **Status** and **Capability** narrow it further. The list loads
+  50 at a time with **Show more**, under a "Showing 50 of 212" line.
+  A deployment whose frontend is on another origin needs nothing extra: the
+  server now exposes `X-Total-Count` to cross-origin requests.
+- **Settings tells a person when the admin fixed the context size.** For a
+  self-hosted Ollama model, **Settings -> Chat -> Context window** reads
+  "Set by your admin: 16,384 tokens." and is locked when the admin or
+  `INFERENCE_LOCAL_NUM_CTX` set a size, and otherwise its **Auto** option
+  names the size the server will use ("Auto (16,384 on this server)").
+- **Overview's Reader and Context windows lines follow Models.** The reader
+  line says where the reader comes from (set in Models, a server setting, or
+  the chat model) and, when it is the chat model and some chat model is a cloud
+  one, that reader calls count against that model's quota. A local model's
+  window is the size requests to it send, not Ollama's maximum.
 
 ### Upgrade notes
 
@@ -70,11 +106,48 @@ All notable changes to this project will be documented in this file.
 - Apart from that, nothing changes until an admin changes it: conversion stays
   open to everyone with the reader capability, with every preset, OCR and
   picture descriptions on, and no page limit.
-- Not yet in the console: choosing the reading model or context sizes,
-  changing the embedding model, and usage by model. Those are later phases.
+- Not yet in the console: changing the embedding model, and usage by model.
+  Those are later phases.
+- **The reader moves to the chat model** on a deployment that sets none of
+  `READER_MODEL`, `SUMMARIZE_MODEL` or `WEB_SEARCH_SUMMARY_MODEL`. It used to
+  be `llama3.2:3b`. With a cloud chat model, reader calls count against its
+  quota; choose a local reader under **Admin console -> Models -> Reader** to
+  keep them off it.
+- **Local Ollama models now get 16,384 tokens** instead of Ollama's own 4,096
+  (on under 24 GiB of VRAM), unless a person or the admin sets a size. A larger
+  context reserves more memory when the model loads. Size it down under
+  **Models**, or with `INFERENCE_LOCAL_NUM_CTX`, on a machine short of RAM. A
+  model that was already loaded at another size reloads once, on its first
+  message after the upgrade.
+- **A person's own context size stops applying to local Ollama models** once
+  the admin sets one (in **Models**, or `INFERENCE_LOCAL_NUM_CTX`). Their value
+  stays stored and applies again if the admin unsets it. It still applies to
+  models the app does not size (Ollama cloud models).
+- **The Deployment section no longer lists "Reading model".** The reader is set
+  in **Models**, and the Overview's Reader line shows what it resolves to.
 
 ### Fixed
 
+- **A local Ollama model no longer silently loses the start of a long chat.**
+  Ollama loads a model at 4,096 tokens on a machine with under 24 GiB of VRAM
+  unless the request names a size, and the app trimmed history against the
+  model's maximum (for example 131,072), so it never trimmed and Ollama cut the
+  prompt without a word. Every request to a self-hosted Ollama model now names
+  a size (16,384 unless set) and history is trimmed to it.
+- **The reader no longer makes Ollama reload the chat model.** Each reader
+  batch asked for a context size of its own, and Ollama reloads a loaded model
+  whenever a request's size differs, so chat and reader calls alternating on
+  one local model reloaded it each time. A turn now uses one size for the chat
+  and for a reader that is the same model, and a different self-hosted reader
+  keeps its own size. A batch is cut to fit that size.
+- **History is trimmed for a model that reports no window.** A model whose
+  provider gave no context window was never trimmed. An admin can now declare
+  one (**Models -> Declared context windows**, or
+  `INFERENCE_<NAME>_CONTEXT_WINDOW`), and the Overview says "Unknown" until
+  one is declared.
+- **A reader on a cloud model sends no context size.** A person's own size for
+  a cloud chat model is no longer passed on to the reader, which would have
+  shrunk its batches for nothing.
 - **A file opened from a folder can be indexed.** Index on a Markdown or
   text file opened with **Open folder** used to refuse ("open the file
   itself with Choose File"). The reader now keeps the file's bytes when it
