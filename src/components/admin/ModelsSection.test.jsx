@@ -191,6 +191,31 @@ describe('ModelsSection', () => {
     expect(body()).toEqual({ changes: { provider_locality: { ollama: 'cloud' } } });
   });
 
+  it('a hidden invalid size no longer blocks Save: flipping its provider to Cloud takes the box and its hold off', async () => {
+    mount();
+    await ready();
+    fireEvent.change(within(sizes()).getByLabelText('ollama:gemma4:e4b'), { target: { value: '100' } });
+    expect(save()).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('ollama'), { target: { value: 'cloud' } });
+    expect(screen.queryByText('Must be a whole number of tokens from 2,048 to 2,097,152.')).toBeNull();
+    expect(save()).toBeEnabled();
+    fireEvent.change(screen.getByLabelText('ollama'), { target: { value: 'local' } });   // back: the box and its error return
+    expect(screen.getByText('Must be a whole number of tokens from 2,048 to 2,097,152.')).toBeTruthy();
+    expect(save()).toBeDisabled();
+  });
+
+  it('keeps a valid drafted size when its provider flips to Cloud (the server ignores it while unsized)', async () => {
+    mount();
+    await ready();
+    fireEvent.change(within(sizes()).getByLabelText('ollama:gemma4:e4b'), { target: { value: '12288' } });
+    fireEvent.change(screen.getByLabelText('ollama'), { target: { value: 'cloud' } });
+    fireEvent.click(save());
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(body()).toEqual({ changes: {
+      context_sizes: { 'ollama:gemma4:e4b': 12288 }, provider_locality: { ollama: 'cloud' },
+    } });
+  });
+
   it('never sizes an Ollama cloud model, or any model of a provider on ollama.com', async () => {
     mount({ catalog: {
       ...CATALOG,

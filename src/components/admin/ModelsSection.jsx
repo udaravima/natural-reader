@@ -97,10 +97,11 @@ export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChang
     const text = typedFor(name, id);
     return text !== undefined && text !== '' && !validNumber(name, text);
   };
-  const anyInvalid = Object.keys(typed).some((k) => {
-    const [name, id] = k.split('\n');
-    return invalid(name, id);
-  });
+  // Only a box that is on screen can hold Save off: its error line is the reason. A model that leaves the sizes
+  // list (its provider was set to Cloud) keeps what was typed, and counts again if it comes back.
+  const anyInvalid = invalid('context_size')
+    || sizedModels.some((m) => invalid('context_sizes', m.id))
+    || unreportedModels.some((m) => invalid('context_windows', m.id));
   const canSave = !anyInvalid;
 
   // A map or list setting is drafted whole. One that ends up the same as the setting without the console's
