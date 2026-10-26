@@ -407,14 +407,17 @@ server's `INFERENCE_LOCAL_NUM_CTX` nor a per-model size sets one for that model)
 server)", the size it will really get.
 
 **The reader.** With **The chat model of each conversation** the reader uses the
-model already loaded, at the chat's size (which is the person's own value when
-no admin size is set), so Ollama doesn't swap models or reload one between
+model already loaded, at the chat's size (on a sized model, the size from the
+list above: its per-model size, else the deployment's, else the person's own
+value if they chose one rather than **Auto**, else 16,384, clamped), so
+Ollama doesn't swap models or reload one between
 chat and reader calls; it is the default on a deployment
 that names no reader. The price is for a cloud chat model: reader calls count
 against that model's quota (and the daily budget either way). To keep them off
-it, pick a small local model: it loads at its own size from the list above, never
-the person's. A reader on a model the app doesn't size (Ollama cloud, an
-OpenAI-compatible provider) sends no size. Each
+it, pick a small local model: it loads at a size from the list above without
+step 3 (its per-model size, else the deployment's, else 16,384, clamped), never
+the person's. A reader on a model the app doesn't size (Ollama cloud, a provider
+you marked **Cloud**, an OpenAI-compatible provider) sends no size. Each
 reader batch is cut to fit its model's window: never above `READER_INPUT_CHARS`,
 and at most 16 passages.
 

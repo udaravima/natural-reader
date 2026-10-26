@@ -124,7 +124,8 @@ All notable changes to this project will be documented in this file.
 - **A person's own context size stops applying to local Ollama models** once
   the admin sets one (in **Models**, or `INFERENCE_LOCAL_NUM_CTX`). Their value
   stays stored and applies again if the admin unsets it. It still applies to
-  models the app does not size (Ollama cloud models).
+  models the app does not size (Ollama cloud models, and providers the admin
+  marked Cloud).
 - **The Deployment section no longer lists "Reading model".** The reader is set
   in **Models**, and the Overview's Reader line shows what it resolves to.
 

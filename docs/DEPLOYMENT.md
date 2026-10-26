@@ -433,9 +433,10 @@ that is set, clamped to `INFERENCE_NUM_CTX_MAX` (32768 tokens unless set):
 Chat history is trimmed to that same number, and the reader uses it too (next
 section). A larger size reserves more memory when the model loads, and a model
 already loaded at another size reloads once on the next message, so size it down
-on a machine short of RAM. Nothing is sent for Ollama cloud models and
-`kind=openai` providers (`num_ctx` is an Ollama option); a person's own value
-for an Ollama cloud model is still passed on.
+on a machine short of RAM. Nothing is sent for Ollama cloud models, providers
+the admin marked Cloud, and `kind=openai` providers (`num_ctx` is an Ollama
+option); a person's own value for an Ollama cloud model or a Cloud-marked
+provider is still passed on.
 
 A model whose provider reports no context window (most OpenAI-compatible
 servers) is never trimmed until a window is declared:
@@ -576,11 +577,14 @@ them are in [`../.env.example`](../.env.example).
 
 A reader on a self-hosted Ollama model is loaded at the size described under
 [Context sizes](#context-sizes-windows-and-the-models-section), the same for
-every call of the turn: the chat's size (the person's own value when no admin
-size is set) when the reader is the chat model, so
-Ollama doesn't reload it between chat and reader calls, and the model's own size
-(never the person's) when it is a different model. A reader on a model that isn't
-sized (Ollama cloud, `kind=openai`) sends no size. Batches are cut to fit.
+every call of the turn. When the reader is the chat model it uses the chat's
+size (steps 1-4 there: the per-model size, else the deployment's, else the
+person's own value if they chose one rather than Auto, else 16384, clamped), so
+Ollama doesn't reload it between chat and reader calls. A different
+model gets the same steps without the person's value (its per-model size, else
+the deployment's, else 16384, clamped). A reader on a model that isn't sized
+(Ollama cloud, a provider the admin marked Cloud, `kind=openai`) sends no size.
+Batches are cut to fit.
 
 **The reader is the chat model unless you say otherwise.** With none of
 `READER_MODEL`, `SUMMARIZE_MODEL` or `WEB_SEARCH_SUMMARY_MODEL` set (and no
