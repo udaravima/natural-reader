@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { UsageSection } from './UsageSection';
 
 vi.mock('../../utils/apiFetch', () => ({ apiFetch: vi.fn() }));
@@ -245,10 +245,50 @@ describe('UsageSection', () => {
     } });
     fireEvent.change(screen.getByLabelText('Usage days'), { target: { value: '30' } });
     await screen.findByText('fast:new');
-    releaseOld();
-    await Promise.resolve();
-    await Promise.resolve();
+    await act(async () => { releaseOld(); await new Promise((r) => setTimeout(r, 0)); });
+    // Without the sequence guard the stale answer lands and the table falls back to Loading…
     expect(screen.queryByText('slow:old')).toBeNull();
     expect(screen.getByText('fast:new')).toBeTruthy();
+  });
+
+  it('drops an out-of-order view answer: a slow By person reply never overwrites the filtered one', async () => {
+    let releaseSlow;
+    const slow = new Promise((r) => { releaseSlow = r; });
+    mount({ handler: (path) => {
+      if (path.endsWith('group=user')) return slow.then(() => json(200, [{ user_id: 'u9', email: 'slow@example.com', ...sums() }]));
+      if (path.includes('group=user&model=')) return json(200, [{ user_id: 'u1', email: 'fast@example.com', ...sums() }]);
+      return null;
+    } });
+    await screen.findByText('ollama:gemma4:e4b');
+    fireEvent.click(toggle('By person'));
+    const select = await screen.findByLabelText('Model');
+    fireEvent.change(select, { target: { value: [...select.options].find((o) => o.textContent === 'gone:old').value } });
+    await screen.findByText('fast@example.com');
+    await act(async () => { releaseSlow(); await new Promise((r) => setTimeout(r, 0)); });
+    expect(screen.queryByText('slow@example.com')).toBeNull();
+    expect(screen.getByText('fast@example.com')).toBeTruthy();
+  });
+
+  it('drops an expansion answered after the range changed: reopening fetches the new range', async () => {
+    let releaseOld;
+    const old = new Promise((r) => { releaseOld = r; });
+    mount({ handler: (path) => {
+      if (path.includes('days=7&group=model&user_id=u1')) return old.then(() => json(200, [{ model: 'stale:7d', tag: 'local', ...sums() }]));
+      if (path.includes('days=30&group=model&user_id=u1')) return json(200, [{ model: 'fresh:30d', tag: 'local', ...sums() }]);
+      return null;
+    } });
+    await screen.findByText('ollama:gemma4:e4b');
+    fireEvent.click(toggle('By person'));
+    await screen.findByText('ada@example.com');
+    fireEvent.click(toggle('Models for ada@example.com'));          // 7-day answer now pending
+    fireEvent.change(screen.getByLabelText('Usage days'), { target: { value: '30' } });
+    await screen.findByText('ada@example.com');
+    await act(async () => { releaseOld(); await new Promise((r) => setTimeout(r, 0)); });
+    // Without the epoch guard the stale rows are cached under the person, and reopening
+    // shows them instead of fetching the 30-day rows.
+    fireEvent.click(toggle('Models for ada@example.com'));
+    await screen.findByText('fresh:30d');
+    expect(screen.queryByText('stale:7d')).toBeNull();
+    expect(paths()).toContain('/v1/admin/inference/usage?days=30&group=model&user_id=u1');
   });
 });
