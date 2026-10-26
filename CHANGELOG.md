@@ -33,11 +33,17 @@ All notable changes to this project will be documented in this file.
   - **Where** follows the provider's mark **now** (**Models -> Providers**:
     Auto, Local or Cloud), not the mark when the tokens were spent. Changing a
     mark re-labels history. A model whose provider was removed from the
-    configuration shows **Unknown**.
+    configuration shows **Unknown**. So does a reader model the router can't
+    place: it is recorded under its bare name (the **Model** cell shows that
+    name) and it is the **Where** cell that reads **Unknown**.
   - **Estimated** is the share of a row's tokens counted from text length
     (characters / 4) because the provider sent no counts. Ollama always sends
-    counts, so with Ollama it normally reads a dash. A reader model the router
-    can't place is recorded under its bare name and shows **Unknown**.
+    counts, so with Ollama it normally reads a dash.
+  - **Requests** counts model calls: each chat step and each reader batch is one
+    request, so a reply that uses tools makes several chat requests.
+  - The old Usage table's Prompt and Eval columns and its person-by-day rows
+    are no longer in the screen. `GET /v1/admin/inference/usage` with no `group`
+    still returns them, and `group=day&user_id=<id>` gives one person's days.
   - `GET /v1/admin/inference/usage` takes `group` (`user_day`, `model`, `user`
     or `day`), `user_id` and `model` (empty means the **Unknown** rows). Without
     `group` it returns the old one-row-per-person-per-day list, so scripts keep
@@ -124,9 +130,13 @@ All notable changes to this project will be documented in this file.
 - **Migration 023 changes `inference_usage`** (applied on start): the key becomes
   `(user_id, day, model, kind)` and `model`, `kind` and `estimated_tokens` are
   added. Rows already there keep their tokens as model `''`, kind `''` (shown as
-  **Unknown**). Rolling back needs the manual merge described in the file's
-  header, because the old one-row-per-day key can't be restored while per-model
-  rows exist. Back up the database first.
+  **Unknown**). Rolling back needs the manual Down SQL in the file's header
+  (`server/sql/023_usage_by_model.sql`), because the old one-row-per-day key
+  can't be restored while per-model rows exist. **Run it before starting the
+  previous image against a migrated database.** Without it, every usage write
+  of the old image fails (logged, swallowed so a chat turn still works), so
+  budgets stop counting new usage, and the only sign is a log warning
+  ("Usage accounting failed"). Back up the database first.
 - **An existing Keycloak realm needs the `docling` realm role created by hand**
   (Realm roles, Create role, name `docling`). The realm export only seeds a
   new database, so a running realm doesn't get it. Until it exists, ticking

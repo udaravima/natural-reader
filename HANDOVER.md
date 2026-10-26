@@ -18,7 +18,13 @@
 - `99a0bc0` feat(usage): chat and reader writes name their model and kind
 - `78ba314` feat(usage): record usage per model and kind (migration 023)
 
-**Gates on the final code tree (`9e7fd7f`, 2026-10-26):** backend `2447 passed, 16 skipped, 2 deselected` (was 2418 at the end of phase 2a), run with `TEST_DATABASE_URL` and `TEST_ADMIN_DATABASE_URL` pointing at the scratch Postgres on 5434; frontend `1190 passed` in 119 files (was 1170 in 118); `npx eslint .` clean. Every task was reviewed on its own diff and ended review-clean. **No whole-branch final review is recorded yet.**
+**Gates on the final code tree (`9e7fd7f`, 2026-10-26):** backend `2447 passed, 16 skipped, 2 deselected` (was 2418 at the end of phase 2a), run with `TEST_DATABASE_URL` and `TEST_ADMIN_DATABASE_URL` pointing at the scratch Postgres on 5434; frontend `1190 passed` in 119 files (was 1170 in 118); `npx eslint .` clean. Every task was reviewed on its own diff and ended review-clean. **Whole-branch final review (`8e13803..89ed8a5`): done, verdict "with fixes".** Its findings were docs and a rollback script, no behaviour change; they were applied in one docs-only fix wave (below). The gates above are unchanged by it (the wave touches docs and a comment header in the migration; backend re-run after it, same counts).
+
+**Final fix wave (commit `docs: final review fixes — usage docs, rollback Down for 023`, on top of `89ed8a5`):**
+- `docs/DEPLOYMENT.md`: the reader-usage paragraph no longer says usage can't name the model; batches are booked to the reader model's own row (kind `reader`), and the `reader usage` log line still names it.
+- `docs/ARCHITECTURE.md`: `is_local` feeds the Usage **Where** column (computed at read time by the admin usage route), not "usage later".
+- `CHANGELOG.md` and `docs/USER_GUIDE.md`: an unplaceable reader model is a **Where** = Unknown case (the Model cell shows the bare name); By person shows the same token figures without Model and Where; **Requests** = model calls (each chat step, each reader batch; a tool-using reply makes several); the old Prompt/Eval columns and person-by-day rows are gone from the UI but `GET /v1/admin/inference/usage` with no `group` still returns them (`group=day&user_id=<id>` gives one person's days).
+- **Rollback:** `server/sql/023_usage_by_model.sql` now carries runnable Down SQL in its header (one transaction: aggregate per `(user_id, day)`, restore the old key, drop the columns, `DELETE FROM schema_migrations WHERE version = 23`). Proved on a throwaway database on 5434 (merge sums right, old PK back, no model/kind/estimated_tokens, up re-applies); script and output in `.superpowers/sdd/2026-10-26-admin-console-v2-phase3/final-fix-report.md`. CHANGELOG Upgrade notes say plainly that the previous image against a migrated database without the Down makes every usage write fail (logged, fail-open), so budgets stop counting new usage, and the only sign is a log warning. Editing the header is safe: `server/db.py` tracks versions in `schema_migrations`, not checksums.
 
 ### What a person can do now (and where)
 
@@ -28,11 +34,11 @@
 - **Narrow By person and By day to one model** (the **Model** select: **All models**, a model, or **Unknown**). An opened person's rows follow it.
 - **Change the range** (the **Usage days** select: last 1, 7, 14, 30 or 90 days). It applies to all three views and resets the **Model** select to **All models**.
 - **Read the same figures by script:** `GET /v1/admin/inference/usage?days=&group=user_day|model|user|day&user_id=&model=`. No `group` returns the old per-person-per-day list (U5). `model=` empty means the Unknown rows. A bad `group` or `user_id` is a 422. `tag` appears on `group=model` rows only.
-- Reading it, an admin should know: **reader tokens are booked to the reader model's own row** (the chat model's row can show **Reader** 0); **usage from before the upgrade shows as model Unknown and can't be split** (**Chat** and **Reader** read 0 while **Total** doesn't, so Chat + Reader can be less than Total); **Where follows the provider's current Local/Cloud mark**, so changing the mark re-tags history; **Estimated** is the share of tokens counted from text length because the provider sent no counts (Ollama always sends counts, so with Ollama it is normally a dash); a reader model the router can't place is recorded under its bare name and shows Unknown.
+- Reading it, an admin should know: **reader tokens are booked to the reader model's own row** (the chat model's row can show **Reader** 0); **usage from before the upgrade shows as model Unknown and can't be split** (**Chat** and **Reader** read 0 while **Total** doesn't, so Chat + Reader can be less than Total); **Where follows the provider's current Local/Cloud mark**, so changing the mark re-tags history; **Estimated** is the share of tokens counted from text length because the provider sent no counts (Ollama always sends counts, so with Ollama it is normally a dash); a reader model the router can't place is recorded under its bare name (the **Model** cell) and its **Where** cell shows Unknown.
 
 **Not possible yet:** per-person *budgets* per model, usage charts, export, or an alert when a model's spend jumps. The budget is still one number per person per day, summed over every model and kind.
 
-**Upgrade note:** migration `023_usage_by_model.sql` runs on start and rewrites `inference_usage`'s primary key to `(user_id, day, model, kind)`. Old rows keep their tokens as model `''`, kind `''` and still count toward each person's budget that day (tested: migrating mid-day changes nobody's remaining budget). **There is no automatic Down**: the file header says to merge each person-day's rows first. Back up the database before deploying, as for 2a. The live site does not run this branch.
+**Upgrade note:** migration `023_usage_by_model.sql` runs on start and rewrites `inference_usage`'s primary key to `(user_id, day, model, kind)`. Old rows keep their tokens as model `''`, kind `''` and still count toward each person's budget that day (tested: migrating mid-day changes nobody's remaining budget). **There is no automatic Down**: the file header holds a manual, tested Down SQL (run it before starting the previous image on a migrated database, or its usage writes fail and budgets stop counting). Back up the database before deploying, as for 2a. The live site does not run this branch.
 
 ### Rulings (full text in the ledger and the plan; "cost" = what changing it later touches)
 
@@ -65,9 +71,9 @@ Decisions in the plan (U):
 
 ### Open items
 
-1. **Final whole-branch review, then re-walk W1** (above), then merge `feat/admin-console-v2-phase3` into `development`: merge and push both need the owner's go-ahead. `development` itself is still unpushed with phases 1 and 2a on it.
-2. **Docs outside the brief that still say the old thing:** `docs/DEPLOYMENT.md` (the "Reader calls count toward the daily budget and show in usage" paragraph, around line 612) says "The usage figures don't say which model a batch ran on". Usage now does; the server log's `reader usage` line still exists. Fix with the release docs. The older `docs/superpowers/handoff/2026-10-18-project-chat/HANDOFF.md` and the design spec's problem statement keep "no model column" as history, on purpose.
-3. **Deploy:** needs a database backup first (migration 023, no automatic Down). As of the phase 2a entry, live ran a build from before that phase's final fixes; check what it runs now.
+1. **Owed, runs after the final fix wave: W1 re-walk with two people plus a production build check** (both under "Not verified"; the whole-branch review is done), then merge `feat/admin-console-v2-phase3` into `development`: merge and push both need the owner's go-ahead. `development` itself is still unpushed with phases 1 and 2a on it.
+2. **Docs that keep the old wording on purpose:** the older `docs/superpowers/handoff/2026-10-18-project-chat/HANDOFF.md` and the design spec's problem statement keep "no model column" as history, on purpose.
+3. **Deploy:** needs a database backup first (migration 023; the Down SQL in its header is the rollback). As of the phase 2a entry, live ran a build from before that phase's final fixes; check what it runs now.
 4. **Phase 2b** (embedding engine and model) is next in the design; the header scroll at 375 px (W3) is still open.
 
 ---

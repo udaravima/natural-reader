@@ -7,10 +7,28 @@
 -- that was counted by the chars/4 estimate rather than reported by the provider.
 -- The '' defaults exist only to backfill old rows; they are dropped afterwards so a
 -- writer that forgets model or kind fails loudly instead of writing ''.
--- Down: DROP INDEX inference_usage_day_idx; then merge the rows of each (user_id, day)
---   into one, ALTER TABLE inference_usage DROP CONSTRAINT inference_usage_pkey,
---   DROP COLUMN model, kind, estimated_tokens (and the kind check), then
---   ADD PRIMARY KEY (user_id, day).
+-- Down (manual; the runner never runs it). Run it BEFORE starting the previous
+-- image against a migrated database: that image writes (user_id, day) rows with
+-- ON CONFLICT (user_id, day), which no longer matches the key, so every usage
+-- write would fail (logged, swallowed fail-open) and budgets would stop counting.
+-- It merges each (user_id, day) into one row, so no tokens or requests are lost,
+-- then restores the old key and forgets the migration, so the up can run again:
+--   BEGIN;
+--   CREATE TEMP TABLE usage_down ON COMMIT DROP AS
+--     SELECT user_id, day, SUM(prompt_tokens) AS prompt_tokens,
+--            SUM(eval_tokens) AS eval_tokens, SUM(requests) AS requests
+--       FROM inference_usage GROUP BY user_id, day;
+--   DELETE FROM inference_usage;
+--   DROP INDEX IF EXISTS inference_usage_day_idx;
+--   ALTER TABLE inference_usage DROP CONSTRAINT IF EXISTS inference_usage_pkey;
+--   ALTER TABLE inference_usage DROP CONSTRAINT IF EXISTS inference_usage_kind_check;
+--   ALTER TABLE inference_usage DROP COLUMN model, DROP COLUMN kind,
+--     DROP COLUMN estimated_tokens;
+--   INSERT INTO inference_usage (user_id, day, prompt_tokens, eval_tokens, requests)
+--     SELECT user_id, day, prompt_tokens, eval_tokens, requests FROM usage_down;
+--   ALTER TABLE inference_usage ADD PRIMARY KEY (user_id, day);
+--   DELETE FROM schema_migrations WHERE version = 23;
+--   COMMIT;
 ALTER TABLE inference_usage ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT '';
 ALTER TABLE inference_usage ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT '';
 ALTER TABLE inference_usage ADD COLUMN IF NOT EXISTS estimated_tokens BIGINT NOT NULL DEFAULT 0;

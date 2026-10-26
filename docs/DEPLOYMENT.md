@@ -609,8 +609,9 @@ reports token counts, which Ollama and OpenAI-compatible providers do, and
 rounded up, the same estimate a chat reply gets. A batch that fails or times
 out counts only if it produced something. A person who runs out mid-read
 isn't cut off half-way through the tool: the assistant's next step is refused,
-as for any reply. The usage figures don't say which model a batch ran on; the
-server log's `reader usage` line does.
+as for any reply. Reader batches are booked to the reader model's own row
+(kind `reader`) in **Admin -> Usage**; the server log's `reader usage` line
+still names the model.
 
 A project question can be silent for a while when the reader is working. The
 server's 15-second keep-alive (see [Streaming through a

@@ -454,7 +454,9 @@ or 90 days) applies to all three views. The three buttons switch the view:
 - **By model** has one row per model: **Model**, **Where** (**Local**, **Cloud**
   or **Unknown**), **Chat** and **Reader** tokens, **Requests**, **Total** and
   **Estimated**.
-- **By person** has one row per person with the same figures. The arrow at the
+- **By person** has one row per person with the same token figures (**Chat**,
+  **Reader**, **Requests**, **Total**, **Estimated**), without **Model** and
+  **Where**. The arrow at the
   end of a row (its label is **Models for** that person's address) opens that
   person's own per-model rows beneath it; click it again to close.
 - **By day** has one row per day, newest first, in the deployment's timezone
@@ -471,7 +473,8 @@ Read it with these in mind:
 - **Reader tokens sit on the reader model's own row.** If the reader is a
   different model from the one people chat with, the chat model's row shows
   **Reader** 0 and the reader model's row carries them. A chat request and a
-  reader batch each count as one request.
+  reader batch each count as one request: **Requests** counts model calls, so
+  a reply that uses tools makes several chat requests.
 - **Usage from before the upgrade shows as Unknown and can't be split.** It was
   recorded with no model and no chat/reader split, so its row shows **Chat** 0
   and **Reader** 0 while **Total** holds the tokens: **Chat** plus **Reader**
@@ -487,8 +490,10 @@ Read it with these in mind:
   a whole percent, **<1%** for a small share, or a dash for none. Ollama always
   sends counts, so with Ollama it is normally a dash.
 
-A script can read the same figures from `GET /v1/admin/inference/usage`;
-[ARCHITECTURE.md](ARCHITECTURE.md#routers) lists its parameters.
+The old table's Prompt and Eval columns and its person-by-day rows are no
+longer on screen. A script can still read them: `GET /v1/admin/inference/usage`
+with no `group` returns them, and `group=day&user_id=<id>` gives one person's
+days. [ARCHITECTURE.md](ARCHITECTURE.md#routers) lists the parameters.
 
 ### Documents: what a conversion may use
 
