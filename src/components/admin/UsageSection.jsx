@@ -214,6 +214,9 @@ export function UsageSection({ theme, apiHost, apiPort, showToast }) {
                 {viewRows.map((r) => {
                   const id = view === 'user' ? r.user_id : null;
                   const detail = id !== null && open[id] ? people[id] : null;
+                  // The cached answer holds all of the person's models; show the ones the
+                  // Model filter lets through, so the parts sum to the filtered row above.
+                  const shown = detail?.rows && (model === undefined ? detail.rows : detail.rows.filter((m) => m.model === model));
                   return [
                     <tr key={view === 'user' ? id : r.day} className={`border-t ${theme.border}`}>
                       {/* day is already a YYYY-MM-DD in the deployment's zone: render as-is,
@@ -240,10 +243,10 @@ export function UsageSection({ theme, apiHost, apiPort, showToast }) {
                     detail && (
                       <tr key={`${id}-models`}>
                         <td colSpan={7} className="pl-4 pb-2">
-                          {detail.rows ? (
-                            detail.rows.length === 0
+                          {shown ? (
+                            shown.length === 0
                               ? <p className={`text-[10px] ${theme.textMuted}`}>No usage recorded yet.</p>
-                              : <ModelTable rows={detail.rows} theme={theme} />
+                              : <ModelTable rows={shown} theme={theme} />
                           ) : (
                             <p className={`text-[10px] ${theme.textMuted}`}>{detail.failed ? 'Could not load this person’s models.' : 'Loading…'}</p>
                           )}

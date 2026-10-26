@@ -163,7 +163,7 @@ describe('UsageSection', () => {
     await waitFor(() => expect(paths().filter((x) => x === '/v1/admin/inference/usage?days=7&group=user')).toHaveLength(2));
   });
 
-  it('the Model filter also applies to By day, and a person expansion ignores it', async () => {
+  it('the Model filter also applies to By day, and a person expansion fetches without it', async () => {
     mount();
     await screen.findByText('ollama:gemma4:e4b');
     fireEvent.click(toggle('By day'));
@@ -175,6 +175,40 @@ describe('UsageSection', () => {
     await screen.findByText('ada@example.com');
     fireEvent.click(toggle('Models for ada@example.com'));
     await waitFor(() => expect(paths()).toContain('/v1/admin/inference/usage?days=7&group=model&user_id=u1'));
+  });
+
+  it('a person\'s expansion shows only the rows of the selected Model filter, without a new request', async () => {
+    const person = [
+      { model: 'ollama:gemma4:e4b', tag: 'local', ...sums({ tokens: 1111 }) },
+      { model: 'openrouter:some/model', tag: 'cloud', ...sums({ tokens: 2222 }) },
+      { model: '', tag: 'unknown', ...sums({ tokens: 3333 }) },
+    ];
+    mount({ models: MODELS_WITH_UNKNOWN, person });
+    await screen.findByText('ollama:gemma4:e4b');
+    fireEvent.click(toggle('By person'));
+    await screen.findByText('ada@example.com');
+    const select = screen.getByLabelText('Model');
+    const option = (label) => [...select.options].find((o) => o.textContent === label).value;
+    fireEvent.click(toggle('Models for ada@example.com'));
+    await screen.findByText('1,111');
+    expect(screen.getByText('2,222')).toBeTruthy();   // All models: all three rows
+    expect(screen.getByText('3,333')).toBeTruthy();
+    const mine = '/v1/admin/inference/usage?days=7&group=model&user_id=u1';
+
+    fireEvent.change(select, { target: { value: option('openrouter:some/model') } });
+    await screen.findByText('2,222');
+    expect(screen.queryByText('1,111')).toBeNull();
+    expect(screen.queryByText('3,333')).toBeNull();
+
+    fireEvent.change(select, { target: { value: option('Unknown') } });
+    await screen.findByText('3,333');
+    expect(screen.queryByText('2,222')).toBeNull();
+
+    fireEvent.change(select, { target: { value: select.options[0].value } });
+    await screen.findByText('1,111');
+    expect(screen.getByText('2,222')).toBeTruthy();
+    // The cache serves every filter: one request for the person.
+    expect(paths().filter((x) => x === mine)).toHaveLength(1);
   });
 
   it('the Unknown note appears only when the By model data has a model-less row, in any view', async () => {
