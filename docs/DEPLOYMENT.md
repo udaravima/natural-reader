@@ -576,7 +576,8 @@ them are in [`../.env.example`](../.env.example).
 
 A reader on a self-hosted Ollama model is loaded at the size described under
 [Context sizes](#context-sizes-windows-and-the-models-section), the same for
-every call of the turn: the chat's size when the reader is the chat model, so
+every call of the turn: the chat's size (the person's own value when no admin
+size is set) when the reader is the chat model, so
 Ollama doesn't reload it between chat and reader calls, and the model's own size
 (never the person's) when it is a different model. A reader on a model that isn't
 sized (Ollama cloud, `kind=openai`) sends no size. Batches are cut to fit.

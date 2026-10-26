@@ -385,7 +385,8 @@ provider you marked **Cloud**, and every model on an OpenAI-compatible provider
 (that API has no such option). For those the app never sets a size of its own.
 A person's own Settings value, if they chose one, is still passed on with each
 chat message (clamped to the ceiling; an OpenAI-compatible provider ignores
-it). The reader's calls send none (see **The reader** below).
+it). For those models the reader's calls send none; a reader on a sized model
+gets a size (see **The reader** below).
 
 For a sized model the size is the first of these that is set, then clamped to
 `INFERENCE_NUM_CTX_MAX` (32,768 unless changed):
@@ -406,12 +407,14 @@ server's `INFERENCE_LOCAL_NUM_CTX` nor a per-model size sets one for that model)
 server)", the size it will really get.
 
 **The reader.** With **The chat model of each conversation** the reader uses the
-model already loaded, at the chat's size, so Ollama doesn't swap models or
-reload one between chat and reader calls; it is the default on a deployment
+model already loaded, at the chat's size (which is the person's own value when
+no admin size is set), so Ollama doesn't swap models or reload one between
+chat and reader calls; it is the default on a deployment
 that names no reader. The price is for a cloud chat model: reader calls count
 against that model's quota (and the daily budget either way). To keep them off
-it, pick a small local model: it loads at its own size from the list above, not
-the person's. A reader on a model the app doesn't size sends no size. Each
+it, pick a small local model: it loads at its own size from the list above, never
+the person's. A reader on a model the app doesn't size (Ollama cloud, an
+OpenAI-compatible provider) sends no size. Each
 reader batch is cut to fit its model's window: never above `READER_INPUT_CHARS`,
 and at most 16 passages.
 
