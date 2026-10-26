@@ -322,6 +322,49 @@ describe('AdminConsole — overview', () => {
   });
 });
 
+describe('AdminConsole — models', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('has a Models tab between Projects and Documents', () => {
+    mount({ users: [user()], section: null });
+    const names = screen.getAllByRole('tab').map((t) => t.textContent);
+    expect(names.indexOf('Models')).toBe(names.indexOf('Projects') + 1);
+    expect(names.indexOf('Documents')).toBe(names.indexOf('Models') + 1);
+  });
+
+  it("the Overview's Open models button opens the Models tab", async () => {
+    mount({
+      users: [user()], section: null,
+      extra: (path) => path === '/v1/admin/overview' ? json(200, { checks: [
+        { id: 'providers', state: 'ok', title: 'Providers', summary: 'One provider.', section: 'models' },
+      ] }) : undefined,
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Models' }));
+    expect(screen.getByRole('tab', { name: 'Models' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByRole('region', { name: 'Models' })).toBeTruthy();
+  });
+
+  it('asks before leaving Models with an unsaved change', async () => {
+    const view = { settings: {
+      reader: { value: 'chat', source: 'default', env: 'READER_MODEL', fallback: 'chat', fallback_source: 'default' },
+      context_size: { value: null, source: 'default', env: 'INFERENCE_LOCAL_NUM_CTX', fallback: null, fallback_source: 'default' },
+      context_sizes: { value: {}, source: 'default', env: null, fallback: {}, fallback_source: 'default' },
+      context_windows: { value: {}, source: 'default', env: null, fallback: {}, fallback_source: 'default' },
+      provider_locality: { value: {}, source: 'default', env: null, fallback: {}, fallback_source: 'default' },
+      chat_models: { value: [], source: 'default', env: null, fallback: [], fallback_source: 'default' },
+    }, info: [] };
+    mount({
+      users: [user()], section: 'Models',
+      extra: (path) => path === '/v1/admin/settings/models' ? json(200, view)
+        : path === '/v1/admin/models' ? json(200, { providers: [], models: [], limits: { num_ctx_max: null } }) : undefined,
+    });
+    fireEvent.change(await screen.findByLabelText('Context size for local Ollama models'), { target: { value: '8192' } });
+    openSection('People');
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Models.');
+    expect(screen.getByRole('tab', { name: 'Models' })).toHaveAttribute('aria-selected', 'true');
+  });
+});
+
 describe('AdminConsole — documents', () => {
   beforeEach(() => vi.clearAllMocks());
 

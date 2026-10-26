@@ -5,6 +5,7 @@ import { AssistantProfileSection } from './AssistantProfileSection';
 import { ChatOptionsSection } from './ChatOptionsSection';
 import { DefaultsSection } from './DefaultsSection';
 import { DocumentsSection } from './DocumentsSection';
+import { ModelsSection } from './ModelsSection';
 import { AdminProjectsSection } from './AdminProjectsSection';
 import { OverviewSection } from './OverviewSection';
 import { PeopleSection } from './PeopleSection';
@@ -26,6 +27,7 @@ const SECTIONS = [
   { id: 'overview', label: 'Overview' },
   { id: 'people', label: 'People' },
   { id: 'projects', label: 'Projects' },
+  { id: 'models', label: 'Models' },
   { id: 'documents', label: 'Documents' },
   { id: 'chat', label: 'Chat' },
   { id: 'defaults', label: 'Defaults for users' },
@@ -87,6 +89,10 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, l
       {active === 'projects' && (
         <AdminProjectsSection theme={theme} apiHost={apiHost} apiPort={apiPort} currentUserId={currentUserId}
           showToast={showToast} onOpenProject={setOpenProjectId} />
+      )}
+      {active === 'models' && (
+        <ModelsSection theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast}
+          onDirtyChange={setDirty} />
       )}
       {active === 'documents' && (
         <DocumentsSection theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast}

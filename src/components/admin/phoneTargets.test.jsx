@@ -6,6 +6,7 @@ import { AssistantProfileSection } from './AssistantProfileSection';
 import { ChatOptionsSection } from './ChatOptionsSection';
 import { DefaultsSection } from './DefaultsSection';
 import { UsageSection } from './UsageSection';
+import { ModelsSection } from './ModelsSection';
 
 vi.mock('../../utils/apiFetch', () => ({ apiFetch: vi.fn() }));
 import { apiFetch } from '../../utils/apiFetch';
@@ -35,6 +36,25 @@ const ROUTES = {
     values: { ...BUILT_IN }, builtIn: BUILT_IN, overridden: [], epochs: {},
     choices: { chatTtsMode: ['streaming', 'after-complete'], think: ['off', 'on'] },
   },
+  '/v1/admin/settings/models': {
+    settings: {
+      reader: { value: 'chat', source: 'default', env: 'READER_MODEL', fallback: 'chat', fallback_source: 'default' },
+      context_size: { value: 8192, source: 'admin', env: 'INFERENCE_LOCAL_NUM_CTX', fallback: null, fallback_source: 'default' },
+      context_sizes: { value: {}, source: 'admin', env: null, fallback: {}, fallback_source: 'default' },
+      context_windows: { value: {}, source: 'admin', env: null, fallback: {}, fallback_source: 'default' },
+      provider_locality: { value: { ollama: 'cloud' }, source: 'admin', env: null, fallback: {}, fallback_source: 'default' },
+      chat_models: { value: [], source: 'default', env: null, fallback: [], fallback_source: 'default' },
+    },
+    info: [],
+  },
+  '/v1/admin/models': {
+    providers: [{ name: 'ollama', kind: 'ollama', host: 'ollama:11434', detected: 'local', reachable: true }],
+    models: [
+      { id: 'ollama:a', provider: 'ollama', kind: 'ollama', name: 'a', reported_window: null, cloud_name: false },
+      { id: 'ollama:b', provider: 'ollama', kind: 'ollama', name: 'b', reported_window: 4096, cloud_name: false },
+    ],
+    limits: { num_ctx_max: 32768 },
+  },
   '/v1/admin/inference/usage?days=7': [{ user_id: 'u1', email: 'a@x.io', day: '2026-10-25', prompt_tokens: 1, eval_tokens: 2, requests: 1, tokens: 3 }],
 };
 
@@ -44,6 +64,7 @@ const SECTIONS = {
   Assistant: { ui: <AssistantProfileSection {...props} />, ready: 'Assistant profile' },
   Chat: { ui: <ChatOptionsSection {...props} />, ready: 'Ask first' },
   'Defaults for users': { ui: <DefaultsSection {...props} />, ready: 'Voice' },
+  Models: { ui: <ModelsSection {...props} />, ready: 'Reader' },
   Usage: { ui: <UsageSection {...props} />, ready: 'Usage days' },
 };
 
