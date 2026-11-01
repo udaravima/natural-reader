@@ -387,3 +387,105 @@ describe('fix round 2: timing', () => {
         expect(performance.now() - t0).toBeLessThan(500);
     });
 });
+
+describe('fix round 3: the URL skip stays linear', () => {
+    const timeIt = (name, text) => {
+        const t0 = performance.now();
+        maskText(name, text);
+        return performance.now() - t0;
+    };
+    it('handles 64 KB runs that contain URL userinfo', () => {
+        for (const unit of ['a://token:b@', 'https://token:p@h,', 'https://x-access-token:abcd1234@github.com/o/r.git,']) {
+            const run = unit.repeat(Math.ceil(65536 / unit.length));
+            expect(timeIt('x.txt', run)).toBeLessThan(500);
+        }
+    });
+    it('scales roughly linearly', () => {
+        const unit = 'a://token:b@';
+        const small = timeIt('x.txt', unit.repeat(2000)) + 1;
+        const big = timeIt('x.txt', unit.repeat(4000)) + 1;
+        expect(big / small).toBeLessThan(8);
+    });
+    it('still leaves userinfo to the URL rule, and finds a later key', () => {
+        expect(maskText('x.txt', 'https://token:s3cret@h/?password=abc').masked).toBe(2);
+        expect(maskText('x.txt', '//token:abc@h')).toEqual({ text: '//token:<masked, 5 chars>', masked: 1 });
+    });
+});
+
+describe('fix round 3: placeholders already in the file are ordinary text', () => {
+    it('masks a value that merely starts with a placeholder', () => {
+        expect(env('API_KEY=<masked, 12 chars> # rotated\n'))
+            .toEqual({ text: 'API_KEY=<masked, 28 chars>\n', masked: 1 });
+    });
+    it('counts two placeholders in one value once', () => {
+        expect(env('KEYS=<masked, 3 chars>,<masked, 4 chars>\n').masked).toBe(1);
+        expect(env('A=<masked, 3 chars>,<masked, 4 chars>\nB=realsecret\n').masked).toBe(2);
+    });
+    it('keeps a value that is exactly a placeholder, count 0', () => {
+        expect(env('K=<masked, 12 chars>\n')).toEqual({ text: 'K=<masked, 12 chars>\n', masked: 0 });
+    });
+    it('never goes negative on a long run of placeholders', () => {
+        const r = env(`K=${'<masked, 1 chars>'.repeat(3855)}\n`);
+        expect(r.masked).toBe(1);
+    });
+    it('masks look-alikes that are not the real shape', () => {
+        const a = env('PASSWORD=<maskedhunter2>\n');
+        expect(a.masked).toBe(1);
+        expect(a.text).not.toContain('hunter2');
+        const b = env('PASSWORD="<masked hunter2>"\n');
+        expect(b.masked).toBe(1);
+        expect(b.text).not.toContain('hunter2');
+        const c = maskText('x.txt', 'password: <maskedhunter2>');
+        expect(c.masked).toBe(1);
+        expect(c.text).not.toContain('hunter2');
+    });
+    it('counts a private key in a comment line once', () => {
+        const pem = '-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----';
+        const r = env(`# old: ${pem}\n`);
+        expect(r.masked).toBe(1);
+        expect(r.text).not.toContain('AAAA');
+    });
+});
+
+describe('fix round 3: bracketed values run to their close', () => {
+    const x = (s) => maskText('x.txt', s);
+    it('masks a whole JSON array or object', () => {
+        expect(x('{"tokens":["aaa111","bbb222"]}')).toEqual({ text: '{"tokens":<masked, 19 chars>}', masked: 1 });
+        expect(x('{"secrets":{"db":"hunter2","api":"abc123"}}'))
+            .toEqual({ text: '{"secrets":<masked, 31 chars>}', masked: 1 });
+    });
+    it('masks a bracketed unquoted-key value', () => {
+        expect(x('x tokens=[aaa111,bbb222] y')).toEqual({ text: 'x tokens=<masked, 15 chars> y', masked: 1 });
+    });
+    it('is quote-aware inside brackets', () => {
+        const r = x('{"tokens":["a]b","ccc333"]}');
+        expect(r.masked).toBe(1);
+        expect(r.text).not.toContain('ccc333');
+    });
+    it('takes the rest of the line when the bracket never closes', () => {
+        const r = x('{"tokens":["aaa111",');
+        expect(r.masked).toBe(1);
+        expect(r.text).not.toContain('aaa111');
+    });
+    it('stays fast on 64 KB runs of opening brackets', () => {
+        for (const unit of ['token=[', '"token":{']) {
+            const run = unit.repeat(Math.ceil(65536 / unit.length));
+            const t0 = performance.now();
+            x(run);
+            expect(performance.now() - t0).toBeLessThan(500);
+        }
+    });
+});
+
+describe('fix round 3: comment guard covers every line-breaking control', () => {
+    it('masks after VT, FF, NEL, RS in a comment line', () => {
+        for (const c of ['\v', '\f', '\u0085', '\u001e']) {
+            const r = env(`# note${c}FOO=abcsecret\n`);
+            expect(r.text).not.toContain('abcsecret');
+            expect(r.masked).toBeGreaterThan(0);
+        }
+    });
+    it('keeps a comment with a tab a comment', () => {
+        expect(env('# note\tFOO=abcsecret\n')).toEqual({ text: '# note\tFOO=abcsecret\n', masked: 0 });
+    });
+});

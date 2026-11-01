@@ -52,8 +52,13 @@ export const textToBase64 = (text) => {
 
 const maskToken = (n) => `<masked, ${n} chars>`;
 const maskUrlToken = (n) => `<masked URL, ${n} chars>`;
-const hasMask = (s) => s.includes('<masked');
-const isAlreadyMasked = (s) => /^<masked[^>]*>$/.test(s);
+// A NUL is maskEnv's internal mark for a private-key block (see there).
+const NUL = String.fromCharCode(0);
+const PLACEHOLDER_SHAPE = '<masked(?: URL)?, \\d+ chars>';
+const HOLDS_MASK_RE = new RegExp(`${PLACEHOLDER_SHAPE}|${NUL}`);
+const IS_MASK_RE = new RegExp(`^${PLACEHOLDER_SHAPE}$`);
+const hasMask = (s) => HOLDS_MASK_RE.test(s);
+const isAlreadyMasked = (s) => IS_MASK_RE.test(s);
 
 // An unterminated block (a partial paste) masks to the end of the text.
 const PRIVATE_KEY_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|$)/g;
@@ -61,6 +66,7 @@ const PRIVATE_KEY_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?
 const URL_PASSWORD_RE = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/[^\s:/@]*:)([^\s/]+)(?=@)/gi;
 const KEYWORD_RE = /password|passwd|secret|token|api[_-]?key|private[_-]?key/gi;
 const OPERATOR_RE = /===|!==|==|!=|:=|=>|=|:(?!:)/y;
+const USERINFO_RE = /[^\s@/]+@/y;
 const TYPED_DEFAULT_RE = /[ \t]*[\w.[\]|]+[ \t]*=(?!=)[ \t]*(?=["'])/y;
 const TOKEN_RE = new RegExp(
     '\\b(?:sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}'
@@ -85,6 +91,26 @@ const closingQuote = (text, open) => {
         else if (c === q) {
             if (text[j + 1] !== q) return j;
             j += 1;
+        }
+    }
+    return -1;
+};
+
+// Index of the bracket that closes the one at `open`, stepping over quoted
+// strings and counting nested brackets; -1 if it does not close on this line.
+const matchingBracket = (text, open) => {
+    let depth = 0;
+    for (let j = open; j < text.length; j += 1) {
+        const c = text[j];
+        if (c === '\n' || c === '\r') return -1;
+        if (c === '"' || c === "'") {
+            const q = closingQuote(text, j);
+            if (q < 0) return -1;
+            j = q;
+        } else if (c === '[' || c === '{') depth += 1;
+        else if (c === ']' || c === '}') {
+            depth -= 1;
+            if (depth === 0) return j;
         }
     }
     return -1;
@@ -128,6 +154,12 @@ const maskKeyValues = (text) => {
         while (text[p] === ' ' || text[p] === '\t') p += 1;
         const opEnd = p;
 
+        // `https://token:pw@host` is the URL rule's job: decide before walking the value.
+        if (text.slice(keyStart - 3, keyStart) === '://' && text[opEnd] !== '"' && text[opEnd] !== "'") {
+            USERINFO_RE.lastIndex = opEnd;
+            if (USERINFO_RE.test(text)) { resume(opEnd); continue; }
+        }
+
         let start;
         let end;
         let quote = '';
@@ -144,6 +176,10 @@ const maskKeyValues = (text) => {
             if (lineOnly || text[p] === '"' || text[p] === "'") {
                 end = lineEnd(text, p);
                 while (end > start && /[ \t]/.test(text[end - 1])) end -= 1;
+            } else if (text[p] === '[' || text[p] === '{') {
+                // a bracketed value runs to its match on this line, else to the line's end
+                const closeAt = matchingBracket(text, p);
+                end = closeAt >= 0 ? closeAt + 1 : lineEnd(text, p);
             } else if (quotedKey) {
                 end = p;
                 while (end < text.length && !/[\s,}\]]/.test(text[end])) end += 1;
@@ -151,12 +187,6 @@ const maskKeyValues = (text) => {
                 end = p;
                 while (end < text.length && !/\s/.test(text[end])) end += 1;
                 while (end > start && /[,;)}\]]/.test(text[end - 1])) end -= 1;
-                // `https://token:pw@host` is the URL rule's job
-                if (text.slice(keyStart - 2, keyStart) === '//'
-                    && /^[^\s@/]+@/.test(text.slice(start, end))) {
-                    resume(opEnd);
-                    continue;
-                }
             }
         }
         const value = text.slice(start, end);
@@ -186,6 +216,7 @@ const maskGeneric = (text) => {
     return { text: out, masked: count };
 };
 
+const MARK_RE = new RegExp(`${NUL}(\\d+)${NUL}`, 'g');
 const ENV_HEAD_RE = /^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.-]*[ \t]*=/;
 // Content detection is strict: `key = "x"` in source code is not an env file.
 const ENV_DETECT_RE = /^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.-]*=/;
@@ -209,7 +240,10 @@ const looksLikeEnv = (name, text) => {
 // after its first = or :, or whole; a quote that never closes runs to the end.
 const maskEnv = (text, failClosed) => {
     let count = 0;
-    const pre = text.replace(PRIVATE_KEY_RE, (m) => { count += 1; return maskToken(m.length); });
+    // A private-key block becomes an internal mark: NUL, its length, NUL. It is
+    // counted once, later. readTextFile rejects any file holding a NUL, so a
+    // mark can never be mistaken for text that was in the file.
+    const pre = text.replace(PRIVATE_KEY_RE, (m) => `${NUL}${m.length}${NUL}`);
     const lines = pre.split('\n');
     const out = [];
     for (let i = 0; i < lines.length; i += 1) {
@@ -217,7 +251,8 @@ const maskEnv = (text, failClosed) => {
         let cr = line.endsWith('\r') ? '\r' : '';
         const body = cr ? line.slice(0, -1) : line;
         if (body.trim() === '') { out.push(line); continue; }
-        if (body.trimStart().startsWith('#') && !/[\r\u2028\u2029]/.test(body.trim())) {
+        // a control character (but tab) or a line separator inside a comment means it is not one line
+        if (body.trimStart().startsWith('#') && !/[\p{Zl}\p{Zp}]|[^\P{Cc}\t]/u.test(body.trim())) {
             const g = maskGeneric(body);
             count += g.masked;
             out.push(g.text + cr);
@@ -275,20 +310,16 @@ const maskEnv = (text, failClosed) => {
             out.push(line);
             continue;
         }
-        // Placeholders from the private-key pre-pass were already counted: the
-        // whole value counts once, at the length of what was really there.
-        let realLength = inner.length;
-        let held = 0;
-        for (const ph of inner.matchAll(/<masked(?: URL)?, (\d+) chars>/g)) {
-            held += 1;
-            realLength += Number(ph[1]) - ph[0].length;
-        }
-        count += 1 - held;
+        // A value holding marks is one masked value, at the length of what was there.
+        const realLength = inner.replace(MARK_RE, (mk, n) => ' '.repeat(Number(n))).length;
+        count += 1;
         const token = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(inner)
             ? maskUrlToken(realLength) : maskToken(realLength);
         out.push(head + gap + token + tail + cr);
     }
-    return { text: out.join('\n'), masked: count };
+    // Marks that no value took with it (a comment line, a key) are masked here.
+    const joined = out.join('\n').replace(MARK_RE, (mk, n) => { count += 1; return maskToken(Number(n)); });
+    return { text: joined, masked: count };
 };
 
 export const maskText = (name, text) => {
