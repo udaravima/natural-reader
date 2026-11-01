@@ -1,4 +1,4 @@
-import { Image as ImageIcon, FileAudio, X } from 'lucide-react';
+import { Image as ImageIcon, FileAudio, FileText, X } from 'lucide-react';
 import { hasAttachmentData, formatAttachmentSize } from '../utils/attachment';
 
 /**
@@ -10,13 +10,54 @@ import { hasAttachmentData, formatAttachmentSize } from '../utils/attachment';
  *   - Placeholder (metadata only — loaded from a saved session): shows a
  *     muted icon + name + size chip. Hovering explains why.
  *
+ * A text file staged for sending (it holds `originalText`) is a chip that
+ * `onOpen` turns into the viewer; once sent, it keeps only metadata and falls
+ * to the placeholder branch with a text icon.
+ *
  * If `onRemove` is provided, an X button is rendered (used in the pending bar
  * but not inside saved message bubbles).
  */
-export default function AttachmentPreview({ attachment, theme, darkMode, onRemove }) {
+export default function AttachmentPreview({ attachment, theme, darkMode, onRemove, onOpen }) {
     if (!attachment) return null;
     const isLive = hasAttachmentData(attachment);
     const isImage = attachment.kind === 'image';
+    const isText = attachment.kind === 'text';
+
+    if (isText && typeof attachment.originalText === 'string') {
+        const n = attachment.sendReal ? 0 : attachment.masked || 0;
+        return (
+            <div className={`inline-flex items-center gap-1 pl-2 pr-1 py-1 rounded-lg border ${theme.border} ${theme.bgTertiary} max-w-[280px]`}>
+                <button
+                    type="button"
+                    onClick={onOpen}
+                    className={`inline-flex items-center gap-2 min-w-0 text-[10px] ${theme.textMuted} hover:text-blue-500`}
+                    title="View the text that will be sent"
+                >
+                    <FileText size={12} className="shrink-0" />
+                    <span className={`font-bold ${theme.textSecondary} truncate`}>{attachment.name}</span>
+                    <span className="shrink-0">{formatAttachmentSize(attachment.size)}</span>
+                    {n > 0 && <span className="shrink-0 text-amber-600">{n === 1 ? '1 value masked' : `${n} values masked`}</span>}
+                </button>
+                {onRemove && (
+                    <button type="button" onClick={onRemove} className={`p-0.5 rounded ${theme.hover} ${theme.textMuted} hover:text-red-500`} title="Remove attachment">
+                        <X size={11} />
+                    </button>
+                )}
+            </div>
+        );
+    }
+
+    if (isText) {
+        return (
+            <div className={`inline-flex items-center gap-2 px-2 py-1 rounded-lg border ${theme.border} ${darkMode ? 'bg-slate-800/40' : 'bg-slate-100'} text-[10px] ${theme.textMuted}`}>
+                <FileText size={11} />
+                <span className={`font-bold ${theme.textSecondary} truncate max-w-[160px]`}>{attachment.name}</span>
+                <span>·</span>
+                <span>{formatAttachmentSize(attachment.size)}</span>
+                {attachment.masked === true && <span className="text-amber-600">masked</span>}
+            </div>
+        );
+    }
 
     if (isLive && isImage) {
         return (

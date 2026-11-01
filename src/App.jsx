@@ -1109,6 +1109,7 @@ export default function App() {
     messages: chatMessages,
     isStreaming: chatIsStreaming,
     selectedModel,
+    availableModels,
     inferenceBudget: chatInferenceBudget,
     reachable: ollamaReachable,
     sendMessage: chatSendMessage,

@@ -24,6 +24,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import AttachmentPreview from "./AttachmentPreview";
+import TextFileViewer from "./TextFileViewer";
 import ScopeChip from "./chat/ScopeChip";
 import WebOfferCard from "./chat/WebOfferCard";
 import { citationDocs, remarkCitations } from "../lib/citations";
@@ -35,8 +36,20 @@ import { buildPinPreamble } from "../hooks/pins";
 import {
   fileToAttachment,
   IMAGE_ACCEPT,
+  TEXT_ACCEPT,
   kindFromMime,
+  textLimitBytes,
 } from "../utils/attachment";
+import {
+  TEXT_FILE_MAX_BYTES,
+  TEXT_MESSAGE_MAX_BYTES,
+  isTextFile,
+  maskText,
+  readTextFile,
+} from "../utils/textAttachment";
+
+const NOT_ATTACHABLE =
+  "Only images and text files can be attached here. PDFs go in the Library.";
 
 export default function ChatView({
   theme,
@@ -45,6 +58,9 @@ export default function ChatView({
   messages,
   isStreaming,
   selectedModel,
+  // The picker's entries ({id, name, local, ...}): the text viewer words its
+  // "send real values" question by whether the model runs on this machine.
+  availableModels = [],
   reachable,
   inferenceBudget,
   sendMessage,
@@ -97,6 +113,12 @@ export default function ChatView({
   const listRef = useRef(null);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
+  // The attachments as of now, read by ingestFiles after its awaits: the render
+  // closure's copy is stale by then (a later file in one drop must see the
+  // earlier ones).
+  const pendingRef = useRef(pendingAttachments);
+  useEffect(() => { pendingRef.current = pendingAttachments; }, [pendingAttachments]);
+  const [viewingId, setViewingId] = useState(null);
   // Stick-to-bottom flag: when true, new messages/tokens auto-scroll the list to
   // the bottom (live "tailing"). When the user scrolls up, this flips to false
   // so they can read history without each token snapping them back down.
@@ -131,29 +153,96 @@ export default function ChatView({
   // can't decode audio bytes, and we haven't added a Whisper transcription
   // step yet. Audio files are filtered out here with a friendly toast.
   const ingestFiles = async (fileList) => {
-    const all = Array.from(fileList || []);
-    const dropped = all.filter((f) => f && kindFromMime(f.type) === "audio");
-    if (dropped.length > 0) {
+    const all = Array.from(fileList || []).filter(Boolean);
+    const isImage = (f) => kindFromMime(f.type) === "image";
+    const isAudio = (f) => kindFromMime(f.type) === "audio";
+    if (all.some(isAudio)) {
       showToast?.(
         "Audio attachments are not supported yet — coming soon.",
         4000,
       );
     }
-    const files = all.filter((f) => f && kindFromMime(f.type) === "image");
-    if (files.length === 0) return;
-    const results = await Promise.all(files.map((f) => fileToAttachment(f)));
+    const files = all.filter(isImage);
+    const texts = all.filter((f) => !isImage(f) && !isAudio(f) && isTextFile(f));
+    if (all.some((f) => !isImage(f) && !isAudio(f) && !isTextFile(f))) {
+      showToast?.(NOT_ATTACHABLE, 5000);
+    }
     const accepted = [];
-    for (const r of results) {
-      if (r.ok) accepted.push(r.attachment);
-      else showToast?.(r.error, 4000);
+    if (files.length > 0) {
+      const results = await Promise.all(files.map((f) => fileToAttachment(f)));
+      for (const r of results) {
+        if (r.ok) accepted.push(r.attachment);
+        else showToast?.(r.error, 4000);
+      }
+    }
+    // Text files, one after another: each is counted against the message limit
+    // with everything staged so far, this batch included. The size that counts
+    // is the larger of the original and masked text, so choosing real values
+    // later can't push a message over what the server takes.
+    let total = pendingRef.current
+      .filter((a) => a.kind === "text")
+      .reduce((n, a) => n + textLimitBytes(a), 0);
+    for (const f of texts) {
+      const r = await readTextFile(f);
+      if (!r.ok) {
+        showToast?.(r.error, 4000);
+        continue;
+      }
+      const m = maskText(f.name, r.text);
+      const att = {
+        id: crypto.randomUUID(),
+        kind: "text",
+        name: f.name,
+        mimeType: "text/plain",
+        size: f.size,
+        originalText: r.text,
+        maskedText: m.text,
+        masked: m.masked,
+        sendReal: false,
+      };
+      const size = textLimitBytes(att);
+      if (size > TEXT_FILE_MAX_BYTES) {
+        showToast?.(`${f.name} is over 64 KB`, 4000);
+        continue;
+      }
+      if (total + size > TEXT_MESSAGE_MAX_BYTES) {
+        showToast?.("The attached text is over 128 KB", 4000);
+        continue;
+      }
+      total += size;
+      accepted.push(att);
     }
     if (accepted.length) {
+      pendingRef.current = [...pendingRef.current, ...accepted];
       setPendingAttachments((prev) => [...prev, ...accepted]);
     }
   };
 
   const removePending = (id) => {
+    pendingRef.current = pendingRef.current.filter((a) => a.id !== id);
     setPendingAttachments((prev) => prev.filter((a) => a.id !== id));
+  };
+
+  // Real values are agreed for a model that was named in the question. Another
+  // model has not been agreed to, so masking goes back on for every file.
+  const prevModelRef = useRef(selectedModel);
+  useEffect(() => {
+    if (prevModelRef.current === selectedModel) return;
+    prevModelRef.current = selectedModel;
+    if (!pendingRef.current.some((a) => a.kind === "text" && a.sendReal)) return;
+    pendingRef.current = pendingRef.current.map((a) =>
+      a.kind === "text" && a.sendReal ? { ...a, sendReal: false } : a,
+    );
+    setPendingAttachments((prev) =>
+      prev.map((a) => (a.kind === "text" && a.sendReal ? { ...a, sendReal: false } : a)),
+    );
+    showToast?.("Masking is back on: you changed the model.", 4000);
+  }, [selectedModel, setPendingAttachments, showToast]);
+
+  const allowRealValues = (id) => {
+    const on = (a) => (a.id === id ? { ...a, sendReal: true } : a);
+    pendingRef.current = pendingRef.current.map(on);
+    setPendingAttachments((prev) => prev.map(on));
   };
 
   const handleFileChange = (e) => {
@@ -167,7 +256,7 @@ export default function ChatView({
     if (!items || items.length === 0) return;
     const filesFromClipboard = [];
     for (const it of items) {
-      if (it.kind === "file" && it.type.startsWith("image/")) {
+      if (it.kind === "file") {
         const f = it.getAsFile();
         if (f) filesFromClipboard.push(f);
       }
@@ -236,10 +325,15 @@ export default function ChatView({
     reachable !== false &&
     inferenceBudget?.remaining_tokens !== 0;
 
+  const viewing =
+    pendingAttachments.find((a) => a.id === viewingId && a.kind === "text") || null;
+  const modelEntry = availableModels.find((m) => m.id === selectedModel);
+
   const handleSend = () => {
     if (!canSend) return;
     const text = draft;
     const atts = pendingAttachments;
+    setViewingId(null);
     setDraft("");
     setPendingAttachments([]);
     // A refused turn (409, 413, …) never reached the chat: put the text and
@@ -389,6 +483,16 @@ export default function ChatView({
               ))}
             </div>
           )}
+          {viewing && (
+            <TextFileViewer
+              attachment={viewing}
+              theme={theme}
+              modelName={modelEntry?.name || selectedModel}
+              isCloud={modelEntry?.local === false}
+              onSendReal={() => allowRealValues(viewing.id)}
+              onClose={() => setViewingId(null)}
+            />
+          )}
           {/* Pending attachments preview row */}
           {pendingAttachments.length > 0 && (
             <div className="flex flex-wrap gap-2">
@@ -399,19 +503,20 @@ export default function ChatView({
                   theme={theme}
                   darkMode={darkMode}
                   onRemove={() => removePending(att.id)}
+                  onOpen={() => setViewingId(att.id)}
                 />
               ))}
             </div>
           )}
 
           <div className="flex items-end gap-2">
-            {/* Paperclip — opens image picker (audio attachments
-                            paused; see useChatEngine.js comment) */}
+            {/* Paperclip — opens the picker for images and text files (audio
+                attachments paused; see useChatEngine.js comment) */}
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isStreaming}
               className={`p-3 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.textSecondary} hover:text-blue-500 transition-colors disabled:opacity-50`}
-              title="Attach image"
+              title="Attach an image or a text file"
             >
               <Paperclip size={18} />
             </button>
@@ -419,7 +524,7 @@ export default function ChatView({
               type="file"
               ref={fileInputRef}
               onChange={handleFileChange}
-              accept={IMAGE_ACCEPT}
+              accept={`${IMAGE_ACCEPT},${TEXT_ACCEPT}`}
               multiple
               className="hidden"
             />
