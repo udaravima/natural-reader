@@ -29,7 +29,7 @@ describe('DoclingConvertDialog limits', () => {
         expect(screen.getAllByText(OFF)).toHaveLength(3);
         // what is still allowed stays usable
         expect(screen.getByRole('button', { name: /Fast/ })).toBeEnabled();
-        expect(screen.getByRole('button', { name: /Embed/ })).toBeEnabled();
+        expect(screen.getByRole('button', { name: /Keep\s*Saved/ })).toBeEnabled();
     });
 
     it('opens on an allowed preset when the saved one is turned off', () => {
@@ -97,4 +97,13 @@ describe('DoclingConvertDialog limits', () => {
         fireEvent.click(convertButton());
         expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ preset: 'standard' }));
     });
+});
+
+describe('DoclingConvertDialog images', () => {
+  it('says what each choice does with the pictures', () => {
+    renderDialog();
+    expect(screen.getByRole('button', { name: /Keep\s*Saved with the document/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Describe\s*Keep, with a caption/ })).toBeInTheDocument();
+    expect(screen.queryByText(/base64/)).toBeNull();
+  });
 });

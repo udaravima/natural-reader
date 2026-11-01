@@ -32,7 +32,7 @@ def store(tmp_path):
 
 
 async def _fake_convert(*_args, **_kwargs):
-    return [(1, "# P1")]
+    return docling_convert.Conversion([(1, "# P1")], [])
 
 
 @pytest.fixture
@@ -291,7 +291,7 @@ async def test_conversion_progress_is_stored_while_converting_and_cleared_after(
             await asyncio.to_thread(on_progress, {"phase": "build", "done": done, "total": 2})
             await asyncio.sleep(0.05)   # the write is the event loop's, not this thread's
             seen.append(await _progress(db_conn, HEX))
-        return [(1, "# P1"), (2, "# P2")]
+        return docling_convert.Conversion([(1, "# P1"), (2, "# P2")], [])
     monkeypatch.setattr(docling_convert, "convert_pdf_to_markdown_pages", converting)
 
     async with as_user(owner) as client:

@@ -162,6 +162,7 @@ async def gc_content_if_orphaned(conn, doc_id, *, trigger: str) -> bool:
                 doc_storage.resolve_stored(row[0]).unlink(missing_ok=True)
             except OSError as e:
                 logger.warning("Could not remove bytes for doc %s: %s", doc_id, e)
+        doc_storage.remove_figures(doc_id)
         await conn.execute("DELETE FROM documents WHERE doc_id = %s", (doc_id,))
     audit("content.gc", doc=doc_id, trigger=trigger)
     return True

@@ -39,8 +39,8 @@ holder uploads the file; see "Upgrade notes (migration 012)"). It's resolved ent
 Python — so a document nobody gave you can never appear in a result, not
 even one that happens to match your search or tag filter.
 
-**Garbage collection.** Content — its row, chunks, pages and the bytes file
-on disk — is deleted the moment nothing references it any more: no library
+**Garbage collection.** Content — its row, chunks, pages, the bytes file on
+disk and the pictures a conversion kept — is deleted the moment nothing references it any more: no library
 entry and no project placement. Removing your own entry, revoking a share,
 unlinking from a project, and deleting a project or a user all trigger a
 check right after the removal; a startup sweep also removes anything a code
@@ -416,6 +416,7 @@ The whole file runs in one transaction. No data is dropped.
 | `GET /v1/docs?q=&project_id=&tag=` | any signed-in user | Lists documents you hold an entry for, plus documents whose **current** version is in a project you can see (old versions are readable but never listed). Returns `{doc_id, file_name, state, tags, projects: [{id, name, document_id, version, versions_count}], newer_in: [{project: {id, name}, document_id, version, current_version, current_doc_id, current_name, is_current}], in_library, added_via, shared_by: {id, name} \| null}`. The `projects` chips name only projects where this content is current; `newer_in` names visible project documents where it is an older version. `?project_id=` keeps content that is current in that project. `file_name`/`tags` come from **your** entry when you have one; a row you see only through a project shows the file name of a visible version (the current one first) and no tags. |
 | `GET /v1/docs/{id}` | reader (`can_read`) | The row as in the list, plus `versions_in: [{project: {id, name}, document_id, version, current_version, current_doc_id, current_name, is_current}]`: every project you belong to whose history holds this content (`version` is its highest number there). The reader's old-version banner is built from it. Only your own projects are ever named. |
 | `POST /v1/docs/{id}/search` · `GET /v1/docs/{id}/markdown` | reader (`can_read`) | Unchanged read gate, resolved by the entries-or-placement predicate above. |
+| `GET /v1/docs/{id}/figures/{n}.png` | reader (`can_read`) | A picture a conversion kept. Never cached; `404` to anyone who can't read the document, and for a picture that isn't there. |
 | `GET /v1/docs/{id}/file` | reader (`can_read`) | The stored bytes, `inline`, with the stored type (`application/pdf`, `text/plain`, `text/markdown`) and **your** name for the document (your entry's, else the name of a visible project version). `404` to anyone who can't read it, including an unverified pre-A1 holder; `409 bytes_missing` when the server has no bytes for it. What the Library's **Open** button uses. |
 | `PATCH /v1/docs/{id}` | your own entry, on a doc you can read | Sets **your** `file_name`/`tags` only — there's no more `owner_user_id` to reassign. |
 | `DELETE /v1/docs/{id}` | your own entry | Removes your entry (204), then garbage-collects the content if nothing else holds it. Never touches other people's entries or any project. |
@@ -524,7 +525,7 @@ sweep then removes any orphaned content (see "Garbage collection," above).
 
 `DOC_STORAGE_DIR` (falling back to the pre-A1 `PDF_STORAGE_DIR`, then
 `./data/pdfs`) is where uploaded bytes live on disk, one file per document
-id. `PDF_UPLOAD_MAX_MB` (50) and `TEXT_UPLOAD_MAX_MB` (10) cap upload size
+id, with a conversion's pictures under `figures/<doc_id>/`. `PDF_UPLOAD_MAX_MB` (50) and `TEXT_UPLOAD_MAX_MB` (10) cap upload size
 by type. All three are documented with their defaults in `.env.example`.
 
 ## Audit log

@@ -127,6 +127,10 @@ All notable changes to this project will be documented in this file.
 
 ### Upgrade notes
 
+- **Convert → Images → Keep** (it used to read Embed) only applies to new
+  conversions. A document converted before this has no pictures saved; convert it
+  again to get them. Back up `DOC_STORAGE_DIR/figures/` with the documents.
+
 - **Migration 023 changes `inference_usage`** (applied on start): the key becomes
   `(user_id, day, model, kind)` and `model`, `kind` and `estimated_tokens` are
   added. Rows already there keep their tokens as model `''`, kind `''` (shown as
@@ -176,6 +180,13 @@ All notable changes to this project will be documented in this file.
   in **Models**, and the Overview's Reader line shows what it resolves to.
 
 ### Fixed
+
+- **Pictures survive a conversion.** **Images: Embed** in the Convert dialog cropped
+  each picture and then threw it away: the Markdown got an invisible placeholder.
+  The option is now **Keep**: each picture is saved beside the document as a PNG and
+  shows in **MD** view, for anyone who can read the document, without adding a byte
+  to the text that is searched or sent to the model. **Describe** keeps them too.
+  Tiny pictures aren't kept, and a repeated one is saved once.
 
 - **A local Ollama model no longer silently loses the start of a long chat.**
   Ollama loads a model at 4,096 tokens on a machine with under 24 GiB of VRAM

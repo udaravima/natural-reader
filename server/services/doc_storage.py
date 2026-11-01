@@ -5,12 +5,15 @@ SHA-256 is the doc id. The staged file moves into place (`<dir>/<doc_id>.<ext>`)
 only after the caller's INSERT has committed (spec §3, races), so a
 concurrent GC can never delete a file a newer upload just wrote. The user's
 file name is display-only and never part of a path.
+
+A converted document's pictures are `<dir>/figures/<doc_id>/<n>.png`.
 """
 from __future__ import annotations
 
 import hashlib
 import os
 import re
+import shutil
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +29,37 @@ _EXT = {"pdf": "pdf", "text": "txt", "markdown": "md"}
 def storage_dir() -> Path:
     raw = os.environ.get("DOC_STORAGE_DIR") or os.environ.get("PDF_STORAGE_DIR") or "./data/pdfs"
     return Path(raw).resolve()
+
+
+def figures_dir(doc_id: str) -> Path:
+    return storage_dir() / "figures" / doc_id
+
+
+def figure_path(doc_id: str, number: int) -> Path:
+    return figures_dir(doc_id) / f"{number}.png"
+
+
+def remove_figures(doc_id: str) -> None:
+    shutil.rmtree(figures_dir(doc_id), ignore_errors=True)
+
+
+def replace_figures(doc_id: str, pictures: list[bytes]) -> None:
+    """A conversion's pictures replace the last one's. pictures[n - 1] is n.png. They
+    are written beside the folder and moved into place, so a reader never sees half."""
+    target = figures_dir(doc_id)
+    if not pictures:
+        remove_figures(doc_id)
+        return
+    staging = target.with_name(f"{doc_id}.{uuid.uuid4().hex}.tmp")
+    staging.mkdir(parents=True)
+    try:
+        for number, png in enumerate(pictures, start=1):
+            (staging / f"{number}.png").write_bytes(png)
+        remove_figures(doc_id)
+        staging.replace(target)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
 
 _STORED_NAME = re.compile(r"[0-9a-f]{64}\.(?:pdf|txt|md)")

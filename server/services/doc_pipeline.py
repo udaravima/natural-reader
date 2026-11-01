@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ..db import get_pool, is_ready
-from . import doc_storage, extract, model_router
+from . import doc_storage, docling_convert, extract, model_router
 from .doc_outlines import BOOKMARKS, HEADINGS, NO_OUTLINE, Outline, save_outline
 from .doc_search import ReadableDoc
 from .embeddings import EMBEDDING_DIM, current_profile, embed_documents, profile_model
@@ -175,7 +175,8 @@ async def _page_source(conn, doc_id: str) -> tuple[list[extract.Chunk], Outline]
     """A converted document's chunks (one per non-empty Markdown page, split)
     and its outline: the headings of those pages."""
     cur = await conn.execute("SELECT page, markdown FROM doc_pages WHERE doc_id = %s ORDER BY page", (doc_id,))
-    pages = [p for p in ((page, (md or "").strip()) for page, md in await cur.fetchall()) if p[1]]
+    pages = [p for p in ((page, docling_convert.strip_figure_refs(md or "").strip())
+                         for page, md in await cur.fetchall()) if p[1]]
     chunks = extract.split_chunks([extract.Chunk(i, page, "page-md", text)
                                    for i, (page, text) in enumerate(pages)])
     entries = extract.outline_from_markdown_pages(pages)
@@ -346,6 +347,7 @@ async def run_legacy_swap(doc_id: str) -> None:
                     "converted_at = NULL, error_message = NULL, updated_at = now() "
                     "WHERE doc_id = %s",
                     (result.page_count, embed_model, EMBEDDING_DIM, current_profile(), doc_id))
+        doc_storage.remove_figures(doc_id)   # their Markdown just went
         logger.warning("Legacy content %s re-extracted from verified bytes", doc_id)
 
 

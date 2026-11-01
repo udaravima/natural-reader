@@ -552,6 +552,20 @@ async def get_document_file(
                  "X-Content-Type-Options": "nosniff"})
 
 
+@router.get("/{doc_id}/figures/{number}.png")
+async def get_document_figure(
+    doc_id: DocId, number: Annotated[int, PathParam(ge=1)],
+    _reader: Principal = Depends(_require_doc_reader),
+) -> FileResponse:
+    """A picture a conversion kept, for anyone who can read the document (404 to
+    everyone else, like GET /{doc_id}). Never cached, for the reason GET /file gives."""
+    path = doc_storage.figure_path(doc_id, number)
+    if not path.is_file():
+        raise refusal(404, "not_found", "Picture not found")
+    return FileResponse(path, media_type="image/png",
+                        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"})
+
+
 @router.patch("/{doc_id}")
 async def patch_document(
     doc_id: DocId, body: DocPatchIn,
@@ -844,10 +858,11 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
                 raise RuntimeError("No retained PDF for this document")
 
             try:
-                pages = await docling_convert.convert_pdf_to_markdown_pages(
+                converted = await docling_convert.convert_pdf_to_markdown_pages(
                     doc_storage.resolve_stored(row[0]), options, on_progress=progress)
             finally:
                 await progress.close()
+            pages = converted.pages
             if not pages:
                 raise RuntimeError("Conversion produced no pages")
 
@@ -861,6 +876,7 @@ async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
                                 "INSERT INTO doc_pages (doc_id, page, markdown) VALUES (%s, %s, %s)",
                                 (doc_id, page_no, md),
                             )
+            await asyncio.to_thread(doc_storage.replace_figures, doc_id, converted.pictures)
 
             # 'converted' and 'indexing' land together: a poller that sees
             # the conversion done must not also see the OLD 'indexed' state
@@ -1064,5 +1080,6 @@ async def delete_document_markdown(
                 """,
                 (doc_id,),
             )
+    await asyncio.to_thread(doc_storage.remove_figures, doc_id)
     background.add_task(doc_pipeline.run_pipeline, doc_id)
     return {"ok": True, "doc_id": doc_id, "state": "extracting"}

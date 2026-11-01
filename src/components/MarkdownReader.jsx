@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Loader2 } from 'lucide-react';
 import { apiFetch } from '../utils/apiFetch';
+import { buildApiUrl } from '../utils/url';
 
 /**
  * Render docling-converted Markdown for a document, organized by page.
@@ -97,7 +98,10 @@ export default function MarkdownReader({
     }, [loading, pages.length]);
 
     const fontSize = Math.round(15 * scale);
-    const components = useMemo(() => buildMarkdownComponents(darkMode), [darkMode]);
+    const components = useMemo(() => buildMarkdownComponents(darkMode, (src) => {
+        const figure = FIGURE_SRC.exec(src || '');
+        return figure ? buildApiUrl(apiHost, apiPort, `/v1/docs/${encodeURIComponent(docId)}/figures/${figure[1]}.png`) : src;
+    }), [darkMode, apiHost, apiPort, docId]);
 
     const panelBg = darkMode ? 'bg-slate-900' : 'bg-white';
     const sepBg = darkMode ? 'bg-slate-700/40' : 'bg-slate-200';
@@ -143,6 +147,9 @@ export default function MarkdownReader({
     );
 }
 
+// A picture the conversion kept: the Markdown names it relative to the document.
+const FIGURE_SRC = /^figures\/(\d+)\.png$/;
+
 // Backend joins pages with `<!-- page N -->` markers. We split on those so we
 // can render each page in its own anchored section.
 function splitMarkdownByPages(text) {
@@ -163,7 +170,7 @@ function splitMarkdownByPages(text) {
     return out;
 }
 
-function buildMarkdownComponents(darkMode) {
+function buildMarkdownComponents(darkMode, imageSrc) {
     const codeBlockClass = darkMode
         ? 'bg-slate-800/80 text-slate-100'
         : 'bg-slate-900/90 text-slate-100';
@@ -200,6 +207,6 @@ function buildMarkdownComponents(darkMode) {
         th: (props) => <th {...props} className="border border-slate-500/40 px-3 py-1.5 font-semibold text-left" />,
         td: (props) => <td {...props} className="border border-slate-500/40 px-3 py-1.5" />,
         hr: (props) => <hr {...props} className={`my-6 ${darkMode ? 'border-slate-700' : 'border-slate-300'}`} />,
-        img: ({ alt, src, ...props }) => <img {...props} alt={alt} src={src} className="max-w-full rounded-md my-3" />,
+        img: ({ alt, src, ...props }) => <img {...props} alt={alt} src={imageSrc(src)} loading="lazy" className="max-w-full rounded-md my-3" />,
     };
 }

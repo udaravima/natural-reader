@@ -584,6 +584,22 @@ the welcome screen, and Index and chat work on it straight away. If the
 server has no copy of the file (it was indexed before server-side uploads,
 and nobody has uploaded it since), Open tells you to upload the file again.
 
+**Converting a PDF.** **Convert** in the PDF toolbar turns a PDF into Markdown with
+Docling, and the toolbar's **PDF | MD** switch shows the result. **Images** in its
+dialog decides what happens to the document's pictures:
+
+- **Drop** (the default): no pictures, the smallest result.
+- **Keep**: each picture is saved beside the document and shows in **MD** view, for
+  anyone who can read the document. A tiny one (a logo, a rule) isn't kept, and the
+  same picture repeated on every page is saved once.
+- **Describe**: the same, plus a short caption from a small built-in model. The
+  caption is text, so a search can find it.
+
+Pictures show on the page but aren't part of the text the assistant reads, apart
+from a caption. **Download** gives you the Markdown only: it still names the
+pictures, but they aren't in the file. A document converted before this existed has
+no pictures; convert it again with **Keep**.
+
 ## Projects and people
 
 A project is a shared shelf of documents for a team. Open **Library →

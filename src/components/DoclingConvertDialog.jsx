@@ -220,8 +220,8 @@ export default function DoclingConvertDialog({
                         <div className="grid grid-cols-3 gap-2 mt-2">
                             {[
                                 { key: 'drop', label: 'Drop', blurb: 'Smallest output' },
-                                { key: 'embed', label: 'Embed', blurb: 'Inline base64' },
-                                { key: 'describe', label: 'Describe', blurb: 'VLM caption' },
+                                { key: 'embed', label: 'Keep', blurb: 'Saved with the document' },
+                                { key: 'describe', label: 'Describe', blurb: 'Keep, with a caption' },
                             ].map(({ key, label, blurb }) => {
                                 const allowed = key !== 'describe' || describeAllowed;
                                 const active = form.images === key;

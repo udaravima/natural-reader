@@ -26,7 +26,7 @@ def store(tmp_path):
 
 
 async def _fake_convert(*_args, **_kwargs):
-    return [(1, "# P1")]
+    return docling_convert.Conversion([(1, "# P1")], [])
 
 
 @pytest.fixture(autouse=True)

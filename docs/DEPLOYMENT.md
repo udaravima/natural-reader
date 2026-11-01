@@ -100,6 +100,10 @@ build with Docling (CPU-only torch, several GB larger) exactly when it is on.
 Turning it on later takes `./startup.sh rebuild`. A mismatch is logged once at
 startup.
 
+Pictures a conversion keeps are PNG files under `DOC_STORAGE_DIR/figures/`, so
+back that folder up with the documents. `DOCLING_MAX_PICTURES` (500 by default) caps
+them per document; a picture past it stays a placeholder.
+
 ## The one rule that dictates the topology: same origin
 
 The app's login session is an **`HttpOnly` cookie**. Browsers only send that
