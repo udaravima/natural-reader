@@ -213,15 +213,15 @@ async def test_an_unknown_language_is_422(db_conn, engine, language):
     assert engine.seen == []
 
 
-async def test_language_is_checked_before_the_upload_is_read(db_conn, engine, monkeypatch):
-    """G4: capability, then voice off (404), then language (422), then the upload. A bad language never reaches
-    the transcriber, and neither does a request while voice is off."""
+async def test_voice_off_beats_a_bad_language_and_a_bad_language_never_transcribes(db_conn, engine, monkeypatch):
+    """Capability, then voice off (404), then the body is parsed in memory, then language (422), then the file.
+    (Round 1 amended G4: `language` lives in the body, so it can only be checked after the capped parse.)"""
     await _voice(db_conn, on=None)
     async with _client(db_conn) as c:
         assert (await _post(c, language="xx")).status_code == 404     # off wins over a bad language
     await _voice(db_conn)
     async with _client(db_conn) as c:
-        assert (await _post(c, body=b"x" * (11 * 1024 * 1024), language="xx")).status_code == 422
+        assert (await _post(c, language="xx")).status_code == 422
 
 
 async def test_the_transcript_is_never_logged(db_conn, engine, caplog):
@@ -292,3 +292,127 @@ async def test_status_survives_an_engine_that_raises(db_conn, engine, monkeypatc
     assert r.status_code == 200
     assert r.json()["enabled"] is True and r.json()["ready"] is False and r.json()["state"] == "error"
     assert "secret detail" not in r.text
+
+
+# ---------- fix round 1: the body is parsed in memory, with a running cap ----------
+
+MB = 1024 * 1024
+
+
+@pytest.fixture
+def no_rollover(monkeypatch):
+    """A recording must never reach a temp file: any SpooledTemporaryFile that rolls over fails the test."""
+    import tempfile
+
+    rolled = []
+
+    def boom(self, *a, **k):
+        rolled.append(True)    # the framework may turn this exception into a 400: the list is the real signal
+        raise AssertionError("a recording was spooled to disk")
+    monkeypatch.setattr(tempfile.SpooledTemporaryFile, "rollover", boom)
+    yield rolled
+    assert rolled == [], "a recording was spooled to a temp file"
+
+
+async def test_a_3_mb_upload_never_rolls_over_to_a_temp_file(db_conn, engine, no_rollover):
+    await _voice(db_conn)
+    async with _client(db_conn) as c:
+        r = await _post(c, body=b"x" * (3 * MB))
+    assert r.status_code == 200
+    assert engine.seen[0][0] == 3 * MB
+
+
+def _multipart_headers(extra=None):
+    return {"content-type": "multipart/form-data; boundary=BOUND", **(extra or {})}
+
+
+class _Body:
+    """A request body that records whether, and how much of it, the server read."""
+
+    def __init__(self, chunks):
+        self.chunks, self.pulled = list(chunks), 0
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            self.pulled += 1
+            yield chunk
+
+
+async def test_voice_off_never_reads_the_body(db_conn, engine):
+    await _voice(db_conn, on=None)
+    body = _Body([b"x" * MB] * 3)
+    async with _client(db_conn) as c:
+        r = await c.post(URL, content=body, headers=_multipart_headers())
+    assert r.status_code == 404 and body.pulled == 0
+
+
+async def test_a_declared_length_over_the_cap_is_413_with_the_body_unread(db_conn, engine):
+    await _voice(db_conn)
+    body = _Body([b"x" * MB])
+    async with _client(db_conn) as c:
+        r = await c.post(URL, content=body, headers=_multipart_headers({"content-length": str(11 * MB)}))
+    assert r.status_code == 413 and _msg(r) == "The recording is over 10 MB."
+    assert body.pulled == 0
+
+
+async def test_a_chunked_body_with_no_length_that_runs_past_the_cap_is_413(db_conn, engine, no_rollover):
+    await _voice(db_conn)
+    opening = (b'--BOUND\r\nContent-Disposition: form-data; name="file"; filename="a.webm"\r\n'
+               b'Content-Type: audio/webm\r\n\r\n')
+    body = _Body([opening + b"x" * MB] + [b"x" * MB] * 11)
+    async with _client(db_conn) as c:
+        r = await c.post(URL, content=body, headers=_multipart_headers())
+    assert r.status_code == 413 and _msg(r) == "The recording is over 10 MB."
+    assert body.pulled < 12          # it stopped reading at the cap
+
+
+async def test_a_file_field_sent_as_plain_text_is_400(db_conn, engine):
+    await _voice(db_conn)
+    async with _client(db_conn) as c:
+        r = await c.post(URL, data={"file": "just text"})     # urlencoded: no file part at all
+        r2 = await c.post(URL, files={"other": ("a.webm", b"abc", "audio/webm")})
+    assert r.status_code == 400 and r2.status_code == 400
+    assert _msg(r) == "That recording couldn't be read."
+    boundary_text = (b'--B\r\nContent-Disposition: form-data; name="file"\r\n\r\nplain\r\n--B--\r\n')
+    async with _client(db_conn) as c:
+        r3 = await c.post(URL, content=boundary_text, headers={"content-type": "multipart/form-data; boundary=B"})
+    assert r3.status_code == 400 and _msg(r3) == "That recording couldn't be read."
+
+
+async def test_a_body_that_is_not_multipart_is_400(db_conn, engine):
+    await _voice(db_conn)
+    async with _client(db_conn) as c:
+        r = await c.post(URL, content=b"abc", headers={"content-type": "application/json"})
+        r2 = await c.post(URL, content=b"abc", headers={"content-type": "multipart/form-data"})  # no boundary
+        r3 = await c.post(URL, content=b"garbage", headers=_multipart_headers())
+    assert [r.status_code, r2.status_code, r3.status_code] == [400, 400, 400]
+    assert _msg(r) == "That recording couldn't be read."
+    assert engine.seen == []
+
+
+async def test_status_is_bounded_when_the_engine_hangs(db_conn, engine, monkeypatch):
+    import asyncio
+    await _voice(db_conn)
+
+    async def hang():
+        await asyncio.sleep(30)
+    monkeypatch.setattr(engine, "status", hang)
+    monkeypatch.setattr(speech_router, "STATUS_TIMEOUT_S", 0.05)
+    async with _client(db_conn) as c:
+        r = await c.get(STATUS)
+    assert r.status_code == 200
+    assert (r.json()["enabled"], r.json()["ready"], r.json()["state"]) == (True, False, "error")
+
+
+async def test_a_failed_pre_transcribe_status_check_is_logged_at_debug(db_conn, engine, monkeypatch, caplog):
+    await _voice(db_conn)
+
+    async def boom():
+        raise RuntimeError("secret detail")
+    monkeypatch.setattr(engine, "status", boom)
+    with caplog.at_level(logging.DEBUG, logger="server.routers.speech"):
+        async with _client(db_conn) as c:
+            r = await _post(c)
+    assert r.status_code == 200
+    assert any("RuntimeError" in rec.getMessage() for rec in caplog.records)
+    assert "secret detail" not in caplog.text
