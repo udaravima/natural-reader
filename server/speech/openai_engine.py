@@ -3,6 +3,7 @@
 The API key is only ever put in a request header: it is not logged, not in exception messages, not in repr()."""
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 from urllib.parse import urlparse
@@ -10,8 +11,8 @@ from urllib.parse import urlparse
 import httpx
 
 from .languages import WHISPER_LANGUAGES
-from .base import (MAX_AUDIO_SECONDS, AudioTooLong, BadAudio, EngineFailed, EngineNotReady,
-                   EngineStatus, Transcript)
+from .audio import SAMPLE_RATE, decode_capped
+from .base import EngineFailed, EngineNotReady, EngineStatus, Transcript
 
 logger = logging.getLogger("server.speech")
 
@@ -101,29 +102,22 @@ class OpenAICompatible:
     async def transcribe(self, audio: bytes, mime: str, language: str | None) -> Transcript:
         if self._problem:
             raise EngineNotReady(self._problem)
+        # Bounded decode first, off the event loop: an over-long or unreadable recording never reaches the server.
+        samples = await asyncio.to_thread(decode_capped, audio)
+        decoded_s = len(samples) / SAMPLE_RATE
         try:
             async with self._client(TIMEOUT) as c:
                 r = await self._post(c, audio, mime, language, "verbose_json")
                 if r.status_code == 400 and "response_format" in r.text:
                     r = await self._post(c, audio, mime, language, "json")
-                    return self._parse(r, None, self._duration_of(audio))
+                    return self._parse(r, None, decoded_s, force_duration=True)
         except httpx.HTTPError as e:
             logger.warning("transcription request failed: %s", type(e).__name__)
             raise EngineFailed(_DIDNT_ANSWER) from None
-        return self._parse(r, language, None)
+        return self._parse(r, language, decoded_s)
 
-    @staticmethod
-    def _duration_of(audio: bytes) -> float:
-        from .local_whisper import SAMPLE_RATE, decode_audio  # PyAV decode, the same one the local engine uses
-        try:
-            seconds = len(decode_audio(io.BytesIO(audio), sampling_rate=SAMPLE_RATE)) / SAMPLE_RATE
-        except Exception as e:  # noqa: BLE001
-            raise BadAudio("The recording could not be read") from e
-        if seconds > MAX_AUDIO_SECONDS:
-            raise AudioTooLong(f"A recording can be at most {MAX_AUDIO_SECONDS} seconds")
-        return seconds
-
-    def _parse(self, r: httpx.Response, language: str | None, duration: float | None) -> Transcript:
+    def _parse(self, r: httpx.Response, language: str | None, decoded_s: float,
+               force_duration: bool = False) -> Transcript:
         if r.status_code in (401, 403):
             raise EngineFailed(_REFUSED)
         if r.status_code != 200:
@@ -134,8 +128,10 @@ class OpenAICompatible:
             text = str(body["text"]).strip()
         except (ValueError, KeyError, TypeError):
             raise EngineFailed("The transcription server sent an answer this server can't read") from None
-        if duration is None:
+        duration = decoded_s
+        if not force_duration:
             raw = body.get("duration")
-            duration = float(raw) if isinstance(raw, (int, float)) else 0.0
+            if isinstance(raw, (int, float)):
+                duration = float(raw)
             language = _language_code(body.get("language")) or language
         return Transcript(text, language or None, duration)

@@ -11,7 +11,8 @@ import httpx
 import numpy as np
 import pytest
 
-from server.speech import local_whisper, openai_engine
+from server.speech import audio as audio_mod, local_whisper, openai_engine
+from server.speech.audio import decode_capped
 from server.speech.base import (AudioTooLong, BadAudio, EngineFailed, EngineNotReady, EngineStatus, Transcript)
 from server.speech.languages import WHISPER_LANGUAGES
 from server.speech.local_whisper import LocalWhisper
@@ -23,6 +24,28 @@ AUDIO = b"RIFF-not-really-audio-bytes"
 
 def _samples(seconds):
     return np.zeros(int(seconds * 16000), dtype=np.float32)
+
+
+def _wav(seconds, rate=16000):
+    """Real audio, encoded in memory with PyAV: a quiet sine as WAV."""
+    import io
+
+    import av
+    n = int(seconds * rate)
+    t = np.arange(n) / rate
+    pcm = (0.1 * np.sin(2 * np.pi * 440 * t) * 32767).astype(np.int16)
+    buf = io.BytesIO()
+    with av.open(buf, "w", format="wav") as out:
+        st = out.add_stream("pcm_s16le", rate=rate)
+        st.layout = "mono"
+        for i in range(0, n, 1024):
+            frame = av.AudioFrame.from_ndarray(pcm[i:i + 1024].reshape(1, -1), format="s16", layout="mono")
+            frame.sample_rate = rate
+            for p in st.encode(frame):
+                out.mux(p)
+        for p in st.encode(None):
+            out.mux(p)
+    return buf.getvalue()
 
 
 class FakeModel:
@@ -47,7 +70,7 @@ class FakeModel:
 def fake(monkeypatch):
     FakeModel.instances, FakeModel.gate, FakeModel.boom = [], None, None
     monkeypatch.setattr(local_whisper, "WhisperModel", FakeModel)
-    monkeypatch.setattr(local_whisper, "decode_audio", lambda f, sampling_rate=16000: _samples(3))
+    monkeypatch.setattr(local_whisper, "decode_capped", lambda a: _samples(3))
     return FakeModel
 
 
@@ -72,21 +95,33 @@ async def test_local_returns_joined_text_language_duration(fake):
 async def test_local_refuses_over_125_seconds(fake, monkeypatch):
     eng = LocalWhisper("small", 1)
     await _ready(eng)
-    monkeypatch.setattr(local_whisper, "decode_audio", lambda f, sampling_rate=16000: _samples(126))
+    def too_long(a):
+        raise AudioTooLong("too long")
+    monkeypatch.setattr(local_whisper, "decode_capped", too_long)
     with pytest.raises(AudioTooLong):
         await eng.transcribe(AUDIO, "audio/webm", None)
     assert fake.instances[0].calls == []
-    monkeypatch.setattr(local_whisper, "decode_audio", lambda f, sampling_rate=16000: _samples(125))
-    assert (await eng.transcribe(AUDIO, "audio/webm", None)).text == "Hello"
+
+
+async def test_local_decodes_real_audio_with_the_bounded_helper(monkeypatch):
+    """No decode patch: the engine's real path goes through decode_capped."""
+    FakeModel.instances, FakeModel.gate, FakeModel.boom = [], None, None
+    monkeypatch.setattr(local_whisper, "WhisperModel", FakeModel)
+    eng = LocalWhisper("small", 1)
+    await _ready(eng)
+    assert (await eng.transcribe(_wav(2), "audio/wav", None)).text == "Hello"
+    with pytest.raises(BadAudio):
+        await eng.transcribe(b"garbage" * 50, "audio/webm", None)
+    assert len(FakeModel.instances[0].calls) == 1
 
 
 async def test_local_undecodable_audio_is_bad_audio(fake, monkeypatch):
     eng = LocalWhisper("small", 1)
     await _ready(eng)
 
-    def boom(f, sampling_rate=16000):
-        raise ValueError("garbage")
-    monkeypatch.setattr(local_whisper, "decode_audio", boom)
+    def boom(a):
+        raise BadAudio("garbage")
+    monkeypatch.setattr(local_whisper, "decode_capped", boom)
     with pytest.raises(BadAudio):
         await eng.transcribe(AUDIO, "audio/webm", None)
 
@@ -139,6 +174,18 @@ def test_whisper_languages_match_faster_whisper():
 # ---- openai ----
 
 
+_REAL_DECODE = {"test_openai_over_the_cap_never_reaches_the_transport",
+                "test_openai_garbage_audio_never_reaches_the_transport",
+                "test_openai_real_audio_uses_its_length_when_the_server_gives_no_duration"}
+
+
+@pytest.fixture(autouse=True)
+def _fake_decode_for_openai(request, monkeypatch):
+    """The openai tests send placeholder bytes, so they stub the decoder; the ones about decoding use the real one."""
+    if request.node.name not in _REAL_DECODE:
+        monkeypatch.setattr(openai_engine, "decode_capped", lambda a: _samples(2))
+
+
 def _engine(handler, url="https://stt.example.com/v1", model="whisper-1", key=SECRET):
     return OpenAICompatible(url, key, model, transport=httpx.MockTransport(handler))
 
@@ -186,7 +233,7 @@ async def test_openai_without_a_key_sends_no_authorization():
 
 
 async def test_openai_retries_once_with_json_when_verbose_json_is_refused(monkeypatch):
-    monkeypatch.setattr(local_whisper, "decode_audio", lambda f, sampling_rate=16000: _samples(4))
+    monkeypatch.setattr(openai_engine, "decode_capped", lambda a: _samples(4))
     formats = []
 
     def handler(req):
@@ -289,3 +336,109 @@ async def test_openai_config_mistakes_are_reported_not_raised():
 def test_openai_attributes():
     eng = OpenAICompatible("https://stt.example.com:8443/v1", "k", "whisper-1")
     assert (eng.name, eng.model, eng.where) == ("openai", "whisper-1", "stt.example.com")
+
+
+# ---- decode_capped ----
+
+
+def test_decode_capped_returns_16k_mono_float32():
+    a = decode_capped(_wav(3, rate=44100))  # resampled from 44.1 kHz
+    assert a.dtype == np.float32 and a.ndim == 1
+    assert abs(len(a) - 3 * 16000) < 400
+    assert 0.01 < float(np.abs(a).max()) <= 1.0
+
+
+def test_decode_capped_over_the_cap_raises_audio_too_long():
+    with pytest.raises(AudioTooLong):
+        decode_capped(_wav(4), max_seconds=1)
+    assert len(decode_capped(_wav(2), max_seconds=2.5)) > 0
+
+
+def test_decode_capped_stops_decoding_early(monkeypatch):
+    import av
+    calls = []
+
+    real = av.AudioResampler
+
+    class Counting:  # AudioResampler can't be subclassed, so wrap it
+        def __init__(self, **kw):
+            self._r = real(**kw)
+
+        def resample(self, frame):
+            calls.append(frame)
+            return self._r.resample(frame)
+
+    monkeypatch.setattr(audio_mod.av, "AudioResampler", Counting)
+    long = _wav(30)
+    decode_capped(long, max_seconds=100)
+    full = len(calls)
+    calls.clear()
+    with pytest.raises(AudioTooLong):
+        decode_capped(long, max_seconds=1)
+    assert 0 < len(calls) < full / 5
+
+
+def test_decode_capped_garbage_and_no_audio_are_bad_audio():
+    with pytest.raises(BadAudio):
+        decode_capped(b"this is not audio" * 100)
+    with pytest.raises(BadAudio):
+        decode_capped(b"")
+
+
+async def test_openai_over_the_cap_never_reaches_the_transport(monkeypatch):
+    import functools
+    monkeypatch.setattr(openai_engine, "decode_capped", functools.partial(decode_capped, max_seconds=1))
+    calls = []
+
+    def handler(req):
+        calls.append(req)
+        return httpx.Response(200, json={"text": "x"})
+
+    with pytest.raises(AudioTooLong):
+        await _engine(handler).transcribe(_wav(3), "audio/wav", None)
+    assert calls == []
+
+
+async def test_openai_garbage_audio_never_reaches_the_transport():
+    calls = []
+
+    def handler(req):
+        calls.append(req)
+        return httpx.Response(200, json={"text": "x"})
+
+    with pytest.raises(BadAudio):
+        await _engine(handler).transcribe(b"garbage" * 50, "audio/webm", None)
+    assert calls == []
+
+
+async def test_openai_real_audio_uses_its_length_when_the_server_gives_no_duration():
+    t = await _engine(lambda r: httpx.Response(200, json={"text": "hi"})).transcribe(_wav(2), "audio/wav", None)
+    assert abs(t.duration_s - 2.0) < 0.05
+
+
+async def test_openai_decodes_off_the_event_loop(monkeypatch):
+    import threading
+    where = []
+
+    def spy(a):
+        where.append(threading.current_thread())
+        return _samples(1)
+    monkeypatch.setattr(openai_engine, "decode_capped", spy)
+    await _engine(lambda r: httpx.Response(200, json={"text": "x"})).transcribe(AUDIO, "audio/webm", None)
+    assert where and where[0] is not threading.main_thread()
+
+
+async def test_local_a_failed_load_is_retried_by_the_next_warm(fake):
+    fake.boom = OSError("offline")
+    eng = LocalWhisper("small", 1)
+    await _ready(eng)
+    assert (await eng.status()).state == "error"
+    fake.boom = None
+    fake.gate = threading.Event()  # hold the second load open so "loading" is observable
+    eng.warm()
+    assert (await eng.status()).state == "loading"
+    fake.gate.set()
+    await _ready(eng)
+    assert await eng.status() == EngineStatus(True, "ready", "")
+    eng.warm()  # ready: idempotent, no second model
+    assert len(fake.instances) == 1

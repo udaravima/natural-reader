@@ -147,3 +147,25 @@ def test_cpu_threads_default_and_bad_value(monkeypatch):
     monkeypatch.setattr(service.os, "cpu_count", lambda: 1)
     assert service._cpu_threads({}) == 1
     assert service._cpu_threads({"SPEECH_CPU_THREADS": "abc"}) == 1
+
+
+class Failing(Slow):
+    async def transcribe(self, audio, mime, language):
+        raise RuntimeError("engine blew up")
+
+
+@pytest.mark.parametrize("name", ["local", "openai"])
+async def test_an_engine_failure_releases_the_person_and_the_slot(name, monkeypatch):
+    service._transcriber = Failing(name)
+    monkeypatch.setattr(service, "LOCAL_WAIT_S", 0.05)
+    with pytest.raises(RuntimeError):
+        await service.transcribe_for("u1", b"a", "audio/webm", None)
+    assert "u1" not in service._running
+    with pytest.raises(RuntimeError):  # same person again: not AlreadyRunning
+        await service.transcribe_for("u1", b"a", "audio/webm", None)
+    with pytest.raises(RuntimeError):  # another person: not Busy
+        await service.transcribe_for("u2", b"a", "audio/webm", None)
+    ok = Slow(name)
+    ok.release.set()
+    service._transcriber = ok
+    assert (await service.transcribe_for("u1", b"a", "audio/webm", None)).text == "hi"

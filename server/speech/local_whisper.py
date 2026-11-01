@@ -2,19 +2,15 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 import threading
 
 from faster_whisper import WhisperModel
-from faster_whisper.audio import decode_audio
 
-from .base import (MAX_AUDIO_SECONDS, AudioTooLong, BadAudio, EngineNotReady, EngineStatus,
-                   Transcript)
+from .audio import SAMPLE_RATE, decode_capped
+from .base import EngineNotReady, EngineStatus, Transcript
 
 logger = logging.getLogger("server.speech")
-
-SAMPLE_RATE = 16000  # decode_audio's output rate
 
 
 class LocalWhisper:
@@ -36,10 +32,10 @@ class LocalWhisper:
     def warm(self) -> None:
         """Load the model in a daemon thread (downloads into HF_HOME the first time). Safe to call repeatedly."""
         with self._lock:
-            if self._started:
-                return
+            if self._started and self._state != "error":
+                return  # loading or ready; a failed load is retried
             self._started = True
-            self._detail = "Loading the model"
+            self._state, self._detail = "loading", "Loading the model"
         threading.Thread(target=self._load, name="speech-warm", daemon=True).start()
 
     def _load(self) -> None:
@@ -58,15 +54,10 @@ class LocalWhisper:
         with self._lock:
             return EngineStatus(self._state == "ready", self._state, self._detail)
 
-    def _run(self, audio: bytes, language: str | None, model) -> Transcript:
-        try:
-            samples = decode_audio(io.BytesIO(audio), sampling_rate=SAMPLE_RATE)
-        except Exception as e:  # noqa: BLE001 - PyAV raises many types for undecodable input
-            raise BadAudio("The recording could not be read") from e
-        if len(samples) / SAMPLE_RATE > MAX_AUDIO_SECONDS:
-            raise AudioTooLong(f"A recording can be at most {MAX_AUDIO_SECONDS} seconds")
+    @staticmethod
+    def _run(samples, language: str | None, model) -> Transcript:
         segments, info = model.transcribe(samples, language=language, vad_filter=True)
-        text = "".join(s.text for s in segments).strip()
+        text = "".join(seg.text for seg in segments).strip()
         return Transcript(text, info.language, float(info.duration))
 
     async def transcribe(self, audio: bytes, mime: str, language: str | None) -> Transcript:
@@ -74,4 +65,5 @@ class LocalWhisper:
             model, state, detail = self._model, self._state, self._detail
         if model is None:
             raise EngineNotReady(detail if state == "error" else "The speech model is still loading")
-        return await asyncio.to_thread(self._run, audio, language, model)
+        samples = await asyncio.to_thread(decode_capped, audio)  # bounded; raises AudioTooLong / BadAudio
+        return await asyncio.to_thread(self._run, samples, language, model)
