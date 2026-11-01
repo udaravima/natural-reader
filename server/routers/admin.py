@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from ..auth import deps, users
 from ..auth.capabilities import KNOWN_CAPABILITIES
@@ -19,6 +19,7 @@ from ..auth.config import load_auth_config
 from ..auth.kc_admin import KCAdminError, KCRoleMissing
 from ..llm.router import get_router
 from ..http_errors import refusal
+from ..speech import service as speech_service
 from ..services import (assistant_profile, chat_options, console_overview, console_settings, deployment_info, deployment_settings,
                         doc_content, docling_limits, inference_budget, inference_limits, model_router, model_settings, people, user_defaults,
                         web_search as web_search_service)
@@ -547,15 +548,24 @@ async def put_assistant_profile(
 
 class ChatOptionsIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    # Required: null resets the setting (the environment, or "ask", applies again), so a body without the
-    # field must not do it by accident.
-    web_search: Literal["ask", "auto", "off"] | None
+    # Each field is optional, and a field that is present is applied: null resets that setting (the environment,
+    # or the default, applies again), so absent and null mean different things (model_fields_set tells them
+    # apart). A body with neither field would do nothing and is refused.
+    web_search: Literal["ask", "auto", "off"] | None = None
+    voice_input: StrictBool | None = None
+
+    @model_validator(mode="after")
+    def _something_to_change(self):
+        if not self.model_fields_set & {"web_search", "voice_input"}:
+            raise ValueError("Send web_search, voice_input, or both.")
+        return self
 
 
 def _chat_options_view(options: chat_options.ChatOptions) -> dict:
     # `searxng`: false only when a deployer set SEARXNG_URL empty; the console then shows the control disabled.
     return {"web_search": options.web_search, "source": options.source,
-            "searxng": bool(web_search_service.SEARXNG_URL)}
+            "searxng": bool(web_search_service.SEARXNG_URL),
+            "voice_input": options.voice_input, "voice_source": options.voice_source}
 
 
 @router.get("/chat-options")
@@ -572,8 +582,20 @@ async def put_chat_options(
     principal: deps.Principal = Depends(deps.require_admin),
     conn=Depends(deps.get_conn, scope="function"),
 ):
-    """Save how web search asks; null resets it. Applies from the next chat message."""
-    saved = await chat_options.save_chat_options(conn, body.web_search, updated_by=str(principal.user_id))
+    """Save how web search asks and/or whether voice input is on; null resets that setting. Web search applies
+    from the next chat message. Switching voice input on starts the engine loading (its model downloads the
+    first time), without making this response wait."""
+    by = str(principal.user_id)
+    saved = None
+    if "web_search" in body.model_fields_set:
+        saved = await chat_options.save_chat_options(conn, body.web_search, updated_by=by)
+    if "voice_input" in body.model_fields_set:
+        saved = await chat_options.save_voice_input(conn, body.voice_input, updated_by=by)
+        if saved.voice_input:   # what applies after the save, so a reset that falls back to CHAT_VOICE_INPUT=on counts
+            try:
+                speech_service.get_transcriber().warm()
+            except Exception:  # noqa: BLE001 - a saved setting must not become a 500; status shows the engine's state
+                logger.warning("The speech engine couldn't start loading", exc_info=True)
     return _chat_options_view(saved)
 
 

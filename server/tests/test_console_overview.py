@@ -24,6 +24,8 @@ from server.services import (chat_options, console_overview, console_settings, d
 from server.services.inference_limits import InferenceLimits
 from server.chat.config import ChatConfig
 from server.services.console_overview import project_turn_tokens, run_checks, window_for
+from server.speech import service as speech_service
+from server.speech.base import EngineStatus
 from server.tests import seed
 
 
@@ -136,7 +138,8 @@ async def test_a_check_that_raises_says_which_kind_of_failure(db_conn, monkeypat
 
 async def test_checks_come_in_a_fixed_order(db_conn):
     checks = await run_checks(db_conn, _router(), {}, http=_searxng_ok())
-    assert [c.id for c in checks] == ["providers", "reader", "context", "embeddings", "docling", "web_search"]
+    assert [c.id for c in checks] == ["providers", "reader", "context", "embeddings", "docling", "web_search",
+                                      "voice_input"]
 
 
 async def test_providers_states(db_conn):
@@ -420,7 +423,8 @@ async def test_overview_route_is_admin_only(db_conn, monkeypatch):
     async with client(app_for(deps.Principal(user_id=admin["id"], email=admin["email"], role="admin"))) as c:
         r = await c.get("/v1/admin/overview")
     assert r.status_code == 200
-    assert [x["id"] for x in r.json()["checks"]] == ["providers", "reader", "context", "embeddings", "docling", "web_search"]
+    assert [x["id"] for x in r.json()["checks"]] == ["providers", "reader", "context", "embeddings", "docling", "web_search",
+                                      "voice_input"]
 
 
 _LIMITS = InferenceLimits(num_ctx_max=32768, keep_alive_max_s=1800)
@@ -574,7 +578,8 @@ def test_the_embedding_model_isnt_listed_as_a_chat_model():
 async def test_a_malformed_env_value_costs_one_line_not_the_page(db_conn, monkeypatch):
     checks = {c.id: c for c in await run_checks(db_conn, _router(), {"INFERENCE_DAILY_TOKEN_BUDGET": "lots"},
                                                 http=_searxng_ok())}
-    assert list(checks) == ["providers", "reader", "context", "embeddings", "docling", "web_search"]
+    assert list(checks) == ["providers", "reader", "context", "embeddings", "docling", "web_search",
+                                      "voice_input"]
     assert (checks["context"].state, checks["context"].summary) == ("error", "The check failed: ValueError.")
     assert checks["providers"].state == "ok" and checks["web_search"].state == "ok"
 
@@ -601,3 +606,77 @@ async def test_the_overview_route_answers_with_a_malformed_env_value(db_conn, mo
 
 async def _off():
     return console_overview._check("web_search", "off", "Off.")
+
+
+# ---------- voice input (Task 6) ----------
+
+class _Voice:
+    name, model, where = "local", "small", "this server"
+
+    def __init__(self, status=None, raises=None):
+        self._status, self._raises, self.probed = status, raises, 0
+
+    async def status(self):
+        self.probed += 1
+        if self._raises:
+            raise self._raises
+        return self._status
+
+    def warm(self):
+        raise AssertionError("the Overview must not warm an engine")
+
+
+@pytest.fixture
+def voice(monkeypatch):
+    holder = {}
+
+    def install(**kw):
+        speech_service.reset_for_tests()
+        holder["v"] = _Voice(**kw)
+        monkeypatch.setattr(speech_service, "_transcriber", holder["v"])
+        return holder["v"]
+    yield install
+    speech_service.reset_for_tests()
+
+
+async def _voice_check(db_conn, env=None):
+    return (await _by_id(db_conn, _router(), env={"CHAT_VOICE_INPUT": "on"} if env is None else env))["voice_input"]
+
+
+async def test_voice_off_says_how_to_turn_it_on_and_probes_nothing(db_conn, voice):
+    v = voice(status=EngineStatus(True, "ready", ""))
+    c = await _voice_check(db_conn, env={})
+    assert (c.state, c.title, c.section) == ("off", "Voice input", "chat")
+    assert c.summary == "Off. Admin → Chat options turns it on."
+    assert v.probed == 0
+
+
+async def test_voice_ready_names_engine_model_and_place(db_conn, voice):
+    voice(status=EngineStatus(True, "ready", ""))
+    c = await _voice_check(db_conn)
+    assert (c.state, c.summary) == ("ok", "local · small · runs on this server")
+
+
+async def test_voice_loading_is_a_warning(db_conn, voice):
+    voice(status=EngineStatus(False, "loading", "Loading the model"))
+    c = await _voice_check(db_conn)
+    assert (c.state, c.summary) == ("warn", "Getting ready: downloading or loading small.")
+
+
+async def test_voice_error_shows_the_detail(db_conn, voice):
+    voice(status=EngineStatus(False, "error", "The transcription server didn't answer"))
+    c = await _voice_check(db_conn)
+    assert (c.state, c.summary) == ("error", "The transcription server didn't answer")
+
+
+async def test_a_status_that_raises_is_an_error_line_with_the_type_name(db_conn, voice):
+    voice(raises=KeyError("x"))
+    c = await _voice_check(db_conn)
+    assert (c.state, c.summary) == ("error", "The check failed: KeyError.")
+
+
+async def test_the_admin_choice_turns_the_check_on(db_conn, voice):
+    voice(status=EngineStatus(True, "ready", ""))
+    await chat_options.save_voice_input(db_conn, True, updated_by=None)
+    c = await _voice_check(db_conn, env={})
+    assert c.state == "ok"

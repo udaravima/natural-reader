@@ -62,3 +62,28 @@ def test_a_malformed_url_shows_a_placeholder_instead_of_failing():
     assert rows["provider:x"]["env"] == "INFERENCE_X_URL"
     assert rows["searxng"]["value"] == "Not a valid URL" and rows["searxng"]["source"] == "env"
     assert rows["embedding_url"]["value"] == "Not a valid URL"
+
+
+def test_speech_rows_have_defaults_and_name_their_variables():
+    d = _by_id({})
+    assert (d["speech_engine"]["value"], d["speech_engine"]["env"], d["speech_engine"]["source"]) == (
+        "local", "SPEECH_ENGINE", "default")
+    assert (d["speech_model"]["value"], d["speech_model"]["env"], d["speech_model"]["source"]) == (
+        "small", "SPEECH_MODEL", "default")
+    assert (d["speech_url"]["value"], d["speech_url"]["env"], d["speech_url"]["source"]) == (
+        "Not set", "SPEECH_URL", "default")
+    assert (d["speech_key"]["value"], d["speech_key"]["env"], d["speech_key"]["source"]) == (
+        "not set", "SPEECH_API_KEY", "default")
+
+
+def test_speech_rows_show_the_environment_and_never_the_key_or_url_secrets():
+    env = {"SPEECH_ENGINE": "openai", "SPEECH_MODEL": "whisper-1", "SPEECH_API_KEY": "sk-speech-secret",
+           "SPEECH_URL": "https://user:pw@speech.example.com:8443/v1?key=q"}
+    rows = readonly_rows(env)
+    dumped = json.dumps(rows)
+    assert "sk-speech-secret" not in dumped and "pw" not in dumped and "key=q" not in dumped
+    d = {r["id"]: r for r in rows}
+    assert (d["speech_engine"]["value"], d["speech_engine"]["source"]) == ("openai", "env")
+    assert (d["speech_model"]["value"], d["speech_model"]["source"]) == ("whisper-1", "env")
+    assert (d["speech_url"]["value"], d["speech_url"]["source"]) == ("https://speech.example.com:8443/v1", "env")
+    assert (d["speech_key"]["value"], d["speech_key"]["source"]) == ("set", "env")
