@@ -64,6 +64,8 @@ def _entry(m, llm, ms: model_settings.ModelsSettings, limits: inference_limits.I
     yourself, `sizes_context`) also says what context size it will be loaded with: `fixed` when the admin or the
     environment decided it (already within the limits), else `auto`, the default within the limits."""
     out = m.to_json()
+    # Whether the model runs on hardware the deployer controls (the picker's local/cloud hint).
+    out["local"] = model_settings.is_local(llm.providers[m.provider].config, m.name, ms.provider_locality)
     if m.kind == "ollama":
         out["limits"] = limits_out
     if model_settings.sizes_context(llm.providers[m.provider].config, m.name):

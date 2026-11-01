@@ -89,7 +89,7 @@ async def test_models_lists_ids_with_provider_and_capabilities(client, upstream)
                          "capabilities": {"tools": True, "thinking": False, "vision": False,
                                           "audio": False, "contextWindow": 4096},
                          "limits": {"numCtxMax": 32768, "keepAliveMaxS": 1800},
-                         "context_size": {"fixed": None, "auto": 16384}}
+                         "context_size": {"fixed": None, "auto": 16384}, "local": True}
 
 
 async def test_ollama_models_carry_the_deployment_limits(client, upstream, monkeypatch):
@@ -268,3 +268,15 @@ async def test_unreadable_models_row_falls_back_to_the_environment(client, upstr
     models = (await client.get("/v1/inference/models")).json()["models"]
     assert [m["id"] for m in models] == ["ollama:gemma3"]
     assert models[0]["context_size"] == {"fixed": None, "auto": 16384}
+
+
+async def test_models_say_whether_they_run_locally(client, upstream, monkeypatch):
+    upstream["handler"] = _tags_and_show(["gemma3"])
+    assert (await client.get("/v1/inference/models")).json()["models"][0]["local"] is True
+    await _restart_router(upstream, monkeypatch, INFERENCE_PROVIDERS="gpu", INFERENCE_GPU_KIND="ollama",
+                          INFERENCE_GPU_URL="http://gpu.example.com:11434")
+    models = (await client.get("/v1/inference/models")).json()["models"]
+    assert models[0]["local"] is False   # a public host is a cloud guess until the admin marks it Local
+    upstream["handler"] = _tags_and_show(["gemma4:31b-cloud"])
+    await _restart_router(upstream, monkeypatch, INFERENCE_PROVIDERS="")
+    assert (await client.get("/v1/inference/models")).json()["models"][0]["local"] is False

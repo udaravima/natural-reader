@@ -681,9 +681,11 @@ async def _log_sent(claim: TurnClaim, req: TurnRequest) -> None:
                      f"prompt: {title_from_prompt(req.text or '(attachment only)')}")
     if req.attachments:
         images = sum(1 for a in req.attachments if a.kind == "image")
-        audio = len(req.attachments) - images
+        audio = sum(1 for a in req.attachments if a.kind == "audio")
+        texts = len(req.attachments) - images - audio
         parts = ([f"{images} image{'s' if images > 1 else ''}"] if images else []) + \
-                ([f"{audio} audio"] if audio else [])
+                ([f"{audio} audio"] if audio else []) + \
+                ([f"{texts} text file{'s' if texts > 1 else ''}"] if texts else [])
         await _log_event(claim.session_id, "attached", ", ".join(parts))
 
 

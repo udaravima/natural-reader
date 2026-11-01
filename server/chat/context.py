@@ -22,9 +22,10 @@ user typed.
 """
 from __future__ import annotations
 
+import base64
 import logging
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -36,7 +37,7 @@ from ..services.embeddings import embed_query
 from . import store
 from .config import ChatConfig
 from .project_scope import ScopeDoc
-from .prompt import PASSAGES_TAG, PIN_TAG, display_name, fence, system_rules
+from .prompt import ATTACHED_TAG, PASSAGES_TAG, PIN_TAG, display_name, fence, system_rules
 from .store import StoredMessage
 from .tools import result_text
 from .tools.search_documents import PREFETCH_CALL_ID, passages_result
@@ -184,6 +185,30 @@ def _merge_same_role(messages: list[Message]) -> list[Message]:
     return out
 
 
+def _attachment_text(a: Attachment) -> str:
+    return base64.b64decode(a.base64).decode("utf-8", errors="replace")
+
+
+def _file_block(a: Attachment) -> str:
+    """One attached text file as data: a fenced block that names the file, so the file's own text can't end it."""
+    text = _attachment_text(a)
+    body = fence(text)
+    if not body.endswith("\n"):
+        body += "\n"
+    return f'<{ATTACHED_TAG} name="{display_name(a.name)}">\n{body}</{ATTACHED_TAG}>'
+
+
+def inline_text_files(m: Message) -> Message:
+    """The message's text attachments moved into its content as fenced blocks after what the person typed (a
+    provider takes images and audio as attachments; text is just more text for every model). Only the model
+    input changes: the stored message keeps the text as typed. Images and audio stay attachments."""
+    files = [a for a in m.attachments if a.kind == "text"]
+    if not files:
+        return m
+    content = "\n\n".join([c for c in (m.content,) if c] + [_file_block(a) for a in files])
+    return replace(m, content=content, attachments=tuple(a for a in m.attachments if a.kind != "text"))
+
+
 def _marker(meta: dict[str, Any]) -> str:
     return _MARKER.format(kind=meta.get("kind", "file"), name=meta.get("name") or "attachment")
 
@@ -206,9 +231,12 @@ def _fit_history(history: list[StoredMessage], fixed_chars: int, fixed_attachmen
     budget = window - cfg.reply_reserve_tokens
 
     def tokens() -> int:
+        # A kept text file costs its characters (stored `size` is bytes: a safe over-estimate); images and audio
+        # cost a flat estimate.
         chars = fixed_chars + sum(len(i.stored.content) + sum(len(_marker(a)) + 2 for a in i.dropped)
+                                  + sum(int(a.get("size") or 0) for a in i.keep if a.get("kind") == "text")
                                   for i in items)
-        attachments = fixed_attachments + sum(len(i.keep) for i in items)
+        attachments = fixed_attachments + sum(1 for i in items for a in i.keep if a.get("kind") != "text")
         return math.ceil(chars / 4) + attachments * cfg.attachment_token_estimate
 
     dropped_attachments = 0
@@ -291,8 +319,12 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
                          today=today_line(turn.now, turn.timezone, turn.default_timezone), profile=turn.profile,
                          has_map=bool(turn.project_map), project=getattr(turn.tool_ctx, "project", None))
     system = Message("system", "\n\n".join(c for c in (rules, turn.project_map, pin_text(turn.pins)) if c))
-    fixed_chars = len(system.content) + len(volatile) + 2 + len(turn.text) + sum(len(m.content) for m in exchange)
-    items, n_messages, n_attachments = _fit_history(turn.history, fixed_chars, len(turn.attachments),
+    # The new message's text files cost their characters; only images and audio take the flat estimate.
+    current_files = sum(len(_attachment_text(a)) for a in turn.attachments if a.kind == "text")
+    fixed_chars = (len(system.content) + len(volatile) + 2 + len(turn.text) + current_files
+                   + sum(len(m.content) for m in exchange))
+    items, n_messages, n_attachments = _fit_history(turn.history, fixed_chars,
+                                                    sum(1 for a in turn.attachments if a.kind != "text"),
                                                     turn.window, cfg)
     wanted = [(i.stored.id, a["ordinal"]) for i in items for a in i.keep]
     blobs = await store.load_attachment_bytes(wanted) if wanted else {}
@@ -311,7 +343,7 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
         kept = tuple(blobs[(i.stored.id, a["ordinal"])] for a in i.keep
                      if (i.stored.id, a["ordinal"]) in blobs)
         history_messages.append(Message(i.stored.role, content, attachments=kept))
-    history_messages = _merge_same_role(history_messages)
+    history_messages = [inline_text_files(m) for m in _merge_same_role(history_messages)]
     # The new message: the volatile block first, then what the user typed. An
     # unanswered user turn at the end of history (its reply failed) joins it
     # between the two, so the prompt still ends on exactly one user message
@@ -319,6 +351,7 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     current = Message("user", turn.text, attachments=turn.attachments)
     if history_messages and history_messages[-1].role == "user":
         current = _merge_same_role([history_messages.pop(), current])[0]
+    current = inline_text_files(current)
     current = Message("user", "\n\n".join(c for c in (volatile, current.content) if c),
                       attachments=current.attachments)
     notes = [pre.note] if pre.note else []
