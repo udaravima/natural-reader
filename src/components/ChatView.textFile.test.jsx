@@ -241,6 +241,51 @@ describe('text files in the message box', () => {
     });
 });
 
+describe('a refused send and the model', () => {
+    const realOnA = async (props) => {
+        render(<Harness props={props} />);
+        pick([file('A=secret\n', '.env')]);
+        fireEvent.click(await staged('.env'));
+        fireEvent.click(screen.getByRole('button', { name: 'Send real values' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Yes, send real values' }));
+        await staged('.env');
+    };
+    const deferred = () => {
+        let release;
+        const gate = new Promise((r) => { release = r; });
+        return { release, sendMessage: vi.fn(() => gate) };
+    };
+
+    it('puts masking back on when the model changed before the refusal arrived', async () => {
+        const { release, sendMessage } = deferred();
+        const props = baseProps({ draft: 'q', sendMessage });
+        await realOnA(props);
+        fireEvent.click(screen.getByTitle('Send (Enter)'));
+        fireEvent.click(screen.getByText('switch-to-cloud'));
+        release({ sent: false, refused: true });
+        expect(await staged('.env')).toHaveTextContent('1 value masked');
+        expect(props.showToast).toHaveBeenCalledWith('Masking is back on: you changed the model.', expect.anything());
+        sendMessage.mockImplementation(async () => ({ sent: true }));
+        fireEvent.click(screen.getByTitle('Send (Enter)'));
+        const att = sendMessage.mock.calls[1][1][0];
+        expect(att.sendReal).toBe(false);
+        expect(att.masked).toBe(1);
+    });
+
+    it('keeps the real values when the model did not change', async () => {
+        const { release, sendMessage } = deferred();
+        const props = baseProps({ draft: 'q', sendMessage });
+        await realOnA(props);
+        fireEvent.click(screen.getByTitle('Send (Enter)'));
+        release({ sent: false, refused: true });
+        expect(await staged('.env')).not.toHaveTextContent('masked');
+        sendMessage.mockImplementation(async () => ({ sent: true }));
+        fireEvent.click(screen.getByTitle('Send (Enter)'));
+        expect(sendMessage.mock.calls[1][1][0].sendReal).toBe(true);
+        expect(props.showToast).not.toHaveBeenCalledWith('Masking is back on: you changed the model.', expect.anything());
+    });
+});
+
 describe('a sent text attachment', () => {
     it('renders a chip with name, size and masked, not the text and not the data-gone notice', () => {
         const att = { id: 't1', kind: 'text', name: '.env', mimeType: 'text/plain', size: 20, masked: true };

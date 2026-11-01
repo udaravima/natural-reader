@@ -119,6 +119,8 @@ export default function ChatView({
   const pendingRef = useRef(pendingAttachments);
   useEffect(() => { pendingRef.current = pendingAttachments; }, [pendingAttachments]);
   const [viewingId, setViewingId] = useState(null);
+  const selectedModelRef = useRef(selectedModel);
+  useEffect(() => { selectedModelRef.current = selectedModel; }, [selectedModel]);
   // Stick-to-bottom flag: when true, new messages/tokens auto-scroll the list to
   // the bottom (live "tailing"). When the user scrolls up, this flips to false
   // so they can read history without each token snapping them back down.
@@ -334,6 +336,7 @@ export default function ChatView({
     const text = draft;
     const atts = pendingAttachments;
     setViewingId(null);
+    const sentModel = selectedModel;
     setDraft("");
     setPendingAttachments([]);
     // A refused turn (409, 413, …) never reached the chat: put the text and
@@ -341,7 +344,14 @@ export default function ChatView({
     Promise.resolve(sendMessage(text, atts)).then((r) => {
       if (!r?.refused) return;
       setDraft((d) => d || text);
-      setPendingAttachments((a) => (a.length ? a : atts));
+      // Real values were agreed for the model the send was made with. If the
+      // picker moved meanwhile, the R4 effect saw nothing staged: do it here.
+      let back = atts;
+      if (selectedModelRef.current !== sentModel && atts.some((a) => a.kind === "text" && a.sendReal)) {
+        back = atts.map((a) => (a.kind === "text" && a.sendReal ? { ...a, sendReal: false } : a));
+        showToast?.("Masking is back on: you changed the model.", 4000);
+      }
+      setPendingAttachments((a) => (a.length ? a : back));
     });
   };
 

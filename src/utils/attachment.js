@@ -23,8 +23,9 @@ export const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // 25 MB
 export const IMAGE_ACCEPT = 'image/*';
 export const AUDIO_ACCEPT = 'audio/*';
 // Mirrors textAttachment.js's extension list, so the picker offers what
-// isTextFile() will take. `.env` files often have no MIME type at all.
-export const TEXT_ACCEPT = 'text/*,.txt,.md,.env,.json,.yaml,.yml,.toml,.ini,.conf,.cfg,.csv,.tsv,.log,.xml,.html,.css,.js,.ts,.jsx,.tsx,.py,.sh,.sql,.properties';
+// isTextFile() will take. isTextFile takes any name starting .env, but an
+// accept entry only matches a name's end, so the common siblings are listed. `.env` files often have no MIME type at all.
+export const TEXT_ACCEPT = 'text/*,.txt,.md,.env,.json,.yaml,.yml,.toml,.ini,.conf,.cfg,.csv,.tsv,.log,.xml,.html,.css,.js,.ts,.jsx,.tsx,.py,.sh,.sql,.properties,.env.local,.env.development,.env.production,.env.staging,.env.test,.env.example';
 export const ATTACHMENT_ACCEPT = `${IMAGE_ACCEPT},${AUDIO_ACCEPT},${TEXT_ACCEPT}`;
 
 // What a staged text file sends: its real text only after the person chose to.

@@ -6,7 +6,7 @@
 export const TEXT_FILE_MAX_BYTES = 65536;
 export const TEXT_MESSAGE_MAX_BYTES = 131072;
 
-const TEXT_EXTENSIONS = new Set([
+export const TEXT_EXTENSIONS = new Set([
     'txt', 'md', 'env', 'json', 'yaml', 'yml', 'toml', 'ini', 'conf', 'cfg',
     'csv', 'tsv', 'log', 'xml', 'html', 'css', 'js', 'ts', 'jsx', 'tsx', 'py',
     'sh', 'sql', 'properties',
