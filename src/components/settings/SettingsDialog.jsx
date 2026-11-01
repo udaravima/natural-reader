@@ -5,6 +5,7 @@ import { InferenceRow } from '../chat/InferenceRow';
 import { KEEP_ALIVE_OPTIONS, NUM_CTX_OPTIONS, serverContextSize, shownValue, withAutoLabel, withinLimit } from '../../lib/inferenceLimits';
 import { AccountPanel } from '../account/AccountPanel';
 import { resolveForModel, patchForModel } from '../../hooks/inference';
+import { apiFetch } from '../../utils/apiFetch';
 import { groupByProvider, migrateModelId, modelLabel, supportedKnobs } from '../../lib/modelIds';
 
 function Field({ theme, label, children }) {
@@ -234,7 +235,28 @@ function VoicePanel({ theme, v }) {
     );
 }
 
+// The languages voice input offers: Auto first, then the engine's, by name. Null while unknown, and when voice
+// input is off or the status can't be read: the row means nothing then, so it isn't shown.
+function useSpeechLanguages(apiHost, apiPort) {
+    const [languages, setLanguages] = useState(null);
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await apiFetch(apiHost, apiPort, '/v1/speech/status');
+                if (!res.ok) return;
+                const body = await res.json();
+                if (cancelled || body?.enabled !== true || !Array.isArray(body.languages)) return;
+                setLanguages([...body.languages].sort((a, b) => a.name.localeCompare(b.name)));
+            } catch { /* the row stays hidden */ }
+        })();
+        return () => { cancelled = true; };
+    }, [apiHost, apiPort]);
+    return languages;
+}
+
 function ChatPanel({ theme, ch }) {
+    const speechLanguages = useSpeechLanguages(ch.apiHost, ch.apiPort);
     // Which model's per-model inference knobs are being edited (defaults to the
     // active chat model). Editing writes inferenceByModel[configModel] via the
     // same pure helpers the chat sidebar used.
@@ -269,6 +291,22 @@ function ChatPanel({ theme, ch }) {
                         {ch.chatAutoTts ? <Volume2 size={14} className="text-blue-500" /> : <VolumeX size={14} className={theme.textMuted} />}
                     </button>
                 </Field>
+
+                {speechLanguages && (
+                    <Field theme={theme} label="Speech language">
+                        <select
+                            aria-label="Speech language"
+                            // A stored language the engine no longer offers shows as Auto (and is sent as Auto).
+                            value={speechLanguages.some((l) => l.code === ch.speechLanguage) ? ch.speechLanguage : 'auto'}
+                            onChange={(e) => ch.setSpeechLanguage(e.target.value)}
+                            className={`w-full ${input}`}
+                        >
+                            <option value="auto">Auto (detect the language)</option>
+                            {speechLanguages.map((l) => <option key={l.code} value={l.code}>{l.name}</option>)}
+                        </select>
+                        <p className={`text-[9px] ${theme.textMuted}`}>What you speak into the microphone button in the message box.</p>
+                    </Field>
+                )}
 
                 <Field theme={theme} label="Per-model inference">
                     <select

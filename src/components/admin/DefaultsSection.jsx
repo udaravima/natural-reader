@@ -16,12 +16,16 @@ const LABELS = {
   think: 'Thinking',
   selectedVoice: 'Voice',
   playbackSpeed: 'Reading speed',
+  speechLanguage: 'Speech language',
 };
 const TTS_MODE_LABEL = { streaming: 'While it streams', 'after-complete': 'Once it is complete' };
 const THINK_LABEL = { off: 'Off', on: 'On', low: 'Low', medium: 'Medium', high: 'High' };
-const ORDER = ['chatAutoTts', 'chatTtsMode', 'think', 'selectedVoice', 'playbackSpeed'];
+const ORDER = ['chatAutoTts', 'chatTtsMode', 'think', 'selectedVoice', 'playbackSpeed', 'speechLanguage'];
 
-function shown(name, value) {
+// The server's defaults view gives only the code ("de"); the names come from the speech status, which
+// lists the engine's languages whether or not voice input is on. Without them a code stands for itself.
+function shown(name, value, languageNames = {}) {
+  if (name === 'speechLanguage') return value === 'auto' ? 'Auto' : (languageNames[value] ?? value);
   if (name === 'chatAutoTts') return value ? 'on' : 'off';
   if (name === 'chatTtsMode') return TTS_MODE_LABEL[value] ?? value;
   if (name === 'think') return THINK_LABEL[value]?.toLowerCase() ?? value;
@@ -37,6 +41,8 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast, onDirtyCha
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(null);   // setting name awaiting "Replace for everyone"
 
+  const [languageNames, setLanguageNames] = useState({});   // code -> name, from /v1/speech/status
+
   const apply = (view) => { setData(view); setDraft(view.values); };
 
   const load = useCallback(async () => {
@@ -51,6 +57,20 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast, onDirtyCha
   }, [apiHost, apiPort]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch(apiHost, apiPort, '/v1/speech/status');
+        if (!res.ok) return;
+        const body = await res.json();
+        if (cancelled || !Array.isArray(body?.languages)) return;
+        setLanguageNames(Object.fromEntries(body.languages.map((l) => [l.code, l.name])));
+      } catch { /* codes stand for themselves */ }
+    })();
+    return () => { cancelled = true; };
+  }, [apiHost, apiPort]);
 
   const call = async (path, init, done) => {
     setBusy(true);
@@ -110,6 +130,18 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast, onDirtyCha
         </select>
       );
     }
+    if (name === 'speechLanguage') {
+      const value = v ?? 'auto';
+      const codes = Object.keys(languageNames).sort((a, b) => languageNames[a].localeCompare(languageNames[b]));
+      // A saved default the list doesn't know (or no list at all) still shows, as its code.
+      if (value !== 'auto' && !codes.includes(value)) codes.push(value);
+      return (
+        <select aria-label={LABELS[name]} value={value} onChange={(e) => set(name, e.target.value)} className={control}>
+          <option value="auto">Auto</option>
+          {codes.map((c) => <option key={c} value={c}>{languageNames[c] ?? c}</option>)}
+        </select>
+      );
+    }
     return (
       <input type="number" aria-label={LABELS[name]} min={0.5} max={2} step={0.1} value={v}
         onChange={(e) => set(name, Math.min(2, Math.max(0.5, parseFloat(e.target.value) || 1)))}
@@ -136,14 +168,14 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast, onDirtyCha
                 <span className="flex flex-col min-w-0">
                   <span className={`text-xs ${theme.text}`}>{LABELS[name]}</span>
                   {data.overridden.includes(name) && (
-                    <span className={`text-[10px] ${theme.textMuted}`}>built-in: {shown(name, data.builtIn[name])}</span>
+                    <span className={`text-[10px] ${theme.textMuted}`}>built-in: {shown(name, data.builtIn[name], languageNames)}</span>
                   )}
                 </span>
                 <span className="flex items-center gap-3">
                   {field(name)}
                   {confirming === name ? (
                     <span className="flex items-center gap-2 text-[10px]">
-                      <span className={theme.textSecondary}>Replaces everyone&apos;s own choice with {shown(name, data.values[name])}.</span>
+                      <span className={theme.textSecondary}>Replaces everyone&apos;s own choice with {shown(name, data.values[name] ?? 'auto', languageNames)}.</span>
                       <button onClick={() => applyToEveryone(name)} disabled={busy}
                         className="min-h-11 md:min-h-0 underline text-red-500 font-bold">Replace for everyone</button>
                       <button onClick={() => setConfirming(null)} className="min-h-11 md:min-h-0 underline">Cancel</button>

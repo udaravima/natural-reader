@@ -8,6 +8,11 @@ import { apiFetch } from '../../utils/apiFetch';
  * else "ask". A change applies from each person's next message. "Use the
  * server setting" removes the admin's choice, so the deployer's value
  * applies again; without it there would be no way back from this screen.
+ *
+ * Voice input (chat composer inputs, spec §4.4) is the second control: On or
+ * Off for the microphone button, off unless an admin or CHAT_VOICE_INPUT
+ * turns it on. It has its own source line and its own reset, and saves only
+ * its own key, so neither setting touches the other.
  */
 
 const MODES = [
@@ -24,6 +29,13 @@ const UNAVAILABLE_ID = 'chat-web-search-unavailable';
 const SOURCE_LINE = {
   admin: 'Set here.',
   env: 'From the server setting CHAT_WEB_SEARCH.',
+  default: 'The default.',
+};
+
+const VOICE_SOURCE_ID = 'chat-voice-input-source';
+const VOICE_SOURCE_LINE = {
+  admin: 'Set here.',
+  env: 'From the server setting CHAT_VOICE_INPUT.',
   default: 'The default.',
 };
 
@@ -54,39 +66,50 @@ export function ChatOptionsSection({ theme, apiHost, apiPort, showToast, onSaved
   // keeps it there, or their next arrow key would change a deployment-wide setting.
   useEffect(() => {
     if (saving || !refocus.current) return;
+    const radioName = refocus.current === 'voice_input' ? 'chat-voice-input' : 'chat-web-search';
     refocus.current = false;
     const section = sectionRef.current;
     const active = document.activeElement;
     if (active && active !== document.body && !section?.contains(active)) return;
-    section?.querySelector('input[type="radio"]:checked')?.focus();
+    section?.querySelector(`input[name="${radioName}"]:checked`)?.focus();
   }, [saving]);
 
-  // One PUT for both a choice and the reset (mode null). `optimistic` shows a choice at once; a failure puts
-  // back exactly what was there, mode and source both.
-  const put = async (mode, optimistic) => {
+  // One PUT for both a choice and the reset (value null). `body` carries exactly one key (web_search or
+  // voice_input), so a save never touches the other setting. `optimistic` shows a choice at once; a failure puts
+  // back exactly what was there, value and source both.
+  const put = async (body, optimistic) => {
     const before = data;
+    const key = Object.keys(body)[0];
     // Only a control in this section calls this, so the admin's attention is here whether or not the browser
     // focused that control on the click (a script click, or Safari, which does not focus buttons on click).
-    refocus.current = true;
+    refocus.current = key;
     setSaving(true);
-    if (optimistic) setData({ ...before, web_search: mode, source: 'admin' });
+    if (optimistic) {
+      setData(key === 'voice_input'
+        ? { ...before, voice_input: body.voice_input, voice_source: 'admin' }
+        : { ...before, web_search: body.web_search, source: 'admin' });
+    }
     try {
       const res = await apiFetch(apiHost, apiPort, '/v1/admin/chat-options', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ web_search: mode }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         let detail = `HTTP ${res.status}`;
         try {
-          const body = await res.json();
-          if (typeof body.detail === 'string' && body.detail) detail = body.detail;
+          const failure = await res.json();
+          if (typeof failure.detail === 'string' && failure.detail) detail = failure.detail;
         } catch { /* not JSON */ }
         throw new Error(detail);
       }
       const view = await res.json();
       setData(view);
-      showToast?.(`Web search: ${LABEL[view.web_search] ?? view.web_search}. Applies from the next message.`, 4000);
+      if (key === 'voice_input') {
+        showToast?.(`Voice input: ${view.voice_input ? 'On' : 'Off'}. Applies from the next recording.`, 4000);
+      } else {
+        showToast?.(`Web search: ${LABEL[view.web_search] ?? view.web_search}. Applies from the next message.`, 4000);
+      }
       onSaved?.();
     } catch (e) {
       setData(before);
@@ -98,7 +121,11 @@ export function ChatOptionsSection({ theme, apiHost, apiPort, showToast, onSaved
 
   const choose = (mode) => {
     if (saving || mode === data.web_search) return;
-    put(mode, true);
+    put({ web_search: mode }, true);
+  };
+  const chooseVoice = (on) => {
+    if (saving || on === data.voice_input) return;
+    put({ voice_input: on }, true);
   };
 
   const sectionTitle = 'text-xs font-bold uppercase tracking-wider text-blue-500';
@@ -142,8 +169,43 @@ export function ChatOptionsSection({ theme, apiHost, apiPort, showToast, onSaved
             <span id={SOURCE_ID} className={theme.textSecondary}>{SOURCE_LINE[data.source] ?? data.source}</span>
             {data.source === 'admin' && (
               <button
-                onClick={() => put(null, false)}
+                onClick={() => put({ web_search: null }, false)}
                 disabled={saving}
+                className="min-h-11 md:min-h-0 underline text-blue-500 disabled:opacity-40 disabled:no-underline"
+              >
+                Use the server setting
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+      {!failed && typeof data?.voice_input === 'boolean' && (
+        <div className={`flex flex-col gap-2 p-3 rounded-lg border ${theme.border} ${theme.bgSecondary}`}>
+          <fieldset aria-describedby={VOICE_SOURCE_ID} className="flex flex-col gap-2 min-w-0">
+            <legend className={`text-xs font-bold mb-2 ${theme.text}`}>Voice input</legend>
+            {[[true, 'On'], [false, 'Off']].map(([on, label]) => (
+              <label key={label} className={`min-h-11 md:min-h-0 flex items-center gap-2 text-xs ${theme.text} ${saving ? 'opacity-60' : 'cursor-pointer'}`}>
+                <input
+                  type="radio" name="chat-voice-input" value={on ? 'on' : 'off'}
+                  checked={data.voice_input === on}
+                  onChange={() => chooseVoice(on)}
+                  disabled={saving}
+                  className="h-3 w-3 accent-blue-500"
+                />
+                {label}
+              </label>
+            ))}
+            <span className={`pl-5 text-[10px] ${theme.textSecondary}`}>
+              The microphone button in the message box. Turning it on starts loading the speech model, which downloads once.
+            </span>
+          </fieldset>
+          <div className="flex flex-wrap items-center gap-3 text-[10px]">
+            <span id={VOICE_SOURCE_ID} className={theme.textSecondary}>{VOICE_SOURCE_LINE[data.voice_source] ?? data.voice_source}</span>
+            {data.voice_source === 'admin' && (
+              <button
+                onClick={() => put({ voice_input: null }, false)}
+                disabled={saving}
+                aria-label="Use the server setting for voice input"
                 className="min-h-11 md:min-h-0 underline text-blue-500 disabled:opacity-40 disabled:no-underline"
               >
                 Use the server setting

@@ -30,9 +30,8 @@ import WebOfferCard from "./chat/WebOfferCard";
 import { citationDocs, remarkCitations } from "../lib/citations";
 import { estimateTokens } from "../hooks/inference";
 import { buildPinPreamble } from "../hooks/pins";
-// VoiceRecorder is intentionally not imported — audio attachments are paused
-// until a Whisper-style transcription step is added (see plan file). The file
-// itself is kept on disk so re-enabling is a single import + a JSX block.
+import MicButton from "./chat/MicButton";
+import { useVoiceInput } from "../hooks/useVoiceInput";
 import {
   fileToAttachment,
   IMAGE_ACCEPT,
@@ -97,6 +96,11 @@ export default function ChatView({
   // A narrow column (ChatSidePanel, beside the page): tighter padding, and
   // the model picker is above it rather than in the sidebar.
   compact = false,
+  // Speak a message: where the speech routes live, and the person's Speech
+  // language setting ('auto' or a code).
+  apiHost = '',
+  apiPort = '',
+  speechLanguage = 'auto',
 }) {
   const copyMessage = async (text) => {
     if (!text) return;
@@ -150,10 +154,44 @@ export default function ChatView({
     ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
   }, [draft]);
 
+  // ------ Speak a message ------
+  // The transcript goes into the box at the caret as it is when the answer
+  // arrives (the person may have typed or moved meanwhile): read from the
+  // textarea itself, never from where the recording began. A selection is
+  // never replaced. A space is added only where one is missing. Nothing is sent.
+  const caretAfterRef = useRef(null);
+  const insertTranscript = (text) => {
+    const ta = textareaRef.current;
+    const current = ta ? ta.value : "";
+    const at = ta ? Math.min(ta.selectionEnd ?? current.length, current.length) : current.length;
+    const before = current.slice(0, at);
+    const after = current.slice(at);
+    const lead = before && !/\s$/.test(before) ? " " : "";
+    const trail = after && !/^\s/.test(after) ? " " : "";
+    caretAfterRef.current = before.length + lead.length + text.length;
+    setDraft(before + lead + text + trail + after);
+  };
+  const voice = useVoiceInput({
+    apiHost,
+    apiPort,
+    language: speechLanguage,
+    onText: insertTranscript,
+    showToast,
+  });
+  // After the new draft is rendered: focus the box, caret just after the text.
+  useEffect(() => {
+    const pos = caretAfterRef.current;
+    const ta = textareaRef.current;
+    if (pos === null || !ta || ta.value.length < pos) return;
+    caretAfterRef.current = null;
+    ta.focus();
+    ta.setSelectionRange(pos, pos);
+  }, [draft]);
+
   // ------ Attachment helpers ------
-  // Audio attachments are temporarily disabled — the Ollama image projector
-  // can't decode audio bytes, and we haven't added a Whisper transcription
-  // step yet. Audio files are filtered out here with a friendly toast.
+  // Audio FILES are still refused here with a friendly toast: the model
+  // can't decode audio bytes. Speaking a message (the microphone button) is
+  // different: the server transcribes it and the text lands in the box.
   const ingestFiles = async (fileList) => {
     const all = Array.from(fileList || []).filter(Boolean);
     const isImage = (f) => kindFromMime(f.type) === "image";
@@ -521,7 +559,7 @@ export default function ChatView({
 
           <div className="flex items-end gap-2">
             {/* Paperclip — opens the picker for images and text files (audio
-                attachments paused; see useChatEngine.js comment) */}
+                files are refused; speaking is the microphone beside it) */}
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isStreaming}
@@ -530,6 +568,7 @@ export default function ChatView({
             >
               <Paperclip size={18} />
             </button>
+            <MicButton theme={theme} voice={voice} />
             <input
               type="file"
               ref={fileInputRef}

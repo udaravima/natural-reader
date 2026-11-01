@@ -35,9 +35,10 @@ const ROUTES = {
   '/v1/admin/users': [person({ id: 'u1' }), person({ id: 'u2', email: 'b@x.io', status: 'active' })],
   '/v1/admin/projects': [project()],
   '/v1/admin/assistant': { text: 'Be brief.', source: 'admin', maxChars: 8000, preview: 'Preview', warnings: [] },
-  '/v1/admin/chat-options': { web_search: 'ask', source: 'admin', searxng: true },
+  '/v1/admin/chat-options': { web_search: 'ask', source: 'admin', searxng: true, voice_input: true, voice_source: 'admin' },
+  '/v1/speech/status': { enabled: true, languages: [{ code: 'de', name: 'German' }] },
   '/v1/admin/defaults': {
-    values: { ...BUILT_IN }, builtIn: BUILT_IN, overridden: [], epochs: {},
+    values: { ...BUILT_IN, speechLanguage: 'de' }, builtIn: BUILT_IN, overridden: [], epochs: {},
     choices: { chatTtsMode: ['streaming', 'after-complete'], think: ['off', 'on'] },
   },
   '/v1/admin/settings/models': {

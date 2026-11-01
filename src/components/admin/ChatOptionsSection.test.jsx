@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { ChatOptionsSection } from './ChatOptionsSection';
 
 vi.mock('../../utils/apiFetch', () => ({ apiFetch: vi.fn() }));
@@ -302,5 +302,119 @@ describe('ChatOptionsSection', () => {
     apiFetch.mockResolvedValue(json(500, {}));
     render(<ChatOptionsSection theme={theme} apiHost="" apiPort="" showToast={vi.fn()} />);
     expect(await screen.findByText(/Couldn't load the chat options/)).toBeTruthy();
+  });
+});
+
+describe('ChatOptionsSection: Voice input', () => {
+  const vradio = (name) => within(screen.getByRole('group', { name: 'Voice input' })).getByRole('radio', { name });
+  beforeEach(() => vi.clearAllMocks());
+
+  const full = (over = {}) => view({ voice_input: false, voice_source: 'default', ...over });
+  // Answers a PUT the way the server does: it applies only the keys sent.
+  function mountVoice(initial, { onPut } = {}) {
+    let current = initial;
+    apiFetch.mockImplementation(async (host, port, path, opts) => {
+      if (opts?.method === 'PUT') {
+        const body = JSON.parse(opts.body);
+        if (onPut) return onPut(body);
+        if ('voice_input' in body) {
+          current = { ...current, voice_input: body.voice_input ?? false, voice_source: body.voice_input === null ? 'default' : 'admin' };
+        }
+        if ('web_search' in body) {
+          current = { ...current, web_search: body.web_search ?? 'ask', source: body.web_search === null ? 'default' : 'admin' };
+        }
+        return json(200, current);
+      }
+      return json(200, current);
+    });
+    const showToast = vi.fn();
+    render(<ChatOptionsSection theme={theme} apiHost="" apiPort="" showToast={showToast} />);
+    return showToast;
+  }
+
+  it('shows a Voice input group with On and Off, on the saved value', async () => {
+    mountVoice(full({ voice_input: true, voice_source: 'admin' }));
+    const group = await screen.findByRole('group', { name: 'Voice input' });
+    expect(group).toBeTruthy();
+    expect(vradio('On').checked).toBe(true);
+    expect(vradio('Off').checked).toBe(false);
+  });
+
+  it('has no Voice input row when the server does not report it', async () => {
+    mountVoice(view());
+    await screen.findByRole('radio', { name: 'Ask first' });
+    expect(screen.queryByRole('group', { name: 'Voice input' })).toBeNull();
+  });
+
+  it('switching it on saves only voice_input and toasts', async () => {
+    const showToast = mountVoice(full());
+    await screen.findByRole('group', { name: 'Voice input' });
+    fireEvent.click(vradio('On'));
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(putBody()).toEqual({ voice_input: true });
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith('Voice input: On. Applies from the next recording.', expect.any(Number)));
+    expect(vradio('On').checked).toBe(true);
+    expect(await screen.findByText('Set here.')).toBeTruthy();
+  });
+
+  it('switching it off toasts Off', async () => {
+    const showToast = mountVoice(full({ voice_input: true, voice_source: 'admin' }));
+    await screen.findByRole('group', { name: 'Voice input' });
+    fireEvent.click(vradio('Off'));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith('Voice input: Off. Applies from the next recording.', expect.any(Number)));
+    expect(putBody()).toEqual({ voice_input: false });
+  });
+
+  it('a web search change never sends voice_input', async () => {
+    mountVoice(full());
+    await screen.findByRole('group', { name: 'Voice input' });
+    // two radios are named Off (web search and voice): the web one is the first in the page
+    fireEvent.click(screen.getAllByRole('radio', { name: 'Off' })[0]);
+    await waitFor(() => expect(puts().length).toBeGreaterThan(0));
+    for (let i = 0; i < puts().length; i++) expect(putBody(i)).not.toHaveProperty('voice_input');
+    expect(putBody(puts().length - 1)).toEqual({ web_search: 'off' });
+  });
+
+  it('Use the server setting for voice sends {voice_input: null} and leaves web search alone', async () => {
+    mountVoice(full({ web_search: 'auto', source: 'admin', voice_input: true, voice_source: 'admin' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Use the server setting for voice input' }));
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(putBody()).toEqual({ voice_input: null });
+    expect(await screen.findByText('The default.')).toBeTruthy();
+    // web search kept its own source and its own reset button
+    expect(screen.getByRole('button', { name: 'Use the server setting' })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: 'Search without asking' }).checked).toBe(true);
+  });
+
+  it('the web search reset sends only web_search', async () => {
+    mountVoice(full({ web_search: 'auto', source: 'admin', voice_input: true, voice_source: 'admin' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Use the server setting' }));
+    await waitFor(() => expect(puts()).toHaveLength(1));
+    expect(putBody()).toEqual({ web_search: null });
+  });
+
+  it.each([
+    ['admin', 'Set here.'],
+    ['env', 'From the server setting CHAT_VOICE_INPUT.'],
+    ['default', 'The default.'],
+  ])('says where voice input comes from: %s', async (voice_source, line) => {
+    mountVoice(full({ voice_source, source: 'env' }));
+    expect(await screen.findByText(line)).toBeTruthy();
+  });
+
+  it('only shows the voice reset when the admin set it', async () => {
+    mountVoice(full({ voice_source: 'env' }));
+    await screen.findByRole('group', { name: 'Voice input' });
+    expect(screen.queryByRole('button', { name: 'Use the server setting for voice input' })).toBeNull();
+  });
+
+  it('a failed voice save puts back the value and the source', async () => {
+    const showToast = mountVoice(full({ voice_source: 'env' }), { onPut: () => json(500, { detail: 'database is down' }) });
+    await screen.findByRole('group', { name: 'Voice input' });
+    fireEvent.click(vradio('On'));
+    await waitFor(() => expect(vradio('On').disabled).toBe(false));
+    expect(vradio('Off').checked).toBe(true);
+    expect(screen.getByText('From the server setting CHAT_VOICE_INPUT.')).toBeTruthy();
+    expect(showToast).toHaveBeenCalledWith("That didn't work: database is down", expect.any(Number));
   });
 });

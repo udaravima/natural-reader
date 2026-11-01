@@ -119,6 +119,8 @@ export default function App() {
   const [selectedModel, setSelectedModel] = usePersistedState('selectedModel', '');
   const [chatTtsMode, setChatTtsMode] = usePersistedState('chatTtsMode', deploymentDefaults.chatTtsMode);
   const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', deploymentDefaults.chatAutoTts);
+  // 'auto' (the engine detects it) or a language code; sent with each voice-input recording.
+  const [speechLanguage, setSpeechLanguage] = usePersistedState('speechLanguage', deploymentDefaults.speechLanguage);
   // Composer in-progress state lives here (not in ChatView) so switching tabs —
   // which unmounts ChatView — doesn't discard a half-typed message. The text
   // draft is persisted (survives a reload too); pending image attachments are
@@ -1128,6 +1130,9 @@ export default function App() {
     pendingAttachments: chatPendingAttachments,
     setPendingAttachments: setChatPendingAttachments,
     onOpenCitation: handleOpenCitation,
+    apiHost,
+    apiPort,
+    speechLanguage,
     openDocName: currentDocId ? pdfFileName : null,
     openDocVersion: currentDocId && versionOld ? versionOld.version : null,
     openDocProjects: docProjects,
@@ -1233,7 +1238,7 @@ export default function App() {
             onUserChanged={auth.patchUser} showToast={showToast} />
         ) : null}
         voiceSettings={{ selectedVoice, setSelectedVoice, playbackSpeed, setPlaybackSpeed, volume, setVolume, isLocalhost, setIsLocalhost, requestTimeout, setRequestTimeout, unlimitedBatchTimeout, setUnlimitedBatchTimeout, isPreviewingVoice, previewVoice, stopVoicePreview, clearCache }}
-        chatSettings={{ chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, inferenceByModel, setInferenceByModel, inferenceBase, availableModels, selectedModel }}
+        chatSettings={{ chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, speechLanguage, setSpeechLanguage, apiHost, apiPort, inferenceByModel, setInferenceByModel, inferenceBase, availableModels, selectedModel }}
         connectionSettings={{ apiHost, setApiHost, apiPort, setApiPort, backendAvailable }}
         appearanceSettings={{ darkMode, setDarkMode, layoutMode, setLayoutMode, mobileBreakpoint, setMobileBreakpoint, showHeaderControlsOnMobile, setShowHeaderControlsOnMobile }}
         accountProps={{ apiHost, apiPort, user: auth.user }}

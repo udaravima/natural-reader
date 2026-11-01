@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { apiFetch } from '../../utils/apiFetch';
 
 vi.mock('../../utils/apiFetch', () => ({
   apiFetch: vi.fn(async () => ({ ok: true, status: 200, json: async () => [] })),
@@ -255,5 +256,63 @@ describe('SettingsDialog — the context size the server will use (admin console
     expect([...ctx.options].find((o) => o.value === 'auto').textContent).toBe('Auto');
     expect(screen.queryByText(/Set by your admin/)).toBeNull();
   });
-});
 
+  describe('Speech language', () => {
+    afterEach(() => apiFetch.mockImplementation(async () => ({ ok: true, status: 200, json: async () => [] })));
+    const STATUS = { enabled: true, ready: true, languages: [{ code: 'sv', name: 'Swedish' }, { code: 'de', name: 'German' }] };
+    const answerStatus = (body, ok = true) => {
+      apiFetch.mockImplementation(async (h, p, path) => (
+        path === '/v1/speech/status'
+          ? { ok, status: ok ? 200 : 500, json: async () => body }
+          : { ok: true, status: 200, json: async () => [] }));
+    };
+    const chat = (over = {}) => {
+      const b = bags({ tab: 'chat' });
+      b.chatSettings = { ...b.chatSettings, speechLanguage: 'auto', setSpeechLanguage: vi.fn(), apiHost: '', apiPort: '', ...over };
+      return b;
+    };
+
+    it('shows Auto first, then the status languages by name', async () => {
+      answerStatus(STATUS);
+      render(<SettingsDialog {...chat()} />);
+      const select = await screen.findByRole('combobox', { name: 'Speech language' });
+      expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/speech/status');
+      expect([...select.options].map((o) => o.textContent)).toEqual(['Auto (detect the language)', 'German', 'Swedish']);
+      expect(select.value).toBe('auto');
+    });
+
+    it('choosing a language sets it', async () => {
+      answerStatus(STATUS);
+      const b = chat();
+      render(<SettingsDialog {...b} />);
+      fireEvent.change(await screen.findByRole('combobox', { name: 'Speech language' }), { target: { value: 'sv' } });
+      expect(b.chatSettings.setSpeechLanguage).toHaveBeenCalledWith('sv');
+    });
+
+    it('a stored value the engine no longer offers shows as Auto', async () => {
+      answerStatus(STATUS);
+      render(<SettingsDialog {...chat({ speechLanguage: 'xx' })} />);
+      expect((await screen.findByRole('combobox', { name: 'Speech language' })).value).toBe('auto');
+    });
+
+    it('is hidden while voice input is off', async () => {
+      answerStatus({ ...STATUS, enabled: false });
+      render(<SettingsDialog {...chat()} />);
+      await waitFor(() => expect(apiFetch).toHaveBeenCalled());
+      await act(async () => {});
+      expect(screen.queryByRole('combobox', { name: 'Speech language' })).toBeNull();
+      expect(screen.getByLabelText(/configuring model/i)).toBeInTheDocument();
+    });
+
+    it('a failed status fetch hides the row and does not break the tab', async () => {
+      apiFetch.mockImplementation(async (h, p, path) => {
+        if (path === '/v1/speech/status') throw new Error('down');
+        return { ok: true, status: 200, json: async () => [] };
+      });
+      render(<SettingsDialog {...chat()} />);
+      await act(async () => {});
+      expect(screen.queryByRole('combobox', { name: 'Speech language' })).toBeNull();
+      expect(screen.getByLabelText(/configuring model/i)).toBeInTheDocument();
+    });
+  });
+});
