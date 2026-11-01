@@ -4,7 +4,55 @@
 
 ---
 
-## 2026-10-26 — Admin console v2, phase 3 (usage by model) built, walked and final-reviewed; on its branch, not merged (START HERE)
+## 2026-10-27 — Phase 3 merged; how we work, and the recommended order of work (START HERE)
+
+**State.** `feat/admin-console-v2-phase3` was fast-forwarded into `development` (`85b85d6`) on the owner's "merge"; the gates on the merged tree were backend `2447 passed, 16 skipped, 2 deselected` (scratch 5434), frontend `1190 passed`, eslint clean. The local branch was deleted (its origin copy is identical). `d7f106d` adds the design and plan for the message box inputs. **`origin/development` is at `85b85d6`: the unidentified auto-pusher pushed `development` itself**, so phases 1, 2a and 3 are public; nobody here ran `git push`. **Not deployed:** live still runs an older build; deploying phase 3 needs a database backup first (migration 023; its Down SQL is in the file's header).
+
+### How a piece of work goes (the procedure we follow)
+
+1. **Brainstorm** what the owner wants, or skip the questions when the owner says "go with your recommendations"; the designer's calls are then listed as decisions in the spec.
+2. **Spec** in `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`: why, goals, non-goals, anti-goals, constraints, decisions with their cost if wrong, what's not verified.
+3. **Plan** in `docs/superpowers/plans/YYYY-MM-DD-<topic>.md`: tasks with exact names, signatures and tests; a Review Focus list; the walk before the docs.
+4. **The owner reviews and says "Go ahead".** That is the permission for per-task commits on a feature branch cut from `development`, and nothing more.
+5. **Execution, subagent-driven by default:** a fresh implementer per task, a task review, a fix loop; a ledger with every ruling in `.superpowers/sdd/<plan>/progress.md` (git-ignored).
+6. **Walk the user's journey in the running app** (scratch DB, port 8100, no compose Keycloak), naming the control for each step. A step with no control is a gap, said plainly.
+7. **Docs** from the walk's results, then a whole-branch final review on the most capable model, one fix wave, a re-review.
+8. **A HANDOVER entry**, then the finishing menu (merge locally / push and PR / keep). **Merge, push, deploy and every commit outside step 4 need the owner's word, each time.**
+
+The environment and safety rules (test DB, Keycloak, secrets, PIDs) are in the 2026-10-25 entry's "Environment and safety rules"; they still hold.
+
+### Recommended order of work
+
+1. **Fix: Docling's "Images: embed" keeps no pictures** (read from the code and the installed Docling 2.142.1, not run). We set `generate_picture_images`, but `export_to_markdown`'s default `image_mode` is `PLACEHOLDER`, so every picture becomes `<!-- image -->` and the crops are dropped; the README promises embedded images. Check first: a document converted with embed shows no pictures in **MD** view. Small, user-visible, and the owner uses this option, so it goes first. ("Describe" works, but with Docling's built-in SmolVLM-256M, not a model we choose.)
+2. **Message box inputs** (`docs/superpowers/plans/2026-10-27-chat-composer-inputs.md`, 9 tasks, awaiting "Go ahead"): text files with secrets masked in the browser; voice input that transcribes into the box (faster-whisper on the server, or any OpenAI-compatible transcription server), off until an admin turns it on. Native audio models (gemma4 and others, many languages, any provider) plug in later through the same `Transcriber` interface (spec §6).
+3. **Admin console v2 phase 2b: the embedding provider.** Indexing still calls Ollama at `OLLAMA_URL` whatever `INFERENCE_PROVIDERS` says, so a vLLM-only or Claude-only deployment can't index documents. It also unblocks the embedding-model trials (backlog item 4).
+4. **Figures, designed after 2b:** keep each picture beside the converted document (shown in MD view, same access rules); describe it with a vision model the admin picks (gemma4 or a cloud one; Docling 2.142.1's `PictureDescriptionApiOptions` takes any OpenAI-compatible URL, with `enable_remote_services=True`); let a chat model that can see images look at the figure itself when a search lands on it. **DeepSeek-OCR** as a conversion preset for scans, tables and formulas: Docling ships it (`VLM_CONVERT_DEEPSEEK_OCR`, `deepseek-ocr:3b` through Ollama's `/v1`), and wiring it needs the four changes in the 2026-10-26 research note. No setting turns it on today. Its CPU cost is unmeasured.
+5. **Later, by value:**
+   - Robustness: replies that survive closing the tab (LibreChat's resumable streams); a backup **restore** actually tested; a lock around migrations (`WORKERS>1`); citation quality (87.9% against a 90% target).
+   - Providers: when a provider's `/models` fails, fall back to its `INFERENCE_<NAME>_MODELS` list (otherwise the picker silently drops it; Anthropic's OpenAI-compatible layer may do this, unverified); per-provider parameters to drop or add; a native Anthropic adapter if Claude becomes a real option (prompt caching suits our stable prompt prefix; the compatibility layer has none, ignores `reasoning_effort` and strips audio).
+   - From LibreChat and LLMRouter: chat search and export, edit and regenerate, saved assistant roles, prices per model (turns phase 3's token counts into money), an Auto model choosing by simple rules.
+   - The owner's backlog: bulk upload into a project, auto tags, MD and PDF side by side, MCP, agents.
+
+### Provider notes (for the DEPLOYMENT.md pass)
+
+- **vLLM:** `KIND=openai`, URL ending `/v1`. It needs `--enable-auto-tool-choice --tool-call-parser <family>` (e.g. `hermes` for Qwen), or the app turns the model's tools off and it never searches the document. It needs a GPU, which this machine doesn't have. vLLM and LiteLLM are still unrun against this app.
+- **Unsloth:** its GGUF quants run through the existing Ollama (`ollama pull hf.co/unsloth/<repo>:Q4_K_M`, then listed under `local:`); Unsloth Studio is an OpenAI-compatible server with `sk-unsloth-…` keys. Neither has been run here.
+- **OpenAI:** set `INFERENCE_OPENAI_MODELS`, or the picker lists its embedding, TTS and image models too.
+- **Claude:** `https://api.anthropic.com/v1` with `KIND=openai` works for chat, tools, images and token counts per Anthropic's docs; it is a testing layer by Anthropic's own description. The app sends no `temperature` (Claude 4.7+ rejects values below 1).
+- **Audio in Ollama:** 0.40.8 lists `audio` for gemma4:e4b, but its API has no audio field (ollama/ollama#11798) and gemma4 audio regressed into made-up transcripts (#16584); hence transcription first.
+
+### Still waiting on the owner
+
+- Deploy (database backup first); the `docling` realm role in the live Keycloak.
+- Find what auto-pushes (VS Code's sync is the suspect).
+- W3: the header scrolls sideways at 375 px.
+- A cloud eval before the next release.
+- `README.md` ~456 still says budgets reset at UTC midnight (stale since phase 1; the message box plan's docs task fixes it).
+- Keep or delete the SDD workspaces under `.superpowers/sdd/`.
+
+---
+
+## 2026-10-26 — Admin console v2, phase 3 (usage by model) built, walked and final-reviewed (merged 2026-10-27, see above)
 
 **Branch:** `feat/admin-console-v2-phase3`, cut from `development` at `8e13803` (phase 2a merged). **Not merged into `development`, not deployed, no version bump; nobody here ran `git push`** (CHANGELOG entries sit under `[Unreleased]`). The owner's "Go ahead" on the subagent-driven plan was read as approval of its per-task commits on this feature branch (ledger opening ruling). **The branch is on origin up to `99a0bc0` anyway** (`git reflog show origin/feat/admin-console-v2-phase3`: one "update by push"), the same unidentified pusher as for phases 1 and 2a (see the entry below; VS Code's sync is the suspect). Everything after `99a0bc0`, including this docs commit, was local when this was written. Plan: `docs/superpowers/plans/2026-10-26-admin-console-v2-phase3.md`. Workspace ledger (rulings, every review finding and which were deferred): `.superpowers/sdd/2026-10-26-admin-console-v2-phase3/progress.md`, with each task's brief, report and review diff beside it, and the walk in `task-6-walk-report.md`. Spec: `docs/superpowers/specs/2026-10-25-admin-console-v2-design.md`.
 
