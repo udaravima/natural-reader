@@ -182,6 +182,72 @@ async def test_unreadable_attachment_is_422(db_conn, app, att):
     assert r.status_code == 422 and r.json()["detail"]["error"] == "invalid_attachment"
 
 
+def _b64(b: bytes) -> str:
+    return base64.b64encode(b).decode()
+
+
+def _text_body(*files):
+    return {**BODY, "message": {"content": "read", "attachments": [
+        {"kind": "text", "mime": "text/plain", "name": name, "base64": _b64(data), **extra}
+        for name, data, extra in files]}}
+
+
+async def test_text_attachment_is_stored_with_masked_flag(db_conn, app):
+    data = "A=<masked, 3 chars>\n".encode()
+    body = _text_body((".env", data, {"masked": True}))
+    r = await _post(app, await member(db_conn, "alice"), body=body)
+    assert r.status_code == 200
+    meta = (await _one(db_conn, "SELECT attachments FROM chat_messages WHERE role='user'"))[0]
+    assert meta[0]["kind"] == "text" and meta[0]["masked"] is True and meta[0]["size"] == len(data)
+    row = await _one(db_conn, "SELECT kind, data FROM chat_attachments")
+    assert row[0] == "text" and bytes(row[1]) == data
+
+
+async def test_text_attachment_without_masked_stores_false(db_conn, app):
+    r = await _post(app, await member(db_conn, "alice"), body=_text_body(("a.txt", b"hi", {})))
+    assert r.status_code == 200
+    meta = (await _one(db_conn, "SELECT attachments FROM chat_messages WHERE role='user'"))[0]
+    assert meta[0]["masked"] is False
+
+
+async def test_images_carry_no_masked_key(db_conn, app):
+    body = {**BODY, "message": {"content": "look", "attachments": [
+        {"kind": "image", "mime": "image/png", "name": "a.png", "base64": PNG}]}}
+    assert (await _post(app, await member(db_conn, "alice"), body=body)).status_code == 200
+    meta = (await _one(db_conn, "SELECT attachments FROM chat_messages WHERE role='user'"))[0]
+    assert "masked" not in meta[0]
+
+
+_BIG = b"a" * 65_536
+
+
+@pytest.mark.parametrize("files,message", [
+    ([(".env", b"\xff\xfe", {})], ".env isn't a text file."),
+    ([(".env", b"ab\x00cd", {})], ".env isn't a text file."),
+    ([(".env", _BIG + b"a", {})], ".env is over 64 KB."),
+    ([("a.txt", _BIG, {}), ("b.txt", _BIG, {}), ("c.txt", b"a", {})], "The attached text is over 128 KB."),
+])
+async def test_text_attachment_refusals(db_conn, app, files, message):
+    r = await _post(app, await member(db_conn, "alice"), body=_text_body(*files))
+    assert r.status_code == 422
+    assert r.json()["detail"]["error"] == "invalid_attachment"
+    assert r.json()["detail"]["message"] == message
+    assert await _one(db_conn, "SELECT 1 FROM chat_sessions WHERE id='s-1'") is None
+
+
+async def test_text_attachment_with_a_non_text_mime_is_refused(db_conn, app):
+    body = _text_body((".env", b"A=1", {}))
+    body["message"]["attachments"][0]["mime"] = "application/json"
+    r = await _post(app, await member(db_conn, "alice"), body=body)
+    assert r.status_code == 422
+    assert r.json()["detail"]["message"] == ".env is not a valid text file."
+
+
+async def test_two_full_text_files_exactly_fit_the_message_limit(db_conn, app):
+    r = await _post(app, await member(db_conn, "alice"), body=_text_body(("a", _BIG, {}), ("b", _BIG, {})))
+    assert r.status_code == 200
+
+
 async def test_empty_message_without_pins_is_422(db_conn, app):
     r = await _post(app, await member(db_conn, "alice"), body={**BODY, "message": {"content": "  "}})
     assert r.status_code == 422 and r.json()["detail"]["error"] == "empty_message"

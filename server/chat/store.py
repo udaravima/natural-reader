@@ -41,6 +41,7 @@ class NewAttachment:
     name: str
     data: bytes = field(repr=False)   # never let a stray repr/f-string dump image bytes into logs
     client_id: str | None = None
+    masked: bool = False   # text only: secret values were hidden in the browser
 
     @property
     def size(self) -> int:
@@ -189,7 +190,8 @@ async def begin_turn(*, session_id: str, user_id: str, model_id: str, text: str,
                 "SELECT COALESCE(MAX(timestamp), 0) FROM chat_messages WHERE session_id = %s", (session_id,))
             ts = max(now_ms(), (await cur.fetchone())[0] + 1)
             meta = [{"id": a.client_id or f"att-{i}", "kind": a.kind, "name": a.name,
-                     "mimeType": a.mime, "size": a.size, "ordinal": i}   # ruling R11
+                     "mimeType": a.mime, "size": a.size, "ordinal": i,   # ruling R11
+                     **({"masked": a.masked} if a.kind == "text" else {})}
                     for i, a in enumerate(attachments)]
             await conn.execute(
                 "INSERT INTO chat_messages (id, session_id, role, content, attachments, timestamp, status, model) "

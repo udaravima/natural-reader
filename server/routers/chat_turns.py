@@ -54,11 +54,16 @@ _STOPPING: set[asyncio.Future] = set()   # run_turn steps finishing their cleanu
 class AttachmentIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str | None = Field(default=None, max_length=100)
-    kind: Literal["image", "audio"]
+    kind: Literal["image", "audio", "text"]
     mime: str = Field(min_length=3, max_length=100)
     name: str = Field(default="", max_length=255)
     size: int = Field(default=0, ge=0)
     base64: str
+    masked: bool = False   # text only: the browser hid secret values before sending
+
+
+TEXT_FILE_MAX_BYTES = 65_536       # one text file, UTF-8 bytes
+TEXT_MESSAGE_MAX_BYTES = 131_072   # all the text files of one message
 
 
 class MessageIn(BaseModel):
@@ -122,6 +127,7 @@ class TurnIn(BaseModel):
 
 def _decode(attachments: list[AttachmentIn]) -> list[store.NewAttachment]:
     out = []
+    text_total = 0
     for a in attachments:
         label = a.name or "An attachment"
         if not a.mime.startswith(f"{a.kind}/"):
@@ -132,8 +138,26 @@ def _decode(attachments: list[AttachmentIn]) -> list[store.NewAttachment]:
             data = b""
         if not data:
             raise refusal(422, "invalid_attachment", f"{label} could not be read.")
-        out.append(store.NewAttachment(kind=a.kind, mime=a.mime, name=a.name, data=data, client_id=a.id))
+        if a.kind == "text":
+            # The decoded bytes decide, never the client's `size`.
+            if b"\x00" in data or not _is_utf8(data):
+                raise refusal(422, "invalid_attachment", f"{label} isn't a text file.")
+            if len(data) > TEXT_FILE_MAX_BYTES:
+                raise refusal(422, "invalid_attachment", f"{label} is over 64 KB.")
+            text_total += len(data)
+            if text_total > TEXT_MESSAGE_MAX_BYTES:
+                raise refusal(422, "invalid_attachment", "The attached text is over 128 KB.")
+        out.append(store.NewAttachment(kind=a.kind, mime=a.mime, name=a.name, data=data, client_id=a.id,
+                                       masked=a.masked and a.kind == "text"))
     return out
+
+
+def _is_utf8(data: bytes) -> bool:
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
 
 
 async def _budget_state_if_over(user_id: str, budget: int | None) -> dict | None:
