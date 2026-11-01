@@ -1,0 +1,149 @@
+"""Task 5: the service rules around the engines."""
+from __future__ import annotations
+
+import asyncio
+import logging
+
+import pytest
+
+from server.speech import service
+from server.speech.base import AudioTooLong, EngineNotReady, EngineStatus, Transcript
+from server.speech.local_whisper import LocalWhisper
+from server.speech.openai_engine import OpenAICompatible
+
+ENV_KEYS = ("SPEECH_ENGINE", "SPEECH_MODEL", "SPEECH_URL", "SPEECH_API_KEY", "SPEECH_CPU_THREADS")
+
+
+@pytest.fixture(autouse=True)
+def _clean(monkeypatch):
+    for k in ENV_KEYS:
+        monkeypatch.delenv(k, raising=False)
+    service.reset_for_tests()
+    yield
+    service.reset_for_tests()
+
+
+class Slow:
+    """A stand-in engine that holds until released."""
+    model, where = "m", "this server"
+
+    def __init__(self, name="local"):
+        self.name = name
+        self.release = asyncio.Event()
+        self.started = asyncio.Event()
+        self.finished = 0
+
+    async def transcribe(self, audio, mime, language):
+        self.started.set()
+        await self.release.wait()
+        self.finished += 1
+        return Transcript("hi", "en", 2.0)
+
+    async def status(self):
+        return EngineStatus(True, "ready", "")
+
+    def warm(self):
+        pass
+
+
+async def test_service_one_per_person_and_busy(monkeypatch):
+    eng = Slow()
+    service._transcriber = eng
+    monkeypatch.setattr(service, "LOCAL_WAIT_S", 0.05)
+    first = asyncio.create_task(service.transcribe_for("u1", b"a", "audio/webm", None))
+    await eng.started.wait()
+    with pytest.raises(service.AlreadyRunning):
+        await service.transcribe_for("u1", b"a", "audio/webm", None)
+    with pytest.raises(service.Busy):
+        await service.transcribe_for("u2", b"a", "audio/webm", None)
+    eng.release.set()
+    assert (await first).text == "hi"
+    # Both are free again.
+    assert (await service.transcribe_for("u1", b"a", "audio/webm", None)).text == "hi"
+    assert (await service.transcribe_for("u2", b"a", "audio/webm", None)).text == "hi"
+
+
+async def test_remote_engine_has_no_process_wide_slot():
+    eng = Slow("openai")
+    service._transcriber = eng
+    a = asyncio.create_task(service.transcribe_for("u1", b"a", "audio/webm", None))
+    b = asyncio.create_task(service.transcribe_for("u2", b"a", "audio/webm", None))
+    await asyncio.sleep(0.05)
+    eng.release.set()
+    assert [(await a).text, (await b).text] == ["hi", "hi"]
+
+
+async def test_a_cancelled_request_keeps_the_local_slot_until_the_work_ends(monkeypatch):
+    eng = Slow()
+    service._transcriber = eng
+    monkeypatch.setattr(service, "LOCAL_WAIT_S", 0.05)
+    t = asyncio.create_task(service.transcribe_for("u1", b"a", "audio/webm", None))
+    await eng.started.wait()
+    t.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await t
+    with pytest.raises(service.Busy):  # the thread is still running
+        await service.transcribe_for("u2", b"a", "audio/webm", None)
+    eng.release.set()
+    await asyncio.sleep(0.05)
+    assert eng.finished == 1
+    assert (await service.transcribe_for("u2", b"a", "audio/webm", None)).text == "hi"
+
+
+async def test_too_big_a_recording_is_refused_before_any_work():
+    eng = Slow()
+    service._transcriber = eng
+    with pytest.raises(AudioTooLong):
+        await service.transcribe_for("u1", b"x" * (service.MAX_AUDIO_BYTES + 1), "audio/webm", None)
+    assert not eng.started.is_set()
+    assert (service.MAX_AUDIO_BYTES, service.MAX_AUDIO_SECONDS) == (10 * 1024 * 1024, 125)
+
+
+async def test_the_log_line_has_no_text(caplog):
+    service._transcriber = Slow("openai")
+    service._transcriber.release.set()
+    caplog.set_level(logging.INFO, logger="server.speech")
+    await service.transcribe_for("u7", b"a", "audio/webm", None)
+    msgs = [r.getMessage() for r in caplog.records if r.name == "server.speech"]
+    assert len(msgs) == 1
+    assert msgs[0].startswith("transcribed user=u7 engine=openai seconds=2.0 language=en elapsed_ms=")
+
+
+async def test_service_engine_from_env(monkeypatch, caplog):
+    eng = service.get_transcriber()
+    assert isinstance(eng, LocalWhisper) and eng.model == "small" and eng.name == "local"
+    assert service.get_transcriber() is eng  # one per process
+
+    service.reset_for_tests()
+    eng = service.get_transcriber({"SPEECH_MODEL": "large-v3-turbo", "SPEECH_CPU_THREADS": "3"})
+    assert eng.model == "large-v3-turbo" and eng.cpu_threads == 3
+
+    service.reset_for_tests()
+    eng = service.get_transcriber({"SPEECH_ENGINE": "openai"})  # no SPEECH_URL: built, not raised
+    assert isinstance(eng, OpenAICompatible)
+    st = await eng.status()
+    assert (st.ready, st.state) == (False, "error") and "SPEECH_URL" in st.detail
+    with pytest.raises(EngineNotReady) as e:
+        await eng.transcribe(b"a", "audio/webm", None)
+    assert "SPEECH_URL" in e.value.detail
+
+    service.reset_for_tests()
+    eng = service.get_transcriber({"SPEECH_ENGINE": "openai", "SPEECH_URL": "https://stt.example.com/v1",
+                                   "SPEECH_MODEL": "whisper-1", "SPEECH_API_KEY": "k"})
+    assert (eng.name, eng.model, eng.where) == ("openai", "whisper-1", "stt.example.com")
+
+    service.reset_for_tests()
+    caplog.set_level(logging.WARNING, logger="server.speech")
+    first = service.get_transcriber({"SPEECH_ENGINE": "whisperx"})
+    assert isinstance(first, LocalWhisper)
+    assert service.get_transcriber({"SPEECH_ENGINE": "whisperx"}) is first
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "whisperx" in warnings[0].getMessage()
+
+
+def test_cpu_threads_default_and_bad_value(monkeypatch):
+    monkeypatch.setattr(service.os, "cpu_count", lambda: 8)
+    assert service._cpu_threads({}) == 4
+    monkeypatch.setattr(service.os, "cpu_count", lambda: 1)
+    assert service._cpu_threads({}) == 1
+    assert service._cpu_threads({"SPEECH_CPU_THREADS": "abc"}) == 1
