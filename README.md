@@ -2,7 +2,7 @@
 
 A modern, feature-rich document reader with **neural text-to-speech** powered by **[Kokoro TTS](https://github.com/hexgrad/kokoro)**, an **optional local-AI chat mode** powered by **[Ollama](https://ollama.com/)**, and (new in `v1.6.0`) **document-aware chat with RAG + autonomous tool calling** backed by **Postgres + pgvector**. Open PDFs, `.txt`, or `.md` files, have them read aloud with natural-sounding voices, ask the model about what you're reading, or let the model search the indexed doc on its own.
 
-> 🎯 **A web frontend for Kokoro TTS — now with chat that knows what you're reading.** Beyond the TTS reader and the standalone Ollama chat side-mode, the app can index a loaded document into pgvector and expose a `search_documents` tool that your local LLM calls autonomously when a question warrants it. Everything stays local: Ollama for the LLM + embeddings, Postgres in a container for chat sessions and vectors, no cloud round-trips. A browser-based Web Speech fallback is also available for testing without any backend.
+> 🎯 **A web frontend for Kokoro TTS — now with chat that knows what you're reading.** Beyond the TTS reader and the standalone Ollama chat side-mode, the app can index a loaded document into pgvector and expose a `search_documents` tool that your local LLM calls autonomously when a question warrants it. Out of the box everything stays local: Ollama for the LLM + embeddings, Postgres in a container for chat sessions and vectors. A deployment can add cloud model providers for chat, and web search asks before anything leaves the server. A browser-based Web Speech fallback is also available for testing without any backend.
 
 ![Neural Reader](https://img.shields.io/badge/React-19.x-blue) ![PDF.js](https://img.shields.io/badge/PDF.js-5.x-orange) ![Kokoro TTS](https://img.shields.io/badge/Kokoro-TTS-green) ![Ollama](https://img.shields.io/badge/Ollama-Chat-orange) ![Vite](https://img.shields.io/badge/Vite-Rolldown-purple) ![Offline](https://img.shields.io/badge/Offline-Ready-brightgreen)
 
@@ -47,14 +47,14 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 - **Per-Message Read Aloud** — A `🔊 Read aloud` / `■ Stop` button on every assistant bubble — works even with auto-TTS off, or to re-read finished messages later
 - **Markdown Rendering** — Lists, code blocks, tables, headings, links render natively in chat bubbles
 - **Markdown-Aware TTS** — Markup is stripped before synthesis so audio reads visible text only (no "star star bold")
-- **Per-Model Inference Settings** — An `Inference` block in the chat sidebar sets the **context window** (`num_ctx`), **keep-alive**, **thinking level**, and **max reply tokens** for the selected model, saved per model so a 9.7B and a 3B can differ on the same machine. Every control defaults to **Auto**, which omits the key entirely and leaves Ollama's own memory-based sizing alone — nothing changes until you opt in. Note that changing the context window makes Ollama reload the model.
+- **Per-Model Inference Settings** — **Settings → Chat** sets the **context window** (`num_ctx`), **keep-alive**, **thinking level**, and **max reply tokens** for the selected model, saved per model so a 9.7B and a 3B can differ on the same machine. Every control defaults to **Auto**. For a self-hosted Ollama model **Auto** means the server sends 16,384 tokens (Ollama's own default cuts long prompts without saying so), and an admin can fix the size under **Admin → Models**, which locks the control. Changing the context window makes Ollama reload the model.
 - **Reasoning Trace Control** — The `Thinking` setting sends `think` to Ollama and surfaces the reasoning trace (deepseek-r1, qwen3-thinking, gpt-oss, …) in a collapsible disclosure that auto-expands while streaming. Five states: `Off` / `On` (booleans) plus the graduated `Low` / `Medium` / `High` levels — useful on slow hardware, where reasoning tokens are the most expensive output a model can produce. Models that accept the boolean but reject a level are retried automatically.
 - **Context Meter & Truncation Warning** — A `~3.3k / 16k ctx` readout above the composer estimates how full the window is (amber past 75%), and if a reply is cut off because the context filled up, a toast names the actual numbers instead of leaving `done_reason: length` buried in the stats disclosure.
 - **Per-Message Copy** — One-click copy of any chat message to clipboard
 
 ### 🧩 Chrome Read-Aloud Extension & Markdown Folder Workspace *(new in `v1.8.0`)*
 
-- **Chrome "Read Aloud" extension** — A Manifest V3 browser extension (in [`extension/`](extension/)) that reads the selected text or the whole page aloud on any site through this project's local Kokoro TTS backend. No build step — load `extension/` unpacked. Floating Shadow-DOM toolbar (play/pause, stop, seek, voice, speed) via right-click or a popup; whole-page reads chunk into sentences and stream with prefetch. Loopback-only permissions, backend unchanged. Setup + known site limits in [extension/README.md](extension/README.md).
+- **Chrome "Read Aloud" extension** — A Manifest V3 browser extension (in [`extension/`](extension/)) that reads the selected text or the whole page aloud on any site through this project's local Kokoro TTS backend. No build step — load `extension/` unpacked. Floating Shadow-DOM toolbar (play/pause, stop, seek, voice, speed) via right-click or a popup; whole-page reads chunk into sentences and stream with prefetch. It reaches `localhost` out of the box; any other server needs the site permission Chrome asks for, and a server with sign-in needs an access token. Setup + known site limits in [extension/README.md](extension/README.md).
 - **Markdown folder workspace** — Open a folder so a Markdown/text file's cross-file links navigate in-reader: relative `.md`/`.txt` links open the target, `#heading` anchors scroll, relative images render, with Back/Forward history. Uses the File System Access API (with a folder-picker fallback), persists across reloads, and rejects dangerous link schemes.
 
 ### 🪄 Docling Conversion, Audiobook & Chat Audio *(new in `v1.7.x`)*
@@ -113,10 +113,10 @@ Walkthroughs: [docs/USER_GUIDE.md](docs/USER_GUIDE.md#asking-a-whole-project); o
 
 ### 💾 Memory & Persistence
 - **Document Library (IndexedDB)** — PDFs, `.txt`, and `.md` files saved locally for instant resume (up to 5 docs)
-- **Chat Sessions (IndexedDB)** — Every chat is auto-saved; switch / rename / delete from the sidebar; auto-named from the first prompt; LRU-capped at 50 sessions
+- **Chat Sessions (Postgres)** — Every chat is saved on the server as it streams; switch / rename / delete from the sidebar; auto-named from the first prompt. Chats from before `v1.6.0` stay readable from IndexedDB with a **LOCAL** badge
 - **Per-Session Event Log** — `sent`, `received`, `aborted`, `error` events with timestamps, viewable as a collapsible log
 - **One-Click Resume** — Click any document in the library to continue reading
-- **Settings Saved** — Voice, speed, volume, zoom, theme, Ollama host/port, model, TTS mode all persist across sessions
+- **Settings Saved** — Voice, speed, volume, zoom, theme, API host/port, model, TTS mode all persist across sessions
 - **Reading Progress** — Remembers your position in each document (page + sentence)
 
 ### ⌨️ Keyboard Shortcuts
@@ -146,7 +146,7 @@ Walkthroughs: [docs/USER_GUIDE.md](docs/USER_GUIDE.md#asking-a-whole-project); o
 | **Markdown** | `react-markdown` + `remark-gfm` (chat replies) |
 | **Styling** | Tailwind CSS 4.x |
 | **Icons** | Lucide React |
-| **Storage** | localStorage + IndexedDB (`books` + `chat_sessions` stores) |
+| **Storage** | Server: Postgres + files under `DOC_STORAGE_DIR`. Browser: localStorage + IndexedDB (settings, a local library, legacy chats) |
 | **TTS Backend** | FastAPI, Kokoro ONNX, Uvicorn |
 | **TTS Inference** | ONNX Runtime (CPU by default; CUDA / OpenVINO builds opt-in on bare metal) |
 | **Chat Backend (optional)** | [Ollama](https://ollama.com/) — local LLM server (default `:11434`) |
@@ -264,7 +264,7 @@ Place both files in the project root directory.
 # End-user guide (signing in, personal access tokens, admin section,
 # chat budgets): docs/USER_GUIDE.md
 
-# Or, to run the backend manually (no containers, no chat persistence):
+# Or, to run the backend manually (no containers; TTS works, chat and documents need Postgres):
 python run.py
 # To fan TTS / audiobook synthesis across CPU cores (one Kokoro model
 # loaded per worker — budget ~300–500 MB each on the ONNX-CPU build):
@@ -323,7 +323,7 @@ ollama pull gemma3
 ollama pull deepseek-r1:1.5b
 ```
 
-Ollama serves at `http://localhost:11434` by default. In the app, toggle to **Chat** in the header — host/port and model picker live in the chat sidebar.
+Ollama serves at `http://localhost:11434` by default. In the app, open **Chat** in the header; the model picker is in the chat sidebar. There is no host or port to set in the browser: the server finds Ollama at `OLLAMA_URL`.
 
 ### 5. (Optional) Document Chat & RAG
 
@@ -403,21 +403,23 @@ on CPU. The container is CPU-only (see `docs/DEPLOYMENT.md`).
 
 ## 📖 Usage
 
-### Browser Mode (No Backend Required)
+### System voices (no neural voice needed)
 
 1. Upload a PDF via the upload button or drag-and-drop
-2. Toggle to **"SYSTEM"** mode in the header
+2. Open **Settings → Voice & reading** and click **Voice backend** until it reads **System voices**
 3. Press **Play** — the browser's built-in Web Speech API reads the text
 
-### Kokoro Mode (Neural TTS)
+The backend still has to be running: sign-in and the app's gate depend on it, and without it the app stops at "The backend isn't responding."
 
-1. Start the backend: `python run.py`
-2. Ensure the header shows **"KOKORO"** (green indicator)
-3. Upload a PDF and press Play — enjoy neural-quality voices!
+### Kokoro (neural voices)
+
+1. Start the backend (`./startup.sh up`, or `python run.py`)
+2. **Voice backend** under **Settings → Voice & reading** reads **Kokoro (server)**, the default
+3. Upload a PDF and press Play
 
 ### API Endpoints
 
-The frontend talks to two backends. Each has its own host/port (configurable in the sidebar). **Leave the host field blank to hit the same origin the page was served from** — useful when an nginx (or similar) reverse proxy is fronting both services on a single domain.
+The frontend talks to one backend, set under **Settings → Connection**. **Leave the host field blank to hit the same origin the page was served from** — the default, and the only setup in which sign-in cookies work. The backend is the only thing that talks to model providers.
 
 #### Kokoro TTS (FastAPI server in this repo, default `localhost:8000`)
 
@@ -451,9 +453,9 @@ Chat always runs on the server (`server/chat/`, `server/llm/`) against one or mo
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/v1/inference/models` | `GET` | Every provider's models as `{id, provider, kind, name, capabilities}` (`id` is `<provider>:<model>`), plus the caller's daily budget `{remaining_tokens, reset_at}`. |
+| `/v1/inference/models` | `GET` | Every provider's models as `{id, provider, kind, name, capabilities}` (`id` is `<provider>:<model>`; an Ollama model also carries `limits`, and a self-hosted one `context_size`), plus the caller's daily budget `{remaining_tokens, reset_at}`. |
 
-Admin knobs: `INFERENCE_PROVIDERS` + `INFERENCE_<NAME>_*` (providers), `INFERENCE_MODELS` (legacy single-Ollama allowlist, still the default with no providers configured), `INFERENCE_DAILY_TOKEN_BUDGET` (default per-user daily tokens, UTC-midnight reset — a reply you stop or that fails still counts), per-user overrides + usage view via `/v1/admin/users/{id}` and `/v1/admin/inference/usage`. See [.env.example](.env.example).
+Admin knobs: `INFERENCE_PROVIDERS` + `INFERENCE_<NAME>_*` (providers), `INFERENCE_MODELS` (legacy single-Ollama allowlist, still the default with no providers configured), `INFERENCE_DAILY_TOKEN_BUDGET` (default per-user daily tokens; resets at midnight in the deployment's timezone, **Admin → Deployment** or `TZ`, UTC if neither — a reply you stop or that fails still counts), per-user overrides under **Admin → People**, usage by model, person and day under **Admin → Usage** (`/v1/admin/users/{id}` and `/v1/admin/inference/usage` from a script). See [.env.example](.env.example).
 
 #### Ollama (default local model provider, `localhost:11434`)
 
@@ -462,7 +464,7 @@ Ollama is the no-config default chat provider **and** always runs document/chat 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/tags` | `GET` | Lists installed models. The backend calls this server-side; the browser never does. |
-| `/api/chat` | `POST` | Streaming chat, called by the backend's Ollama adapter (`server/llm/providers/ollama.py`). Per-message `images: [...]` carries vision attachments (audio attachments are still disabled in the UI). |
+| `/api/chat` | `POST` | Streaming chat, called by the backend's Ollama adapter (`server/llm/providers/ollama.py`). Per-message `images: [...]` carries image attachments. |
 
 <details>
 <summary><strong>Request / Response Examples</strong></summary>
@@ -508,7 +510,7 @@ Ollama is the no-config default chat provider **and** always runs document/chat 
 
 ## 🌐 Reverse Proxy / Production Deployment
 
-For production, the typical setup is to serve the frontend as static files from a web server (nginx, Caddy, …) and reverse-proxy the backend on the same hostname. The frontend supports this natively: leaving the **Host** field blank in the sidebar settings causes requests to be issued as same-origin paths (`/v1/synthesize`, `/v1/chat/sessions/{id}/turns`, …). nginx (or whatever sits in front) handles the routing. Chat always goes through the backend; no `/api/` proxy to Ollama is needed — see [docs/DEPLOYMENT.md § Model providers and chat streaming](docs/DEPLOYMENT.md#model-providers-and-chat-streaming) for the streaming-through-a-proxy trap.
+For production, the typical setup is to serve the frontend as static files from a web server (nginx, Caddy, …) and reverse-proxy the backend on the same hostname. The frontend supports this natively: leaving the **API host** field blank under **Settings → Connection** causes requests to be issued as same-origin paths (`/v1/synthesize`, `/v1/chat/sessions/{id}/turns`, …). nginx (or whatever sits in front) handles the routing. Chat always goes through the backend; no `/api/` proxy to Ollama is needed — see [docs/DEPLOYMENT.md § Model providers and chat streaming](docs/DEPLOYMENT.md#model-providers-and-chat-streaming) for the streaming-through-a-proxy trap.
 
 ### Example nginx config
 
@@ -563,14 +565,14 @@ server {
 
 ### App configuration
 
-In the reader sidebar (Voice API), **clear the Host field**. The placeholder will read *"localhost (blank = same origin)"* and a small hint will appear confirming the mode. The Port field is then ignored. Chat has no host/port field at all — it always talks to the backend, and the backend is the only thing that ever calls Ollama.
+Under **Settings → Connection**, leave **API host** blank (the default; its placeholder reads *blank = same origin*). The port is then ignored. Everything, chat included, goes to that one backend, and the backend is the only thing that ever calls Ollama.
 
 Notes:
 
 - **Ollama bind address.** By default Ollama listens on `127.0.0.1:11434`. That's fine here since only the backend talks to it. If you change `OLLAMA_HOST` to bind on a different interface, mirror it in the backend's provider config (`OLLAMA_URL` / `INFERENCE_<NAME>_URL`, see [.env.example](.env.example)).
 - **Streaming.** `proxy_buffering off` on `/v1/` is required so chat turns stream token-by-token instead of arriving as one buffered chunk.
-- **CORS.** Same-origin requests don't need CORS at all. The Kokoro server's permissive CORS header (set in [server/app.py](server/app.py)) is harmless but unused under this setup.
-- **Custom hostnames during development.** If you want to test the reader's Voice API against a non-localhost machine without proxying, set Host to an IP / hostname (e.g. `192.168.1.10`) and the matching Port. Bare hostnames default to `http://`; you can also paste a full `https://example.com` if you have HTTPS terminating elsewhere. Chat has no equivalent field: point the backend's own `OLLAMA_URL` / provider `URL` at wherever the model server actually runs.
+- **CORS.** Same-origin requests don't need CORS at all, and with `FRONTEND_ORIGIN` unset the backend allows no cross-origin caller.
+- **Custom hostnames during development.** To test against a backend on another machine without proxying, set **API host** to an IP / hostname (e.g. `192.168.1.10`) and the matching port under **Settings → Connection**. Bare hostnames default to `http://`; you can also paste a full `https://example.com`. This crosses origins, so it only works with sign-in off or with `FRONTEND_ORIGIN` set on that backend. To move a model server, point the backend's `OLLAMA_URL` / provider `URL` at it instead.
 - **Firefox + PDF.js worker (`.mjs` MIME type).** PDF.js's worker file is a `.mjs` ES module. nginx's stock `mime.types` doesn't list `.mjs`, so it serves it as `application/octet-stream`, and Firefox refuses to load it as a module — PDF parsing then falls back to a slow main-thread "fake worker" that often fails. Fix: serve `.mjs` with a JS MIME type. Add this **before** your `location /` block:
   ```nginx
   location ~ \.mjs$ {
@@ -589,8 +591,8 @@ Notes:
 
 The backend authenticates via **OpenID Connect** — it's an OIDC Relying Party, so you point it at any provider (Keycloak, Authentik, Auth0, …) and it stores no passwords. Every document and chat session is owned by a user; you only ever see your own. Set the `OIDC_*` vars plus `SESSION_SECRET` (see [.env.example](.env.example)) to turn it on.
 
-- **First-user-admin:** the first identity to log in becomes admin; everyone after is `pending` until an admin activates them (Admin → Users). Set `BOOTSTRAP_ADMIN_EMAIL` to pre-designate the admin by email and inherit any pre-existing single-user data. **Caveat:** doing so routes that founder through the email-claim path, which does *not* force-grant capabilities — the pre-designated user must actually hold the `reader`/`chat`/`admin` realm roles in your IdP (or `KC_ADMIN_*` must be set for the app to self-heal them), or they log in to "active but no access". See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) Trap 4.
-- **The web app** uses a revocable, `HttpOnly` session cookie. **The read-aloud extension and scripts** use a **personal access token** sent as `Authorization: Bearer …`. Create it under Settings → Account with only the access it needs (the extension needs only *Read aloud*), then paste it into the extension's Options → Access token.
+- **First-user-admin:** the first identity to log in becomes admin; everyone after is `pending` until an admin activates them (Admin → People). Set `BOOTSTRAP_ADMIN_EMAIL` to pre-designate the admin by email and inherit any pre-existing single-user data. **Caveat:** doing so routes that founder through the email-claim path, which does *not* force-grant capabilities — the pre-designated user must actually hold the `reader`/`chat`/`admin` realm roles in your IdP (or `KC_ADMIN_*` must be set for the app to self-heal them), or they log in to "active but no access". See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) Trap 4.
+- **The web app** uses a revocable, `HttpOnly` session cookie. **The read-aloud extension and scripts** use a **personal access token** sent as `Authorization: Bearer …`. Create it under **Settings → Access tokens** with only the access it needs (the extension needs only *Read aloud*), then paste it into the extension's Options → Access token.
 - **Local dev without an IdP:** `AUTH_ENABLED=false` treats every request as the admin — but the server **refuses to start** with this set on a non-loopback bind.
 
 `/api/*` (Ollama) is **never used by the SPA** — chat always runs server-side ([`server/chat/`, `server/llm/`](#model-providers-same-fastapi-server)), so the nginx `/api/` proxy block should be **deleted**: Ollama becomes backend-only (loopback bind, nothing proxied). There is no per-user "bring your own Ollama" option in the browser.
@@ -606,22 +608,22 @@ The table below is the *un-authenticated* exposure — i.e. what OIDC now closes
 | `POST /v1/synthesize` | Generate arbitrary TTS audio of any length | GPU/CPU burn, electricity |
 | `POST /v1/batch_synthesize` | Submit huge sentence arrays; with **Unlimited batch timeout** on, a single request can pin Kokoro's inference lock for hours | Same, amplified — practical DoS surface |
 
-`/api/*` (direct Ollama) is closed now that the SPA goes through the authenticated inference gateway — **delete the nginx `/api/` block** and keep Ollama bound to loopback. If you still proxy `/api/*` for other clients, everything in the old rows applies: any unauthenticated caller could run any installed model (`POST /api/chat`) or list models (`GET /api/tags`) — proxy-gate it or remove it.
+`/api/*` (direct Ollama) is closed now that chat runs on the authenticated backend — **delete the nginx `/api/` block** and keep Ollama bound to loopback. If you still proxy `/api/*` for other clients, everything in the old rows applies: any unauthenticated caller could run any installed model (`POST /api/chat`) or list models (`GET /api/tags`) — proxy-gate it or remove it.
 
 CORS no longer helps either: with `FRONTEND_ORIGIN` unset, [server/app.py](server/app.py) lets no other website call the API from a browser. (It used to default to `allow_origins=["*"]`, for the read-aloud extension, which let any website drive your Kokoro endpoint from JavaScript. The extension now calls from its service worker and needs no CORS entry.) Set `FRONTEND_ORIGIN` only if the SPA is served from another origin; `*` brings the old behavior back. TTS payloads are now size-capped (`TTS_MAX_*`, see [.env.example](.env.example)) so a single request can no longer pin the inference lock indefinitely.
 
 ### What is *not* a vulnerability (worth saying out loud)
 
-- **Chat history, sessions, document library** — all in IndexedDB, sandboxed per origin. Other websites can't read them.
+- **Chat history, sessions, document library** — in Postgres, behind sign-in and per-user access checks; what the browser keeps (settings, a local library) is in localStorage and IndexedDB, sandboxed per origin.
 - **Bind addresses** — Kokoro and Ollama listen on `127.0.0.1` only by default (both now; Kokoro via [run.py](run.py)). The backend container uses host networking and keeps that `127.0.0.1` bind, so leave `HOST` unset behind nginx; `HOST=0.0.0.0` exposes the port on every interface. Only the proxy is internet-facing.
 - **TLS** — terminated at nginx with a real cert; in-transit traffic is fine.
-- **Input shapes** — both backends do ML inference. There's no shell-out, no eval, no SQL. The risk is *resource consumption*, not RCE.
+- **Input shapes** — there's no shell-out and no eval, and SQL is parameterized. The risk from model and TTS requests is *resource consumption*, not RCE.
 
 ### Mitigations (effort-ordered, stack as needed)
 
 #### 1. HTTP Basic Auth at nginx — biggest payoff, smallest effort
 
-The browser prompts once, remembers credentials for the session, and both backends become useless to anyone without them. Recommended for any single-user deployment.
+The browser prompts once, remembers credentials for the session, and the backend becomes useless to anyone without them. An option for a single-user deployment that runs with sign-in off.
 
 ```bash
 # One-time: create the password file
@@ -630,7 +632,7 @@ sudo htpasswd -B -c /etc/nginx/htpasswd you
 sudo htpasswd -B    /etc/nginx/htpasswd teammate
 ```
 
-In each backend `location` block:
+In the backend `location` block:
 
 ```nginx
 location /v1/ {
@@ -638,14 +640,6 @@ location /v1/ {
     auth_basic_user_file /etc/nginx/htpasswd;
     proxy_pass           http://127.0.0.1:8000/v1/;
     # ... existing headers / timeouts ...
-}
-# /api/ (Ollama) — only if you proxy it for Local-Ollama mode; DELETE this
-# block entirely on standard deployments (server-mode chat never touches it).
-location /api/ {
-    auth_basic           "Neural Reader";
-    auth_basic_user_file /etc/nginx/htpasswd;
-    proxy_pass           http://127.0.0.1:11434/api/;
-    # ...
 }
 ```
 
@@ -689,35 +683,21 @@ location /v1/chat/ {
 }
 ```
 
-#### 4. Tighten Kokoro CORS — server-side, one-line edit
+#### 4. Keep CORS closed
 
-Stops other websites from co-opting your TTS via cross-origin fetch. Same-origin requests from your own page are unaffected.
+With `FRONTEND_ORIGIN` unset the backend lets no other website call it from a browser. Set it only if the SPA is served from another origin, to that exact origin (`FRONTEND_ORIGIN=https://chat.example.com`); `*` lets every website call the API, without cookies.
 
-In [server/app.py](server/app.py):
+#### 5. Personal access tokens — built in
 
-```python
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://chat.example.com"],   # not "*"
-    allow_credentials=True,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
-)
-```
-
-Reload uvicorn (`pkill -HUP -f "uvicorn"` or restart the service).
-
-#### 5. Token-based auth (advanced)
-
-For a more app-like UX than the browser's basic-auth dialog: nginx checks for `Authorization: Bearer <token>` and returns `401` when absent; the frontend stores the token in `localStorage` (set once via a small settings field) and threads it through `fetch`. Better UX, more code on both sides — pursue this if you graduate to multi-user or want the auth to be invisible after first login.
+Scripts and the read-aloud extension authenticate with `Authorization: Bearer nrp_…`, created under **Settings → Access tokens**, each limited to what it's for and optionally expiring. See [docs/USER_GUIDE.md](docs/USER_GUIDE.md#access-tokens).
 
 ### Quick picks by deployment shape
 
 | Deployment | Recommended stack |
 |---|---|
-| **Personal — just you** | Basic auth + tighter CORS. Five lines of nginx, one line in `server/app.py`. |
-| **Small team / family** | Basic auth + rate limit + tighter CORS. Each user gets their own htpasswd entry. |
-| **Public-ish demo** | Basic auth + rate limit + `INFERENCE_MODELS` allowlist (the gateway never exposes models you don't list) + `INFERENCE_DAILY_TOKEN_BUDGET`. Consider token auth instead of basic. |
+| **Personal — just you** | Basic auth with sign-in off, or sign-in alone. Five lines of nginx. |
+| **Small team / family** | Sign-in (OIDC) + rate limit. Each person gets their own account and capabilities. |
+| **Public-ish demo** | Sign-in + rate limit + `INFERENCE_MODELS` allowlist (the server never offers models you don't list) + `INFERENCE_DAILY_TOKEN_BUDGET`. |
 
 The sample [docs/sample_configs/chat.example.com.sample](docs/sample_configs/chat.example.com.sample) includes the above mitigations as **commented-out blocks at the bottom of the file** — uncomment what you need and reload nginx.
 
@@ -777,7 +757,7 @@ natural-reader/
 ├── src/
 │   ├── App.jsx                # Main application — wires hooks and components
 │   ├── main.jsx               # React entry point
-│   ├── constants.js           # Voice definitions, keyboard shortcuts, Ollama defaults
+│   ├── constants.js           # Voice definitions, keyboard shortcuts
 │   ├── db.js                  # IndexedDB: document library + legacy chat sessions (v3)
 │   ├── index.css              # Global styles (Tailwind)
 │   ├── hooks/
@@ -819,6 +799,7 @@ natural-reader/
 │       ├── VoiceRecorder.jsx       # MediaRecorder UI (kept for future re-enable; currently unused)
 │       ├── MobileBottomNav.jsx
 │       ├── WelcomeScreen.jsx       # Library and upload landing page
+│       ├── admin/, library/, projects/, people/, settings/, account/, auth/, chat/ # The console, Library, project pages, people picker, Settings, tokens, sign-in screens, scope chip + web card
 │       └── overlays/               # Drag, toast, context menu, shortcuts modal, ReadSelectionButton (+ Ask AI)
 ├── server/
 │   ├── __init__.py
@@ -827,20 +808,17 @@ natural-reader/
 │   ├── endpoints.py           # /v1/synthesize, /v1/batch_synthesize, /v1/health
 │   ├── model.py               # Kokoro ONNX loading with GPU/NPU/CPU fallback
 │   ├── schemas.py             # Pydantic request models (TTS)
-│   ├── sql/
-│   │   ├── 001_init.sql       # Core schema: documents, doc_chunks (vector(768)), chat_sessions, chat_messages, chat_events
-│   │   ├── 002_tool_calls.sql # Adds tool_calls JSONB to chat_messages
-│   │   ├── 003_docling.sql    # Docling lifecycle columns on documents + new doc_pages table
-│   │   ├── 005_users_ownership.sql # users table + per-user ownership (multi-user)
-│   │   ├── 006_auth_credentials.sql # sessions + personal_access_tokens
-│   │   └── 007_inference_budgets.sql # inference_usage + per-user daily token budget
+│   ├── sql/                   # 001-023, applied in order at startup; the interesting ones are in docs/ARCHITECTURE.md
 │   ├── routers/
 │   │   ├── chat_sessions.py   # /v1/chat/sessions/* — list / get / patch / delete / import (legacy-chat copy)
 │   │   ├── chat_turns.py      # POST /v1/chat/sessions/{id}/turns — runs one turn, frames orchestrator events as SSE
 │   │   ├── docs.py            # /v1/docs/* — upload / list / status / file / shares / index / search / convert / markdown
 │   │   ├── inference.py       # GET /v1/inference/models — every provider's models + the caller's budget
-│   │   ├── admin.py           # /v1/admin/* — user management + inference usage + deployment config view
+│   │   ├── projects.py, project_documents.py # /v1/projects/* — projects, members, activity, document versions
+│   │   ├── people.py, profile.py, settings.py, tools.py # people search, avatars, per-user settings, POST /v1/tools/web_search
+│   │   ├── admin.py           # /v1/admin/* — the admin console's API (people, overview, settings sections, usage)
 │   │   └── auth.py            # /v1/auth/* — OIDC login/callback, sessions, PATs
+│   ├── auth/                  # OIDC, sessions, tokens, capabilities, access checks (authz.py)
 │   ├── chat/                  # The chat orchestrator (server-side turn loop, C1)
 │   │   ├── orchestrator.py    # run_turn: one step per model call, tool rounds, failures, event emission
 │   │   ├── context.py         # Stage 0: document prefetch, time-in-prompt, history trimming
@@ -853,20 +831,29 @@ natural-reader/
 │   │   └── providers/         # ollama.py, openai_compat.py adapters + shared base.py helpers
 │   └── services/
 │       ├── embeddings.py      # httpx client → Ollama /api/embeddings via model_router, Semaphore(4), dim assertion
-│       ├── model_router.py    # Legacy single-Ollama config: allowlist, task models (summarize/embed), daily budget
-│       ├── inference_budget.py # per-user daily token accounting (UTC days) — also charges stopped/failed replies
+│       ├── model_router.py    # Legacy single-Ollama config: allowlist, embedding model, daily budget
+│       ├── inference_budget.py # per-user daily token accounting, per model and kind, in the deployment's timezone — also charges stopped/failed replies
 │       ├── web_search.py      # SearXNG results + SSRF-guarded page fetch and passage picking
 │       └── docling_convert.py # PDF → per-page Markdown via Docling (Fast/Standard/Accurate presets)
+│       # plus doc_* (content, storage, search, pipeline, versions), model_settings, chat_options, console_* and more: docs/ARCHITECTURE.md
 ├── data/
-│   └── pdfs/                  # Retained PDF bytes (one file per doc_id; created on first conversion)
-├── docker-compose.yml         # pgvector/pgvector:pg16 on host port 5433
+│   └── pdfs/                  # Uploaded document bytes (one file per doc_id)
+├── docker-compose.yml         # Postgres (host port 5433), Keycloak, SearXNG and the backend
+├── Containerfile              # The backend image
+├── deploy/                    # The local OIDC rig: realm export, Postgres init, deploy/README.md
+├── extension/                 # The Chrome read-aloud extension
+├── scripts/                   # Chat evals and the project-search benchmark
 ├── docs/
-│   ├── CHAT_WITH_PDF.md       # End-to-end walkthrough for the doc-chat / RAG / tool-calling feature (+ §10 perf)
-│   ├── RELEASE_NOTES_v1.7.0.md # Tag-page notes for v1.7.0
-│   ├── RELEASE_NOTES_v1.7.1.md # Tag-page notes for v1.7.1
+│   ├── README.md              # The docs index: start here
+│   ├── USER_GUIDE.md          # For people using the app, admin console included
+│   ├── ARCHITECTURE.md        # The whole system map
+│   ├── CHAT_WITH_PDF.md       # Document and project chat, end to end (+ §10 perf)
+│   ├── LIBRARY.md             # Documents, sharing, projects, versions
+│   ├── IDENTITY_AND_ROLES.md  # Keycloak users and app users
+│   ├── TESTING.md             # What covers what, and how to run it safely
 │   ├── DEPLOYMENT.md          # Production behind nginx + TLS: topology, config table, the traps
-│   ├── chat.example.com.sample # Prod nginx vhost — SPA + same-origin /v1 proxy (TLS, hardening recipes)
-│   └── auth.example.com.sample # Prod nginx vhost — reverse-proxies Keycloak (auth.example.com)
+│   ├── Release_notes/         # Tag-page notes per release
+│   └── sample_configs/        # nginx vhosts (SPA + /v1, Keycloak) and a deploy script sample
 ├── run.py                     # Server entry point (uvicorn) — honours WORKERS / HOST / PORT env vars
 ├── requirements.txt           # Python dependencies
 ├── vite.config.js             # Vite + Rolldown config with chunk splitting
@@ -910,14 +897,14 @@ python scripts/eval_doc_qa.py --model ollama:llama3.2:3b
 - **Model stats** — Click the small `⚡` chevron under any reply to expand a per-turn breakdown of load time, prompt eval, generation throughput, and `done_reason`. Useful for comparing models or spotting cold-start cost.
 - **Scroll while streaming** — Scroll up at any time during a reply; the chat will stop tailing tokens and let you read history. Scroll back near the bottom and tailing resumes automatically.
 - **Sessions** — Every chat is saved automatically; switch / rename / delete from the sidebar. Click "New chat" to start a fresh thread without losing the current one.
-- **Reasoning models** — For `deepseek-r1`, `qwen3-thinking`, etc., enable "Thinking" in the chat sidebar. The reasoning trace appears in a collapsible disclosure above the answer (auto-expanded while streaming).
+- **Reasoning models** — For `deepseek-r1`, `qwen3-thinking`, etc., set **Thinking** under **Settings → Chat**. The reasoning trace appears in a collapsible disclosure above the answer (auto-expanded while streaming).
 
 ---
 
 ## 📋 Logging
 
-The backend logs to **both the console and a size-rotating file** at
-`logs/server.log` (10 MB × 5 backups; `logs/` is gitignored). This captures TTS,
+The backend logs to **both the console and a time-rotating file** at
+`logs/server.log` (a new file at midnight, 5 old ones kept; `logs/` is gitignored). This captures TTS,
 chat, embedding, and `web_search` activity — including SSRF blocks, failed or
 slow page fetches, and the reader's failed or timed-out calls and dropped facts (counts and error types, never page text). Tune it with env vars (see `.env.example`):
 
@@ -950,7 +937,9 @@ designed. **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** explains how the
 components fit together (the same-origin `/v1` rule, auth flow, TTS lock, chat
 engine, doc pipelines, and the invariants to keep intact). In short:
 `./startup.sh init && ./startup.sh up`, keep both test suites
-green (`npm run test:run` and `.venv/bin/pytest server/tests`), and open PRs against
+green (`npm run test:run`, and `.venv/bin/python -m pytest server/tests` with
+`TEST_DATABASE_URL` and `TEST_ADMIN_DATABASE_URL` set: a bare run connects to the
+app's own Postgres, see [docs/TESTING.md](docs/TESTING.md#how-to-run)), and open PRs against
 `master` using [Conventional Commits](https://www.conventionalcommits.org/).
 
 ## 📄 License

@@ -35,7 +35,7 @@ The line under the title says which.
 A server with sign-in on (the default) rejects reads without a token, so the
 toolbar turns red with *"not signed in"*. To connect:
 
-1. In Natural Reader, open **Settings → Account**. Leave **Access** at
+1. In Natural Reader, open **Settings → Access tokens**. Leave **Access** at
    **Read aloud** only (the default), pick an expiry, type a name (e.g.
    `laptop-extension`) and click **Create**. Copy the `nrp_…` token: it's
    shown only once. A read-aloud-only token can't open your documents, chats
@@ -46,7 +46,7 @@ toolbar turns red with *"not signed in"*. To connect:
 
 The token is kept in `chrome.storage.local` on this computer only (not Chrome
 sync), and only the extension's service worker sends it. Web pages never see
-it. Revoke it in **Settings → Account** to cut the extension off. A
+it. Revoke it in **Settings → Access tokens** to cut the extension off. A
 single-user server (`AUTH_ENABLED=false`) needs no token.
 
 **A server that isn't on `localhost`** (e.g. `https://reader.example.com`):

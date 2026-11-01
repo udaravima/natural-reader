@@ -1,10 +1,10 @@
-# Testing — what covers what (post-v1.9.0: auth + model-router gateway)
+# Testing — what covers what
 
-This is the **test map for everything that shipped after tag `v1.9.0`**: the
-multi-user auth+authz backend, the SPA auth UI, and the inference gateway with
-budgets. For each feature area: which file owns it, what each case actually
-asserts, what is deliberately *not* automated, and the manual checks that have
-been run live. Use it to answer "if I change X, what must stay green?" and to
+This is the **test map**. The detailed areas below (auth, budgets, chat turns,
+document versions, the admin console) say which file owns each feature, what each
+case asserts, what is deliberately *not* automated, and the manual checks that
+have been run live. The other test files are listed by area under
+[Everything else](#everything-else-by-area), without their cases. Use it to answer "if I change X, what must stay green?" and to
 spot a feature that shipped without coverage.
 
 - [How to run](#how-to-run)
@@ -29,6 +29,7 @@ spot a feature that shipped without coverage.
   - [Frontend: auth UI](#frontend-auth-ui)
   - [Frontend: chat streaming](#frontend-chat-streaming)
   - [Frontend: budget UX](#frontend-budget-ux)
+  - [Everything else, by area](#everything-else-by-area)
 - [Integration seams covered by tests](#integration-seams-covered-by-tests)
 - [Manual / live verification ledger](#manual--live-verification-ledger)
 - [Known gaps](#known-gaps)
@@ -70,7 +71,7 @@ spot a feature that shipped without coverage.
 npx vitest run                                       # 1190 passed (119 files) @ 2026-10-26 (phase 3)
 
 # Lint
-npx eslint src                                       # clean (npm run lint is the same)
+npx eslint .                                         # clean (the same as npm run lint)
 
 # Opt-in, slow: build and run the real backend image and the compose Keycloak
 # entrypoint (deselected by default via pytest.ini addopts)
@@ -423,6 +424,17 @@ frontend half is now a thin SSE reader plus a pure event reducer:
 | `ChatView.meter.test.jsx` | 9 | context meter accounting; send disabled when `inferenceBudget.remaining_tokens === 0` |
 | `chatTransport.test.js` (budget half) | — | `budgetDetail` + `formatResetAt` |
 | `ChatSidebar.jsx` tests (meter) | — | "N tokens left today" rendering — C1 removed the dedicated `ChatSidebar.inference.test.jsx`/source-toggle file along with the toggle itself |
+
+### Everything else, by area
+
+| Area | Backend (`server/tests/`) | Frontend (`src/`) |
+|---|---|---|
+| Documents | `test_docs_*`, `test_doc_*`, `test_extract.py`, `test_chunk_split.py`, `test_content_ops.py`, `test_entry_verification.py`, `test_hybrid_search.py` | `IndexButton`, `ConvertButton`, `PdfViewer.banner`, `PdfToolbarMenu`, `docMeta`, `docHash`, `docStatusPoller`, `segmentation.fixtures` |
+| Library and access | `test_library_*`, `test_people.py`, `test_project_*`, `test_admin_projects.py`, `test_capability_enforcement.py` | `LibraryPage*`, `ProjectsTab`, `ProjectPage`, `ProjectDocRow`, `MembersTab`, `ShareDialog`, `PeoplePicker`, `projectsApi`, `visibleTo` |
+| Chat | `test_chat_*` (context, store, sources, web, consent, project scope, read pages, multiround), `test_llm_openai.py`, `test_project_map.py`, `test_assistant_profile.py` | `ChatView.*`, `ChatSidebar.*`, `ChatSidePanel`, `ScopeChip*`, `WebOfferCard*`, `*.journey`, `citations`, `pins`, `sessionStore`, `useChatEngine`, `useDocUse` |
+| Reader and voice | `test_tts_stops_on_disconnect.py`, `test_synthesize_gate.py` | `usePdfEngine.*`, `useTtsEngine.*`, `useWorkspaceRestore`, `WorkspaceContext`, `WorkspaceLink`, `resolvePath`, `ReadSelectionButton`, `WelcomeScreen`, `useKeyboardShortcuts`, `useMenuDismiss` |
+| Accounts | `test_kc_admin.py`, `test_profile.py`, `test_auth_touch.py`, `test_admin_lifecycle.py` | `ProfileMenu`, `ProfilePanel`, `useViewModeGuard`, `useAuth.*`, `usePersistedState`, `useDeploymentDefaults`, `db.*` |
+| Platform and evals | `test_conftest_smoke.py`, `test_conn_commits_before_response.py`, `test_db_pool_options.py`, `test_logging_config.py`, `test_platform_compat.py`, `test_container_*`, `test_startup_script.py`, `test_eval_*`, `test_migration_*` | `smoke`, `Header.settings`, `ViewSwitcher`, `Sidebar.sections`, `MenuOpeners.shortcuts`, `userAgent`, `apiErrors` |
 
 ## Integration seams covered by tests
 

@@ -35,7 +35,7 @@ With the default single-worker uvicorn server the parallelism is mostly a small 
 WORKERS=4 python run.py        # four kokoro models in RAM, four pages in flight
 ```
 
-Trade-offs (RAM per worker, Postgres pool sizing, GPU caveat) are documented in [docs/CHAT_WITH_PDF.md §10](../docs/CHAT_WITH_PDF.md#10-performance--audiobook-export--multi-worker).
+Trade-offs (RAM per worker, Postgres pool sizing, GPU caveat) are documented in [docs/CHAT_WITH_PDF.md §10](../CHAT_WITH_PDF.md#10-performance--audiobook-export--multi-worker).
 
 ## Upgrade notes
 
@@ -46,4 +46,4 @@ Trade-offs (RAM per worker, Postgres pool sizing, GPU caveat) are documented in 
 
 ## Full changelog
 
-[CHANGELOG.md#171---2026-05-23](../CHANGELOG.md#171---2026-05-23) · diff: [v1.7.0…v1.7.1](https://github.com/udaravima/natural-reader/compare/v1.7.0...v1.7.1)
+[CHANGELOG.md#171---2026-05-23](../../CHANGELOG.md#171---2026-05-23) · diff: [v1.7.0…v1.7.1](https://github.com/udaravima/natural-reader/compare/v1.7.0...v1.7.1)

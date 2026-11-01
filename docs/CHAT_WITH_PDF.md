@@ -1,7 +1,7 @@
 # Chat with PDF — Walkthrough
 
-> **Audience:** anyone running Natural Reader who wants to ask their local LLM about a document they're reading.
-> **Status:** ships in `v1.6.0` (PRs 1–5 in the plan archive).
+> **Audience:** anyone running Natural Reader who wants to ask a model about what they're reading.
+> **Status:** current as of `v2.4.0` plus `[Unreleased]`; the feature first shipped in `v1.6.0`.
 > **Time to first working chat-with-doc:** ~10 minutes on a machine that already has Docker + Ollama.
 
 This document walks the whole feature end-to-end: what it does, why we built it the way we did, how to bring it up locally, and the four different ways you can pull document context into a chat — from a one-click page question to fully autonomous tool calling.
@@ -19,7 +19,7 @@ You can now:
 3. **Index the whole document** — pgvector embeddings via Ollama's `nomic-embed-text`, then let the chat semantically retrieve passages from anywhere in the doc.
 4. **Let the model decide on its own** — once a doc is indexed, the model gets a `search_documents` tool it can invoke autonomously whenever a question warrants it.
 
-Everything is still local: Ollama for the LLM and embeddings, FastAPI + Postgres for the backend, no cloud round-trips.
+Out of the box everything is local: Ollama for the LLM and embeddings, FastAPI + Postgres for the backend. A deployment can add cloud model providers for chat (the excerpts a chat sends then go to that provider), and web search asks before anything leaves the server.
 
 ---
 
@@ -54,7 +54,7 @@ The browser never calls a model provider directly (**C1**: no `/api/*` fetch to 
 
 A few load-bearing decisions worth knowing:
 
-- **Document identity = `sha256` of the file bytes**, computed lazily in the browser the first time you do anything chat-related with a doc. Filenames are metadata only — renaming a file hits the same document; editing it gets a fresh one.
+- **Document identity = `sha256` of the file bytes, computed by the server** on upload (the browser's own hash is only a hint). Filenames are metadata only — renaming a file hits the same document; editing it gets a fresh one.
 - **Chat now needs Postgres (C1).** Every turn claims the session and writes its reply to Postgres as it streams; if Postgres is unreachable, sending a message returns `503 db_unavailable` instead of a reply — this is a change from pre-C1, where the chat streamed against Ollama regardless and only session *persistence* depended on Postgres.
 - **Tool calling is server-side (C1).** The document tools (`search_documents`, `read_document_pages`, and since C2.1 `extract_from_documents` and `document_outline`) and the web tools (`web_search`, `read_web_pages`, `offer_web_search`) run in `server/chat/tools/`; there is no browser-side tool registry any more.
 
@@ -67,7 +67,7 @@ A few load-bearing decisions worth knowing:
 | Node.js | 20.19+ or 22.12+ | Frontend dev server (Vite 7). `startup.sh` refuses older versions. |
 | Python | 3.12 or 3.13 | For the bare-metal backend (`BACKEND_RUNTIME=venv`) and the test suite; the backend container needs none. 3.14 is untested. |
 | Docker (or Postgres + pgvector locally) | any recent | The compose file pins `pgvector/pgvector:pg16`. |
-| Ollama | latest | Both the chat model and `nomic-embed-text` must be pulled locally. |
+| Ollama | latest | `nomic-embed-text` must be pulled here whatever runs chat (indexing only calls Ollama). The chat model too, unless a provider serves it. |
 | RAM | ~6 GB free | Postgres + Ollama + a small chat model fit comfortably. Larger chat models scale linearly. |
 
 ---
@@ -226,9 +226,9 @@ the last is fully autonomous retrieval.
 The fastest path. Cap is `~8000 chars` per page (truncated tail marker added if over).
 
 1. While reading a page, click **Ask page** in the toolbar.
-2. The app jumps to chat mode and **pins** the page: a purple **pin chip** appears above the input reading `Page N · filename.pdf` + a preview. The pin stays attached to the conversation.
+2. The app opens the chat (beside the page on a wide screen, the Chat view otherwise) and **pins** the page: a purple **pin chip** appears above the input reading `Page N · filename.pdf` + a preview. The pin stays attached to the conversation.
 3. Type your question (or just hit Send to let the model decide what to say about the page).
-4. The model gets a system preamble with the page text — re-sent on **every** turn (placed at the very top of the prompt — there's no base system prompt ahead of it — so follow-ups keep the context without re-attaching).
+4. The model gets the page text in the leading system message, after the app's rules — re-sent on **every** turn, so follow-ups keep the context without re-attaching.
 
 **No indexing required.** Works the moment a doc loads. Remove a pin anytime via the ✕ on its chip.
 
@@ -244,10 +244,10 @@ Same idea, scoped to whatever you highlighted — and you can stack several.
 ### 6.3. How pins behave (persistent context)
 
 A pin is **not** a one-shot. Once created (Ask page or Ask AI) it stays attached to
-the conversation and is **re-sent to the model on every turn**, injected as a system
-note **at the very top of the prompt** — there's no base system prompt ahead of it,
-and it comes before the conversation history — so it never gets buried as the chat
-grows, and follow-ups "just work" without re-attaching.
+the conversation and is **re-sent to the model on every turn**, as part of the one
+leading system message (after the assistant profile, the app's rules and a project's
+map), ahead of the conversation history — so it never gets buried as the chat grows,
+and follow-ups "just work" without re-attaching.
 
 This is close to how a normal ChatGPT/Gemini session keeps context in view, with one
 deliberate difference: pasting text into a single message freezes it at that spot in
@@ -255,10 +255,9 @@ the transcript, where it recedes turn after turn; a pin instead is **re-injected
 the same place every turn**, staying maximally relevant. (The conversation's
 user/assistant turns are still re-sent in full each turn — every provider's chat API
 is stateless this way.) **Changed in C1:** pins used to sit immediately before your
-latest question; they moved to the very top of the prompt (there's no base system
-prompt ahead of them), so the prefix up to your new message stays identical
-turn-to-turn and a provider that caches repeated prompt prefixes (most do) can reuse
-that work instead of reprocessing it every time.
+latest question; they moved into the leading system message, so the prefix up to your
+new message stays identical turn-to-turn and a provider that caches repeated prompt
+prefixes (most do) can reuse that work instead of reprocessing it every time.
 
 - **Multiple pins** accumulate as separate chips; remove any via its ✕.
 - **Dedupe** by `(doc_id, kind, text)` — re-pinning the same passage is a no-op.
@@ -484,7 +483,7 @@ The sidebar merges both lists, newest-first, deduped by id.
 | Field | Notes |
 |---|---|
 | `content` / `thinking` | The model's reply text + reasoning trace. |
-| `attachments` | Image metadata (binary `dataUrl`/`base64` stripped on save). |
+| `attachments` | Attachment metadata; the bytes are in `chat_attachments` (migration 013), so a follow-up turn can send an earlier image to the model again. Deleting the chat deletes them. |
 | `docContext` | Legacy per-message context (pre-pins). No longer written for new messages; retained so old sessions still re-render their chip. |
 | `stats` | Per-turn token + latency numbers from the provider (the `⚡` disclosure); `usageEstimated: true` if the provider didn't report token counts and they were estimated from text length instead. |
 | `toolCalls` | Compact summary of any autonomous tool calls — `{name, arguments, result_summary}`. Used to re-render the 🔎 disclosure on reload. |
@@ -577,12 +576,11 @@ The server-side tool registry (`server/chat/tools/` — moved from the browser's
 
 Adding a tool is one file in `server/chat/tools/` (`name`, `spec`, `available(ctx)`, `execute`, `summarize`) plus one registry line — there's no separate frontend half to write any more.
 
-Also tabled for future work:
+**Tool rounds and their guard-rails (shipped in v2.3).** `CHAT_MAX_TOOL_ROUNDS` defaults to 3, with these guard-rails:
 
-- **Multi-round tool calls (v2.3).** `CHAT_MAX_TOOL_ROUNDS` defaults to 3, with these guard-rails:
-  - **Per-answer result budget:** `CHAT_TOOL_RESULT_BUDGET_CHARS`, default 24,000. Past it, a call returns "Search budget for this answer used up: answer from what you have." A result that would go past the budget is dropped unseen, and its passages don't count as shown.
-  - **Repeated calls:** a call identical to an earlier one in the same answer returns "Already searched: see the results above." without running.
-  - **Daily token budget:** checked before every step.
-  - **Web search guard:** `web_search` and `offer_web_search` refuse queries over 300 characters, and any query that shares a run of 8 words with document text the model has this turn (the Stage 0 passages, pins, search results, pages read). For scripts written without spaces (Chinese, Japanese, Thai and others), the check is a shared run of 12 characters. The check also covers the model's own earlier answers in the chat, since they often quote the document; your own messages are not checked. It tells the model to search by topic instead. **Limit:** it catches copied runs, not meaning. A short sensitive fragment, under 8 words, can still be sent, so don't rely on it as a data-loss filter.
-  - **Status line:** the reply says what is running ("Searching the document…", "Reading the document…", "Searching the web…"), and "Still searching… (round n)" from the second round on.
-- **No-chip retrieval toggle** for users who want manual whole-doc context without going through Ask page / Ask AI first.
+- **Per-answer result budget:** `CHAT_TOOL_RESULT_BUDGET_CHARS`, default 24,000. Past it, a call returns "Search budget for this answer used up: answer from what you have." A result that would go past the budget is dropped unseen, and its passages don't count as shown.
+- **Repeated calls:** a call identical to an earlier one in the same answer returns "Already searched: see the results above." without running.
+- **Daily token budget:** checked before every step.
+- **Web search guard:** `web_search` and `offer_web_search` refuse queries over 300 characters, and any query that shares a run of 8 words with document text the model has this turn (the Stage 0 passages, pins, search results, pages read). For scripts written without spaces (Chinese, Japanese, Thai and others), the check is a shared run of 12 characters. The check also covers the model's own earlier answers in the chat, since they often quote the document; your own messages are not checked. It tells the model to search by topic instead. **Limit:** it catches copied runs, not meaning. A short sensitive fragment, under 8 words, can still be sent, so don't rely on it as a data-loss filter.
+- **Status line:** the reply says what is running ("Searching the document…", "Reading the document…", "Searching the web…"), and "Still searching… (round n)" from the second round on.
+Also tabled for future work: a **no-chip retrieval toggle**, for manual whole-document context without going through Ask page / Ask AI first.

@@ -1,19 +1,16 @@
-# Document library (RAG Phase 0 → A1)
+# Document library
 
 The library turns the single-owner document store into a **shared,
 organizable library**: documents can be grouped into projects, shared with
-other users, and tagged, while every read stays access-controlled. Today,
-adding members to a project and sharing a document with one person are
-**API-only** until the project-management UI (subsystem A0) ships. In the
-app you can create a project (Library → **New project**), tag your
-documents, and file them into projects you can see (a project's owner can
-also remove them there). This is Phase 0
-of the RAG roadmap — it builds the sharing/organization substrate
-that later phases (cross-document search, descriptions + routing,
-multi-round retrieval) sit on top of. It adds no search intelligence itself.
+other people, tagged and kept in versions, while every read stays
+access-controlled. In the app you create a project (Library → **New
+project**), add people with a role (**Members → + Add people**), file your
+uploads into it, and share a single document with one person (**Share** in
+the Library). How people use it: [USER_GUIDE.md](USER_GUIDE.md#projects-and-people).
+This document is the developer's view.
 
-Lives on `development`. Migrations **009**, **010**, **011** and **012**, plus
-**018** for document versions. Not yet on `master`.
+Migrations **009**, **010**, **011** and **012**, **017** for project roles,
+and **018** for document versions.
 
 ## The model: content, library entries, placements
 
@@ -34,7 +31,7 @@ re-embedded (see "Uploading," below).
 
 **Read access** reduces to one predicate: a user can read a document iff
 they hold a library entry for it, **or** the content is placed in a project
-they own or belong to — and that entry or placement is **verified**: it
+they belong to — and that entry or placement is **verified**: it
 traces back to someone who uploaded the bytes to this server (a holding
 from before A1, which only ever claimed a hash, doesn't count until its
 holder uploads the file; see "Upgrade notes (migration 012)"). It's resolved entirely in SQL (`readable_docs_where` /
@@ -96,25 +93,14 @@ last entry and the very last placement are both gone.
 
 ## Sharing
 
-Sharing a single document with one other person works today, but **only
-through the API** — there's no share button in the app yet. The same goes
-for adding members to a project: it's API-only
-(`PUT /v1/projects/{id}/members/{user_id}`) until the project-management UI
-(subsystem A0) ships, because the app has no way yet to find another
-person's user id. The project actions in the app today are creating a
-project (Library → **New project**: a name and an optional description; you
-own what you create), filing a document you uploaded into a project you can
-see, and, for that project's owner, removing it again.
+In the Library, **Share** on a document you uploaded opens a panel with the
+people picker: find the person, pick them, and × stops sharing. Who you can
+find depends on `USER_DIRECTORY_MODE` (below); a full email address always
+works, and an admin finds anyone.
 
-Sharing needs curl (or a script) and a personal access token (see
-[USER_GUIDE.md](USER_GUIDE.md) for creating one), plus two ids:
-
-- **`doc_id`** — `GET /v1/docs` lists your documents with their `doc_id`
-  (`curl https://reader.example.com/v1/docs -H "Authorization: Bearer nrp_…"`;
-  add `?q=<part of the name>` to narrow it down).
-- **the recipient's `user_id`** — there's no people directory yet, so ask
-  the recipient: they read their own id from `GET /v1/auth/me` (the `id`
-  field), with their own token or signed in to the app in the same browser.
+A script can do the same with a personal access token (see
+[USER_GUIDE.md](USER_GUIDE.md#access-tokens)), a `doc_id` from `GET /v1/docs`
+and a `user_id` from `GET /v1/users/lookup?q=`:
 
 ```bash
 # Share a document you uploaded with another user (idempotent, 204 either way):
@@ -158,11 +144,9 @@ the same proof of possession sharing needs. Members who see it only through
 the project see it under the name its filer gave it, and can open it from
 their Library (**Open**) like any document they can read. Once it's filed, though, ownership
 of the document stops mattering: only **the project** can remove it from
-itself again. Today (before A0) that means the **project's owner**; once A0
-ships, any Maintainer will be able to. The person who filed it has no
-special standing over a placement they made — if the project owner wants it
-gone, it's gone, for everyone who reads that project through that
-placement.
+itself again, which means a Maintainer or Owner. The person who filed it has
+no special standing over a placement they made — if a Maintainer wants it
+gone, it's gone, for everyone who reads that project through that placement.
 
 ## Versions (V1)
 
@@ -444,10 +428,14 @@ The whole file runs in one transaction. No data is dropped.
 
 | Route | Guard | Notes |
 |-------|-------|-------|
-| `POST /v1/projects` | any signed-in user | Creates a project you own. In the app: Library → **New project**. |
-| `GET /v1/projects` | any signed-in user | Lists projects you **own or are a member of**; each row carries `is_owner`. |
-| `GET` · `PATCH` · `DELETE /v1/projects/{id}` | owner (404 otherwise) | Read/rename/delete your own project. Delete removes its doc links (garbage-collecting any content that was only reachable through it); the documents themselves survive if anyone else holds them. |
-| `PUT` · `DELETE /v1/projects/{id}/members/{user_id}` | owner | Idempotent (204). Add/remove a read-member. Unknown `user_id` → 404. API-only until A0. |
+| `POST /v1/projects` | any signed-in user (`reader`), within `PROJECT_LIMIT_PER_USER` | Creates a project; you become its Owner (an admin may name another Owner with `owner_user_id`). In the app: Library → **New project**. |
+| `GET /v1/projects` | any signed-in user | Lists projects you **are a member of**, admins included (every project is under `GET /v1/admin/projects`). Each row carries `my_role`, `member_count`, `doc_count` and `can`, what you may do, so the UI never re-derives the rules. |
+| `GET /v1/projects/{id}` | Reader+ | Non-members get 404. |
+| `PATCH /v1/projects/{id}` | Maintainer+ | Rename, or change the description. |
+| `DELETE /v1/projects/{id}` | Owner | Removes the project and its doc links (garbage-collecting any content that was only reachable through it); the documents themselves survive if anyone else holds them. |
+| `GET /v1/projects/{id}/members` · `GET /v1/projects/{id}/events` | Reader+ | The member list; the Activity feed. |
+| `PUT /v1/projects/{id}/members/{user_id}` | Maintainer+ | Body `{"role": …}` is required. Adds a person or changes their role. A Maintainer manages roles up to Maintainer; Owner rows need an Owner, or an admin. |
+| `DELETE /v1/projects/{id}/members/{user_id}` | Maintainer+, or yourself | Removes a member, or leaves. The last Owner can't be removed. |
 | `PUT /v1/projects/{id}/docs/{doc_id}` | Contributor+ holding a verified upload entry (admins only through a member role) | File a document from your library. `201 {document_id, version}` when something was filed, `200` (same body) when that content was already current. Query `as_version_of=<document id>` files it as a new version of that document; `keep_both=true` files it as a separate document anyway. `409 name_exists` / `409 older_version` ask the caller to choose (see "Name match, in order"). Invisible project → 404; a document you don't hold an upload entry for → 404. |
 | ~~`DELETE /v1/projects/{id}/docs/{doc_id}`~~ | — | **Removed.** Use `DELETE /v1/projects/{id}/documents/{document_id}` below. |
 
@@ -555,11 +543,18 @@ and `can_read` on the specific document — a user needs the `reader`
 capability from their Keycloak realm roles *and* an entry or placement for
 that particular document.
 
+## People search
+
+`GET /v1/users/lookup?q=` (`server/services/people.py`) is what the people
+picker calls. `USER_DIRECTORY_MODE` decides who a person can find: `exact`
+(a full email address only, the default), `domain` (type-ahead within your
+email domain, when it's listed in `USER_DIRECTORY_DOMAINS`) or `open`
+(type-ahead over everyone). A full email works in every mode, and an admin
+always gets type-ahead over everyone.
+
 ## What's next (out of scope here)
 
-Phase 1 = `docScope` cross-document search; Phase 2 = document descriptions +
-`find_documents` routing; Phase 3 = multi-round retrieval loop. Each gets its
-own spec → plan → build. The "Ask about these" affordance in the Library is a
-Phase 1 feature and is intentionally absent. Subsystem A0 (projects, roles &
-directory) adds the people picker that turns per-document sharing into a UI
-flow, Maintainer-level project roles, and a proper project-management screen.
+Project chat shipped in v2.4 ([CHAT_WITH_PDF.md](CHAT_WITH_PDF.md#66-asking-a-whole-project-c21)).
+Still planned: comparing two versions and reviewing a version before it
+becomes current, and asking all of your documents at once, whatever project
+they are in.

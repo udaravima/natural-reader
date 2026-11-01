@@ -18,4 +18,4 @@ Consumer code is unchanged — React accepts callback functions in `ref={...}` e
 
 ## Full changelog
 
-[CHANGELOG.md#173---2026-05-23](../CHANGELOG.md#173---2026-05-23) · diff: [v1.7.2…v1.7.3](https://github.com/udaravima/natural-reader/compare/v1.7.2...v1.7.3)
+[CHANGELOG.md#173---2026-05-23](../../CHANGELOG.md#173---2026-05-23) · diff: [v1.7.2…v1.7.3](https://github.com/udaravima/natural-reader/compare/v1.7.2...v1.7.3)

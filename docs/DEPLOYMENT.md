@@ -316,7 +316,7 @@ use it only as a throwaway, never as the fix.
 Too Large`.
 
 **Cause:** nginx's default `client_max_body_size` is **1 MB**. Document uploads
-go through `POST /v1/docs/{id}/pdf` and are often much larger.
+go through `POST /v1/docs` and are often much larger.
 
 **Fix:** the `chat.example.com.sample` sets `client_max_body_size 100m;` inside
 the `/v1/` block. Raise it if you expect bigger files.
@@ -374,7 +374,7 @@ OpenAI chat-completions shape (vLLM, OpenRouter, LiteLLM, or Ollama's own
 `/v1`); for `kind=openai`, `URL` is the API base **including** the version
 path — the adapter appends `/chat/completions` and `/models` itself. API
 keys stay on the server: never sent to the browser, never logged, never
-shown in the admin console's Deployment config panel.
+shown in the admin console's Deployment section (a key reads only *set* or *not set*).
 
 **What has been run against real providers:** OpenRouter, through the
 `openai` adapter, with paid `google/gemma-4-26b-a4b-it` and
@@ -384,6 +384,69 @@ follow-up question, provider-reported token usage, a rate-limited free
 model and a rejected key, with no key in the logs. Before that (v2.1.0),
 the same adapter was run against Ollama's own `/v1`. vLLM and LiteLLM speak
 the same protocol but haven't been run.
+
+### Examples: vLLM, Unsloth, OpenAI and Claude
+
+Each server is one more name in `INFERENCE_PROVIDERS`. Anything that speaks the
+OpenAI chat-completions shape is `KIND=openai`, and its `URL` ends in `/v1`.
+Of these, only the Ollama provider has been run against this app (OpenRouter has
+too; see below). **The others are written from each project's documentation.**
+
+```bash
+INFERENCE_PROVIDERS=local,vllm,unsloth,openai,claude
+INFERENCE_LOCAL_KIND=ollama
+INFERENCE_LOCAL_URL=http://localhost:11434
+
+# vLLM on a GPU machine
+INFERENCE_VLLM_KIND=openai
+INFERENCE_VLLM_URL=http://gpu-box.example.com:8001/v1
+INFERENCE_VLLM_API_KEY=change-me          # whatever you passed to --api-key
+
+# Unsloth Studio (create the key in Studio's Settings; it's shown once)
+INFERENCE_UNSLOTH_KIND=openai
+INFERENCE_UNSLOTH_URL=http://localhost:<studio-port>/v1
+INFERENCE_UNSLOTH_API_KEY=sk-unsloth-...
+
+# OpenAI: name the models you want, or the picker also lists its embedding,
+# speech and image models
+INFERENCE_OPENAI_KIND=openai
+INFERENCE_OPENAI_URL=https://api.openai.com/v1
+INFERENCE_OPENAI_API_KEY=sk-...
+INFERENCE_OPENAI_MODELS=<chat-model-a>,<chat-model-b>
+
+# Claude, through Anthropic's OpenAI-compatible layer
+INFERENCE_CLAUDE_KIND=openai
+INFERENCE_CLAUDE_URL=https://api.anthropic.com/v1
+INFERENCE_CLAUDE_API_KEY=sk-ant-...
+INFERENCE_CLAUDE_MODELS=claude-sonnet-5-5,claude-haiku-5-5
+INFERENCE_CLAUDE_CONTEXT_WINDOW=<the model's documented window>
+```
+
+On the vLLM side:
+
+```bash
+vllm serve Qwen/Qwen3-8B --port 8001 --api-key change-me --max-model-len 32768 \
+  --enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3
+```
+
+What each one will surprise you with:
+
+- **Indexing still needs Ollama.** Embeddings go to `OLLAMA_URL` whatever
+  `INFERENCE_PROVIDERS` says, so a vLLM-only or Claude-only deployment can chat
+  but can't index documents.
+- **vLLM:** without `--enable-auto-tool-choice` and the `--tool-call-parser` of the
+  model's family (`hermes` for Qwen) it refuses tool requests. The app then turns
+  that model's tools off, and it never searches the document.
+- **Unsloth** means two things. Its quantized models on Hugging Face run through
+  the Ollama you already have, with no config change:
+  `ollama pull hf.co/unsloth/<repo>:Q4_K_M`, then they're listed under your Ollama
+  provider. Unsloth Studio is a server of its own, configured as above.
+- **Claude** works through Anthropic's compatibility layer, which Anthropic
+  describes as a way to test models rather than a production path. Chat, tools,
+  images and token counts work per its documentation. It has no prompt caching,
+  ignores the **Thinking** setting (`reasoning_effort`) and strips audio. Whether it
+  answers this app's model listing (`GET /models` with a Bearer key) is **unverified**.
+  A provider whose listing fails disappears from the picker, with only a log line.
 
 **Trap:** the key goes in `INFERENCE_<NAME>_API_KEY`, where `<NAME>` is the
 provider's name from `INFERENCE_PROVIDERS` in capitals —
@@ -449,8 +512,8 @@ provider reports always wins over a declared one.
 
 **Admin console → Models** sets the same things without a restart, and wins over
 the environment: the deployment's size and per-model sizes, declared windows,
-the reader, which providers count as local (a cost flag; **Cloud** also stops an
-Ollama provider's models from being sized), and which chat models are offered
+the reader, which providers count as local (a cost flag that never changes a
+model's size), and which chat models are offered
 (it can only narrow `INFERENCE_MODELS` and each provider's allow-list).
 `INFERENCE_NUM_CTX_MAX` is not editable there; Models shows it as the ceiling.
 It applies from the next message, on every worker.

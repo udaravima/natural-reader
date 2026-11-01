@@ -4,7 +4,7 @@ How to run the multi-user auth flow end to end against a real Keycloak, on your
 own machine. This is a **local-dev** rig — the Keycloak container runs in
 `start-dev` mode (no TLS, bootstrap admin creds). Production hardening
 (external DB user, TLS, a real reverse proxy, dedicated Keycloak credentials)
-is sub-project **D**.
+is covered in [../docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md).
 
 **Deploying for real?** See [../docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md) —
 production behind nginx + TLS on real hostnames, with the two nginx sample vhosts
@@ -25,7 +25,7 @@ Files here:
 - `keycloak/realm-export.json` — a reproducible `natural-reader` realm: the
   browser-facing confidential client (PKCE, plus a realm-roles protocol
   mapper so `realm_access.roles` reaches the ID token), the realm roles
-  `reader`/`chat`/`admin` (granted to **nobody** by default), one verified
+  `reader`/`chat`/`admin`/`docling` (granted to **nobody** by default, apart from the test user below), one verified
   test user (`admin-user`), and a second confidential client
   **`natural-reader-admin`** (service accounts, no login flows) whose
   service-account user holds the `realm-management` roles the app's admin
@@ -52,8 +52,8 @@ above): [`chat.example.com.sample`](../docs/sample_configs/chat.example.com.samp
 OIDC session cookies only work when the browser sees the **SPA and the backend
 as one origin**. Two ways to get that:
 
-- **Fast dev loop:** `npm run dev` (:5173) — `vite.config.js` proxies `/v1` and
-  `/api` to the backend, so :5173 is same-origin. Use this while building UI.
+- **Fast dev loop:** `npm run dev` (:5173) — `vite.config.js` proxies `/v1` to the
+  backend, so :5173 is same-origin. Use this while building UI.
 - **Prod-like:** build the SPA and let nginx serve it and proxy the backend
   (one origin, e.g. :8080).
 
@@ -96,7 +96,7 @@ export SESSION_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(4
 export COOKIE_SECURE=false                 # local http, no TLS
 export BOOTSTRAP_ADMIN_EMAIL=admin@example.com
 export HOST=127.0.0.1
-# Optional — inference gateway tuning (see .env.example § Inference gateway):
+# Optional — which models people get and what they may spend (see .env.example):
 # export INFERENCE_MODELS="llama3.2:3b,gemma3:4b"   # unset = allow all (dev)
 # export INFERENCE_DAILY_TOKEN_BUDGET=100000        # unset/0 = unlimited
 # Optional — Keycloak admin service account (matches realm-export.json's
@@ -110,10 +110,9 @@ export HOST=127.0.0.1
 .venv/bin/python run.py
 ```
 
-With auth on, chat goes through the authenticated gateway
-(`/v1/inference/*`) using the session cookie — see
-[docs/USER_GUIDE.md](../docs/USER_GUIDE.md) for the user-facing behavior and
-`../README.md` § Inference Gateway for the operator view.
+With auth on, chat runs on the backend (`/v1/chat/sessions/{id}/turns`) under the
+session cookie — see [docs/USER_GUIDE.md](../docs/USER_GUIDE.md) for the
+user-facing behavior and `../README.md` § Model providers for the operator view.
 
 ## 3. Start the SPA
 
@@ -158,25 +157,18 @@ yet" until an admin explicitly grants some.
    You get the **"awaiting approval"** screen (JIT-provisioned, `pending`,
    zero capabilities).
 4. Back as the admin: click the **shield icon** (admin view) in the view
-   switcher. The pending user is listed → click **Activate**, then check the
+   switcher, then **People**. The pending user is listed → click **Activate**, then check the
    **reader** and **chat** boxes in that row's capability strip (each
    checkbox PATCHes immediately). Skip this and the user stays "active but no
    access" after step 5.
 5. As the second user, click **Refresh** on the pending screen → the app
    renders (no fresh Keycloak login needed — the running session picks up
    the new capabilities on its next request either way).
-6. Open Sidebar → **Account** → create a **Personal Access Token**; copy it once
-   (this is what the browser extension / scripts use as a `Bearer` token — it
-   needs the owning user to hold `reader` to authenticate TTS calls).
-7. **Log out** from the Account section → back to the login screen.
+6. Open **Settings → Access tokens** (the header gear) → create a token; copy it
+   once (this is what the browser extension / scripts use as a `Bearer` token —
+   it needs the owning user to hold `reader` to authenticate TTS calls).
+7. **Log out** from the profile menu (top right) → back to the login screen.
 
-> The older per-user "Make admin/member" toggle still visible in the reader
-> Sidebar's collapsible Admin block (`AdminPanel.jsx`) only writes the legacy
-> `role` column — it does **not** grant a capability, so it no longer confers
-> real admin access. Use the shield-icon admin view's capability checkboxes
-> for anything that has to actually take effect. See
-> [docs/IDENTITY_AND_ROLES.md](../docs/IDENTITY_AND_ROLES.md) § "Roles → UI".
->
 > **Offboarding note (live-verified):** deleting a user in the Keycloak console
 > does **not** remove them from the app — their account stays active with any
 > tokens still working, and their email stays blocked for future Keycloak users

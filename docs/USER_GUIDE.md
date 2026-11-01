@@ -1,7 +1,7 @@
-# User Guide — accounts, tokens, admin, and chat budgets
+# User Guide — accounts, the library, chat and the admin console
 
-This is the **end-user guide** for the multi-user features: signing in, your
-account, personal access tokens, the admin section, and the chat inference
+This is the **end-user guide**: signing in, your account, personal access
+tokens, the admin console, the Library and projects, chat, and the daily token
 budget. (For developer internals see [ARCHITECTURE.md](ARCHITECTURE.md) and
 [IDENTITY_AND_ROLES.md](IDENTITY_AND_ROLES.md); reading features are covered in
 the [README](../README.md).)
@@ -12,6 +12,8 @@ the [README](../README.md).)
 - [Profile: your picture, password and signed-in browsers](#profile-your-picture-password-and-signed-in-browsers)
 - [Access tokens](#access-tokens)
 - [Admin console (admins only)](#admin-console-admins-only)
+- [Library: documents on the server](#library-documents-on-the-server)
+- [Projects and people](#projects-and-people)
 - [Chat: models and streaming](#chat-models-and-streaming)
 - [Asking a whole project](#asking-a-whole-project)
 - [When the assistant offers a web search](#when-the-assistant-offers-a-web-search)
@@ -55,8 +57,8 @@ navigation (reader) and the model picker + sessions (chat). Everything about
   tokens** (the only place tokens are created). **Esc**, the **×** or a click
   outside closes it; it opens on the tab you used last.
 - **Admin** console — a separate view opened from the **shield** button in the
-  top view switcher (Reader / Chat / Library / Admin). Only admins see it. User
-  management only; **no token creation happens here.**
+  top view switcher (Reader / Chat / Library / Admin). Only admins see it.
+  **No token creation happens here.**
 
 ## Listening while you do something else
 
@@ -224,24 +226,31 @@ Each row has buttons per user:
 |---|---|
 | **Activate** | Moves a `pending` account to active — the user can sign in (do this after you've vetted them) |
 | **Disable** | Signs the user out **everywhere, immediately** and blocks them until reactivated. Their data is kept |
-| **Make admin / Make member** | Grants or removes admin rights. Takes effect on the user's very next request — no re-login needed on the server's side; their open tab refreshes its view of the role on next page load |
+| **Delete** | Removes the account for good, once you type their email to confirm: sessions, tokens, usage, library entries, project memberships and chats go with it, and so do documents nobody else holds. Projects survive (ownerless if this was their last Owner). With the Keycloak service account configured, their Keycloak user is deleted too |
+
+Under each row, the **capabilities** ticks (`reader`, `chat`, `admin`, `docling`) grant or remove what the person can do. A change takes effect on their very next request, with no re-login; their open tab refreshes its view on the next page load.
+
+**Enrolling someone.** The form above the list creates an account before its owner ever logs in: their email and name, a status, a budget and capability ticks. With the Keycloak service account configured it also creates their Keycloak user and either emails them an invite or shows a one-time temporary password, once, to pass on. Without it, the row waits for its owner's first login with that email.
 
 Notes:
 
-- You can't disable or demote **yourself** from this list (the buttons are
-  hidden on your own row) — that's a lockout guard in the UI.
+- You can't disable or delete **yourself**, or untick your own `admin`, from
+  this list — the controls are hidden or locked on your own row, and the server
+  refuses to remove the last active admin.
 - New users appear here automatically, as `pending`, the first time they log
   in.
 - **Offboarding order matters.** To remove someone: click **Disable here
   first** — that signs them out everywhere and blocks their tokens — and only
-  then delete them in the login system (Keycloak), if that's how you manage
-  accounts. Deleting them in Keycloak *alone* does **not** remove them here:
+  then delete them, with **Delete** here or in the login system (Keycloak).
+  Deleting them in Keycloak *alone* does **not** remove them here:
   their account stays active, any already-issued tokens keep working, and that
   email address becomes permanently unusable (a new account with the same
   email will be rejected with "email already linked to another identity").
-- Roles are managed **here, not in the login system** — your organization's
-  login (Keycloak) only verifies who you are; whether you're an admin is a
-  fact this application owns.
+- **Capabilities live in the login system.** They are Keycloak realm roles, and
+  each login copies them into the app. A tick here writes to Keycloak first when
+  the server has the Keycloak service account (`KC_ADMIN_*`), so it lasts.
+  Without that account a tick lasts only until the person's next login. See
+  [IDENTITY_AND_ROLES.md](IDENTITY_AND_ROLES.md#where-roles-actually-live-keycloak-realm-roles--userscapabilities).
 - Each person's daily token budget is the **Budget** box on their row under
   **People** (empty = the deployment default, 0 = unlimited; press **Set**).
   **Usage** shows tokens by model, by person and by day.
@@ -553,7 +562,9 @@ shows:** the session secret, sign-in client secret and Keycloak admin client
 secret read only **set** or **not set**, and a URL never shows a password or
 query.
 
-**Projects.** Every project, with its owners and counts. **Ownerless only**
+### Projects: every project on the server
+
+Every project, with its owners and counts. **Ownerless only**
 shows projects whose last Owner was deleted; **Add me as Owner** takes one
 over (recorded as "added by admin" and logged). **Open** shows the project
 page; as an admin you can manage members, rename and delete any project, but
@@ -852,8 +863,8 @@ When you run out:
 - Nothing is lost: your message stays, the document is fine, and everything
   comes back at the reset time.
 
-Admins can raise individual users' budgets (API today; UI pending). If you
-legitimately need more, ask yours.
+An admin sets each person's budget under **Admin → People** (the **Budget** box
+on their row). If you legitimately need more, ask yours.
 
 ## FAQ
 
@@ -881,9 +892,9 @@ with the same email can't log in.**
 Deleting in the login system removes their ability to *log in*, but their app
 account — documents, tokens, and all — remains, and their email stays locked
 to it. To properly offboard: **Disable** them in the Admin section first
-(kills their sessions and tokens), then delete in Keycloak. To free the email
-for a future user, the old app row must be removed by an operator
-(database-level today; an admin-side "delete user" UI is a planned follow-up).
+(kills their sessions and tokens), then **Delete** them there, which also frees
+the email. If they were deleted in Keycloak first, **Delete** in the Admin section
+still removes the app account.
 
 **The assistant asked me before searching the web. Can I turn that off?**
 That is the default on purpose. An admin can change it under **Admin → Chat

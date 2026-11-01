@@ -92,5 +92,5 @@ design-first workflow for larger features.
 
 ## Full changelog
 
-[CHANGELOG.md#190---2026-08-10](../CHANGELOG.md#190---2026-08-10) · diff:
+[CHANGELOG.md#190---2026-08-10](../../CHANGELOG.md#190---2026-08-10) · diff:
 [v1.8.3…v1.9.0](https://github.com/udaravima/natural-reader/compare/v1.8.3...v1.9.0)

@@ -232,6 +232,16 @@ All notable changes to this project will be documented in this file.
   model (3 repeats): project eval 33/42 against 32/42, document eval 27/27
   both.
 
+### Docs
+
+- **Every living document was checked against the code (2026-11-01).** Screens
+  that moved are named where they are now (Settings, the admin console's sections),
+  and claims that had stopped being true are gone: sharing and project members
+  being API-only, a Make admin button, roles being "owned by the app" (they are
+  Keycloak realm roles), a browser mode with no backend, pins having no system
+  prompt ahead of them, a Vite proxy to Ollama, and more. **Docs → DEPLOYMENT**
+  gains worked examples for vLLM, Unsloth, OpenAI and Claude.
+
 ## [2.4.0] - 2026-10-25
 
 **Ask a whole project.** A chat can cover every current document in a

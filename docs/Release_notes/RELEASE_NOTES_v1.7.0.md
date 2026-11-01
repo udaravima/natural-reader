@@ -58,4 +58,4 @@ New Home icon in the header (reader mode, doc open) stops TTS, drops the current
 
 ## Full changelog
 
-[CHANGELOG.md#170---2026-05-23](../CHANGELOG.md#170---2026-05-23) · diff: [v1.6.0…v1.7.0](https://github.com/udaravima/natural-reader/compare/v1.6.0...v1.7.0)
+[CHANGELOG.md#170---2026-05-23](../../CHANGELOG.md#170---2026-05-23) · diff: [v1.6.0…v1.7.0](https://github.com/udaravima/natural-reader/compare/v1.6.0...v1.7.0)
