@@ -211,6 +211,49 @@ describe('ChatView: recording and transcribing', () => {
     fireEvent.keyDown(window, { key: 'Escape' });
     await waitFor(() => expect(document.activeElement).toBe(box()));
   });
+  describe('focus is only taken when nobody else has it', () => {
+    const withOther = (over) => render(<><Harness initial="Say now" {...over} /><button aria-label="other">x</button></>);
+    const toTranscribing = async () => {
+      fireEvent.click(await waitMic());
+      fireEvent.click(await screen.findByRole('button', { name: 'Stop and transcribe' }));
+      await screen.findByRole('status');
+      screen.getByLabelText('other').focus();
+    };
+    it('stays on another field after Cancel', async () => {
+      onPost = () => new Promise(() => {});
+      withOther();
+      await toTranscribing();
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      await waitMic();
+      expect(document.activeElement).toBe(screen.getByLabelText('other'));
+    });
+    it('stays on another field after a failure', async () => {
+      let fail; onPost = () => new Promise((r) => { fail = r; });
+      withOther();
+      await toTranscribing();
+      await act(async () => { fail(answer(503, { detail: 'busy' })); });
+      await waitMic();
+      expect(document.activeElement).toBe(screen.getByLabelText('other'));
+    });
+    it('stays on another field after an answer, and the text is still inserted', async () => {
+      let ok; onPost = () => new Promise((r) => { ok = r; });
+      withOther();
+      await toTranscribing();
+      await act(async () => { ok(answer(200, { text: 'hello', language: 'en' })); });
+      await waitFor(() => expect(box().value).toBe('hello Say now'));
+      expect(document.activeElement).toBe(screen.getByLabelText('other'));
+    });
+    it('with focus on nothing, the box takes it', async () => {
+      onPost = () => new Promise(() => {});
+      withOther();
+      fireEvent.click(await waitMic());
+      fireEvent.click(await screen.findByRole('button', { name: 'Stop and transcribe' }));
+      await screen.findByRole('status');
+      document.activeElement?.blur();
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      await waitFor(() => expect(document.activeElement).toBe(box()));
+    });
+  });
   it('Escape cancels while recording', async () => {
     render(<Harness />);
     fireEvent.click(await waitMic());

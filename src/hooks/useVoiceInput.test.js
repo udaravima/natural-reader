@@ -309,6 +309,13 @@ describe('useVoiceInput: stop edge cases', () => {
     expect(m.result.current.phase).toBe('idle');
     expect(allTracksStopped()).toBe(true);
   });
+  it('a clock set backwards never shows a negative time', async () => {
+    const m = await ready();
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    await act(async () => { m.result.current.start(); await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { vi.setSystemTime(Date.now() - 60000); vi.advanceTimersByTime(1000); });
+    expect(m.result.current.seconds).toBe(0);
+  });
   it('the 120 s limit follows the wall clock: a throttled timer cannot run past it', async () => {
     const m = await ready();
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });

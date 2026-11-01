@@ -180,9 +180,17 @@ export default function ChatView({
   });
   // Cancel, Escape and a failure end the recording with the focus gone from the page (the controls were
   // replaced): give it back to the box, as an answer does.
+  // Only when nobody else has it: a transcription takes seconds, and a person who opened a dialog or moved to
+  // another field meanwhile must not have focus pulled from under them. "Nobody" is the page itself (body),
+  // the mic controls (which were just replaced), or the box.
+  const micRef = useRef(null);
+  const mayTakeFocus = () => {
+    const active = document.activeElement;
+    return !active || active === document.body || active === textareaRef.current || !!micRef.current?.contains(active);
+  };
   const prevPhaseRef = useRef('idle');
   useEffect(() => {
-    if (prevPhaseRef.current !== 'idle' && voice.phase === 'idle') textareaRef.current?.focus();
+    if (prevPhaseRef.current !== 'idle' && voice.phase === 'idle' && mayTakeFocus()) textareaRef.current?.focus();
     prevPhaseRef.current = voice.phase;
   }, [voice.phase]);
   // After the new draft is rendered: focus the box, caret just after the text.
@@ -191,6 +199,7 @@ export default function ChatView({
     const ta = textareaRef.current;
     if (pos === null || !ta || ta.value.length < pos) return;
     caretAfterRef.current = null;
+    if (!mayTakeFocus()) return;   // the text is in the box either way
     ta.focus();
     ta.setSelectionRange(pos, pos);
   }, [draft]);
@@ -575,7 +584,7 @@ export default function ChatView({
             >
               <Paperclip size={18} />
             </button>
-            <MicButton theme={theme} voice={voice} />
+            <div ref={micRef} className="contents"><MicButton theme={theme} voice={voice} /></div>
             <input
               type="file"
               ref={fileInputRef}

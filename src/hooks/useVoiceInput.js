@@ -232,7 +232,7 @@ export function useVoiceInput({ apiHost, apiPort, language = 'auto', onText, sho
     setPhase('recording');
     tickRef.current = setInterval(() => {
       // From the wall clock, not a tick count: a throttled tab runs ticks late, and the server refuses past 125 s.
-      const elapsed = Math.floor((Date.now() - startedAtRef.current) / 1000);
+      const elapsed = Math.max(0, Math.floor((Date.now() - startedAtRef.current) / 1000));
       if (mountedRef.current) setSeconds(Math.min(elapsed, MAX_SECONDS));
       if (elapsed >= MAX_SECONDS) stop();
     }, 1000);
