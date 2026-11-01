@@ -66,7 +66,7 @@ const PRIVATE_KEY_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?
 // (?<!...) anchors keep these linear on long unbroken runs. A password that is
 // already a placeholder still matches, so the key scanner leaves it alone.
 const URL_PASSWORD_RE = new RegExp(
-    `(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*://[^\\s:/@]*:)(${PLACEHOLDER}|[^\\s/]+)(?=@)`,
+    `(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*://[^\\s:/@"',]*:)(${PLACEHOLDER}|[^\\s/]+)(?=@)`,
     'gi',
 );
 const KEYWORD_RE = /password|passwd|secret|token|api[_-]?key|private[_-]?key/gi;
@@ -151,7 +151,7 @@ const bareEnd = (text, blocks, from, quotedKey) => {
 // Finds `key <op> value` where the key holds a secret-ish word and reports the
 // value. Scanning resumes at the end of each value (never the end of the line),
 // so later secrets on the same line are still found. `urls` are the URL rule's
-// spans: a value starting inside one is that rule's job.
+// spans: a value starting exactly at one is that rule's job.
 const keyRanges = (text, urls) => {
     const blocks = blocksIn(text);
     const ranges = [];
@@ -182,7 +182,7 @@ const keyRanges = (text, urls) => {
         const opEnd = p;
 
         while (nextUrl < urls.length && urls[nextUrl].end <= opEnd) nextUrl += 1;
-        if (nextUrl < urls.length && urls[nextUrl].start <= opEnd) { resume(opEnd); continue; }
+        if (nextUrl < urls.length && urls[nextUrl].start === opEnd) { resume(opEnd); continue; }
 
         let start = p;
         let end;
@@ -238,6 +238,8 @@ const genericRanges = (slice, offset) => {
     ].map((r) => ({ start: r.start + offset, end: r.end + offset }));
 };
 
+// One word, then a separator: the only shape a line may have to keep its head.
+const ENV_WORD_HEAD_RE = new RegExp(`^\\s*(?:set\\s+)?(?:${PLACEHOLDER}|[^\\s=:]+)[ \\t]*[=:]`);
 const ENV_HEAD_RE = /^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.-]*[ \t]*=/;
 // Content detection is strict: `key = "x"` in source code is not an env file.
 const ENV_DETECT_RE = /^\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.-]*=/;
@@ -266,7 +268,7 @@ const isComment = (body) => body.trimStart().startsWith('#')
     && !NOT_ONE_LINE_RE.test(body.replace(PRIVATE_KEY_RE, '-').trim());
 
 // failClosed (env by NAME): a line that does not parse as KEY=value is masked
-// after its first = or :, or whole; a quote that never closes runs to the end.
+// after its one-word head and separator, or whole; a quote that never closes runs to the end.
 const envRanges = (text, failClosed) => {
     const blocks = blocksIn(text);
     const lastBlockEnd = Math.max(0, ...blocks.values());
@@ -281,12 +283,15 @@ const envRanges = (text, failClosed) => {
         if (body.trim() === '') continue;
         if (isComment(body)) { ranges.push(...genericRanges(body, lineStart)); continue; }
         let headEnd;
-        const hm = ENV_HEAD_RE.exec(body);
+        const trimmed = body.trim();
+        const base64Tail = failClosed && /^[A-Za-z0-9+/]{16,}={1,2}$/.test(trimmed)
+            && /[a-z]/.test(trimmed) && /[A-Z0-9]/.test(trimmed);
+        const hm = base64Tail ? null : ENV_HEAD_RE.exec(body);
         if (hm) {
             headEnd = lineStart + hm[0].length;
         } else if (failClosed) {
-            const sep = scanTo(text, blocks, /[=:\n]/, lineStart);
-            headEnd = sep < bodyEnd ? sep + 1 : bodyEnd - body.trimStart().length;
+            const head = base64Tail ? null : ENV_WORD_HEAD_RE.exec(body);
+            headEnd = lineStart + (head ? head[0].length : body.length - body.trimStart().length);
         } else {
             ranges.push(...genericRanges(body, lineStart));
             continue;
@@ -352,11 +357,12 @@ const render = (text, ranges) => {
 export const maskText = (name, text) => {
     const keys = rangesOf(text, PRIVATE_KEY_RE);
     let ranges;
-    if (isEnvName(name)) ranges = envRanges(text, true);
+    const withTokens = (envs) => [...envs, ...rangesOf(text, TOKEN_RE), ...rangesOf(text, JWT_RE)];
+    if (isEnvName(name)) ranges = withTokens(envRanges(text, true));
     // Lines count as they stand and as the masked file will read: a block's own lines
     // must not dilute detection, or masking the file again would pick the other mode.
     else if (looksLikeEnv(name, text) || looksLikeEnv(name, render(text, keys).text)) {
-        ranges = envRanges(text, false);
+        ranges = withTokens(envRanges(text, false));
     } else ranges = genericRanges(text, 0);
     return render(text, merge([...keys, ...ranges]));
 };

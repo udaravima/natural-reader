@@ -653,6 +653,66 @@ describe('fix round 4: timing', () => {
     });
 });
 
+describe('fix round 5: URL ranges and env heads', () => {
+    it('keeps a URL range from swallowing the next value', () => {
+        let r = maskText('x.txt', '{"url":"https://db.example.com","password":"p@ssw0rd"}');
+        expect(r.text).toBe('{"url":"https://db.example.com","password":"<masked, 8 chars>"}');
+        expect(r.masked).toBe(1);
+        r = maskText('x.txt', "cfg({url:'redis://cache.local',token:'t0k@en'})");
+        expect(r.text).toContain("token:'<masked, 6 chars>'");
+        expect(r.masked).toBe(1);
+        r = maskText('x.txt', 'url: jdbc:sqlserver://db:1433;databaseName=app;user=sa;password=S3cret@123;encrypt=true');
+        expect(r.text).not.toContain('S3cret');
+        expect(r.text).not.toContain('@123');
+        expect(r.masked).toBe(1);
+        r = maskText('x.txt', 'https://x-access-token:abcd1234@github.com/o/r.git');
+        expect(r.text).toBe('https://x-access-token:<masked, 8 chars>@github.com/o/r.git');
+        expect(r.masked).toBe(1);
+    });
+    it('masks a token before the first separator of an unparsed .env line', () => {
+        expect(env('ghp_aaaaaaaaaaaa: x\n').text).not.toContain('ghp_aaaaaaaaaaaa');
+        const eq = env('ghp_aaaaaaaaaaaa=x\n');
+        expect(eq.text).not.toContain('ghp_aaaaaaaaaaaa');
+        expect(maskTextUnrecorded('.env', eq.text).text).toBe(eq.text);
+        expect(env('sk-abcdefgh12=\n').text).not.toContain('sk-abcdefgh12');
+    });
+    it('masks a non-one-word-head .env line whole', () => {
+        let r = env('mysql -uroot -phunter2 --host=db\n');
+        expect(r.text).toBe('<masked, 32 chars>\n');
+        expect(r.masked).toBe(1);
+        r = env('docker login -u me -p hunter2 --email=a@b.c\n');
+        expect(r.text).not.toContain('hunter2');
+        expect(r.masked).toBe(1);
+        r = env('curl -u admin:x https://h\n');
+        expect(r.text).toBe('<masked, 25 chars>\n');
+        expect(r.masked).toBe(1);
+        r = env('hunter2\rFOO=bar\n');
+        expect(r.text).not.toContain('hunter2');
+        expect(r.text).not.toContain('bar');
+    });
+    it('masks the padded end of base64 whole', () => {
+        let r = env('aGVsbG93b3JsZHNlY3JldA=\n');
+        expect(r.text).toBe('<masked, 23 chars>\n');
+        expect(r.masked).toBe(1);
+        r = env('QUJDREVGR0hJSktMTU5P==\n');
+        expect(r.text).toBe('<masked, 22 chars>\n');
+        expect(r.masked).toBe(1);
+    });
+    it('keeps the lines that still parse', () => {
+        let r = env('set FOO=hunter2\n');
+        expect(r.text).toBe('set FOO=<masked, 7 chars>\n');
+        expect(r.masked).toBe(1);
+        r = env('DB_PASS: hunter2\n');
+        expect(r.text).toBe('DB_PASS: <masked, 7 chars>\n');
+        expect(r.masked).toBe(1);
+        for (const same of ['EMPTY=\n', 'DATABASE_CONNECTION_STRING=\n', 'DATABASECONNECTIONSTRINGX=\n']) {
+            r = env(same);
+            expect(r.text).toBe(same);
+            expect(r.masked).toBe(0);
+        }
+    });
+});
+
 // Keep last: it reads what every test above recorded.
 describe('fix round 4: the invariants', () => {
     const PLACEHOLDER_RE = /<masked(?: URL)?, \d+ chars>/g;
