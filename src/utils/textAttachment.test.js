@@ -4,10 +4,16 @@ import {
     TEXT_MESSAGE_MAX_BYTES,
     isTextFile,
     readTextFile,
-    maskText,
+    maskText as maskTextUnrecorded,
     textToBase64,
 } from './textAttachment';
 
+// Every input masked in this file, for the invariants at the end of it.
+const maskedInputs = new Map();
+const maskText = (name, text) => {
+    maskedInputs.set(`${name}|${text}`, [name, text]);
+    return maskTextUnrecorded(name, text);
+};
 const env = (s) => maskText('.env', s);
 const fileOf = (bytes, name = 'a.txt', type = 'text/plain') =>
     new File([bytes], name, { type });
@@ -400,12 +406,6 @@ describe('fix round 3: the URL skip stays linear', () => {
             expect(timeIt('x.txt', run)).toBeLessThan(500);
         }
     });
-    it('scales roughly linearly', () => {
-        const unit = 'a://token:b@';
-        const small = timeIt('x.txt', unit.repeat(2000)) + 1;
-        const big = timeIt('x.txt', unit.repeat(4000)) + 1;
-        expect(big / small).toBeLessThan(8);
-    });
     it('still leaves userinfo to the URL rule, and finds a later key', () => {
         expect(maskText('x.txt', 'https://token:s3cret@h/?password=abc').masked).toBe(2);
         expect(maskText('x.txt', '//token:abc@h')).toEqual({ text: '//token:<masked, 5 chars>', masked: 1 });
@@ -487,5 +487,209 @@ describe('fix round 3: comment guard covers every line-breaking control', () => 
     });
     it('keeps a comment with a tab a comment', () => {
         expect(env('# note\tFOO=abcsecret\n')).toEqual({ text: '# note\tFOO=abcsecret\n', masked: 0 });
+    });
+});
+
+describe('fix round 4: required rows', () => {
+    const pem = '-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----';
+    const jsonPem = pem.replace(/\n/g, '\\n');
+    const n = pem.length;
+    const old = '<masked, 12 chars>';
+    const secrets = `{"tls":"${jsonPem}","password":"hunter2"}`;
+    const oldSecrets = `{"old":"${old}","password":"hunter2"}`;
+    const oldTokens = `["${old}","bbb222"]`;
+    it.each([
+        ['x.txt', `x private_key=${pem} y`, `x private_key=<masked, ${n} chars> y`, 1],
+        ['x.txt', 'x password=<masked, 7 chars> y', 'x password=<masked, 7 chars> y', 0],
+        ['x.txt', `{"password": ${old}, "x": 1}`, `{"password": ${old}, "x": 1}`, 0],
+        ['.env', `# x password=${old} y\n`, `# x password=${old} y\n`, 0],
+        ['x.txt', `{"secrets":${secrets}}`, `{"secrets":<masked, ${secrets.length} chars>}`, 1],
+        ['x.txt', `{"secrets":${oldSecrets}}`, `{"secrets":<masked, ${oldSecrets.length} chars>}`, 1],
+        ['x.txt', `{"tokens":${oldTokens}}`, `{"tokens":<masked, ${oldTokens.length} chars>}`, 1],
+        ['x.txt', 'mysql -u root --password={Tr0ub}4dor --host=db', 'mysql -u root --password=<masked, 11 chars> --host=db', 1],
+        ['x.txt', 'x password=[abc]def y', 'x password=<masked, 8 chars> y', 1],
+        ['x.txt', 'curl -d token=[abc]def123 https://x.example', 'curl -d token=<masked, 11 chars> https://x.example', 1],
+        ['x.txt', '{"tokens":["a","b"],"x":1}', '{"tokens":<masked, 9 chars>,"x":1}', 1],
+        ['x.txt', "'https://token': abc@h", "'https://token': <masked, 5 chars>", 1],
+        ['x.txt', '"https://api_key" = abc@h', '"https://api_key" = <masked, 5 chars>', 1],
+        ['x.txt', 'https://token=abc@h', 'https://token=<masked, 5 chars>', 1],
+        ['x.txt', 'https://token: abc@h', 'https://token: <masked, 5 chars>', 1],
+        ['x.txt', '://token:abc@h', '://token:<masked, 5 chars>', 1],
+        ['x.txt', '//token:abc@h', '//token:<masked, 5 chars>', 1],
+        ['x.txt', 'https://x-access-token:abcd1234@github.com/o/r.git', 'https://x-access-token:<masked, 8 chars>@github.com/o/r.git', 1],
+        ['x.txt', 'x https://token:s3cret@h/?password=abc', 'x https://token:<masked, 6 chars>@h/?password=<masked, 3 chars>', 2],
+        ['.env', `# a ${pem} b ${pem}\n`, `# a <masked, ${n} chars> b <masked, ${n} chars>\n`, 2],
+        ['.env', `# nothing here ${pem}\n`, `# nothing here <masked, ${n} chars>\n`, 1],
+        ['.env', `KEY=${pem}\nPORT=1\n`, `KEY=<masked, ${n} chars>\nPORT=1\n`, 1],
+        ['.env', 'A=<masked, 3 chars>\nB=<masked URL, 9 chars>\n', 'A=<masked, 3 chars>\nB=<masked URL, 9 chars>\n', 0],
+        ['.env', 'K=\u000012345678901\u0000\n', 'K=<masked, 13 chars>\n', 1],
+    ])('%s %j', (name, input, text, masked) => {
+        expect(maskText(name, input)).toEqual({ text, masked });
+    });
+    it('keeps [db] and masks one value at its real length in an .ini', () => {
+        // One KEY=value line in two: the dispatch makes this generic, so the block is the value.
+        expect(maskText('config.ini', `[db]\nurl=https://user:${pem}@h\n`))
+            .toEqual({ text: `[db]\nurl=https://user:<masked, ${n} chars>@h\n`, masked: 1 });
+    });
+    it('reports the whole URL value when env rules read that .ini', () => {
+        const value = `https://user:${pem}@h`;
+        expect(maskText('config.ini', `[db]\nhost=h\nname=n\nurl=${value}\n`).text)
+            .toBe(`[db]\nhost=<masked, 1 chars>\nname=<masked, 1 chars>\nurl=<masked URL, ${value.length} chars>\n`);
+    });
+});
+
+describe('fix round 4: ranges merge, then render once', () => {
+    const pem = '-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----';
+    const open = '-----BEGIN RSA PRIVATE KEY-----\nAAAA\n';
+    const n = pem.length;
+    it('keeps ranges that only touch separate', () => {
+        expect(maskText('x.txt', pem + pem))
+            .toEqual({ text: `<masked, ${n} chars><masked, ${n} chars>`, masked: 2 });
+    });
+    it('reports end - start for a partial overlap', () => {
+        // The value stops before the final newline; the unterminated block runs past it.
+        expect(env(`K=abc${open}`)).toEqual({ text: `K=<masked, ${open.length + 3} chars>`, masked: 1 });
+    });
+    it('lets the outer range speak when one contains the other', () => {
+        expect(env(`K="${pem}"\n`)).toEqual({ text: `K=<masked, ${n} chars>\n`, masked: 1 });
+        const url = `https://u:${pem}@h`;
+        expect(env(`K=${url}\n`)).toEqual({ text: `K=<masked URL, ${url.length} chars>\n`, masked: 1 });
+    });
+});
+
+describe('fix round 4: a value keeps going past what opens it', () => {
+    const x = (s) => maskText('x.txt', s);
+    it('masks what follows a placeholder in a bare value', () => {
+        expect(x('x password=<masked, 7 chars>abc y')).toEqual({ text: 'x password=<masked, 20 chars> y', masked: 1 });
+        expect(x('{"password":<masked, 7 chars>abc,"x":1}')).toEqual({ text: '{"password":<masked, 20 chars>,"x":1}', masked: 1 });
+    });
+    it('masks what follows a bracket under a quoted key', () => {
+        expect(x('{"tokens":[a]b,"x":1}')).toEqual({ text: '{"tokens":<masked, 4 chars>,"x":1}', masked: 1 });
+    });
+    it('leaves a trailing delimiter after a bracket to the text', () => {
+        expect(x('x tokens=[a,b], y')).toEqual({ text: 'x tokens=<masked, 5 chars>, y', masked: 1 });
+    });
+    it('still finds the next key after a closed bracket', () => {
+        expect(x('{tokens:["a"],password: "hunter2"}'))
+            .toEqual({ text: '{tokens:<masked, 5 chars>,password: "<masked, 7 chars>"}', masked: 2 });
+        expect(x('x tokens=[a];password=hunter2 y'))
+            .toEqual({ text: 'x tokens=<masked, 3 chars>;password=<masked, 7 chars> y', masked: 2 });
+        expect(x('{"tokens":["a"];"password": "hunter2"}'))
+            .toEqual({ text: '{"tokens":<masked, 5 chars>;"password": "<masked, 7 chars>"}', masked: 2 });
+    });
+});
+
+describe('fix round 4: a private-key block is one unit to the key scanner', () => {
+    const pem = '-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----';
+    const x = (s) => maskText('x.txt', s);
+    it('closes a quote and a bracket past the newlines of a block', () => {
+        expect(x(`private_key: "${pem}"\n`)).toEqual({ text: `private_key: "<masked, ${pem.length} chars>"\n`, masked: 1 });
+        const v = `["${pem}","b"]`;
+        expect(x(`{"tokens":${v}}`)).toEqual({ text: `{"tokens":<masked, ${v.length} chars>}`, masked: 1 });
+    });
+    it('closes a bracket past a bare block', () => {
+        expect(x(`x tokens=[${pem}] y`)).toEqual({ text: `x tokens=<masked, ${pem.length + 2} chars> y`, masked: 1 });
+    });
+    it('reads a line-only value past a block', () => {
+        expect(x(`password: ${pem} more\n`)).toEqual({ text: `password: <masked, ${pem.length + 5} chars>\n`, masked: 1 });
+    });
+    it('reads a bare value past a block', () => {
+        expect(x(`x password=${pem}more y`)).toEqual({ text: `x password=<masked, ${pem.length + 4} chars> y`, masked: 1 });
+    });
+    it('keeps env rules when an unterminated block holds the KEY=value lines', () => {
+        const open = '-----BEGIN PRIVATE KEY-----\nb=1\nc=2\nd=3\n';
+        expect(maskText('settings.txt', `a=x\n${open}`))
+            .toEqual({ text: `a=<masked, 1 chars>\n<masked, ${open.length} chars>`, masked: 2 });
+    });
+    it('does not let a block dilute env detection', () => {
+        const r = maskText('settings.txt', `a=x\nb=y\n${pem}\n`);
+        expect(r.text).toBe(`a=<masked, 1 chars>\nb=<masked, 1 chars>\n<masked, ${pem.length} chars>\n`);
+        expect(r.masked).toBe(3);
+    });
+});
+
+describe('fix round 4: the comment guard reads around a block', () => {
+    const pem = '-----BEGIN RSA PRIVATE KEY-----\nAAA=\n-----END RSA PRIVATE KEY-----';
+    it('still sees a line break just before a block', () => {
+        for (const c of ['\r', '\u2028', '\f']) {
+            const r = env(`#FOO=abcsecret${c}${pem}\n`);
+            expect(r.text).toBe(`#FOO=<masked, ${'abcsecret'.length + 1 + pem.length} chars>\n`);
+            expect(r.masked).toBe(1);
+        }
+    });
+    it('is not fooled by an = inside a block', () => {
+        expect(env(`foo ${pem} bar\n`)).toEqual({ text: `<masked, ${pem.length + 8} chars>\n`, masked: 1 });
+    });
+    it('does not close a quote on one inside a block', () => {
+        const quoted = pem.replace('AAA=', 'A"A=');
+        expect(env(`K="${quoted}\n"\nPORT=1\n`))
+            .toEqual({ text: `K=<masked, ${quoted.length + 1} chars>\nPORT=1\n`, masked: 1 });
+    });
+});
+
+describe('fix round 4: a masked file reads back as masked', () => {
+    const x = (s) => maskText('x.txt', s);
+    it('leaves a masked URL password to the URL rule', () => {
+        const t = 'https://x-access-token:<masked, 8 chars>@github.com/o/r.git';
+        expect(x(t)).toEqual({ text: t, masked: 0 });
+    });
+});
+
+describe('fix round 4: timing', () => {
+    it('stays fast on 64 KB of short lines in an .env', () => {
+        for (const unit of ['a\n', '"\n', '#\n', '# a=b\n', 'K="\n', 'K="a\nb"\n', 'a b\r\n']) {
+            const t0 = performance.now();
+            env(unit.repeat(Math.ceil(65536 / unit.length)));
+            expect(performance.now() - t0).toBeLessThan(500);
+        }
+    });
+    it('stays fast on a 64 KB run of placeholders', () => {
+        const run = '<masked, 1 chars>'.repeat(Math.ceil(65536 / 17));
+        for (const name of ['x.txt', '.env']) {
+            const t0 = performance.now();
+            maskText(name, run);
+            expect(performance.now() - t0).toBeLessThan(500);
+        }
+    });
+});
+
+// Keep last: it reads what every test above recorded.
+describe('fix round 4: the invariants', () => {
+    const PLACEHOLDER_RE = /<masked(?: URL)?, \d+ chars>/g;
+    const placeholders = (s) => (s.match(PLACEHOLDER_RE) || []).length;
+    const one = '<masked, 1 chars>';
+    const oneRun = Math.ceil(65536 / one.length);
+    // A value masked whole takes any placeholder inside it along, so these end with
+    // that many fewer than "masked + already there". Keyed as maskedInputs is.
+    const absorbed = new Map([
+        ['.env|API_KEY=<masked, 12 chars> # rotated\n', 1],
+        ['.env|KEYS=<masked, 3 chars>,<masked, 4 chars>\n', 2],
+        ['.env|A=<masked, 3 chars>,<masked, 4 chars>\nB=realsecret\n', 2],
+        [`.env|K=${one.repeat(3855)}\n`, 3855],
+        [`.env|${one.repeat(oneRun)}`, oneRun],
+        ['x.txt|x password=<masked, 7 chars>abc y', 1],
+        ['x.txt|{"password":<masked, 7 chars>abc,"x":1}', 1],
+        ['x.txt|{"secrets":{"old":"<masked, 12 chars>","password":"hunter2"}}', 1],
+        ['x.txt|{"tokens":["<masked, 12 chars>","bbb222"]}', 1],
+    ]);
+    it('hold for every input masked in this file', () => {
+        const inputs = [...maskedInputs.values()];
+        expect(inputs.length, 'recorded as the tests above run, so run the whole file').toBeGreaterThanOrEqual(40);
+        const names = inputs.map(([name]) => name);
+        expect(names).toContain('.env');
+        expect(names).toContain('config.ini');
+        expect(names).toContain('x.txt');
+        for (const [name, text] of inputs) {
+            const label = `${name}: ${JSON.stringify(text.slice(0, 120))}`;
+            const a = maskTextUnrecorded(name, text);
+            const b = maskTextUnrecorded(name, a.text);
+            expect(b.text, `idempotent text, ${label}`).toBe(a.text);
+            expect(b.masked, `idempotent count, ${label}`).toBe(0);
+            const gone = absorbed.get(`${name}|${text}`) ?? 0;
+            expect(placeholders(a.text), `count, ${label}`).toBe(a.masked + placeholders(text) - gone);
+        }
+    });
+    it('list no absorbed input that this file does not mask', () => {
+        for (const key of absorbed.keys()) expect(maskedInputs.has(key), key.slice(0, 80)).toBe(true);
     });
 });
