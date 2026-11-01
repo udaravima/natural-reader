@@ -268,3 +268,122 @@ describe('fix round 1: robustness', () => {
         expect(await readTextFile(f)).toEqual({ ok: false, error: "gone.txt couldn't be read" });
     });
 });
+
+describe('fix round 2: the key rule scans, it does not swallow the line', () => {
+    const x = (s) => maskText('x.txt', s);
+    it('finds a later secret on the same line', () => {
+        const r = x('docker run -e USE_TOKEN=true -e PASSWORD=hunter2 image');
+        expect(r.text).toBe('docker run -e USE_TOKEN=true -e PASSWORD=<masked, 7 chars> image');
+        expect(r.masked).toBe(1);
+        expect(x('x debug_secret=none password=hunter2').masked).toBe(1);
+        expect(x('docker run -e POSTGRES_PASSWORD=abc -e API_KEY=realkey123 image').masked).toBe(2);
+        expect(x('curl --password=abc --token=realtoken123 https://h').masked).toBe(2);
+    });
+    it('handles minified JSON and inline objects', () => {
+        expect(x('{"max_tokens": 1024, "api_key": "realkey123"}').masked).toBe(2);
+        expect(x('auth: {password: abc, token: realtoken}'))
+            .toEqual({ text: 'auth: {password: <masked, 3 chars>, token: <masked, 9 chars>}', masked: 2 });
+        expect(x('{"token_count":5,"user":"bob","age":3,"items":[1,2,3]}'))
+            .toEqual({ text: '{"token_count":<masked, 1 chars>,"user":"bob","age":3,"items":[1,2,3]}', masked: 1 });
+        const r = x('{"token_count": 5, "password": "x"}');
+        expect(r.text).toBe('{"token_count": <masked, 1 chars>, "password": "<masked, 1 chars>"}');
+        expect(r.masked).toBe(2);
+    });
+    it('finds URL credentials and later keys together', () => {
+        const a = x('git clone https://x-access-token:abcd1234@github.com/o/r.git && password=hunter2');
+        expect(a.masked).toBe(2);
+        expect(a.text).not.toContain('abcd1234');
+        expect(a.text).not.toContain('hunter2');
+        const b = x('x https://token:s3cret@h/?password=abc');
+        expect(b.masked).toBe(2);
+        expect(b.text).not.toContain('s3cret');
+        expect(b.text).not.toContain('=abc');
+    });
+    it('handles comparison and assignment operators', () => {
+        expect(x('if password == "hunter2":')).toEqual({ text: 'if password == "<masked, 7 chars>":', masked: 1 });
+        expect(x("password === 'hunter2'")).toEqual({ text: "password === '<masked, 7 chars>'", masked: 1 });
+        for (const s of ['if password != "hunter2":', 'if password := "hunter2"; ok {']) {
+            const r = x(s);
+            expect(r.masked).toBe(1);
+            expect(r.text).not.toContain('hunter2');
+        }
+    });
+    it('handles a typed default', () => {
+        expect(x('def f(password: str = "hunter2"):'))
+            .toEqual({ text: 'def f(password: str = "<masked, 7 chars>"):', masked: 1 });
+    });
+    it('keeps a doubled quote inside the value', () => {
+        const r = x("password: 'it''s-real'");
+        expect(r.text).not.toContain('s-real');
+        expect(r.masked).toBe(1);
+    });
+    it('keeps the whole value when the line is only key: value', () => {
+        expect(x('password: abc,def')).toEqual({ text: 'password: <masked, 7 chars>', masked: 1 });
+        expect(x('password=abc;def')).toEqual({ text: 'password=<masked, 7 chars>', masked: 1 });
+    });
+    it('does not treat :: as an operator', () => {
+        expect(x('token::parse()')).toEqual({ text: 'token::parse()', masked: 0 });
+    });
+});
+
+describe('fix round 2: comments cannot hide a CR-only .env', () => {
+    it('masks values after a comment joined by CR or U+2028', () => {
+        for (const s of [
+            '# prod config\rFOO=abcsecret\rBAR=defsecret\n',
+            '\r# note\rBAR=defsecret\r',
+            '# prod FOO=abcsecret\n',
+        ]) {
+            const r = env(s);
+            expect(r.text).not.toContain('abcsecret');
+            expect(r.text).not.toContain('defsecret');
+            expect(r.masked).toBeGreaterThan(0);
+        }
+    });
+});
+
+describe('fix round 2: a placeholder in an env value counts once', () => {
+    const pem = '-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----';
+    it('counts a quoted PEM with a trailing newline once, with its real length', () => {
+        const r = env(`KEY="${pem}\n"\nPORT=1\n`);
+        expect(r).toEqual({ text: `KEY=<masked, ${pem.length + 1} chars>\nPORT=1\n`, masked: 1 });
+    });
+    it('counts an unterminated PEM once', () => {
+        const src = '-----BEGIN RSA PRIVATE KEY-----\nAAAA\n';
+        const r = env(`KEY="${src}`);
+        expect(r.masked).toBe(1);
+        expect(r.text).toBe(`KEY=<masked, ${src.length} chars>`);
+    });
+    it('counts a PEM followed by a comment once', () => {
+        const r = env(`KEY=${pem} # prod`);
+        expect(r).toEqual({ text: `KEY=<masked, ${pem.length + 7} chars>`, masked: 1 });
+    });
+    it('counts a PEM inside JSON once', () => {
+        const src = pem.replace(/\n/g, '\\n');
+        const v = `{"private_key":"${src}"}`;
+        const r = env(`CREDS=${v}`);
+        expect(r).toEqual({ text: `CREDS=<masked, ${v.length} chars>`, masked: 1 });
+    });
+    it('leaves a value that is exactly a PEM as one masked value', () => {
+        expect(env(`KEY=${pem}\n`)).toEqual({ text: `KEY=<masked, ${pem.length} chars>\n`, masked: 1 });
+    });
+    it('counts the CR of a CRLF inside a quoted value', () => {
+        expect(env('FOO="a\r\nb"\r\n').text).toBe('FOO=<masked, 4 chars>\r\n');
+    });
+});
+
+describe('fix round 2: timing', () => {
+    it('stays fast on 64 KB runs of key words and JWT starts', () => {
+        for (const w of ['token', 'token.', 'secret', 'api_key', 'password', 'eyJ-']) {
+            const run = w.repeat(Math.ceil(65536 / w.length));
+            const t0 = performance.now();
+            maskText('x.txt', run);
+            expect(performance.now() - t0).toBeLessThan(500);
+        }
+    });
+    it('stays fast on many keywords on one line', () => {
+        const run = 'a token b '.repeat(6000);
+        const t0 = performance.now();
+        maskText('x.txt', run);
+        expect(performance.now() - t0).toBeLessThan(500);
+    });
+});

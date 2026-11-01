@@ -59,45 +59,128 @@ const isAlreadyMasked = (s) => /^<masked[^>]*>$/.test(s);
 const PRIVATE_KEY_RE = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|$)/g;
 // (?<!...) anchors keep these linear on long unbroken runs.
 const URL_PASSWORD_RE = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/[^\s:/@]*:)([^\s/]+)(?=@)/gi;
-const SECRET_KEY_RE = /(?<![\w.-])([\w.-]*(?:password|passwd|secret|token|api[_-]?key|private[_-]?key)[\w.-]*["']?[ \t]*(?:=>|[:=])[ \t]*)(?:(["'])((?:\\[\s\S]|(?!\2)[^\\\r\n])*)\2|([^\r\n]*))/gi;
+const KEYWORD_RE = /password|passwd|secret|token|api[_-]?key|private[_-]?key/gi;
+const OPERATOR_RE = /===|!==|==|!=|:=|=>|=|:(?!:)/y;
+const TYPED_DEFAULT_RE = /[ \t]*[\w.[\]|]+[ \t]*=(?!=)[ \t]*(?=["'])/y;
 const TOKEN_RE = new RegExp(
     '\\b(?:sk-ant-[A-Za-z0-9_-]{8,}|sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}'
     + '|github_pat_[A-Za-z0-9_]{8,}|xox[abprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{16}|nrp_[A-Za-z0-9_-]{8,})',
     'g',
 );
-const JWT_RE = /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g;
+const JWT_RE = /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g;
 const ENV_PLAIN_RE = /^(true|false|yes|no|on|off)$/i;
 const PLAIN_WORDS_RE = /^(true|false|yes|no|on|off|null|none)$/i;
 
-// Each pass leaves only "<masked ...>" placeholders behind, and no later pass
-// re-masks one (hasMask guards), so a value counts once.
+const KEY_CHAR_RE = /[\w.-]/;
+const PREFIX_CHAR_RE = /[ \t#/*>-]/;
+
+// Where a quoted value ends: the matching quote on the same line, with `\x`
+// and a doubled quote staying inside. Returns -1 if it never closes.
+const closingQuote = (text, open) => {
+    const q = text[open];
+    for (let j = open + 1; j < text.length; j += 1) {
+        const c = text[j];
+        if (c === '\n' || c === '\r') return -1;
+        if (c === '\\') j += 1;
+        else if (c === q) {
+            if (text[j + 1] !== q) return j;
+            j += 1;
+        }
+    }
+    return -1;
+};
+
+const lineEnd = (text, from) => {
+    let j = from;
+    while (j < text.length && text[j] !== '\n' && text[j] !== '\r') j += 1;
+    return j;
+};
+
+// Finds `key <op> value` where the key holds a secret-ish word and masks the
+// value. Scanning resumes at the end of each value (never the end of the line),
+// so later secrets on the same line are still found.
+const maskKeyValues = (text) => {
+    let out = '';
+    let copied = 0;
+    let count = 0;
+    let floor = 0;
+    KEYWORD_RE.lastIndex = 0;
+    let m;
+    const resume = (at) => { KEYWORD_RE.lastIndex = at; floor = at; };
+    while ((m = KEYWORD_RE.exec(text)) !== null) {
+        let keyStart = m.index;
+        while (keyStart > floor && KEY_CHAR_RE.test(text[keyStart - 1])) keyStart -= 1;
+        let p = m.index + m[0].length;
+        while (p < text.length && KEY_CHAR_RE.test(text[p])) p += 1;
+        let quotedKey = false;
+        if (text[p] === '"' || text[p] === "'") { quotedKey = true; p += 1; }
+        const keyEnd = p;
+        while (text[p] === ' ' || text[p] === '\t') p += 1;
+        OPERATOR_RE.lastIndex = p;
+        const op = OPERATOR_RE.exec(text);
+        if (!op) { resume(keyEnd); continue; }
+        p += op[0].length;
+        if (op[0] === ':') {
+            TYPED_DEFAULT_RE.lastIndex = p;
+            const typed = TYPED_DEFAULT_RE.exec(text);
+            if (typed) p += typed[0].length;
+        }
+        while (text[p] === ' ' || text[p] === '\t') p += 1;
+        const opEnd = p;
+
+        let start;
+        let end;
+        let quote = '';
+        const close = (text[p] === '"' || text[p] === "'") ? closingQuote(text, p) : -1;
+        if (close >= 0) {
+            quote = text[p];
+            start = p + 1;
+            end = close;
+        } else {
+            let walk = keyStart;
+            while (walk > floor && PREFIX_CHAR_RE.test(text[walk - 1])) walk -= 1;
+            const lineOnly = walk === 0 || text[walk - 1] === '\n' || text[walk - 1] === '\r';
+            start = p;
+            if (lineOnly || text[p] === '"' || text[p] === "'") {
+                end = lineEnd(text, p);
+                while (end > start && /[ \t]/.test(text[end - 1])) end -= 1;
+            } else if (quotedKey) {
+                end = p;
+                while (end < text.length && !/[\s,}\]]/.test(text[end])) end += 1;
+            } else {
+                end = p;
+                while (end < text.length && !/\s/.test(text[end])) end += 1;
+                while (end > start && /[,;)}\]]/.test(text[end - 1])) end -= 1;
+                // `https://token:pw@host` is the URL rule's job
+                if (text.slice(keyStart - 2, keyStart) === '//'
+                    && /^[^\s@/]+@/.test(text.slice(start, end))) {
+                    resume(opEnd);
+                    continue;
+                }
+            }
+        }
+        const value = text.slice(start, end);
+        const after = quote ? end + 1 : end;
+        resume(Math.max(after, opEnd));
+        if (!value || hasMask(value) || PLAIN_WORDS_RE.test(value)) continue;
+        out += text.slice(copied, start) + maskToken(value.length);
+        copied = end;
+        count += 1;
+    }
+    return { text: out + text.slice(copied), masked: count };
+};
+
+// Each pass leaves only "<masked ...>" placeholders behind. The key rule and
+// the URL rule skip values that already hold one; the token and JWT patterns
+// cannot match inside one. So a value counts once.
 const maskGeneric = (text) => {
     let count = 0;
     const hit = (n) => { count += 1; return maskToken(n); };
     let out = text.replace(PRIVATE_KEY_RE, (m) => hit(m.length));
-    out = out.replace(SECRET_KEY_RE, (m, head, quote, inner, bare, offset, whole) => {
-        let value = quote ? inner : bare;
-        let rest = '';
-        if (!quote) {
-            const lineStart = whole.lastIndexOf('\n', offset - 1) + 1;
-            const prefix = whole.slice(lineStart, offset);
-            if (/^[ \t#/*>-]*$/.test(prefix)) {
-                // a line that is only `key: value`: the rest of the line is the value
-                const t = value.trimEnd();
-                rest = value.slice(t.length);
-                value = t;
-            } else {
-                const sp = value.search(/\s/);
-                if (sp >= 0) { rest = value.slice(sp); value = value.slice(0, sp); }
-                // `https://x-access-token:pw@host` is the URL rule's job
-                if (prefix.endsWith('//') && /^[^\s@/]+@/.test(value)) return m;
-            }
-        }
-        if (!value || hasMask(value) || PLAIN_WORDS_RE.test(value)) return m;
-        const masked = hit(value.length);
-        return quote ? head + quote + masked + quote : head + masked + rest;
-    });
-    out = out.replace(URL_PASSWORD_RE, (m, head, pw) => (hasMask(pw) ? m : head + hit(pw.length)));
+    const kv = maskKeyValues(out);
+    out = kv.text;
+    count += kv.masked;
+    out = out.replace(URL_PASSWORD_RE, (m, head, pw) => head + hit(pw.length));
     out = out.replace(TOKEN_RE, (m) => hit(m.length));
     out = out.replace(JWT_RE, (m) => hit(m.length));
     return { text: out, masked: count };
@@ -134,7 +217,7 @@ const maskEnv = (text, failClosed) => {
         let cr = line.endsWith('\r') ? '\r' : '';
         const body = cr ? line.slice(0, -1) : line;
         if (body.trim() === '') { out.push(line); continue; }
-        if (body.trimStart().startsWith('#')) {
+        if (body.trimStart().startsWith('#') && !/[\r\u2028\u2029]/.test(body.trim())) {
             const g = maskGeneric(body);
             count += g.masked;
             out.push(g.text + cr);
@@ -170,17 +253,20 @@ const maskEnv = (text, failClosed) => {
             } else if (v.indexOf(q, 1) < 0) {
                 // opens a quote that does not close on this line: one value
                 multiline = true;
-                inner = v.slice(1);
+                inner = v.slice(1) + cr;
+                cr = '';
                 tail = '';
                 while (i + 1 < lines.length && !(i + 1 === lines.length - 1 && lines[i + 1] === '')) {
                     i += 1;
                     const l = lines[i];
-                    cr = l.endsWith('\r') ? '\r' : '';
-                    inner += `\n${cr ? l.slice(0, -1) : l}`;
+                    const lcr = l.endsWith('\r') ? '\r' : '';
                     if (l.includes(q)) {
+                        inner += `\n${lcr ? l.slice(0, -1) : l}`;
+                        cr = lcr;
                         if (inner.endsWith(q)) inner = inner.slice(0, -1);
                         break;
                     }
+                    inner += `\n${l}`;
                 }
             }
         }
@@ -189,9 +275,17 @@ const maskEnv = (text, failClosed) => {
             out.push(line);
             continue;
         }
-        count += 1;
+        // Placeholders from the private-key pre-pass were already counted: the
+        // whole value counts once, at the length of what was really there.
+        let realLength = inner.length;
+        let held = 0;
+        for (const ph of inner.matchAll(/<masked(?: URL)?, (\d+) chars>/g)) {
+            held += 1;
+            realLength += Number(ph[1]) - ph[0].length;
+        }
+        count += 1 - held;
         const token = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(inner)
-            ? maskUrlToken(inner.length) : maskToken(inner.length);
+            ? maskUrlToken(realLength) : maskToken(realLength);
         out.push(head + gap + token + tail + cr);
     }
     return { text: out.join('\n'), masked: count };
