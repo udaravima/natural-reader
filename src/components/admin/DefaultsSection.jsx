@@ -22,8 +22,8 @@ const TTS_MODE_LABEL = { streaming: 'While it streams', 'after-complete': 'Once 
 const THINK_LABEL = { off: 'Off', on: 'On', low: 'Low', medium: 'Medium', high: 'High' };
 const ORDER = ['chatAutoTts', 'chatTtsMode', 'think', 'selectedVoice', 'playbackSpeed', 'speechLanguage'];
 
-// The server's defaults view gives only the code ("de"); the names come from the speech status, which
-// lists the engine's languages whether or not voice input is on. Without them a code stands for itself.
+// A language default is a code ("de"); the view's `choice_labels.speechLanguage` names it. Without a name the
+// code stands for itself.
 function shown(name, value, languageNames = {}) {
   if (name === 'speechLanguage') return value === 'auto' ? 'Auto' : (languageNames[value] ?? value);
   if (name === 'chatAutoTts') return value ? 'on' : 'off';
@@ -41,8 +41,6 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast, onDirtyCha
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(null);   // setting name awaiting "Replace for everyone"
 
-  const [languageNames, setLanguageNames] = useState({});   // code -> name, from /v1/speech/status
-
   const apply = (view) => { setData(view); setDraft(view.values); };
 
   const load = useCallback(async () => {
@@ -57,20 +55,6 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast, onDirtyCha
   }, [apiHost, apiPort]);
 
   useEffect(() => { load(); }, [load]);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await apiFetch(apiHost, apiPort, '/v1/speech/status');
-        if (!res.ok) return;
-        const body = await res.json();
-        if (cancelled || !Array.isArray(body?.languages)) return;
-        setLanguageNames(Object.fromEntries(body.languages.map((l) => [l.code, l.name])));
-      } catch { /* codes stand for themselves */ }
-    })();
-    return () => { cancelled = true; };
-  }, [apiHost, apiPort]);
 
   const call = async (path, init, done) => {
     setBusy(true);
@@ -105,6 +89,8 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast, onDirtyCha
   // The console asks before a tab switch drops an unsaved draft.
   useEffect(() => { onDirtyChange?.(!!dirty); }, [dirty, onDirtyChange]);
   const control = `min-h-11 md:min-h-0 text-xs p-1 rounded border ${theme.border} ${theme.bg} ${theme.text}`;
+
+  const languageNames = data?.choice_labels?.speechLanguage ?? {};
 
   const field = (name) => {
     const v = draft[name];

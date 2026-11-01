@@ -106,6 +106,14 @@ async def test_admin_view_lists_built_ins_and_choices(db_conn, admin):
     assert set(view["choices"]["chatTtsMode"]) == {"streaming", "after-complete"}
 
 
+async def test_admin_view_names_the_speech_languages(db_conn, admin):
+    """The Defaults page shows names, not codes, and a person without chat access can't ask /v1/speech/status."""
+    from server.speech.languages import WHISPER_LANGUAGES
+    view = (await _req(_app(db_conn, admin), "GET", "/v1/admin/defaults")).json()
+    assert view["choice_labels"] == {"speechLanguage": WHISPER_LANGUAGES}
+    assert view["choice_labels"]["speechLanguage"]["de"] == "German"
+
+
 def test_the_built_ins_are_the_services_own():
     assert user_defaults.built_in() == BUILT_IN
 

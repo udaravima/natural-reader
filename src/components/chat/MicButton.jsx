@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { Mic, Square, X, Loader2 } from 'lucide-react';
 import { HARD_REASONS } from '../../hooks/useVoiceInput';
 
@@ -11,6 +12,11 @@ const clock = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
  * frozen timer, "Transcribing…" and Cancel.
  */
 export default function MicButton({ theme, voice, disabled = false }) {
+  const stopRef = useRef(null);
+  // Start swaps the mic for Stop, which would drop the focus to the page: put it on Stop, so Enter stops.
+  useEffect(() => {
+    if (voice.phase === 'recording') stopRef.current?.focus();
+  }, [voice.phase]);
   if (!voice.available) return null;
   const base = `min-h-11 min-w-11 p-3 rounded-xl border ${theme.border} flex items-center justify-center gap-1.5 transition-colors`;
 
@@ -48,6 +54,7 @@ export default function MicButton({ theme, voice, disabled = false }) {
       <div className="flex items-center gap-1">
         <button
           type="button"
+          ref={stopRef}
           onClick={voice.stop}
           aria-label="Stop and transcribe"
           title="Stop and transcribe"

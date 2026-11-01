@@ -101,7 +101,10 @@ async def admin_view(conn) -> dict[str, Any]:
     stored = await _stored(conn)
     return {"values": {**built_in(), **stored["values"]}, "builtIn": built_in(),
             "overridden": sorted(stored["values"]), "epochs": stored["epochs"],
-            "choices": {k: list(spec[2]) for k, spec in SETTINGS.items() if spec[2]}}
+            "choices": {k: list(spec[2]) for k, spec in SETTINGS.items() if spec[2]},
+            # Names for choices that are codes, so the console shows "German", not "de". Served here because the
+            # page may not ask /v1/speech/status: that route needs the chat capability and an admin may lack it.
+            "choice_labels": {"speechLanguage": dict(WHISPER_LANGUAGES)}}
 
 
 async def save(conn, values: dict[str, Any], *, updated_by: str | None) -> None:

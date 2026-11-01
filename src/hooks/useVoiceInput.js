@@ -58,7 +58,7 @@ export function useVoiceInput({ apiHost, apiPort, language = 'auto', onText, sho
   const chunksRef = useRef([]);
   const tickRef = useRef(null);
   const abortRef = useRef(null);
-  const secondsRef = useRef(0);
+  const startedAtRef = useRef(0);   // wall clock (ms) of the recording's start: timers run late when throttled
   // The latest of everything an async step reads after its awaits.
   const latest = useRef({});
   latest.current = { language, onText, showToast, status, apiHost, apiPort };
@@ -75,8 +75,10 @@ export function useVoiceInput({ apiHost, apiPort, language = 'auto', onText, sho
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = await res.json();
       if (mountedRef.current) setStatus(body);
+      return body?.enabled === true;
     } catch {
       if (mountedRef.current) setStatus(null);
+      return false;
     }
   }, [apiHost, apiPort]);
 
@@ -120,7 +122,12 @@ export function useVoiceInput({ apiHost, apiPort, language = 'auto', onText, sho
         method: 'POST', body: fd, signal: controller.signal,
       });
       if (session !== sessionRef.current) return;
-      if (res.status === 404) { loadStatus(); return; }   // voice was switched off: the button goes away
+      if (res.status === 404) {
+        // Voice was switched off: the button goes away, no toast. If it is still on, the 404 is a mystery: say so.
+        const stillOn = await loadStatus();
+        if (stillOn && session === sessionRef.current) toast("Voice input isn't available right now.", 5000);
+        return;
+      }
       if (!res.ok) { toast(await detailOf(res), 5000); return; }
       const out = await res.json();
       if (session !== sessionRef.current || controller.signal.aborted) return;
@@ -146,8 +153,10 @@ export function useVoiceInput({ apiHost, apiPort, language = 'auto', onText, sho
     clearTick();
     if (!rec) { cancel(); return; }
     // The recorder's last chunk and its stop event arrive after stop(): collect them, then upload.
-    rec.onstop = () => {
-      if (session !== sessionRef.current) return;
+    let finished = false;
+    const finish = () => {
+      if (finished || session !== sessionRef.current) return;
+      finished = true;
       const blob = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' });
       chunksRef.current = [];
       recorderRef.current = null;
@@ -158,7 +167,14 @@ export function useVoiceInput({ apiHost, apiPort, language = 'auto', onText, sho
       }
       upload(blob, session);
     };
-    try { rec.stop(); } catch { /* onstop still decides */ }
+    if (rec.state === 'inactive') {
+      // The browser already stopped it (a microphone unplugged): no stop event will come, and stop() would throw.
+      release();
+      finish();
+      return;
+    }
+    rec.onstop = finish;
+    try { rec.stop(); } catch { finish(); }
     release();   // the light goes off now, not when the upload ends
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cancel]);
@@ -211,13 +227,14 @@ export function useVoiceInput({ apiHost, apiPort, language = 'auto', onText, sho
       toast('The recording failed.', 5000);
       return;
     }
-    secondsRef.current = 0;
+    startedAtRef.current = Date.now();
     setSeconds(0);
     setPhase('recording');
     tickRef.current = setInterval(() => {
-      secondsRef.current += 1;
-      if (mountedRef.current) setSeconds(secondsRef.current);
-      if (secondsRef.current >= MAX_SECONDS) stop();
+      // From the wall clock, not a tick count: a throttled tab runs ticks late, and the server refuses past 125 s.
+      const elapsed = Math.floor((Date.now() - startedAtRef.current) / 1000);
+      if (mountedRef.current) setSeconds(Math.min(elapsed, MAX_SECONDS));
+      if (elapsed >= MAX_SECONDS) stop();
     }, 1000);
   }, [stop, teardown]);
 

@@ -263,6 +263,24 @@ describe('useVoiceInput: upload', () => {
     await act(async () => { m.result.current.stop(); });
     await waitFor(() => expect(m.showToast).toHaveBeenCalledWith(fallback, expect.anything()));
   });
+  it('a 404 with voice still on toasts that it is unavailable', async () => {
+    onPost = () => answer(404, { detail: 'off' });
+    const m = await ready();
+    await startRec(m);
+    await act(async () => { m.result.current.stop(); });
+    await waitFor(() => expect(m.showToast).toHaveBeenCalledWith("Voice input isn't available right now.", expect.anything()));
+    expect(m.result.current.available).toBe(true);
+    expect(m.result.current.phase).toBe('idle');
+  });
+  it('a 404 with voice now off makes the button go away with no toast', async () => {
+    onPost = () => answer(404, { detail: 'off' });
+    const m = await ready();
+    await startRec(m);
+    statusBody = STATUS({ enabled: false });
+    await act(async () => { m.result.current.stop(); });
+    await waitFor(() => expect(m.result.current.available).toBe(false));
+    expect(m.showToast).not.toHaveBeenCalled();
+  });
   it('a 404 re-reads the status and the button goes away', async () => {
     onPost = () => answer(404, { detail: 'off' });
     const m = await ready();
@@ -273,6 +291,33 @@ describe('useVoiceInput: upload', () => {
     await waitFor(() => expect(m.result.current.available).toBe(false));
     expect(apiFetch.mock.calls.filter((c) => c[2] === '/v1/speech/status').length).toBe(before + 1);
     expect(m.onText).not.toHaveBeenCalled();
+  });
+});
+
+describe('useVoiceInput: stop edge cases', () => {
+  it('a recorder the browser already stopped (microphone unplugged) still uploads, not stuck on Transcribing', async () => {
+    const m = await ready();
+    await startRec(m);
+    const rec = FakeRecorder.instances[0];
+    rec.state = 'inactive';
+    rec.chunks = true;
+    rec.stop = () => { throw new Error('InvalidStateError'); };
+    // The browser delivered its data before it stopped.
+    rec.ondataavailable({ data: new Blob([new Uint8Array(4)]) });
+    await act(async () => { m.result.current.stop(); });
+    await waitFor(() => expect(m.onText).toHaveBeenCalledWith('hello there', 'en'));
+    expect(m.result.current.phase).toBe('idle');
+    expect(allTracksStopped()).toBe(true);
+  });
+  it('the 120 s limit follows the wall clock: a throttled timer cannot run past it', async () => {
+    const m = await ready();
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] });
+    await act(async () => { m.result.current.start(); await vi.advanceTimersByTimeAsync(0); });
+    expect(m.result.current.phase).toBe('recording');
+    // One late tick, 121 s of real time after the start: only one interval callback fires.
+    await act(async () => { vi.setSystemTime(Date.now() + 121000); vi.advanceTimersByTime(1000); });
+    expect(posts).toHaveLength(1);
+    expect(m.result.current.seconds).toBe(120);
   });
 });
 

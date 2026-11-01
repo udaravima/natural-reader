@@ -178,6 +178,13 @@ export default function ChatView({
     onText: insertTranscript,
     showToast,
   });
+  // Cancel, Escape and a failure end the recording with the focus gone from the page (the controls were
+  // replaced): give it back to the box, as an answer does.
+  const prevPhaseRef = useRef('idle');
+  useEffect(() => {
+    if (prevPhaseRef.current !== 'idle' && voice.phase === 'idle') textareaRef.current?.focus();
+    prevPhaseRef.current = voice.phase;
+  }, [voice.phase]);
   // After the new draft is rendered: focus the box, caret just after the text.
   useEffect(() => {
     const pos = caretAfterRef.current;

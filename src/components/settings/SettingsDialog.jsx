@@ -237,9 +237,12 @@ function VoicePanel({ theme, v }) {
 
 // The languages voice input offers: Auto first, then the engine's, by name. Null while unknown, and when voice
 // input is off or the status can't be read: the row means nothing then, so it isn't shown.
-function useSpeechLanguages(apiHost, apiPort) {
+function useSpeechLanguages(apiHost, apiPort, canChat) {
     const [languages, setLanguages] = useState(null);
     useEffect(() => {
+        // /v1/speech/status needs the chat capability: without it the answer is a 403 that makes the app re-check
+        // the session. Don't ask.
+        if (!canChat) return undefined;
         let cancelled = false;
         (async () => {
             try {
@@ -251,12 +254,12 @@ function useSpeechLanguages(apiHost, apiPort) {
             } catch { /* the row stays hidden */ }
         })();
         return () => { cancelled = true; };
-    }, [apiHost, apiPort]);
-    return languages;
+    }, [apiHost, apiPort, canChat]);
+    return canChat ? languages : null;
 }
 
 function ChatPanel({ theme, ch }) {
-    const speechLanguages = useSpeechLanguages(ch.apiHost, ch.apiPort);
+    const speechLanguages = useSpeechLanguages(ch.apiHost, ch.apiPort, ch.canChat);
     // Which model's per-model inference knobs are being edited (defaults to the
     // active chat model). Editing writes inferenceByModel[configModel] via the
     // same pure helpers the chat sidebar used.

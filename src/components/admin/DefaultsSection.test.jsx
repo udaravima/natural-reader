@@ -12,17 +12,12 @@ const view = (over = {}) => ({
     choices: { chatTtsMode: ['streaming', 'after-complete'], think: ['off', 'on', 'low', 'medium', 'high'] }, ...over,
 });
 const json = (body) => new Response(JSON.stringify(body), { status: 200 });
-const STATUS = { enabled: false, languages: [{ code: 'de', name: 'German' }, { code: 'en', name: 'English' }] };
-// Answers by route. `then` is what the next non-GET call (the save or the action) answers; the speech status is
-// the names the Speech language select shows.
-function api({ first, then, status = STATUS }) {
-    apiFetch.mockImplementation(async (h, p, path, opts) => {
-        if (path === '/v1/speech/status') return status === null ? new Response('{}', { status: 500 }) : json(status);
-        if (opts?.method) return json(then);
-        return json(first);
-    });
+const NAMES = { choice_labels: { speechLanguage: { de: 'German', en: 'English' } } };
+// Answers by route: the first GET, then whatever a save or an action answers.
+function api({ first, then }) {
+    apiFetch.mockImplementation(async (h, p, path, opts) => (opts?.method ? json(then) : json(first)));
 }
-const nonStatus = () => apiFetch.mock.calls.filter((c) => c[2] !== '/v1/speech/status');
+const nonStatus = () => apiFetch.mock.calls;
 const props = { theme, apiHost: '', apiPort: '', showToast: vi.fn() };
 
 describe('Admin → Defaults', () => {
@@ -60,14 +55,20 @@ describe('Admin → Defaults', () => {
     describe('Speech language', () => {
         const withSpeech = (values = {}, over = {}) => view({
             values: { ...BUILT_IN, speechLanguage: 'auto', ...values },
-            builtIn: { ...BUILT_IN, speechLanguage: 'auto' }, ...over,
+            builtIn: { ...BUILT_IN, speechLanguage: 'auto' }, ...NAMES, ...over,
+        });
+
+        it('never calls the speech status route (a person without chat access would be bounced)', async () => {
+            api({ first: withSpeech() });
+            render(<DefaultsSection {...props} />);
+            await screen.findByRole('combobox', { name: 'Speech language' });
+            expect(apiFetch.mock.calls.map((c) => c[2])).toEqual(['/v1/admin/defaults']);
         });
 
         it('is a labelled select with Auto first, then the engine\'s languages by name', async () => {
             api({ first: withSpeech() });
             render(<DefaultsSection {...props} />);
             const select = await screen.findByRole('combobox', { name: 'Speech language' });
-            await waitFor(() => expect(select.options.length).toBe(3));
             expect([...select.options].map((o) => o.textContent)).toEqual(['Auto', 'English', 'German']);
             expect(select.value).toBe('auto');
         });
@@ -76,7 +77,6 @@ describe('Admin → Defaults', () => {
             api({ first: withSpeech(), then: withSpeech({ speechLanguage: 'de' }, { overridden: ['speechLanguage'] }) });
             render(<DefaultsSection {...props} />);
             const select = await screen.findByRole('combobox', { name: 'Speech language' });
-            await waitFor(() => expect(select.options.length).toBe(3));
             fireEvent.change(select, { target: { value: 'de' } });
             fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
             await waitFor(() => expect(nonStatus()).toHaveLength(2));
@@ -92,8 +92,8 @@ describe('Admin → Defaults', () => {
             expect(screen.getByText(/built-in: Auto/i)).toBeInTheDocument();
         });
 
-        it('falls back to the code when the language names cannot be read', async () => {
-            api({ first: withSpeech({ speechLanguage: 'de' }), status: null });
+        it('falls back to the code when the view carries no names', async () => {
+            api({ first: withSpeech({ speechLanguage: 'de' }, { choice_labels: undefined }) });
             render(<DefaultsSection {...props} />);
             const select = await screen.findByRole('combobox', { name: 'Speech language' });
             expect([...select.options].map((o) => o.textContent)).toEqual(['Auto', 'de']);

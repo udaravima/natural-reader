@@ -268,7 +268,7 @@ describe('SettingsDialog — the context size the server will use (admin console
     };
     const chat = (over = {}) => {
       const b = bags({ tab: 'chat' });
-      b.chatSettings = { ...b.chatSettings, speechLanguage: 'auto', setSpeechLanguage: vi.fn(), apiHost: '', apiPort: '', ...over };
+      b.chatSettings = { ...b.chatSettings, speechLanguage: 'auto', setSpeechLanguage: vi.fn(), apiHost: '', apiPort: '', canChat: true, ...over };
       return b;
     };
 
@@ -302,6 +302,15 @@ describe('SettingsDialog — the context size the server will use (admin console
       await act(async () => {});
       expect(screen.queryByRole('combobox', { name: 'Speech language' })).toBeNull();
       expect(screen.getByLabelText(/configuring model/i)).toBeInTheDocument();
+    });
+
+    it('without chat access makes no status call and shows no row', async () => {
+      answerStatus(STATUS);
+      apiFetch.mockClear();
+      render(<SettingsDialog {...chat({ canChat: false })} />);
+      await act(async () => {});
+      expect(apiFetch.mock.calls.filter((c) => c[2] === '/v1/speech/status')).toHaveLength(0);
+      expect(screen.queryByRole('combobox', { name: 'Speech language' })).toBeNull();
     });
 
     it('a failed status fetch hides the row and does not break the tab', async () => {

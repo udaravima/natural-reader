@@ -192,6 +192,25 @@ describe('ChatView: recording and transcribing', () => {
     expect(box().value).toBe('Say now');
     expect(await waitMic()).toBeInTheDocument();
   });
+  it('Start moves focus to Stop, so Enter stops without the mouse', async () => {
+    render(<Harness />);
+    fireEvent.click(await waitMic());
+    const stopBtn = await screen.findByRole('button', { name: 'Stop and transcribe' });
+    await waitFor(() => expect(document.activeElement).toBe(stopBtn));
+  });
+  it('Cancel returns focus to the message box', async () => {
+    render(<Harness />);
+    fireEvent.click(await waitMic());
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(document.activeElement).toBe(box()));
+  });
+  it('Escape returns focus to the message box too', async () => {
+    render(<Harness />);
+    fireEvent.click(await waitMic());
+    await screen.findByRole('button', { name: 'Stop and transcribe' });
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => expect(document.activeElement).toBe(box()));
+  });
   it('Escape cancels while recording', async () => {
     render(<Harness />);
     fireEvent.click(await waitMic());

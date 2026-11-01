@@ -1238,7 +1238,7 @@ export default function App() {
             onUserChanged={auth.patchUser} showToast={showToast} />
         ) : null}
         voiceSettings={{ selectedVoice, setSelectedVoice, playbackSpeed, setPlaybackSpeed, volume, setVolume, isLocalhost, setIsLocalhost, requestTimeout, setRequestTimeout, unlimitedBatchTimeout, setUnlimitedBatchTimeout, isPreviewingVoice, previewVoice, stopVoicePreview, clearCache }}
-        chatSettings={{ chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, speechLanguage, setSpeechLanguage, apiHost, apiPort, inferenceByModel, setInferenceByModel, inferenceBase, availableModels, selectedModel }}
+        chatSettings={{ chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, speechLanguage, setSpeechLanguage, apiHost, apiPort, canChat, inferenceByModel, setInferenceByModel, inferenceBase, availableModels, selectedModel }}
         connectionSettings={{ apiHost, setApiHost, apiPort, setApiPort, backendAvailable }}
         appearanceSettings={{ darkMode, setDarkMode, layoutMode, setLayoutMode, mobileBreakpoint, setMobileBreakpoint, showHeaderControlsOnMobile, setShowHeaderControlsOnMobile }}
         accountProps={{ apiHost, apiPort, user: auth.user }}
