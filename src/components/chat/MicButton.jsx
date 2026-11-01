@@ -13,9 +13,17 @@ const clock = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
  */
 export default function MicButton({ theme, voice, disabled = false }) {
   const stopRef = useRef(null);
+  const cancelRef = useRef(null);
   // Start swaps the mic for Stop, which would drop the focus to the page: put it on Stop, so Enter stops.
   useEffect(() => {
     if (voice.phase === 'recording') stopRef.current?.focus();
+  }, [voice.phase]);
+  // Stop removes the focused button and focus falls to the page: hand it to Cancel, so the keyboard can still
+  // reach it. Only when it fell to the page: a person who moved to another field keeps it.
+  useEffect(() => {
+    if (voice.phase !== 'transcribing') return;
+    const active = document.activeElement;
+    if (!active || active === document.body) cancelRef.current?.focus();
   }, [voice.phase]);
   if (!voice.available) return null;
   const base = `min-h-11 min-w-11 p-3 rounded-xl border ${theme.border} flex items-center justify-center gap-1.5 transition-colors`;
@@ -40,6 +48,7 @@ export default function MicButton({ theme, voice, disabled = false }) {
   const cancel = (
     <button
       type="button"
+      ref={cancelRef}
       onClick={voice.cancel}
       aria-label="Cancel"
       title="Cancel (Esc)"
@@ -72,7 +81,7 @@ export default function MicButton({ theme, voice, disabled = false }) {
     <div className="flex items-center gap-1">
       <span role="status" className={`min-h-11 px-3 flex items-center gap-1.5 text-xs ${theme.textSecondary}`}>
         <Loader2 size={16} className="animate-spin" aria-hidden="true" />
-        Transcribing…
+        <span className="sr-only sm:not-sr-only">Transcribing…</span>
       </span>
       {timer}
       {cancel}

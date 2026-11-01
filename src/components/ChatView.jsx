@@ -608,7 +608,7 @@ export default function ChatView({
                     : "Ask the model, drop / paste / attach an image…  (Enter to send)"
               }
               rows={1}
-              className={`flex-1 resize-none p-3 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.text} text-sm leading-relaxed outline-none focus:ring-2 focus:ring-blue-500 transition-colors`}
+              className={`flex-1 min-w-0 resize-none p-3 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.text} text-sm leading-relaxed outline-none focus:ring-2 focus:ring-blue-500 transition-colors`}
               style={{ maxHeight: "200px" }}
             />
             {isStreaming ? (

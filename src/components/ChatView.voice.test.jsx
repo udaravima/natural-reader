@@ -192,6 +192,30 @@ describe('ChatView: recording and transcribing', () => {
     expect(box().value).toBe('Say now');
     expect(await waitMic()).toBeInTheDocument();
   });
+  it('on a phone the word "Transcribing…" is visually hidden but stays in the accessible tree', async () => {
+    onPost = () => new Promise(() => {});
+    render(<Harness />);
+    fireEvent.click(await waitMic());
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop and transcribe' }));
+    const st = await screen.findByRole('status');
+    expect(st).toHaveTextContent('Transcribing…');
+    const word = [...st.querySelectorAll('span')].find((n) => n.textContent === 'Transcribing…');
+    expect(word.className).toMatch(/\bsr-only\b/);
+    expect(word.className).toMatch(/sm:not-sr-only/);
+    expect(box().className).toMatch(/\bmin-w-0\b/);
+  });
+  it('Enter on Stop leaves focus on Cancel, and the answer moves it to the box', async () => {
+    let ok; onPost = () => new Promise((r) => { ok = r; });
+    render(<Harness />);
+    fireEvent.click(await waitMic());
+    const stopBtn = await screen.findByRole('button', { name: 'Stop and transcribe' });
+    await waitFor(() => expect(document.activeElement).toBe(stopBtn));
+    fireEvent.click(stopBtn);   // what Enter on a focused button does
+    const cancelBtn = await screen.findByRole('button', { name: 'Cancel' });
+    await waitFor(() => expect(document.activeElement).toBe(cancelBtn));
+    await act(async () => { ok(answer(200, { text: 'hello', language: 'en' })); });
+    await waitFor(() => expect(document.activeElement).toBe(box()));
+  });
   it('Start moves focus to Stop, so Enter stops without the mouse', async () => {
     render(<Harness />);
     fireEvent.click(await waitMic());
@@ -241,6 +265,15 @@ describe('ChatView: recording and transcribing', () => {
       await toTranscribing();
       await act(async () => { ok(answer(200, { text: 'hello', language: 'en' })); });
       await waitFor(() => expect(box().value).toBe('hello Say now'));
+      expect(document.activeElement).toBe(screen.getByLabelText('other'));
+    });
+    it('Stop does not pull focus from another field to Cancel', async () => {
+      onPost = () => new Promise(() => {});
+      withOther();
+      fireEvent.click(await waitMic());
+      fireEvent.click(await screen.findByRole('button', { name: 'Stop and transcribe' }));
+      screen.getByLabelText('other').focus();
+      await screen.findByRole('status');
       expect(document.activeElement).toBe(screen.getByLabelText('other'));
     });
     it('with focus on nothing, the box takes it', async () => {

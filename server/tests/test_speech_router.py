@@ -390,6 +390,29 @@ async def test_a_body_that_is_not_multipart_is_400(db_conn, engine):
     assert engine.seen == []
 
 
+async def test_a_client_that_drops_mid_upload_is_a_quiet_400_not_a_traceback(db_conn, engine, caplog):
+    """A closed tab raises ClientDisconnect out of request.stream(): a normal event, so no ERROR line, no traceback."""
+    from fastapi import HTTPException
+    from starlette.requests import ClientDisconnect
+
+    class _Dropped:
+        from starlette.datastructures import Headers
+        headers = Headers({"content-type": "multipart/form-data; boundary=BOUND"})
+
+        async def stream(self):
+            yield (b'--BOUND\r\nContent-Disposition: form-data; name="file"; filename="a.webm"\r\n'
+                   b'Content-Type: audio/webm\r\n\r\n' + b"x" * 1000)
+            raise ClientDisconnect()
+
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(HTTPException) as e:
+            await speech_router._read_upload(_Dropped())
+    assert e.value.status_code == 400
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert [r for r in caplog.records if r.levelno == logging.DEBUG and "disconnect" in r.getMessage().lower()]
+    assert not any(r.exc_info for r in caplog.records)
+
+
 async def test_status_is_bounded_when_the_engine_hangs(db_conn, engine, monkeypatch):
     import asyncio
     await _voice(db_conn)

@@ -123,9 +123,12 @@ export function useVoiceInput({ apiHost, apiPort, language = 'auto', onText, sho
       });
       if (session !== sessionRef.current) return;
       if (res.status === 404) {
-        // Voice was switched off: the button goes away, no toast. If it is still on, the 404 is a mystery: say so.
+        // Voice was switched off (the button goes away, and the person is told: they may have just spoken for a
+        // minute). If it is still on, the 404 is a mystery: say so.
         const stillOn = await loadStatus();
-        if (stillOn && session === sessionRef.current) toast("Voice input isn't available right now.", 5000);
+        if (session === sessionRef.current) {
+          toast(stillOn ? "Voice input isn't available right now." : 'Voice input was turned off.', 5000);
+        }
         return;
       }
       if (!res.ok) { toast(await detailOf(res), 5000); return; }

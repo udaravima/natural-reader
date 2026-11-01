@@ -15,6 +15,7 @@ import logging
 from fastapi import APIRouter, Depends, Request
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
+from starlette.requests import ClientDisconnect
 
 from ..auth import deps
 from ..http_errors import refusal
@@ -106,6 +107,11 @@ async def _read_upload(request: Request) -> tuple[str | None, UploadFile | None]
     try:
         form = await parser.parse()
     except MultiPartException:
+        raise refusal(400, "bad_audio", _BAD_AUDIO) from None
+    except ClientDisconnect:
+        # A closed tab mid-upload is a normal event, not a crash: one debug line, no traceback. The client has
+        # gone, so the status is never seen. (The parser closes the part it was filling as it unwinds.)
+        logger.debug("The client disconnected during a recording upload")
         raise refusal(400, "bad_audio", _BAD_AUDIO) from None
     language = form.get("language")
     file = form.get("file")

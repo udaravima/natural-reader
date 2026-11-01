@@ -272,14 +272,15 @@ describe('useVoiceInput: upload', () => {
     expect(m.result.current.available).toBe(true);
     expect(m.result.current.phase).toBe('idle');
   });
-  it('a 404 with voice now off makes the button go away with no toast', async () => {
+  it('a 404 with voice now off makes the button go away and says voice was turned off', async () => {
     onPost = () => answer(404, { detail: 'off' });
     const m = await ready();
     await startRec(m);
     statusBody = STATUS({ enabled: false });
     await act(async () => { m.result.current.stop(); });
     await waitFor(() => expect(m.result.current.available).toBe(false));
-    expect(m.showToast).not.toHaveBeenCalled();
+    expect(m.showToast).toHaveBeenCalledTimes(1);
+    expect(m.showToast).toHaveBeenCalledWith('Voice input was turned off.', expect.anything());
   });
   it('a 404 re-reads the status and the button goes away', async () => {
     onPost = () => answer(404, { detail: 'off' });
