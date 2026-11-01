@@ -39,7 +39,9 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 - **Reader ↔ Chat Toggle** — Switch the main view between document reader and chat mode from the header
 - **Streaming Replies** — Every chat turn runs on the server (`server/chat/`) and streams token-by-token over `POST /v1/chat/sessions/{id}/turns` (server-sent events); the browser never talks to a model provider directly
 - **Model Picker** — Grouped by provider (native Ollama, plus any OpenAI-compatible server an admin has configured — vLLM, OpenRouter, LiteLLM), with capability badges per model. Adding or changing providers is an operator `.env` task (`INFERENCE_PROVIDERS`, see [.env.example](.env.example)); there's no in-app provider screen yet
-- **Image Attachments** — Paperclip button, drag & drop onto the chat view, and `Ctrl + V` paste images from the clipboard. Thumbnails preview above the prompt and persist in user bubbles. Sent to vision-capable models via the per-message `images: [base64]` field. *(Audio attachments are temporarily paused — see CHANGELOG.)*
+- **Image Attachments** — Paperclip button, drag & drop onto the chat view, and `Ctrl + V` paste images from the clipboard. Thumbnails preview above the prompt and persist in user bubbles. Sent to vision-capable models via the per-message `images: [base64]` field. An audio file dropped onto the chat is still refused: speaking a message is the microphone button below.
+- **Text files in a message** — The same paperclip (also drag & drop, and pasting a file) takes small text files: `.env`, `.txt`, `.md`, `.json`, `.yaml`, `.toml`, `.csv`, `.log`, source files and similar, up to 64 KB each and 128 KB per message. The browser masks secret values **before anything is uploaded**: in an env file every value except ones like `true`, a port or a short number; in other files, only what looks like a secret (private keys, well-known tokens, JWTs, `password:` lines, a password in a URL). Click the file's chip to see exactly what will be sent, and **Send real values** to send the original instead (it asks first and names the model, and says when it runs on a cloud service). It is a safety net, not a guarantee: read the chip view. The model gets each file as an `<attached_file>` block in the message, so every model and provider can read it.
+- **Voice input** — A microphone button beside the paperclip records up to 2 minutes, the server turns it into text (faster-whisper on the CPU by default, or any OpenAI-compatible transcription server), and the text lands in the message box for you to edit and send. Nothing is sent for you, and a recording is never written to disk, the database or a log. **Off by default**: an admin turns it on under **Admin → Chat options → Voice input** (or `CHAT_VOICE_INPUT=on`), and the first time it downloads a ~464 MB model. Needs https (or localhost) for the microphone. **Settings → Chat → Speech language** picks a language, or **Auto**. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#voice-input) for the setup and its costs.
 - **Model Response Stats** — Every assistant bubble has a collapsible footer showing token count, total time, and tokens/sec. Expanded view breaks out load / prompt-eval / generation phases for fine-grained latency inspection.
 - **Stick-to-Bottom Scroll** — The chat list auto-tails streaming tokens when you're at the bottom; scrolling up pauses the auto-follow so you can read history during a long response, and resumes when you scroll back down.
 - **Chat TTS** — Replies are read aloud through the same Kokoro pipeline, with bounded prefetch to avoid gaps
@@ -447,6 +449,15 @@ All endpoints return `503` when Postgres is unreachable.
 
 Sharing, projects, conversion and who may call what: [docs/LIBRARY.md § API surface](docs/LIBRARY.md#api-surface). There is no chunk-upload route: chunks are always derived on the server.
 
+#### Voice input (same FastAPI server)
+
+Both routes need the `chat` capability (a personal access token, the `chat` scope). Docs: [docs/DEPLOYMENT.md § Voice input](docs/DEPLOYMENT.md#voice-input).
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/speech/status` | `GET` | `{enabled, ready, state, max_seconds, languages}` for the message box. Always `200`; builds nothing while voice input is off. |
+| `/v1/speech/transcriptions` | `POST` | Multipart `file` (a recording, up to 10 MB and 125 s) and an optional `language` (a Whisper code, or `auto`). Answers `{text, language, duration_s}`. `404` when voice input is off, `409` while this person already has one running, `413` too big or too long, `503` while the engine is getting ready, busy for over 60 s, or failed. The recording is read in memory and never stored. |
+
 #### Model providers (same FastAPI server)
 
 Chat always runs on the server (`server/chat/`, `server/llm/`) against one or more configured **model providers** — native Ollama by default, plus any OpenAI-compatible server (vLLM, OpenRouter, LiteLLM) an admin adds in `.env`. OpenRouter has been run end to end (paid Gemma 4 and Mistral Small 3.2: chat, pins, tools, images, usage); vLLM and LiteLLM speak the same protocol but haven't been run. A refused request says what happened (rate-limited, key rejected, out of credit) — see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#configuring-providers). The browser never talks to a provider directly; there is no "local mode" and no in-app screen for adding providers (`.env` + restart, see [.env.example](.env.example) and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
@@ -764,6 +775,7 @@ natural-reader/
 │   │   ├── usePdfEngine.js       # PDF + .txt + .md loading, rendering, text extraction, library, extractAllChunks
 │   │   ├── useTtsEngine.js       # TTS playback loop, caching, voice preview, chat audio channel
 │   │   ├── useChatEngine.js      # Session state, SSE turn streaming (chatStream.js + chatEvents.js reducer), pins, per-session event log, chat TTS queue
+│   │   ├── useVoiceInput.js      # The microphone: record, Stop/Cancel/Escape, upload to /v1/speech/transcriptions, put the text in the box
 │   │   ├── usePersistedState.js  # localStorage-backed state + reading progress
 │   │   ├── useKeyboardShortcuts.js
 │   │   ├── useMobileDetect.js
@@ -778,6 +790,7 @@ natural-reader/
 │   │   └── chatTransport.js      # GET /v1/inference/models, budget parsing (no tool code here anymore — tools run server-side)
 │   ├── utils/
 │   │   ├── attachment.js         # File → Attachment helper, size caps, strip-on-save for IndexedDB
+│   │   ├── textAttachment.js     # Reading a text file, and masking its secrets (detectors report ranges; one render writes the placeholders)
 │   │   ├── docHash.js            # sha256 of file bytes → stable doc_id (Web Crypto, lazy + memoized)
 │   │   ├── markdownToSpeech.js   # Strips Markdown markup before chat TTS synthesis
 │   │   ├── url.js                # Builds API URLs, returns relative paths when host is blank
@@ -795,8 +808,9 @@ natural-reader/
 │       ├── TextPageRenderer.jsx    # Renders a .txt pseudo-page with sentence highlighting
 │       ├── MarkdownPageRenderer.jsx # Renders a .md page (react-markdown + remark-gfm) with paragraph-level highlighting
 │       ├── ChatView.jsx            # Chat list, prompt box, attachments, DocContextChip, ToolCallsDisclosure, per-message stats / read-aloud / copy / audio download
-│       ├── AttachmentPreview.jsx   # Image-thumbnail / audio-player chip used in pending bar + bubbles
-│       ├── VoiceRecorder.jsx       # MediaRecorder UI (kept for future re-enable; currently unused)
+│       ├── AttachmentPreview.jsx   # Image-thumbnail / text-file chip (name, size, "N values masked") used in pending bar + bubbles
+│       ├── TextFileViewer.jsx      # Click a text chip: the exact text that will be sent, plus Send real values
+│       ├── chat/MicButton.jsx      # The microphone / Stop / Cancel control beside the paperclip (state lives in hooks/useVoiceInput.js)
 │       ├── MobileBottomNav.jsx
 │       ├── WelcomeScreen.jsx       # Library and upload landing page
 │       ├── admin/, library/, projects/, people/, settings/, account/, auth/, chat/ # The console, Library, project pages, people picker, Settings, tokens, sign-in screens, scope chip + web card
@@ -829,6 +843,7 @@ natural-reader/
 │   │   ├── router.py          # Loads INFERENCE_PROVIDERS config, resolves "<provider>:<model>" ids
 │   │   ├── types.py           # Internal message/event types every adapter maps to/from
 │   │   └── providers/         # ollama.py, openai_compat.py adapters + shared base.py helpers
+│   ├── speech/                # Voice input: a Transcriber interface, the local (faster-whisper) and openai engines, a bounded audio decoder
 │   └── services/
 │       ├── embeddings.py      # httpx client → Ollama /api/embeddings via model_router, Semaphore(4), dim assertion
 │       ├── model_router.py    # Legacy single-Ollama config: allowlist, embedding model, daily budget

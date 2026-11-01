@@ -26,6 +26,7 @@ spot a feature that shipped without coverage.
   - [Admin console v2, phase 1](#admin-console-v2-phase-1)
   - [Admin console v2, phase 2a](#admin-console-v2-phase-2a)
   - [Admin console v2, phase 3 (usage by model)](#admin-console-v2-phase-3-usage-by-model)
+  - [Message box inputs (text files and voice)](#message-box-inputs-text-files-and-voice)
   - [Frontend: auth UI](#frontend-auth-ui)
   - [Frontend: chat streaming](#frontend-chat-streaming)
   - [Frontend: budget UX](#frontend-budget-ux)
@@ -65,10 +66,10 @@ spot a feature that shipped without coverage.
 # Backend — REQUIRES Postgres up (conftest migrates natural_reader_test on a
 # real connection; without the DB every test errors, not skips). Run it with
 # the two TEST_* variables above exported, or it uses 5433.
-.venv/bin/python -m pytest server/tests/ -q          # 2447 passed, 16 skipped, 2 deselected @ 2026-10-26 (phase 3)
+.venv/bin/python -m pytest server/tests/ -q          # 2608 passed, 16 skipped, 2 deselected @ 2026-11-02 (message box inputs)
 
 # Frontend (vitest, jsdom — no services needed)
-npx vitest run                                       # 1190 passed (119 files) @ 2026-10-26 (phase 3)
+npx vitest run                                       # 1452 passed (125 files) @ 2026-11-02 (message box inputs)
 
 # Lint
 npx eslint .                                         # clean (the same as npm run lint)
@@ -392,6 +393,65 @@ browser (both are backend-tested); a production build (the first open sent
 `group=model` twice in the dev server, likely StrictMode); dark mode. See
 HANDOVER's phase 3 entry.
 
+### Message box inputs (text files and voice)
+
+Attaching a text file with its secrets masked in the browser, and speaking a
+message into the box (spec:
+[superpowers/specs/2026-10-27-chat-composer-inputs-design.md](superpowers/specs/2026-10-27-chat-composer-inputs-design.md)).
+Counts are collected cases in the whole file, new and old. **No test downloads a
+Whisper model or calls a real transcription server**: the local engine's model
+class is monkeypatched and the remote engine runs against a fake transport.
+
+| File | Pins |
+|---|---|
+| `textAttachment.test.js` (134, new) | masking: an env file masks every value except empty, `true/false/yes/no/on/off` and an integer of up to 6 digits (so **a short all-digit password is not masked**, by design); a value that starts `scheme://` becomes `<masked URL, N chars>`; keys, comments, quoting and order survive; any other file masks only private keys (an unterminated block runs to the end), well-known token prefixes, JWT shapes, keyword lines and `user:password@`; **detectors report ranges over the original text and one render writes the placeholders**, so nothing is masked twice and long unbroken runs stay linear; the count is per value; reading refuses over 64 KB, a NUL byte and non-UTF-8 |
+| `ChatView.textFile.test.jsx` (24, new) | the paperclip and a pasted file stage a chip with its name, size and "N values masked" (drag and drop is walked, below, not unit-tested); the viewer shows the text that will be sent; **Send real values** asks first, names the model and adds the cloud clause for a cloud model, and **Keep masked** backs out; **changing the model puts masking back with the notice**; a refused PDF, a file over 64 KB and a message over 128 KB each toast and leave the rest staged; the upload carries the masked text unless real values were agreed |
+| `attachment.accept.test.js` (2) | the paperclip's `accept` list takes text types and images |
+| `test_migration_024.py` (2, new) | `'text'` joins the `kind` CHECK and any other kind is still refused; the file's Down removes the text rows, restores the old CHECK and forgets version 24 |
+| `test_chat_turns.py` (36) | six new cases: a text attachment is stored with its `masked` flag, and without one stores `false`; an image carries no `masked` key; each refusal (not UTF-8, a NUL byte, over 64 KB, over 128 KB, a non-text MIME) is a 422 `invalid_attachment` naming the file; two full-size files exactly fit the message limit |
+| `test_chat_context.py` (42), `test_chat_prompt.py` (140) | the file is inlined after the typed text as an `<attached_file name="…">` block; **a file containing `</attached_file>` can't end its block**; images still ride as attachments; an old text file in history is inlined, costs its characters ÷ 4, and is dropped (with the marker) before whole turns; the rules say an attached file is data, never instructions, and what `<masked…>` means |
+| `test_speech_engines.py` (30, new) | the local engine against a monkeypatched `WhisperModel` (loading then ready, a failed load is an `error` status naming the exception's type, and the next `warm()` retries it); **`decode_capped` stops decoding past the cap** and a recording that is not audio is `BadAudio`; the remote engine against `httpx.MockTransport`: the URL and key, `verbose_json` then the `json` fall back, a language name or code, readiness from `GET /models` (401/403, a non-200, unreachable), a missing URL or model reported through `status()`, and the key never in a log, an error or the repr |
+| `test_speech_service.py` (9, new) | one engine per process built from `SPEECH_ENGINE`; **one running transcription per person (`AlreadyRunning`)**; the local engine one at a time, a second waiting then `Busy`; **a cancelled request keeps the slot until the thread ends**; the log line has the person, engine, seconds, language and time, never the text; `SPEECH_CPU_THREADS` default and a non-number |
+| `test_speech_router.py` (39, new) | the status route (always 200, the languages sorted by name, nothing built while off, a hung or raising engine is a state, an engine in error is not retried by a page load); the POST (404 when off, 403 without the `chat` capability or a PAT without the scope, 413 over 10 MB by declared length and by a chunked body with none, 400 for an empty or non-multipart body, 422 for an unknown language, each engine error to its status and words); **a 3 MB upload never rolls over to a temp file**; **the transcript is never logged**; **a client that drops mid-upload is a quiet 400, not a traceback** |
+| `test_chat_options.py` (56), `test_admin_router.py` | `voice_input` beside `web_search` in one row: each save leaves the other key alone and a reset removes only its own; the environment value, an invalid one (warned, then off) and the admin's explicit `false` beating `CHAT_VOICE_INPUT=on`; the PUT starts the engine loading only when voice ends up on, and a failed `warm()` doesn't fail the save |
+| `test_console_overview.py` (48), `test_deployment_info.py` (8), `test_user_defaults.py` (21) | Overview's **Voice input** line in each state (off, ready with engine, model and place, getting ready, a reason, a status that raises); the Deployment rows with their defaults and never the key; the **Speech language** default accepts `auto` or a Whisper code |
+| `useVoiceInput.test.js` (42, new) | one thing at a time; the microphone's tracks end on **every** way out (Stop, Cancel, Escape, the 2-minute stop, a recorder error, unmount, a stream arriving after Cancel); an answer after Cancel changes nothing; `language` is sent only when it isn't Auto; **a 404 when voice was switched off toasts "Voice input was turned off."** and one while it is still on toasts "Voice input isn't available right now."; the three disabled reasons; "No speech was heard" |
+| `ChatView.voice.test.jsx` (30, new) | the mic shows only when voice is on (nothing when it is off or the status can't be read); Stop and Cancel with the timer; **the text lands at the caret with a space only where needed and nothing is sent**; Escape cancels; **focus goes to Stop, then Cancel while transcribing, then back to the box, and never takes it from another field**; the word "Transcribing…" is `sr-only` below `sm` and stays in the accessibility tree |
+| `ChatOptionsSection.test.jsx` (40), `SettingsDialog.test.jsx` (27), `DefaultsSection.test.jsx` (8) | **Voice input** On/Off saves at once, with its source line and **Use the server setting**; **Speech language** lists Auto then the languages by name and shows only when voice is on; the admin default's language names |
+
+**Walked in the running app on 2026-11-02** (scratch database with migrations
+001-024, a scratch backend on loopback with `AUTH_ENABLED=false`, real Chromium
+1217 headless, a fake microphone replaying a recorded sentence; 35 steps, 33
+passed and 2 failed, then four fixes): an `.env` attached, masked, viewed, sent to
+a cloud model that named the right line without asking for the secrets, and found
+in no table, dump or log; **Send real values** for a cloud and a local model, and
+masking coming back on a model change; drop and paste; voice off (no button) then
+on from **Chat options**, with the first download and load at **46.6 s** and a
+restart at about 3 s; a sentence in English, Spanish (Auto detected `es`) and Hindi
+(right script, several word errors); Cancel, Cancel while transcribing and Escape;
+the microphone released on every way out; two tabs with voice switched off under
+the recording; the recording nowhere on disk, in the database or in any log; the
+speech language in **Settings** and the admin default; a Docling conversion
+keeping a picture. It found, and these were fixed (the controller re-checks them
+in a browser): a closed connection mid-upload logged a traceback; a recording
+lost with no message when voice was switched off under it; the message box
+squeezed to 30 px at 375 px while "Transcribing…"; keyboard focus dropped to the
+page after Stop. Still open from the walk: the page scrolls sideways at 375 px
+because of the header's right-hand buttons (not the composer; not checked whether
+it predates this branch).
+**Not walked:** real Safari or a real phone (only Chromium's 375 x 812); a person
+without chat access (the walk had one admin, so the 403 is tests only); a real
+blocked-microphone prompt and the disabled states (the fake-media flags
+auto-grant and loopback counts as secure); the recording stopping itself at 2
+minutes (the longest was 101 s); a real remote speech engine; Docling's
+**Describe** and **Accurate** modes; Sinhala and Tamil quality; real drag and drop
+from the operating system (only synthetic events carrying real files); a real
+microphone in a noisy room.
+**Walking it yourself:** set `SEARXNG_URL` to something unreachable
+(`http://127.0.0.1:1`) first. Its default is the usual local SearXNG port, and
+**Overview**'s Web search check will otherwise probe a live SearXNG if one is
+running there.
+
 ### Frontend: auth UI
 
 | File | Case count | Asserts |
@@ -431,8 +491,8 @@ frontend half is now a thin SSE reader plus a pure event reducer:
 |---|---|---|
 | Documents | `test_docling_pictures.py` (Docling's real document type and export, no model), `test_doc_figures.py`, `test_docs_*`, `test_doc_*`, `test_extract.py`, `test_chunk_split.py`, `test_content_ops.py`, `test_entry_verification.py`, `test_hybrid_search.py` | `IndexButton`, `ConvertButton`, `PdfViewer.banner`, `PdfToolbarMenu`, `MarkdownReader.figures`, `DoclingConvertDialog.limits`, `docMeta`, `docHash`, `docStatusPoller`, `segmentation.fixtures` |
 | Library and access | `test_library_*`, `test_people.py`, `test_project_*`, `test_admin_projects.py`, `test_capability_enforcement.py` | `LibraryPage*`, `ProjectsTab`, `ProjectPage`, `ProjectDocRow`, `MembersTab`, `ShareDialog`, `PeoplePicker`, `projectsApi`, `visibleTo` |
-| Chat | `test_chat_*` (context, store, sources, web, consent, project scope, read pages, multiround), `test_llm_openai.py`, `test_project_map.py`, `test_assistant_profile.py` | `ChatView.*`, `ChatSidebar.*`, `ChatSidePanel`, `ScopeChip*`, `WebOfferCard*`, `*.journey`, `citations`, `pins`, `sessionStore`, `useChatEngine`, `useDocUse` |
-| Reader and voice | `test_tts_stops_on_disconnect.py`, `test_synthesize_gate.py` | `usePdfEngine.*`, `useTtsEngine.*`, `useWorkspaceRestore`, `WorkspaceContext`, `WorkspaceLink`, `resolvePath`, `ReadSelectionButton`, `WelcomeScreen`, `useKeyboardShortcuts`, `useMenuDismiss` |
+| Chat | `test_chat_*` (context, store, sources, web, consent, project scope, read pages, multiround), `test_llm_openai.py`, `test_project_map.py`, `test_assistant_profile.py` | `ChatView.*` (incl. `textFile`, `voice`), `textAttachment`, `attachment.accept`, `ChatSidebar.*`, `ChatSidePanel`, `ScopeChip*`, `WebOfferCard*`, `*.journey`, `citations`, `pins`, `sessionStore`, `useChatEngine`, `useDocUse` |
+| Reader and voice | `test_tts_stops_on_disconnect.py`, `test_synthesize_gate.py`, `test_speech_*` (voice input, above) | `useVoiceInput`, `usePdfEngine.*`, `useTtsEngine.*`, `useWorkspaceRestore`, `WorkspaceContext`, `WorkspaceLink`, `resolvePath`, `ReadSelectionButton`, `WelcomeScreen`, `useKeyboardShortcuts`, `useMenuDismiss` |
 | Accounts | `test_kc_admin.py`, `test_profile.py`, `test_auth_touch.py`, `test_admin_lifecycle.py` | `ProfileMenu`, `ProfilePanel`, `useViewModeGuard`, `useAuth.*`, `usePersistedState`, `useDeploymentDefaults`, `db.*` |
 | Platform and evals | `test_conftest_smoke.py`, `test_conn_commits_before_response.py`, `test_db_pool_options.py`, `test_logging_config.py`, `test_platform_compat.py`, `test_container_*`, `test_startup_script.py`, `test_eval_*`, `test_migration_*` | `smoke`, `Header.settings`, `ViewSwitcher`, `Sidebar.sections`, `MenuOpeners.shortcuts`, `userAgent`, `apiErrors` |
 

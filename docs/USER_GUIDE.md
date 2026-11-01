@@ -15,6 +15,8 @@ the [README](../README.md).)
 - [Library: documents on the server](#library-documents-on-the-server)
 - [Projects and people](#projects-and-people)
 - [Chat: models and streaming](#chat-models-and-streaming)
+- [Attaching a text file](#attaching-a-text-file)
+- [Speaking a message](#speaking-a-message)
 - [Asking a whole project](#asking-a-whole-project)
 - [When the assistant offers a web search](#when-the-assistant-offers-a-web-search)
 - [The daily token budget](#the-daily-token-budget)
@@ -198,8 +200,8 @@ jump to the first and last.
 | **Projects** | Every project, ownerless ones, taking one over |
 | **Models** | The reader, context sizes, windows, which providers are local, which chat models are offered ([below](#models-the-reader-context-sizes-and-which-models-people-get)) |
 | **Documents** | Limits on Docling conversion ([below](#documents-what-a-conversion-may-use)) |
-| **Chat** | The assistant's profile and the web search mode |
-| **Defaults for users** | What read-aloud, voice, speed and thinking show for someone who hasn't chosen them |
+| **Chat** | The assistant's profile, the web search mode and whether the microphone is on ([below](#speaking-a-message)) |
+| **Defaults for users** | What read-aloud, voice, speed, thinking and speech language show for someone who hasn't chosen them |
 | **Usage** | Token use by model, by person and by day ([below](#usage-who-spent-tokens-on-which-model)) |
 | **Deployment** | The deployment timezone, and the server's own values read-only |
 
@@ -280,7 +282,9 @@ Notes:
     shows about how many tokens), and up to 8,000 characters are allowed.
   - Don't name the app's tools (`web_search` and so on): describe the
     behaviour you want. The section warns you if you do.
-- **Chat options** (also in **Chat**) has one setting so far, **Web search**: **Ask first** (the
+- **Chat options** (also in **Chat**) has two settings. **Voice input** (On or Off, **off** by
+  default) is described under [Speaking a message](#speaking-a-message). The other is
+  **Web search**: **Ask first** (the
   default: the assistant can only offer a search and the person says yes on a
   card), **Search without asking**, or **Off**.
   - There is no Save button: picking a choice saves it at once. A change
@@ -343,6 +347,7 @@ changes it.
 | **Embeddings** | Whether the embedding model answers, and returns the width (768) the database holds; and how many documents are waiting to be rebuilt |
 | **Docling** | Whether conversion is on |
 | **Web search** | Whether the search server answers |
+| **Voice input** | **Off** ("Off. Admin → Chat options turns it on."), **Warning** while the speech model downloads or loads ("Getting ready: downloading or loading small."), **OK** when it is ready ("local · small · runs on this server", or the host a remote engine calls), or **Problem** with the reason when it isn't working |
 
 **Context windows** gives each model the number the app works with, and says
 where it came from. First match wins:
@@ -556,7 +561,8 @@ the next request.
 Under **Server settings (read-only)** the section lists what the server runs
 with and which variable sets each: model providers, allowed models, chat
 timeout, daily token budget, embedding model and server,
-document storage, Docling, web search server, and server workers. These can
+document storage, Docling, web search server, the voice input engine, model,
+server and key, and server workers. These can
 only be changed in `.env` on the server, with a restart. **Nothing secret
 shows:** the session secret, sign-in client secret and Keycloak admin client
 secret read only **set** or **not set**, and a URL never shows a password or
@@ -747,6 +753,134 @@ app.** There's no provider-management screen yet — an administrator adds,
 removes, or reconfigures providers in the server's `.env` file and restarts
 it. If you want a model that isn't in the picker, ask whoever runs your
 deployment to add it.
+
+## Attaching a text file
+
+Some things are easiest to ask with the file in front of the assistant: "how
+should I change this `.env` to move the port?" You can attach small text files to
+a message, and the app **hides secret values before the file leaves your browser**.
+
+**Attach one.** Three ways, in the Chat view's message box:
+
+- the **paperclip** (**Attach an image or a text file**), which also takes
+  images, as before;
+- drag the file onto the chat;
+- paste a file from the clipboard into the box.
+
+Text files are recognised by their ending (`.txt .md .env .json .yaml .yml .toml
+.ini .conf .cfg .csv .tsv .log .xml .html .css .js .ts .jsx .tsx .py .sh .sql
+.properties`, and any name starting `.env`) or by the browser calling them text.
+Anything else is turned away with "Only images and text files can be attached
+here. PDFs go in the Library." (A PDF, or a Word file, goes through the Library
+and indexing instead; an audio file is still refused.) A file must be UTF-8 text:
+otherwise the toast says "*name* isn't a text file".
+
+**The limits:** 64 KB per file ("*name* is over 64 KB"), 128 KB of text per message
+("The attached text is over 128 KB"). Past either, that file is left out and the
+others stay. A message can carry at most 10 attachments, images included; the
+box doesn't count them, the server refuses an eleventh when you press Send.
+
+**The chip.** The file appears above the box as a chip: its name, its size, and,
+when something was hidden, **N values masked**. **The chip's text view shows exactly
+what will be sent**, so look at it before you press Send: click the chip. The
+**×** on the chip removes the file.
+
+**What gets masked.** This is a safety net, not a guarantee: it catches the common
+shapes, not everything.
+
+- In an **env file** (a `.env`, `.env.production`, `prod.env`, or any file where
+  most lines read `KEY=value`), **every value is masked** except ones that only
+  describe the shape: nothing, `true`/`false`/`yes`/`no`/`on`/`off`, and a whole
+  number of up to 6 digits (a port, a count). So `PORT=8000` stays and
+  `DATABASE_URL=...` becomes `<masked URL, 55 chars>`. Keys, comments, quotes and
+  line order stay, so "which line do I change?" still has an answer.
+  **A short all-digit password is not masked**: `DB_PASSWORD=123456` looks exactly
+  like a port to a program, and masking every small number would hide the ports
+  the assistant needs. If a value like that is secret, change it before attaching,
+  or edit the text in your message instead.
+- In **any other text file**, only what **looks like a secret** is masked: a
+  private key block, a token with a well-known start (`sk-`, `ghp_`, `AKIA...` and
+  similar), something shaped like a JWT, the value on a `password:`, `secret=`,
+  `token:`, `api_key=` or similar line, and the password in `user:password@host`.
+  A secret in some shape that isn't on that list goes through.
+
+**Sending the real values.** Open the chip. When values are masked the view says
+"N values are masked." and offers **Send real values**. It asks first, naming the
+model: "The real values will be sent to *model* and saved in this chat.", and,
+when that model runs on a provider an admin marked **Cloud** (**Admin → Models**),
+"...which runs on a cloud service...". **Yes, send real values** agrees;
+**Keep masked** backs out. Saved in this chat means what it says: the real values
+are kept in the chat's history on the server. The agreement is for the model you
+were looking at: **change the model and masking comes back on** for every file,
+with the notice "Masking is back on: you changed the model."
+
+**After you send.** Your message shows the file as a chip (name, size, "masked"),
+not its text. The assistant reads the file as part of your message, whichever
+model or provider it is, and is told that a `<masked, N chars>` mark is a value
+you hid, so it shouldn't ask for it. A reload keeps the chip, but the text is shown
+only in the session that attached it. In a long chat an old file is among the first
+things dropped when the history has to be shortened.
+
+## Speaking a message
+
+The **microphone** button beside the paperclip turns what you say into text in the
+message box. **It is off until an admin turns it on**, so if you can't see it,
+that is the first thing to check: **Admin → Chat options → Voice input → On**. You
+also need chat access.
+
+**Using it.**
+
+1. Press the **microphone** (**Speak a message**). The browser asks for the
+   microphone the first time. The button becomes a red **Stop** with a running
+   timer, and a **Cancel** (**×**) appears. **Esc** also cancels.
+2. Speak, then press **Stop** (**Stop and transcribe**). The box shows
+   "Transcribing…" with the timer frozen; **Cancel** still works and throws the
+   recording away. A recording stops by itself at **2 minutes**.
+3. The words appear in the message box **where your cursor was**, with a space
+   put in if one was needed, and the cursor goes back to the box. **Nothing is
+   sent.** Fix any mistakes, then press Send.
+
+On a phone the word "Transcribing…" is hidden to leave room for the box; the
+spinner, the timer and **Cancel** stay.
+
+**When it can't.** The button shows, greyed, with its reason when you hover or
+focus it: "Voice input needs a secure (https) connection" (browsers allow the
+microphone only on https, or on `localhost`), or "This browser can't record
+audio". If you blocked the microphone, pressing the button says "Microphone
+blocked: allow it in the browser's site settings"; allow it there and press again.
+A failed transcription leaves the box as it was and says why: "Voice input is
+still getting ready, try again in a minute" (the first download, or a restart),
+"Voice input is busy. Try again in a moment.", "The transcription server didn't
+answer", or "No speech was heard". If an admin turns Voice input off while you are
+recording, the recording can't be transcribed and you get "Voice input was turned
+off."; the button disappears.
+
+**Your language.** **Settings → Chat → Speech language** is **Auto (detect the
+language)** or one language by name. Auto is right when you speak more than one
+language; choose one when the same sentences keep being mistaken for another
+language. The row only shows when Voice input is on and you have chat access. Your
+admin sets what it starts as under **Admin → Defaults for users → Speech language**.
+How good the result is depends on the language and the speech model: the default
+model is much better at English and Spanish than at many others, and an admin can
+choose a larger one ([DEPLOYMENT.md](DEPLOYMENT.md#choosing-a-model)).
+
+**What it does with your recording.** The server turns it into text and forgets it:
+it isn't saved to disk, the database or a log. With the default engine it never
+leaves the server; if your admin set up a remote engine, the recording goes to that
+service. A cloud model's reply isn't slowed by it; a model running on the same
+machine as the server can answer a little slower for a few seconds while a
+recording is transcribed.
+
+**For admins.** **Admin → Chat options → Voice input** is **On** or **Off**
+(off to start with), saved the moment you choose, and it applies from the next
+recording. Turning it on the first time starts a model download (about 464 MB for
+the default), so the **Overview**'s **Voice input** line reads **Warning**
+"Getting ready…" for about a minute on a CPU-only machine, then **OK**. The line
+under the choice says where the value comes from (**Set here.**, **From the server
+setting CHAT_VOICE_INPUT.** or **The default.**), and **Use the server setting**
+hands control back. If the Overview says **Problem**, its line says why; fix it,
+then switch Voice input Off and On to try again. The engine, model and costs are in
+[DEPLOYMENT.md](DEPLOYMENT.md#voice-input).
 
 ## Asking a whole project
 

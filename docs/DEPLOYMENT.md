@@ -724,10 +724,12 @@ again on the server.
   page fetch and no model call. A caller that read `summary` needs to read
   `snippet`, or fetch the page itself. When the web search mode is `off` it
   refuses with 403; `ask` and `auto` don't affect it (the caller chose the query).
-- `GET /v1/admin/chat-options` returns `{web_search, source, searxng}`
-  (`source` is `admin`, `env` or `default`; `searxng` is false when
-  `SEARXNG_URL` is empty). `PUT` takes `{"web_search": "ask" | "auto" | "off" | null}`;
-  `null` removes the admin's choice. Both need the `admin` capability.
+- `GET /v1/admin/chat-options` returns `{web_search, source, searxng, voice_input,
+  voice_source}` (`source` and `voice_source` are `admin`, `env` or `default`;
+  `searxng` is false when `SEARXNG_URL` is empty). `PUT` takes
+  `{"web_search": "ask" | "auto" | "off" | null}` and/or `{"voice_input": true | false | null}`;
+  `null` removes the admin's choice, and a body naming neither is refused (422).
+  Both need the `admin` capability. See [Voice input](#voice-input).
 - `POST /v1/chat/sessions/{id}/turns` accepts `context.project_id` (a project
   id scopes the chat to it, `null` clears the scope, leaving it out keeps what
   the chat has) and `context.web` (`{query}`, up to 300 characters: the person's
@@ -737,6 +739,167 @@ again on the server.
 - The chat session list and the session record carry `scopeProject`
   (`{id, name}` or `null`); `name` is `null` when the caller can no longer see
   the project.
+
+## Voice input
+
+The microphone button in the chat message box. A person speaks, the server turns
+the recording into text, and the text lands in the message box for them to edit
+and send. Nothing is sent for them. **It is off by default**: until an admin turns
+it on, nobody sees the button, nothing is downloaded and no CPU is used.
+
+**Turning it on.** **Admin console → Chat options → Voice input → On**, or
+`CHAT_VOICE_INPUT=on` in `.env` as the starting value. The console's choice wins
+over `.env`, and **Use the server setting** in that section hands control back.
+Switching it on starts the engine loading in the background, without making the
+click wait; the first time, the local engine downloads its model. **Admin console →
+Overview → Voice input** shows where that stands: **Warning** "Getting ready:
+downloading or loading *model*." and then **OK** "local · small · runs on this
+server". The change applies from the next recording on every worker, with no
+restart. A server restarted with voice already on starts loading the model at
+startup (about 3 s from the cache), and a worker that never loaded one starts
+when the first person's button asks.
+
+### The settings
+
+All six are in [`../.env.example`](../.env.example). The **Deployment** page of the
+admin console lists four of them read-only (engine, model, server and key), under
+the labels in the first column; the switch has its own control, and
+`SPEECH_CPU_THREADS` isn't listed. It prints a variable's name only when the value
+comes from `.env`; a default shows under the label alone. The key never shows: it
+reads **set** or **not set**.
+
+| Variable (Deployment label) | Default | What it does, and when it applies |
+|---|---|---|
+| `CHAT_VOICE_INPUT` (none: its switch is **Chat options → Voice input**) | `off` | `on` or `off`, the starting value for the switch. Anything else is ignored with a warning, and off applies. |
+| `SPEECH_ENGINE` (**Voice input engine**) | `local` | `local` runs [faster-whisper](https://github.com/SYSTRAN/faster-whisper) inside the backend, on the CPU: nothing leaves the server. `openai` calls a remote server that speaks `POST {SPEECH_URL}/audio/transcriptions`. Anything else logs a warning and means `local`. Read once at startup: changing it takes a restart. |
+| `SPEECH_MODEL` (**Voice input model**) | `small` for `local`; none for `openai` | `local`: a size (`tiny`, `base`, `small`, `medium`, `large-v3`, `large-v3-turbo`), a Hugging Face repo id of a CTranslate2 model, or a directory on the server (see [Choosing a model](#choosing-a-model)). `openai`: the server's model name (`whisper-1` for OpenAI itself); required, and the Overview says "SPEECH_MODEL is not set" without it. |
+| `SPEECH_URL` (**Voice input server**) | none | `openai` only: the base **including `/v1`**, like `INFERENCE_<NAME>_URL`. Without it the Overview says "SPEECH_URL is not set". |
+| `SPEECH_API_KEY` (**Voice input key**) | none | `openai` only: sent as the bearer key. It stays on the server and is never logged or shown. |
+| `SPEECH_CPU_THREADS` (none) | half the machine's cores, at least 1 | `local` only: the threads one transcription uses (a count). The rest of the machine stays free for chat, narration and indexing. A value that isn't a number logs a warning and the default applies. |
+
+### What it costs on the server
+
+**Image and disk.** The Python packages (`faster-whisper`, `ctranslate2`, `av`) add
+about 276 MB to the backend image (`ctranslate2` 146, `av` 128, `faster-whisper`
+2). They are in `requirements.txt`, not an optional extra, so the button works on
+a quick-start box the moment it is switched on. The `small` model is another 464
+MB under `HF_HOME` (in the container, the `cache` volume), downloaded once.
+
+**Time, as measured on one CPU-only test machine with `small`** (32 cores, so the
+default 16 threads). It is one machine, not a promise: a smaller box will be
+slower, and none of this was measured on yours.
+
+| What | Measured |
+|---|---|
+| First turn-on: download plus load | 46.6 s |
+| A later load (a restart, or a worker starting) | about 3 s |
+| 6 s of speech | 1.5-1.7 s to transcribe |
+| 101 s of speech | 9.0 s alone, 11.9 s while a local chat reply was running |
+| A cloud model's reply during a 101 s transcription | not slowed |
+| A **local** model's reply during a 101 s transcription | about 1.5-2 times as long |
+
+The local engine transcribes **one recording at a time per worker process**. A
+second one waits up to 60 s, then the person sees "Voice input is busy. Try again
+in a moment." (503). Each person can have one running (409). Cancel in the browser
+ends the request, but a transcription already running finishes in its thread (a
+thread can't be stopped) and holds the slot until it does: at most one 2-minute
+recording's worth of CPU.
+
+**`WORKERS` above 1: each worker loads its own model**, so memory is multiplied by
+the worker count, as with Kokoro. How much one loaded `small` takes in memory was
+not measured here, only its 464 MB on disk.
+
+### Choosing a model
+
+`SPEECH_MODEL` for the local engine takes any of: a size such as `small` or
+`large-v3-turbo` (it downloads), a Hugging Face repo id of a **CTranslate2** model,
+or a directory on the server (an offline box downloads once somewhere else and
+copies the folder in).
+
+**The trap: it must be in CTranslate2 format.** faster-whisper reads a folder with
+a `model.bin`. Many Whisper fine-tunes for one language are published in the
+Transformers format instead (a `model.safetensors`), and those do not load until
+they are converted. Nothing warns you at setup: the model fails to load, the
+Overview's **Voice input** line turns **Problem** and names the error's type, and
+the button never becomes ready. Convert once (needs `transformers` and `torch`
+installed beside `ctranslate2`; this command was not run while writing this page):
+
+```bash
+ct2-transformers-converter --model <org>/<whisper-model-name> \
+  --output_dir ./whisper-ct2 --quantization int8 \
+  --copy_files tokenizer.json preprocessor_config.json
+```
+
+then set `SPEECH_MODEL` to the folder (a path the backend can read; in the
+container, one under a mounted folder).
+
+**Languages.** `small` is weak at many languages. In the one walk, an English and
+a Spanish sentence came out right and a Hindi one had several word errors.
+Sinhala and Tamil are Whisper languages but nobody has measured them here. A
+larger model (`large-v3-turbo` handles languages other than English better, at
+several times the CPU time) or a fine-tune for the language is how to improve it.
+People pick a language under **Settings → Chat → Speech language**, or leave
+**Auto**, which detects it.
+
+**A failed load.** A model that can't download or load (no network, a wrong name, a
+Transformers-format folder) shows on **Admin → Overview** as **Problem**. The
+engine doesn't retry it by itself. Fix the cause, then turn **Voice input** **Off**
+and **On** again in **Chat options**: that starts a new load, with no restart.
+
+### A remote engine (`SPEECH_ENGINE=openai`)
+
+Any server that speaks OpenAI's transcription route works. Set the base **with
+`/v1`**; the app adds `/audio/transcriptions`:
+
+```bash
+# OpenAI itself
+SPEECH_ENGINE=openai
+SPEECH_URL=https://api.openai.com/v1
+SPEECH_MODEL=whisper-1
+SPEECH_API_KEY=<your key>
+
+# a self-hosted vLLM serving a Whisper model
+SPEECH_ENGINE=openai
+SPEECH_URL=http://speech.example.com:8001/v1
+SPEECH_MODEL=<the model name vLLM serves>
+```
+
+Readiness is a `GET {SPEECH_URL}/models` when the Overview or the message box asks:
+reachable and accepting the key means ready. Neither example was run against a
+real server here: the remote engine is unit-tested against a fake, so try it once
+and watch the Overview before telling people.
+
+**A remote engine can cost money per minute, and the app has no budget for it.**
+The daily token budget counts tokens; speech is seconds. The only limits are
+2 minutes per recording, 10 MB, and one recording at a time per person. If that
+matters, watch the provider's billing.
+
+### Recordings and your reverse proxy
+
+The app keeps a recording in memory for one request and never writes it to disk,
+the database or a log (a log line carries the person, the engine, the seconds, the
+language and the time taken, never the words). **A reverse proxy can write it to
+disk though**: nginx buffers a request body bigger than `client_body_buffer_size`
+into a temp file before passing it on. If that matters to you, set
+`proxy_request_buffering off;` for `/v1/speech/`, or raise `client_body_buffer_size`
+above 10 MB. Also, `client_max_body_size` must allow a little over 10 MB for
+`/v1/speech/transcriptions` (the sample vhost's `100m` on `/v1/` already does; a
+stricter limit would turn every recording into a `413`).
+
+### https for the microphone
+
+Browsers allow the microphone only on https, or on `localhost`. Over plain http the
+button shows, disabled, with the reason "Voice input needs a secure (https)
+connection". With the production topology above that is already true; it bites on a
+LAN address over http.
+
+### Upgrading
+
+**Migration 024** runs at startup. It only widens a check on `chat_attachments` so
+a message can carry a text file; it has a Down (in the file's header) for a
+rollback. Voice stays off, and nothing downloads, until someone turns it on. An
+existing **Web search** setting is not touched: both options live in the same
+`chat_options` row and each save leaves the other alone.
 
 ## Bring-up checklist
 

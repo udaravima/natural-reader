@@ -6,6 +6,47 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Attach a text file to a chat message, with its secrets hidden first.** The
+  paperclip (**Attach an image or a text file**), a drag onto the chat and a pasted
+  file all take small text files (`.env`, `.txt`, `.md`, `.json`, `.yaml`, source
+  files and similar; 64 KB each, 128 KB per message). The browser masks secret
+  values **before anything is uploaded**: in an env file every value except ones
+  like `true`, a port or a short number, and in any other file only what looks like
+  a secret (private keys, well-known tokens, JWTs, `password:` lines, a password in
+  a URL). The file shows as a chip with **N values masked**; click it to see exactly
+  what will be sent, and **Send real values** (it asks first, names the model, and
+  says when it runs on a cloud service) to send the original. Things to know:
+  - Masking is a safety net, not a guarantee. A short all-digit password in an env
+    file is **not** masked: to a program it looks like a port.
+  - Changing the model puts masking back on, with the notice "Masking is back on:
+    you changed the model."
+  - The model reads each file as an `<attached_file>` block in the message, so it
+    works with every model and provider. The bubble shows the chip, not the text,
+    and after a reload the chip stays but the text isn't shown again.
+- **Voice input: speak a message.** A **microphone** button beside the paperclip
+  records up to 2 minutes; **Stop** sends it to the server, which turns it into
+  text that lands in the message box at the cursor. Nothing is sent for you.
+  **Cancel** or **Esc** throws a recording away. **Settings -> Chat -> Speech
+  language** picks a language (default **Auto**); **Admin -> Defaults for users ->
+  Speech language** sets the starting one. Things to know:
+  - **Off by default.** An admin turns it on under **Admin -> Chat options ->
+    Voice input**, or `CHAT_VOICE_INPUT=on` sets the starting value. **Admin ->
+    Overview -> Voice input** says whether it is ready.
+  - The default engine is [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+    with the `small` model on the server's CPU: nothing leaves the server. The first
+    time it is turned on it downloads 464 MB (46.6 s plus load on the test machine)
+    and the Python packages add about 276 MB to the image. `SPEECH_ENGINE=openai`
+    uses any OpenAI-compatible transcription server instead, which can cost money
+    per minute with no budget in the app beyond 2 minutes and 10 MB per recording
+    and one at a time per person. A recording is kept in memory for one request:
+    never written to disk, the database or a log.
+  - It needs https (or `localhost`) for the microphone. The six `SPEECH_*` and
+    `CHAT_VOICE_INPUT` settings, the cost on the server, how to choose a model (it
+    must be in CTranslate2 format) and the nginx notes are in
+    [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#voice-input).
+  - Replaces the old microphone component, which had been switched off since 1.7
+    (it sent the recording to the model as audio, which Ollama's gemma4 rejected).
+    An audio *file* dropped onto the chat is still refused.
 - **The admin console is split into sections.** **Overview**, **People**,
   **Projects**, **Models**, **Documents**, **Chat**, **Defaults for users**,
   **Usage** and **Deployment**, in a list down the side (a picker on a phone), the way
@@ -126,6 +167,18 @@ All notable changes to this project will be documented in this file.
   window is the size requests to it send, not Ollama's maximum.
 
 ### Upgrade notes
+
+- **Migration 024 (applied on start) widens one check:** `chat_attachments.kind`
+  also accepts `'text'`, so a message can carry a text file. Nothing else changes,
+  no data is touched, and it is safe to run twice. Its Down is in the file's header
+  (`server/sql/024_text_attachments.sql`); it deletes the text attachments, restores
+  the old check and forgets the version, so run it only to roll back. **Voice input
+  stays off**, and nothing is downloaded or loaded, until an admin turns it on. An
+  existing **Web search** setting is left as it was. The backend image is about
+  276 MB larger (`faster-whisper`, `ctranslate2`, `av`), so rebuild it
+  (`./startup.sh rebuild`); a bare-metal install needs `pip install -r
+  requirements.txt` again. Behind nginx, `/v1/speech/transcriptions` needs
+  `client_max_body_size` above 10 MB (the sample vhost's 100m is enough).
 
 - **Convert → Images → Keep** (it used to read Embed) only applies to new
   conversions. A document converted before this has no pictures saved; convert it
