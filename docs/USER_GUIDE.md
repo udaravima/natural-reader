@@ -780,8 +780,11 @@ otherwise the toast says "*name* isn't a text file".
 others stay. A message can carry at most 10 attachments, images included; the
 box doesn't count them, the server refuses an eleventh when you press Send. An empty
 file is refused when you attach it ("*name* is empty"). A file can be under 64 KB
-and still bigger than the model's context window (a small model is loaded with 4,096
-tokens unless an admin sized it): the message is never shortened, so you get "*name*
+and still bigger than the model's context window (Ollama loads a model at 4,096
+tokens unless told otherwise, but the app sizes the models it runs: an admin's
+per-model size, else the admin's general size, else your own Context window
+setting, else 16,384, never above `INFERENCE_NUM_CTX_MAX`; see "Which models get a
+context size" above): the message is never shortened, so you get "*name*
 is larger than this model's context: it may read only part of it." (it may: the
 model's provider may keep only the end of a prompt that is too long), and the
 context meter above the box counts a file you've attached before you press Send.
@@ -822,15 +825,21 @@ are kept in the chat's history on the server. The agreement is for the model you
 were looking at: **change the model and masking comes back on** for every file,
 with the notice "Masking is back on: you changed the model."
 
-The agreement also stays with that model after you send. If you pick another model
-later in the same chat and ask a follow-up, the real values are **not** sent to it:
-the assistant sees only a note that the file was held back, and you get the notice
-"*name* wasn't sent to this model: its real values were agreed for another one."
-Switch back to the model you agreed for and the file is sent again. To use the
-file with another model, attach it again (masked, or with real values agreed for
-that model). A file you sent masked is unaffected and follows the chat to any
-model. While a file with real values is part of the conversation, a web search set
-to **Auto** asks you first, as **Ask** does, so you see the query before it leaves.
+The agreement also stays with that model after you send, and so do its replies.
+If you pick another model later in the same chat and ask a follow-up, the real
+values are **not** sent to it, and neither is any reply from the model you agreed
+for (it may have quoted them): the assistant sees only a short note in their place.
+Under its reply you read "*name* wasn't sent to this model: its real values were
+agreed for another one. Earlier replies that read it weren't sent either." The note
+is saved with the reply, so it is still there after a reload. Switch back to the
+model you agreed for and the file and its replies are sent again. To use the file
+with another model, attach it again (masked, or with real values agreed for that
+model). A file you sent masked is unaffected and follows the chat to any model, as
+do replies from before the file and replies from a model that was never given the
+values. **What this does not hold back:** anything you typed or pinned yourself (it
+is yours), and anything a model passes to a reader model as a written request. While
+a file with real values is part of the conversation, a web search set to **Auto**
+asks you first, as **Ask** does, so you see the query before it leaves.
 
 **After you send.** Your message shows the file as a chip (name, size, "masked"),
 not its text. The assistant reads the file as part of your message, whichever
@@ -891,7 +900,8 @@ it isn't saved by the app to disk, the database or a log. With the default engin
 leaves the server; if your admin set up a remote engine, the recording goes to that
 service. A cloud model's reply isn't slowed by it. A model running on the same
 machine as the server is: in one walk, on a CPU-only machine, a local model's
-reply took about 1.5 to 2 times as long while a transcription ran. The app keeps
+reply took about 1.5 to 2 times as long while a transcription ran, and read-aloud
+narration slowed about 1.6 to 2.4 times (one machine, not a promise). The app keeps
 the recording in memory only, and a reverse proxy in front of it may buffer an
 upload to disk ([DEPLOYMENT.md](DEPLOYMENT.md#recordings-and-your-reverse-proxy)).
 

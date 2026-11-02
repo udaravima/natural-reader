@@ -518,7 +518,7 @@ async def test_current_text_files_count_toward_the_history_budget(search, monkey
     big = _text("x" * 40000)
     built = await build_context(_turn(history=history, attachments=(big,), window=2000),
                                 ChatConfig(reply_reserve_tokens=0))
-    assert built.notes == [{"kind": "trimmed", "messages": 2, "attachments": 0}]
+    assert [n for n in built.notes if n["kind"] == "trimmed"] == [{"kind": "trimmed", "messages": 2, "attachments": 0}]
 
 
 # ---- real values stay with the model they were agreed for (final fix wave, C1) ----
@@ -543,6 +543,10 @@ def bytes_asked(monkeypatch):
     return asked
 
 
+def _held_notes(built):
+    return [n for n in built.notes if n["kind"] == "file_held_back"]
+
+
 def _all_text(built):
     return "\n".join(m.content for m in built.messages)
 
@@ -550,7 +554,7 @@ def _all_text(built):
 async def test_real_values_are_sent_again_to_the_same_model(search, bytes_asked):
     built = await build_context(_turn(history=_real_history(_real_meta()), model="ollama:local"), ChatConfig())
     assert "hunter2" in _all_text(built)
-    assert built.notices == () and built.real_values is True
+    assert _held_notes(built) == []
 
 
 async def test_real_values_agreed_for_one_model_do_not_reach_another(search, bytes_asked):
@@ -558,10 +562,8 @@ async def test_real_values_agreed_for_one_model_do_not_reach_another(search, byt
     assert "hunter2" not in _all_text(built)
     assert ("[secrets.env: not shown to this model. Its real values were agreed for another model.]"
             in built.messages[1].content)
-    assert built.notices == ({"code": "file_held_back", "message":
-                              "secrets.env wasn't sent to this model: its real values were agreed for another one."},)
+    assert _held_notes(built) == [{"kind": "file_held_back", "names": ["secrets.env"], "replies": 1}]
     assert bytes_asked == []          # the held file's bytes are never loaded
-    assert built.real_values is False  # nothing real is in this turn's context
     assert "hunter2" not in "".join(built.file_texts)
 
 
@@ -576,7 +578,7 @@ async def test_a_masked_file_and_a_file_without_the_key_follow_the_chat_to_any_m
     for meta in (_real_meta(real=False), _real_meta(real=None)):
         built = await build_context(_turn(history=_real_history(meta), model="ollama:cloud"), ChatConfig())
         assert "hunter2" in _all_text(built)
-        assert built.notices == () and built.real_values is False
+        assert _held_notes(built) == []
 
 
 async def test_only_the_held_file_of_a_message_is_held(search, monkeypatch):
@@ -592,8 +594,7 @@ async def test_only_the_held_file_of_a_message_is_held(search, monkeypatch):
     built = await build_context(_turn(history=history, model="ollama:cloud"), ChatConfig())
     assert asked == [[("u1", 1)]]
     assert "OPEN=1" in _all_text(built) and "[a.env: not shown to this model." in _all_text(built)
-    assert [n["message"] for n in built.notices] == [
-        "a.env wasn't sent to this model: its real values were agreed for another one."]
+    assert [n["names"] for n in _held_notes(built)] == [["a.env"]]
 
 
 async def test_the_held_and_the_trimmed_markers_use_the_display_name(search, bytes_asked):
@@ -601,29 +602,105 @@ async def test_the_held_and_the_trimmed_markers_use_the_display_name(search, byt
                                 ChatConfig())
     assert "[a'\nb" not in built.messages[1].content
     assert "[a' b\u2039.env: not shown to this model." in built.messages[1].content
-    assert built.notices[0]["message"].startswith("a' b\u2039.env wasn't sent")
+    assert _held_notes(built)[0]["names"] == ["a' b\u2039.env"]
     assert ctx_mod._marker({"kind": "text", "name": 'x"\ny'}) == "[text x' y from earlier; no longer attached]"
-
-
-async def test_a_current_real_values_file_marks_the_context(search):
-    built = await build_context(_turn(attachments=(_text("A=1"),), current_real_values=True), ChatConfig())
-    assert built.real_values is True and built.file_texts == ("A=1",)
 
 
 async def test_a_trimmed_message_with_a_held_file_gives_no_notice(search, bytes_asked):
     history = _real_history(_real_meta())
     built = await build_context(_turn(history=history, model="ollama:cloud", window=1), ChatConfig(reply_reserve_tokens=0))
-    assert built.notices == ()
+    assert [n for n in built.notes if n["kind"] == "file_held_back" and n["names"]] == []
 
 
 async def test_a_file_larger_than_the_window_says_so(search):
     big = _text("x" * 40000, "big.log")
     small = _text("y" * 10, "small.txt")
     built = await build_context(_turn(attachments=(small, big), window=4096), ChatConfig())
-    assert built.notices == ({"code": "file_larger_than_context", "message":
-                              "big.log is larger than this model's context: it may read only part of it."},)
+    assert built.notes == [{"kind": "file_larger_than_context", "name": "big.log"}]
 
 
 async def test_a_file_that_fits_or_an_unknown_window_gives_no_size_notice(search):
-    assert (await build_context(_turn(attachments=(_text("x" * 100),), window=4096), ChatConfig())).notices == ()
-    assert (await build_context(_turn(attachments=(_text("x" * 40000),), window=None), ChatConfig())).notices == ()
+    assert (await build_context(_turn(attachments=(_text("x" * 100),), window=4096), ChatConfig())).notes == []
+    assert (await build_context(_turn(attachments=(_text("x" * 40000),), window=None), ChatConfig())).notes == []
+
+
+# ---- a reply from a model that was given real values is held from every other model ----
+
+REPLY_HELD = "[This reply isn't shown to this model: it could quote real values agreed for another model.]"
+
+
+def _walk(*rows):
+    """(role, model, content, real) rows -> history. A real row is a user message with a real-values file."""
+    out = []
+    for i, (role, model, content, real) in enumerate(rows):
+        out.append(StoredMessage(f"m{i}", role, content, [_real_meta(True, ordinal=0)] if real else [], model))
+    return out
+
+
+async def _prompt(history, model):
+    return await build_context(_turn(history=history, model=model), ChatConfig())
+
+
+async def test_a_reply_that_read_real_values_does_not_reach_another_model(search, bytes_asked):
+    history = _walk(("user", "ollama:a", "see this", True), ("assistant", "ollama:a", "API_KEY is hunter2", False))
+    built = await _prompt(history, "ollama:b")
+    assert "hunter2" not in _all_text(built)
+    assert REPLY_HELD in _all_text(built)
+    assert _held_notes(built) == [{"kind": "file_held_back", "names": ["secrets.env"], "replies": 1}]
+
+
+async def test_a_then_b_then_a_for_replies(search, bytes_asked):
+    history = _walk(("user", "ollama:a", "see this", True), ("assistant", "ollama:a", "A says hunter2", False),
+                    ("user", "ollama:b", "again", False), ("assistant", "ollama:b", "B says nothing", False))
+    on_a = _all_text(await _prompt(history, "ollama:a"))
+    assert "A says hunter2" in on_a and "B says nothing" in on_a   # B's reply was never given the values
+    history = _walk(("user", "ollama:a", "see this", True), ("assistant", "ollama:a", "A says hunter2", False),
+                    ("user", "ollama:b", "again", False), ("assistant", "ollama:b", "B reply", False))
+    on_b = _all_text(await _prompt(history, "ollama:b"))
+    assert "A says hunter2" not in on_b and "B reply" in on_b
+
+
+async def test_a_reply_from_before_the_file_stays(search, bytes_asked):
+    history = _walk(("user", "ollama:a", "hello", False), ("assistant", "ollama:a", "EARLIER A REPLY", False),
+                    ("user", "ollama:a", "see this", True), ("assistant", "ollama:a", "LATER A REPLY", False))
+    text = _all_text(await _prompt(history, "ollama:b"))
+    assert "EARLIER A REPLY" in text and "LATER A REPLY" not in text
+
+
+async def test_a_reply_from_a_model_never_given_values_stays_everywhere(search, bytes_asked):
+    history = _walk(("user", "ollama:a", "see this", True), ("assistant", "ollama:a", "A reply", False),
+                    ("user", "ollama:b", "q", False), ("assistant", "ollama:b", "B PLAIN REPLY", False))
+    assert "B PLAIN REPLY" in _all_text(await _prompt(history, "ollama:a"))
+    assert "B PLAIN REPLY" in _all_text(await _prompt(history, "ollama:c"))
+
+
+async def test_a_masked_file_holds_nothing_back(search, bytes_asked):
+    history = _walk(("user", "ollama:a", "see this", False), ("assistant", "ollama:a", "A MASKED REPLY", False))
+    history[0] = StoredMessage("m0", "user", "see this", [_real_meta(False)], "ollama:a")
+    built = await _prompt(history, "ollama:b")
+    assert "A MASKED REPLY" in _all_text(built) and REPLY_HELD not in _all_text(built)
+    assert _held_notes(built) == []
+
+
+async def test_a_reply_with_no_model_after_exposure_is_held(search, bytes_asked):
+    for blank in (None, ""):
+        history = _walk(("user", "ollama:a", "see this", True), ("assistant", blank, "NO MODEL REPLY", False))
+        built = await _prompt(history, "ollama:b")
+        assert "NO MODEL REPLY" not in _all_text(built) and REPLY_HELD in _all_text(built)
+
+
+async def test_the_held_reply_costs_the_marker_not_the_original(search, bytes_asked):
+    long_reply = "word " * 4000
+    history = _walk(("user", "ollama:a", "see this", True), ("assistant", "ollama:a", long_reply, False),
+                    ("user", "ollama:b", "next", False))
+    built = await build_context(_turn(history=history, model="ollama:b", window=1500),
+                                ChatConfig(reply_reserve_tokens=0))
+    assert REPLY_HELD in _all_text(built)   # the 20 000-character reply would have forced a trim; the marker doesn't
+    assert not [n for n in built.notes if n["kind"] == "trimmed"]
+
+
+async def test_a_held_reply_with_no_held_file_still_notes(search, bytes_asked):
+    history = _walk(("user", "ollama:a", "see this", True), ("assistant", None, "NO MODEL REPLY", False))
+    built = await _prompt(history, "ollama:a")   # the file is this model's own; the unlabeled reply is held anyway
+    assert _held_notes(built) == [{"kind": "file_held_back", "names": [], "replies": 1}]
+    assert "hunter2" in _all_text(built)

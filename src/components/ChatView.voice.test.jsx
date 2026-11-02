@@ -255,7 +255,7 @@ describe('ChatView: recording and transcribing', () => {
       let fail; onPost = () => new Promise((r) => { fail = r; });
       withOther();
       await toTranscribing();
-      await act(async () => { fail(answer(503, { detail: 'busy' })); });
+      await act(async () => { fail(answer(503, { detail: { error: 'busy', message: 'busy' } })); });
       await waitMic();
       expect(document.activeElement).toBe(screen.getByLabelText('other'));
     });
@@ -296,7 +296,7 @@ describe('ChatView: recording and transcribing', () => {
     expect(tracks[0].stop).toHaveBeenCalled();
   });
   it('a 404 on the upload re-reads the status and the button disappears', async () => {
-    onPost = () => answer(404, { detail: 'off' });
+    onPost = () => answer(404, { detail: { error: 'voice_off', message: 'Voice input is off.' } });
     render(<Harness />);
     fireEvent.click(await waitMic());
     const b = await screen.findByRole('button', { name: 'Stop and transcribe' });

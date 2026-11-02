@@ -243,12 +243,36 @@ describe('useVoiceInput: upload', () => {
   });
   it("shows the server's message for a 503", async () => {
     const msg = 'Voice input is still getting ready, try again in a minute';
-    onPost = () => answer(503, { detail: msg });
+    onPost = () => answer(503, { detail: { error: 'not_ready', message: msg } });
     const m = await ready();
     await startRec(m);
     await act(async () => { m.result.current.stop(); });
     await waitFor(() => expect(m.showToast).toHaveBeenCalledWith(msg, expect.anything()));
     expect(m.result.current.phase).toBe('idle');
+  });
+  it.each([
+    [503, 'unavailable', "Voice input isn't working right now. Ask your admin."],
+    [503, 'not_ready', 'Voice input is still getting ready, try again in a minute'],
+    [503, 'busy', 'Voice input is busy. Try again in a moment.'],
+    [409, 'already_running', 'A recording of yours is already being transcribed.'],
+    [413, 'too_long', 'The recording is over 2 minutes.'],
+    [413, 'too_large', 'The recording is over 10 MB.'],
+    [400, 'bad_audio', "That recording couldn't be read."],
+    [422, 'bad_language', "That language isn't one Voice input knows."],
+    [503, 'engine_failed', 'The engine said something specific.'],
+  ])("shows the server's own message for a %i %s refusal (the real {detail: {error, message}} shape)", async (status, error, message) => {
+    onPost = () => answer(status, { detail: { error, message } });
+    const m = await ready();
+    await startRec(m);
+    await act(async () => { m.result.current.stop(); });
+    await waitFor(() => expect(m.showToast).toHaveBeenCalledWith(message, expect.anything()));
+  });
+  it('still reads a plain string detail from an older route', async () => {
+    onPost = () => answer(502, { detail: 'Bad gateway text' });
+    const m = await ready();
+    await startRec(m);
+    await act(async () => { m.result.current.stop(); });
+    await waitFor(() => expect(m.showToast).toHaveBeenCalledWith('Bad gateway text', expect.anything()));
   });
   it("falls back to \"The transcription server didn't answer\" for a non-JSON body and for a network failure", async () => {
     const fallback = "The transcription server didn't answer";
@@ -264,7 +288,7 @@ describe('useVoiceInput: upload', () => {
     await waitFor(() => expect(m.showToast).toHaveBeenCalledWith(fallback, expect.anything()));
   });
   it('a 404 with voice still on toasts that it is unavailable', async () => {
-    onPost = () => answer(404, { detail: 'off' });
+    onPost = () => answer(404, { detail: { error: 'voice_off', message: 'Voice input is off.' } });
     const m = await ready();
     await startRec(m);
     await act(async () => { m.result.current.stop(); });
@@ -273,7 +297,7 @@ describe('useVoiceInput: upload', () => {
     expect(m.result.current.phase).toBe('idle');
   });
   it('a 404 with voice now off makes the button go away and says voice was turned off', async () => {
-    onPost = () => answer(404, { detail: 'off' });
+    onPost = () => answer(404, { detail: { error: 'voice_off', message: 'Voice input is off.' } });
     const m = await ready();
     await startRec(m);
     statusBody = STATUS({ enabled: false });
@@ -283,7 +307,7 @@ describe('useVoiceInput: upload', () => {
     expect(m.showToast).toHaveBeenCalledWith('Voice input was turned off.', expect.anything());
   });
   it('a 404 re-reads the status and the button goes away', async () => {
-    onPost = () => answer(404, { detail: 'off' });
+    onPost = () => answer(404, { detail: { error: 'voice_off', message: 'Voice input is off.' } });
     const m = await ready();
     await startRec(m);
     statusBody = STATUS({ enabled: false });

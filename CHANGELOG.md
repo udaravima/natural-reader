@@ -21,16 +21,23 @@ All notable changes to this project will be documented in this file.
   - Changing the model puts masking back on, with the notice "Masking is back on:
     you changed the model."
   - **Real values stay with the model you agreed for.** If you send real values to
-    one model and then pick another in the same chat, the file is **not** sent to
-    the other model: it sees a note that the file was held back, and you get "*name*
-    wasn't sent to this model: its real values were agreed for another one." Back on
-    the first model it is sent again; to use the file with another one, attach it
-    again. A masked file follows the chat to any model. While a real-values file is
-    part of the conversation, a web search set to **Auto** asks first, as **Ask**
-    does, and file text can't be copied into a search query. A file bigger than the
-    model's context window is still sent in full (the new message is never trimmed),
-    but you get "*name* is larger than this model's context: it may read only part of
-    it.", and the context meter counts a staged file before Send.
+    one model and then pick another in the same chat, neither the file **nor that
+    model's replies** are sent to the other model (a reply can quote the values). The
+    other model sees a short note in their place, and under its reply you read "*name*
+    wasn't sent to this model: its real values were agreed for another one. Earlier
+    replies that read it weren't sent either." (a note saved with the reply, so it is
+    still there after a reload). Back on the first model both are sent again; to use
+    the file with another one, attach it again. Replies from before the file, and from
+    models never given the values, stay. A masked file follows the chat to any model.
+    **Not held back:** anything you typed or pinned yourself, and anything a model
+    passes to a reader model as a written request. While a real-values file is part of
+    the conversation, a web search set to **Auto** asks first, as **Ask** does, so you
+    see the query before it leaves; the search guard also refuses a query that copies
+    a run of the file's (or a document's) text, though a short phrase or a lone token
+    can still pass, which is why that turn asks first. A file bigger than the model's
+    context window is still sent in full (the new message is never trimmed), but you
+    get "*name* is larger than this model's context: it may read only part of it."
+    under the reply, and the context meter counts a staged file before Send.
   - The model reads each file as an `<attached_file>` block in the message, so it
     works with every model and provider. The bubble shows the chip, not the text,
     and after a reload the chip stays but the text isn't shown again.
@@ -49,7 +56,7 @@ All notable changes to this project will be documented in this file.
     and the Python packages add about 276 MB to the image. `SPEECH_ENGINE=openai`
     uses any OpenAI-compatible transcription server instead, which can cost money
     per minute with no budget in the app beyond 2 minutes and 10 MB per recording
-    and one at a time per person. A recording is kept in memory for one request:
+    and one at a time per worker. A recording is kept in memory for one request:
     never written to disk, the database or a log by the app (a reverse proxy in
     front of it may buffer an upload to disk: see DEPLOYMENT.md, "Recordings and your
     reverse proxy").

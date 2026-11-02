@@ -806,8 +806,12 @@ thread can't be stopped) and holds the slot until it does: at most one 2-minute
 recording's worth of CPU.
 
 **`WORKERS` above 1: each worker loads its own model**, so memory is multiplied by
-the worker count, as with Kokoro. How much one loaded `small` takes in memory was
-not measured here, only its 464 MB on disk.
+the worker count, as with Kokoro. Measured in the real
+image on the same CPU-only machine, Kokoro included: **1.26 GB** after the model
+loaded and **1.95 GB** after use (the model alone is 464 MB on disk). Speed in
+that image: 5.7 s of speech in 1.7 s; 100.8 s of speech in 21.5 s with read-aloud
+narration running alongside. One sentence of narration took 2.1 s alone and
+3.5-5.2 s during a transcription. One machine, not a promise.
 
 ### Choosing a model
 
@@ -889,9 +893,10 @@ disk though**: nginx buffers a request body bigger than `client_body_buffer_size
 into a temp file before passing it on. If that matters to you, turn request
 buffering off for the speech routes. In the sample vhost
 ([`sample_configs/chat.example.com.sample`](sample_configs/chat.example.com.sample))
-put a nested block inside the `location /v1/ { … }` block. It must repeat the
-`proxy_pass` and headers, because a nested location replaces what the outer one
-set up:
+put a nested block inside the `location /v1/ { … }` block. It must repeat
+`proxy_pass` (never inherited into a nested location) and the `proxy_set_header`
+lines (a block that sets any header of its own drops the outer ones), while
+`client_max_body_size` and `proxy_read_timeout` are inherited:
 
 ```nginx
     location /v1/ {
@@ -918,8 +923,9 @@ slow client holds a backend worker for the whole upload). The other way is to ra
 `client_body_buffer_size` above 10 MB. Either way `client_max_body_size` must allow
 a little over 10 MB for `/v1/speech/transcriptions` (the sample vhost's `100m` on
 `/v1/` already does; a stricter limit would turn every recording into a `413`). The
-example block above was written from the sample vhost and not run against a real
-nginx here: test it with `nginx -t` and one recording.
+example block above was run on nginx 1.28.3 over plain http (a recording passed
+through it); it was not run behind https or a real certificate. Test it on yours
+with `nginx -t` and one recording.
 
 ### https for the microphone
 

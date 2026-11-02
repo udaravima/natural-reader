@@ -1329,6 +1329,21 @@ function ContextNotes({ notes, theme }) {
         if (n.attachments) parts.push(`${plural(n.attachments, "older attachment")}`);
         return parts.length ? `Trimmed ${parts.join(" and ")} to fit` : null;
       }
+      if (n.kind === "file_held_back") {
+        // Real values were agreed for another model: the file, and any reply that read it, stayed out of this prompt.
+        const names = Array.isArray(n.names) ? n.names : [];
+        const sentences = [];
+        if (names.length) {
+          sentences.push(`${names.join(", ")} ${names.length === 1 ? "wasn't" : "weren't"} sent to this model: its real values were agreed for another one.`);
+          if (n.replies > 0) sentences.push("Earlier replies that read it weren't sent either.");
+        } else if (n.replies > 0) {
+          sentences.push("Replies that read real values weren't sent to this model.");
+        }
+        return sentences.length ? sentences.join(" ") : null;
+      }
+      if (n.kind === "file_larger_than_context") {
+        return `${n.name} is larger than this model's context: it may read only part of it.`;
+      }
       return null;
     })
     .filter(Boolean);

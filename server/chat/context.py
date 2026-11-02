@@ -48,8 +48,8 @@ PASSAGE_TEXT_CAP = 1500   # characters per prefetched passage
 _MARKER = "[{kind} {name} from earlier; no longer attached]"
 # A text file whose real values were agreed for one model, in a turn for another (final fix wave, C1).
 _HELD_MARKER = "[{name}: not shown to this model. Its real values were agreed for another model.]"
-_HELD_NOTICE = "{name} wasn't sent to this model: its real values were agreed for another one."
-_LARGE_NOTICE = "{name} is larger than this model's context: it may read only part of it."
+# A reply from a model that was given real values, in a turn for another model: it may quote them.
+_REPLY_HELD = "[This reply isn't shown to this model: it could quote real values agreed for another model.]"
 
 
 def _pin_block(p: dict[str, Any]) -> str:
@@ -239,6 +239,23 @@ class _Item:
     keep: list[dict[str, Any]]
     dropped: list[dict[str, Any]] = field(default_factory=list)
     held: list[dict[str, Any]] = field(default_factory=list)   # real values agreed for another model: never loaded
+    reply_held: bool = False   # a reply from a model that was given real values, in a turn for another model
+
+
+def _held_replies(history: list[StoredMessage], model: str) -> set[str]:
+    """Ids of the assistant replies this model must not see: replies from a model that was given real values.
+    Walk in order: a user message with a real-values text file exposes that message's model; an assistant message
+    after that, from another model that was exposed (or with no model recorded), is held. Replies from before the
+    exposure, from models never exposed, and the model's own replies stay."""
+    exposed: set[str] = set()
+    held: set[str] = set()
+    for m in history:
+        if m.role == "user":
+            if any(a.get("kind") == "text" and a.get("real_values") is True for a in m.attachments):
+                exposed.add(m.model or "")
+        elif m.role == "assistant" and exposed and (not m.model or (m.model != model and m.model in exposed)):
+            held.add(m.id)
+    return held
 
 
 def _fit_history(history: list[StoredMessage], fixed_chars: int, fixed_attachments: int,
@@ -247,9 +264,10 @@ def _fit_history(history: list[StoredMessage], fixed_chars: int, fixed_attachmen
     part of a long chat), then the oldest turns. Pins, the volatile block and
     the new message are never trimmed."""
     items = []
+    held_replies = _held_replies(history, model)
     for m in history:
         held = [a for a in m.attachments if _is_held(m, a, model)]
-        items.append(_Item(m, [a for a in m.attachments if a not in held], held=held))
+        items.append(_Item(m, [a for a in m.attachments if a not in held], held=held, reply_held=m.id in held_replies))
     if window is None:
         return items, 0, 0
     budget = window - cfg.reply_reserve_tokens
@@ -257,7 +275,7 @@ def _fit_history(history: list[StoredMessage], fixed_chars: int, fixed_attachmen
     def tokens() -> int:
         # A kept text file costs its characters (stored `size` is bytes: a safe over-estimate); images and audio
         # cost a flat estimate.
-        chars = fixed_chars + sum(len(i.stored.content) + sum(len(_marker(a)) + 2 for a in i.dropped)
+        chars = fixed_chars + sum(len(_REPLY_HELD if i.reply_held else i.stored.content) + sum(len(_marker(a)) + 2 for a in i.dropped)
                                   + sum(len(_HELD_MARKER.format(name=_held_name(a))) + 2 for a in i.held)
                                   + sum(int(a.get("size") or 0) for a in i.keep if a.get("kind") == "text")
                                   for i in items)
@@ -304,7 +322,6 @@ class TurnInput:
     app_exchange: tuple[Message, ...] = ()   # a tool exchange the app ran (the approved web search), after the prefetch's
     default_timezone: str = "UTC"            # the deployment's zone: the "Today" line's fallback when the browser sent none
     model: str = ""                          # the turn's canonical model id (the form begin_turn stores on user rows)
-    current_real_values: bool = False        # a text file of the new message carries the person's "real values" choice
 
 
 @dataclass
@@ -315,8 +332,6 @@ class BuiltContext:
     shown_chunk_ids: tuple[int, ...] = ()   # the prefetched chunks: search_documents won't repeat them
     shown_texts: tuple[str, ...] = ()       # their text: web_search won't send it out
     evidence: tuple[tuple[str, int | None, str], ...] = ()   # (doc_id, page, text): for the source chips (v2.4 Task D)
-    notices: tuple[dict[str, str], ...] = ()   # {code, message}: what the person should be told this turn
-    real_values: bool = False               # a real-values text file is in the prompt, kept or current
     file_texts: tuple[str, ...] = ()        # every text file in the prompt: web search must not send them out
 
 
@@ -356,17 +371,23 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     items, n_messages, n_attachments = _fit_history(turn.history, fixed_chars,
                                                     sum(1 for a in turn.attachments if a.kind != "text"),
                                                     turn.window, cfg, turn.model)
-    notices: list[dict[str, str]] = [
-        {"code": "file_held_back", "message": _HELD_NOTICE.format(name=_held_name(a))}
-        for i in items for a in i.held]
+    held_names = [_held_name(a) for i in items for a in i.held]
+    held_replies = sum(1 for i in items if i.reply_held)
+    notes: list[dict[str, Any]] = [pre.note] if pre.note else []
+    if n_messages or n_attachments:
+        notes.append({"kind": "trimmed", "messages": n_messages, "attachments": n_attachments})
+        logger.debug("history trimmed: %d messages, %d attachments (window %s)",
+                     n_messages, n_attachments, turn.window)
+    if held_names or held_replies:
+        notes.append({"kind": "file_held_back", "names": held_names, "replies": held_replies})
     current_texts = [(display_name(a.name or "attachment"), _attachment_text(a))
                      for a in turn.attachments if a.kind == "text"]
     if (current_texts and turn.window is not None
             and math.ceil(fixed_chars / 4) + sum(1 for a in turn.attachments if a.kind != "text")
             * cfg.attachment_token_estimate > turn.window - cfg.reply_reserve_tokens):
         # The new message is never trimmed. A provider may keep only the tail of a prompt that is too long.
-        notices.append({"code": "file_larger_than_context",
-                        "message": _LARGE_NOTICE.format(name=max(current_texts, key=lambda t: len(t[1]))[0])})
+        notes.append({"kind": "file_larger_than_context",
+                      "name": max(current_texts, key=lambda t: len(t[1]))[0]})
     wanted = [(i.stored.id, a["ordinal"]) for i in items for a in i.keep]
     blobs = await store.load_attachment_bytes(wanted) if wanted else {}
     history_messages = []
@@ -384,7 +405,7 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
             content = (content + "\n\n" + "\n".join(markers)).strip()
         kept = tuple(blobs[(i.stored.id, a["ordinal"])] for a in i.keep
                      if (i.stored.id, a["ordinal"]) in blobs)
-        history_messages.append(Message(i.stored.role, content, attachments=kept))
+        history_messages.append(Message(i.stored.role, _REPLY_HELD if i.reply_held else content, attachments=kept))
     history_messages = [inline_text_files(m) for m in _merge_same_role(history_messages)]
     # The new message: the volatile block first, then what the user typed. An
     # unanswered user turn at the end of history (its reply failed) joins it
@@ -396,18 +417,11 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     current = inline_text_files(current)
     current = Message("user", "\n\n".join(c for c in (volatile, current.content) if c),
                       attachments=current.attachments)
-    notes = [pre.note] if pre.note else []
-    if n_messages or n_attachments:
-        notes.append({"kind": "trimmed", "messages": n_messages, "attachments": n_attachments})
-        logger.debug("history trimmed: %d messages, %d attachments (window %s)",
-                     n_messages, n_attachments, turn.window)
     file_texts = tuple([_attachment_text(blobs[(i.stored.id, a["ordinal"])]) for i in items for a in i.keep
                         if a.get("kind") == "text" and (i.stored.id, a["ordinal"]) in blobs]
                        + [t for _, t in current_texts])
-    real = turn.current_real_values or any(a.get("kind") == "text" and a.get("real_values") is True
-                                           for i in items for a in i.keep)
     return BuiltContext([system, *history_messages, current, *exchange], notes, bool(pre.passages),
                         tuple(p["id"] for p in pre.passages if p.get("id") is not None),
                         tuple(p["text"] for p in pre.passages),
                         tuple((p["doc_id"], p["page"], p["text"]) for p in pre.passages),
-                        tuple(notices), real, file_texts)
+                        file_texts)

@@ -37,6 +37,36 @@ describe('ChatView — reply status and context notes', () => {
         expect(screen.getByText('Used 4 passages from Thesis.pdf · Trimmed 6 older messages and 1 older attachment to fit')).toBeInTheDocument();
     });
 
+    const withNotes = (notes) => render(<ChatView {...baseProps({ messages: [q,
+        { id: 'a1', role: 'assistant', content: 'ok', status: 'complete', docContext: { notes } }] })} />);
+
+    it('says a held-back file was not sent, with the replies that read it', () => {
+        withNotes([{ kind: 'file_held_back', names: ['secrets.env'], replies: 2 }]);
+        expect(screen.getByText("secrets.env wasn't sent to this model: its real values were agreed for another one. Earlier replies that read it weren't sent either.")).toBeInTheDocument();
+    });
+
+    it('uses "weren\'t" for several held files, and no second sentence without replies', () => {
+        withNotes([{ kind: 'file_held_back', names: ['a.env', 'b.env'], replies: 0 }]);
+        expect(screen.getByText("a.env, b.env weren't sent to this model: its real values were agreed for another one.")).toBeInTheDocument();
+    });
+
+    it('says held replies alone when no file is held in this turn', () => {
+        withNotes([{ kind: 'file_held_back', names: [], replies: 1 }]);
+        expect(screen.getByText("Replies that read real values weren't sent to this model.")).toBeInTheDocument();
+    });
+
+    it('says a file is larger than the model\'s context', () => {
+        withNotes([{ kind: 'file_larger_than_context', name: 'big.log' }]);
+        expect(screen.getByText("big.log is larger than this model's context: it may read only part of it.")).toBeInTheDocument();
+    });
+
+    it('draws a saved note after a reload (it comes back in docContext.notes)', () => {
+        const { unmount } = withNotes([{ kind: 'file_held_back', names: ['secrets.env'], replies: 0 }]);
+        unmount();
+        withNotes(JSON.parse(JSON.stringify([{ kind: 'file_held_back', names: ['secrets.env'], replies: 0 }])));
+        expect(screen.getByText(/secrets\.env wasn't sent to this model/)).toBeInTheDocument();
+    });
+
     it('no longer mentions Ollama host/port when the server is unreachable', () => {
         render(<ChatView {...baseProps({ reachable: false })} />);
         expect(screen.queryByText(/host & port/i)).toBeNull();

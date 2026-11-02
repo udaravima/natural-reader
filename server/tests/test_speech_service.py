@@ -7,7 +7,7 @@ import logging
 import pytest
 
 from server.speech import service
-from server.speech.base import AudioTooLong, EngineNotReady, EngineStatus, Transcript
+from server.speech.base import EngineNotReady, EngineStatus, Transcript
 from server.speech.local_whisper import LocalWhisper
 from server.speech.openai_engine import OpenAICompatible
 

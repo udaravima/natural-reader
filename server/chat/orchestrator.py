@@ -321,9 +321,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             profile=profile.text, scope=tuple(scope_docs(tool_ctx)),
             project_map=project_map.text if project_map else "", app_exchange=app_exchange,
             default_timezone=await _deployment_timezone(),
-            model=req.model_id, current_real_values=req.real_values), cfg)
-        for notice in built.notices:
-            yield ev("data-notice", code=notice["code"], message=notice["message"])
+            model=req.model_id), cfg)
         tool_ctx.shown.update(built.shown_chunk_ids)
         # Document text the model already has: the web search guard's reference.
         tool_ctx.seen_text.extend(built.shown_texts)

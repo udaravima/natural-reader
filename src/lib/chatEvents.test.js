@@ -56,19 +56,9 @@ describe('applyEvent over the backend contract fixtures', () => {
         expect(m.content).toBe('Partial');
     });
 
-    it('notice and context: surfaced on the message', () => {
-        expect(reduce(loadFixture('notice')).notices).toEqual(['This model rejected tools — answered without them.']);
+    it('context: surfaced on the message (a notice is the toast route, not a message field)', () => {
+        expect(reduce(loadFixture('notice')).notices).toBeUndefined();
         expect(reduce(loadFixture('context')).docContext.notes[0]).toMatchObject({ kind: 'prefetch', docName: 'Thesis.pdf' });
-    });
-
-    it('any data-notice code shows, including the ones about attached files (no code is filtered)', () => {
-        const held = "secrets.env wasn't sent to this model: its real values were agreed for another one.";
-        const big = "big.log is larger than this model's context: it may read only part of it.";
-        const m = reduce([
-            { type: 'data-notice', code: 'file_held_back', message: held },
-            { type: 'data-notice', code: 'file_larger_than_context', message: big },
-        ]);
-        expect(m.notices).toEqual([held, big]);
     });
 
     it('ignores unknown event types (forward compatible)', () => {

@@ -929,17 +929,18 @@ async def test_auto_behaves_as_ask_while_an_earlier_real_values_file_is_in_the_c
     other = FakeRouter()
     events, _ = await file_turn(conn, other, alice, attachment=None, sid="s-h", text="again", model="ollama:other")
     assert other.calls[0]["tools"] == WEB_TOOLS                     # held back from this model: nothing real in context
-    assert "data-notice" in types(events)
+    ctx_items = [e for e in events if e["type"] == "data-context"][0]["items"]
+    assert {"kind": "file_held_back", "names": ["secrets.env"], "replies": 2} in ctx_items
 
 
-async def test_a_held_back_file_is_announced_once_and_not_sent(conn, engine):
+async def test_a_held_back_file_is_a_note_with_the_reply_and_not_sent(conn, engine):
     alice = await member(conn, "alice")
     await file_turn(conn, FakeRouter(), alice, attachment=_file(real=True, text="TOKEN=hunter2"), sid="s-n")
     router = FakeRouter()
     events, _ = await file_turn(conn, router, alice, attachment=None, sid="s-n", text="next", model="ollama:other")
-    notices = [e for e in events if e["type"] == "data-notice"]
-    assert [(n["code"], n["message"]) for n in notices] == [
-        ("file_held_back", "secrets.env wasn't sent to this model: its real values were agreed for another one.")]
+    assert not [e for e in events if e["type"] == "data-notice"]
+    notes = [n for e in events if e["type"] == "data-context" for n in e["items"] if n["kind"] == "file_held_back"]
+    assert notes == [{"kind": "file_held_back", "names": ["secrets.env"], "replies": 1}]
     assert all("hunter2" not in m.content for m in router.calls[0]["messages"])
 
 

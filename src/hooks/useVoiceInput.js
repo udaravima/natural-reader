@@ -39,6 +39,9 @@ function stopTracks(stream) {
 async function detailOf(res) {
   try {
     const body = await res.json();
+    // The server's refusals send {detail: {error, message}}; an older route sends a plain string.
+    const message = body?.detail?.message;
+    if (typeof message === 'string' && message) return message;
     if (typeof body?.detail === 'string' && body.detail) return body.detail;
   } catch { /* not JSON */ }
   return FALLBACK;
