@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sinhala, Tamil and Hindi are read without spoken noise.** Kokoro only ever gets
+  phonemes, and espeak switches language by itself on a script it wasn't asked for,
+  which is how any voice can read Sinhala. Each switch left a marker such as `(si)`
+  that Kokoro spoke as sounds: 2 s extra on 7 s of Sinhala, and about 72% longer on a
+  sentence mixing Sinhala and English. English audio is unchanged, sample for sample.
+- **A voice reads in its own language.** `/v1/synthesize` and `/v1/batch_synthesize`
+  asked for `en-us` for every voice, so a Spanish voice read Spanish as English.
+- **River is labelled Female:** `af_` is an American female voice.
+- **All 50 Kokoro voices.** **Settings → Voice & reading → Voice** now offers Hindi,
+  Spanish, French, Italian, Portuguese, Japanese and Chinese voices beside the US and
+  UK ones, grouped by language, each previewing in its own language. The read-aloud
+  extension lists them too. Japanese voices read kana but not kanji, because espeak
+  can't read kanji.
+- **A tab icon:** the header's speaker on its blue tile, with PNG versions for
+  browsers that want them.
+- **Long dropdowns open as a popup.** Past 12 entries, a dropdown is one control that
+  opens with a search box at its top, already focused: open it and type, or start
+  typing on it. Arrow keys and Enter work, Esc closes it and stays in the dialog around
+  it, and it opens upward when there's no room below. It replaces the separate search
+  box above a list, whose rows were about 15 px tall and unusable in the chat panels.
+  A list of controls, such as Admin → Models → Chat models offered, keeps its search
+  box.
+- **The Library opens on Projects,** the first tab, with Documents second.
+- **The audiobook has its own icon,** headphones. It had the Library's.
+
 ## [2.5.0] - 2026-11-02
 
 **Speak a message, and hand the chat a file.** A microphone beside the paperclip

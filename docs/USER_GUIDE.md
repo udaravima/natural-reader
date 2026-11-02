@@ -58,6 +58,12 @@ navigation (reader) and the model picker + sessions (chat). Everything about
   **Voice & reading**, **Chat**, **Appearance**, **Connection** and **Access
   tokens** (the only place tokens are created). **Esc**, the **×** or a click
   outside closes it; it opens on the tab you used last.
+
+  **Voice** on **Voice & reading** holds all 50 of Kokoro's voices, grouped by
+  language: open it and type to find one, and the play button beside it previews it.
+  Each reads its own language best. Sinhala and Tamil have no voices of their own, but
+  any voice can read them, and English words among them stay English. Try the Hindi
+  voices first. Japanese voices read kana but not kanji.
 - **Admin** console — a separate view opened from the **shield** button in the
   top view switcher (Reader / Chat / Library / Admin). Only admins see it.
   **No token creation happens here.**
@@ -308,11 +314,12 @@ pick it (see above), so it has no Save, no draft and no unsaved-changes question
 The **Assistant profile** and **Defaults for users** keep their own Save buttons.
 
 **Long lists.** The Save at the bottom of a section stays on screen as you scroll, so
-you never have to go to the end of the page to reach it. Past 12 entries, a list gets
-a search box: the per-model lists under **Models** scroll in their own box, and a long
-dropdown (timezone, model, voice, language) narrows as you type, then shows the matches
-to pick from. Searching hides rows, not what they hold: ticks and numbers you can't
-see still save, and a box with a mistake in it stays visible.
+you never have to go to the end of the page to reach it. Past 12 entries, a dropdown
+(timezone, model, voice, language) opens as a popup with a search box at its top: open
+it and type, then click a row or use the arrow keys and Enter. The per-model lists
+under **Models** have a search box above them and scroll in their own box. Searching
+those hides rows, not what they hold: ticks and numbers you can't see still save, and
+a box with a mistake in it stays visible.
 
 - A line under the setting says where its value comes from: **Set here.**
   (you chose it in the console), **From the server setting** `NAME` (the

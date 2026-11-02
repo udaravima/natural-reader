@@ -24,7 +24,7 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 
 ### 🎙️ Text-to-Speech
 - **Kokoro TTS Integration** — High-quality neural text-to-speech via local backend
-- **27 Voice Options** — Wide selection of US and UK male/female voices with live preview
+- **50 Voice Options** — US and UK English, Hindi, Spanish, French, Italian, Portuguese, Japanese and Chinese voices with live preview. Any voice can read Sinhala and Tamil
 - **Speed Control** — Adjust playback speed from 0.5× to 2×
 - **Volume Control** — Adjustable audio volume slider
 - **Audio Buffering** — Pre-fetches upcoming sentences for seamless playback
@@ -727,7 +727,7 @@ The sample [docs/sample_configs/chat.example.com.sample](docs/sample_configs/cha
 ## 🎭 Available Voices
 
 <details>
-<summary><strong>US Voices (19)</strong></summary>
+<summary><strong>US Voices (20)</strong></summary>
 
 | Voice ID | Name | Gender |
 |----------|------|--------|
@@ -739,7 +739,7 @@ The sample [docs/sample_configs/chat.example.com.sample](docs/sample_configs/cha
 | `af_kore` | Kore | Female |
 | `af_nicole` | Nicole | Female |
 | `af_nova` | Nova | Female |
-| `af_river` | River | Male |
+| `af_river` | River | Female |
 | `af_sarah` | Sarah | Female |
 | `af_sky` | Sky | Female |
 | `am_michael` | Michael | Male |
@@ -750,6 +750,7 @@ The sample [docs/sample_configs/chat.example.com.sample](docs/sample_configs/cha
 | `am_liam` | Liam | Male |
 | `am_onyx` | Onyx | Male |
 | `am_puck` | Puck | Male |
+| `am_santa` | Santa | Male |
 
 </details>
 
@@ -766,6 +767,38 @@ The sample [docs/sample_configs/chat.example.com.sample](docs/sample_configs/cha
 | `bm_fable` | Fable | Male |
 | `bm_george` | George | Male |
 | `bm_lewis` | Lewis | Male |
+
+</details>
+
+<details>
+<summary><strong>Other languages (22)</strong></summary>
+
+| Voice ID | Name | Language | Gender |
+|----------|------|----------|--------|
+| `hf_alpha` | Alpha | Hindi | Female |
+| `hf_beta` | Beta | Hindi | Female |
+| `hm_omega` | Omega | Hindi | Male |
+| `hm_psi` | Psi | Hindi | Male |
+| `ef_dora` | Dora | Spanish | Female |
+| `em_alex` | Alex | Spanish | Male |
+| `em_santa` | Santa | Spanish | Male |
+| `ff_siwis` | Siwis | French | Female |
+| `if_sara` | Sara | Italian | Female |
+| `im_nicola` | Nicola | Italian | Male |
+| `pf_dora` | Dora | Portuguese | Female |
+| `pm_alex` | Alex | Portuguese | Male |
+| `pm_santa` | Santa | Portuguese | Male |
+| `jf_alpha` | Alpha | Japanese | Female |
+| `jf_gongitsune` | Gongitsune | Japanese | Female |
+| `jf_nezumi` | Nezumi | Japanese | Female |
+| `jf_tebukuro` | Tebukuro | Japanese | Female |
+| `jm_kumo` | Kumo | Japanese | Male |
+| `zf_xiaobei` | Xiaobei | Chinese | Female |
+| `zf_xiaoni` | Xiaoni | Chinese | Female |
+| `zf_xiaoxiao` | Xiaoxiao | Chinese | Female |
+| `zf_xiaoyi` | Xiaoyi | Chinese | Female |
+
+Each voice reads its own language best. Sinhala and Tamil have no voices of their own, but any voice can read them. Japanese voices read kana but not kanji.
 
 </details>
 
