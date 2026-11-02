@@ -11,9 +11,10 @@ import httpx
 import numpy as np
 import pytest
 
-from server.speech import audio as audio_mod, local_whisper, openai_engine
+from server.speech import audio as audio_mod, catalogue, convert, hf_whisper, local_whisper, openai_engine
 from server.speech.audio import decode_capped
-from server.speech.base import (AudioTooLong, BadAudio, EngineFailed, EngineNotReady, EngineStatus, Transcript)
+from server.speech.catalogue import SpeechModel
+from server.speech.base import (AudioTooLong, BadAudio, ConversionFailed, EngineFailed, EngineNotReady, EngineStatus, Transcript)
 from server.speech.languages import WHISPER_LANGUAGES
 from server.speech.local_whisper import LocalWhisper
 from server.speech.openai_engine import OpenAICompatible
@@ -461,3 +462,148 @@ async def test_openai_config_mistake_raises_unavailable():
     from server.speech.base import EngineUnavailable
     with pytest.raises(EngineUnavailable):
         await OpenAICompatible(None, None, None).transcribe(b"a", "audio/webm", None)
+
+
+# ---------- the chosen model's own rules (spec 2026-11-02-speech-model-choice) ----------
+
+class _Recording:
+    """A stand-in faster-whisper model that records what it was asked and can fail."""
+    def __init__(self, error=None):
+        self.language = "unset"
+        self.error = error
+
+    def transcribe(self, samples, language=None, **kw):
+        self.language = language
+        self.kw = kw
+        if self.error:
+            raise self.error
+        return [SimpleNamespace(text=" hi")], SimpleNamespace(language=language or "en", duration=1.0)
+
+
+def _running(spec, model, monkeypatch):
+    monkeypatch.setattr(local_whisper, "decode_capped", lambda audio: np.zeros(16000, dtype=np.float32))
+    eng = LocalWhisper(spec, 1)
+    eng._model, eng._state = model, "ready"
+    return eng
+
+
+async def test_auto_tells_a_one_language_model_its_language(monkeypatch):
+    model = _Recording()
+    spec = SpeechModel("m", "M", "converted-whisper", "a/b", "r", ("si",))
+    assert (await _running(spec, model, monkeypatch).transcribe(b"x", "audio/webm", None)).language == "si"
+
+
+async def test_every_model_listens_the_way_the_recordings_said_to(monkeypatch):
+    model = _Recording()
+    await _running(SpeechModel("m", "M", "faster-whisper", "m"), model, monkeypatch).transcribe(b"x", "audio/webm", "en")
+    assert model.kw["vad_filter"] is True and model.kw["vad_parameters"] == {"threshold": 0.4}
+    assert model.kw["temperature"] == 0
+    # Whisper's defaults, because the common speed-ups cost real words: see DECODE.
+    assert "beam_size" not in model.kw and "condition_on_previous_text" not in model.kw
+
+
+async def test_a_language_the_person_chose_stays_theirs(monkeypatch):
+    model = _Recording()
+    spec = SpeechModel("m", "M", "converted-whisper", "a/b", "r", ("si",))
+    await _running(spec, model, monkeypatch).transcribe(b"x", "audio/webm", "en")
+    assert model.language == "en"
+
+
+async def test_auto_stays_auto_on_a_model_for_every_language(monkeypatch):
+    model = _Recording()
+    await _running(SpeechModel("m", "M", "faster-whisper", "m"), model, monkeypatch).transcribe(b"x", "audio/webm", None)
+    assert model.language is None
+
+
+async def test_a_model_that_cant_detect_a_language_says_what_to_do(monkeypatch):
+    # faster-whisper's own behaviour on a fine-tune whose config lists no languages: all_language_probs[0].
+    model = _Recording(IndexError("list index out of range"))
+    eng = _running(SpeechModel("m", "M", "converted-whisper", "a/b"), model, monkeypatch)
+    with pytest.raises(EngineFailed) as e:
+        await eng.transcribe(b"x", "audio/webm", None)
+    assert "Speech language" in str(e.value)
+
+
+async def test_a_model_failing_on_a_recording_is_engine_failed_not_a_crash(monkeypatch):
+    model = _Recording(RuntimeError("ctranslate2 said no"))
+    eng = _running(SpeechModel("m", "M", "faster-whisper", "m"), model, monkeypatch)
+    with pytest.raises(EngineFailed) as e:
+        await eng.transcribe(b"x", "audio/webm", "en")
+    assert "ctranslate2" not in str(e.value)
+
+
+def _load(eng):
+    eng._load()
+    return eng._state, eng._detail
+
+
+def test_the_load_passes_the_pinned_revision(monkeypatch):
+    seen = {}
+
+    def fake(path, **kw):
+        seen.update(path=path, **kw)
+        return "loaded"
+
+    monkeypatch.setattr(local_whisper, "WhisperModel", fake)
+    assert _load(LocalWhisper(SpeechModel("m", "M", "faster-whisper", "a/b", "abc"), 1))[0] == "ready"
+    assert seen["path"] == "a/b" and seen["revision"] == "abc"
+
+
+def test_a_converted_model_loads_from_its_converted_directory(monkeypatch, tmp_path):
+    seen = {}
+    monkeypatch.setattr(catalogue, "_installed", lambda name: True)
+    monkeypatch.setattr(convert, "ensure_converted", lambda spec, threads: tmp_path)
+    monkeypatch.setattr(local_whisper, "WhisperModel", lambda path, **kw: seen.update(path=path, **kw) or "loaded")
+    assert _load(LocalWhisper(SpeechModel("m", "M", "converted-whisper", "a/b", "abc"), 1))[0] == "ready"
+    assert seen["path"] == str(tmp_path) and "revision" not in seen
+
+
+def test_a_failed_conversion_shows_its_reason_to_the_admin(monkeypatch):
+    def fail(spec, threads):
+        raise ConversionFailed("Converting a/b failed: no such commit")
+    monkeypatch.setattr(catalogue, "_installed", lambda name: True)
+    monkeypatch.setattr(convert, "ensure_converted", fail)
+    state, detail = _load(LocalWhisper(SpeechModel("m", "M", "converted-whisper", "a/b", "abc"), 1))
+    assert state == "error" and "no such commit" in detail
+
+
+def test_a_model_that_needs_torch_says_so_and_starts_nothing(monkeypatch):
+    monkeypatch.setattr(catalogue, "_installed", lambda name: False)
+    monkeypatch.setattr(convert, "ensure_converted", lambda *a: pytest.fail("must not convert"))
+    state, detail = _load(LocalWhisper(SpeechModel("m", "M", "converted-whisper", "a/b", "abc"), 1))
+    assert state == "error" and "transformers" in detail
+
+
+class _Pipe:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, audio, generate_kwargs=None):
+        self.calls.append((audio, generate_kwargs))
+        return {"text": " hello "}
+
+
+def test_the_unconverted_engine_passes_speech_and_language(monkeypatch):
+    pipe = _Pipe()
+    monkeypatch.setattr(hf_whisper, "speech_only", lambda samples: samples[:8000])
+    eng = hf_whisper.TransformersWhisper(SpeechModel("m", "M", "transformers-whisper", "a/b", "r", ("si",)), 2)
+    got = eng._run(np.zeros(16000, dtype=np.float32), "si", pipe)
+    assert (got.text, got.language, got.duration_s) == ("hello", "si", 1.0)
+    audio, kwargs = pipe.calls[0]
+    assert audio["raw"].size == 8000 and audio["sampling_rate"] == 16000
+    assert kwargs == {"task": "transcribe", "language": "si"}
+
+
+def test_both_paths_share_one_vad_threshold(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(hf_whisper, "get_speech_timestamps", lambda samples, options: seen.update(o=options) or [])
+    hf_whisper.speech_only(np.zeros(160, dtype=np.float32))
+    assert seen["o"].threshold == local_whisper.VAD_THRESHOLD
+
+
+def test_vad_silence_never_reaches_the_unconverted_model():
+    """The real Silero VAD on real silence: Whisper would invent text from it."""
+    pipe = _Pipe()
+    eng = hf_whisper.TransformersWhisper(SpeechModel("m", "M", "transformers-whisper", "a/b", "r", ("si",)), 2)
+    got = eng._run(np.zeros(16000 * 3, dtype=np.float32), "si", pipe)
+    assert got.text == "" and got.duration_s == 3.0 and pipe.calls == []

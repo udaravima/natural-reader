@@ -597,3 +597,17 @@ async def test_the_pre_transcribe_probe_is_for_the_local_engine_only(db_conn, en
     async with _client(db_conn) as c:
         await _post(c)
     assert engine.status_calls == 1
+
+
+async def test_status_names_what_the_model_is_for(db_conn, engine, monkeypatch):
+    await _voice(db_conn, True)
+    engine.languages = ("si",)
+    async with _client(db_conn) as c:
+        body = (await c.get(STATUS)).json()
+    assert body["model_languages"] == ["Sinhala"]
+
+
+async def test_a_model_for_every_language_names_none(db_conn, engine):
+    await _voice(db_conn, True)
+    async with _client(db_conn) as c:
+        assert (await c.get(STATUS)).json()["model_languages"] == []

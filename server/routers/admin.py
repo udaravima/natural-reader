@@ -1,8 +1,10 @@
 """/v1/admin/* — user administration. Admin manages accounts, not their data."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import re
 import secrets
 import uuid
 from typing import Any, Callable, Literal, Mapping
@@ -19,7 +21,8 @@ from ..auth.config import load_auth_config
 from ..auth.kc_admin import KCAdminError, KCRoleMissing
 from ..llm.router import get_router
 from ..http_errors import refusal
-from ..speech import service as speech_service
+from ..speech import catalogue as speech_catalogue, convert as speech_convert, service as speech_service
+from ..speech.languages import WHISPER_LANGUAGES
 from ..services import (assistant_profile, chat_options, console_overview, console_settings, deployment_info, deployment_settings,
                         doc_content, docling_limits, inference_budget, inference_limits, model_router, model_settings, people, user_defaults,
                         web_search as web_search_service)
@@ -592,11 +595,133 @@ async def put_chat_options(
     if "voice_input" in body.model_fields_set:
         saved = await chat_options.save_voice_input(conn, body.voice_input, updated_by=by)
         if saved.voice_input:   # what applies after the save, so a reset that falls back to CHAT_VOICE_INPUT=on counts
-            try:
-                speech_service.get_transcriber().warm()
-            except Exception:  # noqa: BLE001 - a saved setting must not become a 500; status shows the engine's state
-                logger.warning("The speech engine couldn't start loading", exc_info=True)
+            _warm_speech(saved)
     return _chat_options_view(saved)
+
+
+def _warm_speech(options: chat_options.ChatOptions) -> None:
+    try:
+        speech_service.get_transcriber(wanted=speech_catalogue.wanted(options)).warm()
+    except Exception:  # noqa: BLE001 - a saved setting must not become a 500; status shows the engine's state
+        logger.warning("The speech engine couldn't start loading", exc_info=True)
+
+
+# ---------- speech models (spec 2026-11-02-speech-model-choice) ----------
+
+class SpeechModelChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str | None = Field(max_length=100)   # null: the server setting applies again
+
+
+class SpeechModelIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    repo: str = Field(max_length=200)
+    revision: str | None = Field(default=None, max_length=100)   # empty: the repo's latest commit, then pinned
+    languages: list[str] = Field(default_factory=list, max_length=20)   # empty: what the model card says, else all
+    label: str | None = Field(default=None, max_length=80)
+    unconverted: StrictBool = False
+
+
+def _speech_models_view(options: chat_options.ChatOptions) -> dict:
+    """The list, and which model applies. A remote engine has no list: SPEECH_MODEL names its model."""
+    if speech_service.engine_name() == "openai":
+        return {"engine": "openai", "chosen": None, "source": "env", "models": []}
+    models = speech_catalogue.all_models(os.environ, options.added_speech_models)
+    current = speech_catalogue.wanted(options)
+    listed = ([] if current.id in models else [current]) + list(models.values())
+    return {"engine": "local", "chosen": current.id, "source": speech_catalogue.source(options),
+            "models": [speech_catalogue.view(m) for m in listed]}
+
+
+@router.get("/speech-models")
+async def get_speech_models(
+    _: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    return _speech_models_view(await chat_options.load_chat_options(conn))
+
+
+@router.put("/speech-models/choice")
+async def put_speech_model_choice(
+    body: SpeechModelChoice,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Choose the deployment's speech model; null goes back to the server setting. With voice on, the new model
+    starts loading now on this worker, and on the others at their next speech request."""
+    if body.id is not None:
+        options = await chat_options.load_chat_options(conn)
+        model = speech_catalogue.all_models(os.environ, options.added_speech_models).get(body.id)
+        if model is None:
+            raise refusal(422, "unknown_speech_model", "That speech model isn't in the list.")
+        reason = speech_catalogue.why_not(model)
+        if reason:
+            raise refusal(422, "speech_model_cannot_run", reason)
+    saved = await chat_options.save_speech_model(conn, body.id, updated_by=str(principal.user_id))
+    if saved.voice_input and speech_service.engine_name() != "openai":
+        _warm_speech(saved)
+    return _speech_models_view(saved)
+
+
+@router.post("/speech-models", status_code=201)
+async def add_speech_model(
+    body: SpeechModelIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Add a model from Hugging Face. It's looked up first, so a typo or a repo that isn't Whisper is refused here
+    and not at load time, and it's pinned to a commit so it can't change under the deployment. Nothing downloads
+    until someone chooses it."""
+    repo, revision = body.repo.strip(), (body.revision or "").strip() or None
+    if not speech_catalogue.REPO_RE.match(repo):
+        raise refusal(422, "bad_repo", "Enter the Hugging Face repo as owner/name.")
+    if revision and not speech_catalogue.REVISION_RE.match(revision):
+        raise refusal(422, "bad_revision", "That isn't a commit or a branch name.")
+    unknown = [code for code in body.languages if code not in WHISPER_LANGUAGES]
+    if unknown:
+        raise refusal(422, "bad_language", f"Not a language code Whisper knows: {', '.join(unknown)}.")
+    try:
+        facts = await asyncio.to_thread(speech_convert.inspect_repo, repo, revision)
+    except speech_convert.NotOnHub:
+        raise refusal(422, "not_on_hub", "Hugging Face has no such model or revision, or it's private.") from None
+    except speech_convert.NotWhisper:
+        raise refusal(422, "not_whisper", "That repo isn't a Whisper model this server can run.") from None
+    except speech_convert.HubUnreachable:
+        raise refusal(503, "hub_unreachable", "Hugging Face couldn't be reached. Try again in a moment.") from None
+    engine = facts.engine
+    if body.unconverted:
+        if engine == speech_catalogue.FASTER_WHISPER:
+            raise refusal(422, "already_converted", "That repo is already in CTranslate2 format: leave the box unticked.")
+        engine = speech_catalogue.TRANSFORMERS
+    entry = {"label": (body.label or "").strip() or repo.split("/", 1)[1], "engine": engine, "repo": repo,
+             "revision": facts.revision, "languages": body.languages or list(facts.languages)}
+    model_id = re.sub(r"[^a-z0-9._-]+", "-", repo.lower())[:85] + ("-unconverted" if body.unconverted else "")
+    options = await chat_options.load_chat_options(conn)
+    if model_id in speech_catalogue.all_models(os.environ, options.added_speech_models):
+        raise refusal(409, "already_listed", "That model is already in the list.")
+    model = speech_catalogue.SpeechModel(model_id, entry["label"], engine, repo, facts.revision)
+    reason = speech_catalogue.why_not(model)
+    if reason:
+        raise refusal(422, "speech_model_cannot_run", reason)
+    saved = await chat_options.add_speech_model(conn, model_id, entry, updated_by=str(principal.user_id))
+    return _speech_models_view(saved)
+
+
+@router.delete("/speech-models/{model_id}")
+async def delete_speech_model(
+    model_id: str,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Take an admin-added model off the list. The built-in ones and a deployer's file stay. If it was the chosen
+    one, the server setting applies again. Its downloaded files stay in HF_HOME."""
+    options = await chat_options.load_chat_options(conn)
+    if model_id not in options.added_speech_models:
+        raise refusal(404, "unknown_speech_model", "That model wasn't added here.")
+    saved = await chat_options.remove_speech_model(conn, model_id, updated_by=str(principal.user_id))
+    if saved.voice_input and speech_service.engine_name() != "openai":
+        _warm_speech(saved)
+    return _speech_models_view(saved)
 
 
 # ---------- console settings, one pair of routes for every section (admin console v2 spec §3) ----------

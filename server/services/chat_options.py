@@ -7,7 +7,10 @@ all. All of them still need SEARXNG_URL.
 `voice_input` is a boolean, off by default so an upgrade never starts a model download or uses CPU unasked.
 It comes from the admin console, else CHAT_VOICE_INPUT (on|off), else off.
 
-The two settings share one row, `{"web_search": ..., "voice_input": ...}`, and are independent: each key is read
+`speech_model` is the id of the speech model an admin chose, and `added_speech_models` the models an admin added
+(speech/catalogue.py says which model applies, and who wins).
+
+These settings share one row, `{"web_search": ..., "voice_input": ..., ...}`, and are independent: each key is read
 and written on its own, a missing key falls through to the environment without a warning, and a save or reset
 changes only its own key, in one statement, so two admins saving different settings can't undo each other.
 
@@ -26,7 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Mapping
 
 from psycopg.types.json import Jsonb
@@ -49,6 +52,8 @@ class ChatOptions:
     source: str       # "admin" | "env" | "default": which of the three above decided web_search
     voice_input: bool = False
     voice_source: str = "default"   # the same three, for voice_input
+    speech_model: str | None = None   # the admin's choice, an id; None: the server setting applies
+    added_speech_models: Mapping = field(default_factory=dict)   # id -> what an admin entered
 
 
 def _web_from_env(env: Mapping[str, str]) -> tuple[str, str]:
@@ -107,7 +112,9 @@ async def load_chat_options(conn, env: Mapping[str, str] = os.environ) -> ChatOp
             voice, voice_source = value["voice_input"], "admin"
         else:
             logger.warning("app_settings row %s holds an unusable voice_input value: ignored", KEY)
-    return ChatOptions(web, web_source, voice, voice_source)
+    speech_model = value.get("speech_model") if isinstance(value.get("speech_model"), str) else None
+    added = value.get("added_speech_models") if isinstance(value.get("added_speech_models"), dict) else {}
+    return ChatOptions(web, web_source, voice, voice_source, speech_model, added)
 
 
 async def _set_key(conn, name: str, value, updated_by: str) -> None:
@@ -159,4 +166,52 @@ async def save_voice_input(conn, value: bool | None, *, updated_by: str,
     else:
         await _set_key(conn, "voice_input", value, updated_by)
     audit("chat_options.voice_input", by=updated_by, old=before.voice_input, new=value)
+    return await load_chat_options(conn, env)
+
+
+async def save_speech_model(conn, value: str | None, *, updated_by: str,
+                            env: Mapping[str, str] = os.environ) -> ChatOptions:
+    """Save the admin's speech model (an id the caller has checked) and return what applies now. None removes that
+    key, so SPEECH_MODEL (or the default) applies again."""
+    before = await load_chat_options(conn, env)
+    if value is None:
+        await _clear_key(conn, "speech_model", updated_by)
+    else:
+        await _set_key(conn, "speech_model", value, updated_by)
+    audit("chat_options.speech_model", by=updated_by, old=before.speech_model, new=value)
+    return await load_chat_options(conn, env)
+
+
+async def add_speech_model(conn, model_id: str, entry: dict, *, updated_by: str,
+                           env: Mapping[str, str] = os.environ) -> ChatOptions:
+    """Add one model to the admin's list, in one statement, so two admins adding at once both land."""
+    added = Jsonb({model_id: entry})
+    await conn.execute(
+        "INSERT INTO app_settings (key, value, updated_by, updated_at) "
+        "VALUES (%(key)s, jsonb_build_object('added_speech_models', %(added)s::jsonb), %(by)s, now()) "
+        "ON CONFLICT (key) DO UPDATE SET "
+        "value = CASE WHEN jsonb_typeof(app_settings.value) = 'object' THEN app_settings.value ELSE '{}'::jsonb END "
+        "|| jsonb_build_object('added_speech_models', "
+        "CASE WHEN jsonb_typeof(app_settings.value->'added_speech_models') = 'object' "
+        "THEN app_settings.value->'added_speech_models' ELSE '{}'::jsonb END || %(added)s::jsonb), "
+        "updated_by = %(by)s, updated_at = now()",
+        {"key": KEY, "added": added, "by": updated_by})
+    audit("chat_options.speech_model_added", by=updated_by, id=model_id, repo=entry.get("repo"))
+    return await load_chat_options(conn, env)
+
+
+async def remove_speech_model(conn, model_id: str, *, updated_by: str,
+                              env: Mapping[str, str] = os.environ) -> ChatOptions:
+    """Take one model off the admin's list, and off the choice if it was the choice. The files stay in HF_HOME."""
+    await conn.execute(
+        "UPDATE app_settings SET value = value #- ARRAY['added_speech_models', %s], updated_by = %s, updated_at = now() "
+        "WHERE key = %s AND jsonb_typeof(value) = 'object'", (model_id, updated_by, KEY))
+    await conn.execute(
+        "UPDATE app_settings SET value = value - 'added_speech_models' "
+        "WHERE key = %s AND value->'added_speech_models' = '{}'::jsonb", (KEY,))
+    if (await load_chat_options(conn, env)).speech_model == model_id:
+        await _clear_key(conn, "speech_model", updated_by)
+    else:
+        await conn.execute("DELETE FROM app_settings WHERE key = %s AND value = '{}'::jsonb", (KEY,))
+    audit("chat_options.speech_model_removed", by=updated_by, id=model_id)
     return await load_chat_options(conn, env)

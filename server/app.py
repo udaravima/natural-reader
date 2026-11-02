@@ -32,7 +32,7 @@ from .routers.speech import router as speech_router
 from .routers.profile import router as profile_router
 from .routers.tools import router as tools_router
 from .services import chat_options, doc_storage, docling_convert, project_events
-from .speech import service as speech_service
+from .speech import catalogue as speech_catalogue, service as speech_service
 from .services.embeddings import start_client as start_embeddings, stop_client as stop_embeddings
 from .services.web_search import start_client as start_web_search, stop_client as stop_web_search
 
@@ -124,9 +124,9 @@ def create_app() -> FastAPI:
             # route warms a worker's engine on first use.
             try:
                 async with get_pool().connection() as conn:
-                    voice_on = (await chat_options.load_chat_options(conn)).voice_input
-                if voice_on:
-                    speech_service.get_transcriber().warm()
+                    options = await chat_options.load_chat_options(conn)
+                if options.voice_input:
+                    speech_service.get_transcriber(wanted=speech_catalogue.wanted(options)).warm()
             except Exception:
                 logger.warning("Voice input warm-up skipped", exc_info=True)
         await start_embeddings()

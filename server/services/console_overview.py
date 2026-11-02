@@ -34,7 +34,7 @@ from ..chat.tools import ToolContext, available_tools, tool_spec
 from ..llm.providers.base import ProviderConfig
 from ..llm.router import ModelInfo, UnknownModel
 from . import assistant_profile, chat_options, docling_convert, embeddings, model_router, model_settings, web_search
-from ..speech import service as speech_service
+from ..speech import catalogue as speech_catalogue, service as speech_service
 from .deployment_info import NOT_A_URL, url_host
 from .doc_search import ReadableDoc
 from .inference_limits import InferenceLimits, clamp, load_inference_limits
@@ -294,12 +294,12 @@ async def _context(llm, ms: model_settings.ModelsSettings, env: Mapping[str, str
     return Check("context", "ok" if fits == len(items) else "warn", title, summary, section, tuple(items))
 
 
-async def _voice_input(on: bool) -> Check:
+async def _voice_input(options, env: Mapping[str, str] = os.environ) -> Check:
     """Off when the admin hasn't switched it on, and then nothing is built or probed. On: the engine's own
     status (an exception becomes the type-named error line from _bounded)."""
-    if not on:
+    if not options.voice_input:
         return _check("voice_input", "off", "Off. Admin → Chat options turns it on.")
-    engine = speech_service.get_transcriber()
+    engine = speech_service.get_transcriber(wanted=speech_catalogue.wanted(options, env))
     status = await engine.status()
     if status.state == "ready":
         return _check("voice_input", "ok", f"{engine.name} · {engine.model} · runs on {engine.where}")
@@ -321,7 +321,7 @@ async def run_checks(conn, llm, env: Mapping[str, str] = os.environ,
                      http: httpx.AsyncClient | None = None) -> list[Check]:
     # Every database read first, in turn, outside any timeout (see the module docstring).
     options = await chat_options.load_chat_options(conn, env)
-    web_mode, voice_on = options.web_search, options.voice_input
+    web_mode = options.web_search
     try:
         current = embeddings.current_profile()
     except ValueError:   # a malformed INFERENCE_* value: the embeddings and context checks report it themselves
@@ -347,7 +347,7 @@ async def run_checks(conn, llm, env: Mapping[str, str] = os.environ,
             _bounded("embeddings", lambda: _embeddings(client, env, stale)),
             _bounded("docling", _docling),
             _bounded("web_search", lambda: _web_search(client, web_mode)),
-            _bounded("voice_input", lambda: _voice_input(voice_on)),
+            _bounded("voice_input", lambda: _voice_input(options, env)),
         ))
     finally:
         if owned:

@@ -50,9 +50,14 @@ class EngineFailed(SpeechError):
     pass
 
 
+class ConversionFailed(SpeechError):
+    """A Transformers-format model couldn't be converted (speech/convert.py). Its message goes to the admin."""
+
+
 class Transcriber(Protocol):
     name: str  # "local" | "openai"
     model: str
+    languages: tuple[str, ...]  # what the model is made for; empty: every language
     where: str  # "this server", or the remote URL's host
 
     async def transcribe(self, audio: bytes, mime: str, language: str | None) -> Transcript: ...

@@ -24,7 +24,7 @@ from ..auth import deps
 from ..db import get_pool
 from ..http_errors import refusal
 from ..services import chat_options
-from ..speech import service
+from ..speech import catalogue, service
 from ..speech.base import (AudioTooLong, BadAudio, EngineFailed, EngineNotReady, EngineUnavailable, MAX_AUDIO_BYTES)
 from ..speech.languages import WHISPER_LANGUAGES
 
@@ -46,14 +46,14 @@ def _languages() -> list[dict]:
             for code, name in sorted(WHISPER_LANGUAGES.items(), key=lambda kv: kv[1])]
 
 
-async def _voice_on(conn) -> bool:
+async def _options(conn) -> chat_options.ChatOptions:
     """Read per request, as turns do (one primary-key read), so a switch applies at once on every worker. If the
-    row can't be read the environment's value applies."""
+    row can't be read the environment's values apply."""
     try:
-        return (await chat_options.load_chat_options(conn)).voice_input
+        return await chat_options.load_chat_options(conn)
     except Exception:  # noqa: BLE001 - the composer's status call must not 500 on a database blip
-        logger.warning("Chat options couldn't be read: using CHAT_VOICE_INPUT, else off", exc_info=True)
-        return chat_options.from_env().voice_input
+        logger.warning("Chat options couldn't be read: using the environment's", exc_info=True)
+        return chat_options.from_env()
 
 
 def speech_conn() -> Callable[[], AbstractAsyncContextManager]:
@@ -65,7 +65,15 @@ def speech_conn() -> Callable[[], AbstractAsyncContextManager]:
 @dataclass(frozen=True)
 class SpeechAccess:
     principal: deps.Principal
-    voice_on: bool
+    options: chat_options.ChatOptions
+
+    @property
+    def voice_on(self) -> bool:
+        return self.options.voice_input
+
+    def engine(self):
+        """This worker's engine, on the model the deployment chose (a change reaches a worker here)."""
+        return service.get_transcriber(wanted=catalogue.wanted(self.options))
 
 
 async def speech_access(request: Request, open_conn=Depends(speech_conn)) -> SpeechAccess:
@@ -77,18 +85,20 @@ async def speech_access(request: Request, open_conn=Depends(speech_conn)) -> Spe
     async with open_conn() as conn:
         principal = await deps.resolve_principal(request, conn)
         deps.check_capability(principal, "chat")
-        voice_on = await _voice_on(conn)
-    return SpeechAccess(principal, voice_on)
+        options = await _options(conn)
+    return SpeechAccess(principal, options)
 
 
 @router.get("/status")
 async def speech_status(access: SpeechAccess = Depends(speech_access)):
-    """What the composer needs to draw the microphone: on or off, ready or not, and the languages. When voice is
-    off no engine is built, probed or warmed. Whatever the engine says, this answers 200."""
+    """What the composer needs to draw the microphone: on or off, ready or not, and the languages, with the ones
+    the model is made for (`model_languages`, empty for every language). When voice is off no engine is built,
+    probed or warmed. Whatever the engine says, this answers 200."""
     base = {"max_seconds": MAX_SECONDS, "languages": _languages()}
     if not access.voice_on:
         return {"enabled": False, "ready": False, "state": "off", **base}
-    engine = service.get_transcriber()
+    engine = access.engine()
+    base["model_languages"] = [WHISPER_LANGUAGES[code] for code in getattr(engine, "languages", ())]
     try:
         status = await asyncio.wait_for(engine.status(), STATUS_TIMEOUT_S)
     except Exception as e:  # noqa: BLE001 - a config mistake, a server that's down or one that hangs is a state, not a 500
@@ -165,7 +175,7 @@ async def transcribe(request: Request, access: SpeechAccess = Depends(speech_acc
     if not audio:
         raise refusal(400, "bad_audio", _BAD_AUDIO)
 
-    engine = service.get_transcriber()
+    engine = access.engine()
     if engine.name == "local":   # the local engine's state costs nothing to read; a remote one's is a request per recording
         try:
             service.heal(engine, await asyncio.wait_for(engine.status(), STATUS_TIMEOUT_S))

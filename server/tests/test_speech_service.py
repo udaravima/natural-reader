@@ -8,6 +8,7 @@ import pytest
 
 from server.speech import service
 from server.speech.base import EngineNotReady, EngineStatus, Transcript
+from server.speech.catalogue import SpeechModel
 from server.speech.local_whisper import LocalWhisper
 from server.speech.openai_engine import OpenAICompatible
 
@@ -215,3 +216,51 @@ def test_the_routes_and_the_service_import_without_the_audio_packages():
             "print('ok')\n")
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=str(__import__('pathlib').Path(__file__).parents[2]))
     assert out.stdout.strip() == "ok", out.stderr[-800:]
+
+
+# ---------- the deployment's chosen model (spec 2026-11-02-speech-model-choice) ----------
+
+TINY = SpeechModel("tiny", "Whisper tiny", "faster-whisper", "tiny")
+TAMIL = SpeechModel("ta", "Tamil", "converted-whisper", "a/ta", "r", ("ta",))
+UNCONVERTED = SpeechModel("si", "Sinhala", "transformers-whisper", "a/si", "r", ("si",))
+
+
+def test_a_chosen_model_replaces_this_workers_engine_once():
+    first = service.get_transcriber({}, TINY)
+    assert first.spec == TINY
+    assert service.get_transcriber({}, TINY) is first
+    second = service.get_transcriber({}, TAMIL)
+    assert second is not first and second.spec == TAMIL and second.languages == ("ta",)
+    assert service.get_transcriber({}) is second       # a caller with no opinion keeps what's running
+
+
+def test_the_unconverted_engine_is_built_for_its_kind():
+    from server.speech.hf_whisper import TransformersWhisper
+    assert isinstance(service.get_transcriber({}, UNCONVERTED), TransformersWhisper)
+
+
+def test_a_swap_restarts_the_retry_clock(monkeypatch):
+    service._attempt_at = 123.0
+    service.get_transcriber({}, TINY)
+    assert service._attempt_at is None
+
+
+def test_a_remote_engine_ignores_the_choice():
+    eng = service.get_transcriber({"SPEECH_ENGINE": "openai"}, TINY)
+    assert service.get_transcriber({"SPEECH_ENGINE": "openai"}, TAMIL) is eng
+
+
+def test_speech_model_can_name_a_catalogue_entry():
+    eng = service.get_transcriber({"SPEECH_MODEL": "whisper-small-ta"})
+    assert eng.spec.engine == "converted-whisper" and eng.languages == ("ta",)
+
+
+async def test_a_recording_in_progress_finishes_on_the_engine_it_started_on():
+    old = Slow()
+    service._transcriber = old
+    old.spec = TINY
+    first = asyncio.create_task(service.transcribe_for("u1", b"a", "audio/webm", None))
+    await old.started.wait()
+    service.get_transcriber({}, TAMIL)                # the admin switches while it runs
+    old.release.set()
+    assert (await first).text == "hi" and old.finished == 1
