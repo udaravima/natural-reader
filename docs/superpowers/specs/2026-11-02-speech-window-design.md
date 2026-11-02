@@ -74,6 +74,7 @@ Every value is an environment variable with this default, and reaches the browse
 | `SPEECH_WINDOW_MIN_SPEECH_MS` | `250` | Milliseconds of speech before the reply pauses |
 | `SPEECH_WINDOW_PRE_ROLL_MS` | `300` | Milliseconds kept from before the start, so the first word isn't clipped |
 | `SPEECH_WINDOW_SILENCE_MS` | `700` | Milliseconds of silence that end a turn. The library's default of 1400 adds 0.7 s to every reply |
+| `SPEECH_WINDOW_FIRST_CLAUSE_CHARS` | `30` | Cut a reply's opening at a comma past this many characters. `0`: never |
 | `SPEECH_WINDOW_MAX_NO_SPEECH` | `0.25` | Whisper's `no_speech` score above which a clip is noise |
 | `SPEECH_WINDOW_MIN_LOGPROB` | `-1.0` | Whisper's `avg_logprob` below which a clip is noise |
 
@@ -136,28 +137,18 @@ The owner chose English first, to get a baseline and make it fast before anythin
 
 ## What was measured
 
-On 2026-11-02, with the Silero v5 model from `vad-web` 0.0.31 and this app's Whisper settings, on a 32-thread CPU, using 160 ESC-50 noise clips (8 classes), 600 Speech Commands words (stop, no, yes, go) and 30 LibriSpeech sentences:
+The figures now live in [DEPLOYMENT.md](../../DEPLOYMENT.md#the-speech-window), measured on the real browser path. What changed from the first estimates in this design:
 
-| Passes | Noise | Speech |
-|---|---|---|
-| VAD for 250 ms or more | 27 of 160 | 556 of 600 words, 30 of 30 sentences |
-| Then Whisper's scores | 4 of 160 | all 190 tested |
-
-- A 500 ms minimum keeps 9 of 150 real "stop"s, whose median is 320 ms.
-- Whisper produced text for 20 of the 27 noises, so text alone is no check.
-- `no_speech` at the 10th and 90th percentiles: real speech 0.02 and 0.17, noise 0.34 and 0.71.
-- Whisper time for 1, 3 and 8 s of speech with 16 threads: `small` 0.8, 1.05 and 1.4 s; `base` 0.28, 0.38 and 0.59 s.
-- Silero costs about 0.1 ms per 32 ms frame natively. The browser's cost is **not measured**.
-
-Summing measured parts gives about 2.3 s from the end of speech to the first sound, plus the LLM's time to its first sentence: 0.7 s silence, 1.05 s Whisper, 0.5 s Kokoro. That sum has **not been measured end to end**.
-
-These are clean English recordings and a small sample, and the thresholds came from the same data, so expect worse in a real room.
+- **The VAD's rule is stricter than first simulated.** It counts frames above the start score, not the length of a run.
+- **Silero's memory dulled it to short words,** which offline tests that start fresh can't see. It's now cleared after the silence that ends a turn.
+- **0.25, not 0.4, is the `no_speech` limit:** 0.4 came from `small` and let 9 of 16 noises through on `base.en`.
+- **A short first sentence matters as much as any model.** Kokoro's time grows with the text, so the spoken rule asks for one and a long opening is cut at a comma.
 
 ## What is unknown
 
 - **Whether Chrome's echo cancelling covers this app's own playback.** Sources conflict, and only real speakers and a mic can settle it. If it doesn't, the echo guard and headphones are the first answer, and routing playback through a local WebRTC connection the next.
 - **How the checks do in Sinhala and Tamil,** especially `no_speech` on fine-tuned models.
-- **How it runs on a phone:** the VAD's cost, and whether the browser keeps listening with the screen locked.
+- **How it runs on a phone:** the VAD's cost, and whether the browser keeps listening with the screen locked. On a desktop, idle listening took 2.4% of one core.
 - **CPU load.** Whisper, Kokoro and a local model share the machine, and the bucket list's CPU anti-goal already says a transcription slows a local reply 1.5 to 2 times. The window makes that happen every turn.
 
 ## Left to the builder

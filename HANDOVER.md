@@ -4,7 +4,28 @@
 
 ---
 
-## 2026-11-02 evening — All 50 voices, popup dropdowns, Library on Projects, favicon: released as v2.5.1 (START HERE)
+## 2026-11-03 — The speech window works in English, with a baseline (START HERE)
+
+**State.** On `feat/speech-window`, cut from `development` at `86161f2`, committed as it went on the owner's "commit as you go". **Not merged, and not deployed.** Spec: `docs/superpowers/specs/2026-11-02-speech-window-design.md`. Numbers and settings: `docs/DEPLOYMENT.md`, "The speech window". The owner chose English first, on `gemma4:31b-cloud`, and put local-model speed aside.
+
+**What a person can do.** **Talk** in the view switcher, when voice input is on → choose a model → **Start** → speak. To cut in, speak: the reply pauses, real speech stops it, a cough resumes it at the same word. **Mute**, **End**. **What it heard → Copy numbers** gives every clip's scores and timings. **Admin → Chat options → Speech model** now offers **Whisper base, English only** and **Whisper small, English only**.
+
+**What a person can't do yet.** Everything in the second half of the owner's request: an admin can't offer several speech models or narrow the voices, and a user can't choose among them. One speech model still serves everyone, and the 50 voices are open to all. Design and spec are ready; it was held back so the baseline came first.
+
+**Baseline.** First sound after the person stops, median of 12 turns, cloud model, CPU only: 3.91 s as first built, **2.11 s** tuned with `base.en` (worst 3.12 s). Real browser path, `base.en`: 93 of 100 spoken words accepted, 2 of 28 hard noises. Idle listening takes 2.4% of one core. A real cut-in kept "It started small." of a 188-character reply, and the next request carried that.
+
+**Traps found by running it for real, none visible to unit tests.**
+- Silero's memory dulls it to short words: a live "stop" fired 6 in 25 against 92% offline, where each clip got a fresh model. `listen.js` clears it after the silence that ends a turn.
+- 0.4 for `no_speech` came from `small` and let 9 of 16 noises through on `base.en`. 0.25 suits all three models.
+- The first echo check threw away a repeated question. Only a clip that began during a reply can be an echo.
+- Most interruptions hit a reply saved `complete`, not `aborted`, so `heard` cuts either.
+- `int8` Kokoro is 4 times slower on a CPU. `fp16` is faster but not the same audio, so it's off until the owner has listened.
+
+**Owed.** The owner, on real hardware: speakers without headphones (whether Chrome's echo cancelling covers the app's own audio is unknown), a real room, and comparing Kokoro's `fp16` by ear. Then Sinhala and Tamil, whose `no_speech` scores are untested. Admin lists next. The CPU ruling below matters more now: Whisper, Kokoro and a local model share the machine on every turn. The header still overflows by 14 px below 375 px for an admin.
+
+---
+
+## 2026-11-02 evening — All 50 voices, popup dropdowns, Library on Projects, favicon: released as v2.5.1
 
 **State.** Built and walked on `feat/voices-and-dropdowns`, cut from `development` at `06b4569`, then merged and **released as v2.5.1** on the owner's word. **v2.5.1 is not deployed:** live is the branch at `f8af89e`. Nothing is migrated, but it needs Node 22.13 or 24 and both halves rebuilt. The owner deployed v2.5.0 on the evening of 2026-11-02, so the v2.5.0 entry's "Nothing is deployed" is out of date, and then deployed this branch at `f8af89e` at 22:38. The `en-us` bug and the `af_river` label are fixed here.
 

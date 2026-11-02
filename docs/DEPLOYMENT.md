@@ -1071,6 +1071,96 @@ until someone turns it on. An
 existing **Web search** setting is not touched: both options live in the same
 `chat_options` row and each save leaves the other alone.
 
+## The speech window
+
+**Talk** is a spoken conversation built from separate parts: voice activity detection
+(Silero) in the browser, Whisper on the server, the chat model, and Kokoro. It appears
+for anyone with `chat` and `reader` when voice input is on, and it has no switch of its
+own. It uses the deployment's speech model, and English is the only language it has
+been tuned on. People's guide: [USER_GUIDE.md § Talking with the assistant](USER_GUIDE.md#talking-with-the-assistant).
+
+**What leaves the browser.** Listening happens on the person's device. The server gets
+a clip only once speech has been detected, so nothing streams while the room is quiet.
+It's a WAV sent to `/v1/speech/transcriptions`, one per turn. The browser fetches about
+17 MB (about 6 MB if the server compresses it) from `/vad/` at the first **Start**, never
+from a CDN, and nobody else fetches it. A proxy must serve `.wasm` as `application/wasm` and `.mjs` as
+JavaScript; a Content-Security-Policy needs `'wasm-unsafe-eval'` in `script-src`.
+
+### Fast on a CPU
+
+| Change | Why |
+|---|---|
+| **Speech model `base.en`** (**Admin → Chat options → Speech model**) | 0.4 s for a short clip against 1.0 s for `small`, at about 9% word errors against 7%. `small.en` is the choice if accuracy matters more. It applies to the whole deployment, the microphone included, so don't use an English-only model if people dictate in other languages |
+| **A cloud chat model** | A local model on the same CPU added about 1.4 s, because it competes with Kokoro for cores |
+| `TTS_CPU_THREADS` (default 6) | Kokoro was slower on all 24 cores than on 6, and about twice as slow again with 32 threads |
+| `KOKORO_MODEL_PATH` | `kokoro-v1.0.fp16.onnx` is half the size and about 15% faster, but the audio isn't identical (it took 8.90 s where the stock file took 8.70 s), so listen first. Never `int8` on a CPU: smaller, and 4 times slower |
+
+First sound after the person stops talking, median of 12 turns with
+`gemma4:31b-cloud` through Ollama, on a 32-thread CPU with no GPU, in Chromium on the
+same machine:
+
+| Setup | Whisper | Model | Kokoro | **First sound** | Worst |
+|---|---|---|---|---|---|
+| As first built, `small` | 0.97 s | 0.63 s | 1.22 s | 3.91 s | 5.07 s |
+| Tuned, `small.en` | 0.95 s | 0.62 s | 0.51 s | 2.80 s | 4.01 s |
+| **Tuned, `base.en`** | 0.37 s | 0.49 s | 0.47 s | **2.11 s** | 3.12 s |
+| Tuned, `base.en`, local `gemma4:e4b` | 0.43 s | 1.55 s | 1.07 s | 3.55 s | 4.51 s |
+
+Each row includes the 0.7 s of silence that ends a turn. Two changes in "tuned" need no
+setting. A long opening is cut at its first comma past 30 characters, because Kokoro's
+time grows with the text ("Sure." 0.27 s, a long sentence 0.84 s). And a spoken turn
+asks the model to keep its first sentence to a few words. Thinking is always off, and a
+spoken turn is never offered the web search card, because nobody could press it.
+
+### Telling speech from noise
+
+Neither check works alone:
+
+| Passes (real browser path) | Spoken words | Hard noises |
+|---|---|---|
+| VAD: 250 ms of speech, then Whisper's scores | 93 of 100 | 2 of 28, with `base.en` |
+
+- **Length alone can't do it.** A 500 ms minimum (LiveKit's default) keeps almost no
+  real "stop": they last about 320 ms.
+- **Whisper's text can't either.** It wrote words for most noises ("Thank you.", "Woof,
+  woof!"). Its `no_speech` score can, which is why the response carries it. 0.25 suits
+  `base.en`, `small.en` and `small`; 0.4, the first guess, let 9 of 16 noises through on
+  `base.en`.
+- **Silero's memory dulls it to short words.** It runs on from whatever it last heard,
+  so in a continuous stream a real "stop" fired 6 times in 25. The window clears it
+  after the silence that ends a turn, which brought that to 24 in 25. A test that
+  starts each clip with a fresh model can't see this: run a stream.
+
+The cost of a noise that gets past the VAD is a pause of about a second. Playback waits
+and Whisper decides, while the model and Kokoro keep working behind the pause, so
+nothing is lost. The 28 noises are the coughs, sneezes, barks and laughs of the 160
+tested that were likeliest to pass. The recordings are clean: **a real room and real
+speakers are untested**.
+
+### Settings
+
+Each is an environment variable, read per request. Change one at a time: they're
+measured together.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SPEECH_WINDOW_VAD_START` | `0.5` | Silero score, 0 to 1, that starts speech |
+| `SPEECH_WINDOW_VAD_STAY` | `0.35` | Score that keeps it going. Never above the start score |
+| `SPEECH_WINDOW_MIN_SPEECH_MS` | `250` | Milliseconds of speech before a reply pauses |
+| `SPEECH_WINDOW_PRE_ROLL_MS` | `300` | Milliseconds kept from before the start, so the first word isn't clipped |
+| `SPEECH_WINDOW_SILENCE_MS` | `700` | Milliseconds of silence that end a turn, and clear the VAD's memory. Lower is faster, and cuts in on slow talkers |
+| `SPEECH_WINDOW_FIRST_CLAUSE_CHARS` | `30` | Cut a reply's opening at a comma past this many characters. `0`: never |
+| `SPEECH_WINDOW_MAX_NO_SPEECH` | `0.25` | Whisper's `no_speech` at or above which a clip is noise |
+| `SPEECH_WINDOW_MIN_LOGPROB` | `-1.0` | Whisper's `avg_logprob` below which a clip is noise |
+| `SPEECH_WINDOW_LANGUAGE` | `en` | Sent with every clip. Empty: Whisper detects it |
+
+**Limits.** Whisper and Kokoro each run one job at a time per worker, so two people
+talking at once queue, and read-aloud shares Kokoro with them. A remote speech engine
+gives no scores, so any text counts as speech. On speakers the microphone may hear the
+reply: a clip that began during a reply is dropped when 60% of its words are that
+reply's, and headphones avoid the question. Whether Chrome's echo cancelling covers the
+app's own playback is unknown.
+
 ## Bring-up checklist
 
 1. **DNS:** `chat.example.com` and `auth.example.com` both resolve to the host.

@@ -66,10 +66,10 @@ spot a feature that shipped without coverage.
 # Backend — REQUIRES Postgres up (conftest migrates natural_reader_test on a
 # real connection; without the DB every test errors, not skips). Run it with
 # the two TEST_* variables above exported, or it uses 5433.
-.venv/bin/python -m pytest server/tests/ -q          # 2782 passed, 16 skipped, 2 deselected @ 2026-11-02 (voices and popup dropdowns)
+.venv/bin/python -m pytest server/tests/ -q          # 2807 passed, 16 skipped, 2 deselected @ 2026-11-03 (the speech window)
 
 # Frontend (vitest, jsdom — no services needed)
-npx vitest run                                       # 1537 passed (129 files) @ 2026-11-02 (voices and popup dropdowns)
+npx vitest run                                       # 1636 passed (137 files) @ 2026-11-03 (the speech window)
 
 # Lint
 npx eslint .                                         # 0 errors; 24 warnings, see eslint.config.js (the same as npm run lint)
@@ -78,6 +78,8 @@ npx eslint .                                         # 0 errors; 24 warnings, se
 # entrypoint (deselected by default via pytest.ini addopts)
 .venv/bin/python -m pytest -m container -q
 ```
+
+**Test speech on a stream, in a real browser.** A VAD has memory, so a test that hands it one clip at a time and a fresh model measures something else: offline a spoken "stop" passed 92% of the time, and live 24%. To drive the real path, replace `navigator.mediaDevices.getUserMedia` in a Playwright init script with a `MediaStreamDestination`, play clips into it with a `BufferSource`, and read the numbers through **What it heard → Copy numbers**. Everything but the microphone is then real. Test audio stays out of the repo: ESC-50 is non-commercial. Still by hand: a real room, real speakers, a phone.
 
 `startup.sh` is tested without containers: `server/tests/startup_harness.py`
 copies the script into a temp project and replaces podman, compose, curl, npm,
@@ -421,6 +423,10 @@ class is monkeypatched and the remote engine runs against a fake transport.
 | `test_chat_options.py` (56), `test_admin_router.py` | `voice_input` beside `web_search` in one row: each save leaves the other key alone and a reset removes only its own; the environment value, an invalid one (warned, then off) and the admin's explicit `false` beating `CHAT_VOICE_INPUT=on`; the PUT starts the engine loading only when voice ends up on, and a failed `warm()` doesn't fail the save |
 | `test_console_overview.py` (48), `test_deployment_info.py` (9), `test_user_defaults.py` (21) | Overview's **Voice input** line in each state (off, ready with engine, model and place, getting ready, a reason, a status that raises); the Deployment rows with their defaults and never the key; the **Speech language** default accepts `auto` or a Whisper code |
 | `useVoiceInput.test.js` (56, new) | one thing at a time; the microphone's tracks end on **every** way out (Stop, Cancel, Escape, the 2-minute stop, a recorder error, unmount, a stream arriving after Cancel); an answer after Cancel changes nothing; `language` is sent only when it isn't Auto; **a 404 when voice was switched off toasts "Voice input was turned off."** and one while it is still on toasts "Voice input isn't available right now."; the three disabled reasons; "No speech was heard"; **each refusal message the server sends, in its real `{detail: {error, message}}` shape, reaches the toast** |
+| `test_speech_window.py` (7, new), `test_tts_threads.py` (4, new) | Whisper's scores come from the most speech-like segment, none without segments; the window's defaults are the measured ones, a bad value keeps its default, the stay score never passes the start score; Kokoro's threads |
+| `test_chat_store.py`, `test_chat_turns.py`, `test_chat_web_consent.py` | **the next turn cuts a reply to what was heard, one saved `complete` included**, only an assistant reply of this chat; a spoken turn asks for a short plain reply and is never offered the web search card |
+| `lib/speech/*.test.js` (61, new) | the whole conversation with no browser: pause, resume at the same place, a real interruption, how much was heard, an echo only while a reply plays, words arriving while a reply stops; sentences and the cut at a comma; **`listen.test.js`: the VAD's memory is cleared in a silence** |
+| `useSpeechWindow.test.js` (12, new), `SpeechWindow.test.jsx` (15, new) | the microphone is released on End, on leaving, and when it opens too late; Mute; a clip goes as WAV in the window's language; the screen's states and each clip's timings |
 | `ChatView.voice.test.jsx` (30, new) | the mic shows only when voice is on (nothing when it is off or the status can't be read); Stop and Cancel with the timer; **the text lands at the caret with a space only where needed and nothing is sent**; Escape cancels; **focus goes to Stop, then Cancel while transcribing, then back to the box, and never takes it from another field**; the word "Transcribing…" is `sr-only` below `sm` and stays in the accessibility tree |
 | `ChatOptionsSection.test.jsx` (40), `SettingsDialog.test.jsx` (27), `DefaultsSection.test.jsx` (8) | **Voice input** On/Off saves at once, with its source line and **Use the server setting**; **Speech language** lists Auto then the languages by name and shows only when voice is on; the admin default's language names |
 
