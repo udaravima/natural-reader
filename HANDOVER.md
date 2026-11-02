@@ -4,7 +4,73 @@
 
 ---
 
-## 2026-10-27 — Phase 3 merged; how we work, and the recommended order of work (START HERE)
+## 2026-11-02 — Message box inputs built, walked and reviewed; on their branch, not merged (START HERE)
+
+**State.** The plan `docs/superpowers/plans/2026-10-27-chat-composer-inputs.md` is finished on `feat/chat-composer-inputs`. That branch is stacked on `fix/docling-keep-pictures` (`bd2eaaa`), which is stacked on `docs/accuracy-audit` (`59c2c86`), which is on `development` (`0d9305b`), so merging the top branch carries all three. **Nothing is merged into `development` by us and no version is bumped.** The auto-pusher has published these branches anyway. The ledger with every ruling is `.superpowers/sdd/2026-10-27-chat-composer-inputs/progress.md` (git-ignored, kept for the owner to decide on).
+
+**Live is not where the docs assume.** On 2026-11-01 at 22:43 +0530, while this run's agents were stopped by a usage limit, the live backend image was rebuilt from this working tree at `445d2ae` and restarted. **Migration 024 is applied on the live database** (the container's log says so). That image has no speech code and no `faster-whisper`, and `dist/` is still from 2026-10-26, so no screen reaches text attachments there. Nobody here ran it; the owner should confirm it was intended.
+
+### What a person can do now
+
+- **Attach a text file:** the paperclip (**Attach an image or a text file**), drag and drop, or paste. The chip shows the name, size and "N values masked". Clicking it shows exactly what will be sent.
+- **Send real values:** in that view, **Send real values** → **Yes, send real values**. The confirmation names the model and says when it's a cloud one. Changing the model turns masking back on.
+- **After that:** the file and the replies that read it go only to that model. On another model they're held back, and a note saved with the reply says so. To use the file elsewhere, attach it again.
+- **Turn voice on (admin):** **Admin → Chat options → Voice input → On**; **Admin → Overview → Voice input** shows it getting ready, then OK. It's off by default, and nothing downloads until then.
+- **Speak a message:** the mic beside the paperclip → **Stop** (or **Cancel**, Escape). The text lands in the box at the caret, unsent. **Settings → Chat → Speech language** (Auto first); **Admin → Defaults for users → Speech language**.
+- **Keep a PDF's pictures:** Convert → Images → **Keep** → the **MD** view shows them.
+
+### Gates at `6a5ed35`
+
+Backend `2646 passed, 16 skipped, 2 deselected`, eslint clean, frontend `1480 passed` in 126 files on 28 of 29 full runs.
+
+**One unexplained failure.** The first frontend run on this tree read `1 failed | 1479 passed` (started 08:53:34). Only the tail of its output was kept, so the test's name is unknown. It never came back in 28 more runs: one straight after, 6 idle, 3 with all 32 cores busy, 3 straight after a full pytest, and 15 in a row. No test reads `docs/`, and nothing else on the tree changed between them. Treat it as an unidentified timing flake, not a cleared one: if vitest fails again, save the whole output.
+
+### What was walked
+
+- **`task-8-walk-report.md`:** 33 of 35 steps passed on the bare-metal scratch stack. One FAIL was fixed (a dropped connection logged a traceback). The other is W3 below.
+- **Logging proxy in front of Ollama, in a real browser:** real values on `gemma4:e4b`, then `gemma4:31b-cloud`, then back. At `6a5ed35` the cloud request carries no real value (`real: false`), and the note shows in the chat.
+- **Container image built from this branch, under its own tag:** voice on from the environment reached ready in 33 s, including the download into `/app/.cache`. 5.7 s of speech in 1.7 s; 100.8 s in 21.5 s with narration alongside. Memory with Kokoro: 1.26 GB after load, 1.95 GB after use.
+- **A real voice refusal:** the toast reads `Voice input isn't working right now. Ask your admin.`
+
+**Not walked:** real Safari or a real phone; a person without chat access (the walk has one admin); a real blocked-microphone prompt; the 2-minute auto-stop; a real remote speech engine (fake transport only); Docling Describe and Accurate; Auto-turned-Ask's yes path in a browser; Sinhala and Tamil quality.
+
+### What the reviews caught that tests didn't (worth keeping in mind)
+
+- **Masking was rebuilt.** Three rounds of patching a multi-pass rewrite each broke something new, because passes read each other's output. Detectors now report ranges over the original text, and one render writes the placeholders. Two tested invariants replaced case-hunting: masking a masked file changes nothing, and the count is the truth.
+- **The privacy promise crossed task boundaries.** R4 guarded the staged file; history re-sent it to any model (final review). Then the logging proxy showed the local model's *reply* carrying the value to the cloud, past 2,639 green tests. Only a real run with the real prompt in view caught it.
+- **FastAPI wrote recordings to disk.** Multipart parsing spools over 1 MB before the route runs. The route parses in memory now; a spy on rollover pins it.
+- **A mock hid a bug for days of work.** The voice hook read `detail` as a string and the server sends an object, so all seven refusals showed the fallback. The mock used a shape the server never sends.
+- **`warm()` reaches one worker.** With `WORKERS>1`, each worker warms itself, and retries from `error` every 5 minutes.
+
+### Rulings the owner may want to reverse
+
+Every ruling with its cost is in the ledger. The ones that shape behaviour:
+
+- "Go ahead" (HANDOVER step 4) read as permission for per-task commits. From Task 4 on, implementers staged and the controller committed.
+- A short all-digit value stays unmasked in an env file (spec §3.2's integer rule): `PASSWORD=123456` is sent.
+- A blocked microphone stays pressable, with its reason, where the spec says disabled.
+- Switching models after Send real values hides that model's replies from the new model.
+- A file too big for the model's window is sent, with a note, not refused.
+- Lower bounds `av>=19.0` and `numpy>=2.5` are what the code was tested on.
+
+### Waiting on the owner now
+
+- **A ruling on spec §2's CPU anti-goal.** On this CPU-only machine a local model's reply took about 1.5-2× as long during a transcription, and narration about 1.6-2.4×. A cloud model wasn't slowed. The spec says it fails if chat is "noticeably slower for everyone else on a CPU-only box". `SPEECH_CPU_THREADS` now defaults to half the cores across all workers. The owner decides whether that's acceptable, or `cores // 4` is worth trying.
+- Merge the stack; deploy with a database backup; the `docling` realm role in the live Keycloak. Migration 024 is already on live, and the 22:43 log applied only 024, so 023 was there before it.
+- Find what auto-pushes. W3: the header scrolls sideways at 375 px (the composer itself fits).
+- `/v1/synthesize` hardcodes `lang="en-us"` (`server/endpoints.py:79`, `:139`), so non-English Kokoro voices come out wrong through the app. Outside this plan.
+- `server/auth/touch.py:22` takes a second pooled connection while auth holds the first: existing, outside this branch. A reviewer reproduced a `PoolTimeout` at pool size 2; not tried at the real 10.
+- A model can pass text to `READER_MODEL` in a written request, so a model holding real values could forward them. Read from code, not run.
+- `src/components/admin/AdminPanel.jsx` is dead code; `af_river` is labelled Male though Kokoro's `af_` means American female (unverified).
+- The cached Sinhala and Tamil Whisper models are in Transformers format and need `ct2-transformers-converter` before faster-whisper can load them (DEPLOYMENT, "Choosing a model"). `large-v3-turbo` loads as it is. Their quality here is unmeasured, and it's the natural next test.
+
+### Next, unchanged from the order below
+
+Phase 2b (the embedding provider), then figures with a vision model and the DeepSeek-OCR preset.
+
+---
+
+## 2026-10-27 — Phase 3 merged; how we work, and the recommended order of work
 
 **State.** `feat/admin-console-v2-phase3` was fast-forwarded into `development` (`85b85d6`) on the owner's "merge"; the gates on the merged tree were backend `2447 passed, 16 skipped, 2 deselected` (scratch 5434), frontend `1190 passed`, eslint clean. The local branch was deleted (its origin copy is identical). `d7f106d` adds the design and plan for the message box inputs. **`origin/development` is at `85b85d6`: the unidentified auto-pusher pushed `development` itself**, so phases 1, 2a and 3 are public; nobody here ran `git push`. **Not deployed:** live still runs an older build; deploying phase 3 needs a database backup first (migration 023; its Down SQL is in the file's header).
 
@@ -23,8 +89,8 @@ The environment and safety rules (test DB, Keycloak, secrets, PIDs) are in the 2
 
 ### Recommended order of work
 
-1. **Fix: Docling's "Images: embed" keeps no pictures** (read from the code and the installed Docling 2.142.1, not run). We set `generate_picture_images`, but `export_to_markdown`'s default `image_mode` is `PLACEHOLDER`, so every picture becomes `<!-- image -->` and the crops are dropped; the README promises embedded images. Check first: a document converted with embed shows no pictures in **MD** view. Small, user-visible, and the owner uses this option, so it goes first. ("Describe" works, but with Docling's built-in SmolVLM-256M, not a model we choose.)
-2. **Message box inputs** (`docs/superpowers/plans/2026-10-27-chat-composer-inputs.md`, 9 tasks, awaiting "Go ahead"): text files with secrets masked in the browser; voice input that transcribes into the box (faster-whisper on the server, or any OpenAI-compatible transcription server), off until an admin turns it on. Native audio models (gemma4 and others, many languages, any provider) plug in later through the same `Transcriber` interface (spec §6).
+1. **Fix: Docling's "Images: embed" keeps no pictures** (done on `fix/docling-keep-pictures`; read from the code and the installed Docling 2.142.1, not run). We set `generate_picture_images`, but `export_to_markdown`'s default `image_mode` is `PLACEHOLDER`, so every picture becomes `<!-- image -->` and the crops are dropped; the README promises embedded images. Check first: a document converted with embed shows no pictures in **MD** view. Small, user-visible, and the owner uses this option, so it goes first. ("Describe" works, but with Docling's built-in SmolVLM-256M, not a model we choose.)
+2. **Message box inputs** (`docs/superpowers/plans/2026-10-27-chat-composer-inputs.md`, 9 tasks; built, see the 2026-11-02 entry): text files with secrets masked in the browser; voice input that transcribes into the box (faster-whisper on the server, or any OpenAI-compatible transcription server), off until an admin turns it on. Native audio models (gemma4 and others, many languages, any provider) plug in later through the same `Transcriber` interface (spec §6).
 3. **Admin console v2 phase 2b: the embedding provider.** Indexing still calls Ollama at `OLLAMA_URL` whatever `INFERENCE_PROVIDERS` says, so a vLLM-only or Claude-only deployment can't index documents. It also unblocks the embedding-model trials (backlog item 4).
 4. **Figures, designed after 2b:** keep each picture beside the converted document (shown in MD view, same access rules); describe it with a vision model the admin picks (gemma4 or a cloud one; Docling 2.142.1's `PictureDescriptionApiOptions` takes any OpenAI-compatible URL, with `enable_remote_services=True`); let a chat model that can see images look at the figure itself when a search lands on it. **DeepSeek-OCR** as a conversion preset for scans, tables and formulas: Docling ships it (`VLM_CONVERT_DEEPSEEK_OCR`, `deepseek-ocr:3b` through Ollama's `/v1`), and wiring it needs the four changes in the 2026-10-26 research note. No setting turns it on today. Its CPU cost is unmeasured.
 5. **Later, by value:**
@@ -47,7 +113,6 @@ The environment and safety rules (test DB, Keycloak, secrets, PIDs) are in the 2
 - Find what auto-pushes (VS Code's sync is the suspect).
 - W3: the header scrolls sideways at 375 px.
 - A cloud eval before the next release.
-- `README.md` ~456 still says budgets reset at UTC midnight (stale since phase 1; the message box plan's docs task fixes it).
 - Keep or delete the SDD workspaces under `.superpowers/sdd/`.
 
 ---

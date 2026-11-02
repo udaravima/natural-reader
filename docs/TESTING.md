@@ -437,9 +437,9 @@ in a browser): a closed connection mid-upload logged a traceback; a recording
 lost with no message when voice was switched off under it; the message box
 squeezed to 30 px at 375 px while "Transcribing…"; keyboard focus dropped to the
 page after Stop. Still open from the walk: the page scrolls sideways at 375 px
-because of the header's right-hand buttons (not the composer; not checked whether
-it predates this branch).
-**Also checked after the fixes:** the real container image (memory and speed figures in DEPLOYMENT.md, "Time, as measured"), and a logging proxy in front of a local model server, which showed what each model was actually sent. It found that a local model's reply carrying real values was still sent to a cloud model after the file itself was held back; replies are now held back too (unit-tested; the proxy walk is re-run by the controller).
+because of the header's right-hand buttons (not the composer; a known item from
+before this branch).
+**Also checked after the fixes:** the real container image (memory and speed figures in DEPLOYMENT.md, "Time, as measured"), and a logging proxy in front of a local model server, which showed what each model was actually sent. It found that a local model's reply carrying real values was still sent to a cloud model after the file itself was held back; replies are now held back too. Walked again through the proxy: the cloud model's request no longer carries the value, the note shows in the chat, and back on the local model the file and its replies are sent.
 **Not walked:** real Safari or a real phone (only Chromium's 375 x 812); a person
 without chat access (the walk had one admin, so the 403 is tests only); a real
 blocked-microphone prompt and the disabled states (the fake-media flags
