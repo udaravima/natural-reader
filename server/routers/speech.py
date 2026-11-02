@@ -24,7 +24,7 @@ from ..auth import deps
 from ..db import get_pool
 from ..http_errors import refusal
 from ..services import chat_options
-from ..speech import catalogue, service
+from ..speech import catalogue, service, window
 from ..speech.base import (AudioTooLong, BadAudio, EngineFailed, EngineNotReady, EngineUnavailable, MAX_AUDIO_BYTES)
 from ..speech.languages import WHISPER_LANGUAGES
 
@@ -96,7 +96,7 @@ async def speech_status(access: SpeechAccess = Depends(speech_access)):
     """What the composer needs to draw the microphone: on or off, ready or not, and the languages, with the ones
     the model is made for (`model_languages`, empty for every language). When voice is off no engine is built,
     probed or warmed. Whatever the engine says, this answers 200."""
-    base = {"max_seconds": MAX_SECONDS, "languages": _languages()}
+    base = {"max_seconds": MAX_SECONDS, "languages": _languages(), "window": window.settings()}
     if not access.voice_on:
         return {"enabled": False, "ready": False, "state": "off", **base}
     engine = access.engine()
@@ -201,4 +201,5 @@ async def transcribe(request: Request, access: SpeechAccess = Depends(speech_acc
                       "Voice input is still getting ready, try again in a minute") from None
     except EngineFailed as e:
         raise refusal(503, "engine_failed", str(e) or "Voice input failed.") from None
-    return {"text": result.text, "language": result.language, "duration_s": result.duration_s}
+    return {"text": result.text, "language": result.language, "duration_s": result.duration_s,
+            "no_speech": result.no_speech, "avg_logprob": result.avg_logprob}

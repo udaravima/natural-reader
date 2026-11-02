@@ -49,6 +49,10 @@ def _wav(seconds, rate=16000):
     return buf.getvalue()
 
 
+def _segment(text):
+    return SimpleNamespace(text=text, no_speech_prob=0.1, avg_logprob=-0.2)
+
+
 class FakeModel:
     instances: list = []
     gate: threading.Event | None = None
@@ -64,7 +68,7 @@ class FakeModel:
 
     def transcribe(self, audio, **kw):
         self.calls.append(kw)
-        return [SimpleNamespace(text=" Hel"), SimpleNamespace(text="lo ")], SimpleNamespace(language="en", duration=1.5)
+        return [_segment(" Hel"), _segment("lo ")], SimpleNamespace(language="en", duration=1.5)
 
 
 @pytest.fixture
@@ -87,7 +91,7 @@ async def _ready(eng):
 async def test_local_returns_joined_text_language_duration(fake):
     eng = LocalWhisper("small", cpu_threads=3)
     await _ready(eng)
-    assert await eng.transcribe(AUDIO, "audio/webm;codecs=opus", None) == Transcript("Hello", "en", 1.5)
+    assert await eng.transcribe(AUDIO, "audio/webm;codecs=opus", None) == Transcript("Hello", "en", 1.5, no_speech=0.1, avg_logprob=-0.2)
     m = fake.instances[0]
     assert m.name == "small" and m.kw == {"device": "cpu", "compute_type": "int8", "cpu_threads": 3}
     assert m.calls[0]["vad_filter"] is True
@@ -477,7 +481,7 @@ class _Recording:
         self.kw = kw
         if self.error:
             raise self.error
-        return [SimpleNamespace(text=" hi")], SimpleNamespace(language=language or "en", duration=1.0)
+        return [_segment(" hi")], SimpleNamespace(language=language or "en", duration=1.0)
 
 
 def _running(spec, model, monkeypatch):

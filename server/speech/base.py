@@ -14,6 +14,9 @@ class Transcript:
     text: str
     language: str | None  # what the engine detected or was told; None when it didn't say
     duration_s: float
+    # Whisper's own view of the most speech-like part: `no_speech` 0 to 1, `avg_logprob` 0 and down. None: no scores.
+    no_speech: float | None = None
+    avg_logprob: float | None = None
 
 
 @dataclass(frozen=True)

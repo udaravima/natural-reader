@@ -49,6 +49,13 @@ def test_run12_is_offered_converted_and_unconverted_with_the_same_weights():
     assert (fast.engine, slow.engine) == ("converted-whisper", "transformers-whisper")
 
 
+def test_the_english_only_sizes_say_so():
+    models = catalogue.all_models({})
+    for name in ("base.en", "small.en"):
+        assert models[name].languages == ("en",)
+        assert models[name].repo == name
+
+
 def test_every_built_in_model_is_pinned_except_the_stock_sizes():
     for model in catalogue.all_models({}).values():
         assert model.revision or model.repo == model.id, model.id

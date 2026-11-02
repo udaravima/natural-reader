@@ -109,6 +109,17 @@ async def test_ask_mode_offers_only_offer_web_search(conn, engine):
     assert router.calls[0]["tools"] == ["offer_web_search"]       # not web_search, not read_web_pages
 
 
+async def test_a_spoken_turn_is_never_offered_a_card_nobody_can_press(conn, engine):
+    router = FakeRouter()
+    alice = await member(conn, "alice")
+    claim = await store.begin_turn(session_id="s-1", user_id=alice.user_id, model_id="ollama:m", text="Hi",
+                                   attachments=[], new_session_pins=None)
+    req = TurnRequest(user_id=alice.user_id, session_id="s-1", model_id="ollama:m", text="Hi", attachments=(),
+                      settings=CallSettings(), doc_id=None, timezone="UTC", spoken=True)
+    [e async for e in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)]
+    assert router.calls[0]["tools"] == []
+
+
 async def test_ask_mode_keeps_the_document_tools_and_adds_the_offer(conn, engine, open_doc):
     router = FakeRouter()
     await turn(conn, router, doc_id="d" * 64)

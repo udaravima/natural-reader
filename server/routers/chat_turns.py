@@ -103,6 +103,7 @@ class ContextIn(BaseModel):
     project_id: UUID | None = None
     timezone: str | None = Field(default=None, max_length=64)
     web: WebIn | None = None
+    spoken: bool = False   # the reply will be read aloud in the speech window
 
     def requested_scope(self) -> Any:
         """The scope this turn asks for: a project id, None, or store.KEEP."""
@@ -117,6 +118,13 @@ class NewSessionIn(BaseModel):
     pins: list[dict[str, Any]] = Field(default_factory=list, max_length=6)
 
 
+class HeardIn(BaseModel):
+    """How much of an earlier reply was played before the person cut in (store.Heard)."""
+    model_config = ConfigDict(extra="forbid")
+    message_id: str = Field(min_length=1, max_length=100)
+    chars: int = Field(ge=0)
+
+
 class TurnIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     message: MessageIn
@@ -124,6 +132,7 @@ class TurnIn(BaseModel):
     settings: SettingsIn = Field(default_factory=SettingsIn)
     context: ContextIn = Field(default_factory=ContextIn)
     session: NewSessionIn | None = None
+    heard: HeardIn | None = None
 
 
 def _decode(attachments: list[AttachmentIn]) -> list[store.NewAttachment]:
@@ -376,6 +385,7 @@ async def post_turn(session_id: SessionId, request: Request,
         claim = await store.begin_turn(
             session_id=session_id, user_id=principal.user_id, model_id=model_id,
             text=body.message.content, attachments=attachments,
+            heard=store.Heard(body.heard.message_id, body.heard.chars) if body.heard else None,
             new_session_pins=body.session.pins if body.session else None, scope_project_id=requested)
     except store.NotOwner:
         raise refusal(404, "not_found", NOT_FOUND)
@@ -389,7 +399,7 @@ async def post_turn(session_id: SessionId, request: Request,
         real_values=any(a.real_values for a in attachments),
         settings=call_settings(body.settings),
         doc_id=body.context.doc_id, timezone=body.context.timezone, project_id=project_id,
-        web_query=body.context.web.query if body.context.web else None)
+        web_query=body.context.web.query if body.context.web else None, spoken=body.context.spoken)
     events = run_turn(req, claim, router=llm, cfg=cfg, deployment_budget=budget)
     return _EagerCloseStreamingResponse(_sse(events), turn=events, abandon=lambda: abandon_turn(req, claim),
                                         media_type="text/event-stream",

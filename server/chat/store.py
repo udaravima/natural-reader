@@ -157,14 +157,25 @@ async def set_session_scope(session_id: str, user_id: str, project_id: str | Non
                            (project_id, session_id, user_id))
 
 
+@dataclass(frozen=True)
+class Heard:
+    """How much of a reply the person heard before cutting in: its first `chars` characters."""
+    message_id: str
+    chars: int
+
+
 async def begin_turn(*, session_id: str, user_id: str, model_id: str, text: str,
                      attachments: list[NewAttachment],
-                     new_session_pins: list[dict] | None, scope_project_id: Any = KEEP) -> TurnClaim:
+                     new_session_pins: list[dict] | None, scope_project_id: Any = KEEP,
+                     heard: Heard | None = None) -> TurnClaim:
     """Create the session if new, claim it, and write the user message (with
     attachment bytes) and the streaming assistant message — one transaction,
     committed before the first byte streams (spec §7.3). `scope_project_id`
     (a project id, or None to clear it) is saved with the claim; KEEP leaves
-    the session's scope as it is. The caller checked access to it."""
+    the session's scope as it is. The caller checked access to it. `heard` cuts an
+    earlier reply of this chat to what was played, in this transaction: a reply is
+    usually saved long before it finishes playing, so sooner than this races nothing,
+    and what never played must not stay in what the model remembers saying."""
     user_mid, asst_mid = new_message_id("u"), new_message_id("a")
     async with get_pool().connection() as conn:
         async with conn.transaction():
@@ -186,6 +197,11 @@ async def begin_turn(*, session_id: str, user_id: str, model_id: str, text: str,
                 [asst_mid, model_id, *scope_params, session_id])
             if await cur.fetchone() is None:
                 raise TurnInProgress(session_id)
+            if heard is not None:
+                await conn.execute(
+                    "UPDATE chat_messages SET content = left(content, %s), finish_reason = 'interrupted' "
+                    "WHERE id = %s AND session_id = %s AND role = 'assistant' AND status <> 'streaming'",
+                    (heard.chars, heard.message_id, session_id))
             # Monotonic timestamps: the UI sorts by them, and two fast turns can
             # land in the same millisecond.
             cur = await conn.execute(

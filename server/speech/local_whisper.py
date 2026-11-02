@@ -86,8 +86,11 @@ class LocalWhisper:
     @staticmethod
     def _run(samples, language: str | None, model) -> Transcript:
         segments, info = model.transcribe(samples, language=language, **DECODE)
+        segments = list(segments)
         text = "".join(seg.text for seg in segments).strip()
-        return Transcript(text, info.language, float(info.duration))
+        best = min(segments, key=lambda seg: seg.no_speech_prob, default=None)   # a clip is speech if any part of it is
+        scores = (best.no_speech_prob, best.avg_logprob) if best else (None, None)
+        return Transcript(text, info.language, float(info.duration), *scores)
 
     async def transcribe(self, audio: bytes, mime: str, language: str | None) -> Transcript:
         with self._lock:

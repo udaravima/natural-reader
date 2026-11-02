@@ -56,6 +56,10 @@ def _size(name: str) -> SpeechModel:
 
 _BUILT_IN = (
     *(_size(name) for name in ("tiny", "base", "small", "medium", "large-v3", "large-v3-turbo")),
+    SpeechModel("base.en", "Whisper base, English only", FASTER_WHISPER, "base.en", languages=("en",),
+                note="The fastest good choice for English: about 0.4 s for a short clip on a CPU, with more mistakes."),
+    SpeechModel("small.en", "Whisper small, English only", FASTER_WHISPER, "small.en", languages=("en",),
+                note="Faster and a little more accurate than small, for English alone."),
     SpeechModel("whisper-turbo", "Whisper large-v3-turbo, pinned", FASTER_WHISPER,
                 "deepdml/faster-whisper-large-v3-turbo-ct2", "4df90f75321148c3a29a9e2351b7ddf8f5b115a8", (), "mit", "yes",
                 "Good for English. Weak on Tamil, and unusable on Sinhala."),
