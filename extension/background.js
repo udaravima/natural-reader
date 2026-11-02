@@ -55,7 +55,7 @@ async function synthesizeForToolbar({ sentences, voice, speed }) {
     } catch (e) {
         if (e instanceof TypeError) { // fetch itself failed: no answer at all
             throw new Error(`can't reach ${baseUrl}. Is the server running, and has the `
-                + 'extension been allowed to reach it? (Settings → Test connection)');
+                + 'extension been allowed to reach it? (Settings → Test connection)', { cause: e });
         }
         throw e;
     }

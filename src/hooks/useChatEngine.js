@@ -452,7 +452,7 @@ export function useChatEngine({
             const legacyId = sessionId;
             sendingRef.current = true;
             setIsStreaming(true);
-            let forkedId = null;
+            let forkedId;
             try {
                 forkedId = await sessionStore.importLegacy(legacyId);
             } finally {

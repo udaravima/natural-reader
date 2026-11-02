@@ -274,7 +274,7 @@ const envRanges = (text, failClosed) => {
     const lastBlockEnd = Math.max(0, ...blocks.values());
     const fileEnd = text.endsWith('\n') && lastBlockEnd < text.length ? text.length - 1 : text.length;
     const ranges = [];
-    let next = 0;
+    let next;
     for (let lineStart = 0; lineStart < text.length; lineStart = next) {
         const lineBreak = scanTo(text, blocks, /\n/, lineStart);
         next = lineBreak + 1;

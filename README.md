@@ -4,7 +4,7 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 
 > 🎯 **A web frontend for Kokoro TTS — now with chat that knows what you're reading.** Beyond the TTS reader and the standalone Ollama chat side-mode, the app can index a loaded document into pgvector and expose a `search_documents` tool that your local LLM calls autonomously when a question warrants it. Out of the box everything stays local: Ollama for the LLM + embeddings, Postgres in a container for chat sessions and vectors. A deployment can add cloud model providers for chat, and web search asks before anything leaves the server. A browser-based Web Speech fallback is also available for testing without any backend.
 
-![Neural Reader](https://img.shields.io/badge/React-19.x-blue) ![PDF.js](https://img.shields.io/badge/PDF.js-5.x-orange) ![Kokoro TTS](https://img.shields.io/badge/Kokoro-TTS-green) ![Ollama](https://img.shields.io/badge/Ollama-Chat-orange) ![Vite](https://img.shields.io/badge/Vite-Rolldown-purple) ![Offline](https://img.shields.io/badge/Offline-Ready-brightgreen)
+![Neural Reader](https://img.shields.io/badge/React-19.x-blue) ![PDF.js](https://img.shields.io/badge/PDF.js-6.x-orange) ![Kokoro TTS](https://img.shields.io/badge/Kokoro-TTS-green) ![Ollama](https://img.shields.io/badge/Ollama-Chat-orange) ![Vite](https://img.shields.io/badge/Vite-Rolldown-purple) ![Offline](https://img.shields.io/badge/Offline-Ready-brightgreen)
 
 > 🔌 **Works 100% Offline!** Once installed, the app runs completely without internet. PDF.js is bundled locally, and Kokoro TTS / Ollama run on your machine.
 
@@ -178,7 +178,7 @@ git clone https://github.com/udaravima/natural-reader.git && cd natural-reader
 ./startup.sh quickstart            # or: ./startup.sh quickstart --single-user
 ```
 
-It checks for a container engine (podman with podman-compose 1.1+, or Docker with the Compose plugin 2.24+) and Node 20.19+/22.12+. **No host Python is needed:** the backend runs in a container. It writes a local-dev `.env` (never touching an existing one), builds the backend image, starts Postgres, Keycloak, SearXNG and the backend, then the frontend dev server. Open <http://localhost:5173> and sign in as `admin-user` / `password`. `--single-user` turns sign-in off and skips Keycloak. Re-running it after a failure picks up where it stopped.
+It checks for a container engine (podman with podman-compose 1.1+, or Docker with the Compose plugin 2.24+) and Node 22.13+/24+. **No host Python is needed:** the backend runs in a container. It writes a local-dev `.env` (never touching an existing one), builds the backend image, starts Postgres, Keycloak, SearXNG and the backend, then the frontend dev server. Open <http://localhost:5173> and sign in as `admin-user` / `password`. `--single-user` turns sign-in off and skips Keycloak. Re-running it after a failure picks up where it stopped.
 
 | Command | What it does |
 |---|---|
@@ -200,7 +200,7 @@ Install this before you start. The app is split into a **React frontend** (Vite)
 
 | Software | Version | Why |
 |----------|---------|-----|
-| **Node.js** + **npm** | `20.19+` **or** `22.12+` | Frontend dev server / build. Vite 7 (Rolldown) and `@vitejs/plugin-react` declare `engines: ^20.19.0 \|\| >=22.12.0` — older Node will fail to start. npm ships with Node. |
+| **Node.js** + **npm** | `22.13+` **or** `24+` | Frontend dev server / build. `pdfjs-dist` 6 declares `engines: >=22.13.0 \|\| >=24`, and `startup.sh` refuses less. The tests need `22.22.2+` or `24.15+`. npm ships with Node. |
 | **Python** | `3.12`–`3.13` | The backend (`run.py`). The chat server needs 3.12+ (`inspect.getasyncgenstate`); 3.14 is untested. |
 | **Git** | any recent | Clone the repository |
 | **wget** or **curl** | any | Download the Kokoro voice model files (~335 MB total — see step 2) |
@@ -980,7 +980,7 @@ own container logs (`docker-compose logs <service>`).
 
 ## 🔧 Build Optimization
 
-The project uses Rolldown (via `rolldown-vite`) with optimized chunk splitting:
+The project uses Vite 8, which builds with Rolldown, with optimized chunk splitting:
 - **vendor-react** — React core split into a separate chunk for long-term caching
 - **vendor-pdfjs** — PDF.js bundled locally (no CDN dependency)
 - **vendor-icons** — Lucide icons isolated for efficient tree-shaking

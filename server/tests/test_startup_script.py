@@ -137,7 +137,7 @@ def _stubbed(tmp_path, extra=(), codes=None):
     names = ["podman", "podman-compose", "curl", "loginctl", "systemctl", "npm", "node", *extra]
     bindir = stub_bin(tmp_path / "bin", names, calls, codes)
     # node -v must print a supported version for check_node_version.
-    (bindir / "node").write_text(f'#!/bin/sh\necho "node $*" >> "{calls}"\necho v22.12.0\n')
+    (bindir / "node").write_text(f'#!/bin/sh\necho "node $*" >> "{calls}"\necho v22.13.0\n')
     return calls, f"{bindir}:{SYSTEM_PATH}"
 
 

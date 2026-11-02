@@ -72,7 +72,7 @@ spot a feature that shipped without coverage.
 npx vitest run                                       # 1537 passed (129 files) @ 2026-11-02 (voices and popup dropdowns)
 
 # Lint
-npx eslint .                                         # clean (the same as npm run lint)
+npx eslint .                                         # 0 errors; 24 warnings, see eslint.config.js (the same as npm run lint)
 
 # Opt-in, slow: build and run the real backend image and the compose Keycloak
 # entrypoint (deselected by default via pytest.ini addopts)

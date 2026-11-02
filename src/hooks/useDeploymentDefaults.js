@@ -23,7 +23,7 @@ const EPOCHS_KEY = 'neural-pdf-defaultEpochs';
  * handed to `onResetThink` instead.
  */
 export function applyEpochs(serverEpochs, { onResetThink } = {}) {
-    let local = {};
+    let local;
     try { local = JSON.parse(localStorage.getItem(EPOCHS_KEY) || '{}') || {}; } catch { local = {}; }
     let changed = false;
     for (const [key, epoch] of Object.entries(serverEpochs || {})) {

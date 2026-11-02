@@ -64,7 +64,7 @@ A few load-bearing decisions worth knowing:
 
 | Component | Minimum | Notes |
 |---|---|---|
-| Node.js | 20.19+ or 22.12+ | Frontend dev server (Vite 7). `startup.sh` refuses older versions. |
+| Node.js | 22.13+ or 24+ | Frontend dev server (Vite 8). `startup.sh` refuses older versions. |
 | Python | 3.12 or 3.13 | For the bare-metal backend (`BACKEND_RUNTIME=venv`) and the test suite; the backend container needs none. 3.14 is untested. |
 | Docker (or Postgres + pgvector locally) | any recent | The compose file pins `pgvector/pgvector:pg16`. |
 | Ollama | latest | `nomic-embed-text` must be pulled here whatever runs chat (indexing only calls Ollama). The chat model too, unless a provider serves it. |

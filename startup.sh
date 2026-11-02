@@ -46,7 +46,7 @@ readonly BACKEND_CONTAINER="natural-reader-backend"  # container_name in docker-
 COMPOSE_DEV=0
 
 # Minimum tool versions, kept in sync with the README "Software Requirements".
-# Node: Vite 7 (Rolldown) + @vitejs/plugin-react require ^20.19.0 || >=22.12.0.
+# Node: pdfjs-dist 6 requires >=22.13.0 || >=24; Vite 8 alone would accept less.
 # Python: the chat server uses inspect.getasyncgenstate (3.12+;
 # server/routers/chat_turns.py); 3.14 is untested with the pinned
 # dependencies, so it is excluded.
@@ -96,17 +96,17 @@ check_python_version() {
 	die "No python in [$PYTHON_MIN, $PYTHON_MAX_EXCL) found — install Python 3.12 or 3.13 (the chat server needs 3.12+; 3.14 is untested). With uv: uv python install 3.13"
 }
 
-# Verify node + npm exist and node satisfies ^20.19.0 || >=22.12.0.
+# Verify node + npm exist and node satisfies ^22.13.0 || >=24.0.0.
 check_node_version() {
 	command -v node >/dev/null 2>&1 || die "node is not installed."
 	command -v npm >/dev/null 2>&1 || die "npm is not installed."
 	local v
 	v="$(node -v)"; v="${v#v}"
-	if { version_ge "$v" "20.19.0" && version_lt "$v" "21.0.0"; } \
-		|| version_ge "$v" "22.12.0"; then
-		log "Node.js $v OK (need ^20.19.0 or >=22.12.0)"
+	if { version_ge "$v" "22.13.0" && version_lt "$v" "23.0.0"; } \
+		|| version_ge "$v" "24.0.0"; then
+		log "Node.js $v OK (need ^22.13.0 or >=24.0.0)"
 	else
-		die "Node.js $v is unsupported — need ^20.19.0 or >=22.12.0 (Vite 7 / Rolldown)."
+		die "Node.js $v is unsupported — need ^22.13.0 or >=24.0.0 (pdfjs-dist 6)."
 	fi
 }
 

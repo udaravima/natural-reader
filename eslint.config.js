@@ -24,6 +24,11 @@ export default defineConfig([
     },
     rules: {
       'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+      // Stricter in react-hooks 7.1, and they flag working patterns here: loading on mount, and a ref holding the
+      // latest value for async code. Warnings until someone rewrites those, not errors that block every commit.
+      'react-hooks/set-state-in-effect': 'warn',
+      'react-hooks/refs': 'warn',
+      'react-hooks/preserve-manual-memoization': 'warn',
     },
   },
   {

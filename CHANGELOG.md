@@ -34,6 +34,16 @@ All notable changes to this project will be documented in this file.
 - **The Library opens on Projects,** the first tab, with Documents second.
 - **The audiobook has its own icon,** headphones. It had the Library's.
 
+### Changed
+
+- **Every npm package is on its latest version,** including React 19.3, PDF.js 6, Lucide
+  1, Vite 8 (the release Rolldown joined, so `rolldown-vite` is gone), Vitest 5 and
+  ESLint 10. All 18 screens compared pixel by pixel look as they did, bar a slightly
+  redrawn book icon. Keep PDF.js at 6.2.108 or later: 5.6.83 up to there has a high
+  severity advisory, CVE-2026-16633.
+- **Node.js 22.13 or 24 is now the minimum,** because PDF.js 6 requires it. `startup.sh`
+  refuses anything older, and running the tests needs 22.22.2 or 24.15.
+
 ## [2.5.0] - 2026-11-02
 
 **Speak a message, and hand the chat a file.** A microphone beside the paperclip
