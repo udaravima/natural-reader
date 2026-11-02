@@ -59,7 +59,7 @@ The interruption has two checks, because neither works alone (see **What was mea
 | Whisper accepts it | **Stop.** Playback stops, the stream is aborted, and the text goes as the next turn with how much of the reply was heard. | Browser, from the server's scores |
 | Whisper rejects it | **Resume** from the same word. If nothing was playing, nothing is sent and the window goes back to Listening. | Browser |
 
-Whisper accepts a clip when it has text, `no_speech < 0.4` and `avg_logprob >= -1.0`. A clip with several segments counts as speech if any one segment passes both, so one quiet stretch can't reject a long sentence (my call: the measurements were almost all one segment). No text means noise. A remote engine gives no scores, so any text counts as speech and the window says so.
+Whisper accepts a clip when it has text, `no_speech < 0.25` and `avg_logprob >= -1.0`. A clip with several segments counts as speech if any one segment passes both, so one quiet stretch can't reject a long sentence (my call: the measurements were almost all one segment). No text means noise. A remote engine gives no scores, so any text counts as speech and the window says so.
 
 **Echo guard (my call).** On speakers the mic may hear the reply. A clip that began while a reply was playing is dropped when at least 60% of its words are in that reply. Afterwards the same words are the person's: a first version looked back 15 s, and threw away a repeated question.
 
@@ -74,7 +74,7 @@ Every value is an environment variable with this default, and reaches the browse
 | `SPEECH_WINDOW_MIN_SPEECH_MS` | `250` | Milliseconds of speech before the reply pauses |
 | `SPEECH_WINDOW_PRE_ROLL_MS` | `300` | Milliseconds kept from before the start, so the first word isn't clipped |
 | `SPEECH_WINDOW_SILENCE_MS` | `700` | Milliseconds of silence that end a turn. The library's default of 1400 adds 0.7 s to every reply |
-| `SPEECH_WINDOW_MAX_NO_SPEECH` | `0.4` | Whisper's `no_speech` score above which a clip is noise |
+| `SPEECH_WINDOW_MAX_NO_SPEECH` | `0.25` | Whisper's `no_speech` score above which a clip is noise |
 | `SPEECH_WINDOW_MIN_LOGPROB` | `-1.0` | Whisper's `avg_logprob` below which a clip is noise |
 
 ## Changes by part

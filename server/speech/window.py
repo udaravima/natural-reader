@@ -18,7 +18,7 @@ _NUMBERS = {
     "pre_roll_ms": ("SPEECH_WINDOW_PRE_ROLL_MS", 300, 0, 2000),       # kept from before the start
     "silence_ms": ("SPEECH_WINDOW_SILENCE_MS", 700, 100, 5000),       # silence that ends a turn
     "first_clause_chars": ("SPEECH_WINDOW_FIRST_CLAUSE_CHARS", 30, 0, 1000),   # 0: never cut a reply's opening
-    "max_no_speech": ("SPEECH_WINDOW_MAX_NO_SPEECH", 0.4, 0.0, 1.0),  # Whisper's score above which a clip is noise
+    "max_no_speech": ("SPEECH_WINDOW_MAX_NO_SPEECH", 0.25, 0.0, 1.0),  # Whisper's score above which a clip is noise
     "min_logprob": ("SPEECH_WINDOW_MIN_LOGPROB", -1.0, -10.0, 0.0),   # Whisper's score below which a clip is noise
 }
 _warned: set[str] = set()

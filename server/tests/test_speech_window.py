@@ -38,7 +38,7 @@ def test_no_segments_means_no_scores():
 def test_the_defaults_are_the_measured_values():
     assert window.settings({}) == {
         "vad_start": 0.5, "vad_stay": 0.35, "min_speech_ms": 250, "pre_roll_ms": 300, "silence_ms": 700,
-        "first_clause_chars": 30, "max_no_speech": 0.4, "min_logprob": -1.0, "language": "en",
+        "first_clause_chars": 30, "max_no_speech": 0.25, "min_logprob": -1.0, "language": "en",
     }
 
 
