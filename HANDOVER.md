@@ -4,9 +4,9 @@
 
 ---
 
-## 2026-11-02 evening — All 50 voices, popup dropdowns, Library on Projects, favicon: committed on `feat/voices-and-dropdowns` (START HERE)
+## 2026-11-02 evening — All 50 voices, popup dropdowns, Library on Projects, favicon: released as v2.5.1 (START HERE)
 
-**State.** Built and walked on `feat/voices-and-dropdowns`, cut from `development` at `06b4569`, for the next release. **Committed there as fixes, not merged and not pushed.** The owner deployed v2.5.0 on the evening of 2026-11-02, so the v2.5.0 entry's "Nothing is deployed" is out of date, and then deployed this branch at `f8af89e` at 22:38. The `en-us` bug and the `af_river` label are fixed here.
+**State.** Built and walked on `feat/voices-and-dropdowns`, cut from `development` at `06b4569`, then merged and **released as v2.5.1** on the owner's word. **v2.5.1 is not deployed:** live is the branch at `f8af89e`. Nothing is migrated, but it needs Node 22.13 or 24 and both halves rebuilt. The owner deployed v2.5.0 on the evening of 2026-11-02, so the v2.5.0 entry's "Nothing is deployed" is out of date, and then deployed this branch at `f8af89e` at 22:38. The `en-us` bug and the `af_river` label are fixed here.
 
 **Trap:** live serves its own copy of the build, under `/var/www`, not this repo's `dist/`, so `vite build` here doesn't touch it.
 

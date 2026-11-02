@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.5.1] - 2026-11-02
+
+**Every Kokoro voice is available, and each reads in its own language.** All 50 are
+listed by language, and Sinhala and Tamil no longer come out with stray noises in them.
+**Long dropdowns open with a search box,** and Admin → Models → Chat models offered
+shows rows you can read. Every npm package is current, which raises the minimum to
+**Node.js 22.13 or 24**. No migrations.
+
 ### Fixed
 
 - **Sinhala, Tamil and Hindi are read without spoken noise.** Kokoro only ever gets
@@ -17,7 +25,7 @@ All notable changes to this project will be documented in this file.
 - **All 50 Kokoro voices.** **Settings → Voice & reading → Voice** now offers Hindi,
   Spanish, French, Italian, Portuguese, Japanese and Chinese voices beside the US and
   UK ones, grouped by language, each previewing in its own language. The read-aloud
-  extension lists them too. Japanese voices read kana but not kanji, because espeak
+  extension (0.2.1) lists them too. Japanese voices read kana but not kanji, because espeak
   can't read kanji.
 - **A tab icon:** the header's speaker on its blue tile, with PNG versions for
   browsers that want them.

@@ -1,7 +1,7 @@
 # Chat with PDF — Walkthrough
 
 > **Audience:** anyone running Natural Reader who wants to ask a model about what they're reading.
-> **Status:** current as of `v2.5.0` plus `[Unreleased]`; the feature first shipped in `v1.6.0`.
+> **Status:** current as of `v2.5.1` plus `[Unreleased]`; the feature first shipped in `v1.6.0`.
 > **Time to first working chat-with-doc:** ~10 minutes on a machine that already has Docker + Ollama.
 
 This document walks the whole feature end-to-end: what it does, why we built it the way we did, how to bring it up locally, and the four different ways you can pull document context into a chat — from a one-click page question to fully autonomous tool calling.
