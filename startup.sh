@@ -221,13 +221,15 @@ resolve_engine() {
 # an exported XDG_DATA_HOME breaks podman's socket resolution and every compose
 # call fails. The unset is scoped to the invocation only.
 # Compose files for this invocation: the base file, the podman overlay
-# (keep-id), the assistant-profile overlay when export_backend_env found a
-# readable profile file, and the dev overlay when COMPOSE_DEV=1.
+# (keep-id), the assistant-profile and speech-models overlays when
+# export_backend_env found those files readable, and the dev overlay when
+# COMPOSE_DEV=1.
 compose_files() {
 	local engine="$1"
 	printf '%s\n' "$COMPOSE_FILE"
 	[[ "$engine" == "podman" ]] && printf '%s\n' "compose.podman.yml"
 	[[ -n "${NR_PROFILE_FILE:-}" ]] && printf '%s\n' "compose.profile.yml"
+	[[ -n "${NR_SPEECH_MODELS_FILE:-}" ]] && printf '%s\n' "compose.speech.yml"
 	[[ "${COMPOSE_DEV:-0}" == "1" ]] && printf '%s\n' "compose.dev.yml"
 	return 0
 }
@@ -467,6 +469,15 @@ export_backend_env() {
 			export NR_PROFILE_FILE
 		else
 			warn "CHAT_ASSISTANT_PROFILE_FILE is not readable; the assistant gets no file profile."
+		fi
+	fi
+	unset NR_SPEECH_MODELS_FILE
+	if [[ -n "${SPEECH_MODELS_FILE:-}" ]]; then
+		if [[ -r "$SPEECH_MODELS_FILE" && -f "$SPEECH_MODELS_FILE" ]]; then
+			NR_SPEECH_MODELS_FILE="$(cd "$(dirname "$SPEECH_MODELS_FILE")" && pwd)/$(basename "$SPEECH_MODELS_FILE")"
+			export NR_SPEECH_MODELS_FILE
+		else
+			warn "SPEECH_MODELS_FILE is not readable; the speech model list stays as it is."
 		fi
 	fi
 	if [[ -n "${LOG_AUDIT_FILE:-}" ]]; then

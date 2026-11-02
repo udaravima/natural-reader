@@ -12,7 +12,7 @@ const SOURCE_LABEL = { admin: 'Set here', file: 'From the deployment file', none
 
 const fmt = (n) => n.toLocaleString('en-US');
 
-export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, refreshKey = 0 }) {
+export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, refreshKey = 0, onDirtyChange }) {
   const [data, setData] = useState(null);       // the server's view; null while loading
   const [draft, setDraft] = useState('');
   const [failed, setFailed] = useState(false);
@@ -68,6 +68,10 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
     }
   };
 
+  // The console asks before a tab switch drops an unsaved draft.
+  const dirty = data !== null && draft !== (data.text || '');
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+
   const sectionTitle = 'text-xs font-bold uppercase tracking-wider text-blue-500';
   const max = data?.maxChars ?? 8000;
 
@@ -99,7 +103,7 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             placeholder="You are Ada, the reading-room assistant. Answer warmly and briefly."
-            className={`w-full font-mono text-xs p-2 rounded border ${theme.border} ${theme.bg} ${theme.text}`}
+            className={`min-h-11 md:min-h-0 w-full font-mono text-xs p-2 rounded border ${theme.border} ${theme.bg} ${theme.text}`}
           />
           <div className="flex items-center justify-between gap-3 text-xs">
             <span className={theme.textMuted}>
@@ -109,14 +113,14 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
               <button
                 onClick={() => save('')}
                 disabled={saving || data.source !== 'admin'}
-                className="underline text-blue-500 disabled:opacity-40 disabled:no-underline"
+                className="min-h-11 md:min-h-0 underline text-blue-500 disabled:opacity-40 disabled:no-underline"
               >
                 Reset to deployment default
               </button>
               <button
                 onClick={() => save(draft)}
-                disabled={saving || draft === (data.text || '')}
-                className="underline text-blue-500 font-bold disabled:opacity-40 disabled:no-underline"
+                disabled={saving || !dirty}
+                className="min-h-11 md:min-h-0 underline text-blue-500 font-bold disabled:opacity-40 disabled:no-underline"
               >
                 Save
               </button>
@@ -126,7 +130,7 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
             <p key={w} className="text-xs text-amber-600">{w}</p>
           ))}
           <details className="text-xs">
-            <summary className={`cursor-pointer ${theme.textMuted}`}>What the model receives</summary>
+            <summary className={`min-h-11 md:min-h-0 cursor-pointer ${theme.textMuted}`}>What the model receives</summary>
             <pre className={`mt-2 whitespace-pre-wrap p-2 rounded border ${theme.border} ${theme.bgSecondary}`}>
               {data.preview}
             </pre>

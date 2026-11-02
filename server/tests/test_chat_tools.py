@@ -353,7 +353,8 @@ async def test_search_documents_unknown_document_lists_valid_ones(project):
     run = await _search(ctx, {"query": "overview", "documents": [1, "Nope.md"]})
     assert not run.ok
     assert run.result["error"].startswith("Unknown document: Nope.md. Use a number or name from the list: ")
-    assert run.result["error"].endswith("1 Alpha.md, 2 Beta.md, 3 Gamma.md.")
+    # the map's own form: where the number ends and the name begins can't be misread
+    assert run.result["error"].endswith('1. "Alpha.md", 2. "Beta.md", 3. "Gamma.md".')
     assert ctx.shown == set() and ctx.evidence == []                     # nothing was searched
     two = await _search(ctx, {"query": "overview", "documents": [7, "x\ny"]}, "c2")
     assert two.result["error"].startswith("Unknown document: 7, x y. ")
@@ -427,10 +428,26 @@ async def test_a_result_lists_only_the_documents_it_refers_to(project):
 def test_resolve_documents_returns_found_and_unknown_in_the_order_given():
     docs = [ScopeDoc(i, doc_search.ReadableDoc(str(i) * 64, n, "indexed"), n, False)
             for i, n in ((1, "Alpha.md"), (2, "Beta.md"), (3, "2024"))]
-    found, unknown = scope.resolve_documents(docs, [2, "alpha.MD", "2", 2.0, "2024", 9, "x\ny", True])
-    assert [d.ref for d in found] == [2, 1, 3]            # "2" and 2.0 name Beta again: once; "2024" is a name
+    found, waiting, unknown = scope.resolve_documents(docs[:2], [2, "alpha.MD", "2", 2.0, "2024", 9, "x\ny", True],
+                                                      docs)
+    assert [d.ref for d in found] == [2, 1]               # "2" and 2.0 name Beta again: once
+    assert [d.ref for d in waiting] == [3]                # "2024" is a name: listed, not in scope
     assert unknown == ["9", "x y", "True"]
-    assert scope.resolve_documents(docs, []) == ([], [])
+    assert scope.resolve_documents(docs, []) == ([], [], [])
+
+
+def test_resolve_document_takes_the_number_and_name_together():
+    """The map lists `17. "README.md"`; next to names that start with their own number ("10-pbx.md") a model
+    writes "17-README.md". The number and the name must name the SAME document: a number that is another
+    document's, or a name that isn't the numbered one's, is still unknown."""
+    docs = [ScopeDoc(i, doc_search.ReadableDoc(str(i) * 64, n, "indexed"), n, False)
+            for i, n in ((10, "10-pbx.md"), (17, "README.md"), (18, "README.md (2)"))]
+    named = {v: (d.ref if (d := scope.resolve_document(docs, v)) else None)
+             for v in ("17-README.md", '17. "README.md"', "17 readme.md", "17: README.md", "18-README.md (2)",
+                       '"README.md"', "10-pbx.md", "10-10-pbx.md", "18-README.md", "17-pbx.md", "17-", "17x")}
+    assert named == {"17-README.md": 17, '17. "README.md"': 17, "17 readme.md": 17, "17: README.md": 17,
+                     "18-README.md (2)": 18, '"README.md"': 17, "10-pbx.md": 10, "10-10-pbx.md": 10,
+                     "18-README.md": None, "17-pbx.md": None, "17-": None, "17x": None}
 
 
 async def test_search_documents_ignores_documents_in_document_scope(indexed):
@@ -441,7 +458,7 @@ async def test_search_documents_ignores_documents_in_document_scope(indexed):
 
 
 def test_the_search_tool_takes_an_optional_documents_list():
-    spec = sd_tool.TOOL.spec.parameters
+    spec = sd_tool.TOOL.project_spec.parameters   # a project chat's; one document has nothing to narrow
     assert spec["properties"]["documents"]["type"] == "array"
     assert spec["properties"]["documents"]["items"] == {"type": ["integer", "string"]}
     assert spec["required"] == ["query"]
@@ -488,3 +505,20 @@ async def test_a_follow_up_search_reaches_a_documents_deeper_passages(db_conn, m
     # The notes about what the model already has still come, for the documents they are from.
     assert run.result["already_shown"] == [{"ref": 1, "pages": [1, 2]}, {"ref": 2, "pages": [1]}, {"ref": 5, "pages": [1]}]
     assert [d["ref"] for d in run.result["documents"]] == [1, 2, 3, 5]
+
+
+def test_tool_specs_say_what_the_scope_is():
+    """A project chat's search and page tools say they reach the project's documents, by the number or name the
+    map lists; a one-document chat's have no document field to fill in (the open document is the only one)."""
+    one = ScopeDoc(1, doc_search.ReadableDoc("1" * 64, "Alpha.md", "indexed"), "Alpha.md", False)
+    from server.chat.project_scope import ProjectScope
+    project = ToolContext("u", None, project=ProjectScope("p", "P", (one,)))
+    document = ToolContext("u", doc_search.ReadableDoc("1" * 64, "Alpha.md", "indexed"))
+    for tool, field_ in ((sd_tool.TOOL, "documents"), (chat_tools.read_document_pages.TOOL, "document")):
+        in_project = chat_tools.tool_spec(tool, project)
+        assert "open document" not in in_project.description and "project's documents" in in_project.description
+        assert "project map" in in_project.parameters["properties"][field_]["description"]
+        assert "ref" not in in_project.parameters["properties"][field_]["description"]
+        assert field_ not in chat_tools.tool_spec(tool, document).parameters["properties"]
+    # a tool with one spec for every scope is sent as it is
+    assert chat_tools.tool_spec(ws_tool.TOOL, project) is ws_tool.TOOL.spec

@@ -24,19 +24,33 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import AttachmentPreview from "./AttachmentPreview";
+import TextFileViewer from "./TextFileViewer";
 import ScopeChip from "./chat/ScopeChip";
 import WebOfferCard from "./chat/WebOfferCard";
 import { citationDocs, remarkCitations } from "../lib/citations";
 import { estimateTokens } from "../hooks/inference";
 import { buildPinPreamble } from "../hooks/pins";
-// VoiceRecorder is intentionally not imported — audio attachments are paused
-// until a Whisper-style transcription step is added (see plan file). The file
-// itself is kept on disk so re-enabling is a single import + a JSX block.
+import MicButton from "./chat/MicButton";
+import { useVoiceInput } from "../hooks/useVoiceInput";
 import {
   fileToAttachment,
   IMAGE_ACCEPT,
+  TEXT_ACCEPT,
   kindFromMime,
+  textLimitBytes,
+  sentTextOf,
+  utf8Bytes,
 } from "../utils/attachment";
+import {
+  TEXT_FILE_MAX_BYTES,
+  TEXT_MESSAGE_MAX_BYTES,
+  isTextFile,
+  maskText,
+  readTextFile,
+} from "../utils/textAttachment";
+
+const NOT_ATTACHABLE =
+  "Only images and text files can be attached here. PDFs go in the Library.";
 
 export default function ChatView({
   theme,
@@ -45,6 +59,9 @@ export default function ChatView({
   messages,
   isStreaming,
   selectedModel,
+  // The picker's entries ({id, name, local, ...}): the text viewer words its
+  // "send real values" question by whether the model runs on this machine.
+  availableModels = [],
   reachable,
   inferenceBudget,
   sendMessage,
@@ -81,6 +98,11 @@ export default function ChatView({
   // A narrow column (ChatSidePanel, beside the page): tighter padding, and
   // the model picker is above it rather than in the sidebar.
   compact = false,
+  // Speak a message: where the speech routes live, and the person's Speech
+  // language setting ('auto' or a code).
+  apiHost = '',
+  apiPort = '',
+  speechLanguage = 'auto',
 }) {
   const copyMessage = async (text) => {
     if (!text) return;
@@ -97,6 +119,14 @@ export default function ChatView({
   const listRef = useRef(null);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
+  // The attachments as of now, read by ingestFiles after its awaits: the render
+  // closure's copy is stale by then (a later file in one drop must see the
+  // earlier ones).
+  const pendingRef = useRef(pendingAttachments);
+  useEffect(() => { pendingRef.current = pendingAttachments; }, [pendingAttachments]);
+  const [viewingId, setViewingId] = useState(null);
+  const selectedModelRef = useRef(selectedModel);
+  useEffect(() => { selectedModelRef.current = selectedModel; }, [selectedModel]);
   // Stick-to-bottom flag: when true, new messages/tokens auto-scroll the list to
   // the bottom (live "tailing"). When the user scrolls up, this flips to false
   // so they can read history without each token snapping them back down.
@@ -126,34 +156,155 @@ export default function ChatView({
     ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
   }, [draft]);
 
+  // ------ Speak a message ------
+  // The transcript goes into the box at the caret as it is when the answer
+  // arrives (the person may have typed or moved meanwhile): read from the
+  // textarea itself, never from where the recording began. A selection is
+  // never replaced. A space is added only where one is missing. Nothing is sent.
+  const caretAfterRef = useRef(null);
+  const insertTranscript = (text) => {
+    const ta = textareaRef.current;
+    const current = ta ? ta.value : "";
+    const at = ta ? Math.min(ta.selectionEnd ?? current.length, current.length) : current.length;
+    const before = current.slice(0, at);
+    const after = current.slice(at);
+    const lead = before && !/\s$/.test(before) ? " " : "";
+    const trail = after && !/^\s/.test(after) ? " " : "";
+    caretAfterRef.current = before.length + lead.length + text.length;
+    setDraft(before + lead + text + trail + after);
+  };
+  const voice = useVoiceInput({
+    apiHost,
+    apiPort,
+    language: speechLanguage,
+    onText: insertTranscript,
+    showToast,
+  });
+  // Cancel, Escape and a failure end the recording with the focus gone from the page (the controls were
+  // replaced): give it back to the box, as an answer does.
+  // Only when nobody else has it: a transcription takes seconds, and a person who opened a dialog or moved to
+  // another field meanwhile must not have focus pulled from under them. "Nobody" is the page itself (body),
+  // the mic controls (which were just replaced), or the box.
+  const micRef = useRef(null);
+  const mayTakeFocus = () => {
+    const active = document.activeElement;
+    return !active || active === document.body || active === textareaRef.current || !!micRef.current?.contains(active);
+  };
+  const prevPhaseRef = useRef('idle');
+  useEffect(() => {
+    if (prevPhaseRef.current !== 'idle' && voice.phase === 'idle' && mayTakeFocus()) textareaRef.current?.focus();
+    prevPhaseRef.current = voice.phase;
+  }, [voice.phase]);
+  // After the new draft is rendered: focus the box, caret just after the text.
+  useEffect(() => {
+    const pos = caretAfterRef.current;
+    const ta = textareaRef.current;
+    if (pos === null || !ta || ta.value.length < pos) return;
+    caretAfterRef.current = null;
+    if (!mayTakeFocus()) return;   // the text is in the box either way
+    ta.focus();
+    ta.setSelectionRange(pos, pos);
+  }, [draft]);
+
   // ------ Attachment helpers ------
-  // Audio attachments are temporarily disabled — the Ollama image projector
-  // can't decode audio bytes, and we haven't added a Whisper transcription
-  // step yet. Audio files are filtered out here with a friendly toast.
+  // Audio FILES are still refused here with a friendly toast: the model
+  // can't decode audio bytes. Speaking a message (the microphone button) is
+  // different: the server transcribes it and the text lands in the box.
   const ingestFiles = async (fileList) => {
-    const all = Array.from(fileList || []);
-    const dropped = all.filter((f) => f && kindFromMime(f.type) === "audio");
-    if (dropped.length > 0) {
+    const all = Array.from(fileList || []).filter(Boolean);
+    const isImage = (f) => kindFromMime(f.type) === "image";
+    const isAudio = (f) => kindFromMime(f.type) === "audio";
+    if (all.some(isAudio)) {
       showToast?.(
         "Audio attachments are not supported yet — coming soon.",
         4000,
       );
     }
-    const files = all.filter((f) => f && kindFromMime(f.type) === "image");
-    if (files.length === 0) return;
-    const results = await Promise.all(files.map((f) => fileToAttachment(f)));
+    const files = all.filter(isImage);
+    const texts = all.filter((f) => !isImage(f) && !isAudio(f) && isTextFile(f));
+    if (all.some((f) => !isImage(f) && !isAudio(f) && !isTextFile(f))) {
+      showToast?.(NOT_ATTACHABLE, 5000);
+    }
     const accepted = [];
-    for (const r of results) {
-      if (r.ok) accepted.push(r.attachment);
-      else showToast?.(r.error, 4000);
+    if (files.length > 0) {
+      const results = await Promise.all(files.map((f) => fileToAttachment(f)));
+      for (const r of results) {
+        if (r.ok) accepted.push(r.attachment);
+        else showToast?.(r.error, 4000);
+      }
+    }
+    // Text files, one after another: each is counted against the message limit
+    // with everything staged so far, this batch included. The size that counts
+    // is the larger of the original and masked text, so choosing real values
+    // later can't push a message over what the server takes.
+    let total = pendingRef.current
+      .filter((a) => a.kind === "text")
+      .reduce((n, a) => n + textLimitBytes(a), 0);
+    for (const f of texts) {
+      const r = await readTextFile(f);
+      if (!r.ok) {
+        showToast?.(r.error, 4000);
+        continue;
+      }
+      if (r.text.length === 0) {
+        showToast?.(`${f.name} is empty`, 4000);
+        continue;
+      }
+      const m = maskText(f.name, r.text);
+      const att = {
+        id: crypto.randomUUID(),
+        kind: "text",
+        name: f.name,
+        mimeType: "text/plain",
+        size: f.size,
+        originalText: r.text,
+        maskedText: m.text,
+        masked: m.masked,
+        sendReal: false,
+      };
+      const size = textLimitBytes(att);
+      if (size > TEXT_FILE_MAX_BYTES) {
+        showToast?.(`${f.name} is over 64 KB`, 4000);
+        continue;
+      }
+      if (total + size > TEXT_MESSAGE_MAX_BYTES) {
+        showToast?.("The attached text is over 128 KB", 4000);
+        continue;
+      }
+      total += size;
+      accepted.push(att);
     }
     if (accepted.length) {
+      pendingRef.current = [...pendingRef.current, ...accepted];
       setPendingAttachments((prev) => [...prev, ...accepted]);
     }
   };
 
   const removePending = (id) => {
+    pendingRef.current = pendingRef.current.filter((a) => a.id !== id);
     setPendingAttachments((prev) => prev.filter((a) => a.id !== id));
+  };
+
+  // Real values are agreed for a model that was named in the question. Another
+  // model has not been agreed to, so masking goes back on for every file.
+  const prevModelRef = useRef(selectedModel);
+  useEffect(() => {
+    if (prevModelRef.current === selectedModel) return;
+    prevModelRef.current = selectedModel;
+    if (!pendingRef.current.some((a) => a.kind === "text" && a.sendReal)) return;
+    pendingRef.current = pendingRef.current.map((a) =>
+      a.kind === "text" && a.sendReal ? { ...a, sendReal: false } : a,
+    );
+    setPendingAttachments((prev) =>
+      prev.map((a) => (a.kind === "text" && a.sendReal ? { ...a, sendReal: false } : a)),
+    );
+    showToast?.("Masking is back on: you changed the model.", 4000);
+  }, [selectedModel, setPendingAttachments, showToast]);
+
+  const allowRealValues = (id) => {
+    const on = (a) => (a.id === id ? { ...a, sendReal: true } : a);
+    pendingRef.current = pendingRef.current.map(on);
+    setPendingAttachments((prev) => prev.map(on));
   };
 
   const handleFileChange = (e) => {
@@ -167,7 +318,7 @@ export default function ChatView({
     if (!items || items.length === 0) return;
     const filesFromClipboard = [];
     for (const it of items) {
-      if (it.kind === "file" && it.type.startsWith("image/")) {
+      if (it.kind === "file") {
         const f = it.getAsFile();
         if (f) filesFromClipboard.push(f);
       }
@@ -211,10 +362,18 @@ export default function ChatView({
   // Counts what actually gets sent: message contents plus the FULL pin preamble
   // (buildPinPreamble wraps each excerpt in ~57 tokens of framing), both of
   // which are re-sent on every turn.
-  const ctxTokens = estimateTokens([
-    ...messages.map((m) => m.content),
-    ...buildPinPreamble(pins).map((m) => m.content),
-  ]);
+  // Staged text files count at what would be sent (the masked or the real text, in bytes) / 4, so the meter
+  // shows a big file before Send. The new message is never trimmed: this is where the person sees it.
+  const stagedTextTokens = Math.ceil(
+    pendingAttachments
+      .filter((a) => a.kind === "text")
+      .reduce((n, a) => n + utf8Bytes(sentTextOf(a)), 0) / 4,
+  );
+  const ctxTokens =
+    estimateTokens([
+      ...messages.map((m) => m.content),
+      ...buildPinPreamble(pins).map((m) => m.content),
+    ]) + stagedTextTokens;
   const ctxRatio = numCtx ? ctxTokens / numCtx : 0;
   // The running total keeps a decimal so it visibly moves as the conversation
   // grows; the window is a fixed preset and reads better whole. This is a
@@ -236,10 +395,16 @@ export default function ChatView({
     reachable !== false &&
     inferenceBudget?.remaining_tokens !== 0;
 
+  const viewing =
+    pendingAttachments.find((a) => a.id === viewingId && a.kind === "text") || null;
+  const modelEntry = availableModels.find((m) => m.id === selectedModel);
+
   const handleSend = () => {
     if (!canSend) return;
     const text = draft;
     const atts = pendingAttachments;
+    setViewingId(null);
+    const sentModel = selectedModel;
     setDraft("");
     setPendingAttachments([]);
     // A refused turn (409, 413, …) never reached the chat: put the text and
@@ -247,7 +412,14 @@ export default function ChatView({
     Promise.resolve(sendMessage(text, atts)).then((r) => {
       if (!r?.refused) return;
       setDraft((d) => d || text);
-      setPendingAttachments((a) => (a.length ? a : atts));
+      // Real values were agreed for the model the send was made with. If the
+      // picker moved meanwhile, the R4 effect saw nothing staged: do it here.
+      let back = atts;
+      if (selectedModelRef.current !== sentModel && atts.some((a) => a.kind === "text" && a.sendReal)) {
+        back = atts.map((a) => (a.kind === "text" && a.sendReal ? { ...a, sendReal: false } : a));
+        showToast?.("Masking is back on: you changed the model.", 4000);
+      }
+      setPendingAttachments((a) => (a.length ? a : back));
     });
   };
 
@@ -288,7 +460,7 @@ export default function ChatView({
           >
             <ImagePlus size={20} className="text-blue-500" />
             <span className={`text-sm font-bold ${theme.text}`}>
-              Drop an image to attach
+              Drop an image or a text file to attach
             </span>
           </div>
         </div>
@@ -389,6 +561,16 @@ export default function ChatView({
               ))}
             </div>
           )}
+          {viewing && (
+            <TextFileViewer
+              attachment={viewing}
+              theme={theme}
+              modelName={modelEntry?.name || selectedModel}
+              isCloud={modelEntry?.local === false}
+              onSendReal={() => allowRealValues(viewing.id)}
+              onClose={() => setViewingId(null)}
+            />
+          )}
           {/* Pending attachments preview row */}
           {pendingAttachments.length > 0 && (
             <div className="flex flex-wrap gap-2">
@@ -399,27 +581,29 @@ export default function ChatView({
                   theme={theme}
                   darkMode={darkMode}
                   onRemove={() => removePending(att.id)}
+                  onOpen={() => setViewingId(att.id)}
                 />
               ))}
             </div>
           )}
 
           <div className="flex items-end gap-2">
-            {/* Paperclip — opens image picker (audio attachments
-                            paused; see useChatEngine.js comment) */}
+            {/* Paperclip — opens the picker for images and text files (audio
+                files are refused; speaking is the microphone beside it) */}
             <button
               onClick={() => fileInputRef.current?.click()}
               disabled={isStreaming}
               className={`p-3 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.textSecondary} hover:text-blue-500 transition-colors disabled:opacity-50`}
-              title="Attach image"
+              title="Attach an image or a text file"
             >
               <Paperclip size={18} />
             </button>
+            <div ref={micRef} className="contents"><MicButton theme={theme} voice={voice} /></div>
             <input
               type="file"
               ref={fileInputRef}
               onChange={handleFileChange}
-              accept={IMAGE_ACCEPT}
+              accept={`${IMAGE_ACCEPT},${TEXT_ACCEPT}`}
               multiple
               className="hidden"
             />
@@ -435,10 +619,10 @@ export default function ChatView({
                   ? "Can't reach the model server."
                   : !selectedModel
                     ? (compact ? "Pick a model above to start." : "Pick a model in the sidebar to start.")
-                    : "Ask the model, drop / paste / attach an image…  (Enter to send)"
+                    : "Ask the model, drop / paste / attach an image or a text file…  (Enter to send)"
               }
               rows={1}
-              className={`flex-1 resize-none p-3 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.text} text-sm leading-relaxed outline-none focus:ring-2 focus:ring-blue-500 transition-colors`}
+              className={`flex-1 min-w-0 resize-none p-3 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.text} text-sm leading-relaxed outline-none focus:ring-2 focus:ring-blue-500 transition-colors`}
               style={{ maxHeight: "200px" }}
             />
             {isStreaming ? (
@@ -1144,6 +1328,21 @@ function ContextNotes({ notes, theme }) {
         if (n.messages) parts.push(`${plural(n.messages, "older message")}`);
         if (n.attachments) parts.push(`${plural(n.attachments, "older attachment")}`);
         return parts.length ? `Trimmed ${parts.join(" and ")} to fit` : null;
+      }
+      if (n.kind === "file_held_back") {
+        // Real values were agreed for another model: the file, and any reply that read it, stayed out of this prompt.
+        const names = Array.isArray(n.names) ? n.names : [];
+        const sentences = [];
+        if (names.length) {
+          sentences.push(`${names.join(", ")} ${names.length === 1 ? "wasn't" : "weren't"} sent to this model: its real values were agreed for another one.`);
+          if (n.replies > 0) sentences.push("Earlier replies that read it weren't sent either.");
+        } else if (n.replies > 0) {
+          sentences.push("Replies that read real values weren't sent to this model.");
+        }
+        return sentences.length ? sentences.join(" ") : null;
+      }
+      if (n.kind === "file_larger_than_context") {
+        return `${n.name} is larger than this model's context: it may read only part of it.`;
       }
       return null;
     })

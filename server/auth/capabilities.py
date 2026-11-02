@@ -5,7 +5,8 @@ Realm roles are the source of truth; this module maps the token's
 built-in roles like `offline_access`)."""
 from __future__ import annotations
 
-KNOWN_CAPABILITIES = frozenset({"reader", "chat", "admin"})
+KNOWN_CAPABILITIES = frozenset({"reader", "chat", "admin", "docling"})
+# Admins may always convert documents, so the bootstrap admin doesn't need the `docling` role.
 BOOTSTRAP_ADMIN_CAPABILITIES = frozenset({"admin", "reader", "chat"})
 
 

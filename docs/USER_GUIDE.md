@@ -1,7 +1,7 @@
-# User Guide — accounts, tokens, admin, and chat budgets
+# User Guide — accounts, the library, chat and the admin console
 
-This is the **end-user guide** for the multi-user features: signing in, your
-account, personal access tokens, the admin section, and the chat inference
+This is the **end-user guide**: signing in, your account, personal access
+tokens, the admin console, the Library and projects, chat, and the daily token
 budget. (For developer internals see [ARCHITECTURE.md](ARCHITECTURE.md) and
 [IDENTITY_AND_ROLES.md](IDENTITY_AND_ROLES.md); reading features are covered in
 the [README](../README.md).)
@@ -12,7 +12,11 @@ the [README](../README.md).)
 - [Profile: your picture, password and signed-in browsers](#profile-your-picture-password-and-signed-in-browsers)
 - [Access tokens](#access-tokens)
 - [Admin console (admins only)](#admin-console-admins-only)
+- [Library: documents on the server](#library-documents-on-the-server)
+- [Projects and people](#projects-and-people)
 - [Chat: models and streaming](#chat-models-and-streaming)
+- [Attaching a text file](#attaching-a-text-file)
+- [Speaking a message](#speaking-a-message)
 - [Asking a whole project](#asking-a-whole-project)
 - [When the assistant offers a web search](#when-the-assistant-offers-a-web-search)
 - [The daily token budget](#the-daily-token-budget)
@@ -55,8 +59,8 @@ navigation (reader) and the model picker + sessions (chat). Everything about
   tokens** (the only place tokens are created). **Esc**, the **×** or a click
   outside closes it; it opens on the tab you used last.
 - **Admin** console — a separate view opened from the **shield** button in the
-  top view switcher (Reader / Chat / Library / Admin). Only admins see it. User
-  management only; **no token creation happens here.**
+  top view switcher (Reader / Chat / Library / Admin). Only admins see it.
+  **No token creation happens here.**
 
 ## Listening while you do something else
 
@@ -182,44 +186,88 @@ screenshot, or just cleaning house.
 ## Admin console (admins only)
 
 If you see a **shield** button in the top view switcher (Reader / Chat /
-Library / Admin), you're an admin — click it to open the Admin console. It
-lists every account with buttons per user:
+Library / Admin), you're an admin — click it to open the Admin console. (It's
+that button only; the profile menu has no Admin entry.) It opens on
+**Overview** and is split into sections, in a list down the left side. On a
+phone the list becomes a picker at the top. With the list focused, **Up** and
+**Down** move between sections (wrapping at the ends), **Home** and **End**
+jump to the first and last.
+
+| Section | What it holds |
+|---|---|
+| **Overview** | Whether the deployment works right now ([below](#overview-does-it-work-right-now)) |
+| **People** | Every account, enrollment, roles, budgets, project limits |
+| **Projects** | Every project, ownerless ones, taking one over |
+| **Models** | The reader, context sizes, windows, which providers are local, which chat models are offered ([below](#models-the-reader-context-sizes-and-which-models-people-get)) |
+| **Documents** | Limits on Docling conversion ([below](#documents-what-a-conversion-may-use)) |
+| **Chat** | The assistant's profile, the web search mode and whether the microphone is on ([below](#speaking-a-message)) |
+| **Defaults for users** | What read-aloud, voice, speed, thinking and speech language show for someone who hasn't chosen them |
+| **Usage** | Token use by model, by person and by day ([below](#usage-who-spent-tokens-on-which-model)) |
+| **Deployment** | The deployment timezone, and the server's own values read-only |
+
+**People** lists every account, 50 at a time. Over the list:
+
+- **Search people** (the box that says "Name, email or username") finds
+  accounts as you type, after a short pause (300 ms). It matches part of an
+  email, username, display name, first or last name, or the two together
+  ("Ada Lovelace"), in any letter case. The server does the searching, so it
+  covers every account, not only the ones already on screen.
+- **Status** (All, Active, Pending, Disabled) and **Capability** (Any, or one
+  capability such as `docling`) narrow the list. They combine with the search:
+  a person has to match all of them.
+- A line under them reads "Showing 50 of 212": how many are on screen, and how
+  many match. **Show more** loads the next 50. With nothing matching, the list
+  says "No one matches."
+- Changing someone (a button, a capability tick, a budget) keeps your search
+  and filters, and the rows you had opened with **Show more**, up to 200 rows;
+  past 200 the list reloads as its first 200.
+
+Each row has buttons per user:
 
 | Button | Effect |
 |---|---|
 | **Activate** | Moves a `pending` account to active — the user can sign in (do this after you've vetted them) |
 | **Disable** | Signs the user out **everywhere, immediately** and blocks them until reactivated. Their data is kept |
-| **Make admin / Make member** | Grants or removes admin rights. Takes effect on the user's very next request — no re-login needed on the server's side; their open tab refreshes its view of the role on next page load |
+| **Delete** | Removes the account for good, once you type their email to confirm: sessions, tokens, usage, library entries, project memberships and chats go with it, and so do documents nobody else holds. Projects survive (ownerless if this was their last Owner). With the Keycloak service account configured, their Keycloak user is deleted too |
+
+Under each row, the **capabilities** ticks (`reader`, `chat`, `admin`, `docling`) grant or remove what the person can do. A change takes effect on their very next request, with no re-login; their open tab refreshes its view on the next page load.
+
+**Enrolling someone.** The form above the list creates an account before its owner ever logs in: their email and name, a status, a budget and capability ticks. With the Keycloak service account configured it also creates their Keycloak user and either emails them an invite or shows a one-time temporary password, once, to pass on. Without it, the row waits for its owner's first login with that email.
 
 Notes:
 
-- You can't disable or demote **yourself** from this list (the buttons are
-  hidden on your own row) — that's a lockout guard in the UI.
+- You can't disable or delete **yourself**, or untick your own `admin`, from
+  this list — the controls are hidden or locked on your own row, and the server
+  refuses to remove the last active admin.
 - New users appear here automatically, as `pending`, the first time they log
   in.
 - **Offboarding order matters.** To remove someone: click **Disable here
   first** — that signs them out everywhere and blocks their tokens — and only
-  then delete them in the login system (Keycloak), if that's how you manage
-  accounts. Deleting them in Keycloak *alone* does **not** remove them here:
+  then delete them, with **Delete** here or in the login system (Keycloak).
+  Deleting them in Keycloak *alone* does **not** remove them here:
   their account stays active, any already-issued tokens keep working, and that
   email address becomes permanently unusable (a new account with the same
   email will be rejected with "email already linked to another identity").
-- Roles are managed **here, not in the login system** — your organization's
-  login (Keycloak) only verifies who you are; whether you're an admin is a
-  fact this application owns.
-- Per-user inference budget and the usage dashboard are server-side already;
-  the UI for them is a planned follow-up (admins can currently manage budgets
-  only via the API).
-- The Admin console's **Deployment config** section lists every configured
-  model provider (name, kind, host, and either how many models it has or
-  "unreachable") so you can see at a glance what's wired up without reading
-  `.env` on the server — API keys are never shown here or anywhere else. The
-  row that used to say "Ollama URL" is now **"Embeddings (Ollama) URL"**,
-  since that's the only thing that setting still controls (chat models come
-  from the provider list above it). There's still no button here to add or
-  change a provider — that's a `.env` + restart task for whoever runs the
-  server.
-- The **Assistant** section sets the assistant's profile: its name,
+- **Capabilities live in the login system.** They are Keycloak realm roles, and
+  each login copies them into the app. A tick here writes to Keycloak first when
+  the server has the Keycloak service account (`KC_ADMIN_*`), so it lasts.
+  Without that account a tick lasts only until the person's next login. See
+  [IDENTITY_AND_ROLES.md](IDENTITY_AND_ROLES.md#where-roles-actually-live-keycloak-realm-roles--userscapabilities).
+- Each person's daily token budget is the **Budget** box on their row under
+  **People** (empty = the deployment default, 0 = unlimited; press **Set**).
+  **Usage** shows tokens by model, by person and by day.
+- The **Deployment** section's read-only list shows every configured model
+  provider as `kind · URL` (for example `ollama · http://host:11434`), so you
+  can see at a glance what's wired up without reading `.env` on the server.
+  API keys are never shown here or anywhere else: a key reads only **set** or
+  **not set**. The embedding server has its own row, **Embedding server**
+  (that's the only thing the `OLLAMA_URL` setting still controls; chat models
+  come from the providers). Whether a provider answers, and how many models it
+  lists, is in **Overview → Model providers**, not here. There's still no
+  button to add or change a provider: that's a `.env` + restart task for
+  whoever runs the server. The [full list](#deployment-the-timezone-and-the-servers-own-values)
+  is below.
+- The **Assistant profile** (in **Chat**) sets the assistant's profile: its name,
   personality, tone and house rules (for example "You are Ada, the
   reading-room assistant. Answer warmly and briefly, in British English.").
   - It goes first in every chat, from the next message on; the app's own
@@ -234,10 +282,13 @@ Notes:
     shows about how many tokens), and up to 8,000 characters are allowed.
   - Don't name the app's tools (`web_search` and so on): describe the
     behaviour you want. The section warns you if you do.
-- **Chat options** has one setting so far, **Web search**: **Ask first** (the
+- **Chat options** (also in **Chat**) has two settings. **Voice input** (On or Off, **off** by
+  default) is described under [Speaking a message](#speaking-a-message). The other is
+  **Web search**: **Ask first** (the
   default: the assistant can only offer a search and the person says yes on a
   card), **Search without asking**, or **Off**.
-  - A change applies from each person's next message and shows a notice
+  - There is no Save button: picking a choice saves it at once. A change
+    applies from each person's next message and shows a notice
     ("Web search: Ask first. Applies from the next message.").
   - The line under the choices says where the current value comes from: **Set
     here.**, **From the server setting CHAT_WEB_SEARCH.** or **The default.**
@@ -248,7 +299,285 @@ Notes:
   - After a change, the Assistant section's **What the model receives** updates
     to show the rules a document chat gets in that mode.
 
-**Projects.** Every project, with its owners and counts. **Ownerless only**
+### Settings that share one look
+
+Every setting in **Chat options**, **Models**, **Documents** and **Deployment**
+says where its value comes from and can go back to the server's, the same way.
+**Models**, **Documents** and **Deployment** also share one Save; **Chat options** saves each choice as you
+pick it (see above), so it has no Save, no draft and no unsaved-changes question.
+The **Assistant profile** and **Defaults for users** keep their own Save buttons.
+
+**Long lists.** The Save at the bottom of a section stays on screen as you scroll, so
+you never have to go to the end of the page to reach it. Past 12 entries, a list gets
+a search box: the per-model lists under **Models** scroll in their own box, and a long
+dropdown (timezone, model, voice, language) narrows as you type, then shows the matches
+to pick from. Searching hides rows, not what they hold: ticks and numbers you can't
+see still save, and a box with a mistake in it stays visible.
+
+- A line under the setting says where its value comes from: **Set here.**
+  (you chose it in the console), **From the server setting** `NAME` (the
+  deployer's `.env`), or **The default.**
+- **Use the server setting** appears once you've set one here. It removes
+  your choice, so the deployer's value (or the default) applies again.
+- In **Models**, **Documents** and **Deployment**, a section has **one Save**, for
+  everything you changed in it. Nothing is written until you press it.
+  **Discard changes** puts the section back as saved.
+- Leaving a section with unsaved changes (another section, a phone's picker,
+  **Back to reader**, or the header's Reader / Chat / Library buttons and Log
+  out) asks first: **Keep editing** stays and keeps your changes, **Discard
+  changes** leaves without them. **Esc** is the same as Keep editing. The same
+  question covers an unsaved Assistant profile or Defaults change. Reloading or
+  closing the browser tab is not guarded.
+- A change applies at once, on every worker: the next request, message or
+  conversion reads it. There is no restart.
+- **The console can only narrow what the server allows.** If `.env` allows
+  only the Fast and Standard presets, ticking Accurate here changes nothing,
+  and the section says the server setting turned it off.
+- Every saved change writes a line to the audit log: who, which setting, the
+  value before and after.
+
+### Overview: does it work right now?
+
+**Overview** runs a check for each part of the deployment that can be quietly
+broken, and shows a state for each: **OK**, **Warning**, **Problem** or
+**Off**, then one line of why. **Check again** runs them again. A check that
+hangs (a provider or a search server that accepts the connection and then goes
+silent) is cut off after 5 seconds with "Didn't answer within 5 seconds.", and
+the others still show. A line's **Open …** link jumps to the section that
+changes it.
+
+| Check | What it looks at |
+|---|---|
+| **Model providers** | Which providers answer, and how many models each lists |
+| **Reader** | The model that reads documents and web pages for the assistant, and where it comes from. The chat model itself is **OK**; a named model is checked: is it in the deployment's model list (`INFERENCE_MODELS` or the provider's own list; an **Error** if not, from wherever the reader is set), and is it pulled on its provider? When the reader is the chat model and some chat model is a cloud one, the line adds that reader calls count against that model's quota, and points to **Models** |
+| **Context windows** | Each chat model's window, where the number comes from, and whether a project-chat turn fits in it |
+| **Embeddings** | Whether the embedding model answers, and returns the width (768) the database holds; and how many documents are waiting to be rebuilt |
+| **Docling** | Whether conversion is on |
+| **Web search** | Whether the search server answers |
+| **Voice input** | **Off** ("Off. Admin → Chat options turns it on."), **Warning** while the speech model downloads or loads ("Getting ready: downloading or loading small."), **OK** when it is ready ("local · small · runs on this server", or the host a remote engine calls), or **Problem** with the reason when it isn't working |
+
+**Context windows** gives each model the number the app works with, and says
+where it came from. First match wins:
+
+1. a self-hosted Ollama model that is loaded right now: **Loaded now (Ollama)**,
+   with the size it was loaded at;
+2. a self-hosted Ollama model that isn't loaded, whether its provider is marked
+   **Local** or **Cloud**: the size requests to it send: its own size, or the
+   deployment's size, set in **Models** or by `INFERENCE_LOCAL_NUM_CTX`; with
+   neither, 16,384 tokens (lower if `INFERENCE_NUM_CTX_MAX` is lower), "unless a
+   person sets their own in Settings";
+3. an Ollama cloud model (a name ending `-cloud` or `:cloud`, or the ollama.com
+   host): its maximum;
+4. any other model: what its provider reports;
+5. else what you declared under **Models -> Declared context windows** (or
+   `INFERENCE_<NAME>_CONTEXT_WINDOW`);
+6. else **Unknown: the provider doesn't report one. Declare it in Models.**
+
+Ollama's own maximum for a local model (131,072, say) is never shown as its
+window: Ollama loads the model at a smaller size, and the number the app trims
+history to must be the one it was loaded with. If every chat model chosen in
+**Models** has gone from the providers' lists, the line is a **Warning**: "None
+of the chat models chosen in Models is listed by a provider: nobody can chat."
+
+### Models: the reader, context sizes, and which models people get
+
+**Admin console -> Models** sets how the server uses the models it can reach.
+A change applies from the next message, on every worker, with no restart. The
+section saves once (**Save**, **Discard changes**), and each setting's source
+line and **Use the server setting** work as [above](#settings-that-share-one-look).
+The models and providers it lists come from the providers themselves: above the
+settings it says **Loading the models...** while it asks, or **Couldn't load the
+models.** if that fails (the settings still show, with empty model lists).
+
+| Setting (the label on screen) | What it does | Server setting (default) |
+|---|---|---|
+| **Reader** | The model that reads documents and web pages for the chat model. **The chat model of each conversation**, or a model from the list (a model the console doesn't list stays selectable if it is already set). Save refuses a model outside the deployment's model list: "That model isn't in this deployment's model list." | `READER_MODEL`, then `SUMMARIZE_MODEL`, then `WEB_SEARCH_SUMMARY_MODEL` (the chat model) |
+| **Context size for local Ollama models** | One size, in tokens, for every request to a model the app sizes (below). A whole number from 2,048 to 2,097,152 (Save stays off while a box holds anything else); the line under it names the ceiling `INFERENCE_NUM_CTX_MAX` | `INFERENCE_LOCAL_NUM_CTX` (unset: each person's own setting, else 16,384) |
+| **Per-model sizes** | A size for one model, which beats the size above. One box per model the app sizes; empty = the size above | none |
+| **Declared context windows** | The window history is trimmed to for a model whose provider reports none. One box per such model; 1,024 to 10,000,000 | `INFERENCE_<NAME>_CONTEXT_WINDOW` per provider (`<NAME>` as in `INFERENCE_<NAME>_URL`) |
+| **Providers** | **Auto**, **Local** or **Cloud** for each provider; **Auto** names what it guessed from the address ("Auto (cloud)") | none |
+| **Chat models offered** | Tick the models people may chat with. None ticked = every model the server allows | none (`INFERENCE_MODELS` and each provider's own allow-list still apply) |
+
+**Which models get a context size.** Ollama loads a model at 4,096 tokens on a
+machine with under 24 GiB of VRAM unless each request names a size, and cuts the
+start of a long prompt without saying so. So the app names one on every request
+to a **self-hosted Ollama model**, whatever its host name and whether you marked
+its provider **Local** or **Cloud**. Not sized: Ollama cloud models (a name
+ending `-cloud` or `:cloud`, or the ollama.com host), the only Ollama models
+without a size, which get the window their provider reports; and every model on
+an OpenAI-compatible provider (that API has no such option). For those the app
+never sets a size of its own.
+A person's own Settings value, if they chose one, is still passed on with each
+chat message (clamped to the ceiling; an OpenAI-compatible provider ignores
+it). For those models the reader's calls send none; a reader on a sized model
+gets a size (see **The reader** below).
+
+For a sized model the size is the first of these that is set, then clamped to
+`INFERENCE_NUM_CTX_MAX` (32,768 unless changed):
+
+1. **Per-model sizes** for that model;
+2. **Context size for local Ollama models** (the console's, else
+   `INFERENCE_LOCAL_NUM_CTX`);
+3. the person's own **Settings -> Chat -> Context window**;
+4. 16,384.
+
+A bigger size reserves more memory when the model loads, so on a machine short
+of RAM lower it here rather than leaving 16,384.
+
+**What the person sees.** In **Settings -> Chat**, a self-hosted Ollama model's
+**Context window** row reads "Set by your admin: N tokens." and is locked at N when
+steps 1 or 2 set a size (their own value stays stored, and applies again once neither **Models**, the
+server's `INFERENCE_LOCAL_NUM_CTX` nor a per-model size sets one for that model). Otherwise its **Auto** option reads "Auto (16,384 on this
+server)", the size it will really get.
+
+**The reader.** With **The chat model of each conversation** the reader uses the
+model already loaded, at the chat's size (on a sized model, the size from the
+list above: its per-model size, else the deployment's, else the person's own
+value if they chose one rather than **Auto**, else 16,384, clamped), so
+Ollama doesn't swap models or reload one between
+chat and reader calls; it is the default on a deployment
+that names no reader. The price is for a cloud chat model: reader calls count
+against that model's quota (and the daily budget either way). To keep them off
+it, pick a small local model: it loads at a size from the list above without
+step 3 (its per-model size, else the deployment's, else 16,384, clamped), never
+the person's. A reader on a model the app doesn't size (Ollama cloud, an
+OpenAI-compatible provider) sends no size. Each
+reader batch is cut to fit its model's window: never above `READER_INPUT_CHARS`,
+and at most 16 passages.
+
+**Providers: local or cloud.** This flag is about cost, not sizing: the
+Overview's quota hint, the **Where** column in **Usage**, and the **Auto** label. **Auto**
+guesses from the provider's address: `localhost`, a private or loopback
+address, `100.64.0.0/10` (Tailscale), a single-word name such as `ollama`, or a
+name ending `.local`, `.lan`, `.internal` or `.home.arpa` is local; anything else
+is cloud. Choose **Local** or **Cloud** if the guess is wrong. The flag never
+changes sizing: an Ollama you host is sized even when you mark it **Cloud** (a
+rented GPU box whose usage should count as cloud, say), because its Ollama still
+loads at 4,096 tokens unless told otherwise.
+
+**Chat models offered.** The picker in Chat and **Settings -> Chat** shows only
+the ticked models, and a request for another is refused ("That model isn't
+available on this server."). The console can only narrow: the list is
+intersected with what the server allows, never widened. If you tick models and
+they later disappear from the providers, people are offered no model until you
+untick or choose others (the Overview warns).
+
+**Not here.** Adding or changing a provider is still a `.env` and restart task,
+and so is the embedding model.
+
+### Usage: who spent tokens on which model
+
+**Usage** counts every token the server spent for chat replies and for the
+reader's calls (the sub-agent that reads documents and web pages). It opens on
+**By model**, and the **Usage days** select above the table (last 1, 7, 14, 30
+or 90 days) applies to all three views. The three buttons switch the view:
+
+- **By model** has one row per model: **Model**, **Where** (**Local**, **Cloud**
+  or **Unknown**), **Chat** and **Reader** tokens, **Requests**, **Total** and
+  **Estimated**.
+- **By person** has one row per person with the same token figures (**Chat**,
+  **Reader**, **Requests**, **Total**, **Estimated**), without **Model** and
+  **Where**. The arrow at the
+  end of a row (its label is **Models for** that person's address) opens that
+  person's own per-model rows beneath it; click it again to close.
+- **By day** has one row per day, newest first, in the deployment's timezone
+  (see **Deployment** below).
+
+On **By person** and **By day** the **Model** select next to the buttons narrows
+the list to one model (**All models** is the default; **Unknown** picks usage
+with no model, below). An opened person's rows follow it, so they add up to the
+filtered row above them. Changing **Usage days** puts the **Model** select back
+to **All models**, because the new range may not contain that model.
+
+Read it with these in mind:
+
+- **Reader tokens sit on the reader model's own row.** If the reader is a
+  different model from the one people chat with, the chat model's row shows
+  **Reader** 0 and the reader model's row carries them. A chat request and a
+  reader batch each count as one request: **Requests** counts model calls, so
+  a reply that uses tools makes several chat requests.
+- **Usage from before the upgrade shows as Unknown and can't be split.** It was
+  recorded with no model and no chat/reader split, so its row shows **Chat** 0
+  and **Reader** 0 while **Total** holds the tokens: **Chat** plus **Reader**
+  can be less than **Total**. A note under the table appears whenever the range
+  contains such usage. It still counts toward each person's daily budget.
+- **Where** follows the provider's mark **today**. It uses the **Providers**
+  setting in **Models** (Auto, Local or Cloud), so changing a mark re-labels
+  the whole history, not only new usage. A model whose provider is no longer
+  configured is **Unknown**, as is a reader model the server couldn't place
+  (it is recorded under its bare name).
+- **Estimated** is the share of that row's tokens counted from text length
+  (characters divided by 4) because the provider sent no token counts. It reads
+  a whole percent, **<1%** for a small share, or a dash for none. Ollama always
+  sends counts, so with Ollama it is normally a dash.
+
+The old table's Prompt and Eval columns and its person-by-day rows are no
+longer on screen. A script can still read them: `GET /v1/admin/inference/usage`
+with no `group` returns them, and `group=day&user_id=<id>` gives one person's
+days. [ARCHITECTURE.md](ARCHITECTURE.md#routers) lists the parameters.
+
+### Documents: what a conversion may use
+
+Docling turns a PDF into Markdown (the reader offers **Convert** for PDFs). It is
+the heaviest job the server does, so **Documents** lets you narrow it. It
+appears only as a limit: the server's `DOCLING_ENABLED` (see the Deployment
+list) still decides whether conversion exists at all.
+
+| Setting | Choices | Server setting (default) |
+|---|---|---|
+| **Who may convert** | **Everyone with the reader capability**, or **Only people with the Docling role** (admins always can) | `DOCLING_CONVERT_BY` (`readers`) |
+| **Presets** | Fast, Standard, Accurate; at least one | `DOCLING_PRESETS` (`fast,standard,accurate`) |
+| **Allow OCR** | on / off | `DOCLING_ALLOW_OCR` (`true`) |
+| **Allow picture descriptions** | on / off | `DOCLING_ALLOW_PICTURE_DESCRIPTION` (`true`) |
+| **Largest conversion** | Pages one conversion may cover; 0 = no limit (an empty box is refused, and Save stays disabled until it holds a whole number) | `DOCLING_MAX_PAGES` (`0`) |
+
+- **Accurate runs OCR, so it's off whenever OCR is off.** The section says so
+  and the stored choice of presets is kept: allow OCR again and Accurate comes
+  back.
+- **The Docling role** is the `docling` capability. Give it to someone with
+  its checkbox under **People** (it applies at once), or as a realm role in
+  Keycloak (it applies at their next login). On a Keycloak set up before this
+  release, create the `docling` realm role once first; until then the tick says
+  "Keycloak has no “docling” role yet" and changes nothing. See
+  [IDENTITY_AND_ROLES.md](IDENTITY_AND_ROLES.md#the-docling-capability).
+- Under the settings, the section lists the server's upload limits
+  (`PDF_UPLOAD_MAX_MB`, `TEXT_UPLOAD_MAX_MB`); those are read-only.
+- **What people see.** In the reader's **Convert** dialog, an option that is
+  off is greyed out with **Turned off by your admin**. With a page limit, Convert
+  stays disabled with "This server converts at most N pages at a time. Choose a
+  page range of N pages or fewer." until the range fits. A person who isn't
+  allowed to convert at all sees "Only people your admin has given the Docling
+  role can convert documents on this server." instead.
+- **The server enforces it, not just the dialog.** A request that breaks a rule
+  (a script, an old tab) is refused with 403 `convert_not_allowed` and a reason
+  naming the rule; nothing starts converting.
+- A PDF whose page count isn't known yet is counted from the stored file, so
+  neither a 600-page file slips past a limit nor a 3-page one is refused.
+
+### Deployment: the timezone and the server's own values
+
+**Timezone** decides where a day starts and ends for three things: the daily
+token budget (it resets at the next **local** midnight, including the night
+the clocks change), the days in **Usage**, and the "Today is …" line a chat
+falls back to when the browser sent no zone. It also sets the day shown beside
+each account in **People**. Pick a zone by its name (`Asia/Colombo`). Its source
+line reads **Set here.**, **From the server setting** `TZ`, or **The default.**
+(UTC; before this setting existed these days were always UTC). It applies from
+the next request.
+
+Under **Server settings (read-only)** the section lists what the server runs
+with and which variable sets each: model providers, allowed models, chat
+timeout, daily token budget, embedding model and server,
+document storage, Docling, web search server, the voice input engine, model,
+server and key, and server workers. These can
+only be changed in `.env` on the server, with a restart. **Nothing secret
+shows:** the session secret, sign-in client secret and Keycloak admin client
+secret read only **set** or **not set**, and a URL never shows a password or
+query.
+
+### Projects: every project on the server
+
+Every project, with its owners and counts. **Ownerless only**
 shows projects whose last Owner was deleted; **Add me as Owner** takes one
 over (recorded as "added by admin" and logged). **Open** shows the project
 page; as an admin you can manage members, rename and delete any project, but
@@ -267,6 +596,22 @@ file from your computer. It is also saved to your own "Your Library" list on
 the welcome screen, and Index and chat work on it straight away. If the
 server has no copy of the file (it was indexed before server-side uploads,
 and nobody has uploaded it since), Open tells you to upload the file again.
+
+**Converting a PDF.** **Convert** in the PDF toolbar turns a PDF into Markdown with
+Docling, and the toolbar's **PDF | MD** switch shows the result. **Images** in its
+dialog decides what happens to the document's pictures:
+
+- **Drop** (the default): no pictures, the smallest result.
+- **Keep**: each picture is saved beside the document and shows in **MD** view, for
+  anyone who can read the document. A tiny one (a logo, a rule) isn't kept, and the
+  same picture repeated on every page is saved once.
+- **Describe**: the same, plus a short caption from a small built-in model. The
+  caption is text, so a search can find it.
+
+Pictures show on the page but aren't part of the text the assistant reads, apart
+from a caption. **Download** gives you the Markdown only: it still names the
+pictures, but they aren't in the file. A document converted before this existed has
+no pictures; convert it again with **Keep**.
 
 ## Projects and people
 
@@ -398,6 +743,9 @@ deployment has) and shows what each model can do — whether it supports thinkin
 tools, images, and so on. In **Settings → Chat**,
 the per-model controls (context window, keep-alive, thinking level, max reply
 tokens) only show the knobs the selected model's provider actually supports.
+Your admin may have narrowed the list to some models (**Admin console → Models**),
+and may have fixed the context size of the models you host: then **Context
+window** says "Set by your admin: 16,384 tokens." and can't be changed.
 
 **When a reply fails at the provider:** the message says why. "This model is
 busy or rate-limited" (common with free models) means try again shortly or
@@ -412,6 +760,184 @@ app.** There's no provider-management screen yet — an administrator adds,
 removes, or reconfigures providers in the server's `.env` file and restarts
 it. If you want a model that isn't in the picker, ask whoever runs your
 deployment to add it.
+
+## Attaching a text file
+
+Some things are easiest to ask with the file in front of the assistant: "how
+should I change this `.env` to move the port?" You can attach small text files to
+a message, and the app **hides secret values before the file leaves your browser**.
+
+**Attach one.** Three ways, in the Chat view's message box:
+
+- the **paperclip** (**Attach an image or a text file**), which also takes
+  images, as before;
+- drag the file onto the chat;
+- paste a file from the clipboard into the box.
+
+Text files are recognised by their ending (`.txt .md .env .json .yaml .yml .toml
+.ini .conf .cfg .csv .tsv .log .xml .html .css .js .ts .jsx .tsx .py .sh .sql
+.properties`, and any name starting `.env`) or by the browser calling them text.
+Anything else is turned away with "Only images and text files can be attached
+here. PDFs go in the Library." (A PDF, or a Word file, goes through the Library
+and indexing instead; an audio file is still refused.) A file must be UTF-8 text:
+otherwise the toast says "*name* isn't a text file".
+
+**The limits:** 64 KB per file ("*name* is over 64 KB"), 128 KB of text per message
+("The attached text is over 128 KB"). Past either, that file is left out and the
+others stay. A message can carry at most 10 attachments, images included; the
+box doesn't count them, the server refuses an eleventh when you press Send. An empty
+file is refused when you attach it ("*name* is empty"). A file can be under 64 KB
+and still bigger than the model's context window (Ollama loads a model at 4,096
+tokens unless told otherwise, but the app sizes the models it runs: an admin's
+per-model size, else the admin's general size, else your own Context window
+setting, else 16,384, never above `INFERENCE_NUM_CTX_MAX`; see "Which models get a
+context size" above): the message is never shortened, so you get "*name*
+is larger than this model's context: it may read only part of it." (it may: the
+model's provider may keep only the end of a prompt that is too long), and the
+context meter above the box counts a file you've attached before you press Send.
+
+**The chip.** The file appears above the box as a chip: its name, its size, and,
+when something was hidden, **N values masked**. **The chip's text view shows exactly
+what will be sent**, so look at it before you press Send: click the chip. The
+**×** on the chip removes the file.
+
+**What gets masked.** This is a safety net, not a guarantee: it catches the common
+shapes, not everything.
+
+- In an **env file** (a `.env`, `.env.production`, `prod.env`, or any file where
+  most lines read `KEY=value`), **every value is masked** except ones that only
+  describe the shape: nothing, `true`/`false`/`yes`/`no`/`on`/`off`, and a whole
+  number of up to 6 digits (a port, a count). So `PORT=8000` stays and
+  `DATABASE_URL=...` becomes `<masked URL, 55 chars>`. Keys, comments and line
+  order stay, so "which line do I change?" still has an answer. A masked value
+  drops its quotes (the mark replaces them), and a secret written inside a comment
+  is masked like any other.
+  **A short all-digit password is not masked**: `DB_PASSWORD=123456` looks exactly
+  like a port to a program, and masking every small number would hide the ports
+  the assistant needs. If a value like that is secret, change it before attaching,
+  or edit the text in your message instead.
+- In **any other text file**, only what **looks like a secret** is masked: a
+  private key block, a token with a well-known start (`sk-`, `ghp_`, `AKIA...` and
+  similar), something shaped like a JWT, the value on a `password:`, `secret=`,
+  `token:`, `api_key=` or similar line, and the password in `user:password@host`.
+  A secret in some shape that isn't on that list goes through.
+
+**Sending the real values.** Open the chip. When values are masked the view says
+"N values are masked." and offers **Send real values**. It asks first, naming the
+model: "The real values will be sent to *model* and saved in this chat.", and,
+when that model runs on a provider an admin marked **Cloud** (**Admin → Models**),
+"...which runs on a cloud service...". **Yes, send real values** agrees;
+**Keep masked** backs out. Saved in this chat means what it says: the real values
+are kept in the chat's history on the server. The agreement is for the model you
+were looking at: **change the model and masking comes back on** for every file,
+with the notice "Masking is back on: you changed the model."
+
+The agreement also stays with that model after you send, and so do its replies.
+If you pick another model later in the same chat and ask a follow-up, the real
+values are **not** sent to it, and neither is any reply from the model you agreed
+for (it may have quoted them): the assistant sees only a short note in their place.
+Under its reply you read "*name* wasn't sent to this model: its real values were
+agreed for another one. Earlier replies that read it weren't sent either." The note
+is saved with the reply, so it is still there after a reload. Switch back to the
+model you agreed for and the file and its replies are sent again. To use the file
+with another model, attach it again (masked, or with real values agreed for that
+model). A file you sent masked is unaffected and follows the chat to any model, as
+do replies from before the file and replies from a model that was never given the
+values. **What this does not hold back:** anything you typed or pinned yourself (it
+is yours), and anything a model passes to a reader model as a written request. While
+a file with real values is part of the conversation, a web search set to **Auto**
+asks you first, as **Ask** does, so you see the query before it leaves.
+
+**After you send.** Your message shows the file as a chip (name, size, "masked"),
+not its text. The assistant reads the file as part of your message, whichever
+model or provider it is, and is told that a `<masked, N chars>` mark is a value
+you hid, so it shouldn't ask for it. A reload keeps the chip, but the text is shown
+only in the session that attached it. In a long chat an old file is among the first
+things dropped when the history has to be shortened.
+
+## Speaking a message
+
+The **microphone** button beside the paperclip turns what you say into text in the
+message box. **It is off until an admin turns it on**, so if you can't see it,
+that is the first thing to check: **Admin → Chat options → Voice input → On**. You
+also need chat access.
+
+**Using it.**
+
+1. Press the **microphone** (**Speak a message**). The browser asks for the
+   microphone the first time. The button becomes a red **Stop** with a running
+   timer, and a **Cancel** (**×**) appears. **Esc** also cancels.
+2. Speak, then press **Stop** (**Stop and transcribe**). The box shows
+   "Transcribing…" with the timer frozen; **Cancel** still works and throws the
+   recording away. A recording stops by itself at **2 minutes**.
+3. The words appear in the message box **where your cursor was**, with a space
+   put in if one was needed, and the cursor goes back to the box. **Nothing is
+   sent.** Fix any mistakes, then press Send.
+
+On a phone the word "Transcribing…" is hidden to leave room for the box; the
+spinner, the timer and **Cancel** stay.
+
+**When it can't.** The button shows, greyed, with its reason when you hover or
+focus it: "Voice input needs a secure (https) connection" (browsers allow the
+microphone only on https, or on `localhost`), or "This browser can't record
+audio". If you blocked the microphone, pressing the button says "Microphone
+blocked: allow it in the browser's site settings"; allow it there and press again.
+A failed transcription leaves the box as it was and says why: "Voice input is
+still getting ready, try again in a minute" (the first download, or a restart),
+"Voice input isn't working right now. Ask your admin." (the model failed to load, or
+voice is set up wrong; waiting won't help),
+"Voice input is busy. Try again in a moment.", "The transcription server didn't
+answer", or "No speech was heard". If an admin turns Voice input off while you are
+recording, the recording can't be transcribed and you get "Voice input was turned
+off."; the button disappears. If you leave the chat (to the Reader, say) while
+recording or transcribing, the recording is thrown away and a message says so: "Your
+recording was discarded: you left the chat."
+
+**Your language.** **Settings → Chat → Speech language** is **Auto (detect the
+language)** or one language by name. Auto is right when you speak more than one
+language; choose one when the same sentences keep being mistaken for another
+language. The row only shows when Voice input is on and you have chat access. Your
+admin sets what it starts as under **Admin → Defaults for users → Speech language**.
+How good the result is depends on the language and the speech model: the default
+model is much better at English and Spanish than at many others, and an admin can
+choose another one (below). When the server's model is made for one language, the
+row says so, and Auto listens for that language. Other languages may come out wrong.
+
+**What it does with your recording.** The server turns it into text and forgets it:
+it isn't saved by the app to disk, the database or a log. With the default engine it never
+leaves the server; if your admin set up a remote engine, the recording goes to that
+service. A cloud model's reply isn't slowed by it. A model running on the same
+machine as the server is: in one walk, on a CPU-only machine, a local model's
+reply took about 1.5 to 2 times as long while a transcription ran, and read-aloud
+narration slowed about 1.6 to 2.4 times (one machine, not a promise). The app keeps
+the recording in memory only, and a reverse proxy in front of it may buffer an
+upload to disk ([DEPLOYMENT.md](DEPLOYMENT.md#recordings-and-your-reverse-proxy)).
+
+**For admins.** **Admin → Chat options → Voice input** is **On** or **Off**
+(off to start with), saved the moment you choose, and it applies from the next
+recording. Turning it on the first time starts a model download (about 464 MB for
+the default), so the **Overview**'s **Voice input** line reads **Warning**
+"Getting ready…" for about a minute on a CPU-only machine, then **OK**. The line
+under the choice says where the value comes from (**Set here.**, **From the server
+setting CHAT_VOICE_INPUT.** or **The default.**), and **Use the server setting**
+hands control back. If the Overview says **Problem**, its line says why; fix it,
+then switch Voice input Off and On to try again. The engine, model and costs are in
+[DEPLOYMENT.md](DEPLOYMENT.md#voice-input).
+
+**Choosing the speech model (admins).** **Speech model**, under the switch, lists the
+models this server can run, with the languages each is for. Picking one saves at once;
+under it you see how it runs, any note, and its licence. The first time, it downloads
+(about 1 GB for a fine-tuned model), so the **Overview** reads **Warning** for a couple
+of minutes. People get "still getting ready" until then. One model runs for everyone,
+so choose a fine-tuned one only if the server serves that language: stock models stay
+the right choice for English. **Use the server setting** goes back to the default.
+
+To add a model, open **Add a model from Hugging Face**, enter its repo as `owner/name`
+and press **Add model**. It's checked straight away, and you're told if it can't be
+used. Then choose it from the list. **Added here** lists the models you added, each
+with a **Remove**, whether it's in use or not. A model that can't run on this server
+shows greyed out, with the reason below.
+Details are in [DEPLOYMENT.md](DEPLOYMENT.md#choosing-a-model).
 
 ## Asking a whole project
 
@@ -524,8 +1050,9 @@ look things up here. If the server has no search engine set up, no card appears.
 
 ## The daily token budget
 
-Your deployment may cap how many tokens each user may spend per day (UTC day —
-resets at UTC midnight). The chat sidebar shows **"N tokens left today"**
+Your deployment may cap how many tokens each user may spend per day (a day in
+the deployment's timezone, UTC unless an admin set another under **Deployment**
+— it resets at that zone's midnight). The chat sidebar shows **"N tokens left today"**
 while you chat.
 
 A reply you stop partway through, or one that fails, still counts against
@@ -543,8 +1070,8 @@ When you run out:
 - Nothing is lost: your message stays, the document is fine, and everything
   comes back at the reset time.
 
-Admins can raise individual users' budgets (API today; UI pending). If you
-legitimately need more, ask yours.
+An admin sets each person's budget under **Admin → People** (the **Budget** box
+on their row). If you legitimately need more, ask yours.
 
 ## FAQ
 
@@ -572,9 +1099,9 @@ with the same email can't log in.**
 Deleting in the login system removes their ability to *log in*, but their app
 account — documents, tokens, and all — remains, and their email stays locked
 to it. To properly offboard: **Disable** them in the Admin section first
-(kills their sessions and tokens), then delete in Keycloak. To free the email
-for a future user, the old app row must be removed by an operator
-(database-level today; an admin-side "delete user" UI is a planned follow-up).
+(kills their sessions and tokens), then **Delete** them there, which also frees
+the email. If they were deleted in Keycloak first, **Delete** in the Admin section
+still removes the app account.
 
 **The assistant asked me before searching the web. Can I turn that off?**
 That is the default on purpose. An admin can change it under **Admin → Chat
@@ -591,10 +1118,11 @@ project from the chat.
 Reload the page — the app refreshes your role when it re-checks your account.
 
 **Budget says "0 tokens left" but I haven't chatted today.**
-The day is measured in **UTC**, not your timezone — "today" can end (or not
-have started) at what feels like an odd hour. The reset time is always shown
+The day is measured in the **deployment's** timezone (UTC unless an admin set
+another), not yours — "today" can end (or not have started) at what feels like
+an odd hour. The reset time is always shown
 in the toast and the sidebar.
 
 ---
 
-*UI references: `src/components/settings/SettingsDialog.jsx`, `src/components/ProfileMenu.jsx`, `src/components/account/ProfilePanel.jsx`, `src/components/account/AccountPanel.jsx`, `src/components/chat/ChatSidePanel.jsx`, `src/components/chat/ScopeChip.jsx`, `src/components/chat/WebOfferCard.jsx`, `src/components/projects/ProjectPage.jsx`, `src/components/admin/ChatOptionsSection.jsx`, `src/components/NarrationMiniPlayer.jsx`, `src/components/admin/AdminConsole.jsx`, `src/components/Header.jsx`, `src/components/ViewSwitcher.jsx`, `src/components/chat/InferenceRow.jsx`, `src/components/ChatSidebar.jsx`.*
+*UI references: `src/components/settings/SettingsDialog.jsx`, `src/components/ProfileMenu.jsx`, `src/components/account/ProfilePanel.jsx`, `src/components/account/AccountPanel.jsx`, `src/components/chat/ChatSidePanel.jsx`, `src/components/chat/ScopeChip.jsx`, `src/components/chat/WebOfferCard.jsx`, `src/components/projects/ProjectPage.jsx`, `src/components/admin/ChatOptionsSection.jsx`, `src/components/NarrationMiniPlayer.jsx`, `src/components/admin/AdminConsole.jsx`, `src/components/admin/ConsoleShell.jsx`, `src/components/admin/OverviewSection.jsx`, `src/components/admin/DocumentsSection.jsx`, `src/components/admin/DeploymentSection.jsx`, `src/components/DoclingConvertDialog.jsx`, `src/components/Header.jsx`, `src/components/ViewSwitcher.jsx`, `src/components/chat/InferenceRow.jsx`, `src/components/ChatSidebar.jsx`.*

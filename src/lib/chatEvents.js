@@ -52,8 +52,6 @@ export function applyEvent(msg, ev) {
             // reply itself goes on to finish normally; the card that asks the
             // user is drawn from this note.
             return addNote(msg, { kind: 'web_offer', query: ev.query, reason: ev.reason });
-        case 'data-notice':
-            return { ...msg, notices: [...(msg.notices || []), ev.message] };
         case 'start-step':
             return { ...msg, toolStatus: undefined };
         case 'reasoning-delta':

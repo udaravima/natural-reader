@@ -11,7 +11,7 @@ from typing import Any, Protocol
 from ...llm.types import ToolCall, ToolSpec
 from ..config import ChatConfig
 from ..project_scope import ProjectScope
-from ..reader import Charge
+from ..reader import Charge, ReaderConfig
 from ...services.doc_outlines import Outline
 from ...services.doc_search import ReadableDoc
 
@@ -42,7 +42,7 @@ class ToolContext:
     map_shortened: bool = False
     outlines: dict[str, Outline] = field(default_factory=dict, hash=False, compare=False)
     # The turn's chat model, canonical "provider:name": a tool that makes a model call of its own (the reader,
-    # chat/reader.py) can read with it when READER_MODEL=chat.
+    # chat/reader.py) can read with it when the reader model is "chat" (the default).
     model: str = ""
     # Every web search result of this turn by its number (web_search numbers across the turn: the first search's
     # results are 1..k, the next continue from the highest). Each: title, url, site, the query of the search
@@ -59,11 +59,16 @@ class ToolContext:
     # the daily budget and the usage figures (orchestrator._charge_reader wires it; chat/reader.py BatchCall). None:
     # nothing is recorded (a tool run outside a turn, as in tests).
     charge: Charge | None = field(default=None, hash=False, compare=False)
+    # The reader's settings for this turn, fixed by the orchestrator (_turn_reader): its model, resolved ("chat" is
+    # this turn's model), and the context size every reader call sends. None: the tools read the environment's
+    # knobs and send no size (a tool run outside a turn, as in tests).
+    reader_cfg: ReaderConfig | None = field(default=None, hash=False, compare=False)
 
 
 class Tool(Protocol):
     name: str
     spec: ToolSpec   # what it does and how to use it; never contradicts the strategy (server/chat/prompt.py)
+    # A tool whose wording depends on the scope also has `project_spec`, sent in a project chat (tool_spec).
     source: str      # "document" | "web": where its results come from
     reads_documents: bool   # its results are document text (brings the data rule)
 
@@ -97,6 +102,14 @@ REGISTRY: list[Tool] = [search_documents.TOOL, read_document_pages.TOOL, extract
 
 def available_tools(ctx: ToolContext) -> list[Tool]:
     return [t for t in REGISTRY if t.available(ctx)]
+
+
+def tool_spec(tool: Tool, ctx: ToolContext) -> ToolSpec:
+    """The spec the model gets for `tool` this turn: a project chat's own wording when the tool has one (it
+    reaches every searchable document of the project, named by the map's number or name), else the one spec.
+    Each is a constant, so a chat's tool list stays the same bytes from turn to turn (the prefix cache)."""
+    project_spec = getattr(tool, "project_spec", None)
+    return project_spec if ctx.project is not None and project_spec is not None else tool.spec
 
 
 async def run_tool(call: ToolCall, ctx: ToolContext, offered: list[Tool]) -> ToolRun:

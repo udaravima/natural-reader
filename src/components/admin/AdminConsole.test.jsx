@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import { AdminConsole } from './AdminConsole';
 
 vi.mock('../../utils/apiFetch', () => ({ apiFetch: vi.fn() }));
@@ -17,13 +17,28 @@ const user = (over = {}) => ({
   ...over,
 });
 
+// The People list asks for a page: ?q=&status=&capability=&limit=&offset=. This answers it like the
+// server does (substring on email/name, filters, paging) and reports the total in X-Total-Count.
+function usersPage(all, path) {
+  const params = new URL(path, 'http://x').searchParams;
+  const q = (params.get('q') ?? '').toLowerCase();
+  const rows = all.filter((u) =>
+    (!q || [u.email, u.username, u.display_name].some((v) => v?.toLowerCase().includes(q)))
+    && (!params.get('status') || u.status === params.get('status'))
+    && (!params.get('capability') || u.capabilities.includes(params.get('capability'))));
+  const offset = Number(params.get('offset') ?? 0);
+  const limit = Number(params.get('limit') ?? 50);
+  return { ...json(200, rows.slice(offset, offset + limit)), headers: { get: (h) => (h.toLowerCase() === 'x-total-count' ? String(rows.length) : null) } };
+}
+
 // Mounts the console with a mutable user list so PATCH/POST/DELETE handlers
 // can mutate it and the reload reflects the change, like the real backend.
 // enrollResponse(created) lets a test opt into the current
 // { user, onboarding, temp_password? } POST contract; by default the mock
 // returns the raw created-user row (the shape older/simpler tests assert on).
 // extra(path, opts) answers routes of its own first (undefined = fall through).
-function mount({ users, usage = [], config = {}, showToast = vi.fn(), currentUserId = 'me', enrollResponse, extra } = {}) {
+// section is the tab opened after mounting (the console opens on Overview); null stays on Overview.
+function mount({ users, usage = [], deployment = { settings: { timezone: { value: 'UTC', source: 'default', env: 'TZ', fallback: 'UTC', fallback_source: 'default' } }, info: [] }, showToast = vi.fn(), currentUserId = 'me', enrollResponse, extra, section = 'People' } = {}) {
   apiFetch.mockImplementation(async (host, port, path, opts) => {
     const answered = extra?.(path, opts);   // a test's own routes (chat options, the assistant) win
     if (answered) return answered;
@@ -42,9 +57,11 @@ function mount({ users, usage = [], config = {}, showToast = vi.fn(), currentUse
       return noContent();
     }
     if (path === '/v1/admin/users') return json(200, users);
+    if (path.startsWith('/v1/admin/users?')) return usersPage(users, path);
     if (path.startsWith('/v1/admin/inference/usage')) return json(200, usage);
-    if (path === '/v1/admin/inference/config') return json(200, config);
+    if (path === '/v1/admin/settings/deployment') return json(200, deployment);
     if (path.startsWith('/v1/admin/projects')) return json(200, []);
+    if (path === '/v1/admin/overview') return json(200, { checks: [] });
     return json(404, {});
   });
   render(
@@ -53,13 +70,17 @@ function mount({ users, usage = [], config = {}, showToast = vi.fn(), currentUse
       onBack={vi.fn()} showToast={showToast}
     />
   );
+  if (section) openSection(section);
 }
+
+function openSection(name) { fireEvent.click(screen.getByRole('tab', { name })); }
 
 const calls = (method) =>
   apiFetch.mock.calls.filter(([, , , opts]) => opts?.method === method);
 const lastBody = (method) => JSON.parse(calls(method).at(-1)[3].body);
 
 describe('AdminConsole — users', () => {
+  // mount() is called inside each test and opens People (the console itself opens on Overview).
   it('sets a per-user project limit, empty meaning the default', async () => {
     mount({ users: [user()] });
     fireEvent.change(await screen.findByLabelText('Project limit for a@x.io'), { target: { value: '5' } });
@@ -91,6 +112,34 @@ describe('AdminConsole — users', () => {
   });
 
   beforeEach(() => vi.clearAllMocks());
+
+  // A realm imported before the docling role existed: Keycloak can't grant it.
+  const roleMissing = () => json(409, { detail: { reason: 'kc_role_missing', role: 'docling' } });
+  const ROLE_MISSING_MSG = 'Keycloak has no “docling” role yet. Create it in the Keycloak admin console (Realm roles → Create role, name: docling), then try again.';
+
+  it('says which Keycloak role to create when ticking a capability the realm lacks', async () => {
+    const showToast = vi.fn();
+    mount({
+      users: [user({ capabilities: ['reader'] })], showToast,
+      extra: (path, opts) => (path.startsWith('/v1/admin/users/') && opts?.method === 'PATCH' ? roleMissing() : undefined),
+    });
+    const row = await screen.findByTestId('user-row-u1');
+    fireEvent.click(within(row).getByRole('checkbox', { name: 'docling' }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith(ROLE_MISSING_MSG, 8000));
+  });
+
+  it('says which Keycloak role to create when enrolling with a capability the realm lacks', async () => {
+    mount({
+      users: [user()],
+      extra: (path, opts) => (path === '/v1/admin/users' && opts?.method === 'POST' ? roleMissing() : undefined),
+    });
+    fireEvent.change(await screen.findByLabelText('Enroll email'), { target: { value: 'n@example.com' } });
+    const enrollCaps = screen.getAllByRole('checkbox', { name: 'docling' })[0];
+    fireEvent.click(enrollCaps);
+    fireEvent.click(screen.getByRole('button', { name: 'Enroll' }));
+    expect(await screen.findByText(ROLE_MISSING_MSG)).toBeInTheDocument();
+    expect(screen.queryByText('That email is already taken.')).not.toBeInTheDocument();
+  });
 
   it('renders rows and the awaiting-first-login badge for unlinked rows', async () => {
     mount({ users: [user(), user({ id: 'u2', email: 'b@x.io', oidc_sub: null, status: 'pending' })] });
@@ -151,6 +200,18 @@ describe('AdminConsole — users', () => {
     expect(caps).toHaveLength(2);
   });
 
+  it('offers the docling capability on a person and when enrolling', async () => {
+    const users = [user({ id: 'u2', email: 'b@x.io', capabilities: ['reader'] })];
+    mount({ users });
+    await screen.findByText('b@x.io');
+    const row = screen.getByTestId('user-row-u2');
+    fireEvent.click(within(row).getByRole('checkbox', { name: 'docling' }));
+    await waitFor(() => expect(calls('PATCH').length).toBe(1));
+    expect(lastBody('PATCH').capabilities.sort()).toEqual(['docling', 'reader']);
+    const form = screen.getByLabelText(/enroll email/i).closest('form');
+    expect(within(form).getByRole('checkbox', { name: 'docling' })).not.toBeChecked();
+  });
+
   it('includes selected capabilities in the enroll POST body', async () => {
     mount({ users: [user({ id: 'me', role: 'admin' })] });
     await screen.findByText('a@x.io');
@@ -208,6 +269,8 @@ describe('AdminConsole — users', () => {
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(
       expect.stringContaining('library and chat history'), expect.anything()
     ));
+    const deleted = showToast.mock.calls.filter(([m]) => m.includes('library and chat history were removed'));
+    expect(deleted).toHaveLength(1);
   });
 
   it('states what deleting a user does to their projects, and reloads the Projects section afterwards', async () => {
@@ -215,13 +278,24 @@ describe('AdminConsole — users', () => {
     mount({ users });
     await screen.findByText('b@x.io');
     const projectGets = () => apiFetch.mock.calls.filter(([, , path]) => path.startsWith('/v1/admin/projects')).length;
-    await waitFor(() => expect(projectGets()).toBe(1));
+    expect(projectGets()).toBe(0);
     const row = screen.getByTestId('user-row-u2');
     fireEvent.click(within(row).getByRole('button', { name: /delete/i }));
     expect(within(row).getByText(/permanently deletes their library and chat history\. Projects they belong to stay; any they were the only Owner of become ownerless \(recover them under Projects\)\./)).toBeTruthy();
     fireEvent.change(within(row).getByLabelText(/confirm email/i), { target: { value: 'b@x.io' } });
     fireEvent.click(within(row).getByRole('button', { name: /confirm delete/i }));
-    await waitFor(() => expect(projectGets()).toBe(2));
+    await waitFor(() => expect(calls('DELETE').length).toBe(1));
+    openSection('Projects');
+    await waitFor(() => expect(projectGets()).toBe(1));
+  });
+
+  it('shows one section at a time', async () => {
+    mount({ users: [user()] });
+    await screen.findByText('a@x.io');
+    expect(screen.queryByRole('region', { name: 'Inference usage' })).toBeNull();
+    openSection('Usage');
+    expect(await screen.findByRole('region', { name: 'Inference usage' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Users' })).toBeNull();
   });
 
   it('enrolls a pre-provisioned user and shows the claim instruction', async () => {
@@ -246,76 +320,181 @@ describe('AdminConsole — users', () => {
   });
 });
 
+describe('AdminConsole — overview', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('opens on Overview, and an Open link switches section', async () => {
+    mount({
+      users: [user()], section: null,
+      extra: (path) => path === '/v1/admin/overview' ? json(200, { checks: [
+        { id: 'docling', state: 'error', title: 'Docling', summary: 'Docling is not installed.', section: 'documents' },
+      ] }) : undefined,
+    });
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Documents' }));
+    expect(screen.getByRole('tab', { name: 'Documents' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'false');
+  });
+});
+
+describe('AdminConsole — models', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('has a Models tab between Projects and Documents', () => {
+    mount({ users: [user()], section: null });
+    const names = screen.getAllByRole('tab').map((t) => t.textContent);
+    expect(names.indexOf('Models')).toBe(names.indexOf('Projects') + 1);
+    expect(names.indexOf('Documents')).toBe(names.indexOf('Models') + 1);
+  });
+
+  it("the Overview's Open models button opens the Models tab", async () => {
+    mount({
+      users: [user()], section: null,
+      extra: (path) => path === '/v1/admin/overview' ? json(200, { checks: [
+        { id: 'providers', state: 'ok', title: 'Providers', summary: 'One provider.', section: 'models' },
+      ] }) : undefined,
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Models' }));
+    expect(screen.getByRole('tab', { name: 'Models' })).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByRole('region', { name: 'Models' })).toBeTruthy();
+  });
+
+  it('asks before leaving Models with an unsaved change', async () => {
+    const view = { settings: {
+      reader: { value: 'chat', source: 'default', env: 'READER_MODEL', fallback: 'chat', fallback_source: 'default' },
+      context_size: { value: null, source: 'default', env: 'INFERENCE_LOCAL_NUM_CTX', fallback: null, fallback_source: 'default' },
+      context_sizes: { value: {}, source: 'default', env: null, fallback: {}, fallback_source: 'default' },
+      context_windows: { value: {}, source: 'default', env: null, fallback: {}, fallback_source: 'default' },
+      provider_locality: { value: {}, source: 'default', env: null, fallback: {}, fallback_source: 'default' },
+      chat_models: { value: [], source: 'default', env: null, fallback: [], fallback_source: 'default' },
+    }, info: [] };
+    mount({
+      users: [user()], section: 'Models',
+      extra: (path) => path === '/v1/admin/settings/models' ? json(200, view)
+        : path === '/v1/admin/models' ? json(200, { providers: [], models: [], limits: { num_ctx_max: null } }) : undefined,
+    });
+    fireEvent.change(await screen.findByLabelText('Context size for local Ollama models'), { target: { value: '8192' } });
+    openSection('People');
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Models.');
+    expect(screen.getByRole('tab', { name: 'Models' })).toHaveAttribute('aria-selected', 'true');
+  });
+});
+
+describe('AdminConsole — documents', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const rule = (env, value) => ({ value, source: 'default', env, fallback: value, fallback_source: 'default' });
+  const documents = { settings: {
+    convert_by: rule('DOCLING_CONVERT_BY', 'readers'),
+    presets: rule('DOCLING_PRESETS', ['fast', 'standard', 'accurate']),
+    ocr: rule('DOCLING_ALLOW_OCR', true),
+    picture_description: rule('DOCLING_ALLOW_PICTURE_DESCRIPTION', true),
+    max_pages: rule('DOCLING_MAX_PAGES', 0),
+  }, info: [] };
+
+  it('asks before leaving Documents with an unsaved limit', async () => {
+    mount({ users: [user()], section: null, extra: (path) => (path === '/v1/admin/settings/documents' ? json(200, documents) : undefined) });
+    openSection('Documents');
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Allow OCR' }));
+    openSection('People');
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Documents.');
+    expect(screen.getByRole('tab', { name: 'Documents' })).toHaveAttribute('aria-selected', 'true');
+  });
+});
+
 describe('AdminConsole — usage', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it('says days are counted in the deployment timezone', async () => {
+    mount({ users: [user()], usage: [{ email: 'a@x.io', user_id: 'u1', day: '2026-09-17', prompt_tokens: 1, eval_tokens: 1, requests: 1, tokens: 2 }] });
+    openSection('Usage');
+    fireEvent.click(await screen.findByRole('button', { name: 'By day' }));
+    expect(await screen.findByRole('columnheader', { name: 'Day' })).toBeInTheDocument();
+    expect(screen.getByText("Each day is counted in the deployment's timezone. Changing it doesn't move days already counted.")).toBeInTheDocument();
+  });
 
   it('renders ISO day rows as-is', async () => {
     mount({
       users: [user()],
       usage: [{ email: 'a@x.io', user_id: 'u1', day: '2026-09-17', prompt_tokens: 10, eval_tokens: 5, requests: 2, tokens: 15 }],
     });
+    openSection('Usage');
+    fireEvent.click(await screen.findByRole('button', { name: 'By day' }));
     expect(await screen.findByText('2026-09-17')).toBeInTheDocument();
     expect(screen.getByText('15')).toBeInTheDocument();
   });
 
   it('shows the empty state and re-fetches when the days selector changes', async () => {
     mount({ users: [user()], usage: [] });
+    openSection('Usage');
     expect(await screen.findByText('No usage recorded yet.')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/usage days/i), { target: { value: '30' } });
     await waitFor(() =>
-      expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/admin/inference/usage?days=30')
+      expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/admin/inference/usage?days=30&group=model')
     );
   });
 });
 
-describe('AdminConsole — config', () => {
+describe('AdminConsole — deployment', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('renders read-only values, with "all models allowed" for an empty allowlist', async () => {
+  it('lists the providers from the server settings, never a key', async () => {
     mount({
       users: [user()],
-      config: {
-        ollama_url: 'http://ollama:11434', timeout_s: 120, allowed_models: null,
-        summarize_model: 'sum', embed_model: 'emb', daily_token_budget: null,
-      },
-    });
-    expect(await screen.findByText('http://ollama:11434')).toBeInTheDocument();
-    expect(screen.getByText('all models allowed')).toBeInTheDocument();
-    expect(screen.getByText('unlimited (unset)')).toBeInTheDocument();
-  });
-
-  it('renders an explicit allowlist', async () => {
-    mount({
-      users: [user()],
-      config: { ollama_url: 'http://x:11434', timeout_s: 60, allowed_models: ['llama3.2:3b', 'qwen3.5'], summarize_model: null, embed_model: null, daily_token_budget: 1000 },
-    });
-    expect(await screen.findByText('llama3.2:3b, qwen3.5')).toBeInTheDocument();
-    expect(screen.getByText('1000 tokens/day')).toBeInTheDocument();
-  });
-
-  it('lists each model provider with its host and model count, never a key', async () => {
-    mount({
-      users: [user()],
-      config: {
-        ollama_url: 'http://x:11434', timeout_s: 60, allowed_models: null, summarize_model: null,
-        embed_model: null, daily_token_budget: null,
-        providers: [
-          { name: 'local', kind: 'ollama', url_host: 'gpu.example.com', models: 1 },
-          { name: 'cloud', kind: 'openai', url_host: 'openrouter.example.com', models: null },
+      deployment: {
+        settings: { timezone: { value: 'UTC', source: 'default', env: 'TZ', fallback: 'UTC', fallback_source: 'default' } },
+        info: [
+          { id: 'provider:cloud', label: 'Provider cloud', value: 'openai · https://llm.example.com/v1', env: 'INFERENCE_CLOUD_URL', source: 'env' },
+          { id: 'provider_key:cloud', label: 'Provider cloud key', value: 'set', env: 'INFERENCE_CLOUD_API_KEY', source: 'env' },
         ],
       },
     });
-    expect(await screen.findByText('local · ollama · gpu.example.com · 1 model')).toBeInTheDocument();
-    expect(screen.getByText('cloud · openai · openrouter.example.com · unreachable')).toBeInTheDocument();
+    openSection('Deployment');
+    expect(await screen.findByText('openai · https://llm.example.com/v1')).toBeInTheDocument();
+    expect(screen.getByText('set')).toBeInTheDocument();
+    expect(apiFetch).not.toHaveBeenCalledWith('', '', '/v1/admin/inference/config');
   });
 
-  it('says so when no provider is configured', async () => {
+  it('asks before leaving Deployment with an unsaved zone', async () => {
+    mount({ users: [user()], section: null });
+    openSection('Deployment');
+    fireEvent.change(await screen.findByLabelText('Timezone'), { target: { value: 'Asia/Colombo' } });
+    openSection('People');
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Deployment.');
+    expect(screen.getByRole('tab', { name: 'Deployment' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it("shows a person's created date in the deployment zone", async () => {
     mount({
-      users: [user()],
-      config: { ollama_url: 'http://x:11434', timeout_s: 60, allowed_models: null, summarize_model: null,
-                embed_model: null, daily_token_budget: null, providers: [] },
+      users: [user({ created_at: '2026-09-17T20:00:00Z' })],
+      deployment: { settings: { timezone: { value: 'Asia/Colombo', source: 'admin', env: 'TZ', fallback: 'UTC', fallback_source: 'default' } }, info: [] },
     });
-    expect(await screen.findByText('none configured')).toBeInTheDocument();
+    expect(await screen.findByText(/2026-09-18/)).toBeInTheDocument();
+  });
+
+  it('uses a zone saved in Deployment for the dates in People', async () => {
+    const saved = { settings: { timezone: { value: 'Asia/Colombo', source: 'admin', env: 'TZ', fallback: 'UTC', fallback_source: 'default' } }, info: [] };
+    mount({
+      users: [user({ created_at: '2026-09-17T20:00:00Z' })],
+      extra: (path, opts) => (path === '/v1/admin/settings/deployment' && opts?.method === 'PUT' ? json(200, saved) : undefined),
+      section: null,
+    });
+    openSection('Deployment');
+    fireEvent.change(await screen.findByLabelText('Timezone'), { target: { value: 'Asia/Colombo' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.getByLabelText('Timezone')).toHaveValue('Asia/Colombo'));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled());
+    await act(async () => {});   // the section's "no unsaved changes" reaches the console in an effect, a tick after the button disables
+    openSection('People');
+    expect(await screen.findByText(/2026-09-18/)).toBeInTheDocument();
+  });
+
+  it('counts People dates in UTC when the zone cannot be loaded', async () => {
+    mount({
+      users: [user({ created_at: '2026-09-17T20:00:00Z' })],
+      extra: (path) => (path === '/v1/admin/settings/deployment' ? json(500, {}) : undefined),
+    });
+    expect(await screen.findByText(/2026-09-17/)).toBeInTheDocument();
   });
 });
 
@@ -324,7 +503,107 @@ describe('AdminConsole — assistant profile', () => {
 
   it('has an Assistant section (v2.4 Task A2)', async () => {
     mount({ users: [user()] });
+    openSection('Chat');
     expect(await screen.findByRole('region', { name: 'Assistant' })).toBeTruthy();
+  });
+});
+
+describe('AdminConsole — unsaved drafts in Chat and Defaults', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const assistant = { text: '', source: 'none', fileConfigured: false, maxChars: 8000, preview: '', warnings: [] };
+  const BUILT_IN = { chatAutoTts: false, chatTtsMode: 'after-complete', think: 'off', selectedVoice: 'af_heart', playbackSpeed: 1 };
+  const defaultsView = { values: { ...BUILT_IN }, builtIn: BUILT_IN, overridden: [], epochs: {},
+    choices: { chatTtsMode: ['streaming', 'after-complete'], think: ['off', 'on', 'low', 'medium', 'high'] } };
+  const routes = (path) => {
+    if (path === '/v1/admin/assistant') return json(200, assistant);
+    if (path === '/v1/admin/chat-options') return json(200, { web_search: 'ask', source: 'default', searxng: true });
+    if (path === '/v1/admin/defaults') return json(200, defaultsView);
+    return undefined;
+  };
+
+  it('asks before a tab switch drops an unsaved assistant profile', async () => {
+    mount({ users: [user()], section: null, extra: routes });
+    openSection('Chat');
+    fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'You are Sam.' } });
+    openSection('Overview');
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Chat.');
+    expect(screen.getByRole('tab', { name: 'Chat' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Discard changes' }));
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('does not ask when the assistant profile is untouched or back to what is saved', async () => {
+    mount({ users: [user()], section: null, extra: routes });
+    openSection('Chat');
+    const box = await screen.findByRole('textbox');
+    fireEvent.change(box, { target: { value: 'x' } });
+    fireEvent.change(box, { target: { value: '' } });
+    await act(async () => {});
+    openSection('Overview');
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('asks before a tab switch drops an unsaved Defaults change', async () => {
+    mount({ users: [user()], section: null, extra: routes });
+    openSection('Defaults for users');
+    fireEvent.click(await screen.findByRole('checkbox', { name: /read replies aloud/i }));
+    openSection('Overview');
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Defaults for users.');
+    expect(screen.getByRole('tab', { name: 'Defaults for users' })).toHaveAttribute('aria-selected', 'true');
+  });
+});
+
+describe('AdminConsole — leaving through the app header', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const deployment = { settings: { timezone: { value: 'UTC', source: 'default', env: 'TZ', fallback: 'UTC', fallback_source: 'default' } }, info: [] };
+  // The app hands the console a ref; the header's view buttons and Log out call leaveRef.current(run).
+  function mountWithLeaveRef() {
+    const leaveRef = { current: null };
+    apiFetch.mockImplementation(async (host, port, path) => {
+      if (path === '/v1/admin/settings/deployment') return json(200, deployment);
+      if (path === '/v1/admin/overview') return json(200, { checks: [] });
+      return json(404, {});
+    });
+    render(<AdminConsole theme={theme} apiHost="" apiPort="" currentUserId="me" onBack={vi.fn()} leaveRef={leaveRef} showToast={vi.fn()} />);
+    return leaveRef;
+  }
+  const dirtyDeployment = async () => {
+    openSection('Deployment');
+    fireEvent.change(await screen.findByLabelText('Timezone'), { target: { value: 'Asia/Colombo' } });
+  };
+
+  it('runs a header exit straight away when nothing is unsaved', async () => {
+    const leaveRef = mountWithLeaveRef();
+    const run = vi.fn();
+    act(() => leaveRef.current(run));
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+  });
+
+  it('asks first when a header exit (a view button or Log out) would drop an unsaved change', async () => {
+    const leaveRef = mountWithLeaveRef();
+    await dirtyDeployment();
+    const run = vi.fn();
+    act(() => leaveRef.current(run));
+    expect(run).not.toHaveBeenCalled();
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Deployment.');
+  });
+
+  it('Keep editing stays; Discard changes then runs the exit', async () => {
+    const leaveRef = mountWithLeaveRef();
+    await dirtyDeployment();
+    const run = vi.fn();
+    act(() => leaveRef.current(run));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Keep editing' }));
+    expect(run).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getByLabelText('Timezone')).toHaveValue('Asia/Colombo');   // the draft is still there
+    act(() => leaveRef.current(run));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Discard changes' }));
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -335,6 +614,7 @@ describe('AdminConsole — chat options', () => {
 
   it('has a Chat options section after the Assistant section', async () => {
     mount({ users: [user()] });
+    openSection('Chat');
     const assistant = await screen.findByRole('region', { name: 'Assistant' });
     const options = await screen.findByRole('region', { name: 'Chat options' });
     expect(assistant.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -356,10 +636,136 @@ describe('AdminConsole — chat options', () => {
         return undefined;
       },
     });
+    openSection('Chat');
     fireEvent.click(await screen.findByText('What the model receives'));
     expect(await screen.findByText('Rules: offer_web_search.')).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('radio', { name: 'Search without asking' }));
     expect(await screen.findByText('Rules: web_search, read_web_pages.')).toBeInTheDocument();
     expect(screen.queryByText('Rules: offer_web_search.')).toBeNull();
+  });
+});
+
+describe('AdminConsole — searching people', () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.useRealTimers());
+
+  const usersCalls = () =>
+    apiFetch.mock.calls.filter(([, , path, opts]) => path.startsWith('/v1/admin/users?') && !opts?.method).map(([, , path]) => new URL(path, 'http://x').searchParams);
+  const many = (n) => Array.from({ length: n }, (_, i) => user({ id: `m${i}`, email: `member${String(i).padStart(3, '0')}@x.io` }));
+  // Fake timers only around the typing: RTL's waitFor polls with timers and would hang under them.
+  const typeAndWait = async (label, value, ms = 300) => {
+    vi.useFakeTimers();
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+    vi.useRealTimers();
+  };
+
+  it('loads the first page of 50 and says how many exist', async () => {
+    mount({ users: many(120) });
+    expect(await screen.findByText('Showing 50 of 120')).toBeInTheDocument();
+    const first = usersCalls()[0];
+    expect(first.get('limit')).toBe('50');
+    expect(first.get('offset')).toBe('0');
+    expect(first.has('q')).toBe(false);
+    expect(screen.getByPlaceholderText('Name, email or username')).toBe(screen.getByLabelText('Search people'));
+  });
+
+  it('typing sends one request with q, 300 ms after typing stops', async () => {
+    mount({ users: [user({ email: 'ada@x.io' }), user({ id: 'u2', email: 'bob@x.io' })] });
+    await screen.findByText('ada@x.io');
+    const before = usersCalls().length;
+    vi.useFakeTimers();
+    for (const v of ['b', 'bo', 'bob']) {
+      fireEvent.change(screen.getByLabelText('Search people'), { target: { value: v } });
+      await act(async () => { await vi.advanceTimersByTimeAsync(100); });
+    }
+    expect(usersCalls().length).toBe(before);                     // still typing: nothing sent
+    await act(async () => { await vi.advanceTimersByTimeAsync(250); });
+    vi.useRealTimers();
+    await waitFor(() => expect(usersCalls().length).toBe(before + 1));
+    expect(usersCalls().at(-1).get('q')).toBe('bob');
+    expect(await screen.findByText('Showing 1 of 1')).toBeInTheDocument();
+    expect(screen.queryByText('ada@x.io')).toBeNull();
+  });
+
+  it('the status and capability selects search at once and combine', async () => {
+    mount({ users: [
+      user({ id: 'u1', email: 'a@x.io', status: 'active', capabilities: ['reader'] }),
+      user({ id: 'u2', email: 'b@x.io', status: 'pending', capabilities: ['reader'] }),
+      user({ id: 'u3', email: 'c@x.io', status: 'pending', capabilities: ['chat'] }),
+    ] });
+    await screen.findByText('Showing 3 of 3');
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'pending' } });
+    await screen.findByText('Showing 2 of 2');
+    expect(usersCalls().at(-1).get('status')).toBe('pending');
+    fireEvent.change(screen.getByLabelText('Capability'), { target: { value: 'reader' } });
+    await screen.findByText('Showing 1 of 1');
+    expect(usersCalls().at(-1).get('capability')).toBe('reader');
+    expect(usersCalls().at(-1).get('status')).toBe('pending');
+    expect(screen.getByText('b@x.io')).toBeInTheDocument();
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(
+      expect.arrayContaining(['All', 'Active', 'Pending', 'Disabled', 'Any', 'reader', 'chat', 'admin', 'docling']));
+  });
+
+  it('Show more appends the next 50 and goes away when everything is loaded', async () => {
+    mount({ users: many(120) });
+    fireEvent.click(await screen.findByRole('button', { name: 'Show more' }));
+    expect(await screen.findByText('Showing 100 of 120')).toBeInTheDocument();
+    expect(usersCalls().at(-1).get('offset')).toBe('50');
+    expect(screen.getByText('member000@x.io')).toBeInTheDocument();   // the first page is still there
+    expect(screen.getByText('member099@x.io')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    expect(await screen.findByText('Showing 120 of 120')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Show more' })).toBeNull();
+  });
+
+  it('says "No one matches." for an empty result', async () => {
+    mount({ users: [user()] });
+    await screen.findByText('a@x.io');
+    await typeAndWait('Search people', 'zzz');
+    expect(await screen.findByText('No one matches.')).toBeInTheDocument();
+    expect(screen.getByText('Showing 0 of 0')).toBeInTheDocument();
+  });
+
+  it('a late answer to an older search does not overwrite the newest one', async () => {
+    const pending = {};
+    mount({
+      users: [user({ email: 'ada@x.io' }), user({ id: 'u2', email: 'bob@x.io' })],
+      extra: (path) => {
+        const q = path.startsWith('/v1/admin/users?') && new URL(path, 'http://x').searchParams.get('q');
+        if (!q) return undefined;
+        return new Promise((resolve) => { pending[q] = resolve; });
+      },
+    });
+    await screen.findByText('ada@x.io');
+    await typeAndWait('Search people', 'ad');
+    await typeAndWait('Search people', 'bo');
+    await waitFor(() => expect(Object.keys(pending).sort()).toEqual(['ad', 'bo']));
+    await act(async () => { pending.bo(json(200, [user({ id: 'u2', email: 'bob@x.io' })])); });
+    expect(await screen.findByText('bob@x.io')).toBeInTheDocument();
+    await act(async () => { pending.ad(json(200, [user({ email: 'ada@x.io' })])); });   // the older one, arriving late
+    expect(screen.getByText('bob@x.io')).toBeInTheDocument();
+    expect(screen.queryByText('ada@x.io')).toBeNull();
+  });
+
+  it('reloads with the same search after an edit', async () => {
+    mount({ users: [user({ email: 'ada@x.io' }), user({ id: 'u2', email: 'bob@x.io', status: 'pending' })] });
+    await screen.findByText('Showing 2 of 2');
+    await typeAndWait('Search people', 'bob');
+    await screen.findByText('Showing 1 of 1');
+    const before = usersCalls().length;
+    fireEvent.click(screen.getByRole('button', { name: 'Activate' }));
+    await waitFor(() => expect(usersCalls().length).toBe(before + 1));
+    expect(usersCalls().at(-1).get('q')).toBe('bob');
+  });
+
+  it('a reload after an edit keeps the pages already loaded', async () => {
+    mount({ users: many(120) });
+    fireEvent.click(await screen.findByRole('button', { name: 'Show more' }));
+    await screen.findByText('Showing 100 of 120');
+    fireEvent.click(screen.getAllByRole('button', { name: 'Disable' })[0]);
+    await waitFor(() => expect(usersCalls().at(-1).get('limit')).toBe('100'));
+    expect(usersCalls().at(-1).get('offset')).toBe('0');
+    expect(await screen.findByText('Showing 100 of 120')).toBeInTheDocument();
   });
 });

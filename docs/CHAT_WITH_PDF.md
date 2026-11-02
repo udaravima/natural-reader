@@ -1,7 +1,7 @@
 # Chat with PDF — Walkthrough
 
-> **Audience:** anyone running Natural Reader who wants to ask their local LLM about a document they're reading.
-> **Status:** ships in `v1.6.0` (PRs 1–5 in the plan archive).
+> **Audience:** anyone running Natural Reader who wants to ask a model about what they're reading.
+> **Status:** current as of `v2.5.0` plus `[Unreleased]`; the feature first shipped in `v1.6.0`.
 > **Time to first working chat-with-doc:** ~10 minutes on a machine that already has Docker + Ollama.
 
 This document walks the whole feature end-to-end: what it does, why we built it the way we did, how to bring it up locally, and the four different ways you can pull document context into a chat — from a one-click page question to fully autonomous tool calling.
@@ -19,7 +19,7 @@ You can now:
 3. **Index the whole document** — pgvector embeddings via Ollama's `nomic-embed-text`, then let the chat semantically retrieve passages from anywhere in the doc.
 4. **Let the model decide on its own** — once a doc is indexed, the model gets a `search_documents` tool it can invoke autonomously whenever a question warrants it.
 
-Everything is still local: Ollama for the LLM and embeddings, FastAPI + Postgres for the backend, no cloud round-trips.
+Out of the box everything is local: Ollama for the LLM and embeddings, FastAPI + Postgres for the backend. A deployment can add cloud model providers for chat (the excerpts a chat sends then go to that provider), and web search asks before anything leaves the server.
 
 ---
 
@@ -54,7 +54,7 @@ The browser never calls a model provider directly (**C1**: no `/api/*` fetch to 
 
 A few load-bearing decisions worth knowing:
 
-- **Document identity = `sha256` of the file bytes**, computed lazily in the browser the first time you do anything chat-related with a doc. Filenames are metadata only — renaming a file hits the same document; editing it gets a fresh one.
+- **Document identity = `sha256` of the file bytes, computed by the server** on upload (the browser's own hash is only a hint). Filenames are metadata only — renaming a file hits the same document; editing it gets a fresh one.
 - **Chat now needs Postgres (C1).** Every turn claims the session and writes its reply to Postgres as it streams; if Postgres is unreachable, sending a message returns `503 db_unavailable` instead of a reply — this is a change from pre-C1, where the chat streamed against Ollama regardless and only session *persistence* depended on Postgres.
 - **Tool calling is server-side (C1).** The document tools (`search_documents`, `read_document_pages`, and since C2.1 `extract_from_documents` and `document_outline`) and the web tools (`web_search`, `read_web_pages`, `offer_web_search`) run in `server/chat/tools/`; there is no browser-side tool registry any more.
 
@@ -67,7 +67,7 @@ A few load-bearing decisions worth knowing:
 | Node.js | 20.19+ or 22.12+ | Frontend dev server (Vite 7). `startup.sh` refuses older versions. |
 | Python | 3.12 or 3.13 | For the bare-metal backend (`BACKEND_RUNTIME=venv`) and the test suite; the backend container needs none. 3.14 is untested. |
 | Docker (or Postgres + pgvector locally) | any recent | The compose file pins `pgvector/pgvector:pg16`. |
-| Ollama | latest | Both the chat model and `nomic-embed-text` must be pulled locally. |
+| Ollama | latest | `nomic-embed-text` must be pulled here whatever runs chat (indexing only calls Ollama). The chat model too, unless a provider serves it. |
 | RAM | ~6 GB free | Postgres + Ollama + a small chat model fit comfortably. Larger chat models scale linearly. |
 
 ---
@@ -226,9 +226,9 @@ the last is fully autonomous retrieval.
 The fastest path. Cap is `~8000 chars` per page (truncated tail marker added if over).
 
 1. While reading a page, click **Ask page** in the toolbar.
-2. The app jumps to chat mode and **pins** the page: a purple **pin chip** appears above the input reading `Page N · filename.pdf` + a preview. The pin stays attached to the conversation.
+2. The app opens the chat (beside the page on a wide screen, the Chat view otherwise) and **pins** the page: a purple **pin chip** appears above the input reading `Page N · filename.pdf` + a preview. The pin stays attached to the conversation.
 3. Type your question (or just hit Send to let the model decide what to say about the page).
-4. The model gets a system preamble with the page text — re-sent on **every** turn (placed at the very top of the prompt — there's no base system prompt ahead of it — so follow-ups keep the context without re-attaching).
+4. The model gets the page text in the leading system message, after the app's rules — re-sent on **every** turn, so follow-ups keep the context without re-attaching.
 
 **No indexing required.** Works the moment a doc loads. Remove a pin anytime via the ✕ on its chip.
 
@@ -244,10 +244,10 @@ Same idea, scoped to whatever you highlighted — and you can stack several.
 ### 6.3. How pins behave (persistent context)
 
 A pin is **not** a one-shot. Once created (Ask page or Ask AI) it stays attached to
-the conversation and is **re-sent to the model on every turn**, injected as a system
-note **at the very top of the prompt** — there's no base system prompt ahead of it,
-and it comes before the conversation history — so it never gets buried as the chat
-grows, and follow-ups "just work" without re-attaching.
+the conversation and is **re-sent to the model on every turn**, as part of the one
+leading system message (after the assistant profile, the app's rules and a project's
+map), ahead of the conversation history — so it never gets buried as the chat grows,
+and follow-ups "just work" without re-attaching.
 
 This is close to how a normal ChatGPT/Gemini session keeps context in view, with one
 deliberate difference: pasting text into a single message freezes it at that spot in
@@ -255,10 +255,9 @@ the transcript, where it recedes turn after turn; a pin instead is **re-injected
 the same place every turn**, staying maximally relevant. (The conversation's
 user/assistant turns are still re-sent in full each turn — every provider's chat API
 is stateless this way.) **Changed in C1:** pins used to sit immediately before your
-latest question; they moved to the very top of the prompt (there's no base system
-prompt ahead of them), so the prefix up to your new message stays identical
-turn-to-turn and a provider that caches repeated prompt prefixes (most do) can reuse
-that work instead of reprocessing it every time.
+latest question; they moved into the leading system message, so the prefix up to your
+new message stays identical turn-to-turn and a provider that caches repeated prompt
+prefixes (most do) can reuse that work instead of reprocessing it every time.
 
 - **Multiple pins** accumulate as separate chips; remove any via its ✕.
 - **Dedupe** by `(doc_id, kind, text)` — re-pinning the same passage is a no-op.
@@ -401,7 +400,7 @@ python scripts/eval_doc_qa.py --model ollama:gemma4:31b-cloud --repeat 3     # a
 - an Ollama cloud model through the local daemon, e.g. `ollama:gemma4:31b-cloud` (after `ollama signin`; it runs on Ollama's servers, about 10 s a run);
 - an OpenRouter model, e.g. `openrouter:google/gemma-4-26b-a4b-it` (needs the `openrouter` provider configured).
 
-Neither hosts the small local models (`gemma4:e4b`, or `llama3.2:3b` with tools), so check those last, one at a time. Reading web pages and many document pages goes through the reader (§6.6), whose model (`READER_MODEL`, default `llama3.2:3b`, local) is loaded into RAM unless you set `READER_MODEL=chat`.
+Neither hosts the small local models (`gemma4:e4b`, or `llama3.2:3b` with tools), so check those last, one at a time. Reading web pages and many document pages goes through the reader (§6.6), whose model is the chat model unless you name another (`READER_MODEL`, or Admin console → Models → Reader); a separate local reader is loaded into RAM next to the chat model.
 
 It reads the same environment as the backend: `DATABASE_URL`, the embedding model and the chat provider. It indexes the document for an eval user once (later runs reuse it) and deletes its chats afterwards. Each line reports the tools called and the rounds used.
 - **Exit status:** 0 when every case passed, 1 when the model failed one, and 2 when the harness couldn't run. A turn that ended in an error (provider, budget) is reported as ERROR, not as a model failure.
@@ -458,7 +457,9 @@ A project (a team's shelf of documents, see [LIBRARY.md](LIBRARY.md)) can be the
 
 **One search across the project.** `search_documents` ranks the whole project as one list: meaning and exact words fused once by reciprocal-rank fusion, then balanced so one long document can't take every slot (`CHAT_SEARCH_PER_DOC`, default 2 passages per document, skipped ones filling a short list). When no passage has every word of the query, passages with at least half of its informative words rank (so "install podman rootless rhel" still finds "install podman rootless"); this applies to a single document too. Details and the SQL reasoning are in `doc_search.search_scope`'s docstring.
 
-**The reader.** `extract_from_documents` and `read_web_pages` don't hand pages to the chat model. They hand them to a *reader*: a separate model call with a fresh context and no tools, given the chat model's goal and batches of labelled passages, which returns only the facts that serve the goal, each with a verbatim quote. The app then checks every quote against the passage the reader named (ignoring case, curly quotes, dash kinds and a line-end hyphen; accepting the fenced form the model saw) and drops any fact whose quote isn't there. That check is what makes it accurate rather than just shorter, and it is also where a fact gets its exact page for the citation. A batch that fails or times out has its pages listed under `failed` in the result (documents; `not_read` is for pages left out by the page cap) or is replaced by a short fenced excerpt (a web page). `extract_from_documents` reads up to `CHAT_EXTRACT_MAX_PAGES` (default 12) pages per call, choosing the pages closest to the goal when there are more and listing what it didn't read (`not_read`); its result is capped at `CHAT_EXTRACT_OUTPUT_CHARS` (4,000, about 15-25% more once indented for the model). The model is `READER_MODEL`; on a CPU-only Ollama set `READER_MODEL=chat` so no second model is loaded (all `READER_*` knobs: [DEPLOYMENT.md](DEPLOYMENT.md#project-chat-the-reader-and-web-search)).
+**The reader.** `extract_from_documents` and `read_web_pages` don't hand pages to the chat model. They hand them to a *reader*: a separate model call with a fresh context and no tools, given the chat model's goal and batches of labelled passages, which returns only the facts that serve the goal, each with a verbatim quote. The app then checks every quote against the passage the reader named (ignoring case, curly quotes, dash kinds and a line-end hyphen; accepting the fenced form the model saw) and drops any fact whose quote isn't there. That check is what makes it accurate rather than just shorter, and it is also where a fact gets its exact page for the citation. A batch that fails or times out has its pages listed under `failed` in the result (documents; `not_read` is for pages left out by the page cap) or is replaced by a short fenced excerpt (a web page). `extract_from_documents` reads up to `CHAT_EXTRACT_MAX_PAGES` (default 12) pages per call, choosing the pages closest to the goal when there are more and listing what it didn't read (`not_read`); its result is capped at `CHAT_EXTRACT_OUTPUT_CHARS` (4,000, about 15-25% more once indented for the model). The model is the chat model of the conversation unless an admin chose another under Admin console → Models → Reader, or `READER_MODEL` (then `SUMMARIZE_MODEL`, `WEB_SEARCH_SUMMARY_MODEL`) names one; the default keeps a CPU-only Ollama from loading a second model, but with a cloud chat model each batch counts against its quota, so a small local reader is worth naming (all `READER_*` knobs: [DEPLOYMENT.md](DEPLOYMENT.md#project-chat-the-reader-and-web-search)).
+
+**Context size and reloads (admin console v2).** Ollama loads a model at 4,096 tokens on a machine with under 24 GiB of VRAM unless the request names a size, and it reloads a loaded model whenever a request's size differs from the one it was loaded with. So the server settles **one** size per turn for a self-hosted Ollama model (the admin's per-model size, else the deployment's, else the person's own Settings value, else 16,384; at most `INFERENCE_NUM_CTX_MAX`), sends it on every chat step and, when the reader is the chat model, on every reader batch, and trims history to that same number. A different self-hosted reader is sent its own size, never the person's. A reader on an Ollama cloud model or an OpenAI-compatible model is sent none (the admin's Local/Cloud mark on a provider changes only what counts as cloud usage, never the size). Each reader batch is cut to fit the window (never above `READER_INPUT_CHARS`, at most 16 passages), so a small size means more batches, not a cut-off prompt. The first message after a size changes reloads the model once. Where each size comes from: [DEPLOYMENT.md](DEPLOYMENT.md#context-sizes-windows-and-the-models-section).
 
 **Web search asks first.** In `ask` mode (the default) the model is not given a way to search. It can call `offer_web_search(query, reason)`; that ends the turn (if the model wrote no text in that round it first gets one more step, with no tools, to write its answer: what the documents say and don't cover, and general knowledge labelled as such, never with a page), and the reply, text first, gets an offer card ("Search the web?", the reason, the query in an editable field, **Search the web** / **Not now**). The model is told what to write by a note in the offer's result, which differs by what it can search: a project's searchable documents, the one open document, or nothing to search (no document, or a project still indexing), where the answer is general knowledge said not to be from a search. If the daily budget is used up the answer step is skipped and the card still comes, with a notice. If you press Stop during the answer step you keep the text written so far and get no card for that reply; ask again, or type "search the web for X", to bring the card back. **Search the web** starts a new turn with the visible message "Search the web for: *query*" and `context.web = {query}`. On that turn the app runs exactly that query itself, before the model's first step, as a `web_search` tool exchange the model finds in its prompt; the model may then call `read_web_pages` on the results, or `offer_web_search` for a different search (which needs its own yes), and, in `ask` mode, is never given `web_search`. (In `auto` mode an approved turn gets that mode's tools as usual, `web_search` included; in `off` mode the approval is ignored.) The admin console's **Chat options → Web search** sets the mode for everyone (*Ask first*, *Search without asking*, *Off*), over `CHAT_WEB_SEARCH`, with **Use the server setting** to go back. A fact taken from a web page cites its site, `(example.com)`, and the pages read are listed as links under the reply. Web text is untrusted data: it is fenced in the reader's prompt and its facts reach the chat model as data.
 
@@ -482,7 +483,7 @@ The sidebar merges both lists, newest-first, deduped by id.
 | Field | Notes |
 |---|---|
 | `content` / `thinking` | The model's reply text + reasoning trace. |
-| `attachments` | Image metadata (binary `dataUrl`/`base64` stripped on save). |
+| `attachments` | Attachment metadata; the bytes are in `chat_attachments` (migration 013), so a follow-up turn can send an earlier image to the model again. Deleting the chat deletes them. |
 | `docContext` | Legacy per-message context (pre-pins). No longer written for new messages; retained so old sessions still re-render their chip. |
 | `stats` | Per-turn token + latency numbers from the provider (the `⚡` disclosure); `usageEstimated: true` if the provider didn't report token counts and they were estimated from text length instead. |
 | `toolCalls` | Compact summary of any autonomous tool calls — `{name, arguments, result_summary}`. Used to re-render the 🔎 disclosure on reload. |
@@ -509,7 +510,7 @@ the server writes messages itself now, C1.)
 | **Toast: "This model rejected tools" / "…rejected thinking"** | The selected model 4xx'd on that feature; the server retried once without it. | Switch to a model with better feature support, or accept the plain answer — the retry already succeeded. |
 | **Autonomous search never fires and there's no "Used N passages" note either** | The doc isn't indexed yet (state ≠ `indexed`), OR the model doesn't report tool support. | Click Index; or switch to a tools-capable model. |
 | **Old IDB session won't accept new messages** | Read-only by design. | Just type — the next send copies (imports) the session onto Postgres. The IDB original is preserved. |
-| **The machine runs out of RAM while chatting** | Several models loaded at once: Ollama keeps each for 5 minutes after use, and allows 3 on CPU by default. The reader (project chat, `extract_from_documents`, reading web pages) loads `READER_MODEL` (default `llama3.2:3b`) next to the chat model. A user's "keep warm: Always" or a large context size adds to it. | On the Ollama server set `OLLAMA_MAX_LOADED_MODELS=2` (one chat model plus the embedding model; 1 makes them evict each other on every message). Set `READER_MODEL=chat`, so the reader uses the model you chat with instead of loading a second one. `INFERENCE_NUM_CTX_MAX` and `INFERENCE_KEEP_ALIVE_MAX` (v2.4) cap what users can ask for. |
+| **The machine runs out of RAM while chatting** | Several models loaded at once: Ollama keeps each for 5 minutes after use, and allows 3 on CPU by default. A reader that you pointed at a separate local model (`READER_MODEL`, or Models → Reader) loads next to the chat model; the default reader is the chat model and loads nothing extra. A user's "keep warm: Always" or a large context size adds to it. | On the Ollama server set `OLLAMA_MAX_LOADED_MODELS=2` (one chat model plus the embedding model; 1 makes them evict each other on every message). Leave the reader on the chat model (the default; `READER_MODEL=chat` says so explicitly) instead of loading a second one. The context size costs memory too (a larger one reserves more when the model loads): lower **Models → Context size for local Ollama models** or `INFERENCE_LOCAL_NUM_CTX` (16,384 unless set). `INFERENCE_NUM_CTX_MAX` and `INFERENCE_KEEP_ALIVE_MAX` (v2.4) cap what users can ask for. |
 | **A second "Send" in the same chat does nothing / errors** | Only one turn can stream per chat at a time; a second send while one is in flight gets `409 turn_in_progress`. | Wait for the first reply to finish or click Stop, then send again. |
 
 ---
@@ -575,12 +576,11 @@ The server-side tool registry (`server/chat/tools/` — moved from the browser's
 
 Adding a tool is one file in `server/chat/tools/` (`name`, `spec`, `available(ctx)`, `execute`, `summarize`) plus one registry line — there's no separate frontend half to write any more.
 
-Also tabled for future work:
+**Tool rounds and their guard-rails (shipped in v2.3).** `CHAT_MAX_TOOL_ROUNDS` defaults to 3, with these guard-rails:
 
-- **Multi-round tool calls (v2.3).** `CHAT_MAX_TOOL_ROUNDS` defaults to 3, with these guard-rails:
-  - **Per-answer result budget:** `CHAT_TOOL_RESULT_BUDGET_CHARS`, default 24,000. Past it, a call returns "Search budget for this answer used up: answer from what you have." A result that would go past the budget is dropped unseen, and its passages don't count as shown.
-  - **Repeated calls:** a call identical to an earlier one in the same answer returns "Already searched: see the results above." without running.
-  - **Daily token budget:** checked before every step.
-  - **Web search guard:** `web_search` and `offer_web_search` refuse queries over 300 characters, and any query that shares a run of 8 words with document text the model has this turn (the Stage 0 passages, pins, search results, pages read). For scripts written without spaces (Chinese, Japanese, Thai and others), the check is a shared run of 12 characters. The check also covers the model's own earlier answers in the chat, since they often quote the document; your own messages are not checked. It tells the model to search by topic instead. **Limit:** it catches copied runs, not meaning. A short sensitive fragment, under 8 words, can still be sent, so don't rely on it as a data-loss filter.
-  - **Status line:** the reply says what is running ("Searching the document…", "Reading the document…", "Searching the web…"), and "Still searching… (round n)" from the second round on.
-- **No-chip retrieval toggle** for users who want manual whole-doc context without going through Ask page / Ask AI first.
+- **Per-answer result budget:** `CHAT_TOOL_RESULT_BUDGET_CHARS`, default 24,000. Past it, a call returns "Search budget for this answer used up: answer from what you have." A result that would go past the budget is dropped unseen, and its passages don't count as shown.
+- **Repeated calls:** a call identical to an earlier one in the same answer returns "Already searched: see the results above." without running.
+- **Daily token budget:** checked before every step.
+- **Web search guard:** `web_search` and `offer_web_search` refuse queries over 300 characters, and any query that shares a run of 8 words with document text the model has this turn (the Stage 0 passages, pins, search results, pages read). For scripts written without spaces (Chinese, Japanese, Thai and others), the check is a shared run of 12 characters. The check also covers the model's own earlier answers in the chat, since they often quote the document; your own messages are not checked. It tells the model to search by topic instead. **Limit:** it catches copied runs, not meaning. A short sensitive fragment, under 8 words, can still be sent, so don't rely on it as a data-loss filter.
+- **Status line:** the reply says what is running ("Searching the document…", "Reading the document…", "Searching the web…"), and "Still searching… (round n)" from the second round on.
+Also tabled for future work: a **no-chip retrieval toggle**, for manual whole-document context without going through Ask page / Ask AI first.

@@ -56,8 +56,8 @@ describe('applyEvent over the backend contract fixtures', () => {
         expect(m.content).toBe('Partial');
     });
 
-    it('notice and context: surfaced on the message', () => {
-        expect(reduce(loadFixture('notice')).notices).toEqual(['This model rejected tools — answered without them.']);
+    it('context: surfaced on the message (a notice is the toast route, not a message field)', () => {
+        expect(reduce(loadFixture('notice')).notices).toBeUndefined();
         expect(reduce(loadFixture('context')).docContext.notes[0]).toMatchObject({ kind: 'prefetch', docName: 'Thesis.pdf' });
     });
 

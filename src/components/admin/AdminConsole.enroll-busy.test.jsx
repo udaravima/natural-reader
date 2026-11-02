@@ -25,15 +25,17 @@ describe('AdminConsole enroll — in-flight feedback', () => {
           resolveEnroll = () => r(json(201, { ...existing, id: 'u2', email: 'new@x.io', oidc_sub: null }));
         });
       }
-      if (path === '/v1/admin/users') return json(200, [existing]);
+      if (path.startsWith('/v1/admin/users')) return json(200, [existing]);
       if (path.startsWith('/v1/admin/inference/usage')) return json(200, []);
       if (path === '/v1/admin/inference/config') return json(200, {});
       if (path.startsWith('/v1/admin/projects')) return json(200, []);
+      if (path === '/v1/admin/overview') return json(200, { checks: [] });
       return json(404, {});
     });
     render(
       <AdminConsole theme={theme} apiHost="" apiPort="" currentUserId="me" onBack={vi.fn()} showToast={vi.fn()} />
     );
+    fireEvent.click(screen.getByRole('tab', { name: 'People' }));   // the console opens on Overview
     await screen.findByText('a@x.io');
 
     fireEvent.change(screen.getByLabelText('Enroll email'), { target: { value: 'new@x.io' } });

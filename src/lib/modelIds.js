@@ -50,3 +50,16 @@ export function supportedKnobs(model) {
     const ollama = !model || model.kind === 'ollama';
     return { numCtx: ollama, keepAlive: ollama, think: model?.capabilities?.thinking !== false, numPredict: true };
 }
+
+// The options of a model dropdown (components/SearchableList.jsx), grouped by provider: with no models, the one line
+// saying so; a pick that has gone from the list stays, marked; and `prompt`, if given, heads a list with no pick.
+export function modelOptions(models, selected, { empty = 'No models found', prompt } = {}) {
+    if (models.length === 0) return [{ value: '', label: empty }];
+    const first = [];
+    if (!selected && prompt) first.push({ value: '', label: prompt, pinned: true });
+    if (selected && !models.some((m) => m.id === selected)) {
+        first.push({ value: selected, label: `${selected} (unavailable)`, disabled: true, pinned: true });
+    }
+    return [...first, ...groupByProvider(models).flatMap(([provider, list]) => (
+        list.map((m) => ({ value: m.id, label: modelLabel(m), group: provider }))))];
+}

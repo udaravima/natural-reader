@@ -297,6 +297,18 @@ def _pdf_page_texts(path: Path) -> tuple[list[str], int]:
         pdf.close()
 
 
+def pdf_page_count(path: Path) -> int:
+    """A PDF's page count, read from the file (the page limit on conversions needs it before indexing has
+    recorded one). Raises if the file isn't a readable PDF."""
+    import pypdfium2 as pdfium
+
+    pdf = pdfium.PdfDocument(str(path))
+    try:
+        return len(pdf)
+    finally:
+        pdf.close()
+
+
 class _TocItem(NamedTuple):
     level: int               # 0 = top level
     title: str

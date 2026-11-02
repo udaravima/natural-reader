@@ -59,6 +59,14 @@ def _principal(row: dict) -> Principal:
 
 
 async def get_current_user(request: Request, conn=Depends(get_conn, scope="function")) -> Principal:
+    return await resolve_principal(request, conn)
+
+
+async def resolve_principal(request: Request, conn) -> Principal:
+    """Who is calling, from the request's credentials, using the connection the caller hands over. The body of
+    get_current_user, so a route that must not hold a pooled connection for its whole run (the speech routes)
+    can authenticate on a short one of its own and release it. A missing credential is a 401, an inactive
+    account a 403."""
     cfg = load_auth_config(os.environ)
     host = os.environ.get("HOST", "127.0.0.1")
     if dev_bypass_allowed(cfg, host):
@@ -92,13 +100,18 @@ async def require_admin(principal: Principal = Depends(get_current_user)) -> Pri
 def require_capability(name: str):
     """Deny-by-default gate for a feature capability (reader/chat/admin)."""
     async def _dep(principal: Principal = Depends(get_current_user)) -> Principal:
-        if name not in principal.capabilities:
-            raise HTTPException(
-                status_code=403,
-                detail={"error": "missing_capability", "capability": name},
-            )
+        check_capability(principal, name)
         return principal
     return _dep
+
+
+def check_capability(principal: Principal, name: str) -> None:
+    """The capability test behind require_capability: a 403 unless the (already narrowed) principal holds `name`."""
+    if name not in principal.capabilities:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "missing_capability", "capability": name},
+        )
 
 
 async def require_read_aloud(principal: Principal = Depends(get_current_user)) -> Principal:

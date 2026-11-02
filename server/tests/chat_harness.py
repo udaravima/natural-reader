@@ -44,6 +44,9 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from types import SimpleNamespace
+
+from server.llm.providers.base import ProviderConfig
 from server.llm.types import Capabilities, Finish, TextDelta, Usage
 
 
@@ -63,6 +66,8 @@ class FakeRouter:
     listed: bool = True
     providers: bool = True
     kind: str = "ollama"   # the provider kind every model id resolves to
+    provider_name: str = "ollama"                 # the model-id prefix it answers to
+    url: str = "http://localhost:11434"           # the provider's base URL
     calls: list = field(default_factory=list)
 
     def has_providers(self) -> bool:
@@ -82,6 +87,11 @@ class FakeRouter:
 
     def provider_kind(self, model_id: str) -> str | None:
         return self.kind
+
+    def resolve(self, model_id: str):
+        prefix, sep, rest = model_id.partition(":")
+        name = rest if sep and prefix == self.provider_name else model_id
+        return SimpleNamespace(config=ProviderConfig(self.provider_name, self.kind, self.url)), name
 
     def stream_chat(self, model_id, messages, tools, settings):
         self.calls.append({"model": model_id, "messages": list(messages),

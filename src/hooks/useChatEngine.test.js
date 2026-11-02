@@ -623,3 +623,49 @@ describe('useChatEngine — an approved web search (C2.1 Task 18)', () => {
         expect(lastContext().web).toStrictEqual({ query: 'zephyr release' });
     });
 });
+
+describe('useChatEngine — text attachments', () => {
+    const stagedText = (over = {}) => ({
+        id: 't1', kind: 'text', name: '.env', mimeType: 'text/plain', size: 9,
+        originalText: 'A=secret\n', maskedText: 'A=<masked, 6 chars>\n', masked: 1, sendReal: false, ...over,
+    });
+
+    it('sends the masked text, masked:true and the sent size; the message keeps metadata only', async () => {
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await act(async () => { await result.current.sendMessage('what is this?', [stagedText()]); });
+        const wire = postTurn.mock.calls[0][0].body.message.attachments;
+        expect(wire).toEqual([{
+            id: 't1', kind: 'text', mime: 'text/plain', name: '.env', size: 20, masked: true, real_values: false,
+            base64: btoa('A=<masked, 6 chars>\n'),
+        }]);
+        const json = JSON.stringify(result.current.messages);
+        expect(json).not.toContain('secret');
+        expect(json).not.toContain('<masked');
+        expect(json).not.toContain('base64');
+        expect(result.current.messages[0].attachments[0]).toEqual({
+            id: 't1', kind: 'text', name: '.env', mimeType: 'text/plain', size: 20, masked: true,
+        });
+    });
+
+    it('sends the original with masked:false and real_values:true once the person chose real values', async () => {
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await act(async () => { await result.current.sendMessage('q', [stagedText({ sendReal: true })]); });
+        const [a] = postTurn.mock.calls[0][0].body.message.attachments;
+        expect(a).toMatchObject({ masked: false, real_values: true, size: 9, base64: btoa('A=secret\n') });
+        expect(JSON.stringify(result.current.messages)).not.toContain('secret');
+    });
+
+    it('does not mutate the staged object, so a refused send can put it back whole', async () => {
+        postTurn.mockResolvedValue(refusal(409, { error: 'turn_in_progress', message: 'busy' }));
+        const att = stagedText();
+        const copy = JSON.parse(JSON.stringify(att));
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        let out;
+        await act(async () => { out = await result.current.sendMessage('q', [att]); });
+        expect(out.refused).toBe(true);
+        expect(att).toEqual(copy);
+        expect(out.attachments[0]).toBe(att);
+    });
+});

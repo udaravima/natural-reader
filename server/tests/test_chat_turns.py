@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -11,6 +12,7 @@ from server.auth import deps
 from server.chat import context as ctx_mod
 from server.chat import orchestrator, store
 from server.chat.tools import search_documents as sd_tool
+from server.llm.providers.base import ProviderConfig
 from server.llm.types import Capabilities, Finish, TextDelta, Usage
 from server.routers import chat_turns
 from server.services import inference_budget
@@ -104,6 +106,48 @@ async def test_model_not_allowed_is_422(db_conn, app):
     assert r.status_code == 422 and r.json()["detail"]["error"] == "model_not_allowed"
 
 
+async def _select_chat_models(db_conn, models):
+    from server.auth.users import SEED_ADMIN_ID
+    from server.services import console_settings, model_settings
+    await console_settings.save(db_conn, model_settings.SECTION, {"chat_models": models}, updated_by=SEED_ADMIN_ID)
+
+
+async def test_turn_refuses_a_model_the_console_left_out(db_conn, app):
+    """The console narrows the env's list: a model outside a non-empty selection is refused before the turn is
+    claimed, with the same refusal as a model the env forbids."""
+    await _select_chat_models(db_conn, ["ollama:other"])
+    r = await _post(app, await member(db_conn, "alice"))
+    assert r.status_code == 422
+    assert r.json()["detail"] == {"error": "model_not_allowed", "message": "That model isn't available on this server."}
+    assert await _one(db_conn, "SELECT 1 FROM chat_sessions WHERE id='s-1'") is None
+    assert await _one(db_conn, "SELECT 1 FROM chat_messages") is None
+    assert app[1].calls == []
+
+
+async def test_turn_allows_a_model_the_console_selected(db_conn, app):
+    """Checked against the canonical id (a bare name resolves to ollama:), and ':latest' doesn't matter."""
+    await _select_chat_models(db_conn, ["ollama:m:latest"])
+    r = await _post(app, await member(db_conn, "alice"), body={**BODY, "model": "m"})
+    assert r.status_code == 200 and app[1].calls[0]["model"] == "ollama:m"
+
+
+async def test_turn_with_no_console_selection_allows_what_the_env_allows(db_conn, app):
+    r = await _post(app, await member(db_conn, "alice"))
+    assert r.status_code == 200
+
+
+async def test_turn_survives_an_unreadable_models_row(db_conn, app, monkeypatch):
+    """Fail-open: the environment's settings apply, so the turn still runs."""
+    from server.services import model_settings
+
+    async def boom(conn, env=None):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(model_settings, "load_models_settings", boom)
+    r = await _post(app, await member(db_conn, "alice"))
+    assert r.status_code == 200
+
+
 async def test_model_not_in_the_providers_list_is_422_before_claiming(db_conn, app):
     """A saved id can resolve to a real provider (is_allowed passes: no
     allow-list configured) yet name a model that provider doesn't actually
@@ -138,6 +182,90 @@ async def test_unreadable_attachment_is_422(db_conn, app, att):
     assert r.status_code == 422 and r.json()["detail"]["error"] == "invalid_attachment"
 
 
+def _b64(b: bytes) -> str:
+    return base64.b64encode(b).decode()
+
+
+def _text_body(*files):
+    return {**BODY, "message": {"content": "read", "attachments": [
+        {"kind": "text", "mime": "text/plain", "name": name, "base64": _b64(data), **extra}
+        for name, data, extra in files]}}
+
+
+async def test_text_attachment_is_stored_with_masked_flag(db_conn, app):
+    data = "A=<masked, 3 chars>\n".encode()
+    body = _text_body((".env", data, {"masked": True}))
+    r = await _post(app, await member(db_conn, "alice"), body=body)
+    assert r.status_code == 200
+    meta = (await _one(db_conn, "SELECT attachments FROM chat_messages WHERE role='user'"))[0]
+    assert meta[0]["kind"] == "text" and meta[0]["masked"] is True and meta[0]["size"] == len(data)
+    row = await _one(db_conn, "SELECT kind, data FROM chat_attachments")
+    assert row[0] == "text" and bytes(row[1]) == data
+
+
+async def test_text_attachment_without_masked_stores_false(db_conn, app):
+    r = await _post(app, await member(db_conn, "alice"), body=_text_body(("a.txt", b"hi", {})))
+    assert r.status_code == 200
+    meta = (await _one(db_conn, "SELECT attachments FROM chat_messages WHERE role='user'"))[0]
+    assert meta[0]["masked"] is False
+
+
+async def test_real_values_choice_is_recorded_for_text_files_only(db_conn, app):
+    r = await _post(app, await member(db_conn, "alice"),
+                    body=_text_body(("a.env", b"A=1", {"masked": True, "real_values": True}), ("b.txt", b"hi", {})))
+    assert r.status_code == 200
+    meta = (await _one(db_conn, "SELECT attachments FROM chat_messages WHERE role='user'"))[0]
+    assert [m["real_values"] for m in meta] == [True, False]
+    model = (await _one(db_conn, "SELECT model FROM chat_messages WHERE role='user'"))[0]
+    assert model                                   # the model the choice was agreed for travels with the message
+
+
+async def test_an_image_cannot_carry_real_values(db_conn, app):
+    body = {**BODY, "message": {"content": "look", "attachments": [
+        {"kind": "image", "mime": "image/png", "name": "a.png", "base64": PNG, "real_values": True}]}}
+    r = await _post(app, await member(db_conn, "alice"), body=body)
+    assert r.status_code == 422 and r.json()["detail"]["error"] == "invalid_attachment"
+    assert await _one(db_conn, "SELECT 1 FROM chat_sessions WHERE id='s-1'") is None
+
+
+async def test_images_carry_no_masked_key(db_conn, app):
+    body = {**BODY, "message": {"content": "look", "attachments": [
+        {"kind": "image", "mime": "image/png", "name": "a.png", "base64": PNG}]}}
+    assert (await _post(app, await member(db_conn, "alice"), body=body)).status_code == 200
+    meta = (await _one(db_conn, "SELECT attachments FROM chat_messages WHERE role='user'"))[0]
+    assert "masked" not in meta[0]
+
+
+_BIG = b"a" * 65_536
+
+
+@pytest.mark.parametrize("files,message", [
+    ([(".env", b"\xff\xfe", {})], ".env isn't a text file."),
+    ([(".env", b"ab\x00cd", {})], ".env isn't a text file."),
+    ([(".env", _BIG + b"a", {})], ".env is over 64 KB."),
+    ([("a.txt", _BIG, {}), ("b.txt", _BIG, {}), ("c.txt", b"a", {})], "The attached text is over 128 KB."),
+])
+async def test_text_attachment_refusals(db_conn, app, files, message):
+    r = await _post(app, await member(db_conn, "alice"), body=_text_body(*files))
+    assert r.status_code == 422
+    assert r.json()["detail"]["error"] == "invalid_attachment"
+    assert r.json()["detail"]["message"] == message
+    assert await _one(db_conn, "SELECT 1 FROM chat_sessions WHERE id='s-1'") is None
+
+
+async def test_text_attachment_with_a_non_text_mime_is_refused(db_conn, app):
+    body = _text_body((".env", b"A=1", {}))
+    body["message"]["attachments"][0]["mime"] = "application/json"
+    r = await _post(app, await member(db_conn, "alice"), body=body)
+    assert r.status_code == 422
+    assert r.json()["detail"]["message"] == ".env is not a valid text file."
+
+
+async def test_two_full_text_files_exactly_fit_the_message_limit(db_conn, app):
+    r = await _post(app, await member(db_conn, "alice"), body=_text_body(("a", _BIG, {}), ("b", _BIG, {})))
+    assert r.status_code == 200
+
+
 async def test_empty_message_without_pins_is_422(db_conn, app):
     r = await _post(app, await member(db_conn, "alice"), body={**BODY, "message": {"content": "  "}})
     assert r.status_code == 422 and r.json()["detail"]["error"] == "empty_message"
@@ -152,7 +280,7 @@ async def test_pins_only_message_is_allowed(db_conn, app):
 async def test_budget_already_spent_is_429_with_reset_time(db_conn, app):
     alice = await member(db_conn, "alice")
     await db_conn.execute("UPDATE users SET inference_daily_token_budget = 10 WHERE id = %s", (alice.user_id,))
-    await inference_budget.record_usage(db_conn, alice.user_id, 10, 0)
+    await inference_budget.record_usage(db_conn, alice.user_id, 10, 0, model="ollama:test", kind="chat", estimated=False)
     r = await _post(app, alice)
     detail = r.json()["detail"]
     assert r.status_code == 429 and detail["error"] == "budget_exhausted"
@@ -231,6 +359,9 @@ class _StuckRouter:
 
     def provider_kind(self, model_id: str) -> str | None:
         return "ollama"
+
+    def resolve(self, model_id: str):
+        return SimpleNamespace(config=ProviderConfig("ollama", "ollama", "http://localhost:11434")), model_id.removeprefix("ollama:")
 
     def stream_chat(self, model_id, messages, tools, settings):
         return self._gen()

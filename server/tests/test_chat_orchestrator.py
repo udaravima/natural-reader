@@ -2,9 +2,11 @@ import asyncio
 import dataclasses
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 
+from server.auth.users import SEED_ADMIN_ID
 from server.chat import context as ctx_mod
 from server.chat import orchestrator, store
 from server.chat.config import ChatConfig
@@ -16,8 +18,11 @@ from server.chat.tools import TurnTools
 from server.chat.tools import extract_from_documents as ex_tool
 from server.chat.tools import search_documents as sd_tool
 from server.chat.tools import web_search as ws_tool
+from server.services import console_settings, model_settings
 from server.services.doc_search import ReadableDoc
 from server.services.inference_limits import InferenceLimits
+from server.llm.providers.base import ProviderConfig
+from server.llm.router import UnknownModel
 from server.llm.types import (CallSettings, Capabilities, FeatureDropped, Finish, Message, ProviderError,
                               ProviderTimeout, ProviderUnavailable, ReasoningDelta, TextDelta,
                               ToolCall, ToolCallReady, Usage)
@@ -44,11 +49,11 @@ async def fake_web_search(query, count):
     return {"query": query, "results": [{"title": "t", "url": "https://example.com", "summary": "s"}]}
 
 
-async def _start(user, text="Hi", sid="s-1"):
-    claim = await store.begin_turn(session_id=sid, user_id=user.user_id, model_id="ollama:m", text=text,
+async def _start(user, text="Hi", sid="s-1", model_id="ollama:m", settings=CallSettings()):
+    claim = await store.begin_turn(session_id=sid, user_id=user.user_id, model_id=model_id, text=text,
                                    attachments=[], new_session_pins=None)
-    req = TurnRequest(user_id=user.user_id, session_id=sid, model_id="ollama:m", text=text, attachments=(),
-                      settings=CallSettings(), doc_id=None, timezone="UTC")
+    req = TurnRequest(user_id=user.user_id, session_id=sid, model_id=model_id, text=text, attachments=(),
+                      settings=settings, doc_id=None, timezone="UTC")
     return claim, req
 
 
@@ -548,6 +553,133 @@ async def test_num_ctx_sets_the_trimming_window_only_for_ollama_providers(conn, 
     assert seen["window"] == want
 
 
+# ---- admin console v2 phase 2a, Task 2: one context size per local model ----
+
+@pytest.fixture
+def window_spy(monkeypatch):
+    """The window each turn's context is built with; the env has no INFERENCE_LOCAL_NUM_CTX unless a test sets it."""
+    for var in ("INFERENCE_LOCAL_NUM_CTX", "INFERENCE_NUM_CTX_MAX", "INFERENCE_VLLM_CONTEXT_WINDOW"):
+        monkeypatch.delenv(var, raising=False)
+    seen = []
+    real = orchestrator.build_context
+
+    async def spy(turn, cfg):
+        seen.append(turn.window)
+        return await real(turn, cfg)
+
+    monkeypatch.setattr(orchestrator, "build_context", spy)
+    return seen
+
+
+async def _sizes_turn(conn, router, *, model_id="ollama:m", num_ctx=None):
+    """A two-step turn (one tool round), so 'every call' means more than one. Returns the num_ctx each
+    stream_chat call carried."""
+    router.steps = [
+        [ToolCallReady(ToolCall("c1", "web_search", {"query": "news"})), Usage(5, 2), Finish("tool_calls")],
+        reply()]
+    claim, req = await _start(await member(conn, "alice"), model_id=model_id, settings=CallSettings(num_ctx=num_ctx))
+    [_ async for _ in run_turn(req, claim, router=router, cfg=ChatConfig(max_tool_rounds=1), deployment_budget=None)]
+    assert len(router.calls) == 2
+    return [c["settings"].num_ctx for c in router.calls]
+
+
+async def _save_models(conn, **changes):
+    await console_settings.save(conn, model_settings.SECTION, changes, updated_by=SEED_ADMIN_ID)
+
+
+async def test_local_ollama_turn_sends_16384_without_any_setting(conn, monkeypatch, web_auto, window_spy):
+    monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
+    assert await _sizes_turn(conn, FakeRouter()) == [16384, 16384]
+    assert window_spy == [16384]
+
+
+async def test_self_hosted_remote_ollama_is_sized_too(conn, monkeypatch, web_auto, window_spy):
+    monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
+    router = FakeRouter(url="http://gpu.example.com:11434")
+    assert await _sizes_turn(conn, router, model_id="ollama:qwen3:8b") == [16384, 16384]
+    assert window_spy == [16384]
+
+
+async def test_a_cloud_marked_self_hosted_ollama_is_still_sized(conn, monkeypatch, web_auto, window_spy):
+    """Ruling P11: marking a self-hosted Ollama "cloud" changes only what counts as cloud usage. Its Ollama still
+    loads at 4,096 tokens unless told, so the turn still sends 16,384 and trims to it, not to the model's maximum."""
+    monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
+    await _save_models(conn, provider_locality={"ollama": "cloud"})
+    router = FakeRouter(caps=Capabilities(tools=True, context_window=131072))     # /api/show's maximum
+    assert await _sizes_turn(conn, router) == [16384, 16384]
+    assert window_spy == [16384]
+
+
+async def test_admin_size_beats_personal_value_and_unset_keeps_it(conn, monkeypatch, web_auto, window_spy):
+    monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
+    await _save_models(conn, context_size=8192)
+    assert await _sizes_turn(conn, FakeRouter(), num_ctx=4096) == [8192, 8192]
+    assert window_spy == [8192]
+    await _save_models(conn, context_size=None)
+    assert await _sizes_turn(conn, FakeRouter(), num_ctx=4096) == [4096, 4096]
+    assert window_spy[-1] == 4096
+
+
+async def test_cloud_model_keeps_the_personal_value(conn, monkeypatch, web_auto, window_spy):
+    monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
+    cloud = "ollama:gemma4:31b-cloud"
+    assert await _sizes_turn(conn, FakeRouter(), model_id=cloud, num_ctx=4096) == [4096, 4096]
+    assert await _sizes_turn(conn, FakeRouter(caps=Capabilities(tools=True, context_window=262144)),
+                             model_id=cloud) == [None, None]
+    assert window_spy[-1] == 262144     # nothing sent, so the model's own window trims
+
+
+async def test_openai_model_trims_to_a_declared_window(conn, window_spy):
+    await _save_models(conn, context_windows={"vllm:m": 9000})
+    router = FakeRouter(kind="openai", provider_name="vllm")      # reports no window
+    claim, req = await _start(await member(conn, "alice"), model_id="vllm:m")
+    [_ async for _ in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)]
+    assert window_spy == [9000]
+    assert router.calls[0]["settings"].num_ctx is None                # openai ignores num_ctx: none is sent
+
+
+async def test_unreadable_models_row_falls_back_to_env(conn, monkeypatch, caplog, window_spy):
+    monkeypatch.setenv("INFERENCE_LOCAL_NUM_CTX", "6144")
+
+    async def broken(conn, env=None):
+        raise RuntimeError("no pool")
+
+    monkeypatch.setattr(model_settings, "load_models_settings", broken)
+    router = FakeRouter()
+    claim, req = await _start(await member(conn, "alice"))
+    events = [e async for e in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)]
+    assert events[-1]["type"] == "finish"
+    assert router.calls[0]["settings"].num_ctx == 6144 and window_spy == [6144]
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+async def test_a_turn_gets_the_deployment_zone_as_its_default(conn, monkeypatch):
+    seen = []
+    real = orchestrator.build_context
+
+    async def spy(turn, cfg):
+        seen.append(turn.default_timezone)
+        return await real(turn, cfg)
+
+    async def colombo():
+        return "Asia/Colombo"
+
+    monkeypatch.setattr(orchestrator, "build_context", spy)
+    alice = await member(conn, "alice")
+    monkeypatch.setattr(orchestrator, "_deployment_timezone", colombo)
+    claim, req = await _start(alice)
+    [_ async for _ in run_turn(req, claim, router=FakeRouter(), cfg=ChatConfig(), deployment_budget=None)]
+    assert seen == ["Asia/Colombo"]
+
+
+async def test_the_deployment_zone_is_utc_when_it_cannot_be_read(monkeypatch):
+    def broken():
+        raise RuntimeError("no pool")
+
+    monkeypatch.setattr(orchestrator, "get_pool", broken)
+    assert await orchestrator._deployment_timezone() == "UTC"
+
+
 # ---- v2.1 follow-ups, Task 2: tool calls a model writes as text ----
 
 OPEN_DOC = ReadableDoc("d" * 64, "Thesis.pdf", "indexed")
@@ -630,6 +762,125 @@ async def test_the_tool_context_carries_the_turns_model(conn, monkeypatch):
     monkeypatch.setattr(orchestrator, "TurnTools", Spy)
     await _run(conn, FakeRouter(steps=[reply("Hi there.")]))
     assert seen == ["ollama:m"]
+
+
+# ---- admin console v2 phase 2a, Task 3: the reader's model and size ----
+
+@pytest.fixture
+def reader_env(monkeypatch):
+    for var in ("READER_MODEL", "SUMMARIZE_MODEL", "WEB_SEARCH_SUMMARY_MODEL", "INFERENCE_LOCAL_NUM_CTX",
+                "INFERENCE_NUM_CTX_MAX"):
+        monkeypatch.delenv(var, raising=False)
+
+
+class _TwoKinds(FakeRouter):
+    """`vllm:` ids belong to an openai-kind provider, `gone` to none, everything else to the Ollama."""
+    def resolve(self, model_id):
+        if model_id == "gone":
+            raise UnknownModel(model_id)
+        if model_id.startswith("vllm:"):
+            return SimpleNamespace(config=ProviderConfig("vllm", "openai", "http://vllm.example.com/v1")), model_id[5:]
+        return super().resolve(model_id)
+
+
+async def _reader_cfg_of(conn, monkeypatch, router=None, *, model_id="ollama:m", num_ctx=None):
+    """The ToolContext.reader_cfg a one-step turn hands to its tools."""
+    seen = []
+
+    class Spy(orchestrator.TurnTools):
+        def __init__(self, ctx):
+            seen.append(ctx.reader_cfg)
+            super().__init__(ctx)
+
+    monkeypatch.setattr(orchestrator, "TurnTools", Spy)
+    claim, req = await _start(await member(conn, "alice"), model_id=model_id, settings=CallSettings(num_ctx=num_ctx))
+    events = [e async for e in run_turn(req, claim, router=router or FakeRouter(), cfg=ChatConfig(),
+                                        deployment_budget=None)]
+    assert events[-1]["type"] == "finish"
+    [cfg] = seen
+    return cfg
+
+
+async def test_turn_reader_is_sized_to_its_own_model(conn, monkeypatch, reader_env):
+    # the reader is the chat model (the default): the chat's size, whatever decided it
+    cfg = await _reader_cfg_of(conn, monkeypatch)
+    assert (cfg.model, cfg.num_ctx) == ("ollama:m", 16384)
+    cfg = await _reader_cfg_of(conn, monkeypatch, num_ctx=4096)
+    assert (cfg.model, cfg.num_ctx) == ("ollama:m", 4096)
+    # ... and ":latest" doesn't make it another model
+    await _save_models(conn, reader="ollama:m:latest")
+    assert (await _reader_cfg_of(conn, monkeypatch, num_ctx=4096)).num_ctx == 4096
+
+    # a different local model, the person's chat value 4096 and no admin size: its own default, not the person's
+    await _save_models(conn, reader="ollama:other")
+    cfg = await _reader_cfg_of(conn, monkeypatch, num_ctx=4096)
+    assert (cfg.model, cfg.num_ctx) == ("ollama:other", 16384)
+    # ... or the admin's size for that model
+    await _save_models(conn, context_sizes={"ollama:other": 8192})
+    assert (await _reader_cfg_of(conn, monkeypatch, num_ctx=4096)).num_ctx == 8192
+
+    # the chat is a cloud model and so is the reader (chat): nothing to send
+    await _save_models(conn, reader="chat")
+    cfg = await _reader_cfg_of(conn, monkeypatch, model_id="ollama:gemma4:31b-cloud")
+    assert (cfg.model, cfg.num_ctx) == ("ollama:gemma4:31b-cloud", None)
+    # a cloud chat with a local reader: the reader is sized, the chat isn't
+    await _save_models(conn, reader="ollama:other")
+    assert (await _reader_cfg_of(conn, monkeypatch, model_id="ollama:gemma4:31b-cloud")).num_ctx == 8192
+
+
+async def test_cloud_chat_with_a_personal_size_gives_the_reader_none(conn, monkeypatch, reader_env):
+    """The chat model is Ollama cloud: the person's 4096 is sent to it, but it isn't a size the reader (the same
+    model) may send: a cloud model needs none, and without one its batches are full-size."""
+    cfg = await _reader_cfg_of(conn, monkeypatch, model_id="ollama:gemma4:31b-cloud", num_ctx=4096)
+    assert (cfg.model, cfg.num_ctx) == ("ollama:gemma4:31b-cloud", None)
+    calls = []
+
+    class Router:
+        async def complete(self, model_id, messages, settings, *, received=None):
+            calls.append((model_id, settings))
+            return '{"found": false, "facts": []}'
+
+    monkeypatch.setattr(reader, "get_router", lambda: Router())
+    await reader.read_batch("q", "n", [reader.Passage("[1]", "text")], chat_model="ollama:gemma4:31b-cloud", cfg=cfg)
+    [(model, settings)] = calls
+    assert model == "ollama:gemma4:31b-cloud" and settings.num_ctx is None
+    assert reader.fit_input_chars(cfg, "q", "n") == cfg.input_chars
+
+
+async def test_a_different_local_reader_is_held_to_the_ceiling(conn, monkeypatch, reader_env):
+    monkeypatch.setenv("INFERENCE_NUM_CTX_MAX", "8192")
+    await _save_models(conn, reader="ollama:other")
+    cfg = await _reader_cfg_of(conn, monkeypatch, num_ctx=4096)
+    assert (cfg.model, cfg.num_ctx) == ("ollama:other", 8192)      # its 16384 default, clamped
+
+
+async def test_a_reader_that_ignores_num_ctx_is_sent_none(conn, monkeypatch, reader_env):
+    await _save_models(conn, reader="vllm:small")
+    cfg = await _reader_cfg_of(conn, monkeypatch, _TwoKinds())
+    assert (cfg.model, cfg.num_ctx) == ("vllm:small", None)
+    await _save_models(conn, reader="ollama:gemma4:31b-cloud")
+    assert (await _reader_cfg_of(conn, monkeypatch, _TwoKinds())).num_ctx is None
+
+
+async def test_an_unresolvable_reader_never_fails_the_turn(conn, monkeypatch, reader_env):
+    await _save_models(conn, reader="gone")
+    cfg = await _reader_cfg_of(conn, monkeypatch, _TwoKinds())
+    assert (cfg.model, cfg.num_ctx) == ("gone", None)       # the reader's own provider_error result handles it later
+
+
+async def test_console_reader_wins_over_env(conn, monkeypatch, reader_env):
+    monkeypatch.setenv("READER_MODEL", "chat")
+    await _save_models(conn, reader="ollama:gemma4:e4b")
+    cfg = await _reader_cfg_of(conn, monkeypatch)
+    assert cfg.model == "ollama:gemma4:e4b"
+    assert cfg.num_ctx == 16384
+
+
+async def test_the_reader_keeps_its_knobs_from_the_environment(conn, monkeypatch, reader_env):
+    monkeypatch.setenv("READER_INPUT_CHARS", "8000")
+    monkeypatch.setenv("READER_TIMEOUT_S", "90")
+    cfg = await _reader_cfg_of(conn, monkeypatch)
+    assert (cfg.input_chars, cfg.timeout_s) == (8000, 90.0)
 
 
 async def test_no_note_while_rounds_remain(conn, open_doc, web_auto):
@@ -991,8 +1242,10 @@ def _spy_charges(monkeypatch) -> list:
 
 
 async def _usage(conn, user_id):
-    return await _one(conn, "SELECT prompt_tokens, eval_tokens, requests FROM inference_usage WHERE user_id=%s",
-                      (user_id,))
+    """The user's day, summed over model and kind (a turn with a reader writes one row of each)."""
+    row = await _one(conn, "SELECT SUM(prompt_tokens)::bigint, SUM(eval_tokens)::bigint, SUM(requests)::bigint "
+                           "FROM inference_usage WHERE user_id=%s", (user_id,))
+    return None if row[0] is None else row
 
 
 async def test_a_read_web_pages_turn_charges_its_reader_calls_to_the_user(conn, web, use_router, web_auto, monkeypatch):
@@ -1006,7 +1259,7 @@ async def test_a_read_web_pages_turn_charges_its_reader_calls_to_the_user(conn, 
     alice = await member(conn, "alice")
     events, _ = await _run(conn, FakeRouter(steps=_web_turn_steps("It is 8080 (b.test).")), user=alice,
                            text="Which port?")
-    assert [(user, call.model, call.usage) for user, call in charged] == [(alice.user_id, "reader-model", Usage(400, 30))] * 2
+    assert [(user, call.model, call.usage) for user, call in charged] == [(alice.user_id, "ollama:reader-model", Usage(400, 30))] * 2
     # Chat steps 5+5, 5+5 and 10+3 (three requests); reader 2 × (400+30) (two requests).
     assert await _usage(conn, alice.user_id) == (20 + 800, 13 + 60, 5)
     assert events[-1]["usage"] == {"promptTokens": 20, "completionTokens": 13, "estimated": False}
@@ -1024,7 +1277,7 @@ async def test_an_extract_from_documents_turn_charges_its_reader_calls_to_the_us
     assert next(e for e in events if e["type"] == "tool-output-available")["output"]["summary_text"] == (
         "Found 1 fact on page 1 of Alpha.md.")
     [(user, call)] = charged
-    assert (call.model, call.usage, call.finished) == ("reader-model", Usage(900, 50), True)
+    assert (call.model, call.usage, call.finished) == ("ollama:reader-model", Usage(900, 50), True)
     assert await _usage(db_conn, user) == (5 + 10 + 900, 5 + 3 + 50, 3)
 
 
@@ -1115,3 +1368,82 @@ async def test_web_sources_come_with_a_document_scope_chat_too(conn, open_doc, w
     assert _last(kinds, "text-end") < kinds.index("data-web-sources") < kinds.index("finish")
     assert "data-sources" not in kinds
     assert _notes(await _msg(conn, claim.turn_id)) == [{"kind": "web_sources", "pages": pages}]
+
+
+# ---- admin console v2 phase 3, Task 2: every usage write names its model and kind ----
+
+async def _usage_rows(conn, user_id):
+    """Every row of the user's usage today: (model, kind, prompt, eval, requests, estimated_tokens), sorted."""
+    cur = await conn.execute("SELECT model, kind, prompt_tokens, eval_tokens, requests, estimated_tokens "
+                             "FROM inference_usage WHERE user_id=%s ORDER BY model, kind", (user_id,))
+    return await cur.fetchall()
+
+
+async def test_chat_step_records_model_and_kind(conn):
+    router = FakeRouter(steps=[[TextDelta("Hi."), Usage(10, 3), Finish("stop")]])
+    alice = await member(conn, "alice")
+    await _run(conn, router, user=alice)
+    assert await _usage_rows(conn, alice.user_id) == [("ollama:m", "chat", 10, 3, 1, 0)]
+
+
+async def test_cut_short_step_records_model_and_kind(conn):
+    """_finalize charges the step a disconnect cut short: under the turn's model, as chat."""
+    router = FakeRouter(steps=[[TextDelta("Part"), TextDelta("ial"), Usage(1, 1), Finish("stop")]])
+    alice = await member(conn, "alice")
+    claim, req = await _start(alice, model_id="ollama:cut")
+    agen = run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)
+    async for e in agen:
+        if e["type"] == "text-delta":
+            break
+    await agen.aclose()
+    [(model, kind, prompt, evaluated, requests, _)] = await _usage_rows(conn, alice.user_id)
+    assert (model, kind, requests) == ("ollama:cut", "chat", 1) and prompt > 0 and evaluated > 0
+
+
+async def test_estimated_usage_marks_estimated_tokens(conn):
+    """A provider that sends no usage is charged the chars/4 estimate, and the row says those tokens are estimated."""
+    router = FakeRouter(steps=[[TextDelta("x" * 40), Finish("stop")]])
+    alice = await member(conn, "alice")
+    await _run(conn, router, user=alice)
+    [(model, kind, prompt, evaluated, requests, estimated)] = await _usage_rows(conn, alice.user_id)
+    assert (model, kind, requests) == ("ollama:m", "chat", 1)
+    assert estimated == prompt + evaluated and estimated > 0
+
+
+async def test_reader_batch_records_reader_kind(db_conn, monkeypatch, web, use_router):
+    """An extract_from_documents batch is a reader row under the reader model's canonical id, beside the chat's."""
+    shim_pool(monkeypatch, db_conn, ex_tool)
+    await _save_models(db_conn, reader="ollama:reader-model")
+    use_router(by_label({"[1, page 1]": ("Alpha uses ZEPHYR-9 nodes", "ZEPHYR-9 nodes")})).usage = Usage(900, 50)
+    steps = [[ToolCallReady(ToolCall("x1", "extract_from_documents", {"documents": [1], "need": "the node type"})),
+              Usage(5, 5), Finish("tool_calls")],
+             reply("Alpha uses ZEPHYR-9 nodes (Alpha.md, page 1).")]
+    _, claim = await _project_turn(db_conn, monkeypatch, FakeRouter(steps=steps))
+    cur = await db_conn.execute("SELECT user_id FROM chat_sessions WHERE id=%s", (claim.session_id,))
+    [(user_id,)] = await cur.fetchall()
+    assert await _usage_rows(db_conn, str(user_id)) == [
+        ("ollama:m", "chat", 5 + 10, 5 + 3, 2, 0),
+        ("ollama:reader-model", "reader", 900, 50, 1, 0)]
+
+
+async def test_reader_bare_name_lands_canonical(conn, monkeypatch, reader_env):
+    """The same reader model under two spellings is one row: the bare name the router places on ollama, and the
+    canonical key, both record `ollama:m2`. A reader the router can't place keeps its name."""
+    await _save_models(conn, reader="m2")
+    assert (await _reader_cfg_of(conn, monkeypatch)).model == "ollama:m2"
+    await _save_models(conn, reader="ollama:m2")
+    assert (await _reader_cfg_of(conn, monkeypatch)).model == "ollama:m2"
+    await _save_models(conn, reader="vllm:small")
+    assert (await _reader_cfg_of(conn, monkeypatch, _TwoKinds())).model == "vllm:small"     # an unsized path too
+    await _save_models(conn, reader="gone")
+    assert (await _reader_cfg_of(conn, monkeypatch, _TwoKinds())).model == "gone"
+
+
+async def test_a_bare_reader_name_is_charged_under_its_canonical_id(conn, monkeypatch, reader_env):
+    """From the setting to the row: reader='m2' charges `ollama:m2`, as reader."""
+    await _save_models(conn, reader="m2")
+    cfg = await _reader_cfg_of(conn, monkeypatch)
+    alice = await member(conn, "alice")
+    await orchestrator._charge_reader(alice.user_id, BatchCall(cfg.model, SENT, "z", Usage(7, 2), True))
+    rows = await _usage_rows(conn, alice.user_id)       # the turn that made the config left its own chat row
+    assert [r for r in rows if r[1] == "reader"] == [("ollama:m2", "reader", 7, 2, 1, 0)]

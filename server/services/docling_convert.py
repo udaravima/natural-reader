@@ -13,7 +13,8 @@ Options dict shape (all keys optional):
     preset:     'fast' | 'standard' | 'accurate'    (default 'standard')
     ocr:        bool                                (force-enable OCR)
     tables:     bool                                (extract tables; default True)
-    images:     'drop' | 'embed' | 'describe'       (default 'drop')
+    images:     'drop' | 'embed' | 'describe'       (default 'drop'; embed keeps each
+                picture as a file beside the document, describe also captions it)
     page_range: [start, end]   1-based inclusive    (None = whole doc)
 
 If the installed docling version doesn't expose a particular knob (page_range,
@@ -26,12 +27,77 @@ import importlib.util
 import logging
 import os
 import re
+from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, NamedTuple
 
 logger = logging.getLogger(__name__)
 
 DOCLING_ENABLED = os.environ.get("DOCLING_ENABLED", "false").lower() in ("1", "true", "yes")
+
+# Pictures a conversion keeps. Rendered at twice the page's 72 dpi: at 1 a figure
+# comes out blurred. Under MIN_PICTURE_POINTS on a side (about 1 cm) it is a logo
+# or a rule, not a figure: measured on a real PDF, a 91x16 footer on every page.
+PICTURE_SCALE = 2.0
+MIN_PICTURE_POINTS = 32
+DEFAULT_MAX_PICTURES = 500
+_FIGURE_REF = re.compile(r"(?:\n\n)?!\[[^\]]*\]\(figures/\d+\.png\)")
+
+
+class Conversion(NamedTuple):
+    pages: list[tuple[int, str]]   # (page_no, markdown), sorted by page
+    pictures: list[bytes]          # PNGs; pictures[n - 1] is what figures/<n>.png in the Markdown names
+
+
+def max_pictures() -> int:
+    """DOCLING_MAX_PICTURES: pictures one document may keep. A figure past it stays
+    a placeholder. It counts files, not bytes, so it bounds how many pictures a document keeps, not
+    how much space they take."""
+    raw = (os.environ.get("DOCLING_MAX_PICTURES") or "").strip()
+    if raw.isdigit():
+        return int(raw)
+    if raw:
+        logger.warning("DOCLING_MAX_PICTURES=%r isn't a whole number: using %d", raw, DEFAULT_MAX_PICTURES)
+    return DEFAULT_MAX_PICTURES
+
+
+def figure_ref(number: int) -> Path:
+    """What the Markdown calls picture `number`. The reader turns it into the route."""
+    return Path(f"figures/{number}.png")
+
+
+def strip_figure_refs(markdown: str) -> str:
+    """The page without its picture references: a path isn't words, so it stays out
+    of the chunks, the embeddings and what the chat reads."""
+    return _FIGURE_REF.sub("", markdown)
+
+
+def collect_pictures(document) -> list[bytes]:
+    """Each kept picture as PNG bytes, and point its Markdown reference at them.
+    Docling exports a picture whose image is still a data: URI as a placeholder, so
+    a tiny picture, or one past the cap, simply stays one. The same crop twice (a
+    logo on every page) is one file."""
+    cap = max_pictures()
+    pictures: list[bytes] = []
+    numbers: dict[bytes, int] = {}
+    for picture in getattr(document, "pictures", None) or []:
+        box = picture.prov[0].bbox if picture.prov else None
+        if picture.image is None or (box is not None and min(box.width, box.height) < MIN_PICTURE_POINTS):
+            continue
+        image = picture.get_image(document)   # before the URI changes: it reads the data: URI
+        if image is None:
+            continue
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+        png = buffer.getvalue()
+        number = numbers.get(png)
+        if number is None:
+            if len(pictures) >= cap:
+                continue
+            pictures.append(png)
+            number = numbers[png] = len(pictures)
+        picture.image.uri = figure_ref(number)
+    return pictures
 
 # Lazy module-level cache: building a DocumentConverter is expensive (downloads
 # models). We keep one instance per pipeline preset.
@@ -103,16 +169,19 @@ def _build_converter(preset: str, ocr: bool, tables: bool, images: str):
     # Defaults vary across docling versions — set explicitly.
     pipeline_options.do_ocr = bool(ocr) or preset == "accurate"
     pipeline_options.do_table_structure = bool(tables) and preset != "fast"
+    keep_pictures = images in ("embed", "describe")
 
     # Picture handling: docling exposes a few flags; not all exist across
     # versions, so set defensively.
     for attr, value in (
-        ("generate_picture_images", images == "embed"),
+        ("generate_picture_images", keep_pictures),
         ("do_picture_classification", images == "describe"),
         ("do_picture_description", images == "describe"),
     ):
         if hasattr(pipeline_options, attr):
             setattr(pipeline_options, attr, value)
+    if keep_pictures:
+        pipeline_options.images_scale = PICTURE_SCALE
 
     format_options = {
         InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
@@ -126,6 +195,9 @@ def _build_converter(preset: str, ocr: bool, tables: bool, images: str):
             from docling.pipeline.vlm_pipeline import VlmPipeline  # type: ignore
 
             vlm_options = VlmPipelineOptions()
+            if keep_pictures:
+                vlm_options.generate_picture_images = True
+                vlm_options.images_scale = PICTURE_SCALE
             format_options[InputFormat.PDF] = PdfFormatOption(
                 pipeline_cls=VlmPipeline,
                 pipeline_options=vlm_options,
@@ -180,7 +252,7 @@ def _split_markdown_by_pages(md: str) -> list[tuple[int, str]]:
     return [(1, md.strip())]
 
 
-def _doc_to_pages(doc) -> list[tuple[int, str]]:
+def _doc_to_pages(doc, **export_options) -> list[tuple[int, str]]:
     """
     Try several strategies to get per-page markdown out of a DoclingDocument.
     Returns ``[(page_no, markdown), ...]`` sorted by page.
@@ -200,7 +272,7 @@ def _doc_to_pages(doc) -> list[tuple[int, str]]:
                 if callable(export):
                     for kwarg in ("page_no", "page"):
                         try:
-                            md = export(**{kwarg: n})
+                            md = export(**{kwarg: n}, **export_options)
                             break
                         except TypeError:
                             continue
@@ -214,15 +286,43 @@ def _doc_to_pages(doc) -> list[tuple[int, str]]:
     # 2. Fallback: export full document and split on page-boundary comments.
     full = ""
     try:
-        full = doc.export_to_markdown()
+        full = doc.export_to_markdown(**export_options)
     except Exception as e:
         logger.warning("export_to_markdown() failed: %s", e)
     return _split_markdown_by_pages(full)
 
 
-def _convert_sync(pdf_path: Path, options: dict, converter) -> list[tuple[int, str]]:
+def _value(x: Any) -> Any:
+    return getattr(x, "value", x)   # docling's kinds and phases are str enums
+
+
+def progress_from_event(event: Any) -> dict[str, Any] | None:
+    """What the Convert button shows for one of docling's progress events
+    (docling.datamodel.progress, docling 2.142+): the phase, and for pages and
+    enrichment items how many of how many are done. Pages may finish out of
+    order, so the count is `completed_pages`, not the page number. None for an
+    event with nothing to show (a document starting or finishing)."""
+    kind = _value(getattr(event, "kind", None))
+    if kind == "phase_started":
+        return {"phase": str(_value(event.phase))}
+    if kind == "page_completed":
+        return {"phase": "build", "done": event.completed_pages, "total": event.total_pages}
+    if kind == "enrichment_progress":
+        return {"phase": "enrich", "done": event.completed_items, "total": event.total_items,
+                "label": str(event.label)}
+    return None
+
+
+def _convert_sync(pdf_path: Path, options: dict, converter,
+                  on_progress: Callable[[dict], None] | None = None) -> Conversion:
     page_range = options.get("page_range")
     convert_kwargs = {}
+    if on_progress is not None:
+        def report(event):   # docling logs (and survives) a callback that raises
+            progress = progress_from_event(event)
+            if progress is not None:
+                on_progress(progress)
+        convert_kwargs["progress_callback"] = report
     if page_range:
         # docling 2.x accepts page_range=(start, end) on convert(). If the
         # installed version doesn't, we just convert the whole doc.
@@ -231,27 +331,37 @@ def _convert_sync(pdf_path: Path, options: dict, converter) -> list[tuple[int, s
     try:
         result = converter.convert(source=str(pdf_path), **convert_kwargs)
     except TypeError:
-        # page_range not supported on this docling version.
+        # page_range (or progress_callback, before docling 2.142) not supported on this docling version.
         result = converter.convert(source=str(pdf_path))
 
     document = getattr(result, "document", None)
     if document is None:
         raise RuntimeError("docling returned no document")
 
-    pages = _doc_to_pages(document)
+    pictures: list[bytes] = []
+    export_options: dict[str, Any] = {}
+    if options.get("images") in ("embed", "describe"):
+        from docling_core.types.doc.base import ImageRefMode  # type: ignore
+        pictures = collect_pictures(document)
+        export_options["image_mode"] = ImageRefMode.REFERENCED
+
+    pages = _doc_to_pages(document, **export_options)
     if page_range:
         start, end = page_range
         pages = [(p, md) for (p, md) in pages if start <= p <= end]
-    return pages
+    return Conversion(pages, pictures)
 
 
 async def convert_pdf_to_markdown_pages(
     pdf_path: Path,
     options: dict | None = None,
-) -> list[tuple[int, str]]:
+    on_progress: Callable[[dict], None] | None = None,
+) -> Conversion:
     """
-    Convert a PDF to per-page Markdown. Returns ``[(page_no, markdown), ...]``
-    sorted by page. Raises if docling is unavailable or conversion fails.
+    Convert a PDF to per-page Markdown, plus the pictures it keeps. Raises if
+    docling is unavailable or conversion fails.
+    `on_progress` gets each `progress_from_event` dict, called from docling's
+    worker thread, not the event loop.
     """
     if not DOCLING_ENABLED:
         raise RuntimeError("Docling is disabled. Set DOCLING_ENABLED=true to enable.")
@@ -262,4 +372,4 @@ async def convert_pdf_to_markdown_pages(
 
     opts = _normalize_options(options)
     converter = await _get_converter(opts["preset"], opts["ocr"], opts["tables"], opts["images"])
-    return await asyncio.to_thread(_convert_sync, pdf_path, opts, converter)
+    return await asyncio.to_thread(_convert_sync, pdf_path, opts, converter, on_progress)

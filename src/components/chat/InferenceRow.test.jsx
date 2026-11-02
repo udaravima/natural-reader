@@ -13,4 +13,15 @@ describe('InferenceRow', () => {
     fireEvent.change(screen.getByRole('combobox'), { target: { value: '4096' } });
     expect(onChange).toHaveBeenCalledWith('4096');
   });
+
+  it('lets the select grow to its longest option instead of clipping it at a fixed width', () => {
+    render(<InferenceRow theme={theme} label="Context window" value="auto" onChange={() => {}}
+      options={[['auto', 'Auto (16,384 on this server)'], ['4096', '4096']]} />);
+    const select = screen.getByRole('combobox');
+    expect(select.options[0].textContent).toBe('Auto (16,384 on this server)');
+    // A fixed w-32 (128 px) clipped this label to "Auto (16,384 on thi"; a floor keeps the short rows aligned,
+    // and max-w-full keeps a long one inside the dialog (the label truncates instead)
+    expect(select.className.split(/\s+/)).not.toContain('w-32');
+    expect(select.className.split(/\s+/)).toEqual(expect.arrayContaining(['min-w-32', 'max-w-full']));
+  });
 });

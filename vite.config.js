@@ -9,7 +9,7 @@ export default defineConfig({
   ],
   // Dev-only reverse proxy so `npm run dev` (:5173) is same-origin with the
   // backend — the OIDC session cookie only rides same-origin fetches. In a real
-  // deployment the system nginx does this (see deploy/nginx/natural-reader.conf).
+  // deployment the system nginx does this (see docs/sample_configs/).
   server: {
     watch: {
       // Avoid watching the large pdf.worker.min.js file from pdfjs-dist

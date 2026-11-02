@@ -27,7 +27,7 @@ break.
 ## Prerequisites
 
 - **Node.js** `^20.19` or `>=22.12` (Vite 7 / Rolldown) and **npm**
-- **Python** `>=3.10, <4.0` (Docling and the doc-chat routes use 3.10+ unions)
+- **Python** `3.12` or `3.13`, for the bare-metal backend and the test suite (the backend container needs none; 3.14 is untested)
 - **Docker or Podman** (for Postgres + SearXNG)
 - **Ollama** running locally, for the chat / embedding / web-search features
 
@@ -67,8 +67,11 @@ Every behavior change should come with tests, and both suites must pass:
 # Frontend (Vitest + Testing Library)
 npm run test:run
 
-# Backend (pytest — hermetic; network is mocked with respx)
-.venv/bin/pytest server/tests
+# Backend (pytest). Needs a scratch Postgres with pgvector: without these two
+# variables it connects to the app's own Postgres on 5433. See docs/TESTING.md.
+export TEST_ADMIN_DATABASE_URL=postgresql://natural_reader:<scratch-password>@127.0.0.1:5434/postgres
+export TEST_DATABASE_URL=postgresql://natural_reader:<scratch-password>@127.0.0.1:5434/natural_reader_test
+.venv/bin/python -m pytest server/tests
 
 # Lint the frontend
 npm run lint
@@ -83,8 +86,8 @@ The backend logs to `logs/server.log` (rotating) and the console when running;
   (e.g. `feat/short-description`), and open your PR against `master`. The
   maintainer integrates ongoing work via the `development` branch.
 - Keep PRs focused — one logical change per PR is much easier to review.
-- Make sure `npm run test:run`, `.venv/bin/pytest server/tests`, and
-  `npm run lint` are green before requesting review.
+- Make sure `npm run test:run`, the backend tests above, and `npm run lint` are
+  green before requesting review.
 - Update `CHANGELOG.md` under the `[Unreleased]` heading for any user-facing change.
 
 ## Commit messages

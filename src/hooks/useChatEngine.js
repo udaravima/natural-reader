@@ -9,6 +9,7 @@ import { describeRefusal, refusalMessage, PROJECT_NOT_FOUND } from '../lib/apiEr
 import { addPin as addPinReducer, removePin as removePinReducer, MAX_PINS } from './pins';
 import { INFERENCE_DEFAULTS, toWireSettings, truncationMessage } from './inference';
 import { supportedKnobs } from '../lib/modelIds';
+import { textAttachmentWire } from '../utils/attachment';
 import { useDocUse } from './useDocUse';
 import { useChatScope } from './useChatScope';
 
@@ -484,7 +485,7 @@ export function useChatEngine({
         let userId = `u-local-${now}`;
         let assistantId = `a-local-${now}`;
         setMessages((prev) => [...prev,
-            { role: 'user', content: trimmed, attachments: cleanAttachments, id: userId, timestamp: now },
+            { role: 'user', content: trimmed, attachments: cleanAttachments.map((a) => (a.kind === 'text' ? textAttachmentWire(a).meta : a)), id: userId, timestamp: now },
             { role: 'assistant', content: '', thinking: '', id: assistantId, timestamp: now + 1, status: 'streaming' }]);
         sentenceBufferRef.current = '';
         sendingRef.current = true;
@@ -497,9 +498,9 @@ export function useChatEngine({
         const body = {
             message: {
                 content: trimmed,
-                attachments: cleanAttachments.filter((a) => a.base64).map((a) => ({
-                    id: a.id, kind: a.kind, mime: a.mimeType, name: a.name || '', size: a.size || 0, base64: a.base64,
-                })),
+                attachments: cleanAttachments.filter((a) => a.kind === 'text' || a.base64).map((a) => (a.kind === 'text'
+                    ? textAttachmentWire(a).wire
+                    : { id: a.id, kind: a.kind, mime: a.mimeType, name: a.name || '', size: a.size || 0, base64: a.base64 })),
             },
             model: selectedModel,
             settings: toWireSettings(inferenceForThisMsg,

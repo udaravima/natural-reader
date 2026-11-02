@@ -65,6 +65,23 @@ class OllamaProvider:
         self._models.put("models", names)
         return names
 
+    async def loaded_context_lengths(self) -> dict[str, int]:
+        """{model name: the context size it is loaded with now} from GET /api/ps. A model that isn't loaded
+        isn't listed, and Ollama picks its size at load time, so this is the only honest number for a local
+        model. Any failure is {}: the caller reports the size as unknown."""
+        try:
+            resp = await self._client.get(f"{self.config.url}/api/ps", headers=auth_headers(self.config))
+            if resp.status_code != 200:
+                logger.debug("Ollama /api/ps answered %s", resp.status_code)
+                return {}
+            models = json_object(resp).get("models") or []
+        except Exception as e:  # noqa: BLE001 — a status line must never take the page down
+            logger.debug("Ollama /api/ps failed: %s", type(e).__name__)
+            return {}
+        return {m["name"]: m["context_length"] for m in models
+                if isinstance(m, dict) and m.get("name") and isinstance(m.get("context_length"), int)
+                and not isinstance(m["context_length"], bool)}
+
     async def capabilities(self, model: str) -> Capabilities:
         return self._features.apply(model, await self._shown_capabilities(model))
 

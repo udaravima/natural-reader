@@ -11,7 +11,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from .appconfig import cors_allow_credentials, parse_cors_origins
 from .auth.config import load_auth_config, startup_guard
-from .db import close_db, init_db
+from .db import close_db, get_pool, init_db
 from .http_errors import install_handlers
 from .logging_config import configure_logging
 from .chat import orchestrator as chat_orchestrator
@@ -28,9 +28,11 @@ from .routers.project_documents import router as project_documents_router
 from .routers.projects import router as projects_router
 from .routers.people import router as people_router
 from .routers.settings import router as settings_router
+from .routers.speech import router as speech_router
 from .routers.profile import router as profile_router
 from .routers.tools import router as tools_router
-from .services import doc_storage, docling_convert, project_events
+from .services import chat_options, doc_storage, docling_convert, project_events
+from .speech import catalogue as speech_catalogue, service as speech_service
 from .services.embeddings import start_client as start_embeddings, stop_client as stop_embeddings
 from .services.web_search import start_client as start_web_search, stop_client as stop_web_search
 
@@ -54,6 +56,7 @@ def create_app() -> FastAPI:
         allow_credentials=cors_allow_credentials(cors_origins),
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Total-Count"],   # People: total matches for "Show more"
     )
 
     # Signed cookie holding the transient OIDC flow state (Authlib uses
@@ -91,6 +94,7 @@ def create_app() -> FastAPI:
     app.include_router(settings_router)
     app.include_router(profile_router)
     app.include_router(inference_router)
+    app.include_router(speech_router)
 
     @app.on_event("startup")
     async def _startup() -> None:
@@ -115,6 +119,16 @@ def create_app() -> FastAPI:
             except Exception:
                 logger.warning("Stale chat-turn recovery failed", exc_info=True)
             project_events.start_retention()
+            # Voice input is off by default; when it's on, start loading the speech model now so the first
+            # recording doesn't wait for it. A database read that fails here just skips the warm-up: the status
+            # route warms a worker's engine on first use.
+            try:
+                async with get_pool().connection() as conn:
+                    options = await chat_options.load_chat_options(conn)
+                if options.voice_input:
+                    speech_service.get_transcriber(wanted=speech_catalogue.wanted(options)).warm()
+            except Exception:
+                logger.warning("Voice input warm-up skipped", exc_info=True)
         await start_embeddings()
         await start_web_search()
         await start_llm_router()

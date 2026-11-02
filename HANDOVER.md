@@ -4,6 +4,525 @@
 
 ---
 
+## 2026-11-02 — v2.5.0: speech models, long lists and the message box inputs (START HERE)
+
+**State.** `development`, `master` and the tag `v2.5.0` are pushed, and the GitHub release is out. **Nothing is deployed.** The live backend is still the image rebuilt at `445d2ae` on 2026-11-01 (see the entry below), with no speech models and no long-list work. Deploying needs a database backup and the `docling` role in the live Keycloak. Speech-model work is on `feat/speech-models`, merged by fast-forward.
+
+The owner's request was: make three extra models available, from the admin panel as well as config, as a stopgap until audio can go straight to a model; add a VAD; make long lists scroll and search so Save is reachable; English stays primary. The spec is `docs/superpowers/specs/2026-11-02-speech-model-choice-design.md`. It was built inline with one final reviewer rather than a plan and task reviews, because the owner wanted it in this release and each part was walked as it was built. The reviewer found six Important issues the tests hadn't.
+
+### What a person can do now
+
+- **Choose a model (admin):** **Admin → Chat options → Voice input → Speech model**. It saves on selection, and the next recording uses it on every worker. **Use the server setting** hands back. Choose before turning voice on, or `small` downloads first.
+- **Add one (admin):** **Add a model from Hugging Face** → `owner/name` → **Add model**, then choose it. It's checked and pinned at once.
+- **Remove one (admin):** **Added here** → **Remove**, in use or not.
+- **Find things in a long list:** past 12 entries a list gets a search box. Admin → Models rows scroll in their own box, and Save stays on screen.
+- **Deployer:** `SPEECH_MODELS_FILE` (a host path, mounted by `startup.sh` through `compose.speech.yml`), or `SPEECH_MODEL`. Converting elsewhere is in DEPLOYMENT, "Converting somewhere else".
+
+### Facts worth keeping
+
+- **The pasted list had a wrong commit.** The `whisper-small-si-run15` revision pasted by the owner was run12's. The real one is `ab6154e9…`. run15 has no benchmark behind it, and the `voice-agent-79` session that did the research doesn't know where that entry came from.
+- **Two pieces of research advice didn't survive measuring.** `beam_size=1` changed real Sinhala words and `condition_on_previous_text=False` dropped the end of a 269-word English recording, so both stay at Whisper's defaults. VAD threshold 0.5 doubled Tamil error; 0.2 invented text on noise; 0.4 is what's set.
+- **Trap:** Auto needs the one-language rule. run12 called Sinhala Kannada at 0.92, and the Tamil model's config lists no languages, so faster-whisper crashes on detection.
+- **Trap:** faster-whisper's own `decode_audio` fails on PyAV 19 (`metadata_errors`). The app never calls it (`server/speech/audio.py` decodes), but a one-off script will hit it.
+- **embeddinggemma-2** is on the local Ollama as `embeddinggemma-2:740m`: 768 dimensions, the same as `nomic-embed-text`, so no schema change but a full re-embed. Its capabilities list vision and audio. Not tested.
+
+### What the final review caught
+
+A card language outside Whisper's list made a model "Added" and then missing, with no way to remove it. Removing needed the model chosen first, which starts its download, and a model that can't run couldn't be removed at all. One malformed YAML `languages` entry took voice down. A failed options read swapped the running model. `SPEECH_MODELS_FILE` couldn't be reached in a container. The documented hand conversion failed on every built-in fine-tune. Eleven smaller ones were fixed too. Left as they are: the picker saves on selection, so each arrow key in the closed select is a live switch; conversions take no lock between workers, and a dead worker leaves a `.converting-*` folder.
+
+### Gates at the release
+
+Backend `2756 passed, 16 skipped, 2 deselected`, eslint clean, frontend `1523 passed` in 128 files. Cloud evals are in `docs/TESTING.md`: document QA 9/9, citations 4/4, project QA 12, 10 and 10 of 13 against 10, 9 and 9 on v2.4.0, so no regression.
+
+**Not walked:** the real plain image; `compose.speech.yml` on a running stack; more than one worker swapping; Sri Lankan Tamil; a fine-tune for a language Whisper doesn't list, past adding it.
+
+### Bucket list
+
+**Owner decisions.** Spec §2 CPU anti-goal (a local reply 1.5-2× slower during a transcription; recommended: accept and reword). Confirm the live rebuild at `445d2ae` with 024 applied was intended. Find the auto-pusher (not git hooks, cron, user timers or VS Code's post-commit; next look at Claude Code hooks and system timers). Deploy. Keep or delete the SDD workspaces. Whether a file too large for the model is refused or noted. Whether to warn before a model switch hides replies.
+
+**Next build.** Phase 2b embedding provider and trials (embeddinggemma-2, nomic, Qwen). Figures with a chosen vision model, plus the DeepSeek-OCR preset. Audio straight to a model. A model per language or person. Browser auto-stop on silence. Sri Lankan Tamil. Multi-language handling for a server with English and Sinhala speakers.
+
+**Bugs.** `/v1/synthesize` hardcodes `en-us`. The header scrolls sideways at 375 px. The `touch.stamp` second connection. A model can pass real values to `READER_MODEL`. Dead `AdminPanel.jsx`. The `af_river` label. The unidentified vitest flake. Project eval `features` fails every run. Citation quality 87.9% against the 90% target. The speech picker's keyboard switching and conversion locking, above.
+
+**Robustness.** Resumable streams. A tested backup restore. A lock around migrations. A pool-slot limit. Backup guidance.
+
+**Providers.** `/models` fallback, per-provider params, a native Anthropic adapter; vLLM, LiteLLM and Unsloth still unrun; a GPU or NPU image.
+
+**Features.** Chat search, export, edit and regenerate, saved roles, prices per model, Auto model routing, bulk upload, auto tags, MD and PDF side by side, MCP, agents, cloud stats, knowledge-base refresh, V2 compare and review-before-current, C2.2 digests.
+
+**Owed checks.** Safari and a real phone. A person without chat access. A blocked microphone prompt. The 2-minute auto-stop. A real remote speech engine. Docling Describe and Accurate. Auto turned Ask, the yes path. V1 reader error, Retry index and the freeze fix. Two users on one browser. A share recipient. Real Kokoro read-aloud. `startup.cmd` on Windows. Indexed documents with a NULL `embedding_model`.
+
+**Housekeeping.** The AppArmor pasta fix. `git config user.name` is the email. Disk space (97% full). Old merged branches. Stale memories.
+
+---
+
+## 2026-11-02 — Message box inputs built, walked and reviewed; merged in v2.5.0 (see above)
+
+**State.** The plan `docs/superpowers/plans/2026-10-27-chat-composer-inputs.md` is finished on `feat/chat-composer-inputs`. That branch is stacked on `fix/docling-keep-pictures` (`bd2eaaa`), which is stacked on `docs/accuracy-audit` (`59c2c86`), which is on `development` (`0d9305b`), so merging the top branch carries all three. **Nothing is merged into `development` by us and no version is bumped.** The auto-pusher has published these branches anyway. The ledger with every ruling is `.superpowers/sdd/2026-10-27-chat-composer-inputs/progress.md` (git-ignored, kept for the owner to decide on).
+
+**Live is not where the docs assume.** On 2026-11-01 at 22:43 +0530, while this run's agents were stopped by a usage limit, the live backend image was rebuilt from this working tree at `445d2ae` and restarted. **Migration 024 is applied on the live database** (the container's log says so). That image has no speech code and no `faster-whisper`, and `dist/` is still from 2026-10-26, so no screen reaches text attachments there. Nobody here ran it; the owner should confirm it was intended.
+
+### What a person can do now
+
+- **Attach a text file:** the paperclip (**Attach an image or a text file**), drag and drop, or paste. The chip shows the name, size and "N values masked". Clicking it shows exactly what will be sent.
+- **Send real values:** in that view, **Send real values** → **Yes, send real values**. The confirmation names the model and says when it's a cloud one. Changing the model turns masking back on.
+- **After that:** the file and the replies that read it go only to that model. On another model they're held back, and a note saved with the reply says so. To use the file elsewhere, attach it again.
+- **Turn voice on (admin):** **Admin → Chat options → Voice input → On**; **Admin → Overview → Voice input** shows it getting ready, then OK. It's off by default, and nothing downloads until then.
+- **Speak a message:** the mic beside the paperclip → **Stop** (or **Cancel**, Escape). The text lands in the box at the caret, unsent. **Settings → Chat → Speech language** (Auto first); **Admin → Defaults for users → Speech language**.
+- **Keep a PDF's pictures:** Convert → Images → **Keep** → the **MD** view shows them.
+
+### Gates at `6a5ed35`
+
+Backend `2646 passed, 16 skipped, 2 deselected`, eslint clean, frontend `1480 passed` in 126 files on 28 of 29 full runs.
+
+**One unexplained failure.** The first frontend run on this tree read `1 failed | 1479 passed` (started 08:53:34). Only the tail of its output was kept, so the test's name is unknown. It never came back in 28 more runs: one straight after, 6 idle, 3 with all 32 cores busy, 3 straight after a full pytest, and 15 in a row. No test reads `docs/`, and nothing else on the tree changed between them. Treat it as an unidentified timing flake, not a cleared one: if vitest fails again, save the whole output.
+
+### What was walked
+
+- **`task-8-walk-report.md`:** 33 of 35 steps passed on the bare-metal scratch stack. One FAIL was fixed (a dropped connection logged a traceback). The other is W3 below.
+- **Logging proxy in front of Ollama, in a real browser:** real values on `gemma4:e4b`, then `gemma4:31b-cloud`, then back. At `6a5ed35` the cloud request carries no real value (`real: false`), and the note shows in the chat.
+- **Container image built from this branch, under its own tag:** voice on from the environment reached ready in 33 s, including the download into `/app/.cache`. 5.7 s of speech in 1.7 s; 100.8 s in 21.5 s with narration alongside. Memory with Kokoro: 1.26 GB after load, 1.95 GB after use.
+- **A real voice refusal:** the toast reads `Voice input isn't working right now. Ask your admin.`
+
+**Not walked:** real Safari or a real phone; a person without chat access (the walk has one admin); a real blocked-microphone prompt; the 2-minute auto-stop; a real remote speech engine (fake transport only); Docling Describe and Accurate; Auto-turned-Ask's yes path in a browser; Sinhala and Tamil quality.
+
+### What the reviews caught that tests didn't (worth keeping in mind)
+
+- **Masking was rebuilt.** Three rounds of patching a multi-pass rewrite each broke something new, because passes read each other's output. Detectors now report ranges over the original text, and one render writes the placeholders. Two tested invariants replaced case-hunting: masking a masked file changes nothing, and the count is the truth.
+- **The privacy promise crossed task boundaries.** R4 guarded the staged file; history re-sent it to any model (final review). Then the logging proxy showed the local model's *reply* carrying the value to the cloud, past 2,639 green tests. Only a real run with the real prompt in view caught it.
+- **FastAPI wrote recordings to disk.** Multipart parsing spools over 1 MB before the route runs. The route parses in memory now; a spy on rollover pins it.
+- **A mock hid a bug for days of work.** The voice hook read `detail` as a string and the server sends an object, so all seven refusals showed the fallback. The mock used a shape the server never sends.
+- **`warm()` reaches one worker.** With `WORKERS>1`, each worker warms itself, and retries from `error` every 5 minutes.
+
+### Rulings the owner may want to reverse
+
+Every ruling with its cost is in the ledger. The ones that shape behaviour:
+
+- "Go ahead" (HANDOVER step 4) read as permission for per-task commits. From Task 4 on, implementers staged and the controller committed.
+- A short all-digit value stays unmasked in an env file (spec §3.2's integer rule): `PASSWORD=123456` is sent.
+- A blocked microphone stays pressable, with its reason, where the spec says disabled.
+- Switching models after Send real values hides that model's replies from the new model.
+- A file too big for the model's window is sent, with a note, not refused.
+- Lower bounds `av>=19.0` and `numpy>=2.5` are what the code was tested on.
+
+### Waiting on the owner now
+
+- **A ruling on spec §2's CPU anti-goal.** On this CPU-only machine a local model's reply took about 1.5-2× as long during a transcription, and narration about 1.6-2.4×. A cloud model wasn't slowed. The spec says it fails if chat is "noticeably slower for everyone else on a CPU-only box". `SPEECH_CPU_THREADS` now defaults to half the cores across all workers. The owner decides whether that's acceptable, or `cores // 4` is worth trying.
+- Merge the stack; deploy with a database backup; the `docling` realm role in the live Keycloak. Migration 024 is already on live, and the 22:43 log applied only 024, so 023 was there before it.
+- Find what auto-pushes. W3: the header scrolls sideways at 375 px (the composer itself fits).
+- `/v1/synthesize` hardcodes `lang="en-us"` (`server/endpoints.py:79`, `:139`), so non-English Kokoro voices come out wrong through the app. Outside this plan.
+- `server/auth/touch.py:22` takes a second pooled connection while auth holds the first: existing, outside this branch. A reviewer reproduced a `PoolTimeout` at pool size 2; not tried at the real 10.
+- A model can pass text to `READER_MODEL` in a written request, so a model holding real values could forward them. Read from code, not run.
+- `src/components/admin/AdminPanel.jsx` is dead code; `af_river` is labelled Male though Kokoro's `af_` means American female (unverified).
+- The cached Sinhala and Tamil Whisper models are in Transformers format and need `ct2-transformers-converter` before faster-whisper can load them (DEPLOYMENT, "Choosing a model"). `large-v3-turbo` loads as it is. Their quality here is unmeasured, and it's the natural next test.
+
+### Next, unchanged from the order below
+
+Phase 2b (the embedding provider), then figures with a vision model and the DeepSeek-OCR preset.
+
+---
+
+## 2026-10-27 — Phase 3 merged; how we work, and the recommended order of work
+
+**State.** `feat/admin-console-v2-phase3` was fast-forwarded into `development` (`85b85d6`) on the owner's "merge"; the gates on the merged tree were backend `2447 passed, 16 skipped, 2 deselected` (scratch 5434), frontend `1190 passed`, eslint clean. The local branch was deleted (its origin copy is identical). `d7f106d` adds the design and plan for the message box inputs. **`origin/development` is at `85b85d6`: the unidentified auto-pusher pushed `development` itself**, so phases 1, 2a and 3 are public; nobody here ran `git push`. **Not deployed:** live still runs an older build; deploying phase 3 needs a database backup first (migration 023; its Down SQL is in the file's header).
+
+### How a piece of work goes (the procedure we follow)
+
+1. **Brainstorm** what the owner wants, or skip the questions when the owner says "go with your recommendations"; the designer's calls are then listed as decisions in the spec.
+2. **Spec** in `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`: why, goals, non-goals, anti-goals, constraints, decisions with their cost if wrong, what's not verified.
+3. **Plan** in `docs/superpowers/plans/YYYY-MM-DD-<topic>.md`: tasks with exact names, signatures and tests; a Review Focus list; the walk before the docs.
+4. **The owner reviews and says "Go ahead".** That is the permission for per-task commits on a feature branch cut from `development`, and nothing more.
+5. **Execution, subagent-driven by default:** a fresh implementer per task, a task review, a fix loop; a ledger with every ruling in `.superpowers/sdd/<plan>/progress.md` (git-ignored).
+6. **Walk the user's journey in the running app** (scratch DB, port 8100, no compose Keycloak), naming the control for each step. A step with no control is a gap, said plainly.
+7. **Docs** from the walk's results, then a whole-branch final review on the most capable model, one fix wave, a re-review.
+8. **A HANDOVER entry**, then the finishing menu (merge locally / push and PR / keep). **Merge, push, deploy and every commit outside step 4 need the owner's word, each time.**
+
+The environment and safety rules (test DB, Keycloak, secrets, PIDs) are in the 2026-10-25 entry's "Environment and safety rules"; they still hold.
+
+### Recommended order of work
+
+1. **Fix: Docling's "Images: embed" keeps no pictures** (done on `fix/docling-keep-pictures`; read from the code and the installed Docling 2.142.1, not run). We set `generate_picture_images`, but `export_to_markdown`'s default `image_mode` is `PLACEHOLDER`, so every picture becomes `<!-- image -->` and the crops are dropped; the README promises embedded images. Check first: a document converted with embed shows no pictures in **MD** view. Small, user-visible, and the owner uses this option, so it goes first. ("Describe" works, but with Docling's built-in SmolVLM-256M, not a model we choose.)
+2. **Message box inputs** (`docs/superpowers/plans/2026-10-27-chat-composer-inputs.md`, 9 tasks; built, see the 2026-11-02 entry): text files with secrets masked in the browser; voice input that transcribes into the box (faster-whisper on the server, or any OpenAI-compatible transcription server), off until an admin turns it on. Native audio models (gemma4 and others, many languages, any provider) plug in later through the same `Transcriber` interface (spec §6).
+3. **Admin console v2 phase 2b: the embedding provider.** Indexing still calls Ollama at `OLLAMA_URL` whatever `INFERENCE_PROVIDERS` says, so a vLLM-only or Claude-only deployment can't index documents. It also unblocks the embedding-model trials (backlog item 4).
+4. **Figures, designed after 2b:** keep each picture beside the converted document (shown in MD view, same access rules); describe it with a vision model the admin picks (gemma4 or a cloud one; Docling 2.142.1's `PictureDescriptionApiOptions` takes any OpenAI-compatible URL, with `enable_remote_services=True`); let a chat model that can see images look at the figure itself when a search lands on it. **DeepSeek-OCR** as a conversion preset for scans, tables and formulas: Docling ships it (`VLM_CONVERT_DEEPSEEK_OCR`, `deepseek-ocr:3b` through Ollama's `/v1`), and wiring it needs the four changes in the 2026-10-26 research note. No setting turns it on today. Its CPU cost is unmeasured.
+5. **Later, by value:**
+   - Robustness: replies that survive closing the tab (LibreChat's resumable streams); a backup **restore** actually tested; a lock around migrations (`WORKERS>1`); citation quality (87.9% against a 90% target).
+   - Providers: when a provider's `/models` fails, fall back to its `INFERENCE_<NAME>_MODELS` list (otherwise the picker silently drops it; Anthropic's OpenAI-compatible layer may do this, unverified); per-provider parameters to drop or add; a native Anthropic adapter if Claude becomes a real option (prompt caching suits our stable prompt prefix; the compatibility layer has none, ignores `reasoning_effort` and strips audio).
+   - From LibreChat and LLMRouter: chat search and export, edit and regenerate, saved assistant roles, prices per model (turns phase 3's token counts into money), an Auto model choosing by simple rules.
+   - The owner's backlog: bulk upload into a project, auto tags, MD and PDF side by side, MCP, agents.
+
+### Provider notes (for the DEPLOYMENT.md pass)
+
+- **vLLM:** `KIND=openai`, URL ending `/v1`. It needs `--enable-auto-tool-choice --tool-call-parser <family>` (e.g. `hermes` for Qwen), or the app turns the model's tools off and it never searches the document. It needs a GPU, which this machine doesn't have. vLLM and LiteLLM are still unrun against this app.
+- **Unsloth:** its GGUF quants run through the existing Ollama (`ollama pull hf.co/unsloth/<repo>:Q4_K_M`, then listed under `local:`); Unsloth Studio is an OpenAI-compatible server with `sk-unsloth-…` keys. Neither has been run here.
+- **OpenAI:** set `INFERENCE_OPENAI_MODELS`, or the picker lists its embedding, TTS and image models too.
+- **Claude:** `https://api.anthropic.com/v1` with `KIND=openai` works for chat, tools, images and token counts per Anthropic's docs; it is a testing layer by Anthropic's own description. The app sends no `temperature` (Claude 4.7+ rejects values below 1).
+- **Audio in Ollama:** 0.40.8 lists `audio` for gemma4:e4b, but its API has no audio field (ollama/ollama#11798) and gemma4 audio regressed into made-up transcripts (#16584); hence transcription first.
+
+### Still waiting on the owner
+
+- Deploy (database backup first); the `docling` realm role in the live Keycloak.
+- Find what auto-pushes (VS Code's sync is the suspect).
+- W3: the header scrolls sideways at 375 px.
+- A cloud eval before the next release.
+- Keep or delete the SDD workspaces under `.superpowers/sdd/`.
+
+---
+
+## 2026-10-26 — Admin console v2, phase 3 (usage by model) built, walked and final-reviewed (merged 2026-10-27, see above)
+
+**Branch:** `feat/admin-console-v2-phase3`, cut from `development` at `8e13803` (phase 2a merged). **Not merged into `development`, not deployed, no version bump; nobody here ran `git push`** (CHANGELOG entries sit under `[Unreleased]`). The owner's "Go ahead" on the subagent-driven plan was read as approval of its per-task commits on this feature branch (ledger opening ruling). **The branch is on origin up to `99a0bc0` anyway** (`git reflog show origin/feat/admin-console-v2-phase3`: one "update by push"), the same unidentified pusher as for phases 1 and 2a (see the entry below; VS Code's sync is the suspect). Everything after `99a0bc0`, including this docs commit, was local when this was written. Plan: `docs/superpowers/plans/2026-10-26-admin-console-v2-phase3.md`. Workspace ledger (rulings, every review finding and which were deferred): `.superpowers/sdd/2026-10-26-admin-console-v2-phase3/progress.md`, with each task's brief, report and review diff beside it, and the walk in `task-6-walk-report.md`. Spec: `docs/superpowers/specs/2026-10-25-admin-console-v2-design.md`.
+
+**Commits** (`git log --oneline 8e13803..HEAD`, newest first; the docs commit that carries this entry follows them):
+
+- `9e7fd7f` fix(admin): a person's models follow the Model filter (R5)
+- `94a08f3` test(admin): Usage race tests flush and can fail
+- `d561de3` feat(admin): Usage by model, person and day
+- `a1aea8a` refactor(usage): admin_usage is the user_day grouping
+- `f68fc68` feat(admin): usage grouped by model, person and day, tagged local or cloud
+- `99a0bc0` feat(usage): chat and reader writes name their model and kind
+- `78ba314` feat(usage): record usage per model and kind (migration 023)
+
+**Gates on the final code tree (`9e7fd7f`, 2026-10-26):** backend `2447 passed, 16 skipped, 2 deselected` (was 2418 at the end of phase 2a), run with `TEST_DATABASE_URL` and `TEST_ADMIN_DATABASE_URL` pointing at the scratch Postgres on 5434; frontend `1190 passed` in 119 files (was 1170 in 118); `npx eslint .` clean. Every task was reviewed on its own diff and ended review-clean. **Whole-branch final review (`8e13803..89ed8a5`): done, verdict "with fixes".** Its findings were docs and a rollback script, no behaviour change; they were applied in one docs-only fix wave (below). The gates above are unchanged by it (the wave touches docs and a comment header in the migration; backend re-run after it, same counts).
+
+**Final fix wave (commit `docs: final review fixes — usage docs, rollback Down for 023`, on top of `89ed8a5`):**
+- `docs/DEPLOYMENT.md`: the reader-usage paragraph no longer says usage can't name the model; batches are booked to the reader model's own row (kind `reader`), and the `reader usage` log line still names it.
+- `docs/ARCHITECTURE.md`: `is_local` feeds the Usage **Where** column (computed at read time by the admin usage route), not "usage later".
+- `CHANGELOG.md` and `docs/USER_GUIDE.md`: an unplaceable reader model is a **Where** = Unknown case (the Model cell shows the bare name); By person shows the same token figures without Model and Where; **Requests** = model calls (each chat step, each reader batch; a tool-using reply makes several); the old Prompt/Eval columns and person-by-day rows are gone from the UI but `GET /v1/admin/inference/usage` with no `group` still returns them (`group=day&user_id=<id>` gives one person's days).
+- **Rollback:** `server/sql/023_usage_by_model.sql` now carries runnable Down SQL in its header (one transaction: aggregate per `(user_id, day)`, restore the old key, drop the columns, `DELETE FROM schema_migrations WHERE version = 23`). Proved on a throwaway database on 5434 (merge sums right, old PK back, no model/kind/estimated_tokens, up re-applies); script and output in `.superpowers/sdd/2026-10-26-admin-console-v2-phase3/final-fix-report.md`. CHANGELOG Upgrade notes say plainly that the previous image against a migrated database without the Down makes every usage write fail (logged, fail-open), so budgets stop counting new usage, and the only sign is a log warning. Editing the header is safe: `server/db.py` tracks versions in `schema_migrations`, not checksums.
+
+### What a person can do now (and where)
+
+- **See usage by model** (Admin -> **Usage**, which now opens on **By model**): one row per model with **Where** (Local / Cloud / Unknown), **Chat** and **Reader** tokens, **Requests**, **Total** and **Estimated**.
+- **See usage by person** (**By person**) and open one person's own per-model rows (the arrow on their row, label **Models for** their address).
+- **See usage by day** (**By day**), days counted in the deployment's timezone.
+- **Narrow By person and By day to one model** (the **Model** select: **All models**, a model, or **Unknown**). An opened person's rows follow it.
+- **Change the range** (the **Usage days** select: last 1, 7, 14, 30 or 90 days). It applies to all three views and resets the **Model** select to **All models**.
+- **Read the same figures by script:** `GET /v1/admin/inference/usage?days=&group=user_day|model|user|day&user_id=&model=`. No `group` returns the old per-person-per-day list (U5). `model=` empty means the Unknown rows. A bad `group` or `user_id` is a 422. `tag` appears on `group=model` rows only.
+- Reading it, an admin should know: **reader tokens are booked to the reader model's own row** (the chat model's row can show **Reader** 0); **usage from before the upgrade shows as model Unknown and can't be split** (**Chat** and **Reader** read 0 while **Total** doesn't, so Chat + Reader can be less than Total); **Where follows the provider's current Local/Cloud mark**, so changing the mark re-tags history; **Estimated** is the share of tokens counted from text length because the provider sent no counts (Ollama always sends counts, so with Ollama it is normally a dash); a reader model the router can't place is recorded under its bare name (the **Model** cell) and its **Where** cell shows Unknown.
+
+**Not possible yet:** per-person *budgets* per model, usage charts, export, or an alert when a model's spend jumps. The budget is still one number per person per day, summed over every model and kind.
+
+**Upgrade note:** migration `023_usage_by_model.sql` runs on start and rewrites `inference_usage`'s primary key to `(user_id, day, model, kind)`. Old rows keep their tokens as model `''`, kind `''` and still count toward each person's budget that day (tested: migrating mid-day changes nobody's remaining budget). **There is no automatic Down**: the file header holds a manual, tested Down SQL (run it before starting the previous image on a migrated database, or its usage writes fail and budgets stop counting). Back up the database before deploying, as for 2a. The live site does not run this branch.
+
+### Rulings (full text in the ledger and the plan; "cost" = what changing it later touches)
+
+Made while building (R, ledger):
+- **R1.** Task 1 left the orchestrator's writer call alone, so 16 orchestrator tests were red between Task 1 and Task 2. Cost: bisect noise on one commit (`78ba314`).
+- **R2.** The "Usage recorded before this version has no model and shows as Unknown." note shows whenever the range's By model data contains a model-less row, in any view. Cost: harmless copy on a view whose rows show no Unknown.
+- **R3.** The walk seeds usage with real turns on cloud or already-pulled small models, never local `llama3.2:3b`. Cost: the walk proved the UI on mostly writer-produced rows plus one seeded pre-upgrade row.
+- **R4.** The walk ran before the docs, so the docs describe the journey as walked. Cost: none beyond order.
+- **R5.** A person's expanded rows filter the cached per-person rows client-side to the **Model** select (still one fetch per person per range). Replaced an earlier "expansion ignores the filter". Cost: an admin who wants all of a person's models clears the select (one click).
+
+Decisions in the plan (U):
+- **U1.** Old rows get model `''` and kind `''`, both shown as Unknown (they mix chat and reader, so calling them chat would misreport).
+- **U2.** The model is stored canonical (`provider:name`), so `gemma4:e4b` and `ollama:gemma4:e4b` are one row; an unplaceable reader keeps its name.
+- **U3.** The tag is computed at read time from the provider's current mark, not stored. Cost: history re-tags; storing it would freeze the old mark.
+- **U4.** Estimated = estimated tokens / tokens, shown as a whole percent, a dash for none, `<1%` for a small share.
+- **U5.** No `group` means the old shape.
+
+### What was walked, and what was NOT verified
+
+- **Walked in the running app (plan Task 6, at `94a08f3`, `task-6-walk-report.md`):** backend on 8100 against a scratch database (migrated 001-023 by the app), Vite, auth off, Playwright at 1280 and 375 px. **Admin** button -> **Usage** tab -> **By model** (both models with right tags, the cloud one carrying the Reader figure), **By person** with the **Models for admin@localhost** disclosure (matched By model), the **Model** select on By person and By day, the **Usage days** select, and 375 px (no Usage table scrolls sideways; every control at least 44 px). Seeded: one pre-upgrade row; everything else was written by real turns.
+- **Walk defect W1** (a person's expansion ignored the **Model** select) was fixed afterwards in `9e7fd7f` (R5).
+- **Re-walked after the final fix wave (at `ec06db0`, `task-6-rewalk-report.md`), all six steps passed:** two people (a second user and 9 usage rows seeded by SQL, labelled seeded). **By person** sorted by Total, each person equal to their seeded sums; both **Models for <email>** disclosures open under **All models**, each adding up to its person row (one `user_id=` request per person); picking a model in the **Model** select left only that model's row in each open expansion, equal to the row above, with no new `user_id=` request; **Unknown** left only the person with a pre-upgrade row; **Usage days** closed the expansions, reset the filter, and a reopen fetched once per person. A production build (`vite build` + `vite preview`) sent `group=model` **once** on first open, so the doubled request seen in dev is React StrictMode only.
+- **Not verified:**
+  - **The Estimated percentage.** Seen only in unit tests: Ollama always sends counts, so both walks saw only dashes.
+  - An expanded person who drops out under a filter and comes back; a removed provider and a changed Local/Cloud mark in the browser (backend-tested); a non-admin refused; dark mode.
+  - No cloud eval was run for this phase. It touches the reader's model string (now the canonical `provider:name` key the router resolves) but no prompt; the spec's pre-release eval is still owed for the release.
+- **Walk observations, not fixed:** the page is 390 px wide at 375 px on every admin view, from the app header's button group (pre-existing, phase 2a W3, not Usage); model names wrap mid-word at 375 px (`break-all`); table text is 10 px; the Estimated note shows whenever rows exist, even when every cell is a dash.
+- **Deferred minor review findings** (none blocks; ledger has the rest): `KINDS` is defined mid-module in `inference_budget.py`; no router test pins the day window to `today(conn)` (it would pass with `CURRENT_DATE`); equal-token tie-breaks, `user_day` with `user_id`/`model`, and the days clamp with `group` are untested; the `group` vocabulary lives in three places; in By person and By day a failed load shows two toasts and "No usage recorded yet."; the disclosure has no `aria-controls` and the nested table no label; if the By model fetch fails the **Model** select collapses to **All models** unexplained; the **Model** select persists across the view buttons; an expansion filtered to nothing says "No usage recorded yet."; one orchestrator test doesn't assert `estimated_tokens` on the `_finalize` path.
+
+### Open items
+
+1. **Merge** (the final review, its fix wave, the scoped re-review and the W1 re-walk are all done): `feat/admin-console-v2-phase3` into `development`: merge and push both need the owner's go-ahead. `development` itself is still unpushed with phases 1 and 2a on it.
+2. **Docs that keep the old wording on purpose:** the older `docs/superpowers/handoff/2026-10-18-project-chat/HANDOFF.md` and the design spec's problem statement keep "no model column" as history, on purpose.
+3. **Deploy:** needs a database backup first (migration 023; the Down SQL in its header is the rollback). As of the phase 2a entry, live ran a build from before that phase's final fixes; check what it runs now.
+4. **Phase 2b** (embedding engine and model) is next in the design; the header scroll at 375 px (W3) is still open.
+
+---
+
+## 2026-10-26 — Admin console v2, phase 2a built, walked and final-reviewed; merged into development
+
+**Branch:** `feat/admin-console-v2-phase2a`, cut from `development` at `2fadfa2`. **Fast-forward merged into `development` on 2026-10-26; `development` is not pushed; no version bump** (CHANGELOG entries sit under `[Unreleased]`). **The feature branch reached origin without anyone running `git push` here** (`git reflog show origin/feat/admin-console-v2-phase2a`: seven "update by push" entries from 10:13 to 16:22, each a few minutes after a commit), as happened to phase 1's branch; the branch config carries `vscode-merge-base`, so VS Code's sync is the suspect. **Deployed anyway:** the live site has run this branch since 2026-10-26 11:39, from an image built at `0f9aec7` (before the final review); the final-review fixes are not deployed yet. Plan: `docs/superpowers/plans/2026-10-26-admin-console-v2-phase2a.md`. Workspace ledger (rulings, every review finding and which ones were deferred): `.superpowers/sdd/2026-10-26-admin-console-v2-phase2a/progress.md`, with each task's brief, report and review diff beside it. Spec: `docs/superpowers/specs/2026-10-25-admin-console-v2-design.md`.
+
+**Commits** (`git log --oneline 2fadfa2..HEAD`, newest first; the docs commit that carries this entry follows them):
+
+- `87a74bb` docs: the handover says live runs this branch, and records P11-P13 (renumbered P15-P17 below)
+- `aec2add` fix(settings): show the whole Auto label, and the admin's size on a locked row
+- `3f3ded4` fix(admin): the console's Reader must be a model the deployment allows
+- `772d0b5` fix(models): the Cloud mark is cost-only; a self-hosted Ollama is always sized
+- `fd7a659`, `cc325e1`, `571dc5b`, `fbc23f0`, `0f9aec7` docs: phase 2a docs and their review rounds
+- `88484f4` feat(admin): search and filter People on the server
+- `658423e` feat(settings): show the context size the server will use for a local model
+- `0c0bdfc` fix(admin): a hidden invalid size no longer blocks Save in Models
+- `bbe601a` feat(admin): the Models section
+- `5d6dcfc` fix(admin): the reader line never fails because the model list does
+- `fcfc134` feat(admin): Overview's reader and context lines follow the Models settings
+- `dbde911` feat(admin): GET /v1/admin/models, the catalog the Models section chooses from
+- `f87b38a` feat(models): the console narrows the chat models; the model list reports each local model's context size
+- `7d667c8` fix(reader): a reader on a non-sized chat model sends no context size
+- `facbe87` fix(reader): fall back to the chat model, choose it in the console, size it to its model
+- `cc8a906` fix(chat): one context size per local Ollama model, and trim history to it
+- `6aa3c9e` test(models): an empty host after the trailing-dot strip is cloud
+- `c964d80` fix(models): size every self-hosted Ollama model, not only local-looking hosts
+- `b1f74af` fix(models): count .local/.lan/.internal/.home.arpa hosts and 100.64/10 as local
+- `80a86cb` feat(admin): the models settings section and its resolution rules
+- `03acb1d` docs: admin console v2 phase 2a plan (Models, People search)
+- `42bdcd6` fix(admin): say which Keycloak role to create when a capability's realm role is missing
+
+**Gates on the final tree (2026-10-26, after the final-review fixes and the `summarize_model` removal):** backend `2418 passed, 16 skipped, 2 deselected` (was 2281 at the end of phase 1), run with `TEST_DATABASE_URL` and `TEST_ADMIN_DATABASE_URL` pointing at the scratch Postgres on 5434; frontend `1170 passed` in 118 files (was 1121 in 117); `npx eslint .` clean. Every task was reviewed on its own diff; the whole-branch final review (opus, `final-review.md` in the workspace) found no Critical and two Important issues, both fixed and re-reviewed (`final-fix-rereview.md`).
+
+### What a person can do now (and where)
+
+- **Choose the reader** (Admin → Models → **Reader**): the chat model of each conversation (the default) or any listed model. With none of `READER_MODEL`, `SUMMARIZE_MODEL`, `WEB_SEARCH_SUMMARY_MODEL` set, the reader is the chat model, no longer `llama3.2:3b`.
+- **Set the context size of self-hosted Ollama models** (Models → **Context size for local Ollama models**, and **Per-model sizes**). Every request to such a model names a size (the per-model size, else the deployment's, else the person's own value, else 16,384; at most `INFERENCE_NUM_CTX_MAX`), history is trimmed to it, and a reader that is the chat model uses it too, so Ollama stops reloading the model between chat and reader calls. Env fallback: `INFERENCE_LOCAL_NUM_CTX`.
+- **Declare a context window** for a model whose provider reports none (Models → **Declared context windows**, or `INFERENCE_<NAME>_CONTEXT_WINDOW` for a provider). Without one, history for that model is not trimmed and the Overview says "Unknown".
+- **Mark a provider local or cloud** (Models → **Providers**: Auto / Local / Cloud). Cost flag only (the Overview's quota hint, later usage); it never changes sizing, so a self-hosted Ollama marked Cloud is still sized (final-fix ruling P15).
+- **Narrow the chat models offered** (Models → **Chat models offered**). Intersected with the environment's allow-lists, never unioned. The turn route refuses a model outside it (422 `model_not_allowed`), and the picker lists only the ticked models.
+- **Search People** (Admin → People: **Search people**, **Status**, **Capability**, 50 at a time with **Show more**, "Showing N of M").
+- **Settings → Chat → Context window** shows "Set by your admin: N tokens." (locked) for a self-hosted Ollama model whose size the admin fixed, otherwise **Auto** names the size the server will use.
+- Overview's **Reader** line is **OK** by default (it was a warning for the fallback); its **Context windows** line reports the size a request sends. Deployment's read-only list no longer has "Reading model".
+
+**`SUMMARIZE_MODEL` and `WEB_SEARCH_SUMMARY_MODEL` are only older names for the Reader** (the reader's env chain is `READER_MODEL`, then those two). There is no separate summary model: the unused `InferenceConfig.summarize_model` field was removed; `GET /v1/admin/inference/config` still reports the reader under the old `summarize_model` key.
+
+**Still not possible without `.env` and a restart:** adding or changing a provider; changing the embedding model (phase 2b). **Not possible at all yet:** usage by model or by person and model (phase 3, written afterwards, adds it: the usage table had no model column, so usage from before that migration can't be split). **No migration** (`models` is one more `app_settings` row).
+
+**Upgrade notes** (also in CHANGELOG and DEPLOYMENT): the reader moves to the chat model (cloud chat model: reader calls count against its quota; pick a local reader in Models); local Ollama models get 16,384 tokens instead of Ollama's 4,096, which reserves more memory when the model loads (size it down in Models or with `INFERENCE_LOCAL_NUM_CTX`), and a model already loaded at another size reloads once; a person's own context size stops applying to those models once the admin sets one.
+
+### Rulings (full text in the ledger and the plan; "cost" = what changing it later touches)
+
+Made while writing the plan (R, `docs/superpowers/plans/2026-10-26-admin-console-v2-phase2a.md`):
+- **R1.** The deployment's size is `INFERENCE_LOCAL_NUM_CTX`. Cost if wrong: renaming one env var.
+- **R2.** Size order: per-model, deployment (console then env), the person's value, 16,384; clamped to `INFERENCE_NUM_CTX_MAX`. Cost: the owner wanting 16,384 to beat personal values moves step 3 below step 4.
+- **R3.** A non-sized model (Ollama cloud, `openai`-kind) keeps the person's value and the reader sends none. Cost: none known.
+- **R4.** Locality guess, first match wins: `-cloud`/`:cloud` name, the admin's override, the host, else cloud. Cost: a dotted LAN name reads cloud until overridden (P3 widened the host rule).
+- **R5.** The default reader (the chat model) is OK, not a warning. Cost: one state word.
+- **R6.** A chat-model selection whose models all vanished offers nothing and the Overview warns. Cost: none known.
+
+Made during the build (P, ledger):
+- **P1.** A provider's `detected` flag applies the host rule alone (no model name, no override). Cost: one label.
+- **P2.** The turn route reads the `models` row on its own short pool connection, fail-open, not a new `Depends(get_conn)` on the streaming route. Cost: a second read pattern.
+- **P3.** `.local`, `.lan`, `.internal`, `.home.arpa` hosts and 100.64.0.0/10 count as local; one trailing dot is ignored. Cost: a wrong Auto label on an exotic public host with such a suffix (the admin overrides).
+- **P4.** Sizing applies to every self-hosted Ollama model whatever its host; locality is the cost flag only. `sizes_context` is the predicate. Cost: one predicate swap.
+- **P5.** A reader batch never grows past `READER_INPUT_CHARS`; it shrinks to fit the window. Cost: one word if the owner wants window-filling batches.
+- **P6.** A batch holds at most 16 passages (`MAX_BATCH_PASSAGES`). Cost: a few extra reader calls on many tiny passages.
+- **P7.** A reader on a non-sized chat model sends no size, even if the person set one. Cost: one line.
+- **P8.** The model list's `context_size` key stays snake_case beside camelCase `limits`. Cost: one inconsistent payload, one route and one parser to rename.
+- **P9.** Deployment's read-only list drops "Reading model" (it reads only the environment and would contradict a console choice). Cost: one row.
+- **P10.** The Overview's unset-size copy prints the window actually used ("8,192 tokens unless …" when the ceiling is 8,192). Cost: one string.
+- **P11 (Task 7).** A valid per-model size whose provider is flipped to Cloud stays in the map. Moot since P15: flipping to Cloud no longer hides the box.
+- **P12 (Task 10).** Docs review minors fixed in the docs round.
+
+Made in the final fix:
+- **P15.** `sizes_context` ignores the admin's Local/Cloud mark; Cloud is cost-only. Sized = `ollama`-kind, model not `-cloud`/`:cloud`, host not ollama.com. Cost if wrong: a hosted, non-ollama.com Ollama endpoint marked Cloud is sent a `num_ctx` (it loads at our size instead of its own default).
+- **P16.** Saving a Reader that is not "chat" and not allowed by the deployer's allow-lists (`is_allowed`, as the chat path) is refused with 422 ("That model isn't in this deployment's model list."); the Overview's Reader line is an error when the reader, from any source, names such a model. Chat turns are unchanged. Cost: one check.
+- **P17.** A Context window row locked by an admin size shows that size; the person's stored value is kept and applies again when the admin clears it. Cost: one display line.
+- **P18.** The app header's sideways scroll at 375 px (walk bug W3) is parked: the header is unchanged on this branch, so the bug predates it. Cost: a later small CSS fix.
+
+### What was walked, and what was NOT verified
+
+- **Walked in the running app (plan Task 11, before the final fix; `task-11-walk-report.md`):** backend on 8100, scratch DB, Vite, auth off, the owner's Ollama. A document chat on `gemma4:e4b` loaded it once at 16,384 tokens (`/api/ps` and Ollama's journal: one runner, three `/api/chat` calls at `n_ctx_slot=16384`) and the reader call ran in the same runner, so **no reload between chat and reader**; an overflowing chat logged "history trimmed … (window 16384)". Models: set, save, reload, **Use the server setting** for Reader, Context size (validation too), Per-model sizes, Providers, Chat models offered; narrowing to one model left one in the picker and a turn on another got 422 `model_not_allowed`. Settings lock strings. People search by first and last name and Pending, **Show more** to 61 of 61. 0 of 542 Models/People controls under 44 px at 375 px.
+- **Walk bugs:** W1 (clipped Auto label) and W2 (locked row showed the stored personal value) fixed in `aec2add`; W3 (header sideways scroll at 375 px) parked, P18.
+- **Not walked:** the final-review fixes themselves (Cloud-marked sizing, Reader refusal, the two Settings fixes are unit-tested only); dark mode; a non-admin refused the admin routes in the browser; the Overview's env-sourced strings; Declared context windows (both walk models report their own window, so the row had no box).
+- **No cloud eval was run.** Spec §5 requires one before a release, on `ollama:gemma4:31b-cloud` or OpenRouter (never local `llama3.2:3b`); it needs the owner's go-ahead. The one final local `gemma4:e4b` run is still owed too.
+- **The 16,384 default's memory cost on the owner's machine** was not measured.
+- **Deferred minor review findings** (none blocks; ledger has the rest): `test_inference_router.py` defines the `client` fixture twice and the later one wins, so every test in it runs as the seed admin; a SQL error reading the `models` row on `GET /v1/inference/models` aborts that request's transaction, so the budget is omitted too, and `GET /v1/admin/inference/config` returns 500 if the row is unreadable; the turn route holds one extra pool connection per turn; the client ignores `num_ctx_max` when validating a size (the server refuses; a toast); People: a reload racing **Show more** can drop the appended page, a failed load reads "Showing 0 of 0", a search containing a NUL character is likely a 500 not a 422, past 200 loaded rows a reload after an edit collapses to the first 200; the Overview logs a warning with a traceback per load while a provider hangs.
+
+### Open items
+
+1. **Push `development`**: needs the owner's go-ahead. It carries phase 1 and phase 2a; v2.4.0 is not deployed. Find what auto-pushes feature branches before the next one.
+2. **Deploy the final-review fixes.** Live runs `0f9aec7` (since 11:39), which has the I1 bug (a self-hosted Ollama marked Cloud gets no size) and accepts any Reader through the API. Rebuilding from this branch's head fixes both.
+3. **Live config worth setting now:** one deployment context size under Models (two people with different personal sizes otherwise reload the same model between their turns); a small local Reader if people chat on a cloud model (reader calls count against its quota) or on a large local one (every batch runs through it, slow on CPU), with `OLLAMA_MAX_LOADED_MODELS` ≥ 3 so the chat, reader and embedding models don't evict each other.
+4. **Phase 3 (usage by model) is planned:** `docs/superpowers/plans/2026-10-26-admin-console-v2-phase3.md`, branch `feat/admin-console-v2-phase3` from `development`; awaiting the owner's review of the plan. **Phase 2b** (embedding engine and model) follows.
+5. **The live Keycloak still lacks the `docling` realm role** (needed only for `DOCLING_CONVERT_BY=role`); People now says how to create it. W3, the header scroll at 375 px, is open.
+
+---
+
+## 2026-10-26 — Admin console v2, phase 1 built and walked
+
+**Branch:** `feat/admin-console-v2`, cut from `development` at `9459201`. **Fast-forward merged into `development` on 2026-10-26** (`git log --oneline 9459201..development` lists the plan's commit first, then the tasks, the final-review fixes and this entry). **`development` is not pushed** (origin/development is still `955231d`). **Nothing deployed.** **The feature branch was pushed:** not by us. Something pushed this branch to origin four times with nobody running `git push` here: `328f68f` at 23:34:59 on 2026-10-25, then `7637c9a` (00:02:31), `469d2d8` (00:07:14) and `292a0ce` (00:07:47) on 2026-10-26 (from `git reflog show origin/feat/admin-console-v2`, all "update by push"). The cause is unknown (no git hook or Claude hook pushes this repo; VS Code's publish/sync is the suspect). Everything after `292a0ce`, including this docs commit, is local only. The owner never granted a push.
+
+**Gates at `9a3f569` (the last code commit, 2026-10-26):** backend `2281 passed, 16 skipped, 2 deselected` (was 2139 passed at `9127981`), frontend `1121 passed` in 117 files (was 1022), `npx eslint src` clean.
+
+### What a person can do now (and where)
+
+Admins open the console with the **shield button in the header** (the profile menu has no Admin entry; the plan text said it had). It opens on **Overview**, with sections Overview, People, Projects, Documents, Chat, Defaults for users, Usage, Deployment (a picker on a phone).
+
+- **See whether the deployment works.** Overview runs six checks (providers, reader, context windows, embeddings, Docling, web search), each OK / Warning / Problem / Off, in at most 5 seconds each, concurrently. **Check again** reruns them.
+- **Set the deployment's timezone** (Deployment section). It decides the daily token budget's day (reset at the next local midnight, also on a daylight-saving night), the usage days, the "Today is" line without a browser zone, and People's dates. Console value, then `TZ`, then UTC. `tzdata` is now in `requirements.txt` (Windows).
+- **Limit Docling conversion** (Documents section): who may convert, presets, OCR, picture descriptions, a page limit. The convert dialog greys out what is off ("Turned off by your admin"), and the server refuses a request that breaks a rule (403 `convert_not_allowed`).
+- **Every setting in those sections has one look**: a source line (Set here. / From the server setting `VAR`. / The default.), **Use the server setting**, one Save, an unsaved-changes prompt. Each saved change writes an audit line.
+- **No migration.** Settings are `app_settings` rows `deployment` and `documents`.
+
+**What a user still can't do until a later phase:** choose the reader model or context sizes in the console (phase 2a), change the embedding model in the console (2b), see usage by model (3). The reader/context problems found on 2026-10-25 (a local model silently cut to 4k; the reader reloading the model) are still unfixed: they are 2a.
+
+### Rulings that changed the plan (full text in `.superpowers/sdd/2026-10-25-admin-console-v2-phase1/progress.md`)
+
+- **"Who may convert" is `readers` or `role`**, not "admins". `role` means people with the new **`docling` capability, a Keycloak realm role** (admins can always convert); the default `readers` keeps today's behaviour. `DOCLING_CONVERT_BY=readers|role`. The owner hadn't answered the question when Task 4 came up, so this was built on the recommendation: if wrong, revert the vocabulary entry, the realm-export role and the People checkbox and swap "role" back to "admins" (one task's worth).
+- **The `documents` token scope carries `docling`** (conversion is document work), so a role holder's documents-scoped token converts. Other scopes don't.
+- **OCR off refuses Accurate too**, because `docling_convert` runs OCR for Accurate whatever the flag.
+- **An existing Keycloak realm must have the `docling` realm role created by hand.** The realm export only seeds a fresh database. Until then ticking docling under People fails at the Keycloak write (a 502, capability unchanged) while the Keycloak admin client is configured. A role granted in Keycloak applies at the person's next login; one ticked in People applies at once. Only needed for `role` mode.
+- **The Overview reads the database first, then runs the network checks** (a check cancelled mid-query would break the connection).
+- **Env fallbacks:** `DOCLING_CONVERT_BY=readers`, `DOCLING_PRESETS=fast,standard,accurate`, `DOCLING_ALLOW_OCR=true`, `DOCLING_ALLOW_PICTURE_DESCRIPTION=true`, `DOCLING_MAX_PAGES=0` (0 = no limit). The env value is the outer bound; the console can only narrow it.
+- **The walk backend ran on port 8100**, never 8000: nginx on this host proxies the live site's `/v1` to 8000, and an `AUTH_ENABLED=false` backend there would serve the seed admin to the public.
+- **44 px targets** were brought to the moved sections (People, Projects, Chat, Defaults, Usage) with sizing classes only, after the walk measured 13-34 px there (`1100e71`).
+- Task 6's profile test asserts `>= n + 900`, not the plan's `n + 1000` (the plan's arithmetic was wrong; the delta is 999 tokens).
+
+### What was walked, and what wasn't
+
+Walked in the running app (headless Chromium, scratch database on 5434, `AUTH_ENABLED=false`, report at `.superpowers/sdd/2026-10-25-admin-console-v2-phase1/task-13a-walk-report.md`): Overview and each state; `/api/ps` really carries an integer `context_length` and a `name` (nomic-embed-text: 2048); Check again; the timezone, the unsaved prompt (Keep editing, Escape, phone variant), Save, reload, People's dates in Colombo, Use the server setting; Documents with OCR off and a limit of 2; the Convert dialog's greyed options and page gate, then a real 2-page conversion; the server's 403s by `curl` (6 pages, Accurate with OCR off, forced OCR); phone picker; keyboard (Arrow, Home, End, wrap); a canary `SESSION_SECRET` found nowhere in the page or the API payload.
+
+**Not walked:**
+- **A non-admin refused by "Only people with the Docling role."** It needs a second signed-in user, which `AUTH_ENABLED=false` can't give. Covered by `test_convert_limits.py` only. Walk it with the throwaway Keycloak on `:18081`, never the compose one.
+- **The Context windows row of a *loaded* local chat model.** The `/api/ps` shape is confirmed live; the row itself is tested with fakes. Load a local model with one message, then Check again: it should read "Loaded now (Ollama)."
+- **The 44 px fix** (`1100e71`) is class-tested (`phoneTargets.test.jsx`) but not re-measured in a browser; the walk predates it.
+- Dark mode; the Keycloak write when a `docling` role doesn't exist yet.
+
+### Open items
+
+1. ~~Merge into `development`~~ (done 2026-10-26, fast-forward). Still open: push `development`, and find out what pushed the feature branch.
+2. **Deploy** is a separate decision (v2.4.0 itself is also not deployed; see the 2026-10-25 entry). This work needs no migration. For `role` mode, create the `docling` realm role first. **Upgrade note: if the backend's environment sets `TZ` (this host's `.env` does), the daily token budget and the usage days follow it from the deploy, with no console action: budgets reset at local midnight instead of UTC midnight, the switch day gives an early or late reset, and usage days shift. To keep UTC days, choose UTC under Deployment.**
+3. **Deferred review findings** (minor, none blocks; the ledger has the rest):
+   - `GET /v1/admin/inference/config` (`admin.py`, from before this work) calls `urlsplit(...).hostname` unguarded: a malformed provider URL is a 500.
+   - (Fixed after the final review: the embeddings check now makes its own request, so it no longer waits on the indexing semaphore, and a 404 reads "answered HTTP 404".)
+   - A scheme-less URL (`OLLAMA_URL=localhost:11434`) shows an empty host in the Overview and Deployment lists.
+   - A page limit with a PDF pdfium can't open skips the limit; a range starting past the end counts negative pages.
+   - A day boundary in a zone whose local midnight doesn't exist (a DST gap at 00:00, e.g. America/Havana) is about an hour off.
+   - Console a11y: `Check again` loses focus while it runs and there is no live region; small amber/green text is about 3:1 contrast; "Use the server setting" unmounts and drops focus; two `<h1>`s while the console is open (pre-existing).
+   - An invalid page-limit text alone doesn't count as unsaved; edits made during a save need a second Save with no prompt.
+   - Some scoped tokens (`read_aloud`, `chat`) drop `docling` by design; only `documents` carries it.
+4. **Phase 2a** (reader falls back to the chat model, one context size per local model) is next in the spec; the §7 decisions are approved.
+5. The old plan workspace `.superpowers/sdd/2026-10-25-admin-console-v2-phase1/` can be kept or deleted; the `nr-c21-testpg` scratch container is still running.
+
+### Research note: Docling can already drive DeepSeek-OCR (read from the installed code, not run)
+
+The installed Docling 2.142.1 ships a VLM-convert preset `deepseek_ocr` (`docling/datamodel/stage_model_specs.py` `VLM_CONVERT_DEEPSEEK_OCR`): the VLM pipeline renders each page at scale 2.0 and sends it to Ollama's OpenAI-compatible `/v1/chat/completions` with model `deepseek-ocr:3b` (pulled locally, 6.7 GB), prompt `<|grounding|>Convert the document to markdown.`, `max_tokens` 4096, and parses the reply with `ResponseFormat.DEEPSEEKOCR_MARKDOWN`. Docling 2.142 also has a legacy `ApiVlmOptions` form, `vlm_model_specs.DEEPSEEKOCR_OLLAMA` (timeout 90 s, concurrency 4).
+
+Our code does not use it. `docling_convert._build_converter` gives **Accurate** a bare `VlmPipelineOptions()`, whose default is the `granite_docling` preset run in-process (transformers, on this CPU-only machine). Wiring DeepSeek in as a preset needs four things:
+
+- **`enable_remote_services=True`**: Docling refuses any API VLM without it, even on localhost.
+- **The Ollama URL from our own config.** The preset defaults to `localhost:11434`, which inside the backend container is the container itself.
+- **A per-page timeout sized for CPU.** No timing has been measured.
+- **A place in the console's allow-list.** It reads page images, so the "OCR off" rule should refuse it too.
+
+It also loads a 6.7 GB model into the same Ollama as chat and embeddings, which is the reload problem phase 2a deals with. Backlog item 3 (DeepSeek-OCR vs Docling) starts here.
+
+### Where to look
+
+- `CHANGELOG.md` `## [Unreleased]` (written for users), `docs/USER_GUIDE.md` § Admin console, `docs/ARCHITECTURE.md` (the five new services `console_settings`, `deployment_settings`, `deployment_info`, `docling_limits`, `console_overview`; routes `GET`/`PUT /v1/admin/settings/{section}`, `GET /v1/admin/overview`, `GET /v1/settings/docling`), `docs/IDENTITY_AND_ROLES.md` § The `docling` capability, `docs/TESTING.md` § Admin console v2, phase 1.
+- Spec: `docs/superpowers/specs/2026-10-25-admin-console-v2-design.md` (phase 1 is §6 item 1). Plan: `docs/superpowers/plans/2026-10-25-admin-console-v2-phase1.md`.
+- The environment and safety rules in the 2026-10-25 entry below still apply unchanged (scratch DB on 5434, never 5433, never the compose Keycloak, never `pkill -f run.py`).
+
+---
+
+## 2026-10-25 — v2.4.0 released; six post-release fixes; eval "drift" diagnosed; admin console v2 designed
+
+**Branch:** `fix/folder-index-docling-progress-doc-refs`, cut from `development` at `955231d`. **Commits on it:** `6ef6ef5`, `9127981`, and the commit that added this entry and the spec. **Not merged into `development`, not pushed.** **Tests at `9127981`:** backend 2139 passed and 16 skipped, frontend 1022 passed, eslint clean. **Releases:** v2.4.0 is on `master` (`ff71f75`), tagged, pushed, and is the GitHub release marked Latest; v2.3.0 also has a GitHub release now. **The live site is NOT redeployed** (see "Deploying 2.4.0" below).
+
+### Starting a fresh session
+
+Paste this as the first message:
+
+> Read `HANDOVER.md` (the 2026-10-25 entry) and `docs/superpowers/specs/2026-10-25-admin-console-v2-design.md`. I approve the spec's §7 decisions [or: change X]. Write the implementation plan for **phase 1** of that spec with superpowers:writing-plans, on a new branch from `development` after merging the fix branch.
+
+Before that session builds anything, the owner decides the first two items under "Waiting on the owner".
+
+### What this session changed (all on the fix branch)
+
+**Commit `6ef6ef5`:**
+
+1. **Index works for a file opened with Open folder.** The reader keeps a workspace file's bytes (`docBytes` in `src/hooks/usePdfEngine.js`). `src/utils/docHash.js` `readOpenDocBytes` / `openDocHash` hash and upload those bytes, never a same-named library book's. Walked in the running app: folder → README.md → **Index** → "Indexed 3 chunks", stored under the file's own hash.
+2. **Docling shows progress.** The convert job passes Docling 2.142's `progress_callback` (`services/docling_convert.py` `progress_from_event`). `_ConversionProgress` (`routers/docs.py`) stores the latest report in `documents.conversion_progress` (**migration 022**). It writes only the latest value and has at most one write in flight, posted from Docling's thread back to the event loop. The progress lives in the database, not memory, because of `WORKERS>1`. The button reads Queued → Preparing → Converting n/N → Assembling → Enriching n/N. A conversion Docling fails on offers Retry convert. Walked with a 6-page PDF.
+3. **A project chat finds "17-README.md".** `server/chat/tools/scope.py` `resolve_document` takes a document's number and name together (`17-README.md`, `17. "README.md"`) or its quoted name, but only when both name the same document. Error lists now use the map's form: `1. "Alpha.md"`.
+
+**Commit `9127981`:**
+
+4. **`search_documents` names a document that isn't searchable yet** the way the other tools do: `Document 16 ("…") isn't searchable yet.` (`scope.documents_named_in_project`).
+5. **Convert shows Queued until Docling starts.** Uploading a new PDF runs its own indexing first, which holds the document's lock. That indexing is redundant once the PDF is converted, but it is cheap and makes the document searchable sooner, so it stays.
+6. **Tool specs fit the chat they're in** (`tools.tool_spec`). A project chat gets project wording for `search_documents` and `read_document_pages`; a one-document chat no longer gets the `documents`/`document` fields its code ignored. This is the "I2" change that was reverted before release on noise. It was re-measured side by side with a control, 3 repeats on `gemma4:31b-cloud`: project eval 33/42 against 32/42, document eval 27/27 both. Kept.
+
+### The eval "drift", diagnosed
+
+- **Not our code.** The shipped code `26ace78` scored 38/42 on 2026-10-20 and 34/42 today, the same as HEAD.
+- **Not context length for the cloud model.** A 19k-token prompt to `gemma4:31b-cloud` with no `num_ctx` kept a word from its first line; Ollama's docs say cloud models get their maximum context.
+- **About 2 passes per run are the eval's own scorer.** The model now writes "The documents **do not list** …", and `_REFUSAL` (`server/evals/doc_qa.py:103`) has no "list". Rescored, today's runs come to 35–36/42.
+- **The rest:** sampling noise (the eval sets no temperature; four runs on unchanged code spanned 32–34). Ollama was also upgraded locally on 2026-10-22 (0.40.8); its effect wasn't separated.
+- **A real bug found on the way, for local models:**
+  1. Ollama gives a local model 4k tokens of context below 24 GiB of VRAM, so always 4k on this machine.
+  2. With no `num_ctx` set, the app trims history against the model's *maximum* context (`chat/orchestrator.py:684-689`), so it never trims, and Ollama silently cuts the prompt.
+  3. Also, Ollama reloads a model whenever a request's `num_ctx` differs from the one it was loaded with. The reader sends a per-batch size (`chat/reader.py:320-322`), so `READER_MODEL=chat` on a local model reloads the model when chat and reader calls alternate.
+
+  Both are in the spec's phase 2a. Neither is fixed yet.
+
+### Admin console v2: the design (`docs/superpowers/specs/2026-10-25-admin-console-v2-design.md`, revision 2)
+
+The console gets the Settings window's layout: nine sections, one row pattern, and each setting's source shown with a reset. Console row, then env var, then default; allow-lists can only narrow. Revision 2 folds in a review whose four must-fix findings were verified against this repository and Ollama's source:
+
+- the 768-dimension embedding probe must never trust a returned length, because Ollama cuts any vector to `dimensions`;
+- changing the embedding model builds first, then switches, with a second `vector(768)` column;
+- the rebuild queue moves into the database (`FOR UPDATE SKIP LOCKED`);
+- one context size per local Ollama model, with the reader sized to it.
+
+The spec also adds an embedding provider for both provider kinds, which is what removes the dependency on Ollama.
+
+**Phases:**
+
+1. The shell, timezone, and Docling limits.
+2. Models, in two parts: **2a** the reader falling back to the chat model, plus the context-size fixes; **2b** the embedding provider and build-then-switch.
+3. Usage by model.
+
+The §8 measurements (gemma4:e4b as the reader, reload time) are deferred by the owner. Don't run them unasked.
+
+### Waiting on the owner
+
+1. **Merge** the fix branch into `development` (then push?).
+2. **Approve the spec's §7 decisions:**
+   - the reader falls back to the chat model;
+   - local Ollama models get 16,384 tokens of context, one size per model;
+   - Docling stays open to everyone with the reader capability.
+3. **The eval scorer:** add "list" to `_REFUSAL`. Recommended.
+4. **Deploying 2.4.0 plus these fixes.** Order matters:
+   - back up the Postgres volume first: the compose Keycloak goes 26.0 → 26.8.0 and migrates its database irreversibly on first start;
+   - run the `embedding_model` query from the release notes;
+   - migrations 020–022 apply at backend start.
+5. **Still open from earlier:**
+   - the one local `gemma4:e4b` eval run (only with the owner's go-ahead);
+   - replace the old access token (which one is in Claude's memory, deliberately not in git);
+   - remove the `nr-c21-testpg` container when done;
+   - delete or keep the old plan workspace under `.superpowers/sdd/`.
+
+### Environment and safety rules (each one was learned the hard way)
+
+- **The real database:** `127.0.0.1:5433`, database `natural_reader`. **Never write to it, and never run tests against it.** Without the variables below, pytest defaults to 5433.
+- **The scratch database** is the container `nr-c21-testpg` (`pgvector:pg16`) on `127.0.0.1:5434`. Its data is on **tmpfs**, so stopping the container wipes every database in it. Start it with `podman start nr-c21-testpg`, then run tests with:
+  `TEST_ADMIN_DATABASE_URL=postgresql://natural_reader:natural_reader@127.0.0.1:5434/postgres TEST_DATABASE_URL=postgresql://natural_reader:natural_reader@127.0.0.1:5434/natural_reader_test .venv/bin/python -m pytest -q`
+  Shell variables don't persist between agent tool calls: put them on every command, or in a wrapper script.
+- **Frontend:** `npx vitest run`, then `npx eslint src`.
+- **The compose Keycloak is the owner's real identity server** (its `.env` points at the public auth host). Never enroll or test against it.
+- **Walking the app** doesn't need Keycloak: `AUTH_ENABLED=false` is accepted on a loopback bind only. Run `run.py` under `env -i` with explicit values: `HOST=127.0.0.1`, a scratch `DATABASE_URL` on 5434, scratch `DOC_STORAGE_DIR` and `LOG_DIR`, `DOCLING_ENABLED=true` when needed, `OLLAMA_URL`, `INFERENCE_MODELS=gemma4:31b-cloud`, `EMBEDDING_MODEL=nomic-embed-text`. Then `npx vite --port 5173`.
+  - Headless Chromium: use the Playwright in `~/.npm/_npx/*/node_modules/playwright` with `executablePath` set to `~/.cache/ms-playwright/chromium_headless_shell-1217/...`, because its own browser build isn't downloaded.
+  - To open a folder, delete `window.showDirectoryPicker` in an init script, so the app falls back to its `webkitdirectory` input, which `setFiles(dir)` can fill.
+- **Evals** (`docs/superpowers/handoff/2026-10-18-project-chat/EVAL.md`):
+  - always a scratch database (the script refuses `natural_reader`);
+  - always `SUMMARIZE_MODEL=gemma4:31b-cloud`, with `--model ollama:gemma4:31b-cloud --repeat 3`;
+  - **never the local `llama3.2:3b`**;
+  - comparing two versions needs a same-day control: a `git worktree` at the old commit, run in parallel against a second scratch database;
+  - SearXNG isn't running, so the document eval's `live` case logs `ConnectError`, the same in both arms.
+- **Processes:** never `pkill -f run.py`; stop a process by its PID, or by the agent's task ID.
+- **Secrets:** never print `.env` values; check a key's presence with `grep -c '^KEY=' .env`.
+- **Git:** commit or push only with per-action permission from the owner. Stage explicit paths.
+- **Open source:** no deployment-specific value in code or docs; docs use example.com.
+- **zsh traps:** quote globs (`--include='*.py'`), and don't use `#` as the `sed` delimiter on Markdown.
+
+### Pointers
+
+- `CHANGELOG.md` `## [Unreleased]`: the six fixes, written for users.
+- The project chat's full record: `docs/superpowers/handoff/2026-10-18-project-chat/` (`HANDOFF.md`, `EVAL.md`, `WALK.md`).
+- The owner's feature wish-list (bulk project upload, auto tags, DeepSeek-OCR vs Docling, embedding trials, MCP, agents, Markdown and PDF side by side, and more) is in Claude's memory as `project_feature_backlog.md`. The admin console v2 covers its timezone, Docling-limits, cloud-stats and embedding items.
+
+---
+
 ## 2026-09-22 — Fresh-deploy debugging: founder lockout, login-flow bugs, library bounce, and the docs-404 (ownership guard) + access-model design discussion
 
 **Branch:** `development` · **Commits:** `175ef05`, `df82ef3`, `b20a0cc` (all today) · **Tests:** backend 245, frontend 229 (guard 10/10) · Nothing merged to `master`. Two threads got fixed-and-committed; the last (docs-404) was **diagnosis only — no code**, and opened a design discussion the user is still deciding.

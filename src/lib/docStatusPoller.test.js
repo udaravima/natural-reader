@@ -70,7 +70,7 @@ describe('pollConvertUntilSettled', () => {
         expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/docs/server-hash');
 
         expect(setDocConvertByDocId.mock.calls[0][0]({})).toEqual({
-            'local-hash': { state: 'converted', pageCount: 12, error: null, options: null, hasPdf: false },
+            'local-hash': { state: 'converted', pageCount: 12, error: null, options: null, hasPdf: false, progress: null },
         });
         expect(setDocIndexByDocId.mock.calls[0][0]({})).toEqual({
             'local-hash': { state: 'indexed', chunkCount: 5, embeddedCount: 5 },
@@ -78,6 +78,25 @@ describe('pollConvertUntilSettled', () => {
         // The reader auto-switches to the converted MD view — also keyed by
         // the local id, so it isn't stranded on a server-id key nothing reads.
         expect(setDocViewByDocId.mock.calls[0][0]({})).toEqual({ 'local-hash': 'md' });
+    });
+
+    it('carries the server\'s conversion_progress while converting, for the button\'s page count', async () => {
+        apiFetch
+            .mockResolvedValueOnce(json(200, {
+                conversion_state: 'converting', conversion_progress: { phase: 'build', done: 3, total: 40 },
+                state: 'indexed',
+            }))
+            .mockResolvedValueOnce(json(200, { conversion_state: 'converted', converted_page_count: 40, state: 'indexed' }));
+        const setDocConvertByDocId = vi.fn();
+
+        await pollConvertUntilSettled({
+            apiDocId: 'a', stateKey: 'a', apiHost: '', apiPort: '',
+            setDocConvertByDocId, setDocIndexByDocId: vi.fn(), setDocViewByDocId: vi.fn(), showToast: vi.fn(), pollMs: 0,
+        });
+
+        const first = setDocConvertByDocId.mock.calls[0][0]({});
+        expect(first.a).toMatchObject({ state: 'converting', progress: { phase: 'build', done: 3, total: 40 } });
+        expect(setDocConvertByDocId.mock.calls[1][0](first).a.progress).toBe(null);
     });
 
     it('stops and toasts on a conversion failure without touching the view', async () => {

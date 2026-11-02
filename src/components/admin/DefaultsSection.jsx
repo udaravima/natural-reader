@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../utils/apiFetch';
 import { KOKORO_VOICES } from '../../constants';
+import { SearchableSelect } from '../SearchableList';
 
 /**
  * Admin console: deployment defaults for user preferences
@@ -10,18 +11,24 @@ import { KOKORO_VOICES } from '../../constants';
  * person opens the app.
  */
 
+const VOICE_OPTIONS = KOKORO_VOICES.map((voice) => ({ value: voice.id, label: voice.name }));
+
 const LABELS = {
   chatAutoTts: 'Read replies aloud automatically',
   chatTtsMode: 'When a reply is read aloud',
   think: 'Thinking',
   selectedVoice: 'Voice',
   playbackSpeed: 'Reading speed',
+  speechLanguage: 'Speech language',
 };
 const TTS_MODE_LABEL = { streaming: 'While it streams', 'after-complete': 'Once it is complete' };
 const THINK_LABEL = { off: 'Off', on: 'On', low: 'Low', medium: 'Medium', high: 'High' };
-const ORDER = ['chatAutoTts', 'chatTtsMode', 'think', 'selectedVoice', 'playbackSpeed'];
+const ORDER = ['chatAutoTts', 'chatTtsMode', 'think', 'selectedVoice', 'playbackSpeed', 'speechLanguage'];
 
-function shown(name, value) {
+// A language default is a code ("de"); the view's `choice_labels.speechLanguage` names it. Without a name the
+// code stands for itself.
+function shown(name, value, languageNames = {}) {
+  if (name === 'speechLanguage') return value === 'auto' ? 'Auto' : (languageNames[value] ?? value);
   if (name === 'chatAutoTts') return value ? 'on' : 'off';
   if (name === 'chatTtsMode') return TTS_MODE_LABEL[value] ?? value;
   if (name === 'think') return THINK_LABEL[value]?.toLowerCase() ?? value;
@@ -30,7 +37,7 @@ function shown(name, value) {
   return String(value);
 }
 
-export function DefaultsSection({ theme, apiHost, apiPort, showToast }) {
+export function DefaultsSection({ theme, apiHost, apiPort, showToast, onDirtyChange }) {
   const [data, setData] = useState(null);
   const [draft, setDraft] = useState(null);
   const [failed, setFailed] = useState(false);
@@ -82,12 +89,20 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast }) {
 
   const set = (name, value) => setDraft((d) => ({ ...d, [name]: value }));
   const dirty = data && draft && ORDER.some((n) => draft[n] !== data.values[n]);
-  const control = `text-xs p-1 rounded border ${theme.border} ${theme.bg} ${theme.text}`;
+  // The console asks before a tab switch drops an unsaved draft.
+  useEffect(() => { onDirtyChange?.(!!dirty); }, [dirty, onDirtyChange]);
+  const control = `min-h-11 md:min-h-0 text-xs p-1 rounded border ${theme.border} ${theme.bg} ${theme.text}`;
+
+  const languageNames = data?.choice_labels?.speechLanguage ?? {};
 
   const field = (name) => {
     const v = draft[name];
     if (name === 'chatAutoTts') {
-      return <input type="checkbox" aria-label={LABELS[name]} checked={!!v} onChange={(e) => set(name, e.target.checked)} />;
+      return (
+        <label className="flex items-center min-h-11 md:min-h-0">
+          <input type="checkbox" aria-label={LABELS[name]} checked={!!v} onChange={(e) => set(name, e.target.checked)} />
+        </label>
+      );
     }
     if (name === 'chatTtsMode' || name === 'think') {
       const labels = name === 'think' ? THINK_LABEL : TTS_MODE_LABEL;
@@ -99,9 +114,20 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast }) {
     }
     if (name === 'selectedVoice') {
       return (
-        <select aria-label={LABELS[name]} value={v} onChange={(e) => set(name, e.target.value)} className={control}>
-          {KOKORO_VOICES.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}
-        </select>
+        <SearchableSelect theme={theme} findLabel="Find a voice" aria-label={LABELS[name]} value={v}
+          onChange={(id) => set(name, id)} options={VOICE_OPTIONS} className={control} />
+      );
+    }
+    if (name === 'speechLanguage') {
+      const value = v ?? 'auto';
+      const codes = Object.keys(languageNames).sort((a, b) => languageNames[a].localeCompare(languageNames[b]));
+      // A saved default the list doesn't know (or no list at all) still shows, as its code.
+      if (value !== 'auto' && !codes.includes(value)) codes.push(value);
+      return (
+        <SearchableSelect theme={theme} findLabel="Find a language" aria-label={LABELS[name]} value={value}
+          onChange={(code) => set(name, code)} className={control}
+          options={[{ value: 'auto', label: 'Auto', pinned: true },
+            ...codes.map((c) => ({ value: c, label: languageNames[c] ?? c }))]} />
       );
     }
     return (
@@ -130,23 +156,23 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast }) {
                 <span className="flex flex-col min-w-0">
                   <span className={`text-xs ${theme.text}`}>{LABELS[name]}</span>
                   {data.overridden.includes(name) && (
-                    <span className={`text-[10px] ${theme.textMuted}`}>built-in: {shown(name, data.builtIn[name])}</span>
+                    <span className={`text-[10px] ${theme.textMuted}`}>built-in: {shown(name, data.builtIn[name], languageNames)}</span>
                   )}
                 </span>
                 <span className="flex items-center gap-3">
                   {field(name)}
                   {confirming === name ? (
                     <span className="flex items-center gap-2 text-[10px]">
-                      <span className={theme.textSecondary}>Replaces everyone&apos;s own choice with {shown(name, data.values[name])}.</span>
+                      <span className={theme.textSecondary}>Replaces everyone&apos;s own choice with {shown(name, data.values[name] ?? 'auto', languageNames)}.</span>
                       <button onClick={() => applyToEveryone(name)} disabled={busy}
-                        className="underline text-red-500 font-bold">Replace for everyone</button>
-                      <button onClick={() => setConfirming(null)} className="underline">Cancel</button>
+                        className="min-h-11 md:min-h-0 underline text-red-500 font-bold">Replace for everyone</button>
+                      <button onClick={() => setConfirming(null)} className="min-h-11 md:min-h-0 underline">Cancel</button>
                     </span>
                   ) : (
                     <button onClick={() => setConfirming(name)} disabled={busy || dirty}
                       title={dirty ? 'Save first: this applies the saved default' : undefined}
                       aria-label={`Apply ${LABELS[name].toLowerCase()} to everyone`}
-                      className="text-[10px] underline text-blue-500 disabled:opacity-40 disabled:no-underline">
+                      className="min-h-11 md:min-h-0 text-[10px] underline text-blue-500 disabled:opacity-40 disabled:no-underline">
                       Apply to everyone
                     </button>
                   )}
@@ -154,9 +180,9 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast }) {
               </li>
             ))}
           </ul>
-          <div className="flex justify-end">
+          <div className={`sticky bottom-0 z-10 flex justify-end py-2 ${theme.bg}`}>
             <button onClick={save} disabled={busy || !dirty}
-              className="text-xs underline text-blue-500 font-bold disabled:opacity-40 disabled:no-underline">
+              className="min-h-11 md:min-h-0 text-xs underline text-blue-500 font-bold disabled:opacity-40 disabled:no-underline">
               Save
             </button>
           </div>

@@ -95,6 +95,21 @@ async def test_assign_realm_roles_looks_up_then_posts():
     assert b"r-chat" in seen["body"] and b"r-read" in seen["body"]
 
 
+async def test_missing_realm_role_raises_role_missing():
+    """A realm without the role (an existing realm predating `docling`) is told
+    apart from other failures, so the admin learns which role to create."""
+    from server.auth.kc_admin import KCAdminError, KCRoleMissing
+    def handler(req):
+        if req.url.path.endswith("/roles/docling"):
+            return httpx.Response(404, json={"error": "Could not find role"})
+        raise AssertionError(req.url.path)
+    kc = KeycloakAdmin(ISSUER, "svc", "sec", http=_authed(handler))
+    with pytest.raises(KCRoleMissing) as e:
+        await kc.assign_realm_roles("u1", ["docling"])
+    assert e.value.role == "docling"
+    assert isinstance(e.value, KCAdminError)
+
+
 async def test_realm_smtp_configured():
     def on(req): return httpx.Response(200, json={"smtpServer": {"host": "smtp.x"}})
     def off(req): return httpx.Response(200, json={"smtpServer": {}})

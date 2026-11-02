@@ -1,25 +1,33 @@
 """/v1/admin/* — user administration. Admin manages accounts, not their data."""
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import os
+import re
 import secrets
 import uuid
-from typing import Any, Literal
+from typing import Any, Callable, Literal, Mapping
 from urllib.parse import urlsplit
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from ..auth import deps, users
 from ..auth.capabilities import KNOWN_CAPABILITIES
 from ..auth.config import load_auth_config
-from ..auth.kc_admin import KCAdminError
+from ..auth.kc_admin import KCAdminError, KCRoleMissing
 from ..llm.router import get_router
-from ..services import (assistant_profile, chat_options, doc_content, inference_budget, model_router, people,
-                        user_defaults, web_search as web_search_service)
+from ..http_errors import refusal
+from ..speech import catalogue as speech_catalogue, convert as speech_convert, service as speech_service
+from ..speech.languages import WHISPER_LANGUAGES
+from ..services import (assistant_profile, chat_options, console_overview, console_settings, deployment_info, deployment_settings,
+                        doc_content, docling_limits, inference_budget, inference_limits, model_router, model_settings, people, user_defaults,
+                        web_search as web_search_service)
+from ..services.console_settings import Section, SettingError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -47,6 +55,11 @@ class UserEnrollIn(BaseModel):
     capabilities: list[str] = []
 
 
+def _role_missing(e: KCRoleMissing) -> dict:
+    """409 detail for a capability whose realm role the realm lacks."""
+    return {"reason": "kc_role_missing", "role": e.role}
+
+
 async def _other_active_admins(conn, user_id: str) -> int:
     """Count active admins OTHER than user_id — used to guard the last
     remaining active admin from being demoted/disabled and locking everyone
@@ -66,11 +79,33 @@ async def _other_active_admins(conn, user_id: str) -> int:
     return (await cur.fetchone())[0]
 
 
+_USER_QUERY_PARAMS = ("q", "status", "capability", "limit", "offset")
+_CAPABILITY_PATTERN = "^(" + "|".join(sorted(KNOWN_CAPABILITIES)) + ")?$"
+
+
 @router.get("/users")
 async def list_all(
+    request: Request,
+    response: Response,
+    q: str | None = Query(None, max_length=200),
+    status: str | None = Query(None, pattern="^(active|pending|disabled)?$"),
+    capability: str | None = Query(None, pattern=_CAPABILITY_PATTERN),
+    limit: int | None = Query(None, ge=1, le=200),
+    offset: int = Query(0, ge=0),
     _: deps.Principal = Depends(deps.require_admin), conn=Depends(deps.get_conn, scope="function")
 ):
-    return await users.list_users(conn)
+    """Every user as a list. With no parameters that is the whole table (the
+    older AdminPanel reads it so). With any of q/status/capability/limit/offset
+    it is one page (limit defaults to 50) and `X-Total-Count` carries the number
+    of matches before paging."""
+    if not any(k in request.query_params for k in _USER_QUERY_PARAMS):
+        return await users.list_users(conn)
+    rows, total = await users.search_users(
+        conn, q=q, status=status or None, capability=capability or None,
+        limit=limit or 50, offset=offset,
+    )
+    response.headers["X-Total-Count"] = str(total)
+    return rows
 
 
 @router.patch("/users/{user_id}")
@@ -132,6 +167,8 @@ async def patch_user(
                     await kc.remove_realm_roles(sub, to_remove)
                 if to_add:
                     await kc.assign_realm_roles(sub, to_add)
+            except KCRoleMissing as e:
+                raise HTTPException(status_code=409, detail=_role_missing(e))
             except Exception as e:
                 logger.warning("KC role reconcile failed for %s: %s", sub, e)
                 raise HTTPException(
@@ -254,6 +291,8 @@ async def enroll_user(
             pass
         if isinstance(e, ValueError):
             raise HTTPException(status_code=409, detail="email already exists")
+        if isinstance(e, KCRoleMissing):
+            raise HTTPException(status_code=409, detail=_role_missing(e))
         raise HTTPException(status_code=502, detail=f"enroll failed: {e}")
     out = {"user": user, "onboarding": onboarding}
     if temp:
@@ -311,13 +350,51 @@ async def delete_user(
     return Response(status_code=204)
 
 
+@router.get("/overview")
+async def overview(
+    _: deps.Principal = Depends(deps.require_admin), conn=Depends(deps.get_conn, scope="function"),
+):
+    """The Overview page's health checks: each part of the deployment, one line, never a hang."""
+    checks = await console_overview.run_checks(conn, get_router())
+    return {"checks": [c.to_json() for c in checks]}
+
+
+@router.get("/models")
+async def models_catalog(_: deps.Principal = Depends(deps.require_admin)):
+    """What the console's Models section chooses from: every provider (an unreachable one is listed, with no
+    models) and every chat model the environment allows. The console's own chat-model selection does not narrow
+    this list; the admin picks from it. `detected` is what "Auto" means for a provider before any choice: the host
+    rule alone, with no model name and no override."""
+    llm = get_router()
+    models, failed = await llm.list_models()
+    offered = model_router.offered_chat_models(models, model_router.get_config().embed_model)
+    return {
+        "providers": [
+            {"name": name, "kind": p.config.kind, "host": deployment_info.url_host(p.config.url),
+             "detected": "local" if model_settings.is_local(p.config, "", {}) else "cloud",
+             "reachable": name not in failed}
+            for name, p in llm.providers.items()
+        ],
+        "models": [
+            {"id": m.id, "provider": m.provider, "kind": m.kind, "name": m.name,
+             "reported_window": m.capabilities.context_window,
+             "cloud_name": m.kind == "ollama" and model_settings.is_ollama_cloud(m.name)}
+            for m in offered
+        ],
+        "limits": {"num_ctx_max": inference_limits.get_limits().num_ctx_max},
+    }
+
+
 @router.get("/inference/config")
 async def inference_config(
-    _: deps.Principal = Depends(deps.require_admin),
+    _: deps.Principal = Depends(deps.require_admin), conn=Depends(deps.get_conn, scope="function"),
 ):
     """Read-only view of the effective inference config — why a model 422s,
-    without shell access. Never includes API keys (spec §4.5)."""
+    without shell access. Never includes API keys (spec §4.5). `summarize_model` keeps its name for old
+    consumers; it is the reader the Models settings resolve to (the console's, else the environment's, else
+    the chat model), worded as the Overview words it."""
     cfg = model_router.get_config()
+    reader = (await model_settings.load_models_settings(conn, os.environ)).reader
     llm = get_router()
     models, failed = await llm.list_models()
     counts: dict[str, int] = {}
@@ -329,7 +406,7 @@ async def inference_config(
         "allowed_models": (
             list(cfg.allowed_models) if cfg.allowed_models is not None else None
         ),
-        "summarize_model": cfg.summarize_model,
+        "summarize_model": model_settings.CHAT_READER if reader == "chat" else reader,
         "embed_model": cfg.embed_model,
         "daily_token_budget": cfg.daily_token_budget,
         "providers": [
@@ -340,14 +417,39 @@ async def inference_config(
     }
 
 
+def _model_tag(model: str, providers: Mapping[str, Any], locality: Mapping[str, str]) -> str:
+    """`local`, `cloud` or `unknown` for a stored model id, from its provider's mark as it is now (so changing a
+    mark re-tags history). `''` (written before migration 023) and an id whose provider is no longer configured,
+    including a bare reader name the router could not place, are `unknown`."""
+    prefix, _, name = model.partition(":")
+    provider = providers.get(prefix) if name else None
+    if provider is None:
+        return "unknown"
+    return "local" if model_settings.is_local(provider.config, name, locality) else "cloud"
+
+
 @router.get("/inference/usage")
 async def inference_usage(
     days: int = 7,
+    group: Literal["user_day", "model", "user", "day"] = "user_day",
+    user_id: uuid.UUID | None = None,
+    model: str | None = None,
     _: deps.Principal = Depends(deps.require_admin),
     conn=Depends(deps.get_conn, scope="function"),
 ):
+    """Usage over the last `days` (clamped 1..90) deployment days, summed by `group` (see
+    `inference_budget.admin_usage_grouped`). `group` absent is `user_day`: the list this route always returned.
+    `user_id` and `model` filter before grouping; `model=` (empty) is the rows from before the upgrade. The
+    `model` group adds `tag`: `local`, `cloud` or `unknown`, read per request from the Models section's marks."""
     days = max(1, min(90, days))
-    return await inference_budget.admin_usage(conn, days=days)
+    rows = await inference_budget.admin_usage_grouped(
+        conn, days=days, group=group, user_id=str(user_id) if user_id else None, model=model)
+    if group == "model":
+        ms = await model_settings.load_models_settings(conn, os.environ)
+        providers = get_router().providers
+        for r in rows:
+            r["tag"] = _model_tag(r["model"], providers, ms.provider_locality)
+    return rows
 
 
 # ---------- deployment defaults for user preferences ----------
@@ -450,15 +552,24 @@ async def put_assistant_profile(
 
 class ChatOptionsIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    # Required: null resets the setting (the environment, or "ask", applies again), so a body without the
-    # field must not do it by accident.
-    web_search: Literal["ask", "auto", "off"] | None
+    # Each field is optional, and a field that is present is applied: null resets that setting (the environment,
+    # or the default, applies again), so absent and null mean different things (model_fields_set tells them
+    # apart). A body with neither field would do nothing and is refused.
+    web_search: Literal["ask", "auto", "off"] | None = None
+    voice_input: StrictBool | None = None
+
+    @model_validator(mode="after")
+    def _something_to_change(self):
+        if not self.model_fields_set & {"web_search", "voice_input"}:
+            raise ValueError("Send web_search, voice_input, or both.")
+        return self
 
 
 def _chat_options_view(options: chat_options.ChatOptions) -> dict:
     # `searxng`: false only when a deployer set SEARXNG_URL empty; the console then shows the control disabled.
     return {"web_search": options.web_search, "source": options.source,
-            "searxng": bool(web_search_service.SEARXNG_URL)}
+            "searxng": bool(web_search_service.SEARXNG_URL),
+            "voice_input": options.voice_input, "voice_source": options.voice_source}
 
 
 @router.get("/chat-options")
@@ -475,6 +586,221 @@ async def put_chat_options(
     principal: deps.Principal = Depends(deps.require_admin),
     conn=Depends(deps.get_conn, scope="function"),
 ):
-    """Save how web search asks; null resets it. Applies from the next chat message."""
-    saved = await chat_options.save_chat_options(conn, body.web_search, updated_by=str(principal.user_id))
+    """Save how web search asks and/or whether voice input is on; null resets that setting. Web search applies
+    from the next chat message. Switching voice input on starts the engine loading (its model downloads the
+    first time), without making this response wait."""
+    by = str(principal.user_id)
+    saved = None
+    if "web_search" in body.model_fields_set:
+        saved = await chat_options.save_chat_options(conn, body.web_search, updated_by=by)
+    if "voice_input" in body.model_fields_set:
+        saved = await chat_options.save_voice_input(conn, body.voice_input, updated_by=by)
+        if saved.voice_input:   # what applies after the save, so a reset that falls back to CHAT_VOICE_INPUT=on counts
+            _warm_speech(saved)
     return _chat_options_view(saved)
+
+
+def _warm_speech(options: chat_options.ChatOptions) -> None:
+    try:
+        speech_service.get_transcriber(wanted=speech_catalogue.wanted(options)).warm()
+    except Exception:  # noqa: BLE001 - a saved setting must not become a 500; status shows the engine's state
+        logger.warning("The speech engine couldn't start loading", exc_info=True)
+
+
+# ---------- speech models (spec 2026-11-02-speech-model-choice) ----------
+
+class SpeechModelChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str | None = Field(max_length=100)   # null: the server setting applies again
+
+
+class SpeechModelIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    repo: str = Field(max_length=200)
+    revision: str | None = Field(default=None, max_length=100)   # empty: the repo's latest commit, then pinned
+    languages: list[str] = Field(default_factory=list, max_length=20)   # empty: what the model card says, else all
+    label: str | None = Field(default=None, max_length=80)
+    unconverted: StrictBool = False
+
+
+def _speech_models_view(options: chat_options.ChatOptions) -> dict:
+    """The list, and which model applies. A remote engine has no list: SPEECH_MODEL names its model."""
+    if speech_service.engine_name() == "openai":
+        return {"engine": "openai", "chosen": None, "source": "env", "models": []}
+    models = speech_catalogue.all_models(os.environ, options.added_speech_models)
+    current = speech_catalogue.wanted(options)
+    listed = ([] if current.id in models else [current]) + list(models.values())
+    return {"engine": "local", "chosen": current.id, "source": speech_catalogue.source(options),
+            "models": [speech_catalogue.view(m) for m in listed]}
+
+
+@router.get("/speech-models")
+async def get_speech_models(
+    _: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    return _speech_models_view(await chat_options.load_chat_options(conn))
+
+
+@router.put("/speech-models/choice")
+async def put_speech_model_choice(
+    body: SpeechModelChoice,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Choose the deployment's speech model; null goes back to the server setting. With voice on, the new model
+    starts loading now on this worker, and on the others at their next speech request."""
+    if body.id is not None:
+        options = await chat_options.load_chat_options(conn)
+        model = speech_catalogue.all_models(os.environ, options.added_speech_models).get(body.id)
+        if model is None:
+            raise refusal(422, "unknown_speech_model", "That speech model isn't in the list.")
+        reason = speech_catalogue.why_not(model)
+        if reason:
+            raise refusal(422, "speech_model_cannot_run", reason)
+    saved = await chat_options.save_speech_model(conn, body.id, updated_by=str(principal.user_id))
+    if saved.voice_input and speech_service.engine_name() != "openai":
+        _warm_speech(saved)
+    return _speech_models_view(saved)
+
+
+@router.post("/speech-models", status_code=201)
+async def add_speech_model(
+    body: SpeechModelIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Add a model from Hugging Face. It's looked up first, so a typo or a repo that isn't Whisper is refused here
+    and not at load time, and it's pinned to a commit so it can't change under the deployment. Nothing downloads
+    until someone chooses it."""
+    repo, revision = body.repo.strip(), (body.revision or "").strip() or None
+    if not speech_catalogue.REPO_RE.match(repo):
+        raise refusal(422, "bad_repo", "Enter the Hugging Face repo as owner/name.")
+    if revision and not speech_catalogue.REVISION_RE.match(revision):
+        raise refusal(422, "bad_revision", "That isn't a commit or a branch name.")
+    unknown = [code for code in body.languages if code not in WHISPER_LANGUAGES]
+    if unknown:
+        raise refusal(422, "bad_language", f"Not a language code Whisper knows: {', '.join(unknown)}.")
+    try:
+        facts = await asyncio.to_thread(speech_convert.inspect_repo, repo, revision)
+    except speech_convert.NotOnHub:
+        raise refusal(422, "not_on_hub", "Hugging Face has no such model or revision, or it's private.") from None
+    except speech_convert.NotWhisper:
+        raise refusal(422, "not_whisper", "That repo isn't a Whisper model this server can run.") from None
+    except speech_convert.HubUnreachable:
+        raise refusal(503, "hub_unreachable", "Hugging Face couldn't be reached. Try again in a moment.") from None
+    engine = facts.engine
+    if body.unconverted:
+        if engine == speech_catalogue.FASTER_WHISPER:
+            raise refusal(422, "already_converted", "That repo is already in CTranslate2 format: leave the box unticked.")
+        engine = speech_catalogue.TRANSFORMERS
+    entry = {"label": (body.label or "").strip() or repo.split("/", 1)[1], "engine": engine, "repo": repo,
+             "revision": facts.revision, "languages": body.languages or list(facts.languages)}
+    options = await chat_options.load_chat_options(conn)
+    listed = speech_catalogue.all_models(os.environ, options.added_speech_models)
+    if any((m.repo, m.revision, m.engine) == (repo, facts.revision, engine) for m in listed.values()):
+        raise refusal(409, "already_listed", "That model is already in the list.")
+    slug, tail = re.sub(r"[^a-z0-9._-]+", "-", repo.lower())[:78], "-unconverted" if body.unconverted else ""
+    model_id = slug + tail
+    if model_id in listed:   # another revision, or another repo that makes the same id: it must not replace that one
+        model_id = f"{slug}-{hashlib.sha256(f'{repo}@{facts.revision}'.encode()).hexdigest()[:8]}{tail}"
+    try:
+        model = speech_catalogue.parse(model_id, entry, "admin")   # what the list will do with it, so it stays listed
+    except ValueError as e:
+        raise refusal(422, "bad_speech_model", f"That model can't be listed: {e}.") from None
+    reason = speech_catalogue.why_not(model)
+    if reason:
+        raise refusal(422, "speech_model_cannot_run", reason)
+    saved = await chat_options.add_speech_model(conn, model_id, entry, updated_by=str(principal.user_id))
+    return _speech_models_view(saved)
+
+
+@router.delete("/speech-models/{model_id}")
+async def delete_speech_model(
+    model_id: str,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Take an admin-added model off the list. The built-in ones and a deployer's file stay. If it was the chosen
+    one, the server setting applies again. Its downloaded files stay in HF_HOME."""
+    options = await chat_options.load_chat_options(conn)
+    if model_id not in options.added_speech_models:
+        raise refusal(404, "unknown_speech_model", "That model wasn't added here.")
+    saved = await chat_options.remove_speech_model(conn, model_id, updated_by=str(principal.user_id))
+    if saved.voice_input and speech_service.engine_name() != "openai":
+        _warm_speech(saved)
+    return _speech_models_view(saved)
+
+
+# ---------- console settings, one pair of routes for every section (admin console v2 spec §3) ----------
+
+# section key -> (its settings, a function giving the read-only values shown beside them)
+_SECTIONS: dict[str, tuple[Section, Callable[[], list[dict]]]] = {
+    "deployment": (deployment_settings.SECTION, deployment_info.readonly_rows),
+    "documents": (docling_limits.SECTION, docling_limits.info_rows),
+    "models": (model_settings.SECTION, model_settings.info_rows),
+}
+
+
+class SectionChangesIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # {setting: new value}; null resets that setting to the server's own (env or default).
+    changes: dict[str, Any]
+
+
+def _section(key: str) -> tuple[Section, Callable[[], list[dict]]]:
+    if key not in _SECTIONS:
+        raise refusal(404, "unknown_section", "No such settings section.")
+    return _SECTIONS[key]
+
+
+def _section_env(key: str) -> Mapping[str, str]:
+    """The environment a section resolves against: the models section reads the reader's three-variable chain."""
+    return model_settings.models_env(os.environ) if key == "models" else os.environ
+
+
+async def _section_view(conn, key: str) -> dict:
+    section, info = _section(key)
+    values = await console_settings.load(conn, section, _section_env(key))
+    settings = model_settings.view(values) if key == "models" else console_settings.view(section, values)
+    return {"settings": settings, "info": info()}
+
+
+@router.get("/settings/{section}")
+async def get_settings_section(
+    section: str,
+    _: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    return await _section_view(conn, section)
+
+
+def _refuse_a_reader_the_deployment_disallows(value: Any) -> None:
+    """The console can only narrow (spec §2): a reader other than "chat" must be a model the deployer's allow-lists
+    let the chat use (INFERENCE_MODELS, INFERENCE_<NAME>_MODELS), the same check as the turn route's. A value of the
+    wrong shape is left to the section's own parser to refuse."""
+    try:
+        name = model_settings.parse_reader(value)
+    except ValueError:
+        return
+    if name != "chat" and not get_router().is_allowed(name):
+        raise refusal(422, "invalid_setting", "That model isn't in this deployment's model list.", setting="reader")
+
+
+@router.put("/settings/{section}")
+async def put_settings_section(
+    section: str,
+    body: SectionChangesIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Save some settings of one section; null resets one. One refused value saves nothing. Applies at once."""
+    spec, _info = _section(section)
+    if section == "models":
+        _refuse_a_reader_the_deployment_disallows(body.changes.get("reader"))
+    try:
+        await console_settings.save(conn, spec, body.changes, updated_by=str(principal.user_id),
+                                    env=_section_env(section))
+    except SettingError as e:
+        raise refusal(422, "invalid_setting", str(e), setting=e.name) from None
+    return await _section_view(conn, section)

@@ -23,7 +23,7 @@ from ...llm.types import ToolSpec
 from ...services.doc_search import search_scope
 from ...services.embeddings import embed_query
 from ..project_scope import ScopeDoc
-from ..reader import Passage, ReaderResult, batches, get_reader_config, read_many
+from ..reader import Passage, ReaderResult, batches, fit_input_chars, get_reader_config, read_many
 from .read_document_pages import page_count, page_number, page_texts
 from .scope import choices_text, documents_listing, named_in_project, open_document, scope_docs
 
@@ -299,14 +299,15 @@ class _ExtractFromDocuments:
         except _Refused as refused:
             return {"error": str(refused)}
         picked, in_order = await _pick(chosen, candidates, need, ctx.cfg.extract_max_pages)
-        reader_cfg = get_reader_config()    # per call: the knobs are read from the environment
-        passages = await _passages(chosen, picked, reader_cfg.input_chars)
+        reader_cfg = ctx.reader_cfg or get_reader_config()    # the turn's, else the environment's knobs
+        input_chars = fit_input_chars(reader_cfg, ctx.question, need)    # a batch that fits the reader's window
+        passages = await _passages(chosen, picked, input_chars)
 
         messages = [IN_ORDER_NOTE] if in_order else []
         results: list[ReaderResult] = []
         failed: list[tuple[int, int]] = []
         if passages:
-            groups = batches(passages, reader_cfg.input_chars)
+            groups = batches(passages, input_chars)
             results = await read_many(ctx.question, need, groups, chat_model=ctx.model, cfg=reader_cfg,
                                       charge=ctx.charge)
             failed = sorted({(p.doc_ref, p.page) for group, res in zip(groups, results) if res.error for p in group})

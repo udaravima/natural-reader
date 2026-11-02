@@ -14,7 +14,7 @@ from ...llm.types import ToolSpec
 from ...services.doc_search import search_scope
 from ...services.embeddings import embed_query
 from ..project_scope import ScopeDoc
-from .scope import choices_text, documents_listing, resolve_documents, scope_docs
+from .scope import documents_listing, documents_named_in_project, scope_docs
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +66,28 @@ _SPEC = ToolSpec(
                 "distinctive name, label or number. Not a whole question.")},
             "k": {"type": "integer", "minimum": 1, "maximum": 10, "description": (
                 "How many passages, 1-10. Default 5; more for broad questions.")},
-            "documents": {"type": "array", "items": {"type": ["integer", "string"]}, "description": (
-                "Search only these documents: their numbers or exact names, as results list them. Leave it "
-                "out to search them all.")},
         },
         "required": ["query"],
+    },
+)
+
+# A project chat (C2.1) searches every searchable document of the project at once, and may name some.
+_PROJECT_SPEC = ToolSpec(
+    name=_SPEC.name,
+    description=(
+        _SPEC.description
+        .replace("Search the open document.", "Search the project's documents, all at once or only some.")
+        .replace("the document's own text", "the documents' own text")
+        .replace("in the document's words", "in the documents' words")
+        .replace("each with its page.", "each with its document's number and its page.")),
+    parameters={
+        **_SPEC.parameters,
+        "properties": {
+            **_SPEC.parameters["properties"],
+            "documents": {"type": "array", "items": {"type": ["integer", "string"]}, "description": (
+                "Search only these documents: their numbers or exact names in the project map. Leave it out "
+                "to search them all.")},
+        },
     },
 )
 
@@ -93,6 +110,7 @@ def _cap(text: str) -> str:
 class _SearchDocuments:
     name = "search_documents"
     spec = _SPEC
+    project_spec = _PROJECT_SPEC
     reads_documents = True   # brings the data rule (server/chat/prompt.py)
     source = "document"
 
@@ -113,10 +131,9 @@ class _SearchDocuments:
             # near-name a small model fills in must not cost it a round (as for read_document_pages).
             named = args.get("documents")
             if named not in (None, "", []):
-                found, unknown = resolve_documents(scope, named if isinstance(named, list) else [named])
-                if unknown:
-                    return {"error": f"Unknown document: {', '.join(unknown)}. "
-                                     f"Use a number or name from the list: {choices_text(scope)}."}
+                found = documents_named_in_project(scope, named if isinstance(named, list) else [named], ctx)
+                if isinstance(found, dict):
+                    return found
                 scope = [d for d in scope if d in found]   # the project's order, whatever the model's
         qvec = await embed_query(query)
         # What the model already has is handed to the search as `exclude`: it is set aside BEFORE the per-document

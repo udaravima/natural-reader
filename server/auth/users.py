@@ -35,6 +35,54 @@ async def list_users(conn) -> list[dict[str, Any]]:
     return [_row(r) for r in await cur.fetchall()]
 
 
+def _like_escape(text: str) -> str:
+    """Make `%`, `_` and `\\` match themselves inside an ILIKE pattern."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+# What `q` is matched against. `first_name || ' ' || last_name` is NULL when either
+# part is missing, and NULL never matches: so "Ada Lovelace" finds her, and a
+# space-only query can't match everyone who has no name.
+_SEARCH_FIELDS = (
+    "email", "username", "display_name", "first_name", "last_name",
+    "first_name || ' ' || last_name",
+)
+
+
+async def search_users(
+    conn, *, q: str | None, status: str | None, capability: str | None,
+    limit: int | None, offset: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """One page of users and the total number of matches (before paging).
+
+    `q` is a case-insensitive substring of any name/email field; `status` and
+    `capability` narrow further (all given conditions must hold). Order is
+    `created_at, id`, so a page boundary is stable. `limit=None` = no limit.
+    Everything user-supplied goes in as a parameter; the SQL text is fixed.
+    """
+    where: list[str] = []
+    params: dict[str, Any] = {}
+    q = (q or "").strip()
+    if q:
+        params["pat"] = f"%{_like_escape(q)}%"
+        where.append("(" + " OR ".join(f"{f} ILIKE %(pat)s ESCAPE '\\'" for f in _SEARCH_FIELDS) + ")")
+    if status:
+        params["status"] = status
+        where.append("status = %(status)s")
+    if capability:
+        params["cap"] = capability
+        where.append("%(cap)s = ANY(capabilities)")
+    clause = f" WHERE {' AND '.join(where)}" if where else ""
+    cur = await conn.execute(f"SELECT count(*) FROM users{clause}", params)
+    total = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        f"SELECT {_COLS} FROM users{clause} ORDER BY created_at, id "
+        "LIMIT %(limit)s OFFSET %(offset)s",
+        {**params, "limit": limit, "offset": offset},
+    )
+    return [_row(r) for r in await cur.fetchall()], total
+
+
 async def set_status(conn, user_id: str, status: str) -> None:
     await conn.execute(
         "UPDATE users SET status=%s, updated_at=now() WHERE id=%s", (status, user_id)

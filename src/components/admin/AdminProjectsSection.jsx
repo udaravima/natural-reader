@@ -50,7 +50,7 @@ export function AdminProjectsSection({ theme, apiHost, apiPort, currentUserId, s
     <section className="flex flex-col gap-3" aria-label="Projects">
       <div className="flex items-center justify-between">
         <h2 className="text-xs font-bold uppercase tracking-wider text-blue-500">Projects</h2>
-        <label className="flex items-center gap-1 text-[10px]">
+        <label className="flex items-center gap-1 text-[10px] min-h-11 md:min-h-0">
           <input type="checkbox" checked={ownerlessOnly} onChange={(e) => setOwnerlessOnly(e.target.checked)} aria-label="Ownerless only" />
           Ownerless only
         </label>
@@ -58,7 +58,7 @@ export function AdminProjectsSection({ theme, apiHost, apiPort, currentUserId, s
       {error && (
         <p role="alert" className="text-xs text-red-500 flex items-center gap-2">
           Could not load projects: {error}
-          <button onClick={load} className="underline">Retry</button>
+          <button onClick={load} className="min-h-11 md:min-h-0 underline">Retry</button>
         </p>
       )}
       {rows === null ? (
@@ -77,10 +77,10 @@ export function AdminProjectsSection({ theme, apiHost, apiPort, currentUserId, s
             <span className={`text-[10px] ${theme.textMuted}`}>{plural(p.member_count, 'member')} · {plural(p.doc_count, 'document')}</span>
           </span>
           <span className="flex items-center gap-2 shrink-0">
-            <button onClick={() => onOpenProject(p.id)} aria-label={`Open ${p.name}`} className="underline">Open</button>
+            <button onClick={() => onOpenProject(p.id)} aria-label={`Open ${p.name}`} className="min-h-11 md:min-h-0 underline">Open</button>
             {p.ownerless && (
               <button onClick={() => recover(p)} disabled={busyId !== null} aria-label={`Add me as Owner of ${p.name}`}
-                className="underline text-green-600 disabled:opacity-50">
+                className="min-h-11 md:min-h-0 underline text-green-600 disabled:opacity-50">
                 {busyId === p.id ? <Loader2 size={12} className="animate-spin" /> : 'Add me as Owner'}
               </button>
             )}

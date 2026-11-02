@@ -64,12 +64,14 @@ Acceleration).
 
 ### Paths are host paths
 
-`DOC_STORAGE_DIR` (or the legacy `PDF_STORAGE_DIR`), `LOG_DIR` and
-`CHAT_ASSISTANT_PROFILE_FILE` in `.env` name locations **on the host**.
-`startup.sh` mounts them into the container at fixed paths, and files written
-there belong to the user who ran it. Running compose by hand? Set `NR_DATA_DIR`,
-`NR_LOG_DIR` and (optionally) `NR_PROFILE_FILE` to those host paths (absolute)
-and add `-f compose.profile.yml` for the profile; otherwise the defaults
+`DOC_STORAGE_DIR` (or the legacy `PDF_STORAGE_DIR`), `LOG_DIR`,
+`CHAT_ASSISTANT_PROFILE_FILE` and `SPEECH_MODELS_FILE` in `.env` name locations
+**on the host**. `startup.sh` mounts them into the container at fixed paths, and
+files written there belong to the user who ran it. Running compose by hand? Set
+`NR_DATA_DIR`, `NR_LOG_DIR` and (optionally) `NR_PROFILE_FILE` and
+`NR_SPEECH_MODELS_FILE` to those host paths (absolute), and add
+`-f compose.profile.yml` for the profile and `-f compose.speech.yml` for the
+speech list; otherwise the defaults
 `./data/pdfs` and `./logs` are used. On podman also add `-f compose.podman.yml`:
 without its keep-id mapping the container can't write those folders, and
 without its `in_pod: false` podman refuses to create the backend.
@@ -99,6 +101,10 @@ configures the compose Keycloak. A live site fronting it as
 build with Docling (CPU-only torch, several GB larger) exactly when it is on.
 Turning it on later takes `./startup.sh rebuild`. A mismatch is logged once at
 startup.
+
+Pictures a conversion keeps are PNG files under `DOC_STORAGE_DIR/figures/`, so
+back that folder up with the documents. `DOCLING_MAX_PICTURES` (500 by default) caps
+them per document; a picture past it stays a placeholder.
 
 ## The one rule that dictates the topology: same origin
 
@@ -316,7 +322,7 @@ use it only as a throwaway, never as the fix.
 Too Large`.
 
 **Cause:** nginx's default `client_max_body_size` is **1 MB**. Document uploads
-go through `POST /v1/docs/{id}/pdf` and are often much larger.
+go through `POST /v1/docs` and are often much larger.
 
 **Fix:** the `chat.example.com.sample` sets `client_max_body_size 100m;` inside
 the `/v1/` block. Raise it if you expect bigger files.
@@ -374,7 +380,7 @@ OpenAI chat-completions shape (vLLM, OpenRouter, LiteLLM, or Ollama's own
 `/v1`); for `kind=openai`, `URL` is the API base **including** the version
 path — the adapter appends `/chat/completions` and `/models` itself. API
 keys stay on the server: never sent to the browser, never logged, never
-shown in the admin console's Deployment config panel.
+shown in the admin console's Deployment section (a key reads only *set* or *not set*).
 
 **What has been run against real providers:** OpenRouter, through the
 `openai` adapter, with paid `google/gemma-4-26b-a4b-it` and
@@ -384,6 +390,69 @@ follow-up question, provider-reported token usage, a rate-limited free
 model and a rejected key, with no key in the logs. Before that (v2.1.0),
 the same adapter was run against Ollama's own `/v1`. vLLM and LiteLLM speak
 the same protocol but haven't been run.
+
+### Examples: vLLM, Unsloth, OpenAI and Claude
+
+Each server is one more name in `INFERENCE_PROVIDERS`. Anything that speaks the
+OpenAI chat-completions shape is `KIND=openai`, and its `URL` ends in `/v1`.
+Of these, only the Ollama provider has been run against this app (OpenRouter has
+too; see below). **The others are written from each project's documentation.**
+
+```bash
+INFERENCE_PROVIDERS=local,vllm,unsloth,openai,claude
+INFERENCE_LOCAL_KIND=ollama
+INFERENCE_LOCAL_URL=http://localhost:11434
+
+# vLLM on a GPU machine
+INFERENCE_VLLM_KIND=openai
+INFERENCE_VLLM_URL=http://gpu-box.example.com:8001/v1
+INFERENCE_VLLM_API_KEY=change-me          # whatever you passed to --api-key
+
+# Unsloth Studio (create the key in Studio's Settings; it's shown once)
+INFERENCE_UNSLOTH_KIND=openai
+INFERENCE_UNSLOTH_URL=http://localhost:<studio-port>/v1
+INFERENCE_UNSLOTH_API_KEY=sk-unsloth-...
+
+# OpenAI: name the models you want, or the picker also lists its embedding,
+# speech and image models
+INFERENCE_OPENAI_KIND=openai
+INFERENCE_OPENAI_URL=https://api.openai.com/v1
+INFERENCE_OPENAI_API_KEY=sk-...
+INFERENCE_OPENAI_MODELS=<chat-model-a>,<chat-model-b>
+
+# Claude, through Anthropic's OpenAI-compatible layer
+INFERENCE_CLAUDE_KIND=openai
+INFERENCE_CLAUDE_URL=https://api.anthropic.com/v1
+INFERENCE_CLAUDE_API_KEY=sk-ant-...
+INFERENCE_CLAUDE_MODELS=claude-sonnet-5-5,claude-haiku-5-5
+INFERENCE_CLAUDE_CONTEXT_WINDOW=<the model's documented window>
+```
+
+On the vLLM side:
+
+```bash
+vllm serve Qwen/Qwen3-8B --port 8001 --api-key change-me --max-model-len 32768 \
+  --enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3
+```
+
+What each one will surprise you with:
+
+- **Indexing still needs Ollama.** Embeddings go to `OLLAMA_URL` whatever
+  `INFERENCE_PROVIDERS` says, so a vLLM-only or Claude-only deployment can chat
+  but can't index documents.
+- **vLLM:** without `--enable-auto-tool-choice` and the `--tool-call-parser` of the
+  model's family (`hermes` for Qwen) it refuses tool requests. The app then turns
+  that model's tools off, and it never searches the document.
+- **Unsloth** means two things. Its quantized models on Hugging Face run through
+  the Ollama you already have, with no config change:
+  `ollama pull hf.co/unsloth/<repo>:Q4_K_M`, then they're listed under your Ollama
+  provider. Unsloth Studio is a server of its own, configured as above.
+- **Claude** works through Anthropic's compatibility layer, which Anthropic
+  describes as a way to test models rather than a production path. Chat, tools,
+  images and token counts work per its documentation. It has no prompt caching,
+  ignores the **Thinking** setting (`reasoning_effort`) and strips audio. Whether it
+  answers this app's model listing (`GET /models` with a Bearer key) is **unverified**.
+  A provider whose listing fails disappears from the picker, with only a log line.
 
 **Trap:** the key goes in `INFERENCE_<NAME>_API_KEY`, where `<NAME>` is the
 provider's name from `INFERENCE_PROVIDERS` in capitals —
@@ -414,6 +483,60 @@ restart, same as any other config in this file.
 
 Full `.env.example` block: [`../.env.example`](../.env.example), just after
 `INFERENCE_TIMEOUT_S`.
+
+### Context sizes, windows and the Models section
+
+Ollama loads a model at **4,096 tokens** on a machine with under 24 GiB of VRAM
+unless the request names a size, and quietly cuts the start of a longer prompt.
+So the server names a size on every request to a **self-hosted Ollama model**
+(any `kind=ollama` provider, whatever its host, except `-cloud` / `:cloud` models
+and the ollama.com host; the admin's Local/Cloud mark in **Models → Providers**
+affects cost labelling only, never the size). It is the first of these
+that is set, clamped to `INFERENCE_NUM_CTX_MAX` (32768 tokens unless set):
+
+1. the admin's size for that model (**Admin console → Models → Per-model sizes**);
+2. the deployment's size: **Models → Context size for local Ollama models**, else
+   `INFERENCE_LOCAL_NUM_CTX` (2048-2097152 tokens);
+3. the person's own **Settings → Chat → Context window**;
+4. 16384 tokens.
+
+Chat history is trimmed to that same number, and the reader uses it too (next
+section). A larger size reserves more memory when the model loads, and a model
+already loaded at another size reloads once on the next message, so size it down
+on a machine short of RAM. Nothing is sent for Ollama cloud models (the only
+Ollama models without a size: they get the window their provider reports) and
+`kind=openai` providers (`num_ctx` is an Ollama option); a person's own value
+for an Ollama cloud model is still passed on.
+
+A model whose provider reports no context window (most OpenAI-compatible
+servers) is never trimmed until a window is declared:
+`INFERENCE_<NAME>_CONTEXT_WINDOW` (1024-10000000 tokens, `<NAME>` as in
+`INFERENCE_<NAME>_URL`, so `INFERENCE_OLLAMA_CONTEXT_WINDOW` when
+`INFERENCE_PROVIDERS` is unset) declares one for the whole provider, and
+**Models → Declared context windows** for one model (that wins). A window the
+provider reports always wins over a declared one.
+
+**Admin console → Models** sets the same things without a restart, and wins over
+the environment: the deployment's size and per-model sizes, declared windows,
+the reader, which providers count as local (a cost flag that never changes a
+model's size), and which chat models are offered
+(it can only narrow `INFERENCE_MODELS` and each provider's allow-list).
+`INFERENCE_NUM_CTX_MAX` is not editable there; Models shows it as the ceiling.
+It applies from the next message, on every worker.
+[USER_GUIDE.md](USER_GUIDE.md#models-the-reader-context-sizes-and-which-models-people-get)
+has the screen.
+
+**Upgrading to this release changes three defaults** (no migration):
+- The reader moves to the chat model on a deployment that sets none of
+  `READER_MODEL`, `SUMMARIZE_MODEL` or `WEB_SEARCH_SUMMARY_MODEL`. It used to be
+  `llama3.2:3b`. With a cloud chat model, reader calls count against its quota;
+  choose a local reader under **Models → Reader** to keep them off it.
+- Self-hosted Ollama models get 16384 tokens instead of Ollama's 4096 (on under
+  24 GiB of VRAM), unless a person or the admin sets a size. A larger context
+  reserves more memory when the model loads: size it down under **Models**, or
+  with `INFERENCE_LOCAL_NUM_CTX`, on a machine short of RAM.
+- A person's own context size stops applying to those models once the admin
+  sets one.
 
 ### Streaming through a proxy
 
@@ -446,7 +569,7 @@ Full `.env.example` block: [`../.env.example`](../.env.example), just after
   land before closing the database pool, so a restart during a reply doesn't
   usually leave it stuck `streaming` until the next startup sweep.
 - **Model names without a `provider:` prefix** (the pre-C1 `SUMMARIZE_MODEL`,
-  `llama3.2:3b`, and `READER_MODEL`) resolve to the first configured provider
+  a bare name such as `llama3.2:3b`, and `READER_MODEL`) resolve to the first configured provider
   of kind `ollama`. Web search no longer summarizes pages; the reader does the
   reading (next section).
 
@@ -516,25 +639,35 @@ them are in [`../.env.example`](../.env.example).
 
 | Variable | Default | Range | What it does |
 |---|---|---|---|
-| `READER_MODEL` | none: falls back to `SUMMARIZE_MODEL`, then `WEB_SEARCH_SUMMARY_MODEL`, then `llama3.2:3b` | a model id | The model that reads. `chat` (any letter case) means the model of the turn itself; `SUMMARIZE_MODEL=chat` means the same for the reader. |
-| `READER_INPUT_CHARS` | `12000` characters (about 3,000 tokens) | 500-200000 | Source text in one reader batch. A document page longer than this is read in pieces that overlap by 200 characters; a web page is cut into passages of about 1,000 characters and the best-matching ones are kept up to this size. |
+| `READER_MODEL` | none: falls back to `SUMMARIZE_MODEL`, then `WEB_SEARCH_SUMMARY_MODEL`, then the chat model of the turn | a model id | The model that reads. `chat` (any letter case) means the model of the turn itself, which is also what you get when none of the three is set; `SUMMARIZE_MODEL=chat` means the same for the reader. **Admin console → Models → Reader** wins over all three; it can only name a model the allow-lists (`INFERENCE_MODELS`, `INFERENCE_<NAME>_MODELS`) let the chat use, and the Overview flags a reader from any source that they don't. |
+| `READER_INPUT_CHARS` | `12000` characters (about 3,000 tokens) | 500-200000 | The most source text in one reader batch: a ceiling, never exceeded. A batch is cut shorter to fit the reader's context window when that is smaller (never below 500), and holds at most 16 passages. A document page longer than this is read in pieces that overlap by 200 characters; a web page is cut into passages of about 1,000 characters and the best-matching ones are kept up to this size. |
 | `READER_OUTPUT_CHARS` | `1200` characters | 100-20000 | The most one batch may return. The reader is told to stay under it and its reply is capped at about that length; a reply cut off mid-way counts as a failed batch. |
 | `READER_MAX_CONCURRENCY` | `2` batches | 1-32 | Batches running at once. |
 | `READER_TIMEOUT_S` | `60` seconds | 1-3600 | Time one batch may take. `WEB_SEARCH_SUMMARY_TIMEOUT_S` is read when this is unset; with both unset, the reader uses 60 seconds. A batch that fails is listed under `failed` in the result (documents; `not_read` is only for pages left out by the page cap) or falls back to a short excerpt (web). |
 
-Every reader call sets its context size from what it sends, clamped by
-`INFERENCE_NUM_CTX_MAX`, rather than leaving the provider's default, which on
-Ollama can be smaller than the batch and would cut it without a word.
+A reader on a self-hosted Ollama model is loaded at the size described under
+[Context sizes](#context-sizes-windows-and-the-models-section), the same for
+every call of the turn. When the reader is the chat model it uses the chat's
+size (steps 1-4 there: the per-model size, else the deployment's, else the
+person's own value if they chose one rather than Auto, else 16384, clamped), so
+Ollama doesn't reload it between chat and reader calls. A different
+model gets the same steps without the person's value (its per-model size, else
+the deployment's, else 16384, clamped). A reader on a model that isn't sized
+(Ollama cloud, `kind=openai`) sends no size.
+Batches are cut to fit.
 
-**CPU-only Ollama: set `READER_MODEL=chat`.** With the default the reader runs
-on `llama3.2:3b`, a second model that Ollama loads into RAM next to the chat
-model, and on a CPU swapping them costs seconds to minutes on every project
-question. `READER_MODEL=chat` reads with the model already loaded. The price is
-that the chat model does the reading too, so a slow chat model makes `extract`
-slow; on a CPU the batches run one after another whatever
-`READER_MAX_CONCURRENCY` says. Keep a separate small model when the chat model
-is a large or paid one: every batch is a full model call, and a small model is
-cheaper and faster for it.
+**The reader is the chat model unless you say otherwise.** With none of
+`READER_MODEL`, `SUMMARIZE_MODEL` or `WEB_SEARCH_SUMMARY_MODEL` set (and no
+choice in **Models → Reader**) the reader uses the model of the conversation:
+no second model is loaded into RAM, which on a CPU-only Ollama would otherwise
+cost seconds to minutes of swapping on every project question. The price: the
+chat model does the reading too, so a slow chat model makes `extract` slow (on a
+CPU the batches run one after another whatever `READER_MAX_CONCURRENCY` says),
+and with a **cloud** chat model every reader batch is a call counted against its
+quota. Name a small model in `READER_MODEL`, or under **Models → Reader**, when
+the chat model is a large or paid one: every batch is a full model call, and a
+small model is cheaper and faster for it. (Before this release the default was
+`llama3.2:3b`.)
 
 **Reader calls count toward the daily budget and show in usage.** Each batch
 is recorded against the person who asked, in the same daily totals as their
@@ -545,8 +678,9 @@ reports token counts, which Ollama and OpenAI-compatible providers do, and
 rounded up, the same estimate a chat reply gets. A batch that fails or times
 out counts only if it produced something. A person who runs out mid-read
 isn't cut off half-way through the tool: the assistant's next step is refused,
-as for any reply. The usage figures don't say which model a batch ran on; the
-server log's `reader usage` line does.
+as for any reply. Reader batches are booked to the reader model's own row
+(kind `reader`) in **Admin -> Usage**; the server log's `reader usage` line
+still names the model.
 
 A project question can be silent for a while when the reader is working. The
 server's 15-second keep-alive (see [Streaming through a
@@ -592,10 +726,12 @@ again on the server.
   page fetch and no model call. A caller that read `summary` needs to read
   `snippet`, or fetch the page itself. When the web search mode is `off` it
   refuses with 403; `ask` and `auto` don't affect it (the caller chose the query).
-- `GET /v1/admin/chat-options` returns `{web_search, source, searxng}`
-  (`source` is `admin`, `env` or `default`; `searxng` is false when
-  `SEARXNG_URL` is empty). `PUT` takes `{"web_search": "ask" | "auto" | "off" | null}`;
-  `null` removes the admin's choice. Both need the `admin` capability.
+- `GET /v1/admin/chat-options` returns `{web_search, source, searxng, voice_input,
+  voice_source}` (`source` and `voice_source` are `admin`, `env` or `default`;
+  `searxng` is false when `SEARXNG_URL` is empty). `PUT` takes
+  `{"web_search": "ask" | "auto" | "off" | null}` and/or `{"voice_input": true | false | null}`;
+  `null` removes the admin's choice, and a body naming neither is refused (422).
+  Both need the `admin` capability. See [Voice input](#voice-input).
 - `POST /v1/chat/sessions/{id}/turns` accepts `context.project_id` (a project
   id scopes the chat to it, `null` clears the scope, leaving it out keeps what
   the chat has) and `context.web` (`{query}`, up to 300 characters: the person's
@@ -605,6 +741,335 @@ again on the server.
 - The chat session list and the session record carry `scopeProject`
   (`{id, name}` or `null`); `name` is `null` when the caller can no longer see
   the project.
+
+## Voice input
+
+The microphone button in the chat message box. A person speaks, the server turns
+the recording into text, and the text lands in the message box for them to edit
+and send. Nothing is sent for them. **It is off by default**: until an admin turns
+it on, nobody sees the button, nothing is downloaded and no CPU is used.
+
+**Turning it on.** **Admin console → Chat options → Voice input → On**, or
+`CHAT_VOICE_INPUT=on` in `.env` as the starting value. The console's choice wins
+over `.env`, and **Use the server setting** in that section hands control back.
+Switching it on starts the engine loading in the background, without making the
+click wait; the first time, the local engine downloads its model. **Admin console →
+Overview → Voice input** shows where that stands: **Warning** "Getting ready:
+downloading or loading *model*." and then **OK** "local · small · runs on this
+server". The change applies from the next recording on every worker, with no
+restart. A server restarted with voice already on starts loading the model at
+startup (about 3 s from the cache), and a worker that never loaded one starts
+when the first person's button asks.
+
+### The settings
+
+All six are in [`../.env.example`](../.env.example). The **Deployment** page of the
+admin console lists four of them read-only (engine, model, server and key), under
+the labels in the first column; the switch has its own control, and
+`SPEECH_CPU_THREADS` isn't listed. It prints a variable's name only when the value
+comes from `.env`; a default shows under the label alone. The key never shows: it
+reads **set** or **not set**.
+
+| Variable (Deployment label) | Default | What it does, and when it applies |
+|---|---|---|
+| `CHAT_VOICE_INPUT` (none: its switch is **Chat options → Voice input**) | `off` | `on` or `off`, the starting value for the switch. Anything else is ignored with a warning, and off applies. |
+| `SPEECH_ENGINE` (**Voice input engine**) | `local` | `local` runs [faster-whisper](https://github.com/SYSTRAN/faster-whisper) inside the backend, on the CPU: nothing leaves the server. `openai` calls a remote server that speaks `POST {SPEECH_URL}/audio/transcriptions`. Anything else logs a warning and means `local`. Read once at startup: changing it takes a restart. |
+| `SPEECH_MODELS_FILE` (none) | none | `local` only: a YAML file on the host, of extra speech models for **Chat options → Speech model**. See [Choosing a model](#choosing-a-model). |
+| `SPEECH_MODEL` (**Voice input model (server setting)**) | `small` for `local`; none for `openai` | The starting model: **Chat options → Speech model** wins over it for `local`. `local`: an id from that list, a size (`tiny`, `base`, `small`, `medium`, `large-v3`, `large-v3-turbo`), a Hugging Face repo id of a CTranslate2 model, or a directory on the server (see [Choosing a model](#choosing-a-model)). `openai`: the server's model name (`whisper-1` for OpenAI itself); required, and the Overview says "SPEECH_MODEL is not set" without it. |
+| `SPEECH_URL` (**Voice input server**) | none | `openai` only: the base **including `/v1`**, like `INFERENCE_<NAME>_URL`. Without it the Overview says "SPEECH_URL is not set". |
+| `SPEECH_API_KEY` (**Voice input key**) | none | `openai` only: sent as the bearer key. It stays on the server and is never logged or shown. |
+| `SPEECH_CPU_THREADS` (none) | half the machine's cores **divided by `WORKERS`**, at least 1: `max(1, cores // (2 × WORKERS))` | `local` only: the threads one transcription uses (a count), per worker. Every worker has its own engine, so with the default all the workers together stay at half the machine and the rest stays free for chat, narration and indexing. A value you set is used as is, per worker, so with `WORKERS` above 1 it multiplies. A value that isn't a number logs a warning and the default applies. |
+
+### What it costs on the server
+
+**Image and disk.** The Python packages (`faster-whisper`, `ctranslate2`, `av`) add
+about 276 MB to the backend image (`ctranslate2` 146, `av` 128, `faster-whisper`
+2). They are in `requirements.txt`, not an optional extra, so the button works on
+a quick-start box the moment it is switched on. The `small` model is another 464
+MB under `HF_HOME` (in the container, the `cache` volume), downloaded once.
+
+**Time, as measured on one CPU-only test machine with `small`** (32 cores and one worker, so the
+default 16 threads). It is one machine, not a promise: a smaller box will be
+slower, and none of this was measured on yours.
+
+| What | Measured |
+|---|---|
+| First turn-on: download plus load | 46.6 s |
+| A later load (a restart, or a worker starting) | about 3 s |
+| 6 s of speech | 1.5-1.7 s to transcribe |
+| 101 s of speech | 9.0 s alone, 11.9 s while a local chat reply was running |
+| A cloud model's reply during a 101 s transcription | not slowed |
+| A **local** model's reply during a 101 s transcription | about 1.5-2 times as long |
+
+The local engine transcribes **one recording at a time per worker process**. A
+second one waits up to 60 s, then the person sees "Voice input is busy. Try again
+in a moment." (503). Each person can have one running **per worker** (409; the count is not shared between workers). Cancel in the browser
+ends the request, but a transcription already running finishes in its thread (a
+thread can't be stopped) and holds the slot until it does: at most one 2-minute
+recording's worth of CPU.
+
+**`WORKERS` above 1: each worker loads its own model**, so memory is multiplied by
+the worker count, as with Kokoro. Measured in the real
+image on the same CPU-only machine, Kokoro included: **1.26 GB** after the model
+loaded and **1.95 GB** after use (the model alone is 464 MB on disk). Speed in
+that image: 5.7 s of speech in 1.7 s; 100.8 s of speech in 21.5 s with read-aloud
+narration running alongside. One sentence of narration took 2.1 s alone and
+3.5-5.2 s during a transcription. One machine, not a promise.
+
+### Choosing a model
+
+**Admin console → Chat options → Voice input → Speech model** lists the models and
+switches between them with no restart. One model runs for the whole server. The
+change saves at once, and with voice on the new model starts loading: **Overview →
+Voice input** shows **Warning** "Getting ready…" and then **OK** with the model's
+name. The old model is dropped straight away, so voice says "still getting ready"
+until the new one is up, and a recording already running finishes on the old one.
+With `WORKERS` above 1, each worker swaps at its next speech request. If you mean to
+use a particular model from the start, choose it **before** turning voice on, or
+`small` downloads first for nothing.
+
+The list has three sources, and a later one replaces an earlier entry with the same
+id:
+
+| Source | How to add to it |
+|---|---|
+| Built in | The Whisper sizes, plus a few fine-tuned models that download only if chosen |
+| A deployer's file | `SPEECH_MODELS_FILE`: a path on the host, read once at startup. `startup.sh` mounts it into the container |
+| The admin console | **Add a model from Hugging Face**, under the list |
+
+**Adding one in the console.** Enter the repo as `owner/name`. It's looked up on
+Hugging Face straight away, so a typo, a private repo, or a repo that isn't Whisper
+is refused with the reason. It's pinned to a commit (the latest, unless you give a
+revision), so it can't change under you. Language codes are optional: left empty, a
+single language on the model card is used if Whisper knows it. Nothing downloads
+until someone chooses it. **Added here**, under the list, has a **Remove** for each
+model you added, in use or not. Its downloaded files stay in `HF_HOME`, and if it was
+in use, the server setting applies again. A gated or private repo needs `HF_TOKEN` in
+the backend's environment.
+
+A fine-tune for a language Whisper doesn't list, such as Dhivehi, can be added, but
+nothing tells it what language it's hearing. That case hasn't been tried.
+
+**In a file.** The same shape as a model list you might already keep; each entry
+needs an `engine` and a `repo`:
+
+```yaml
+models:
+  whisper-small-example:
+    engine: converted-whisper     # or faster-whisper, or transformers-whisper
+    repo: example-org/whisper-small-example
+    revision: <a commit hash>     # pin it: otherwise it follows main, converted once
+    languages: [si]               # Whisper codes; leave out for every language
+    license: apache-2.0
+    commercial: check             # yes, no or check: shown beside the model
+    note: Shown under the list when this model is chosen.
+```
+
+A bad entry is left out with a warning in the log, and the rest stay.
+`SPEECH_MODEL` can name any id in the list as well as a size, a repo or a directory.
+The admin's choice wins over it, and **Use the server setting** hands control back.
+A directory has to exist where the backend runs, which in a container means inside
+it: use the route below, or a mount of your own.
+
+**How each engine runs.**
+
+| `engine` | What it takes | What happens |
+|---|---|---|
+| `faster-whisper` | A size, a CTranslate2 repo (it has a `model.bin`), or, in a file or `SPEECH_MODEL` only, a directory | Downloads once and loads |
+| `converted-whisper` | A Transformers-format repo (`model.safetensors` or `pytorch_model.bin`), which is how most fine-tunes ship | Downloads once, then converts on this server into `HF_HOME/speech-converted/`, in a separate process that hands its memory back |
+| `transformers-whisper` | The same kind of repo | Runs as it is, inside the backend. Slower and heavier: use it to compare, not to serve |
+
+**The trap: `torch`.** The last two need `transformers` and `torch`, and only the
+Docling build has them (`NR_WITH_DOCLING=true`). On the plain image those models show
+disabled in the list with the reason, unless the model is already converted on that
+server: then it needs neither package.
+
+**Converting somewhere else.** This is the way on the plain image, and on a server
+that can't reach Hugging Face. The model has to be in the list with that repo and
+revision: the built-in fine-tunes are, and anything else goes in your file as a
+`converted-whisper` entry. Then, from the repo root on a machine with `torch` and
+`transformers`, or inside a container of the Docling build, run the app's own
+converter. It also writes the two files many fine-tunes leave out, which is why the
+plain `ct2-transformers-converter` fails on all the built-in ones. The folder's name
+has to be exact:
+
+```bash
+REPO=<org>/<whisper-model-name>
+REV=<the commit in the entry>
+NAME="${REPO/\//--}--$REV--int8"
+python -m server.speech.convert "$REPO" "$REV" "./$NAME"
+```
+
+Copy that folder into `HF_HOME/speech-converted/` on the server. In a container that's
+on the `cache` volume:
+
+```bash
+podman exec <backend> mkdir -p /app/.cache/huggingface/speech-converted
+podman cp "./$NAME" <backend>:/app/.cache/huggingface/speech-converted/
+```
+
+The model now shows as available and loads with no download. A `converted-whisper`
+entry still needs Hugging Face if that folder isn't there.
+
+**The built-in fine-tunes.** Each is about 967 MB to download and, once converted,
+242 MB on disk. Ready in 105-126 s on a test line, download included; conversion
+itself takes a few seconds.
+
+| Id | For | Measured on a CPU-only machine |
+|---|---|---|
+| `whisper-small-si` (run12) | Sinhala | 8.4 s of speech in about 2 s. Readable on all 8 test clips, read by eye: those clips came with no transcripts, so no error rate. Stock `small` gave gibberish on them. English comes out as gibberish here (its model card measures 98.7% word error), so don't choose it for a server that also takes English |
+| `whisper-small-si-run15` | Sinhala | About the same time and, by eye, the same quality on those clips. Not scored. Its model card reports about the same Sinhala scores as run12, with English at 8% word error |
+| `whisper-small-si-hf` | Comparing | The run12 weights unconverted: 8.9 s against 1.9 s for the same clip, and 2.28 GB peak memory against 0.78 GB |
+| `whisper-small-ta` | Tamil | On 12 Tamil clips the median character error was 0.14, against 0.35 for stock `small`. By clip: 0-3% on clean read speech, 6-35% on volunteer and dialect recordings, and worse on one single-word clip, where it added words. Not tried on Sri Lankan Tamil |
+| `whisper-turbo` | English | The pinned `large-v3-turbo`. Good on English; weak on Tamil and unusable on Sinhala |
+
+A separate benchmark by the project's owner on clean read speech, 15 clips per
+language on CPU, scored run12 at 0.028 character error and the Tamil model at 0.029.
+That's a best case: real recordings were visibly worse. The licences differ: `commercial`
+in the list says `check` for the Sinhala models, whose training data includes audio
+of unknown licence.
+
+**Languages.** One model at a time means a server can specialise in one language. A
+server that takes English should stay on a stock model such as `small`, which in
+the walk got English and Spanish right and made several word errors in Hindi. People
+pick a language under **Settings → Chat → Speech language**, or leave **Auto**. Three
+things to know about fine-tunes:
+
+- **Auto doesn't work on them, so the app doesn't use it.** Language detection called
+  Sinhala Kannada, at 0.92 confidence, and the Tamil model's config lists no languages
+  to detect from. So with Auto, a model made for one language is told that language.
+  The Settings row says what the server's model is for.
+- **A language a person chooses is honoured,** because some fine-tunes still read
+  other languages. On one that doesn't, the result is gibberish.
+- **English words inside Sinhala speech** come out in Sinhala letters, spelled
+  differently each time.
+
+### How it listens
+
+The local engines use the settings below, chosen by measuring real Sinhala, Tamil and
+English recordings. They are in `server/speech/local_whisper.py`.
+
+- **A voice activity detector always runs** (Silero, bundled with faster-whisper).
+  Without it, 4 s of silence came out as 82 characters of invented Tamil, and a 3 s
+  pause lost a whole second Sinhala sentence. With it, silence gives no text at all,
+  and speech on both sides of a 20 s pause survives.
+- **Its threshold is 0.4, not the default 0.5.** At 0.5 it cut real speech out of
+  volunteer recordings, and the median Tamil error rose from 0.14 to 0.24. Below 0.35,
+  loud steady noise started to come out as invented words.
+- **`temperature=0`:** by default Whisper retries a clip it doesn't understand, up
+  to six tries in all. Turning that off took stock `small` on 8 Sinhala clips from
+  171 s to 27 s, and the worst Tamil clip from 18.2 s to 2.7 s. A 269-word English
+  recording came out word for word the same. Those retries can rescue a clip now and
+  then, so a clip that fails now fails once.
+- **Left at Whisper's defaults on purpose:** `beam_size=1` saved about 13% and changed
+  real words ("balance" became "field"), and `condition_on_previous_text=False` saved
+  about a quarter on recordings over 30 s but lost the last two words of that English
+  one.
+
+English is the primary language for now, and it came through all of this unchanged: the
+English and Spanish test sentences read the same as before, and 101 s of English speech
+took 8.7 s.
+
+**A failed load.** A model that can't download or load (no network, a wrong name, a
+Transformers-format folder) shows on **Admin → Overview** as **Problem**. Each
+worker retries a failed load by itself, **at most once every 5 minutes**, when a
+person's message box or a recording asks (so a failing download can't restart on
+every page load, and a transient failure heals on every worker within about five
+minutes). People who press the microphone meanwhile see "Voice input isn't working
+right now. Ask your admin."; "still getting ready" is only for a load in progress.
+To retry at once, fix the cause, then turn **Voice input** **Off** and **On** again
+in **Chat options**: that starts a new load, with no restart, on the worker that
+takes the click; the other workers retry on their own within 5 minutes.
+
+### A remote engine (`SPEECH_ENGINE=openai`)
+
+Any server that speaks OpenAI's transcription route works. Set the base **with
+`/v1`**; the app adds `/audio/transcriptions`:
+
+```bash
+# OpenAI itself
+SPEECH_ENGINE=openai
+SPEECH_URL=https://api.openai.com/v1
+SPEECH_MODEL=whisper-1
+SPEECH_API_KEY=<your key>
+
+# a self-hosted vLLM serving a Whisper model
+SPEECH_ENGINE=openai
+SPEECH_URL=http://speech.example.com:8001/v1
+SPEECH_MODEL=<the model name vLLM serves>
+```
+
+Readiness is a `GET {SPEECH_URL}/models` when the Overview or the message box asks:
+reachable and accepting the key means ready. Neither example was run against a
+real server here: the remote engine is unit-tested against a fake, so try it once
+and watch the Overview before telling people.
+
+**A remote engine can cost money per minute, and the app has no budget for it.**
+The daily token budget counts tokens; speech is seconds. The only limits are
+2 minutes per recording, 10 MB, and one recording at a time per person per worker. If that
+matters, watch the provider's billing.
+
+### Recordings and your reverse proxy
+
+The app keeps a recording in memory for one request and never writes it to disk,
+the database or a log (a log line carries the person, the engine, the seconds, the
+language and the time taken, never the words). **A reverse proxy can write it to
+disk though**: nginx buffers a request body bigger than `client_body_buffer_size`
+into a temp file before passing it on. If that matters to you, turn request
+buffering off for the speech routes. In the sample vhost
+([`sample_configs/chat.example.com.sample`](sample_configs/chat.example.com.sample))
+put a nested block inside the `location /v1/ { … }` block. It must repeat
+`proxy_pass` (never inherited into a nested location) and the `proxy_set_header`
+lines (a block that sets any header of its own drops the outer ones), while
+`client_max_body_size` and `proxy_read_timeout` are inherited:
+
+```nginx
+    location /v1/ {
+        # … the existing block, unchanged …
+
+        location /v1/speech/ {
+            proxy_pass http://127.0.0.1:8000/v1/speech/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_http_version 1.1;
+            proxy_request_buffering off;
+            client_max_body_size 11m;
+            proxy_buffering off;
+        }
+    }
+```
+
+Or, to keep it simple, put `proxy_request_buffering off;` in the existing `/v1/`
+block itself, and know that it then applies to PDF uploads too (they then stream to
+the backend instead of being buffered first, which is fine for the app but means a
+slow client holds a backend worker for the whole upload). The other way is to raise
+`client_body_buffer_size` above 10 MB. Either way `client_max_body_size` must allow
+a little over 10 MB for `/v1/speech/transcriptions` (the sample vhost's `100m` on
+`/v1/` already does; a stricter limit would turn every recording into a `413`). The
+example block above was run on nginx 1.28.3 over plain http (a recording passed
+through it); it was not run behind https or a real certificate. Test it on yours
+with `nginx -t` and one recording.
+
+### https for the microphone
+
+Browsers allow the microphone only on https, or on `localhost`. Over plain http the
+button shows, disabled, with the reason "Voice input needs a secure (https)
+connection". With the production topology above that is already true; it bites on a
+LAN address over http.
+
+### Upgrading
+
+**Migration 024** runs at startup. It only widens a check on `chat_attachments` so
+a message can carry a text file; it has a Down (in the file's header) for a
+rollback. **Run `pip install -r requirements.txt` after pulling** on a bare-metal
+install (the container image has it built in): voice input needs `faster-whisper`
+and `av`. Without them the backend still starts, and the **Overview**'s **Voice
+input** line says which package is missing. Voice stays off, and nothing downloads,
+until someone turns it on. An
+existing **Web search** setting is not touched: both options live in the same
+`chat_options` row and each save leaves the other alone.
 
 ## Bring-up checklist
 

@@ -50,6 +50,7 @@ export default function PdfViewer({
     convertState,
     convertError,
     convertedPageCount,
+    convertProgress,
     onOpenConvertDialog,
     onExportMarkdown,
     onDeleteMarkdown,
@@ -224,6 +225,7 @@ export default function PdfViewer({
                                 theme={theme}
                                 state={convertState || 'idle'}
                                 pageCount={convertedPageCount}
+                                progress={convertProgress}
                                 error={convertError}
                                 onClick={onOpenConvertDialog}
                             />

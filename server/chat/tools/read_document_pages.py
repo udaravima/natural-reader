@@ -31,14 +31,26 @@ _SPEC = ToolSpec(
     parameters={
         "type": "object",
         "properties": {
-            "document": {"type": ["integer", "string"], "description": (
-                "Which document: its ref number or its name, as results list them. Needed when there are "
-                "several documents; leave it out for the open document.")},
             "first_page": {"type": "integer", "minimum": 1, "description": "The first page to read."},
             "last_page": {"type": "integer", "minimum": 1, "description": (
                 "The last page to read (at most first_page + 2). Leave it out to read one page.")},
         },
         "required": ["first_page"],
+    },
+)
+
+# A project chat (C2.1): any of the project's searchable documents, by the map's number or name.
+_PROJECT_SPEC = ToolSpec(
+    name=_SPEC.name,
+    description=_SPEC.description.replace("of the open document:", "of one of the project's documents:"),
+    parameters={
+        **_SPEC.parameters,
+        "properties": {
+            "document": {"type": ["integer", "string"], "description": (
+                "Which document: its number or exact name in the project map. Leave it out for the one open "
+                "in the reader.")},
+            **_SPEC.parameters["properties"],
+        },
     },
 )
 
@@ -154,6 +166,7 @@ async def page_texts(conn, doc: ReadableDoc, first: int, last: int) -> list[tupl
 class _ReadDocumentPages:
     name = "read_document_pages"
     spec = _SPEC
+    project_spec = _PROJECT_SPEC
     reads_documents = True   # brings the data rule (server/chat/prompt.py)
     source = "document"
 

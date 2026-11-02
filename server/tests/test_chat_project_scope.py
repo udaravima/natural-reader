@@ -313,7 +313,7 @@ async def test_read_document_pages_needs_a_document_in_project_scope(db_conn, mo
     ctx = await _project_ctx(db_conn, monkeypatch)
     missing = await _call(ctx, "read_document_pages", {"first_page": 1})
     assert not missing.ok
-    assert "1 Alpha.md" in missing.result["error"] and "2 Beta.md" in missing.result["error"]
+    assert "1. \"Alpha.md\"" in missing.result["error"] and "2. \"Beta.md\"" in missing.result["error"]
 
     run = await _call(ctx, "read_document_pages", {"document": 2, "first_page": 1, "last_page": 2})
     assert run.ok
@@ -328,7 +328,7 @@ async def test_read_document_pages_needs_a_document_in_project_scope(db_conn, mo
     assert by_name.result["pages"] == [{"ref": 1, "page": 2, "text": "Alpha page two."}]
     assert (await _call(ctx, "read_document_pages", {"document": "2", "first_page": 2})).result["pages"][0]["ref"] == 2
     unknown = await _call(ctx, "read_document_pages", {"document": "Gamma.md", "first_page": 1})
-    assert unknown.result["error"].startswith("Unknown document: Gamma.md.") and "2 Beta.md" in unknown.result["error"]
+    assert unknown.result["error"].startswith("Unknown document: Gamma.md.") and "2. \"Beta.md\"" in unknown.result["error"]
 
 
 # ---- Task 22 (o): a missing document in a project means the one open in the reader ----
@@ -372,7 +372,7 @@ async def test_without_an_open_document_the_missing_one_is_still_an_error(db_con
     for name, args in (("read_document_pages", {"first_page": 1}), ("document_outline", {})):
         run = await _call(ctx, name, args)
         assert run.result == {"error": "document is required: use a number or name from the list: "
-                                       "1 Alpha.md, 2 Beta.md."}, name
+                                       "1. \"Alpha.md\", 2. \"Beta.md\"."}, name
 
 
 async def test_an_open_document_outside_the_project_is_no_default(db_conn, monkeypatch):
@@ -395,7 +395,7 @@ async def test_an_open_document_that_is_not_searchable_is_no_default(db_conn, mo
     scope = await load_project_scope(db_conn, alice.user_id, pid, open_doc_id=B)    # the failed one is open
     ctx = ToolContext(alice.user_id, None, project=scope)
     run = await _call(ctx, "read_document_pages", {"first_page": 1})
-    assert run.result == {"error": "document is required: use a number or name from the list: 1 Ready.md."}
+    assert run.result == {"error": "document is required: use a number or name from the list: 1. \"Ready.md\"."}
 
 
 async def test_a_document_scope_chat_is_unchanged_by_the_default(db_conn, monkeypatch):
@@ -420,6 +420,12 @@ async def test_a_document_that_isnt_searchable_is_named_as_such(db_conn, monkeyp
                       project=await load_project_scope(db_conn, alice.user_id, pid, open_doc_id=None))
     run = await _call(ctx, "read_document_pages", {"document": "Scan.pdf", "first_page": 1})
     assert run.result == {"error": 'Document 2 ("Scan.pdf") isn\'t searchable yet.'}
+    # search_documents says the same, not "Unknown document" (it is in the project's map)
+    search = await _call(ctx, "search_documents", {"query": "scan", "documents": [2]})
+    assert search.result == {"error": 'Document 2 ("Scan.pdf") isn\'t searchable yet.'}
+    both = await _call(ctx, "search_documents", {"query": "scan", "documents": ["Scan.pdf", "Nope.md", 1]})
+    assert both.result == {"error": 'Document 2 ("Scan.pdf") isn\'t searchable yet. Unknown document: Nope.md. '
+                                    'Use a number or name from the list: 1. "Ready.md".'}
 
 
 async def test_search_documents_covers_the_project_sorted_by_cosine(db_conn, monkeypatch):

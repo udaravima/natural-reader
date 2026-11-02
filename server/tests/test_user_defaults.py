@@ -48,7 +48,7 @@ def member():
 
 
 BUILT_IN = {"chatAutoTts": False, "chatTtsMode": "after-complete", "think": "off",
-            "selectedVoice": "af_heart", "playbackSpeed": 1.0}
+            "selectedVoice": "af_heart", "playbackSpeed": 1.0, "speechLanguage": "auto"}
 
 
 async def test_with_nothing_saved_everyone_gets_the_built_in_defaults(db_conn, member):
@@ -73,7 +73,8 @@ async def test_saving_a_value_equal_to_the_built_in_drops_the_override(db_conn, 
 
 @pytest.mark.parametrize("values", [
     {"chatAutoTts": "yes"}, {"chatTtsMode": "loud"}, {"think": "max"}, {"playbackSpeed": 9},
-    {"selectedVoice": "<script>"}, {"unknown": 1},
+    {"selectedVoice": "<script>"}, {"unknown": 1}, {"speechLanguage": "xx"}, {"speechLanguage": "AUTO"},
+    {"speechLanguage": 1},
 ])
 async def test_bad_values_are_refused(db_conn, admin, values):
     r = await _req(_app(db_conn, admin), "PUT", "/v1/admin/defaults", json={"values": values})
@@ -105,5 +106,21 @@ async def test_admin_view_lists_built_ins_and_choices(db_conn, admin):
     assert set(view["choices"]["chatTtsMode"]) == {"streaming", "after-complete"}
 
 
+async def test_admin_view_names_the_speech_languages(db_conn, admin):
+    """The Defaults page shows names, not codes, and a person without chat access can't ask /v1/speech/status."""
+    from server.speech.languages import WHISPER_LANGUAGES
+    view = (await _req(_app(db_conn, admin), "GET", "/v1/admin/defaults")).json()
+    assert view["choice_labels"] == {"speechLanguage": WHISPER_LANGUAGES}
+    assert view["choice_labels"]["speechLanguage"]["de"] == "German"
+
+
 def test_the_built_ins_are_the_services_own():
     assert user_defaults.built_in() == BUILT_IN
+
+
+@pytest.mark.parametrize("code", ["auto", "si", "en"])
+async def test_speech_language_accepts_auto_and_a_whisper_code(db_conn, admin, member, code):
+    r = await _req(_app(db_conn, admin), "PUT", "/v1/admin/defaults", json={"values": {"speechLanguage": code}})
+    assert r.status_code == 200
+    got = (await _req(_app(db_conn, member), "GET", "/v1/settings/defaults")).json()
+    assert got["values"]["speechLanguage"] == code

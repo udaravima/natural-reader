@@ -6,7 +6,8 @@ user who loses `reader` loses read-aloud on every token at once. A token with
 no scopes (None) has full access, as every token did before migration 019.
 
     read_aloud  the two TTS routes            needs `reader`
-    documents   everything `reader` gates     needs `reader` (includes read_aloud)
+    documents   everything `reader` gates     needs `reader` (includes read_aloud), and lets the
+                and Docling conversion        account's `docling` role through (conversion is document work)
     chat        everything `chat` gates       needs `chat`
     admin       everything `admin` gates      needs `admin`
 """
@@ -19,13 +20,13 @@ REQUIRES = {"read_aloud": "reader", "documents": "reader", "chat": "chat", "admi
 
 # The capabilities a scope lets through to require_capability. read_aloud lets
 # none through: only require_read_aloud honours it.
-_PASSES = {"documents": "reader", "chat": "chat", "admin": "admin"}
+_PASSES = {"documents": {"reader", "docling"}, "chat": {"chat"}, "admin": {"admin"}}
 
 
 def narrow(capabilities: frozenset[str], scopes: frozenset[str] | None) -> frozenset[str]:
     if scopes is None:
         return capabilities
-    passed = {_PASSES[s] for s in scopes if s in _PASSES}
+    passed = set().union(*(_PASSES[s] for s in scopes if s in _PASSES))
     return frozenset(c for c in capabilities if c in passed)
 
 

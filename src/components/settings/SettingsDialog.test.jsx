@@ -1,5 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { apiFetch } from '../../utils/apiFetch';
 
 vi.mock('../../utils/apiFetch', () => ({
   apiFetch: vi.fn(async () => ({ ok: true, status: 200, json: async () => [] })),
@@ -189,5 +190,155 @@ describe('SettingsDialog — deployment limits (v2.4 Task F)', () => {
     const ka = screen.getByLabelText('Keep model warm');
     expect([...ka.options].map((o) => o.value)).not.toContain('-1');
     expect(ka.value).toBe('30m');
+  });
+});
+
+describe('SettingsDialog — the context size the server will use (admin console v2, Task 8)', () => {
+  const local = (contextSize) => ({
+    id: 'ollama:gemma4', provider: 'ollama', kind: 'ollama', name: 'gemma4', capabilities: {},
+    limits: { numCtxMax: 32768, keepAliveMaxS: null },
+    ...(contextSize ? { context_size: contextSize } : {}),
+  });
+  const open = (model, stored = {}) => {
+    const b = bags({ tab: 'chat' });
+    b.chatSettings = { ...b.chatSettings, availableModels: [model], selectedModel: model.id,
+      inferenceByModel: { [model.id]: stored } };
+    render(<SettingsDialog {...b} />);
+    return b;
+  };
+
+  it('disables the row and says the admin set it when the size is fixed, keeping the stored value', () => {
+    const b = open(local({ fixed: 16384, auto: 16384 }), { numCtx: 8192 });
+    const ctx = screen.getByLabelText('Context window');
+    expect(ctx).toBeDisabled();
+    expect(screen.getByText('Set by your admin: 16,384 tokens.')).toBeInTheDocument();
+    expect(ctx).toHaveAccessibleDescription('Set by your admin: 16,384 tokens.');
+    expect(b.chatSettings.setInferenceByModel).not.toHaveBeenCalled();
+  });
+
+  it('a locked row shows the admin\'s size, not the stored one, and saving another knob keeps the stored 8192 (P13)', () => {
+    const b = open(local({ fixed: 12288, auto: 16384 }), { numCtx: 8192 });
+    const ctx = screen.getByLabelText('Context window');
+    expect(ctx).toBeDisabled();
+    expect(ctx.options[ctx.selectedIndex].textContent).toBe('12,288');
+    expect(screen.getByText('Set by your admin: 12,288 tokens.')).toBeInTheDocument();
+    expect(b.chatSettings.setInferenceByModel).not.toHaveBeenCalled();
+    // another knob saves through the same per-model patch: the stored context value rides along untouched
+    fireEvent.change(screen.getByLabelText('Max reply tokens'), { target: { value: '1024' } });
+    const update = b.chatSettings.setInferenceByModel.mock.calls.at(-1)[0];
+    const next = typeof update === 'function' ? update({ 'ollama:gemma4': { numCtx: 8192 } }) : update;
+    expect(next['ollama:gemma4']).toMatchObject({ numCtx: 8192, numPredict: 1024 });
+  });
+
+  it('a locked row with no stored value shows the admin\'s size too, never "Auto"', () => {
+    open(local({ fixed: 20000, auto: 16384 }));
+    const ctx = screen.getByLabelText('Context window');
+    expect(ctx.options[ctx.selectedIndex].textContent).toBe('20,000');
+  });
+
+  it('formats a larger fixed size with a thousands separator', () => {
+    open(local({ fixed: 32768, auto: 16384 }));
+    expect(screen.getByText('Set by your admin: 32,768 tokens.')).toBeInTheDocument();
+  });
+
+  it('names the size Auto resolves to when nothing is fixed, and the row stays usable', () => {
+    open(local({ fixed: null, auto: 16384 }));
+    const ctx = screen.getByLabelText('Context window');
+    expect(ctx).not.toBeDisabled();
+    expect([...ctx.options].find((o) => o.value === 'auto').textContent).toBe('Auto (16,384 on this server)');
+    expect(screen.queryByText(/Set by your admin/)).toBeNull();
+  });
+
+  it('leaves the row as it was for a model without context_size', () => {
+    open(local(null));
+    const ctx = screen.getByLabelText('Context window');
+    expect(ctx).not.toBeDisabled();
+    expect([...ctx.options].find((o) => o.value === 'auto').textContent).toBe('Auto');
+    expect(screen.queryByText(/Set by your admin/)).toBeNull();
+  });
+
+  describe('Speech language', () => {
+    afterEach(() => apiFetch.mockImplementation(async () => ({ ok: true, status: 200, json: async () => [] })));
+    const STATUS = { enabled: true, ready: true, languages: [{ code: 'sv', name: 'Swedish' }, { code: 'de', name: 'German' }] };
+    const answerStatus = (body, ok = true) => {
+      apiFetch.mockImplementation(async (h, p, path) => (
+        path === '/v1/speech/status'
+          ? { ok, status: ok ? 200 : 500, json: async () => body }
+          : { ok: true, status: 200, json: async () => [] }));
+    };
+    const chat = (over = {}) => {
+      const b = bags({ tab: 'chat' });
+      b.chatSettings = { ...b.chatSettings, speechLanguage: 'auto', setSpeechLanguage: vi.fn(), apiHost: '', apiPort: '', canChat: true, ...over };
+      return b;
+    };
+
+    it('says what the speech model is made for', async () => {
+      apiFetch.mockImplementation(async (h, p, path) => (path === '/v1/speech/status'
+        ? { ok: true, json: async () => ({ ...STATUS, model_languages: ['Sinhala'] }) }
+        : { ok: false, status: 404, json: async () => ({}) }));
+      render(<SettingsDialog {...chat()} />);
+      expect(await screen.findByText(/speech model is made for Sinhala/)).toBeTruthy();
+    });
+
+    it('says nothing about a model made for every language', async () => {
+      apiFetch.mockImplementation(async (h, p, path) => (path === '/v1/speech/status'
+        ? { ok: true, json: async () => ({ ...STATUS, model_languages: [] }) }
+        : { ok: false, status: 404, json: async () => ({}) }));
+      render(<SettingsDialog {...chat()} />);
+      await screen.findByRole('combobox', { name: 'Speech language' });
+      expect(screen.queryByText(/speech model is made for/)).toBeNull();
+    });
+
+    it('shows Auto first, then the status languages by name', async () => {
+      answerStatus(STATUS);
+      render(<SettingsDialog {...chat()} />);
+      const select = await screen.findByRole('combobox', { name: 'Speech language' });
+      expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/speech/status');
+      expect([...select.options].map((o) => o.textContent)).toEqual(['Auto (detect the language)', 'German', 'Swedish']);
+      expect(select.value).toBe('auto');
+    });
+
+    it('choosing a language sets it', async () => {
+      answerStatus(STATUS);
+      const b = chat();
+      render(<SettingsDialog {...b} />);
+      fireEvent.change(await screen.findByRole('combobox', { name: 'Speech language' }), { target: { value: 'sv' } });
+      expect(b.chatSettings.setSpeechLanguage).toHaveBeenCalledWith('sv');
+    });
+
+    it('a stored value the engine no longer offers shows as Auto', async () => {
+      answerStatus(STATUS);
+      render(<SettingsDialog {...chat({ speechLanguage: 'xx' })} />);
+      expect((await screen.findByRole('combobox', { name: 'Speech language' })).value).toBe('auto');
+    });
+
+    it('is hidden while voice input is off', async () => {
+      answerStatus({ ...STATUS, enabled: false });
+      render(<SettingsDialog {...chat()} />);
+      await waitFor(() => expect(apiFetch).toHaveBeenCalled());
+      await act(async () => {});
+      expect(screen.queryByRole('combobox', { name: 'Speech language' })).toBeNull();
+      expect(screen.getByLabelText(/configuring model/i)).toBeInTheDocument();
+    });
+
+    it('without chat access makes no status call and shows no row', async () => {
+      answerStatus(STATUS);
+      apiFetch.mockClear();
+      render(<SettingsDialog {...chat({ canChat: false })} />);
+      await act(async () => {});
+      expect(apiFetch.mock.calls.filter((c) => c[2] === '/v1/speech/status')).toHaveLength(0);
+      expect(screen.queryByRole('combobox', { name: 'Speech language' })).toBeNull();
+    });
+
+    it('a failed status fetch hides the row and does not break the tab', async () => {
+      apiFetch.mockImplementation(async (h, p, path) => {
+        if (path === '/v1/speech/status') throw new Error('down');
+        return { ok: true, status: 200, json: async () => [] };
+      });
+      render(<SettingsDialog {...chat()} />);
+      await act(async () => {});
+      expect(screen.queryByRole('combobox', { name: 'Speech language' })).toBeNull();
+      expect(screen.getByLabelText(/configuring model/i)).toBeInTheDocument();
+    });
   });
 });

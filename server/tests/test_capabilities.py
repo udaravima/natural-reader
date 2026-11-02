@@ -12,4 +12,8 @@ def test_caps_from_claims_empty_when_absent():
 
 
 def test_known_capabilities_frozen():
-    assert KNOWN_CAPABILITIES == frozenset({"reader", "chat", "admin"})
+    assert KNOWN_CAPABILITIES == frozenset({"reader", "chat", "admin", "docling"})
+
+
+def test_docling_is_read_from_the_realm_roles():
+    assert caps_from_claims({"realm_access": {"roles": ["docling", "offline_access"]}}) == ["docling"]

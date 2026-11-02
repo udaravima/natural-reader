@@ -31,4 +31,4 @@ In chat mode or with no document open the pill collapses to just the Exit button
 
 ## Full changelog
 
-[CHANGELOG.md#172---2026-05-23](../CHANGELOG.md#172---2026-05-23) · diff: [v1.7.1…v1.7.2](https://github.com/udaravima/natural-reader/compare/v1.7.1...v1.7.2)
+[CHANGELOG.md#172---2026-05-23](../../CHANGELOG.md#172---2026-05-23) · diff: [v1.7.1…v1.7.2](https://github.com/udaravima/natural-reader/compare/v1.7.1...v1.7.2)

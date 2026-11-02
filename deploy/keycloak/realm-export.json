@@ -9,7 +9,8 @@
     "realm": [
       { "name": "reader" },
       { "name": "chat" },
-      { "name": "admin" }
+      { "name": "admin" },
+      { "name": "docling" }
     ]
   },
   "clients": [

@@ -5,6 +5,7 @@ The reader's router is faked (it returns scripted JSON per batch); documents and
 test database, as for the other chat tool tests."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 
@@ -20,7 +21,6 @@ from server.chat.tools import read_document_pages as rp_tool
 from server.llm.types import CallSettings, ToolCall
 from server.services import doc_search
 from server.services.embeddings import EMBEDDING_DIM, current_profile
-from server.services.inference_limits import InferenceLimits
 from server.tests import seed
 from server.tests.chat_harness import member, shim_pool
 
@@ -111,7 +111,6 @@ class Env:
 @pytest.fixture
 async def env(db_conn, monkeypatch):
     shim_pool(monkeypatch, db_conn, ex_tool, rp_tool)
-    monkeypatch.setattr(reader, "get_limits", lambda: InferenceLimits(32768, 1800))
     for key in ("READER_MODEL", "SUMMARIZE_MODEL", "WEB_SEARCH_SUMMARY_MODEL", "READER_INPUT_CHARS",
                 "READER_OUTPUT_CHARS", "READER_MAX_CONCURRENCY", "READER_TIMEOUT_S",
                 "WEB_SEARCH_SUMMARY_TIMEOUT_S"):
@@ -337,7 +336,7 @@ async def test_pages_naming_a_document_outside_documents_is_an_error_listing_the
     ctx = await env.ctx()         # Alpha 1, Beta 2, Delta 3, Gamma 4
     run = await _extract(ctx, {"documents": [1, 2], "need": "n", "pages": [{"document": "Delta.md", "first_page": 1}]})
     assert run.result == {"error": "pages names document 3 (Delta.md), which isn't in documents. "
-                                   "documents: 1 Alpha.md, 2 Beta.md."}
+                                   "documents: 1. \"Alpha.md\", 2. \"Beta.md\"."}
     assert router.calls == []
 
 
@@ -624,6 +623,18 @@ async def test_the_turns_model_reaches_the_reader(env, use_router, monkeypatch):
     assert router.calls[0][0] == "ollama:gemma4:e4b"
 
 
+async def test_the_turns_reader_config_names_the_model_and_the_window_the_pages_are_cut_to(env, use_router):
+    await env.add_doc(PA, "Alpha.md", {1: " ".join(f"Line {i} of the handbook." for i in range(1500))})
+    router = use_router(NOTHING)
+    ctx = await env.ctx()
+    ctx = dataclasses.replace(ctx, reader_cfg=reader.ReaderConfig(model="ollama:small", num_ctx=2048))
+    await _extract(ctx, {"documents": [1], "need": "the handbook's lines"})
+    model, messages, settings = router.calls[0]
+    assert model == "ollama:small" and settings.num_ctx == 2048
+    chars = sum(len(m.content) for m in messages)
+    assert -(-chars // reader.CHARS_PER_TOKEN) + reader.NUM_CTX_MARGIN + 600 <= 2048     # 1200 reply chars at 2 a token
+
+
 # ---- arguments and scope ----------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("need,error", [
@@ -647,11 +658,11 @@ async def test_one_to_five_documents(env, use_router):
     ctx = await env.ctx()
     for documents in (None, [], ""):
         run = await _extract(ctx, {"documents": documents, "need": "n"})
-        assert run.result == {"error": "documents is required: 1-5 numbers or names from the list: 1 Alpha.md."}
+        assert run.result == {"error": "documents is required: 1-5 numbers or names from the list: 1. \"Alpha.md\"."}
     many = await _extract(ctx, {"documents": [1, 2, 3, 4, 5, 6], "need": "n"})
     assert many.result == {"error": "Name at most 5 documents per call (got 6)."}
     unknown = await _extract(ctx, {"documents": [1, "Nope.md"], "need": "n"})
-    assert unknown.result == {"error": "Unknown document: Nope.md. Use a number or name from the list: 1 Alpha.md."}
+    assert unknown.result == {"error": "Unknown document: Nope.md. Use a number or name from the list: 1. \"Alpha.md\"."}
     assert router.calls == []
     for lone in ("1", 1, 1.0):                                      # a lone value names one document
         one = await _extract(ctx, {"documents": lone, "need": "n"})
@@ -677,13 +688,13 @@ async def test_without_documents_a_project_reads_the_open_document(env, use_rout
     assert named.ok and named.result["documents"] == [{"ref": 1, "name": "Alpha.md"}]
     pages = await _extract(ctx, {"documents": [2], "need": "n", "pages": [{"first_page": 1}]})
     assert pages.result == {"error": "document is required: use a number or name from the list: "
-                                     "1 Alpha.md, 2 Beta.md."}
+                                     "1. \"Alpha.md\", 2. \"Beta.md\"."}
 
 
 async def test_without_documents_nothing_open_or_open_elsewhere_is_still_an_error(env, use_router):
     await _alpha_and_gamma(env)
     router = use_router(NOTHING)
-    error = {"error": "documents is required: 1-5 numbers or names from the list: 1 Alpha.md."}
+    error = {"error": "documents is required: 1-5 numbers or names from the list: 1. \"Alpha.md\"."}
     assert (await _extract(await env.ctx(), {"need": "n"})).result == error             # nothing open
     assert (await _extract(await env.ctx(open_doc_id=PC), {"need": "n"})).result == error   # open, still extracting
     assert (await _extract(await env.ctx(open_doc_id="9" * 64), {"need": "n"})).result == error   # not the project's

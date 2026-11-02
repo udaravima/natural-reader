@@ -20,8 +20,8 @@ async def test_users_budget_column_exists(db_conn):
 
 async def test_usage_round_trip(db_conn):
     await db_conn.execute(
-        "INSERT INTO inference_usage (user_id, day, prompt_tokens, eval_tokens, requests) "
-        "VALUES (%s, CURRENT_DATE, 10, 5, 1)",
+        "INSERT INTO inference_usage (user_id, day, model, kind, prompt_tokens, eval_tokens, requests) "
+        "VALUES (%s, CURRENT_DATE, '', '', 10, 5, 1)",
         (SEED,),
     )
     cur = await db_conn.execute(

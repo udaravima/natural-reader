@@ -37,3 +37,22 @@ export function shownValue(saved, options, kind) {
     const below = options.filter(([v]) => size(v, kind) <= target);
     return (below.at(-1) || options[0])[0];
 }
+
+/** The context size the server will load a model with, from its entry in the
+ * models list. The server says it as `context_size: { fixed, auto }` (snake_case,
+ * and only for a model it sizes: a self-hosted Ollama one); null for any other.
+ * `fixedNumCtx` is the size the admin or the environment decided (null = nobody
+ * did); `autoNumCtx` is what "Auto" resolves to. Tokens. */
+export function serverContextSize(entry) {
+    const cs = entry?.context_size;
+    if (!cs || typeof cs !== 'object' || !Number.isFinite(cs.auto)) return null;
+    return { fixedNumCtx: Number.isFinite(cs.fixed) ? cs.fixed : null, autoNumCtx: cs.auto };
+}
+
+/** `options` with the Auto option's label naming the size it resolves to
+ * (null size = unchanged). */
+export function withAutoLabel(options, autoNumCtx) {
+    if (autoNumCtx === null || autoNumCtx === undefined) return options;
+    return options.map(([v, text]) =>
+        (v === 'auto' ? [v, `Auto (${autoNumCtx.toLocaleString('en-US')} on this server)`] : [v, text]));
+}

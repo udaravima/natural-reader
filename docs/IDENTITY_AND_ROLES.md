@@ -76,7 +76,7 @@ Consequences worth holding onto:
    mapper only targets the access token; see
    [Where roles actually live](#where-roles-actually-live-keycloak-realm-roles--userscapabilities)).
    `caps_from_claims` (`server/auth/capabilities.py`) intersects that role list
-   with the app's known capability vocabulary (`reader`/`chat`/`admin`),
+   with the app's known capability vocabulary (`reader`/`chat`/`admin`/`docling`),
    dropping Keycloak built-ins like `offline_access`.
 4. `resolve_or_provision_user(conn, iss=…, sub=…, email=…, email_verified=…,
    capabilities=…)` maps the identity to a `users` row (three branches, next
@@ -91,7 +91,7 @@ see the next section for how one is derived from the other.
 
 ## `resolve_or_provision_user` — the three branches
 
-`server/auth/users.py:65`. Order matters; the first match wins.
+`server/auth/users.py`. Order matters; the first match wins.
 
 | Branch | Condition | Action | Security rationale |
 |---|---|---|---|
@@ -130,8 +130,9 @@ hand once (the comment at the top of the SQL file has the exact `psql` command).
 ## Where roles actually live (Keycloak realm roles → `users.capabilities`)
 
 This used to say "Keycloak does not know about roles at all" — that changed.
-**Roles now live in Keycloak**, as three plain **realm roles**:
-`reader`, `chat`, `admin` (`deploy/keycloak/realm-export.json` §`roles.realm`).
+**Roles now live in Keycloak**, as four plain **realm roles**:
+`reader`, `chat`, `admin` and `docling` (`deploy/keycloak/realm-export.json` §`roles.realm`;
+`docling` is [described below](#the-docling-capability)).
 No group defaults them onto anyone — a brand-new Keycloak user, and a
 brand-new app row, both start with **zero capabilities**. Someone with the
 `admin` capability has to grant them, either through this app's admin console
@@ -167,7 +168,7 @@ Keycloak is the **source of truth**; the app keeps a **mirror**:
   immediately**, no re-login needed, for the same reason as before: nothing
   server-side trusts the token itself past login, only the DB row it fed.
 - `require_capability(name)` (same file) is the deny-by-default gate: reader
-  endpoints (`POST /v1/synthesize`, `/v1/synthesize/batch`) need `reader`;
+  endpoints (`POST /v1/synthesize`, `/v1/batch_synthesize`) need `reader`;
   chat/inference/web-search endpoints need `chat`; `require_admin` is
   effectively `require_capability("admin")` for `/v1/admin/*`. A 403 carries
   `{"error": "missing_capability", "capability": "<name>"}` so the SPA can
@@ -181,6 +182,40 @@ Keycloak is the **source of truth**; the app keeps a **mirror**:
   `require_read_aloud`, which accepts `read_aloud` or `documents` on an account
   holding `reader`. Scoped tokens can't reach `/v1/auth/tokens`
   (`require_full_credential`). See `server/auth/scopes.py`.
+
+### The `docling` capability
+
+`docling` decides who may start a Docling conversion (PDF/Office/HTML → Markdown), and
+only when an admin has limited conversion to it: the admin console's **Documents**
+section has **Who may convert**, either **Everyone with the reader capability** (`readers`, the
+default and what the app always did) or **Only people with the Docling role** (`role`).
+`DOCLING_CONVERT_BY=readers|role` sets the starting value. In `role` mode a person
+needs `docling`; **an admin may always convert**, which is why the bootstrap admin set
+(`admin`, `reader`, `chat`) doesn't include it. In `readers` mode the role does
+nothing. It grants nothing else: no route other than the conversion checks it.
+
+- **Where to give it.** Tick **docling** beside the person under **People** (or when
+  enrolling them), or give them the `docling` realm role in Keycloak. A tick under
+  **People** applies at once; a role granted in Keycloak applies at the person's next
+  login (login sync, above).
+- **A personal access token** carries it through the `documents` scope (conversion is
+  document work), not through `read_aloud`, `chat` or `admin`. A full-access token
+  carries whatever its owner holds. A token never widens its owner: the owner must
+  hold the role.
+- **An existing realm needs the role created by hand.** `--import-realm` only seeds a
+  fresh database (see "Why the mapping used to break" above), so a running realm does not have it.
+  Create it once: Keycloak admin console, realm `natural-reader`, **Realm roles**,
+  **Create role**, name `docling`, Save. Until then, ticking **docling** under
+  **People** fails at the Keycloak write (the capability-edit rule above: Keycloak
+  first, the app's mirror only after it succeeds) with the capability unchanged,
+  **while the service account (`KC_ADMIN_*`) is configured**. The server answers
+  409 `{"reason": "kc_role_missing", "role": "docling"}` and People says which role
+  to create; enrolling someone with the tick is refused the same way (the
+  half-created Keycloak user is removed). The app does not create the role itself:
+  that needs `manage-realm`, which would let the service account change the whole
+  realm, so it keeps `manage-users`, `view-realm` and `query-users` only. With it
+  unset, the tick only writes the app's mirror, and the next login reverts it to
+  what Keycloak says. You only need any of this if you want `role` mode.
 
 ### The service account that makes admin-console edits real
 
@@ -243,7 +278,7 @@ truth for the running session.
 | Transport | `nr_session` httponly cookie | `Authorization: Bearer nrp_...` |
 | Stored | `sessions` table — **sha256(cookie)** only | `personal_access_tokens` — **sha256(token)** only |
 | Scope | one per browser login, full account | user-managed, named, scoped (`read_aloud` / `documents` / `chat` / `admin`), optional expiry, revocable |
-| Works on `/v1/inference/*` (needs `chat` capability) | yes | only with the `chat` scope (or a full-access token) |
+| Works on chat routes (`/v1/chat/*`, `/v1/inference/*`, needs `chat` capability) | yes | only with the `chat` scope (or a full-access token) |
 | Works on `/v1/synthesize*` (needs `reader` capability) | yes | with `read_aloud` or `documents` (or full access): **this is how the browser extension reads pages aloud**; the owner must hold `reader` |
 | Manages tokens (`/v1/auth/tokens`) | yes | only a full-access (pre-2.3.0) token; scoped tokens get 403 `token_scope` |
 
@@ -312,9 +347,9 @@ What the frontend knows: `GET /v1/auth/me` → `{id, email, role, capabilities}`
 `first_name`, `last_name`, `username`, `avatar_url`, `account_url`),
 held in `useAuth`'s `user` state (`capabilities` defaults to `[]` if the
 backend omits it). The SPA has no router — `viewMode` state *is* the routing —
-and it is now a **three-way** value: `'reader' | 'chat' | 'admin'`, each
-gated on its matching capability (`App.jsx`: `canReader`/`canChat`/`canAdmin`
-derived from `auth.user.capabilities`).
+and it has four values: `'reader' | 'chat' | 'admin'`, each gated on its
+matching capability (`App.jsx`: `canReader`/`canChat`/`canAdmin` derived from
+`auth.user.capabilities`), plus `'library'`, which any active user may open.
 
 - **Zero capabilities, `status: active`:** `AuthGate` (`src/components/auth/
   AuthGate.jsx`) renders `NoAccessScreen` instead of the app shell — "your
@@ -331,10 +366,11 @@ derived from `auth.user.capabilities`).
 - **Admin view** (`src/components/admin/AdminConsole.jsx`) is a real third
   view, not a sidebar block — entry point is an icon in the view switcher,
   rendered only when `canAdmin` (`App.jsx`: `inAdmin` suppresses the reader
-  `Sidebar` entirely while this view is active). It holds the user list
-  (activate/disable, the capability editor — a per-user checkbox strip for
-  reader/chat/admin — enroll with capabilities, one-time temp password
-  display when SMTP isn't configured). The self-row hides Disable/Delete and
+  `Sidebar` entirely while this view is active). Its **People** section holds the user list
+  (activate/disable/delete, the capability editor — a per-user checkbox strip
+  for reader/chat/admin/docling — enroll with capabilities, one-time temp
+  password display when SMTP isn't configured); the other sections are in
+  [USER_GUIDE.md](USER_GUIDE.md#admin-console-admins-only). The self-row hides Disable/Delete and
   disables your own `admin` checkbox — UI-only convenience (the server's real
   guard is `other_active_admins(target) == 0`, which fires for *any* row,
   self or not, so this only pre-empts the common case).
@@ -350,18 +386,6 @@ One caveat still worth carrying forward: **`useAuth` otherwise only refreshes
 your open tab until either such a `missing_capability` 403 fires, or you
 reload.
 
-**Known duplication, not yet cleaned up:** the *reader* view's `Sidebar`
-still carries its own collapsible "Admin" block (`Sidebar.jsx`, gated on
-`user?.role === 'admin'`) that renders the older `AdminPanel.jsx` — a smaller
-user list with activate/disable and a role toggle, no capability editor, no
-usage/budget view. It's only reachable while in the reader view (the admin
-*view* hides `Sidebar` outright), so the two don't fight over the same
-screen, but a `role === 'admin'` user now has two different places to manage
-users with two different feature sets. Treat `AdminConsole` as the
-current/complete surface; `Sidebar`'s block is a leftover from before this
-feature and a candidate for removal in a follow-up, not a second supported
-path.
-
 ---
 
 *Verified against source as of commit `1602721` (branch
@@ -375,6 +399,9 @@ path.
 `src/components/admin/AdminConsole.jsx`, `src/components/Sidebar.jsx`,
 `src/components/admin/AdminPanel.jsx`. (Earlier pass: `286fa41` on
 `feat/model-router-gateway`.)*
+
+*2026-11-01: re-read against the code on `development`: routes, the four-way `viewMode`, the
+People section; the old Sidebar admin block is gone.*
 
 *2026-09-22 addendum — the founder-lockout trap (branch 2 has no capability
 floor; empty realm roles zero the mirror on login), the branch-3 self-heal's

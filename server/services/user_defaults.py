@@ -20,6 +20,8 @@ from typing import Any, Callable
 
 from psycopg.types.json import Jsonb
 
+from ..speech.languages import WHISPER_LANGUAGES
+
 logger = logging.getLogger(__name__)
 
 KEY = "user_defaults"
@@ -48,6 +50,8 @@ SETTINGS: dict[str, tuple[Any, Callable[[Any], bool], tuple | None]] = {
     "think": ("off", lambda v: v in THINK, THINK),
     "selectedVoice": ("af_heart", lambda v: isinstance(v, str) and bool(_VOICE.match(v)), None),
     "playbackSpeed": (1.0, _speed, None),
+    # The language the microphone transcribes: "auto" lets Whisper detect it, or a Whisper language code.
+    "speechLanguage": ("auto", lambda v: isinstance(v, str) and (v == "auto" or v in WHISPER_LANGUAGES), None),
 }
 
 
@@ -97,7 +101,10 @@ async def admin_view(conn) -> dict[str, Any]:
     stored = await _stored(conn)
     return {"values": {**built_in(), **stored["values"]}, "builtIn": built_in(),
             "overridden": sorted(stored["values"]), "epochs": stored["epochs"],
-            "choices": {k: list(spec[2]) for k, spec in SETTINGS.items() if spec[2]}}
+            "choices": {k: list(spec[2]) for k, spec in SETTINGS.items() if spec[2]},
+            # Names for choices that are codes, so the console shows "German", not "de". Served here because the
+            # page may not ask /v1/speech/status: that route needs the chat capability and an admin may lack it.
+            "choice_labels": {"speechLanguage": dict(WHISPER_LANGUAGES)}}
 
 
 async def save(conn, values: dict[str, Any], *, updated_by: str | None) -> None:

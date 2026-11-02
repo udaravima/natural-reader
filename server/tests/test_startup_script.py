@@ -102,6 +102,18 @@ def test_profile_overlay_only_for_a_readable_file(proj, tmp_path):
     assert "not readable" in out.stderr
 
 
+def test_speech_models_overlay_only_for_a_readable_file(proj, tmp_path):
+    f = tmp_path / "speech.yaml"
+    f.write_text("models: {}\n")
+    script = 'export_backend_env; compose_files podman; echo "file=$NR_SPEECH_MODELS_FILE"'
+    out = run(proj, script, SYSTEM_PATH, {"SPEECH_MODELS_FILE": str(f)})
+    assert "compose.speech.yml" in out.stdout.split() and f"file={f}" in out.stdout.split()
+    out = run(proj, 'export_backend_env; compose_files podman', SYSTEM_PATH,
+              {"SPEECH_MODELS_FILE": str(tmp_path / "missing.yaml")})
+    assert "compose.speech.yml" not in out.stdout.split()
+    assert "not readable" in out.stderr
+
+
 def test_compose_files_by_engine_and_mode(proj):
     assert run(proj, "compose_files docker", SYSTEM_PATH).stdout.split() == ["docker-compose.yml"]
     assert run(proj, "compose_files podman", SYSTEM_PATH).stdout.split() == ["docker-compose.yml", "compose.podman.yml"]

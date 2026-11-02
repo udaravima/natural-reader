@@ -319,9 +319,9 @@ async def test_document_outline_without_an_outline_says_how_the_document_starts(
 async def test_document_outline_errors_name_the_valid_documents():
     ctx = _tool_ctx(True)
     missing = await _call(ctx, {})
-    assert not missing.ok and "1 Guide.md" in missing.result["error"] and "2 Notes.txt" in missing.result["error"]
+    assert not missing.ok and "1. \"Guide.md\"" in missing.result["error"] and "2. \"Notes.txt\"" in missing.result["error"]
     unknown = await _call(ctx, {"document": "Gamma.md"})
-    assert unknown.result["error"].startswith("Unknown document: Gamma.md.") and "2 Notes.txt" in unknown.result["error"]
+    assert unknown.result["error"].startswith("Unknown document: Gamma.md.") and "2. \"Notes.txt\"" in unknown.result["error"]
     # In the project but not indexed: no outline is ever read for it (ruling 1).
     not_ready = await _call(ctx, {"document": "Scan.pdf"})
     assert not_ready.result == {"error": 'Document 3 ("Scan.pdf") isn\'t searchable yet.'}

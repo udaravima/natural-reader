@@ -102,7 +102,7 @@ async def init_db() -> bool:
                     has_col = await cur.fetchone()
                 if has_col:
                     await conn.execute(
-                        "UPDATE documents SET conversion_state = NULL, "
+                        "UPDATE documents SET conversion_state = NULL, conversion_progress = NULL, "
                         "conversion_error = 'Interrupted by server restart', "
                         "updated_at = now() WHERE conversion_state = 'converting'"
                     )

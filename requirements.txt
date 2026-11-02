@@ -32,6 +32,14 @@ trafilatura
 # Kokoro TTS (ONNX version for CPU efficiency)
 kokoro-onnx>=0.3.9
 
+# Speech-to-text for the chat microphone (local engine): faster-whisper runs Whisper on CPU
+# and decodes the browser's webm/opus itself (PyAV), so no ffmpeg is needed.
+faster-whisper>=1.2
+# server/speech/audio.py imports these directly (decoding and resampling), so they are listed rather than
+# relying on faster-whisper to bring them.
+av>=19.0
+numpy>=2.5
+
 # Audio processing
 soundfile
 
@@ -51,6 +59,9 @@ pydantic
 #   Intel GPU/NPU/CPU: pip uninstall -y onnxruntime && pip install onnxruntime-openvino openvino
 # then check the startup line "Available ONNX Runtime providers".
 onnxruntime
+
+# The zone database for the deployment timezone (Windows has no system copy; Linux and macOS use theirs first).
+tzdata
 
 # Backend test harness (dev). respx mocks httpx; pytest-asyncio runs async tests.
 pytest

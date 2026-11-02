@@ -96,7 +96,7 @@ async def test_delete_user_happy_path_cascades(db_conn):
         "INSERT INTO personal_access_tokens (user_id, name, token_hash) VALUES (%s, %s, %s)",
         (victim, "t", "hash1"),
     )
-    await ib.record_usage(db_conn, victim, 10, 5)
+    await ib.record_usage(db_conn, victim, 10, 5, model="ollama:test", kind="chat", estimated=False)
     await db_conn.execute(
         "INSERT INTO chat_sessions (id, user_id) VALUES (%s, %s)", ("cs1", victim)
     )
@@ -215,6 +215,26 @@ async def test_config_admin_view(db_conn, monkeypatch):
     assert body["daily_token_budget"] == 5000
     assert body["summarize_model"] == "sum-model"
     assert body["embed_model"] == "embed-model"
+
+
+async def test_config_shows_the_reader_the_models_settings_resolve_to(db_conn, monkeypatch):
+    """The key keeps its old name (summarize_model); its value follows the console, then the environment, then
+    the chat model, in the words the Overview uses."""
+    from server.services import console_settings, model_settings
+    for var in ("READER_MODEL", "SUMMARIZE_MODEL", "WEB_SEARCH_SUMMARY_MODEL"):
+        monkeypatch.delenv(var, raising=False)
+    admin, p = await _admin(db_conn)
+
+    async def shown():
+        async with _client(_app(db_conn, p)) as client:
+            return (await client.get("/v1/admin/inference/config")).json()["summarize_model"]
+
+    assert await shown() == "The chat model of each conversation"
+    monkeypatch.setenv("SUMMARIZE_MODEL", "env-reader")
+    assert await shown() == "env-reader"
+    await console_settings.save(db_conn, model_settings.SECTION, {"reader": "ollama:console-reader"},
+                                updated_by=admin["id"])
+    assert await shown() == "ollama:console-reader"
 
 
 async def test_config_unset_allowlist_renders_null(db_conn, monkeypatch):

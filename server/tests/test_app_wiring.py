@@ -50,3 +50,26 @@ def test_create_app_installs_the_shared_exception_handlers():
     calls = {n.func.id for n in ast.walk(create_app)
              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
     assert "install_handlers" in calls
+
+
+def test_cors_exposes_the_people_total_header():
+    # A cross-origin browser (the dev server on another port) can only read a custom
+    # response header that CORS exposes; People's "Showing N of T" and Show more need
+    # X-Total-Count. Read, not imported (see above).
+    tree = ast.parse((Path(__file__).parents[1] / "app.py").read_text())
+    exposed = [kw.value for n in ast.walk(tree)
+               if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+               and n.func.attr == "add_middleware"
+               for kw in n.keywords if kw.arg == "expose_headers"]
+    assert exposed and "X-Total-Count" in [e.value for e in exposed[0].elts]
+
+
+def test_app_includes_the_speech_router_and_warms_voice_at_startup():
+    src = (Path(__file__).parents[1] / "app.py").read_text()
+    tree = ast.parse(src)
+    included = [n.args[0].id for n in ast.walk(tree)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "include_router"
+                and n.args and isinstance(n.args[0], ast.Name)]
+    assert "speech_router" in included
+    # The warm-up runs in startup, after init_db, and only when voice input is on.
+    assert "load_chat_options" in src and ".warm()" in src

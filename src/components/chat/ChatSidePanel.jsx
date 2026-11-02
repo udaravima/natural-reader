@@ -1,5 +1,7 @@
+import { useMemo } from 'react';
 import { MessageSquarePlus, Maximize2, X } from 'lucide-react';
-import { groupByProvider, modelLabel } from '../../lib/modelIds';
+import { modelOptions } from '../../lib/modelIds';
+import { SearchableSelect } from '../SearchableList';
 
 /**
  * Chat beside the page, in the reader: the same chat as the Chat view (one
@@ -12,6 +14,8 @@ export default function ChatSidePanel({
     theme, title, selectedModel, setSelectedModel, availableModels,
     onNewChat, onExpand, onClose, children,
 }) {
+    const options = useMemo(() => modelOptions(availableModels, selectedModel, { prompt: 'Select a model…' }),
+        [availableModels, selectedModel]);
     return (
         <aside
             aria-label="Chat beside the page"
@@ -33,29 +37,16 @@ export default function ChatSidePanel({
                 </button>
             </div>
             <div className={`px-3 py-1.5 border-b ${theme.border}`}>
-                <select
+                <SearchableSelect
+                    theme={theme}
+                    findLabel="Find a model"
                     aria-label="Model"
                     value={selectedModel}
-                    onChange={(e) => setSelectedModel(e.target.value)}
+                    onChange={setSelectedModel}
+                    options={options}
                     disabled={availableModels.length === 0}
                     className={`w-full text-[11px] font-bold p-1.5 rounded-lg border ${theme.border} ${theme.bgTertiary} ${theme.text} outline-none focus:ring-2 focus:ring-blue-500 ${availableModels.length === 0 ? 'opacity-60' : ''}`}
-                >
-                    {availableModels.length === 0 ? (
-                        <option value="">No models found</option>
-                    ) : (
-                        <>
-                            {!selectedModel && <option value="">Select a model…</option>}
-                            {selectedModel && !availableModels.some((m) => m.id === selectedModel) && (
-                                <option value={selectedModel} disabled>{selectedModel} (unavailable)</option>
-                            )}
-                            {groupByProvider(availableModels).map(([provider, models]) => (
-                                <optgroup key={provider} label={provider}>
-                                    {models.map((m) => <option key={m.id} value={m.id}>{modelLabel(m)}</option>)}
-                                </optgroup>
-                            ))}
-                        </>
-                    )}
-                </select>
+                />
             </div>
             <div className="flex-1 min-h-0 flex flex-col">{children}</div>
         </aside>

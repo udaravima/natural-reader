@@ -11,6 +11,7 @@ export const BUILT_IN_DEFAULTS = {
     think: 'off',
     selectedVoice: 'af_heart',
     playbackSpeed: 1.0,
+    speechLanguage: 'auto',
 };
 
 const EPOCHS_KEY = 'neural-pdf-defaultEpochs';

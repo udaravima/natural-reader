@@ -2,10 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import { KOKORO_VOICES } from '../../constants';
 import { PlayCircle, Square, Clock, VolumeX, Volume1, Volume2, Moon, Sun, Zap, X } from 'lucide-react';
 import { InferenceRow } from '../chat/InferenceRow';
-import { KEEP_ALIVE_OPTIONS, NUM_CTX_OPTIONS, shownValue, withinLimit } from '../../lib/inferenceLimits';
+import { KEEP_ALIVE_OPTIONS, NUM_CTX_OPTIONS, serverContextSize, shownValue, withAutoLabel, withinLimit } from '../../lib/inferenceLimits';
 import { AccountPanel } from '../account/AccountPanel';
 import { resolveForModel, patchForModel } from '../../hooks/inference';
-import { groupByProvider, migrateModelId, modelLabel, supportedKnobs } from '../../lib/modelIds';
+import { apiFetch } from '../../utils/apiFetch';
+import { migrateModelId, modelOptions, supportedKnobs } from '../../lib/modelIds';
+import { SearchableSelect } from '../SearchableList';
 
 function Field({ theme, label, children }) {
     return (
@@ -148,6 +150,8 @@ export default function SettingsDialog({ theme, tab, onTab, onClose, profile = n
     );
 }
 
+const VOICE_OPTIONS = KOKORO_VOICES.map((x) => ({ value: x.id, label: x.name }));
+
 const inputClass = (theme) => `text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgTertiary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`;
 
 function VoicePanel({ theme, v }) {
@@ -158,14 +162,16 @@ function VoicePanel({ theme, v }) {
         <>
                 <Field theme={theme} label="Voice">
                     <div className="flex gap-2">
-                        <select
+                        <SearchableSelect
+                            theme={theme}
+                            findLabel="Find a voice"
+                            wrapperClassName="flex-1"
                             aria-label="Voice"
                             value={v.selectedVoice}
-                            onChange={(e) => { v.setSelectedVoice(e.target.value); v.clearCache(); }}
+                            onChange={(id) => { v.setSelectedVoice(id); v.clearCache(); }}
+                            options={VOICE_OPTIONS}
                             className={`flex-1 ${input}`}
-                        >
-                            {KOKORO_VOICES.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
-                        </select>
+                        />
                         <button
                             onClick={() => (v.isPreviewingVoice ? v.stopVoicePreview() : v.previewVoice(v.selectedVoice))}
                             title={v.isPreviewingVoice ? 'Stop preview' : 'Preview this voice'}
@@ -234,7 +240,33 @@ function VoicePanel({ theme, v }) {
     );
 }
 
+// The languages voice input offers: Auto first, then the engine's, by name. Null while unknown, and when voice
+// input is off or the status can't be read: the row means nothing then, so it isn't shown.
+function useSpeechLanguages(apiHost, apiPort, canChat) {
+    const [languages, setLanguages] = useState(null);
+    const [modelLanguages, setModelLanguages] = useState([]);   // what the server's model is made for; empty: everything
+    useEffect(() => {
+        // /v1/speech/status needs the chat capability: without it the answer is a 403 that makes the app re-check
+        // the session. Don't ask.
+        if (!canChat) return undefined;
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await apiFetch(apiHost, apiPort, '/v1/speech/status');
+                if (!res.ok) return;
+                const body = await res.json();
+                if (cancelled || body?.enabled !== true || !Array.isArray(body.languages)) return;
+                setLanguages([...body.languages].sort((a, b) => a.name.localeCompare(b.name)));
+                setModelLanguages(Array.isArray(body.model_languages) ? body.model_languages : []);
+            } catch { /* the row stays hidden */ }
+        })();
+        return () => { cancelled = true; };
+    }, [apiHost, apiPort, canChat]);
+    return { speechLanguages: canChat ? languages : null, modelLanguages };
+}
+
 function ChatPanel({ theme, ch }) {
+    const { speechLanguages, modelLanguages } = useSpeechLanguages(ch.apiHost, ch.apiPort, ch.canChat);
     // Which model's per-model inference knobs are being edited (defaults to the
     // active chat model). Editing writes inferenceByModel[configModel] via the
     // same pure helpers the chat sidebar used.
@@ -247,7 +279,14 @@ function ChatPanel({ theme, ch }) {
     const configEntry = ch.availableModels.find((m) => m.id === configModel);
     const knobs = supportedKnobs(configEntry);
     // v2.4 Task F: only the context sizes and keep-alive times the server will honour.
-    const ctxOptions = withinLimit(NUM_CTX_OPTIONS, configEntry?.limits?.numCtxMax, 'numCtx');
+    // Admin console v2: a self-hosted Ollama model also says the size the server will load it with.
+    // A fixed size locks the row and shows the admin's number, the same one the help line names (ruling P13). The
+    // person's own value stays stored, untouched: it applies again if the admin unsets the size.
+    const serverCtx = serverContextSize(configEntry);
+    const ctxFixed = serverCtx?.fixedNumCtx ?? null;
+    const ctxOptions = ctxFixed !== null
+        ? [[String(ctxFixed), ctxFixed.toLocaleString('en-US')]]
+        : withAutoLabel(withinLimit(NUM_CTX_OPTIONS, configEntry?.limits?.numCtxMax, 'numCtx'), serverCtx?.autoNumCtx);
     const keepOptions = withinLimit(KEEP_ALIVE_OPTIONS, configEntry?.limits?.keepAliveMaxS, 'keepAlive');
     const input = inputClass(theme);
     return (
@@ -263,29 +302,45 @@ function ChatPanel({ theme, ch }) {
                     </button>
                 </Field>
 
+                {speechLanguages && (
+                    <Field theme={theme} label="Speech language">
+                        <SearchableSelect
+                            theme={theme}
+                            findLabel="Find a language"
+                            aria-label="Speech language"
+                            // A stored language the engine no longer offers shows as Auto (and is sent as Auto).
+                            value={speechLanguages.some((l) => l.code === ch.speechLanguage) ? ch.speechLanguage : 'auto'}
+                            onChange={ch.setSpeechLanguage}
+                            options={[
+                                { value: 'auto', label: 'Auto (detect the language)', pinned: true },
+                                ...speechLanguages.map((l) => ({ value: l.code, label: l.name })),
+                            ]}
+                            className={`w-full ${input}`}
+                        />
+                        <p className={`text-[9px] ${theme.textMuted}`}>What you speak into the microphone button in the message box.</p>
+                        {modelLanguages.length > 0 && (
+                            <p className={`text-[9px] ${theme.textMuted}`}>
+                                This server&apos;s speech model is made for {modelLanguages.join(' and ')}. Auto listens for that, and other languages may come out wrong.
+                            </p>
+                        )}
+                    </Field>
+                )}
+
                 <Field theme={theme} label="Per-model inference">
-                    <select
+                    <SearchableSelect
+                        theme={theme}
+                        findLabel="Find a model"
                         aria-label="Configuring model"
                         value={configModel}
-                        onChange={(e) => setConfigModel(e.target.value)}
+                        onChange={setConfigModel}
+                        options={modelOptions(ch.availableModels, configModel, { empty: 'No models available' })}
                         className={`w-full ${input}`}
-                    >
-                        {ch.availableModels.length === 0
-                            ? <option value="">No models available</option>
-                            : <>
-                                {configModel && !ch.availableModels.some((m) => m.id === configModel) && (
-                                    <option value={configModel} disabled>{configModel} (unavailable)</option>
-                                )}
-                                {groupByProvider(ch.availableModels).map(([provider, models]) => (
-                                    <optgroup key={provider} label={provider}>
-                                        {models.map((m) => <option key={m.id} value={m.id}>{modelLabel(m)}</option>)}
-                                    </optgroup>
-                                ))}
-                            </>}
-                    </select>
+                    />
                     <div className="flex flex-col gap-2 mt-1">
-                        {knobs.numCtx && <InferenceRow theme={theme} label="Context window" disabled={!configModel}
-                            value={shownValue(inf.numCtx === null ? 'auto' : String(inf.numCtx), ctxOptions, 'numCtx')}
+                        {knobs.numCtx && <InferenceRow theme={theme} label="Context window" disabled={!configModel || ctxFixed !== null}
+                            help={ctxFixed !== null ? `Set by your admin: ${ctxFixed.toLocaleString('en-US')} tokens.` : null}
+                            value={ctxFixed !== null ? String(ctxFixed)
+                                : shownValue(inf.numCtx === null ? 'auto' : String(inf.numCtx), ctxOptions, 'numCtx')}
                             onChange={(val) => setInf({ numCtx: val === 'auto' ? null : Number(val) })}
                             options={ctxOptions} />}
                         {knobs.keepAlive && <InferenceRow theme={theme} label="Keep model warm" disabled={!configModel}

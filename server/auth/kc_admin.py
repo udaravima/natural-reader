@@ -16,6 +16,15 @@ class KCAdminError(RuntimeError):
     pass
 
 
+class KCRoleMissing(KCAdminError):
+    """The realm has no role by this name: a realm imported before the role
+    was added to the export. The service account can't create roles (no
+    manage-realm), so the admin creates it in Keycloak."""
+    def __init__(self, role: str):
+        super().__init__(f"realm role {role!r} does not exist")
+        self.role = role
+
+
 class KeycloakAdmin:
     def __init__(self, issuer: str, client_id: str, client_secret: str,
                  *, http: httpx.AsyncClient | None = None):
@@ -119,6 +128,8 @@ class KeycloakAdmin:
 
     async def _role(self, name: str) -> dict:
         r = await self._req("GET", f"/roles/{name}")
+        if r.status_code == 404:
+            raise KCRoleMissing(name)
         if r.status_code != 200:
             raise KCAdminError(f"role {name} lookup {r.status_code}")
         return {"id": r.json()["id"], "name": name}

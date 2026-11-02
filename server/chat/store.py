@@ -41,6 +41,8 @@ class NewAttachment:
     name: str
     data: bytes = field(repr=False)   # never let a stray repr/f-string dump image bytes into logs
     client_id: str | None = None
+    masked: bool = False   # text only: secret values were hidden in the browser
+    real_values: bool = False   # text only: the person chose to send real values, for the model of this turn
 
     @property
     def size(self) -> int:
@@ -66,6 +68,7 @@ class StoredMessage:
     role: str
     content: str
     attachments: list[dict[str, Any]]   # metadata with "ordinal" (C1 rows only)
+    model: str | None = None            # the canonical model id the message was written for (begin_turn's model_id)
 
 
 @dataclass(frozen=True)
@@ -189,7 +192,8 @@ async def begin_turn(*, session_id: str, user_id: str, model_id: str, text: str,
                 "SELECT COALESCE(MAX(timestamp), 0) FROM chat_messages WHERE session_id = %s", (session_id,))
             ts = max(now_ms(), (await cur.fetchone())[0] + 1)
             meta = [{"id": a.client_id or f"att-{i}", "kind": a.kind, "name": a.name,
-                     "mimeType": a.mime, "size": a.size, "ordinal": i}   # ruling R11
+                     "mimeType": a.mime, "size": a.size, "ordinal": i,   # ruling R11
+                     **({"masked": a.masked, "real_values": a.real_values} if a.kind == "text" else {})}
                     for i, a in enumerate(attachments)]
             await conn.execute(
                 "INSERT INTO chat_messages (id, session_id, role, content, attachments, timestamp, status, model) "
@@ -274,18 +278,18 @@ async def load_turn_context(session_id: str, *, exclude: tuple[str, ...]
         row = await cur.fetchone()
         pins = (row[0] if row else None) or []
         cur = await conn.execute(
-            "SELECT id, role, content, attachments FROM chat_messages "
+            "SELECT id, role, content, attachments, model FROM chat_messages "
             "WHERE session_id = %s AND role IN ('user', 'assistant') AND status <> 'streaming' "
             "AND NOT (id = ANY(%s)) "
             "ORDER BY timestamp, CASE role WHEN 'user' THEN 1 ELSE 3 END, created_at, id",
             (session_id, list(exclude)))
         rows = await cur.fetchall()
     history: list[StoredMessage] = []
-    for mid, role, content, atts in rows:
+    for mid, role, content, atts, model in rows:
         if role == "assistant" and not (content or "").strip():
             continue   # a failed or empty reply adds nothing the model can use
         meta = [a for a in (atts or []) if isinstance(a, dict) and "ordinal" in a]
-        history.append(StoredMessage(mid, role, content or "", meta))
+        history.append(StoredMessage(mid, role, content or "", meta, model))
     return pins, history
 
 

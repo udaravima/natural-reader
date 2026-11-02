@@ -20,10 +20,11 @@ import functools
 import json
 import logging
 import math
+import os
 import re
 import time
 from contextlib import aclosing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
@@ -32,20 +33,21 @@ from ..llm.router import UnknownModel
 from ..llm.types import (Attachment, CallSettings, Capabilities, FeatureDropped, Finish, Message,
                          ProviderError, ProviderTimeout, ProviderUnavailable, ReasoningDelta,
                          TextDelta, ToolCall, ToolCallReady, Usage)
-from ..services import assistant_profile, chat_options, inference_budget
+from ..services import assistant_profile, chat_options, deployment_settings, inference_budget, model_settings
 from ..services import doc_pipeline
 from ..services.doc_outlines import Outline, load_outlines
 from ..services.doc_search import ReadableDoc, readable_doc
+from ..services.inference_limits import get_limits
 from . import store
 from .config import ChatConfig
-from .context import TurnInput, build_context
+from .context import TurnInput, build_context, history_real_values
 from .project_map import ProjectMap, build_map
 from .project_scope import ProjectScope, load_project_scope
 from .prompt import document_tools_offered
-from .reader import BatchCall
+from .reader import BatchCall, ReaderConfig, get_reader_config, resolve_model
 from .sources import answer_sources, sources_by_document, web_sources
 from .store import TurnClaim, title_from_prompt
-from .tools import ToolContext, ToolRun, TurnTools, available_tools, result_text
+from .tools import ToolContext, ToolRun, TurnTools, available_tools, result_text, tool_spec
 from .tools.scope import scope_docs
 from .web_consent import (APP_WEB_CALL_ID, app_web_exchange, app_web_search, clean_query, offer_note, search_possible,
                           web_offer)
@@ -116,6 +118,8 @@ class TurnRequest:
     project_id: str | None = None
     # The user said yes to this web search (context.web, C2.1 spec 5.8): the app runs it before the first step.
     web_query: str | None = None
+    # A text file of this message was sent with its real values (the person's choice for THIS model).
+    real_values: bool = False
 
 
 @dataclass
@@ -261,6 +265,15 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         async with get_pool().connection() as conn:
             profile = await assistant_profile.load_profile(conn)
         options = await _chat_options()
+        # One context size per self-hosted Ollama model, for every call of the turn and for the trimming window:
+        # Ollama loads a model at 4,096 tokens unless the request names a size (services/model_settings.py).
+        # `models_cfg` and `settings` are what the turn's other parts (the reader) are handed.
+        models_cfg = await _models_settings()
+        provider, model_name = router.resolve(req.model_id)     # the route already resolved it: never UnknownModel
+        model_key = f"{provider.config.name}:{model_name}"
+        sized = model_settings.sizes_context(provider.config, model_name)
+        settings = replace(req.settings, num_ctx=model_settings.num_ctx_for(
+            models_cfg, model_key, local=sized, user_value=req.settings.num_ctx, limits=get_limits()))
         # What was approved is what the user saw: a query with hidden characters is cleaned first, and one with
         # nothing visible left is no approval (chat/web_consent.py).
         web_query = clean_query(req.web_query) if req.web_query else None
@@ -277,10 +290,17 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         max_rounds = cfg.project_max_tool_rounds if req.project_id else cfg.max_tool_rounds
         tools_on = caps.tools is not False and max_rounds > 0
         project_map, outlines = await _project_map(project, cfg, tools_on) if project else (None, {})
+        # A turn that holds a file sent with its real values never searches the web unasked: "auto" behaves as
+        # "ask", so the person sees a query before it leaves (a file's words can ride out in one). Kept files
+        # only count when this model may see them (chat/context.py); trimming is decided later, so this errs safe.
+        web_mode = options.web_search
+        if web_mode == "auto" and (req.real_values or history_real_values(history, req.model_id)):
+            web_mode = "ask"
         tool_ctx = ToolContext(req.user_id, doc, cfg=cfg, project=project, question=req.text,
                                map_shortened=bool(project_map and project_map.shortened), outlines=outlines,
-                               model=req.model_id, web_mode=options.web_search, web_approved=bool(web_query),
-                               charge=functools.partial(_charge_reader, req.user_id))
+                               model=req.model_id, web_mode=web_mode, web_approved=bool(web_query),
+                               charge=functools.partial(_charge_reader, req.user_id),
+                               reader_cfg=_turn_reader(router, models_cfg, req.model_id, model_key, settings))
         offered = [] if caps.tools is False else available_tools(tool_ctx)
         app_exchange = ()
         if web_query and tools_on and search_possible():
@@ -296,13 +316,16 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         built = await build_context(TurnInput(
             user_id=req.user_id, text=req.text, attachments=req.attachments, doc=doc,
             timezone=req.timezone, pins=pins, history=history,
-            window=_window(router, req, caps), now=datetime.now(timezone.utc),
+            window=_window(provider.config, model_key, settings, caps, models_cfg), now=datetime.now(timezone.utc),
             tools=tuple(offered if max_rounds > 0 else ()), tool_ctx=tool_ctx,
             profile=profile.text, scope=tuple(scope_docs(tool_ctx)),
-            project_map=project_map.text if project_map else "", app_exchange=app_exchange), cfg)
+            project_map=project_map.text if project_map else "", app_exchange=app_exchange,
+            default_timezone=await _deployment_timezone(),
+            model=req.model_id), cfg)
         tool_ctx.shown.update(built.shown_chunk_ids)
         # Document text the model already has: the web search guard's reference.
         tool_ctx.seen_text.extend(built.shown_texts)
+        tool_ctx.seen_text.extend(built.file_texts)   # attached files, kept or current (a search query may not carry them)
         tool_ctx.evidence.extend(built.evidence)
         tool_ctx.seen_text.extend(str(p.get("text") or "") for p in pins if isinstance(p, dict))
         if project_map:   # its openings and headings are document text too
@@ -389,8 +412,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             last_flush = time.monotonic()
             failed = False
             try:
-                async with aclosing(router.stream_chat(req.model_id, messages, [t.spec for t in tools_now],
-                                                       req.settings)) as stream:
+                async with aclosing(router.stream_chat(req.model_id, messages, [tool_spec(t, tool_ctx) for t in tools_now],
+                                                       settings)) as stream:
                     async for chunk in stream:
                         if isinstance(chunk, ReasoningDelta):
                             if not open_reasoning:
@@ -462,7 +485,8 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
                 usage = Usage(0, 0)   # refused before generating anything: nothing to charge (as _finalize)
             else:
                 usage = await asyncio.shield(_record_usage(req.user_id, usage, messages,
-                                                           text + probe.held + reasoning))
+                                                           text + probe.held + reasoning,
+                                                           model=req.model_id, kind="chat"))
             state.add(usage, finish)
             yield ev("finish-step", step=step, usage=_usage_json(usage), finishReason=finish)
             await _save(claim, state)
@@ -586,7 +610,8 @@ async def _finalize(claim: TurnClaim, state: _State, outcome: str, req: TurnRequ
             # that refuses before generating anything (e.g. HTTP 400 on an
             # invalid model) leaves nothing to charge (walk fix 2).
             if outcome == "aborted" or _billable(state.pending_usage, state.pending_output):
-                await _record_usage(req.user_id, state.pending_usage, state.pending_messages, state.pending_output)
+                await _record_usage(req.user_id, state.pending_usage, state.pending_messages, state.pending_output,
+                                    model=req.model_id, kind="chat")
             state.step_recorded = True
         if outcome == "aborted":
             await _log_event(claim.session_id, "aborted", "user stopped the stream")
@@ -666,9 +691,11 @@ async def _log_sent(claim: TurnClaim, req: TurnRequest) -> None:
                      f"prompt: {title_from_prompt(req.text or '(attachment only)')}")
     if req.attachments:
         images = sum(1 for a in req.attachments if a.kind == "image")
-        audio = len(req.attachments) - images
+        audio = sum(1 for a in req.attachments if a.kind == "audio")
+        texts = len(req.attachments) - images - audio
         parts = ([f"{images} image{'s' if images > 1 else ''}"] if images else []) + \
-                ([f"{audio} audio"] if audio else [])
+                ([f"{audio} audio"] if audio else []) + \
+                ([f"{texts} text file{'s' if texts > 1 else ''}"] if texts else [])
         await _log_event(claim.session_id, "attached", ", ".join(parts))
 
 
@@ -680,13 +707,16 @@ async def _capabilities(router: Any, model_id: str) -> Capabilities:
         return Capabilities()
 
 
-def _window(router: Any, req: TurnRequest, caps: Capabilities) -> int | None:
-    """The trimming window (ruling R14): num_ctx is an Ollama option, so it
-    counts only when the model's provider is Ollama. A value left over from an
-    Ollama model must not trim an OpenAI-kind chat (final review M4)."""
-    if req.settings.num_ctx and router.provider_kind(req.model_id) == "ollama":
-        return req.settings.num_ctx
-    return caps.context_window
+def _window(provider: Any, model_key: str, settings: CallSettings, caps: Capabilities,
+            models_cfg: model_settings.ModelsSettings) -> int | None:
+    """The trimming window (ruling R14): num_ctx is an Ollama option, so it counts only when the model's provider is
+    Ollama (final review M4) and a size is sent. Otherwise the model's own reported window, then the one the admin
+    or the environment declared for a model that reports none (model_settings.declared_window)."""
+    if settings.num_ctx and provider.kind == "ollama":
+        return settings.num_ctx
+    if caps.context_window:
+        return caps.context_window
+    return model_settings.declared_window(models_cfg, model_key, provider.name, os.environ)[0]
 
 
 async def _project_scope(req: TurnRequest) -> ProjectScope:
@@ -760,6 +790,56 @@ async def _chat_options() -> chat_options.ChatOptions:
         return chat_options.from_env()
 
 
+def _turn_reader(router, models_cfg: model_settings.ModelsSettings, chat_id: str, chat_key: str,
+                 chat_settings: CallSettings) -> ReaderConfig:
+    """The reader's settings for this turn, fixed once: the knobs from the environment, the model from the Models
+    settings ("chat" is the turn's own model), and the context size it is loaded with. That size is the chat's
+    when the reader is the chat model, so one model is loaded once; the reader model's own (num_ctx_for, with
+    none of the person's value: it is their chat's) when it is another model. Both only for a model that needs one
+    named (any Ollama you host); none for any other (Ollama cloud and openai-kind send none, even when the person
+    set a size for a cloud chat). A reader model the router
+    can't place keeps its name and gets no size: its calls fail as the reader's own provider_error result,
+    never the turn. A model the router can place is named by its canonical `provider:name` on every path, so the
+    usage rows count `gemma4:e4b` and `ollama:gemma4:e4b` as one model."""
+    cfg = replace(get_reader_config(), model=models_cfg.reader)
+    named = resolve_model(cfg, chat_id)
+    cfg = replace(cfg, model=named)
+    try:
+        provider, name = router.resolve(named)
+    except UnknownModel:
+        return cfg
+    key = f"{provider.config.name}:{name}"
+    cfg = replace(cfg, model=key)
+    if not model_settings.sizes_context(provider.config, name):
+        return cfg      # a cloud or openai-kind model needs none (the person's chat value is not the reader's to send)
+    if model_settings.same_model(key, chat_key):
+        return replace(cfg, num_ctx=chat_settings.num_ctx)
+    return replace(cfg, num_ctx=model_settings.num_ctx_for(
+        models_cfg, key, local=True, user_value=None, limits=get_limits()))
+
+
+async def _models_settings() -> model_settings.ModelsSettings:
+    """The admin's model settings, read once per turn. Fail-open like _chat_options: if the row can't be read, the
+    environment's values apply (INFERENCE_LOCAL_NUM_CTX, then the default)."""
+    try:
+        async with get_pool().connection() as conn:
+            return await model_settings.load_models_settings(conn, os.environ)
+    except Exception:  # noqa: BLE001 — see above
+        logger.warning("The model settings couldn't be read: using the environment's", exc_info=True)
+        return model_settings.from_env()
+
+
+async def _deployment_timezone() -> str:
+    """The deployment's timezone, for the "Today" line when the browser sent none. Fail-open like _chat_options:
+    if the row can't be read, UTC."""
+    try:
+        async with get_pool().connection() as conn:
+            return await deployment_settings.deployment_zone_name(conn)
+    except Exception:  # noqa: BLE001 — see above
+        logger.warning("The deployment timezone couldn't be read: using UTC", exc_info=True)
+        return "UTC"
+
+
 async def _over_budget(user_id: str, deployment_budget: int | None) -> bool:
     try:
         async with get_pool().connection() as conn:
@@ -782,17 +862,21 @@ async def _charge_reader(user_id: str, call: BatchCall) -> None:
     the provider's own count when it sent one, else the chars/4 estimate (`_record_usage`). A call that failed or
     timed out is charged only if it produced something, by the rule of a step cut short (`_billable`). It only adds
     to the day's totals: it refuses nothing (the next step's check does), and it is not part of the reply's own
-    usage, which is the chat model's. The usage table has no model column: the log line names the reader model."""
+    usage, which is the chat model's. The row is the reader's own: `call.model` (the canonical id `_turn_reader`
+    resolved), kind "reader", so the admin's usage page can tell it from the chat's. The log line names it too."""
     if not call.finished and not _billable(call.usage, call.output):
         return
-    usage = await asyncio.shield(_record_usage(user_id, call.usage, list(call.messages), call.output))
+    usage = await asyncio.shield(_record_usage(user_id, call.usage, list(call.messages), call.output,
+                                               model=call.model, kind="reader"))
     logger.info("reader usage user=%s model=%s tokens=%d+%d estimated=%s", user_id, call.model,
                 usage.prompt_tokens, usage.completion_tokens, usage.estimated)
 
 
-async def _record_usage(user_id: str, usage: Usage | None, messages: list[Message], output: str) -> Usage:
-    """Record the step's usage now. A provider that sends no counts is charged
-    an estimate (chars/4), so it can't be used for free (spec §5.6)."""
+async def _record_usage(user_id: str, usage: Usage | None, messages: list[Message], output: str, *,
+                        model: str, kind: str) -> Usage:
+    """Record the step's usage now, under `model` (canonical `provider:name`) and `kind` ("chat" or "reader").
+    A provider that sends no counts is charged an estimate (chars/4), so it can't be used for free (spec §5.6); the
+    row marks those tokens as estimated."""
     if usage is None:
         prompt = math.ceil(sum(len(m.content) for m in messages) / 4)
         usage = Usage(prompt, math.ceil(len(output) / 4), estimated=True)
@@ -800,7 +884,8 @@ async def _record_usage(user_id: str, usage: Usage | None, messages: list[Messag
                        usage.prompt_tokens, usage.completion_tokens)
     try:
         async with get_pool().connection() as conn:
-            await inference_budget.record_usage(conn, user_id, usage.prompt_tokens, usage.completion_tokens)
+            await inference_budget.record_usage(conn, user_id, usage.prompt_tokens, usage.completion_tokens,
+                                                model=model, kind=kind, estimated=usage.estimated)
     except Exception:
         logger.warning("Usage accounting failed (fail-open)", exc_info=True)
     return usage

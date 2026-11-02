@@ -4,6 +4,387 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-11-02
+
+**Speak a message, and hand the chat a file.** A microphone beside the paperclip
+records up to 2 minutes and puts the text in the box to edit and send, on your own
+server by default. A small text file can join a conversation, with its secrets masked
+in the browser before anything is uploaded. **The admin console now runs the
+deployment:** an Overview that checks everything, Models, Documents, usage by model
+and person, a timezone and defaults, with long lists that scroll and search and Save
+always on screen. **Speech models** are chosen and added there with no restart,
+including fine-tuned Sinhala and Tamil models. Two migrations, `023` and `024`: back up
+the database first, because 023 can't simply be rolled back.
+
+### Added
+
+- **Attach a text file to a chat message, with its secrets hidden first.** The
+  paperclip (**Attach an image or a text file**), a drag onto the chat and a pasted
+  file all take small text files (`.env`, `.txt`, `.md`, `.json`, `.yaml`, source
+  files and similar; 64 KB each, 128 KB per message). The browser masks secret
+  values **before anything is uploaded**: in an env file every value except ones
+  like `true`, a port or a short number, and in any other file only what looks like
+  a secret (private keys, well-known tokens, JWTs, `password:` lines, a password in
+  a URL). The file shows as a chip with **N values masked**; click it to see exactly
+  what will be sent, and **Send real values** (it asks first, names the model, and
+  says when it runs on a cloud service) to send the original. Things to know:
+  - Masking is a safety net, not a guarantee. A short all-digit password in an env
+    file is **not** masked: to a program it looks like a port.
+  - Changing the model puts masking back on, with the notice "Masking is back on:
+    you changed the model."
+  - **Real values stay with the model you agreed for.** If you send real values to
+    one model and then pick another in the same chat, neither the file **nor that
+    model's replies** are sent to the other model (a reply can quote the values). The
+    other model sees a short note in their place, and under its reply you read "*name*
+    wasn't sent to this model: its real values were agreed for another one. Earlier
+    replies that read it weren't sent either." (a note saved with the reply, so it is
+    still there after a reload). Back on the first model both are sent again; to use
+    the file with another one, attach it again. Replies from before the file, and from
+    models never given the values, stay. A masked file follows the chat to any model.
+    **Not held back:** anything you typed or pinned yourself, and anything a model
+    passes to a reader model as a written request. While a real-values file is part of
+    the conversation, a web search set to **Auto** asks first, as **Ask** does, so you
+    see the query before it leaves; the search guard also refuses a query that copies
+    a run of the file's (or a document's) text, though a short phrase or a lone token
+    can still pass, which is why that turn asks first. A file bigger than the model's
+    context window is still sent in full (the new message is never trimmed), but you
+    get "*name* is larger than this model's context: it may read only part of it."
+    under the reply, and the context meter counts a staged file before Send.
+  - The model reads each file as an `<attached_file>` block in the message, so it
+    works with every model and provider. The bubble shows the chip, not the text,
+    and after a reload the chip stays but the text isn't shown again.
+- **Voice input: speak a message.** A **microphone** button beside the paperclip
+  records up to 2 minutes; **Stop** sends it to the server, which turns it into
+  text that lands in the message box at the cursor. Nothing is sent for you.
+  **Cancel** or **Esc** throws a recording away. **Settings -> Chat -> Speech
+  language** picks a language (default **Auto**); **Admin -> Defaults for users ->
+  Speech language** sets the starting one. Things to know:
+  - **Off by default.** An admin turns it on under **Admin -> Chat options ->
+    Voice input**, or `CHAT_VOICE_INPUT=on` sets the starting value. **Admin ->
+    Overview -> Voice input** says whether it is ready.
+  - The default engine is [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+    with the `small` model on the server's CPU: nothing leaves the server. The first
+    time it is turned on it downloads 464 MB (46.6 s plus load on the test machine)
+    and the Python packages add about 276 MB to the image. `SPEECH_ENGINE=openai`
+    uses any OpenAI-compatible transcription server instead, which can cost money
+    per minute with no budget in the app beyond 2 minutes and 10 MB per recording
+    and one at a time per worker. A recording is kept in memory for one request:
+    never written to disk, the database or a log by the app (a reverse proxy in
+    front of it may buffer an upload to disk: see DEPLOYMENT.md, "Recordings and your
+    reverse proxy").
+  - On a CPU-only machine, a local model's reply took about 1.5 to 2 times as long
+    while a transcription ran (one machine; a cloud model's reply was not slowed).
+    The local engine's default threads are now shared between `WORKERS`
+    (`max(1, cores // (2 * WORKERS))`), so all workers together stay at half the
+    machine. A worker whose model failed to load retries by itself, at most every 5
+    minutes. Leaving the chat view while recording throws the recording away, with a
+    toast saying so. Without `pip install -r requirements.txt` after a bare-metal
+    pull, the backend still starts and the Overview names the missing package.
+  - It needs https (or `localhost`) for the microphone. The six `SPEECH_*` and
+    `CHAT_VOICE_INPUT` settings, the cost on the server, how to choose a model (it
+    must be in CTranslate2 format) and the nginx notes are in
+    [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#voice-input).
+  - Replaces the old microphone component, which had been switched off since 1.7
+    (it sent the recording to the model as audio, which Ollama's gemma4 rejected).
+    An audio *file* dropped onto the chat is still refused.
+- **Choose the speech model in the admin console.** **Admin -> Chat options -> Voice
+  input -> Speech model** lists the models and switches between them with no restart.
+  One model runs for the whole server. Stock Whisper models stay the default and the
+  right choice for English; nothing downloads until a model is chosen. Things to know:
+  - **Fine-tuned models for Sinhala and Tamil are in the list**, and they just work:
+    a Transformers-format model is converted to CTranslate2 the first time it runs (a
+    few seconds, in its own process). On the same clip, run12 went from gibberish on
+    stock `small` to readable Sinhala in about 2 s. Unconverted it took 8.9 s against
+    1.9 s, and three times the memory, so there's an unconverted entry for comparing.
+  - **Add a model** from Hugging Face under the list, as `owner/name`. It's checked at
+    once (a typo, a private repo or a repo that isn't Whisper is refused with the
+    reason) and pinned to a commit. **Added here** has a **Remove** for each model you
+    added, in use or not.
+  - **Or from a file:** `SPEECH_MODELS_FILE` adds models from YAML. It's a path on the
+    host, which `startup.sh` mounts through the new `compose.speech.yml`, and
+    `SPEECH_MODEL` can name any id in the list.
+  - **Converting needs `torch` and `transformers`,** which only the Docling build has.
+    On the plain image those models show greyed out with the reason, until one
+    converted elsewhere is copied in. The same route serves a server that can't reach
+    Hugging Face: see DEPLOYMENT.md.
+  - With **Auto**, a model made for one language is told that language, because
+    detection fails on fine-tunes (it called Sinhala Kannada at 0.92 confidence).
+    **Settings -> Chat -> Speech language** says what the server's model is for.
+  - One model at a time means a server can't specialise in Sinhala and Tamil together.
+- **Long lists are scrollable and searchable, and Save stays on screen.** The Save bar
+  of an admin section now sticks to the bottom of the view, so a long list never makes
+  you scroll to the end to save. Past 12 entries, a list gets a search box: the
+  per-model lists under **Admin -> Models** scroll in their own box, and long dropdowns
+  (timezone, reader, chat model, voice, speech language) narrow as you type. Searching
+  hides rows, not what they hold, and a box with a mistake in it stays visible.
+- **The admin console is split into sections.** **Overview**, **People**,
+  **Projects**, **Models**, **Documents**, **Chat**, **Defaults for users**,
+  **Usage** and **Deployment**, in a list down the side (a picker on a phone), the way
+  Settings is laid out. People, Projects, Chat and Defaults for users
+  work as before; they moved. Usage moved too and changed (see below). Open the console with the shield button in the
+  header. It uses arrow keys, Home and End to move between sections, and its
+  buttons are at least 44 px tall on a phone.
+- **Usage by model, person and day.** **Admin console -> Usage** now opens on
+  **By model**: one row per model with **Where** (**Local**, **Cloud** or
+  **Unknown**), **Chat** and **Reader** tokens, **Requests**, **Total** and
+  **Estimated**. **By person** lists each person; the arrow on a row (**Models
+  for** their address) opens that person's own per-model rows. **By day** lists
+  the days of the range. On **By person** and **By day** a **Model** select
+  narrows the list to one model (or **Unknown**); an opened person's rows follow
+  it. The **Usage days** select (last 1, 7, 14, 30 or 90 days) applies to all
+  three views and resets the **Model** select to **All models**. Things to know
+  when reading it:
+  - Reader tokens are booked to the reader model's own row, so the chat model's
+    row can read **Reader** 0 while another row carries the reader.
+  - Usage recorded before this upgrade can't be split. It shows as model
+    **Unknown** with **Chat** and **Reader** 0 but its tokens in **Total**, so
+    **Chat** plus **Reader** can be less than **Total**. It still counts toward
+    each person's budget for that day, so an upgrade mid-day changes nobody's
+    remaining budget.
+  - **Where** follows the provider's mark **now** (**Models -> Providers**:
+    Auto, Local or Cloud), not the mark when the tokens were spent. Changing a
+    mark re-labels history. A model whose provider was removed from the
+    configuration shows **Unknown**. So does a reader model the router can't
+    place: it is recorded under its bare name (the **Model** cell shows that
+    name) and it is the **Where** cell that reads **Unknown**.
+  - **Estimated** is the share of a row's tokens counted from text length
+    (characters / 4) because the provider sent no counts. Ollama always sends
+    counts, so with Ollama it normally reads a dash.
+  - **Requests** counts model calls: each chat step and each reader batch is one
+    request, so a reply that uses tools makes several chat requests.
+  - The old Usage table's Prompt and Eval columns and its person-by-day rows
+    are no longer in the screen. `GET /v1/admin/inference/usage` with no `group`
+    still returns them, and `group=day&user_id=<id>` gives one person's days.
+  - `GET /v1/admin/inference/usage` takes `group` (`user_day`, `model`, `user`
+    or `day`), `user_id` and `model` (empty means the **Unknown** rows). Without
+    `group` it returns the old one-row-per-person-per-day list, so scripts keep
+    working. A bad `group` or `user_id` is a 422.
+- **Overview checks that the deployment works.** One line each for model
+  providers, the reader, context windows, embeddings, Docling and web
+  search, with a state (OK, Warning, Problem, Off) and a button to look
+  again. A check that hangs is cut off after 5 seconds and says so, without
+  holding up the others. **Context windows** lists each chat model with its
+  window and whether a project-chat turn fits in it. A self-hosted Ollama
+  model's window is the size requests to it send (or what it is loaded with
+  right now), never Ollama's maximum; other models report what their provider
+  says, else what an admin declared under **Models**, else "Unknown".
+- **One look for every console setting.** A setting shows where its value
+  comes from: **Set here.**, **From the server setting** `NAME`, or **The
+  default.**. **Use the server setting** drops what you set. A section has one
+  **Save**, and leaving it with unsaved changes asks first (**Keep editing** or
+  **Discard changes**). Every saved change is written to the audit log.
+- **A timezone for the deployment.** Under **Deployment**, pick the zone the
+  daily token budget, the usage days and the chat's "Today is" line use. It
+  applies from the next request. Without a choice here, the `TZ` variable is
+  used, then UTC (before this, these were always UTC). The same section lists
+  the server's own values (providers, storage, Docling, web search, workers)
+  read-only; secrets only show as set or not set.
+- **Limits on Docling conversion.** Under **Documents**, an admin chooses who
+  may convert (everyone with the reader capability, or only people with the new `docling`
+  role; admins always can), which presets are offered, whether OCR and picture
+  descriptions are allowed, and the most pages one conversion may cover. The
+  convert dialog greys out what is off with "Turned off by your admin", and
+  Convert waits for a page range that fits. The server enforces the same
+  rules when a conversion starts. When OCR is off, **Accurate** is off too,
+  because it runs OCR. `DOCLING_CONVERT_BY`, `DOCLING_PRESETS`,
+  `DOCLING_ALLOW_OCR`, `DOCLING_ALLOW_PICTURE_DESCRIPTION` and
+  `DOCLING_MAX_PAGES` set the starting values; the console can only narrow
+  what they allow.
+- **A `docling` role.** Tick it for a person under **People**, or give them
+  the `docling` realm role in Keycloak. It only matters when conversion is
+  limited to that role. A personal access token with the `documents` scope
+  carries it. A Keycloak realm set up before this release doesn't have the
+  role: create it once (**Realm roles → Create role**, name `docling`). Until
+  then, ticking it under **People** says so and changes nothing, instead of a
+  bare "HTTP 502".
+- **A Models section in the admin console** (**Admin console -> Models**).
+  Six settings, each with the usual source line, **Use the server setting** and
+  one Save, applying from the next message:
+  - **Reader**: the model that reads documents and web pages for the chat
+    model. **The chat model of each conversation** (the default) or any model
+    the providers list. A model outside the deployment's allow-list
+    (`INFERENCE_MODELS`, `INFERENCE_<NAME>_MODELS`) is refused on Save, and the
+    Overview's Reader line is an error if the reader, from any source, names one.
+  - **Context size for local Ollama models**: one size for every request to a
+    self-hosted Ollama model, so it loads once. **Per-model sizes** override it
+    for one model. Both are clamped to `INFERENCE_NUM_CTX_MAX`.
+  - **Declared context windows**: what history is trimmed to for a model whose
+    provider reports no window (most OpenAI-compatible servers).
+    `INFERENCE_<NAME>_CONTEXT_WINDOW` sets one for a whole provider.
+  - **Providers**: **Auto**, **Local** or **Cloud** for each provider. This is
+    the cost flag (the Overview's quota hint and the **Where** column in
+    **Usage**) and nothing else: a self-hosted Ollama marked **Cloud** is still sized.
+  - **Chat models offered**: tick the models people may choose. It can only
+    narrow what `INFERENCE_MODELS` and the providers' allow-lists permit; none
+    ticked means every model the server allows. If every ticked model has
+    gone from the providers, nobody is offered a model and the Overview's
+    **Context windows** line says so.
+- **People can be searched and filtered.** A box over the list finds a person
+  by name, email or username (the server does the searching, not the
+  browser), and **Status** and **Capability** narrow it further. The list loads
+  50 at a time with **Show more**, under a "Showing 50 of 212" line.
+  A deployment whose frontend is on another origin needs nothing extra: the
+  server now exposes `X-Total-Count` to cross-origin requests.
+- **Settings tells a person when the admin fixed the context size.** For a
+  self-hosted Ollama model, **Settings -> Chat -> Context window** reads
+  "Set by your admin: 16,384 tokens." and is locked when the admin or
+  `INFERENCE_LOCAL_NUM_CTX` set a size, and otherwise its **Auto** option
+  names the size the server will use ("Auto (16,384 on this server)").
+- **Overview's Reader and Context windows lines follow Models.** The reader
+  line says where the reader comes from (set in Models, a server setting, or
+  the chat model) and, when it is the chat model and some chat model is a cloud
+  one, that reader calls count against that model's quota. A local model's
+  window is the size requests to it send, not Ollama's maximum.
+
+### Upgrade notes
+
+- **Migration 024 (applied on start) widens one check:** `chat_attachments.kind`
+  also accepts `'text'`, so a message can carry a text file. Nothing else changes,
+  no data is touched, and it is safe to run twice. Its Down is in the file's header
+  (`server/sql/024_text_attachments.sql`); it deletes the text attachments, restores
+  the old check and forgets the version, so run it only to roll back. **Voice input
+  stays off**, and nothing is downloaded or loaded, until an admin turns it on. An
+  existing **Web search** setting is left as it was. The backend image is about
+  276 MB larger (`faster-whisper`, `ctranslate2`, `av`), so rebuild it
+  (`./startup.sh rebuild`); a bare-metal install needs `pip install -r
+  requirements.txt` again. Behind nginx, `/v1/speech/transcriptions` needs
+  `client_max_body_size` above 10 MB (the sample vhost's 100m is enough).
+
+- **Convert → Images → Keep** (it used to read Embed) only applies to new
+  conversions. A document converted before this has no pictures saved; convert it
+  again to get them. Back up `DOC_STORAGE_DIR/figures/` with the documents.
+
+- **Migration 023 changes `inference_usage`** (applied on start): the key becomes
+  `(user_id, day, model, kind)` and `model`, `kind` and `estimated_tokens` are
+  added. Rows already there keep their tokens as model `''`, kind `''` (shown as
+  **Unknown**). Rolling back needs the manual Down SQL in the file's header
+  (`server/sql/023_usage_by_model.sql`), because the old one-row-per-day key
+  can't be restored while per-model rows exist. **Run it before starting the
+  previous image against a migrated database.** Without it, every usage write
+  of the old image fails (logged, swallowed so a chat turn still works), so
+  budgets stop counting new usage, and the only sign is a log warning
+  ("Usage accounting failed"). Back up the database first.
+- **An existing Keycloak realm needs the `docling` realm role created by hand**
+  (Realm roles, Create role, name `docling`). The realm export only seeds a
+  new database, so a running realm doesn't get it. Until it exists, ticking
+  **docling** under **People** fails at the Keycloak write while the
+  Keycloak admin client is configured. You only need this if you want
+  "only people with the Docling role". A role given in Keycloak applies at the
+  person's next login; one ticked under **People** applies at once.
+- `tzdata` is added to `requirements.txt` so Windows has a zone database.
+- **If your environment sets `TZ`, the daily token budget and the usage days
+  follow it from this release, with no console action.** `TZ` is the
+  fallback for the new deployment timezone, and it is often set for log
+  timestamps. Each person's budget then resets at local midnight instead of
+  UTC midnight, the day of the switch gives an early or late reset, and the
+  days in **Usage** shift. To keep UTC days, choose UTC under **Deployment**.
+- Apart from that, nothing changes until an admin changes it: conversion stays
+  open to everyone with the reader capability, with every preset, OCR and
+  picture descriptions on, and no page limit.
+- Not yet in the console: changing the embedding model, a later phase.
+- **The reader moves to the chat model** on a deployment that sets none of
+  `READER_MODEL`, `SUMMARIZE_MODEL` or `WEB_SEARCH_SUMMARY_MODEL`. It used to
+  be `llama3.2:3b`. With a cloud chat model, reader calls count against its
+  quota; choose a local reader under **Admin console -> Models -> Reader** to
+  keep them off it.
+- **Local Ollama models now get 16,384 tokens** instead of Ollama's own 4,096
+  (on under 24 GiB of VRAM), unless a person or the admin sets a size. A larger
+  context reserves more memory when the model loads. Size it down under
+  **Models**, or with `INFERENCE_LOCAL_NUM_CTX`, on a machine short of RAM. A
+  model that was already loaded at another size reloads once, on its first
+  message after the upgrade.
+- **A person's own context size stops applying to local Ollama models** once
+  the admin sets one (in **Models**, or `INFERENCE_LOCAL_NUM_CTX`). Their value
+  stays stored and applies again if the admin unsets it. It still applies to
+  models the app does not size (Ollama cloud models). The admin's Local/Cloud
+  mark on a provider decides only what counts as cloud usage: an Ollama the
+  deployer hosts is sized whichever way it is marked.
+- **The Deployment section no longer lists "Reading model".** The reader is set
+  in **Models**, and the Overview's Reader line shows what it resolves to.
+
+### Changed
+
+- **Voice input listens better, and a clip it can't understand no longer stalls it.**
+  The local engine's voice activity detector threshold is 0.4, not 0.5, because 0.5
+  cut real speech out of volunteer recordings (median Tamil error 0.24 against 0.14).
+  `temperature=0` stops Whisper's retries: stock `small` on 8 Sinhala clips took 27 s,
+  not 171 s, and the worst Tamil clip 2.7 s, not 18.2 s. English came out word for word
+  the same. A model that fails on a recording now says so, instead of a server error.
+
+### Fixed
+
+- **Pictures survive a conversion.** **Images: Embed** in the Convert dialog cropped
+  each picture and then threw it away: the Markdown got an invisible placeholder.
+  The option is now **Keep**: each picture is saved beside the document as a PNG and
+  shows in **MD** view, for anyone who can read the document, without adding a byte
+  to the text that is searched or sent to the model. **Describe** keeps them too.
+  Tiny pictures aren't kept, and a repeated one is saved once.
+
+- **A local Ollama model no longer silently loses the start of a long chat.**
+  Ollama loads a model at 4,096 tokens on a machine with under 24 GiB of VRAM
+  unless the request names a size, and the app trimmed history against the
+  model's maximum (for example 131,072), so it never trimmed and Ollama cut the
+  prompt without a word. Every request to a self-hosted Ollama model now names
+  a size (16,384 unless set) and history is trimmed to it.
+- **The reader no longer makes Ollama reload the chat model.** Each reader
+  batch asked for a context size of its own, and Ollama reloads a loaded model
+  whenever a request's size differs, so chat and reader calls alternating on
+  one local model reloaded it each time. A turn now uses one size for the chat
+  and for a reader that is the same model, and a different self-hosted reader
+  keeps its own size. A batch is cut to fit that size.
+- **History is trimmed for a model that reports no window.** A model whose
+  provider gave no context window was never trimmed. An admin can now declare
+  one (**Models -> Declared context windows**, or
+  `INFERENCE_<NAME>_CONTEXT_WINDOW`), and the Overview says "Unknown" until
+  one is declared.
+- **A reader on a model the app doesn't size sends no context size** (Ollama
+  cloud models, `kind=openai` providers); it used to send one per batch. Those
+  models get the window their provider reports, and each batch is cut to fit it.
+- **A file opened from a folder can be indexed.** Index on a Markdown or
+  text file opened with **Open folder** used to refuse ("open the file
+  itself with Choose File"). The reader now keeps the file's bytes when it
+  opens it, so Index uploads that file, and it gets its own server copy and
+  chat. A file in "Your Library" with the same name is still never used in
+  its place.
+- **Docling conversion shows its progress.** The Convert button used to say
+  "Converting" until the whole PDF was done. It now shows **Queued** while the
+  upload's own indexing of the PDF's text runs first (the two share the
+  document's lock), **Preparing** while Docling loads its models, **Converting 3/40** as pages finish, then
+  **Assembling** and, when pictures are described, **Enriching 2/5**. The
+  server stores Docling's latest report in `documents.conversion_progress`
+  (migration 022) and `GET /v1/docs/{id}` returns it. A conversion Docling
+  fails on now offers **Retry convert** with the reason, as a failed upload
+  did, instead of a plain **Convert**.
+- **Project chat finds a document named with its number.** The project map
+  lists documents as `17. "README.md"`. Next to names that start with their
+  own number (`10-pbx.md`), the model wrote `17-README.md`, and every tool
+  answered "Unknown document" until the turn ran out. A tool now takes the
+  number and the name together, or the name in quotes, as long as both name
+  the same document. Its "Use a number or name from the list" error lists
+  them the way the map does.
+- **Project chat: a document that isn't searchable yet is named as such by
+  every tool.** `search_documents` answered "Unknown document" for a project
+  document still indexing (or failed), so the model kept guessing; it now
+  says `Document 16 ("…") isn't searchable yet.`, as the other tools did.
+- **The search and page tools describe the chat they're in.** A project chat
+  was told `search_documents` "searches the open document" and
+  `read_document_pages` "reads the open document"; they now say they reach
+  the project's documents, named by the number or name in the project map. A
+  one-document chat's tools no longer offer a document field that was
+  ignored. Measured side by side against the previous wording on the cloud
+  model (3 repeats): project eval 33/42 against 32/42, document eval 27/27
+  both.
+
+### Docs
+
+- **Every living document was checked against the code (2026-11-01).** Screens
+  that moved are named where they are now (Settings, the admin console's sections),
+  and claims that had stopped being true are gone: sharing and project members
+  being API-only, a Make admin button, roles being "owned by the app" (they are
+  Keycloak realm roles), a browser mode with no backend, pins having no system
+  prompt ahead of them, a Vite proxy to Ollama, and more. **Docs → DEPLOYMENT**
+  gains worked examples for vLLM, Unsloth, OpenAI and Claude.
+
 ## [2.4.0] - 2026-10-25
 
 **Ask a whole project.** A chat can cover every current document in a
