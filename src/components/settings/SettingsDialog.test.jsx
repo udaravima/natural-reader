@@ -272,6 +272,23 @@ describe('SettingsDialog — the context size the server will use (admin console
       return b;
     };
 
+    it('says what the speech model is made for', async () => {
+      apiFetch.mockImplementation(async (h, p, path) => (path === '/v1/speech/status'
+        ? { ok: true, json: async () => ({ ...STATUS, model_languages: ['Sinhala'] }) }
+        : { ok: false, status: 404, json: async () => ({}) }));
+      render(<SettingsDialog {...chat()} />);
+      expect(await screen.findByText(/speech model is made for Sinhala/)).toBeTruthy();
+    });
+
+    it('says nothing about a model made for every language', async () => {
+      apiFetch.mockImplementation(async (h, p, path) => (path === '/v1/speech/status'
+        ? { ok: true, json: async () => ({ ...STATUS, model_languages: [] }) }
+        : { ok: false, status: 404, json: async () => ({}) }));
+      render(<SettingsDialog {...chat()} />);
+      await screen.findByRole('combobox', { name: 'Speech language' });
+      expect(screen.queryByText(/speech model is made for/)).toBeNull();
+    });
+
     it('shows Auto first, then the status languages by name', async () => {
       answerStatus(STATUS);
       render(<SettingsDialog {...chat()} />);

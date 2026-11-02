@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
     Trash2, RefreshCw, MessageSquare, Bot,
     Plus, Pencil, ChevronDown, ChevronRight, ScrollText, Check, X, Folder,
 } from 'lucide-react';
-import { groupByProvider, modelLabel } from '../lib/modelIds';
+import { modelOptions } from '../lib/modelIds';
+import { SearchableSelect } from './SearchableList';
 
 export default function ChatSidebar({
     theme,
@@ -27,6 +28,8 @@ export default function ChatSidebar({
     deleteSession,
     renameSession,
 }) {
+    const modelChoices = useMemo(() => modelOptions(availableModels, selectedModel, { prompt: 'Select a model…' }),
+        [availableModels, selectedModel]);
     const [renamingId, setRenamingId] = useState(null);
     const [draftTitle, setDraftTitle] = useState('');
     const activeMeta = sessions.find(s => s.id === activeSessionId);
@@ -73,30 +76,16 @@ export default function ChatSidebar({
                     {/* Model picker */}
                     <div className="space-y-1">
                         <span className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>MODEL</span>
-                        <select
+                        <SearchableSelect
+                            theme={theme}
+                            findLabel="Find a model"
+                            aria-label="Model"
                             value={selectedModel}
-                            onChange={(e) => setSelectedModel(e.target.value)}
+                            onChange={setSelectedModel}
+                            options={modelChoices}
                             disabled={availableModels.length === 0}
                             className={`w-full text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors ${availableModels.length === 0 ? 'opacity-60' : ''}`}
-                        >
-                            {availableModels.length === 0 ? (
-                                <option value="">No models found</option>
-                            ) : (
-                                <>
-                                    {!selectedModel && <option value="">Select a model…</option>}
-                                    {selectedModel && !availableModels.some((m) => m.id === selectedModel) && (
-                                        <option value={selectedModel} disabled>{selectedModel} (unavailable)</option>
-                                    )}
-                                    {groupByProvider(availableModels).map(([provider, models]) => (
-                                        <optgroup key={provider} label={provider}>
-                                            {models.map((m) => (
-                                                <option key={m.id} value={m.id}>{modelLabel(m)}</option>
-                                            ))}
-                                        </optgroup>
-                                    ))}
-                                </>
-                            )}
-                        </select>
+                        />
                         {selectedModel && (
                             <p className={`text-[9px] ${theme.textMuted} px-1 flex items-center gap-1`}>
                                 <Bot size={10} /> Active: {selectedModel}

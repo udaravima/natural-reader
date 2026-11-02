@@ -320,4 +320,48 @@ describe('ModelsSection', () => {
     render(<ModelsSection theme={theme} apiHost="" apiPort="" showToast={vi.fn()} />);
     expect(await screen.findByText("Couldn't load the model settings.")).toBeTruthy();
   });
+
+  describe('a server with hundreds of models', () => {
+    const many = Array.from({ length: 300 }, (_, i) => model('ollama', `model-${i}`, { reported_window: null }));
+    const big = { ...CATALOG, models: many };
+    const find = (name) => screen.findByRole('searchbox', { name });
+
+    it('gives each long list its own search, and lists stay out of the way', async () => {
+      mount({ catalog: big });
+      await find('Find a chat model');
+      expect(screen.getByRole('searchbox', { name: 'Find a model to size' })).toBeTruthy();
+      expect(screen.getByRole('searchbox', { name: "Find a model's window" })).toBeTruthy();
+      expect(screen.getByRole('searchbox', { name: 'Find a reader model' })).toBeTruthy();
+      const scrollers = [...document.querySelectorAll('.overflow-y-auto')];
+      expect(scrollers).toHaveLength(3);
+      for (const box of scrollers) expect(box.className).toContain('max-h-64');
+    });
+
+    it('keeps Save on screen while the lists scroll', async () => {
+      mount({ catalog: big });
+      await find('Find a chat model');
+      expect(screen.getByRole('button', { name: 'Save' }).closest('.sticky').className).toContain('bottom-0');
+    });
+
+    it('a search hides rows but never drops what they hold', async () => {
+      mount({ catalog: big, initial: view({ chat_models: row(null, ['ollama:model-1']) }) });
+      fireEvent.change(await find('Find a chat model'), { target: { value: '299' } });
+      const group = screen.getByRole('group', { name: 'Chat models offered' });
+      expect(within(group).queryByLabelText('ollama:model-1')).toBeNull();
+      fireEvent.click(within(group).getByLabelText('ollama:model-299'));
+      fireEvent.click(save());
+      await waitFor(() => expect(puts()).toHaveLength(1));
+      expect(body().changes.chat_models).toEqual(['ollama:model-1', 'ollama:model-299']);
+    });
+
+    it('a search never hides a box that is holding Save off', async () => {
+      mount({ catalog: big });
+      const search = await find('Find a model to size');
+      const id = `models-context-sizes-${encodeURIComponent('ollama:model-5')}`;
+      fireEvent.change(document.getElementById(id), { target: { value: '7' } });
+      fireEvent.change(search, { target: { value: '299' } });
+      expect(document.getElementById(id)).not.toBeNull();
+      expect(save().disabled).toBe(true);
+    });
+  });
 });

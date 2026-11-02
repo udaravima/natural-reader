@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from 'react';
 import { useSectionSettings } from '../../hooks/useSectionSettings';
 import { zoneOptions } from '../../lib/zoneFormat';
+import { SearchableSelect } from '../SearchableList';
 import { SettingRow, SectionSaveBar, SourceLine } from './SettingRow';
 
 /**
@@ -18,8 +19,8 @@ const sectionTitle = 'text-xs font-bold uppercase tracking-wider text-blue-500';
 export function DeploymentSection({ theme, apiHost, apiPort, showToast, onDirtyChange, onSaved }) {
   const s = useSectionSettings(apiHost, apiPort, 'deployment');
   const zone = s.value('timezone');
-  // Some 400 <option>s: built once per list, so a keystroke elsewhere doesn't re-render them all.
-  const options = useMemo(() => zoneOptions(zone).map((z) => <option key={z} value={z}>{z}</option>), [zone]);
+  // Some 400 options: built once per list, so a keystroke elsewhere doesn't re-render them all.
+  const options = useMemo(() => zoneOptions(zone).map((z) => ({ value: z, label: z })), [zone]);
 
   useEffect(() => { onDirtyChange?.(s.dirty); }, [s.dirty, onDirtyChange]);
 
@@ -43,14 +44,13 @@ export function DeploymentSection({ theme, apiHost, apiPort, showToast, onDirtyC
               source={s.source('timezone')} envName={s.envName('timezone')}
               canUseServer={s.canUseServer('timezone')} onUseServer={() => s.useServer('timezone')}
             >
-              <select
+              <SearchableSelect
+                theme={theme} findLabel="Find a timezone" options={options}
                 id={ID} value={zone} disabled={s.saving}
-                onChange={(e) => s.set('timezone', e.target.value)}
+                onChange={(next) => s.set('timezone', next)}
                 aria-describedby={`${ID}-help ${ID}-source`}
                 className={`px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-h-11 md:min-h-0`}
-              >
-                {options}
-              </select>
+              />
             </SettingRow>
             <SectionSaveBar theme={theme} dirty={s.dirty} saving={s.saving} error={s.error} onSave={save} onDiscard={s.discard} />
           </div>

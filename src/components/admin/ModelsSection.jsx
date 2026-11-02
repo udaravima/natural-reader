@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '../../utils/apiFetch';
 import { useSectionSettings } from '../../hooks/useSectionSettings';
+import { SearchableList, SearchableSelect } from '../SearchableList';
 import { SettingRow, SectionSaveBar } from './SettingRow';
 
 /**
@@ -89,7 +90,10 @@ export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChang
   const providerByName = Object.fromEntries(providers.map((p) => [p.name, p]));
   const sizedModels = models.filter((m) => sizesContext(m, providerByName[m.provider]));
   const unreportedModels = models.filter((m) => m.reported_window == null);
-  const readerIds = [...new Set([...models.map((m) => m.id), reader].filter((id) => id !== 'chat'))];
+  const readerOptions = useMemo(() => [
+    { value: 'chat', label: CHAT_READER, pinned: true },
+    ...[...new Set([...models.map((m) => m.id), reader].filter((id) => id !== 'chat'))].map((id) => ({ value: id, label: id })),
+  ], [models, reader]);
 
   const typedKey = (name, id = '') => `${name}\n${id}`;
   const typedFor = (name, id) => typed[typedKey(name, id)];
@@ -153,8 +157,8 @@ export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChang
   const modelLabel = `text-xs break-all ${theme.text}`;
 
   // One number box per model, for the two settings that are a model -> tokens map.
-  const mapInputs = (name, group, list, map) => list.map((m, i) => {
-    const id = `${group}-${i}`;
+  const mapInputs = (name, group, list, map) => list.map((m) => {
+    const id = `${group}-${encodeURIComponent(m.id)}`;
     const text = typedFor(name, m.id);
     const bad = invalid(name, m.id);
     return (
@@ -193,14 +197,13 @@ export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChang
             <SettingRow {...row('reader', 'models-reader', 'Reader', {
               help: 'The model that reads documents and web pages for the chat model.',
             })}>
-              <select
+              <SearchableSelect
+                theme={theme} findLabel="Find a reader model"
                 id="models-reader" value={reader} disabled={s.saving}
-                onChange={(e) => s.set('reader', e.target.value)}
+                onChange={(id) => s.set('reader', id)}
                 aria-describedby={describedBy('models-reader')} className={selectClass}
-              >
-                <option value="chat">{CHAT_READER}</option>
-                {readerIds.map((id) => <option key={id} value={id}>{id}</option>)}
-              </select>
+                options={readerOptions}
+              />
             </SettingRow>
 
             <SettingRow {...row('context_size', 'models-context-size', 'Context size for local Ollama models', {
@@ -227,7 +230,10 @@ export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChang
             })}>
               <div role="group" aria-labelledby="models-context-sizes-label"
                 aria-describedby={describedBy('models-context-sizes')} className="flex flex-col gap-1">
-                {mapInputs('context_sizes', 'models-context-sizes', sizedModels, sizeMap)}
+                <SearchableList theme={theme} label="Find a model to size" items={sizedModels} textOf={(m) => m.id}
+                  keep={(m) => invalid('context_sizes', m.id)} disabled={s.saving}>
+                  {(shown) => mapInputs('context_sizes', 'models-context-sizes', shown, sizeMap)}
+                </SearchableList>
                 {catalog.status === 'ready' && sizedModels.length === 0 && (
                   <p className={`text-xs ${theme.textSecondary}`}>No local Ollama models to size.</p>
                 )}
@@ -239,7 +245,10 @@ export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChang
             })}>
               <div role="group" aria-labelledby="models-context-windows-label"
                 aria-describedby={describedBy('models-context-windows')} className="flex flex-col gap-1">
-                {mapInputs('context_windows', 'models-context-windows', unreportedModels, windowMap)}
+                <SearchableList theme={theme} label="Find a model's window" items={unreportedModels} textOf={(m) => m.id}
+                  keep={(m) => invalid('context_windows', m.id)} disabled={s.saving}>
+                  {(shown) => mapInputs('context_windows', 'models-context-windows', shown, windowMap)}
+                </SearchableList>
                 {catalog.status === 'ready' && unreportedModels.length === 0 && (
                   <p className={`text-xs ${theme.textSecondary}`}>Every model reports its own window.</p>
                 )}
@@ -284,15 +293,20 @@ export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChang
               <div role="group" aria-labelledby="models-chat-models-label"
                 aria-describedby={describedBy('models-chat-models', catalog.status === 'ready' && chatModels.length === 0 && 'models-chat-models-none')}
                 className="flex flex-col gap-1">
-                {models.map((m) => (
-                  <label key={m.id} className={`${optionClass} ${s.saving ? 'opacity-60' : 'cursor-pointer'}`}>
-                    <input
-                      type="checkbox" checked={chatModels.includes(m.id)} disabled={s.saving}
-                      onChange={() => toggleChatModel(m.id)} className={box}
-                    />
-                    <span className="break-all">{m.id}</span>
-                  </label>
-                ))}
+                <SearchableList theme={theme} label="Find a chat model" items={models} textOf={(m) => m.id} disabled={s.saving}>
+                  {(shown) => shown.map((m) => (
+                    <label key={m.id} className={`${optionClass} ${s.saving ? 'opacity-60' : 'cursor-pointer'}`}>
+                      <input
+                        type="checkbox" checked={chatModels.includes(m.id)} disabled={s.saving}
+                        onChange={() => toggleChatModel(m.id)} className={box}
+                      />
+                      <span className="break-all">{m.id}</span>
+                    </label>
+                  ))}
+                </SearchableList>
+                {chatModels.length > 0 && (
+                  <p className={`text-[10px] ${theme.textSecondary}`}>{chatModels.length} ticked.</p>
+                )}
                 {catalog.status === 'ready' && chatModels.length === 0 && (
                   <p id="models-chat-models-none" className={`text-xs ${theme.textSecondary}`}>Every model the server allows.</p>
                 )}

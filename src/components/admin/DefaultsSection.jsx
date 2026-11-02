@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../utils/apiFetch';
 import { KOKORO_VOICES } from '../../constants';
+import { SearchableSelect } from '../SearchableList';
 
 /**
  * Admin console: deployment defaults for user preferences
@@ -9,6 +10,8 @@ import { KOKORO_VOICES } from '../../constants';
  * applies the default to everyone, which replaces it the next time each
  * person opens the app.
  */
+
+const VOICE_OPTIONS = KOKORO_VOICES.map((voice) => ({ value: voice.id, label: voice.name }));
 
 const LABELS = {
   chatAutoTts: 'Read replies aloud automatically',
@@ -111,9 +114,8 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast, onDirtyCha
     }
     if (name === 'selectedVoice') {
       return (
-        <select aria-label={LABELS[name]} value={v} onChange={(e) => set(name, e.target.value)} className={control}>
-          {KOKORO_VOICES.map((voice) => <option key={voice.id} value={voice.id}>{voice.name}</option>)}
-        </select>
+        <SearchableSelect theme={theme} findLabel="Find a voice" aria-label={LABELS[name]} value={v}
+          onChange={(id) => set(name, id)} options={VOICE_OPTIONS} className={control} />
       );
     }
     if (name === 'speechLanguage') {
@@ -122,10 +124,10 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast, onDirtyCha
       // A saved default the list doesn't know (or no list at all) still shows, as its code.
       if (value !== 'auto' && !codes.includes(value)) codes.push(value);
       return (
-        <select aria-label={LABELS[name]} value={value} onChange={(e) => set(name, e.target.value)} className={control}>
-          <option value="auto">Auto</option>
-          {codes.map((c) => <option key={c} value={c}>{languageNames[c] ?? c}</option>)}
-        </select>
+        <SearchableSelect theme={theme} findLabel="Find a language" aria-label={LABELS[name]} value={value}
+          onChange={(code) => set(name, code)} className={control}
+          options={[{ value: 'auto', label: 'Auto', pinned: true },
+            ...codes.map((c) => ({ value: c, label: languageNames[c] ?? c }))]} />
       );
     }
     return (
@@ -178,7 +180,7 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast, onDirtyCha
               </li>
             ))}
           </ul>
-          <div className="flex justify-end">
+          <div className={`sticky bottom-0 z-10 flex justify-end py-2 ${theme.bg}`}>
             <button onClick={save} disabled={busy || !dirty}
               className="min-h-11 md:min-h-0 text-xs underline text-blue-500 font-bold disabled:opacity-40 disabled:no-underline">
               Save

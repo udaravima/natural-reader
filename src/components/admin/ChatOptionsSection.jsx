@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../../utils/apiFetch';
+import { SpeechModelPicker } from './SpeechModelPicker';
 
 /**
  * Admin console: chat options (C2.1 Task 19) — how web search asks. The
@@ -212,6 +213,7 @@ export function ChatOptionsSection({ theme, apiHost, apiPort, showToast, onSaved
               </button>
             )}
           </div>
+          <SpeechModelPicker theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast} voiceOn={data.voice_input} />
         </div>
       )}
     </section>

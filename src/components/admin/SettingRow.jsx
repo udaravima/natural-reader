@@ -46,10 +46,12 @@ export function SettingRow({ theme, id, label, help, source, envName, canUseServ
   );
 }
 
-// `canSave` false: something on screen is invalid, so Save stays off until it is put right.
+// `canSave` false: something on screen is invalid, so Save stays off until it is put right. The bar sticks to the
+// bottom of the scrolling area, so a section with long lists never makes anyone scroll down to reach it. The negative
+// margins take it to the edges of the card it sits in, which keeps the rows from showing around it.
 export function SectionSaveBar({ theme, dirty, saving, error, canSave = true, onSave, onDiscard }) {
   return (
-    <div className="flex flex-col gap-2">
+    <div className={`sticky bottom-0 z-10 -mx-3 -mb-3 px-3 py-2 flex flex-col gap-2 rounded-b-lg border-t ${theme.border} ${theme.bgSecondary}`}>
       <div className="flex flex-wrap items-center gap-3 text-xs">
         <button
           type="button"
