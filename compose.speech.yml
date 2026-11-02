@@ -1,0 +1,8 @@
+# Added by startup.sh only when SPEECH_MODELS_FILE names a readable file: mount
+# it read-only at a fixed path and point the app there.
+services:
+  backend:
+    volumes:
+      - ${NR_SPEECH_MODELS_FILE}:/app/config/speech-models.yaml:ro
+    environment:
+      SPEECH_MODELS_FILE: /app/config/speech-models.yaml

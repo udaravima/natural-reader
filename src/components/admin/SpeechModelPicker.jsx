@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../utils/apiFetch';
-import { SearchableSelect } from '../SearchableList';
+import { SearchableList, SearchableSelect } from '../SearchableList';
 
 /**
  * Admin console: which speech model voice input runs (spec 2026-11-02-speech-model-choice). One model for the whole
@@ -121,23 +121,25 @@ export function SpeechModelPicker({ theme, apiHost, apiPort, showToast, voiceOn 
   if (data?.engine !== 'local') return null;
   const current = data.models.find((m) => m.id === data.chosen);
   const blocked = data.models.find((m) => m.why_not);
+  const added = data.models.filter((m) => m.removable);
   const label = `flex flex-col gap-1 text-[10px] ${theme.textSecondary}`;
   const input = `min-h-11 md:min-h-0 px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} ${theme.text}`;
 
   return (
     <div className="flex flex-col gap-2 pt-2">
-      <label className={`flex flex-col gap-1 text-xs font-bold ${theme.text}`}>
-        Speech model
+      <div className="flex flex-col gap-1">
+        <span className={`text-xs font-bold ${theme.text}`}>Speech model</span>
         <SearchableSelect
           theme={theme}
+          aria-label="Speech model"
           findLabel="Find a speech model"
           value={data.chosen}
           onChange={choose}
           aria-busy={saving}
           options={data.models.map((m) => ({ value: m.id, label: optionText(m), disabled: Boolean(m.why_not) }))}
-          className={`min-h-11 md:min-h-0 px-2 py-1 text-xs font-normal rounded border ${theme.border} ${theme.bg} ${theme.text}`}
+          className={`min-h-11 md:min-h-0 px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} ${theme.text}`}
         />
-      </label>
+      </div>
       {current && (
         <p className={`text-[10px] ${theme.textSecondary}`}>
           {[HOW_IT_RUNS[current.engine], current.note,
@@ -157,16 +159,28 @@ export function SpeechModelPicker({ theme, apiHost, apiPort, showToast, voiceOn 
             Use the server setting
           </button>
         )}
-        {current?.removable && (
-          <button
-            onClick={() => remove(current)}
-            disabled={saving}
-            className="min-h-11 md:min-h-0 underline text-red-500 disabled:opacity-40 disabled:no-underline"
-          >
-            Remove this model
-          </button>
-        )}
       </div>
+      {added.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <span className={`text-[10px] ${theme.textSecondary}`}>Added here</span>
+          <SearchableList theme={theme} label="Find an added model" items={added} disabled={saving}
+            textOf={(m) => `${m.label} ${m.repo}`}>
+            {(shown) => shown.map((m) => (
+              <div key={m.id} className="flex items-center justify-between gap-2 min-w-0 text-[10px]">
+                <span className={`min-w-0 truncate ${theme.text}`} title={m.repo}>{m.label}</span>
+                <button
+                  onClick={() => remove(m)}
+                  disabled={saving}
+                  aria-label={`Remove ${m.label}`}
+                  className="min-h-11 md:min-h-0 underline text-red-500 disabled:opacity-40 disabled:no-underline"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </SearchableList>
+        </div>
+      )}
       <details className="text-xs">
         <summary className={`min-h-11 md:min-h-0 flex items-center cursor-pointer text-[10px] underline text-blue-500`}>
           Add a model from Hugging Face

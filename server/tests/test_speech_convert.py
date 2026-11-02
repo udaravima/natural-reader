@@ -84,6 +84,14 @@ def test_a_failed_conversion_says_why_and_leaves_nothing(tmp_path, monkeypatch):
     assert list((tmp_path / "speech-converted").iterdir()) == []
 
 
+def test_a_killed_conversion_says_so_rather_than_quoting_a_progress_bar(tmp_path, monkeypatch):
+    monkeypatch.setattr(convert.subprocess, "run", lambda cmd, **k: SimpleNamespace(
+        returncode=-9, stderr="model.safetensors:  41%|####      | 400M/967M\n"))
+    with pytest.raises(ConversionFailed) as e:
+        convert.ensure_converted(MODEL, 1, {"HF_HOME": str(tmp_path)})
+    assert "killed" in str(e.value) and "safetensors" not in str(e.value)
+
+
 def test_a_conversion_that_hangs_is_stopped(tmp_path, monkeypatch):
     def run(cmd, **k):
         raise subprocess.TimeoutExpired(cmd, 1)
@@ -134,6 +142,18 @@ def test_inspect_many_languages_means_every_language(monkeypatch):
     assert convert.inspect_repo("owner/name", None).languages == ()
 
 
+def test_a_card_language_whisper_doesnt_know_is_left_out(monkeypatch):
+    # Kept, it would be stored and the list would then drop the whole entry: "Added", and nothing there.
+    monkeypatch.setattr(convert, "_api", lambda: FakeApi(_info(["model.safetensors"], language="dv")))
+    assert convert.inspect_repo("owner/name", None).languages == ()
+
+
+def test_inspect_refuses_a_model_bin_with_no_vocabulary(monkeypatch):
+    monkeypatch.setattr(convert, "_api", lambda: FakeApi(_info(["model.bin", "config.json"], model_type=None)))
+    with pytest.raises(convert.NotWhisper):
+        convert.inspect_repo("owner/name", None)
+
+
 def test_inspect_refuses_what_isnt_whisper(monkeypatch):
     monkeypatch.setattr(convert, "_api", lambda: FakeApi(_info(["model.safetensors"], model_type="bert")))
     with pytest.raises(convert.NotWhisper):
@@ -156,3 +176,9 @@ def test_inspect_turns_hub_errors_into_two_kinds(monkeypatch):
     monkeypatch.setattr(convert, "_api", lambda: FakeApi(ConnectionError("offline")))
     with pytest.raises(convert.HubUnreachable):
         convert.inspect_repo("owner/name", None)
+
+
+def test_a_name_the_hub_wont_accept_is_not_an_outage():
+    # Passes REPO_RE, and huggingface_hub refuses it without a network call: not "try again in a moment".
+    with pytest.raises(convert.NotOnHub):
+        convert.inspect_repo("owner/na--me", None)

@@ -14,7 +14,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 PROJECT_FILES = ["startup.sh", "docker-compose.yml", "compose.podman.yml", "compose.dev.yml",
-                 "compose.profile.yml", "searxng/settings.yml.example", "package.json"]
+                 "compose.profile.yml", "compose.speech.yml", "searxng/settings.yml.example", "package.json"]
 
 
 def make_project(tmp_path: Path) -> Path:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -695,11 +696,18 @@ async def add_speech_model(
         engine = speech_catalogue.TRANSFORMERS
     entry = {"label": (body.label or "").strip() or repo.split("/", 1)[1], "engine": engine, "repo": repo,
              "revision": facts.revision, "languages": body.languages or list(facts.languages)}
-    model_id = re.sub(r"[^a-z0-9._-]+", "-", repo.lower())[:85] + ("-unconverted" if body.unconverted else "")
     options = await chat_options.load_chat_options(conn)
-    if model_id in speech_catalogue.all_models(os.environ, options.added_speech_models):
+    listed = speech_catalogue.all_models(os.environ, options.added_speech_models)
+    if any((m.repo, m.revision, m.engine) == (repo, facts.revision, engine) for m in listed.values()):
         raise refusal(409, "already_listed", "That model is already in the list.")
-    model = speech_catalogue.SpeechModel(model_id, entry["label"], engine, repo, facts.revision)
+    slug, tail = re.sub(r"[^a-z0-9._-]+", "-", repo.lower())[:78], "-unconverted" if body.unconverted else ""
+    model_id = slug + tail
+    if model_id in listed:   # another revision, or another repo that makes the same id: it must not replace that one
+        model_id = f"{slug}-{hashlib.sha256(f'{repo}@{facts.revision}'.encode()).hexdigest()[:8]}{tail}"
+    try:
+        model = speech_catalogue.parse(model_id, entry, "admin")   # what the list will do with it, so it stays listed
+    except ValueError as e:
+        raise refusal(422, "bad_speech_model", f"That model can't be listed: {e}.") from None
     reason = speech_catalogue.why_not(model)
     if reason:
         raise refusal(422, "speech_model_cannot_run", reason)

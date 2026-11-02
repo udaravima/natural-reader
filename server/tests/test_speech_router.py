@@ -13,7 +13,7 @@ from server.auth import deps
 from server.auth import scopes as token_scopes
 from server.auth.users import resolve_or_provision_user
 from server.routers import speech as speech_router
-from server.speech import service
+from server.speech import catalogue, service
 from server.speech.base import (AudioTooLong, BadAudio, EngineFailed, EngineNotReady, EngineStatus, EngineUnavailable,
                                 Transcript)
 from server.speech.languages import WHISPER_LANGUAGES
@@ -123,6 +123,59 @@ def _post(client, body=b"abc", language=None, name="rec.webm", ctype="audio/webm
 
 def _msg(r):
     return r.json()["detail"]["message"]
+
+
+class Running(FakeEngine):
+    """A local engine on the admin's model: it has a `spec`, so a different `wanted` replaces it."""
+
+    def __init__(self):
+        super().__init__()
+        self.spec = catalogue.all_models({})["whisper-small-ta"]
+        self.languages = ("ta",)
+
+
+@pytest.fixture
+def running(monkeypatch):
+    fake = Running()
+    service.reset_for_tests()
+    monkeypatch.setattr(service, "_transcriber", fake)
+    monkeypatch.setenv("CHAT_VOICE_INPUT", "on")
+    monkeypatch.delenv("SPEECH_MODEL", raising=False)
+    yield fake
+    service.reset_for_tests()
+
+
+async def test_a_failed_options_read_keeps_the_model_running(db_conn, running, monkeypatch):
+    # The fallback knows nothing about what an admin chose: `small` from it would drop a loaded model, and the
+    # next good read would load the first one again.
+    async def boom(conn):
+        raise RuntimeError("blip")
+    monkeypatch.setattr(speech_router.chat_options, "load_chat_options", boom)
+    async with _client(db_conn) as c:
+        r = await c.get(STATUS)
+    assert r.status_code == 200 and r.json()["enabled"] is True
+    assert service.get_transcriber() is running
+
+
+async def test_a_switch_during_an_upload_doesnt_swap_the_worker_back(db_conn, running, monkeypatch):
+    # The options were read before the upload. An admin switches while it arrives, and a status call moves this
+    # worker to the new model: those old options must not then move it back for the rest of the recording.
+    await _voice(db_conn)
+    await db_conn.execute("""UPDATE app_settings SET value = value || '{"speech_model": "whisper-small-ta"}'::jsonb
+                             WHERE key = 'chat_options'""")
+    later = FakeEngine()
+    later.spec = catalogue.all_models({})["tiny"]
+    real_read = speech_router._read_upload
+
+    async def read(request):
+        out = await real_read(request)
+        service._transcriber = later     # the switch lands while the upload is being read
+        return out
+    monkeypatch.setattr(speech_router, "_read_upload", read)
+    async with _client(db_conn) as c:
+        r = await _post(c)
+    assert r.status_code == 200
+    assert service.get_transcriber() is later and later.seen
 
 
 async def test_voice_on_returns_the_transcript(db_conn, engine):

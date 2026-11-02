@@ -93,6 +93,8 @@ def test_a_file_without_the_models_key_works_too(tmp_path):
     "mine: {engine: faster-whisper}",                          # no repo
     "mine: {engine: converted-whisper, repo: /etc/passwd}",    # only a Hub repo can be converted
     "mine: {engine: faster-whisper, repo: a/b, languages: [klingon]}",
+    "mine: {engine: faster-whisper, repo: a/b, languages: [[si]]}",     # YAML that makes an unhashable code
+    "mine: {engine: faster-whisper, repo: a/b, languages: [si: tamil]}",
     "mine: a string",
     "'Bad Id!': {engine: faster-whisper, repo: a/b}",
 ])
@@ -125,6 +127,33 @@ def test_an_admin_entry_joins_the_list_and_a_bad_one_doesnt():
     models = catalogue.all_models({}, added)
     assert models["example-model"].source == "admin" and models["example-model"].label == "Mine"
     assert "broken" not in models and "small" in models
+
+
+def test_an_admin_entry_never_names_a_local_directory():
+    # Only a file or SPEECH_MODEL may: a row in the database is not how a deployer points at a path on the server.
+    added = {"a-path": {"engine": "faster-whisper", "repo": "/etc/some-dir"}}
+    assert "a-path" not in catalogue.all_models({}, added)
+
+
+@pytest.mark.parametrize("text", ["abc\n", "\n"])
+def test_a_trailing_newline_is_no_part_of_a_valid_name(text):
+    assert not catalogue.ID_RE.match(text)
+    assert not catalogue.REVISION_RE.match(text)
+    assert not catalogue.REPO_RE.match(f"owner/{text}")
+
+
+def test_a_bad_stored_entry_warns_once_not_on_every_request(caplog):
+    caplog.set_level(logging.WARNING, logger="server.speech")
+    for _ in range(3):
+        catalogue.all_models({}, {"broken": {"repo": "x"}})
+    assert len([r for r in caplog.records if "left out" in r.getMessage()]) == 1
+
+
+def test_a_chosen_model_thats_gone_warns_once_not_on_every_request(caplog):
+    caplog.set_level(logging.WARNING, logger="server.speech")
+    for _ in range(3):
+        catalogue.wanted(options(speech_model="removed-from-the-file"), {})
+    assert len([r for r in caplog.records if "removed-from-the-file" in r.getMessage()]) == 1
 
 
 def test_wanted_admin_choice_wins_then_the_environment_then_small():

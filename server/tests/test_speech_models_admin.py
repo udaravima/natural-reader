@@ -1,6 +1,8 @@
 """Choosing and adding speech models from the admin console, and a choice reaching the speech routes."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -190,6 +192,48 @@ async def test_adding_the_same_repo_twice_is_refused(client, hub):
     assert res.status_code == 409 and res.json()["detail"]["error"] == "already_listed"
 
 
+async def test_the_same_repo_at_another_revision_is_another_model(client, monkeypatch):
+    shas = iter(["a" * 40, "b" * 40])
+    monkeypatch.setattr(convert, "inspect_repo", lambda r, v: RepoFacts(next(shas), "converted-whisper", ()))
+    await client.post(URL, json={"repo": "owner/name"})
+    res = await client.post(URL, json={"repo": "owner/name", "revision": "b" * 40})
+    assert res.status_code == 201
+    assert len([m for m in res.json()["models"] if m["repo"] == "owner/name"]) == 2
+
+
+async def test_two_repos_with_the_same_slug_both_land(client, hub):
+    await client.post(URL, json={"repo": "a/b-c"})
+    res = await client.post(URL, json={"repo": "a-b/c"})
+    assert res.status_code == 201
+    assert {"a/b-c", "a-b/c"} <= {m["repo"] for m in res.json()["models"]}
+
+
+async def test_a_repo_whose_slug_is_a_built_in_id_doesnt_replace_it(client, hub):
+    res = await client.post(URL, json={"repo": "whisper/small-si"})
+    assert res.status_code == 201
+    models = {m["id"]: m for m in res.json()["models"]}
+    assert models["whisper-small-si"]["repo"] == "SinhaSpeech/whisper-small-sinhala-run12-best"
+    assert "whisper/small-si" in {m["repo"] for m in models.values()}
+
+
+async def test_a_model_the_list_would_drop_is_refused_not_added(client, db_conn, monkeypatch):
+    # The list reads every entry back through the same parser, so nothing can be saved that it would hide.
+    monkeypatch.setattr(convert, "inspect_repo", lambda r, v: RepoFacts(SHA, "converted-whisper", ("xx",)))
+    res = await client.post(URL, json={"repo": "owner/name"})
+    assert res.status_code == 422 and res.json()["detail"]["error"] == "bad_speech_model"
+    assert (await load_chat_options(db_conn)).added_speech_models == {}
+
+
+async def test_a_model_for_a_language_whisper_doesnt_know_stays_in_the_list(client, monkeypatch):
+    info = SimpleNamespace(sha=SHA, siblings=[SimpleNamespace(rfilename="model.safetensors")],
+                           config={"model_type": "whisper"}, card_data=SimpleNamespace(language="dv"))
+    monkeypatch.setattr(convert, "_api", lambda: SimpleNamespace(model_info=lambda *a, **k: info))
+    res = await client.post(URL, json={"repo": "owner/dhivehi"})
+    assert res.status_code == 201
+    model = next(m for m in res.json()["models"] if m["repo"] == "owner/dhivehi")
+    assert model["languages"] == [] and model["removable"] is True
+
+
 async def test_add_refuses_a_model_this_server_cant_run(client, hub, monkeypatch):
     monkeypatch.setattr(catalogue, "_installed", lambda name: False)
     res = await client.post(URL, json={"repo": "owner/name"})
@@ -220,6 +264,13 @@ async def test_remove_keeps_the_other_settings(client, hub, db_conn, admin):
     await client.delete(f"{URL}/owner-name")
     got = await load_chat_options(db_conn)
     assert got.added_speech_models == {} and (got.voice_input, got.voice_source) == (False, "admin")
+
+
+async def test_a_model_that_isnt_in_use_is_removed_without_touching_the_choice(client, hub, db_conn):
+    await client.post(URL, json={"repo": "owner/name"})
+    await client.put(f"{URL}/choice", json={"id": "tiny"})
+    view = (await client.delete(f"{URL}/owner-name")).json()
+    assert view["chosen"] == "tiny" and "owner-name" not in [m["id"] for m in view["models"]]
 
 
 async def test_a_built_in_model_cant_be_removed(client):

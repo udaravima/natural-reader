@@ -79,6 +79,42 @@ describe('SearchableSelect', () => {
     expect(onPick).not.toHaveBeenCalled();
   });
 
+  it('Enter leaves things alone when the one that matches is already chosen', () => {
+    const onPick = vi.fn();
+    render(<Picker onPick={onPick} initial="Asia/Colombo" />);
+    type('colombo');
+    fireEvent.keyDown(box(), { key: 'Enter' });
+    expect(onPick).not.toHaveBeenCalled();
+    expect(box().value).toBe('');
+  });
+
+  it('Enter does not pick another option just because the chosen one also matches', () => {
+    const onPick = vi.fn();
+    render(<Picker onPick={onPick} initial="America/New_York" />);
+    type('america');
+    fireEvent.keyDown(box(), { key: 'Enter' });
+    expect(onPick).not.toHaveBeenCalled();
+  });
+
+  it('Escape clears the search and stays inside a dialog; a second Escape closes the dialog', () => {
+    const onDialogKey = vi.fn();
+    render(<div onKeyDown={onDialogKey}><Picker /></div>);
+    type('sao');
+    fireEvent.keyDown(box(), { key: 'Escape' });
+    expect(box().value).toBe('');
+    expect(onDialogKey).not.toHaveBeenCalled();
+    fireEvent.keyDown(box(), { key: 'Escape' });
+    expect(onDialogKey).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows every option again when the list stops being long', () => {
+    const { rerender } = render(<Picker />);
+    type('sao');
+    const short = zones.slice(0, LONG_LIST);
+    rerender(<Picker options={short} />);
+    expect(names(screen.getByRole('combobox', { name: 'Timezone' }))).toHaveLength(LONG_LIST);
+  });
+
   it('ArrowDown moves to the list, and Escape comes back', () => {
     render(<Picker />);
     type('america');

@@ -36,7 +36,8 @@ def test_containerfile_pins_python_313_and_runs_unprivileged():
     assert text.index("requirements.txt") < text.index("kokoro-v1.0.onnx") < text.index("COPY server/")
 
 
-COMPOSE_FILES = ["docker-compose.yml", "compose.podman.yml", "compose.dev.yml", "compose.profile.yml"]
+COMPOSE_FILES = ["docker-compose.yml", "compose.podman.yml", "compose.dev.yml", "compose.profile.yml",
+                 "compose.speech.yml"]
 
 
 def _render(tmp_path, env_lines=None, files=("docker-compose.yml",), extra_env=None):
@@ -108,6 +109,13 @@ def test_profile_overlay_mounts_the_file_read_only(tmp_path):
                 extra_env={"NR_PROFILE_FILE": "/home/u/profile.md"})["backend"]
     assert "/home/u/profile.md:/app/config/assistant-profile:ro" in b["volumes"]
     assert b["environment"]["CHAT_ASSISTANT_PROFILE_FILE"] == "/app/config/assistant-profile"
+
+
+def test_speech_overlay_mounts_the_file_read_only(tmp_path):
+    b = _render(tmp_path, env_lines=[], files=("docker-compose.yml", "compose.speech.yml"),
+                extra_env={"NR_SPEECH_MODELS_FILE": "/home/u/speech.yaml"})["backend"]
+    assert "/home/u/speech.yaml:/app/config/speech-models.yaml:ro" in b["volumes"]
+    assert b["environment"]["SPEECH_MODELS_FILE"] == "/app/config/speech-models.yaml"
 
 
 def test_podman_never_puts_the_keep_id_backend_in_a_pod(tmp_path):

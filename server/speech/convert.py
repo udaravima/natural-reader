@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .base import ConversionFailed
+from .languages import WHISPER_LANGUAGES
 
 if TYPE_CHECKING:
     from .catalogue import SpeechModel
@@ -54,7 +55,7 @@ class HubUnreachable(Exception):
 class RepoFacts:
     revision: str              # the commit, so the model can't change under the deployment
     engine: str                # "faster-whisper" or "converted-whisper"
-    languages: tuple[str, ...]  # from the model card, when it names exactly one; else empty
+    languages: tuple[str, ...]  # from the model card, when it names exactly one Whisper knows; else empty
 
 
 def _hf_home(env: Mapping[str, str]) -> Path:
@@ -84,6 +85,9 @@ def ensure_converted(model: SpeechModel, cpu_threads: int, env: Mapping[str, str
             raise ConversionFailed(f"Converting {model.repo} took too long and was stopped") from None
         except OSError as e:
             raise ConversionFailed(f"Converting {model.repo} couldn't start: {type(e).__name__}") from None
+        if done.returncode < 0:   # stderr is a progress bar by then, and says nothing about why
+            raise ConversionFailed(f"Converting {model.repo} was killed (signal {-done.returncode}): "
+                                   "on a small server that's usually memory")
         if done.returncode != 0:
             lines = (done.stderr or "").strip().splitlines()
             raise ConversionFailed(f"Converting {model.repo} failed: {lines[-1][:200] if lines else 'no reason given'}")
@@ -104,15 +108,16 @@ def _api():
 
 def inspect_repo(repo: str, revision: str | None) -> RepoFacts:
     """Look a repo up on the Hub. Raises NotOnHub, NotWhisper or HubUnreachable."""
-    from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError, RevisionNotFoundError
+    from huggingface_hub.errors import (GatedRepoError, HFValidationError, RepositoryNotFoundError,
+                                        RevisionNotFoundError)
     try:
         info = _api().model_info(repo, revision=revision or None, timeout=HUB_TIMEOUT_S)
-    except (RepositoryNotFoundError, RevisionNotFoundError, GatedRepoError) as e:
+    except (RepositoryNotFoundError, RevisionNotFoundError, GatedRepoError, HFValidationError) as e:
         raise NotOnHub(repo) from e
     except Exception as e:  # noqa: BLE001 - offline, a timeout, a 5xx: all "try again later"
         raise HubUnreachable(type(e).__name__) from e
     files = {s.rfilename for s in (info.siblings or [])}
-    if "model.bin" in files:
+    if "model.bin" in files and any(f == "tokenizer.json" or f.startswith("vocabulary.") for f in files):
         engine = "faster-whisper"
     elif any(f.endswith(".safetensors") or (f.startswith("pytorch_model") and f.endswith(".bin")) for f in files) \
             and (info.config or {}).get("model_type") == "whisper":
@@ -122,7 +127,9 @@ def inspect_repo(repo: str, revision: str | None) -> RepoFacts:
     card = getattr(info, "card_data", None)
     language = getattr(card, "language", None) if card else None
     language = language[0] if isinstance(language, list) and len(language) == 1 else language
-    return RepoFacts(info.sha, engine, (language,) if isinstance(language, str) else ())
+    # A card can say anything, and catalogue.parse refuses a language Whisper doesn't know: kept, the entry would
+    # save and then be missing from the list.
+    return RepoFacts(info.sha, engine, (language,) if isinstance(language, str) and language in WHISPER_LANGUAGES else ())
 
 
 def _convert(repo: str, revision: str, out: str) -> None:

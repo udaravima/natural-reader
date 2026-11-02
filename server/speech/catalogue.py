@@ -31,9 +31,9 @@ FASTER_WHISPER, CONVERTED, TRANSFORMERS = "faster-whisper", "converted-whisper",
 ENGINES = (FASTER_WHISPER, CONVERTED, TRANSFORMERS)
 FILE_VAR = "SPEECH_MODELS_FILE"
 NEEDS_TORCH = "Needs the Python packages transformers and torch, which the Docling build of the server has."
-ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,99}$")
-REPO_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*$")
-REVISION_RE = re.compile(r"^[A-Za-z0-9][\w.-]{0,99}$")
+ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,99}\Z")
+REPO_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*\Z")
+REVISION_RE = re.compile(r"^[A-Za-z0-9][\w.-]{0,99}\Z")
 
 
 @dataclass(frozen=True)
@@ -76,15 +76,25 @@ _BUILT_IN = (
 )
 
 _from_file: tuple[SpeechModel, ...] | None = None
+_warned: set[str] = set()
 
 
 def reset_for_tests() -> None:
     global _from_file
     _from_file = None
+    _warned.clear()
 
 
-def _parse(model_id: object, raw: object, source: str) -> SpeechModel:
-    """One entry, or ValueError saying what's wrong with it."""
+def _warn_once(message: str) -> None:
+    """The list is read on every speech request, so a standing problem is said once per process."""
+    if message not in _warned:
+        _warned.add(message)
+        logger.warning(message)
+
+
+def parse(model_id: object, raw: object, source: str) -> SpeechModel:
+    """One entry, or ValueError saying what's wrong with it. A local directory is for a deployer: an entry in the
+    database always names a repo."""
     if not isinstance(model_id, str) or not ID_RE.match(model_id):
         raise ValueError("the id must be lower-case letters, digits, dots, dashes or underscores")
     if not isinstance(raw, Mapping):
@@ -95,13 +105,13 @@ def _parse(model_id: object, raw: object, source: str) -> SpeechModel:
     if not isinstance(repo, str) or not repo.strip():
         raise ValueError("it has no repo")
     repo = repo.strip()
-    if engine != FASTER_WHISPER and not REPO_RE.match(repo):
-        raise ValueError(f"{engine} needs a Hugging Face repo")
+    if (engine != FASTER_WHISPER or source == "admin") and not REPO_RE.match(repo):
+        raise ValueError("it needs a Hugging Face repo as owner/name")
     revision = raw.get("revision")
     if revision is not None and not (isinstance(revision, str) and REVISION_RE.match(revision)):
         raise ValueError("the revision isn't a commit or a branch name")
     languages = raw.get("languages") or []
-    if not isinstance(languages, list) or any(code not in WHISPER_LANGUAGES for code in languages):
+    if not isinstance(languages, list) or not all(isinstance(c, str) and c in WHISPER_LANGUAGES for c in languages):
         raise ValueError("languages must be a list of Whisper language codes")
     return SpeechModel(model_id, str(raw.get("label") or model_id), engine, repo, revision, tuple(languages),
                        str(raw.get("license") or ""), str(raw.get("commercial") or ""),
@@ -112,9 +122,9 @@ def _entries(raw: Mapping, source: str) -> list[SpeechModel]:
     models = []
     for model_id, entry in raw.items():
         try:
-            models.append(_parse(model_id, entry, source))
+            models.append(parse(model_id, entry, source))
         except ValueError as e:
-            logger.warning("Speech model %r left out: %s", model_id, e)
+            _warn_once(f"Speech model {model_id!r} left out: {e}")
     return models
 
 
@@ -155,7 +165,7 @@ def wanted(options, env: Mapping[str, str] = os.environ) -> SpeechModel:
     if choice in models:
         return models[choice]
     if choice:
-        logger.warning("The chosen speech model %r is no longer in the list: using the server setting", choice)
+        _warn_once(f"The chosen speech model {choice!r} is no longer in the list: using the server setting")
     value = (env.get("SPEECH_MODEL") or "").strip() or DEFAULT_MODEL
     return models.get(value) or SpeechModel(value, value, FASTER_WHISPER, value, source="environment")
 

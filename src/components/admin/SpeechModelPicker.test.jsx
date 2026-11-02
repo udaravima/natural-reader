@@ -163,12 +163,35 @@ describe('SpeechModelPicker', () => {
     expect(screen.getByRole('button', { name: 'Add model' }).disabled).toBe(true);
   });
 
-  it('removes only a model an admin added', async () => {
+  it('removes a model an admin added without choosing it first', async () => {
     const after = view();
-    const toast = mount(view({ chosen: 'owner-name', source: 'admin', models: [small, mine] }), { DELETE: () => after });
-    fireEvent.click(await screen.findByRole('button', { name: 'Remove this model' }));
+    const toast = mount(view({ models: [small, tamil, mine] }), { DELETE: () => after });
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove Mine' }));
     await waitFor(() => expect(toast).toHaveBeenCalledWith('Removed Mine.', 5000));
     expect(calls('DELETE')[0][2]).toBe(`${LIST}/owner-name`);
-    expect(screen.queryByRole('button', { name: 'Remove this model' })).toBeNull();
+    expect(calls('PUT')).toHaveLength(0);
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove Mine' })).toBeNull());
+  });
+
+  it('removes a model that can no longer run here', async () => {
+    mount(view({ models: [small, { ...mine, why_not: 'Needs torch.' }] }), { DELETE: () => view() });
+    await select();
+    expect(screen.getByRole('option', { name: 'Mine' }).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Mine' }));
+    await waitFor(() => expect(calls('DELETE')).toHaveLength(1));
+  });
+
+  it('offers no way to remove a model nobody added here', async () => {
+    mount(view());
+    await select();
+    expect(screen.queryByRole('button', { name: /^Remove/ })).toBeNull();
+    expect(screen.queryByText('Added here')).toBeNull();
+  });
+
+  it('keeps its name once the list is long enough to search', async () => {
+    const models = Array.from({ length: 14 }, (_, i) => ({ ...small, id: `m-${i}`, label: `Model ${i}` }));
+    mount(view({ chosen: 'm-0', models }));
+    expect((await select()).value).toBe('m-0');
+    expect(screen.getByRole('searchbox', { name: 'Find a speech model' })).toBeTruthy();
   });
 });

@@ -10,7 +10,8 @@ import { LONG_LIST, hits } from '../lib/listSearch';
  *
  * SearchableSelect keeps the native <select>, because a phone's own picker and the keyboard already work on it: the
  * box narrows the options, and while it holds text the select opens up as a short list of the matches. The value in
- * use always stays among the options, so narrowing can never change what is selected.
+ * use always stays among the options, so narrowing can never change what is selected. Name the select with aria-label
+ * or an id: a <label> around this takes the search box as its control once the list is long.
  */
 const VISIBLE_MATCHES = 8;
 
@@ -72,10 +73,10 @@ export function SearchableSelect({
   const list = useRef(null);
   const long = options.length > LONG_LIST;
   const shown = useMemo(
-    () => (query
+    () => (long && query
       ? options.filter((o) => o.pinned || String(o.value) === String(value) || hits(query, o.label, o.value))
       : options),
-    [options, query, value],
+    [options, long, query, value],
   );
   const rendered = useMemo(() => grouped(shown).map(({ group, options: inGroup }) => (group
     ? <optgroup key={group} label={group}>{inGroup.map(drawn)}</optgroup>
@@ -90,7 +91,7 @@ export function SearchableSelect({
       onKeyDown={(e) => {
         if (!query) return;
         if (e.key === 'Enter') { e.preventDefault(); setQuery(''); }
-        if (e.key === 'Escape') { e.preventDefault(); setQuery(''); box.current?.focus(); }
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setQuery(''); box.current?.focus(); }
       }}
     >
       {rendered}
@@ -100,11 +101,14 @@ export function SearchableSelect({
 
   const boxKeys = (e) => {
     if (e.key === 'ArrowDown' && query) { e.preventDefault(); list.current?.focus(); }
-    if (e.key === 'Escape' && query) { e.preventDefault(); setQuery(''); }
+    if (e.key === 'Escape' && query) { e.preventDefault(); e.stopPropagation(); setQuery(''); }   // not the dialog
     if (e.key === 'Enter') {
       e.preventDefault();   // never submits a form around it
-      const matches = shown.filter((o) => !o.pinned && !o.disabled && String(o.value) !== String(value));
-      if (query && matches.length === 1) { onChange(matches[0].value); setQuery(''); }
+      const matches = query ? shown.filter((o) => !o.pinned && !o.disabled && hits(query, o.label, o.value)) : [];
+      if (matches.length === 1) {
+        if (String(matches[0].value) !== String(value)) onChange(matches[0].value);
+        setQuery('');
+      }
     }
   };
   return (

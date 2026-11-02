@@ -46,14 +46,14 @@ def _languages() -> list[dict]:
             for code, name in sorted(WHISPER_LANGUAGES.items(), key=lambda kv: kv[1])]
 
 
-async def _options(conn) -> chat_options.ChatOptions:
+async def _options(conn) -> tuple[chat_options.ChatOptions, bool]:
     """Read per request, as turns do (one primary-key read), so a switch applies at once on every worker. If the
-    row can't be read the environment's values apply."""
+    row can't be read the environment's values apply, and the answer says they aren't the row's."""
     try:
-        return await chat_options.load_chat_options(conn)
+        return await chat_options.load_chat_options(conn), True
     except Exception:  # noqa: BLE001 - the composer's status call must not 500 on a database blip
         logger.warning("Chat options couldn't be read: using the environment's", exc_info=True)
-        return chat_options.from_env()
+        return chat_options.from_env(), False
 
 
 def speech_conn() -> Callable[[], AbstractAsyncContextManager]:
@@ -66,14 +66,16 @@ def speech_conn() -> Callable[[], AbstractAsyncContextManager]:
 class SpeechAccess:
     principal: deps.Principal
     options: chat_options.ChatOptions
+    from_row: bool = True   # False: `options` are the environment's, which know nothing of an admin's choice
 
     @property
     def voice_on(self) -> bool:
         return self.options.voice_input
 
     def engine(self):
-        """This worker's engine, on the model the deployment chose (a change reaches a worker here)."""
-        return service.get_transcriber(wanted=catalogue.wanted(self.options))
+        """This worker's engine, on the model the deployment chose (a change reaches a worker here). Without the
+        row nobody knows what was chosen, so whatever runs keeps running: a database blip must not reload a model."""
+        return service.get_transcriber(wanted=catalogue.wanted(self.options) if self.from_row else None)
 
 
 async def speech_access(request: Request, open_conn=Depends(speech_conn)) -> SpeechAccess:
@@ -85,8 +87,8 @@ async def speech_access(request: Request, open_conn=Depends(speech_conn)) -> Spe
     async with open_conn() as conn:
         principal = await deps.resolve_principal(request, conn)
         deps.check_capability(principal, "chat")
-        options = await _options(conn)
-    return SpeechAccess(principal, options)
+        options, from_row = await _options(conn)
+    return SpeechAccess(principal, options, from_row)
 
 
 @router.get("/status")
@@ -158,6 +160,7 @@ async def transcribe(request: Request, access: SpeechAccess = Depends(speech_acc
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
         raise refusal(413, "too_large", _TOO_LARGE)
+    access.engine()   # now: by the end of the upload these options can be stale, and would swap a newer model back
     language, file = await _read_upload(request)
     try:
         code = None if language in (None, "", "auto") else language
@@ -175,7 +178,7 @@ async def transcribe(request: Request, access: SpeechAccess = Depends(speech_acc
     if not audio:
         raise refusal(400, "bad_audio", _BAD_AUDIO)
 
-    engine = access.engine()
+    engine = service.get_transcriber()
     if engine.name == "local":   # the local engine's state costs nothing to read; a remote one's is a request per recording
         try:
             service.heal(engine, await asyncio.wait_for(engine.status(), STATUS_TIMEOUT_S))
