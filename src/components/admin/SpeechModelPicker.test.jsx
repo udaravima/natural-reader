@@ -191,7 +191,8 @@ describe('SpeechModelPicker', () => {
   it('keeps its name once the list is long enough to search', async () => {
     const models = Array.from({ length: 14 }, (_, i) => ({ ...small, id: `m-${i}`, label: `Model ${i}` }));
     mount(view({ chosen: 'm-0', models }));
-    expect((await select()).value).toBe('m-0');
+    fireEvent.click(await select());
     expect(screen.getByRole('searchbox', { name: 'Find a speech model' })).toBeTruthy();
+    expect(screen.getByRole('listbox', { name: 'Speech model' })).toBeTruthy();
   });
 });

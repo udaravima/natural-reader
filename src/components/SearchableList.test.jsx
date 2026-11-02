@@ -16,10 +16,14 @@ function Picker({ options = zones, initial = 'Asia/Colombo', onPick = () => {}, 
       onChange={(v) => { setValue(v); onPick(v); }} {...rest} />
   );
 }
+const trigger = () => screen.getByRole('combobox', { name: 'Timezone' });
+const open = () => fireEvent.click(trigger());
 const box = () => screen.getByRole('searchbox', { name: 'Find a timezone' });
 const type = (text) => fireEvent.change(box(), { target: { value: text } });
 const list = () => screen.getByRole('listbox', { name: 'Timezone' });
-const names = (root) => [...root.querySelectorAll('option')].map((o) => o.value);
+const rows = () => within(list()).queryAllByRole('option');
+const names = () => rows().map((o) => o.textContent);
+const active = () => document.getElementById(box().getAttribute('aria-activedescendant'))?.textContent;
 
 describe('hits', () => {
   it('finds across the separators and accents people do not type', () => {
@@ -35,108 +39,200 @@ describe('SearchableSelect', () => {
     const short = many(LONG_LIST).map((m) => ({ value: m, label: m }));
     render(<Picker options={short} initial="model-0" />);
     expect(screen.queryByRole('searchbox')).toBeNull();
-    expect(screen.getByRole('combobox', { name: 'Timezone' })).toBeTruthy();
+    expect(trigger().tagName).toBe('SELECT');
   });
 
-  it('narrows the options and opens a list of the matches', () => {
+  it('shows one control until it is opened: no box, no list', () => {
     render(<Picker />);
-    expect(screen.getByRole('combobox', { name: 'Timezone' })).toBeTruthy();
-    type('america');
-    expect(names(list())).toEqual(['America/New_York', 'America/Sao_Paulo', 'Asia/Colombo']);
+    expect(trigger().textContent).toBe('Asia/Colombo');
+    expect(trigger().getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('searchbox')).toBeNull();
+    expect(screen.queryByRole('listbox')).toBeNull();
   });
 
-  it('never loses the value in use while searching', () => {
+  it('opens with every option and the search box already focused', () => {
     render(<Picker />);
+    open();
+    expect(trigger().getAttribute('aria-expanded')).toBe('true');
+    expect(rows()).toHaveLength(zones.length);
+    expect(document.activeElement).toBe(box());
+  });
+
+  it('opens on the option in use, marked as chosen', () => {
+    render(<Picker />);
+    open();
+    expect(active()).toBe('Asia/Colombo');
+    expect(screen.getByRole('option', { selected: true }).textContent).toBe('Asia/Colombo');
+  });
+
+  it('narrows as you type, across the separators people do not type', () => {
+    render(<Picker />);
+    open();
+    type('new york');
+    expect(names()).toEqual(['America/New_York']);
+    expect(active()).toBe('America/New_York');
+  });
+
+  it('says when nothing matches', () => {
+    render(<Picker />);
+    open();
     type('nothing matches this');
-    expect(list().value).toBe('Asia/Colombo');
+    expect(rows()).toHaveLength(0);
+    expect(screen.getByText('Nothing matches.')).toBeTruthy();
   });
 
-  it('a click on a match chooses it and closes the list', () => {
+  it('a click on an option chooses it, closes, and goes back to the control', () => {
     const onPick = vi.fn();
     render(<Picker onPick={onPick} />);
+    open();
     type('new york');
-    fireEvent.change(list(), { target: { value: 'America/New_York' } });
-    fireEvent.click(list());
+    fireEvent.click(screen.getByRole('option', { name: 'America/New_York' }));
     expect(onPick).toHaveBeenCalledWith('America/New_York');
-    expect(screen.getByRole('combobox', { name: 'Timezone' }).value).toBe('America/New_York');
-    expect(box().value).toBe('');
+    expect(trigger().textContent).toBe('America/New_York');
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(document.activeElement).toBe(trigger());
   });
 
-  it('Enter on one match chooses it', () => {
+  it('Enter chooses the highlighted option, and the arrows move the highlight', () => {
     const onPick = vi.fn();
     render(<Picker onPick={onPick} />);
-    type('new york');
+    open();
+    type('america');
+    expect(active()).toBe('America/New_York');
+    fireEvent.keyDown(box(), { key: 'ArrowDown' });
+    expect(active()).toBe('America/Sao_Paulo');
+    fireEvent.keyDown(box(), { key: 'ArrowDown' });
+    expect(active()).toBe('America/Sao_Paulo');
+    fireEvent.keyDown(box(), { key: 'ArrowUp' });
+    expect(active()).toBe('America/New_York');
     fireEvent.keyDown(box(), { key: 'Enter' });
     expect(onPick).toHaveBeenCalledWith('America/New_York');
   });
 
-  it('Enter on several matches chooses nothing and submits nothing', () => {
+  it('choosing what is already chosen changes nothing and still closes', () => {
     const onPick = vi.fn();
-    const submit = vi.fn((e) => e.preventDefault());
-    render(<form onSubmit={submit}><Picker onPick={onPick} /></form>);
-    type('america');
-    expect(fireEvent.keyDown(box(), { key: 'Enter' })).toBe(false);   // default prevented
-    expect(onPick).not.toHaveBeenCalled();
-  });
-
-  it('Enter leaves things alone when the one that matches is already chosen', () => {
-    const onPick = vi.fn();
-    render(<Picker onPick={onPick} initial="Asia/Colombo" />);
-    type('colombo');
+    render(<Picker onPick={onPick} />);
+    open();
     fireEvent.keyDown(box(), { key: 'Enter' });
     expect(onPick).not.toHaveBeenCalled();
-    expect(box().value).toBe('');
+    expect(screen.queryByRole('listbox')).toBeNull();
   });
 
-  it('Enter does not pick another option just because the chosen one also matches', () => {
-    const onPick = vi.fn();
-    render(<Picker onPick={onPick} initial="America/New_York" />);
-    type('america');
-    fireEvent.keyDown(box(), { key: 'Enter' });
-    expect(onPick).not.toHaveBeenCalled();
+  it('Enter submits no form around it', () => {
+    const onSubmit = vi.fn((e) => e.preventDefault());
+    render(<form onSubmit={onSubmit}><Picker /></form>);
+    open();
+    expect(fireEvent.keyDown(box(), { key: 'Enter' })).toBe(false);
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it('Escape clears the search and stays inside a dialog; a second Escape closes the dialog', () => {
+  it('typing on the closed control starts the search', () => {
+    render(<Picker />);
+    trigger().focus();
+    fireEvent.keyDown(trigger(), { key: 's' });
+    expect(box().value).toBe('s');
+    expect(document.activeElement).toBe(box());
+  });
+
+  it('the arrow keys open it too', () => {
+    render(<Picker />);
+    fireEvent.keyDown(trigger(), { key: 'ArrowDown' });
+    expect(rows()).toHaveLength(zones.length);
+  });
+
+  it('Escape closes it and stays inside a dialog; a second Escape reaches the dialog', () => {
     const onDialogKey = vi.fn();
-    render(<div onKeyDown={onDialogKey}><Picker /></div>);
+    render(<div role="dialog" onKeyDown={onDialogKey}><Picker /></div>);
+    open();
     type('sao');
     fireEvent.keyDown(box(), { key: 'Escape' });
-    expect(box().value).toBe('');
+    expect(screen.queryByRole('listbox')).toBeNull();
     expect(onDialogKey).not.toHaveBeenCalled();
-    fireEvent.keyDown(box(), { key: 'Escape' });
+    fireEvent.keyDown(trigger(), { key: 'Escape' });
     expect(onDialogKey).toHaveBeenCalledTimes(1);
   });
 
-  it('shows every option again when the list stops being long', () => {
-    const { rerender } = render(<Picker />);
-    type('sao');
-    const short = zones.slice(0, LONG_LIST);
-    rerender(<Picker options={short} />);
-    expect(names(screen.getByRole('combobox', { name: 'Timezone' }))).toHaveLength(LONG_LIST);
+  it('a press outside closes it and chooses nothing', () => {
+    const onPick = vi.fn();
+    render(<div><button>elsewhere</button><Picker onPick={onPick} /></div>);
+    open();
+    fireEvent.pointerDown(screen.getByText('elsewhere'));
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(onPick).not.toHaveBeenCalled();
   });
 
-  it('ArrowDown moves to the list, and Escape comes back', () => {
+  it('forgets the search when it closes', () => {
     render(<Picker />);
-    type('america');
-    fireEvent.keyDown(box(), { key: 'ArrowDown' });
-    expect(document.activeElement).toBe(list());
-    fireEvent.keyDown(list(), { key: 'Escape' });
-    expect(document.activeElement).toBe(box());
+    open();
+    type('sao');
+    fireEvent.keyDown(box(), { key: 'Escape' });
+    open();
     expect(box().value).toBe('');
+    expect(rows()).toHaveLength(zones.length);
   });
 
-  it('keeps a pinned option through a search', () => {
-    render(<Picker options={[{ value: 'auto', label: 'Auto', pinned: true }, ...zones]} initial="auto" />);
-    type('colombo');
-    expect(names(list())).toEqual(['auto', 'Asia/Colombo']);
+  it('a disabled option can be seen but not chosen, and the arrows skip it', () => {
+    const onPick = vi.fn();
+    const options = [...zones, { value: 'Asia/Dhaka', label: 'Asia/Dhaka', disabled: true },
+      { value: 'Asia/Kolkata', label: 'Asia/Kolkata' }];
+    render(<Picker onPick={onPick} options={options} />);
+    open();
+    type('asia');
+    const off = screen.getByRole('option', { name: 'Asia/Dhaka' });
+    expect(off.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(off);
+    expect(onPick).not.toHaveBeenCalled();
+    fireEvent.keyDown(box(), { key: 'ArrowDown' });
+    expect(active()).toBe('Asia/Kolkata');
   });
 
-  it('keeps provider groups', () => {
-    const options = many(14).map((m, i) => ({ value: m, label: m, group: i < 7 ? 'ollama' : 'cloud' }));
-    render(<Picker options={options} initial="model-0" />);
-    const select = screen.getByRole('combobox', { name: 'Timezone' });
-    expect([...select.querySelectorAll('optgroup')].map((g) => g.label)).toEqual(['ollama', 'cloud']);
-    expect(within(select).getAllByRole('option')).toHaveLength(14);
+  it('keeps provider groups, and a group goes when none of it matches', () => {
+    const options = [
+      ...many(7).map((m) => ({ value: `a:${m}`, label: m, group: 'ollama' })),
+      ...many(7).map((m) => ({ value: `b:${m}x`, label: `${m}x`, group: 'openrouter' })),
+    ];
+    render(<Picker options={options} initial="a:model-0" />);
+    open();
+    expect(screen.getByRole('group', { name: 'ollama' })).toBeTruthy();
+    expect(screen.getByRole('group', { name: 'openrouter' })).toBeTruthy();
+    type('model-1x');
+    expect(screen.queryByRole('group', { name: 'ollama' })).toBeNull();
+    expect(names()).toEqual(['model-1x']);
+  });
+
+  it('draws outside its panel, so a narrow box cannot squeeze or clip it', () => {
+    const { container } = render(<div style={{ width: 120, overflow: 'hidden' }}><Picker /></div>);
+    open();
+    expect(container.contains(list())).toBe(false);
+    expect(document.body.contains(list())).toBe(true);
+  });
+
+  it('stays inside a dialog, for its focus trap and for screen readers', () => {
+    render(<div role="dialog"><Picker /></div>);
+    open();
+    expect(screen.getByRole('dialog').contains(list())).toBe(true);
+  });
+
+  it('hands back a string, as a native select does', () => {
+    const onPick = vi.fn();
+    const numbers = many(LONG_LIST + 1).map((_, i) => ({ value: i, label: `Option ${i}` }));
+    render(<Picker onPick={onPick} options={numbers} initial={0} />);
+    expect(trigger().textContent).toBe('Option 0');
+    open();
+    fireEvent.click(screen.getByRole('option', { name: 'Option 3' }));
+    expect(onPick).toHaveBeenCalledWith('3');
+  });
+
+  it('does not open when disabled', () => {
+    render(<Picker disabled />);
+    open();
+    expect(screen.queryByRole('listbox')).toBeNull();
+  });
+
+  it('passes the name and description on to the control', () => {
+    render(<><label htmlFor="tz">Zone</label><Picker aria-label={undefined} id="tz" aria-describedby="help" /></>);
+    const control = screen.getByRole('combobox', { name: 'Zone' });
+    expect(control.getAttribute('aria-describedby')).toBe('help');
   });
 });
 

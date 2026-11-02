@@ -91,7 +91,7 @@ export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChang
   const sizedModels = models.filter((m) => sizesContext(m, providerByName[m.provider]));
   const unreportedModels = models.filter((m) => m.reported_window == null);
   const readerOptions = useMemo(() => [
-    { value: 'chat', label: CHAT_READER, pinned: true },
+    { value: 'chat', label: CHAT_READER },
     ...[...new Set([...models.map((m) => m.id), reader].filter((id) => id !== 'chat'))].map((id) => ({ value: id, label: id })),
   ], [models, reader]);
 

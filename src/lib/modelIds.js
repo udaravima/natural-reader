@@ -56,9 +56,9 @@ export function supportedKnobs(model) {
 export function modelOptions(models, selected, { empty = 'No models found', prompt } = {}) {
     if (models.length === 0) return [{ value: '', label: empty }];
     const first = [];
-    if (!selected && prompt) first.push({ value: '', label: prompt, pinned: true });
+    if (!selected && prompt) first.push({ value: '', label: prompt });
     if (selected && !models.some((m) => m.id === selected)) {
-        first.push({ value: selected, label: `${selected} (unavailable)`, disabled: true, pinned: true });
+        first.push({ value: selected, label: `${selected} (unavailable)`, disabled: true });
     }
     return [...first, ...groupByProvider(models).flatMap(([provider, list]) => (
         list.map((m) => ({ value: m.id, label: modelLabel(m), group: provider }))))];

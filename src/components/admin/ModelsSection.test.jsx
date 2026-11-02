@@ -331,7 +331,9 @@ describe('ModelsSection', () => {
       await find('Find a chat model');
       expect(screen.getByRole('searchbox', { name: 'Find a model to size' })).toBeTruthy();
       expect(screen.getByRole('searchbox', { name: "Find a model's window" })).toBeTruthy();
+      fireEvent.click(screen.getByRole('combobox', { name: /^Reader/ }));
       expect(screen.getByRole('searchbox', { name: 'Find a reader model' })).toBeTruthy();
+      fireEvent.keyDown(screen.getByRole('searchbox', { name: 'Find a reader model' }), { key: 'Escape' });
       const scrollers = [...document.querySelectorAll('.overflow-y-auto')];
       expect(scrollers).toHaveLength(3);
       for (const box of scrollers) expect(box.className).toContain('max-h-64');
