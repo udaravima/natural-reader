@@ -15,14 +15,14 @@ import { apiFetch } from '../utils/apiFetch';
  */
 
 export const REASON_INSECURE = 'Voice input needs a secure (https) connection';
-export const REASON_NO_RECORDER = "This browser can't record audio";
+const REASON_NO_RECORDER = "This browser can't record audio";
 export const REASON_BLOCKED = "Microphone blocked: allow it in the browser's site settings";
 // The two reasons that can't change without a reload: the button is truly disabled for them. A blocked
 // microphone can be allowed in the browser's site settings, so that button stays pressable (it asks again).
 export const HARD_REASONS = [REASON_INSECURE, REASON_NO_RECORDER];
 
 const PREFERRED_MIME = 'audio/webm;codecs=opus';
-export const MAX_SECONDS = 120;
+const MAX_SECONDS = 120;
 const FALLBACK = "The transcription server didn't answer";
 
 function fileName(mime) {
@@ -107,7 +107,16 @@ export function useVoiceInput({ apiHost, apiPort, language = 'auto', onText, sho
 
   useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; teardown(); phaseRef.current = 'idle'; };
+    return () => {
+      // Leaving the chat view (a tab switch) throws a recording or a transcription away. `toast` does nothing
+      // once unmounted, so say it directly: somebody who pressed Stop after two minutes must not come back to
+      // nothing and wonder.
+      const inFlight = phaseRef.current === 'recording' || phaseRef.current === 'transcribing';
+      mountedRef.current = false;
+      teardown();
+      phaseRef.current = 'idle';
+      if (inFlight) latest.current.showToast?.('Your recording was discarded: you left the chat.', 5000);
+    };
   }, [teardown]);
 
   const upload = async (blob, session) => {

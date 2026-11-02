@@ -8,7 +8,7 @@ import threading
 from faster_whisper import WhisperModel
 
 from .audio import SAMPLE_RATE, decode_capped
-from .base import EngineNotReady, EngineStatus, Transcript
+from .base import EngineNotReady, EngineStatus, EngineUnavailable, Transcript
 
 logger = logging.getLogger("server.speech")
 
@@ -64,6 +64,8 @@ class LocalWhisper:
         with self._lock:
             model, state, detail = self._model, self._state, self._detail
         if model is None:
-            raise EngineNotReady(detail if state == "error" else "The speech model is still loading")
+            if state == "error":
+                raise EngineUnavailable(detail)
+            raise EngineNotReady("The speech model is still loading")
         samples = await asyncio.to_thread(decode_capped, audio)  # bounded; raises AudioTooLong / BadAudio
         return await asyncio.to_thread(self._run, samples, language, model)

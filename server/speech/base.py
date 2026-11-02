@@ -41,6 +41,11 @@ class EngineNotReady(SpeechError):
         return str(self.args[0]) if self.args else ""
 
 
+class EngineUnavailable(EngineNotReady):
+    """The engine is not merely loading: a load failed, or it is set up wrong (no URL, no model, a package that
+    isn't installed). Waiting won't fix it, so the person is told to ask their admin, not to try again."""
+
+
 class EngineFailed(SpeechError):
     pass
 

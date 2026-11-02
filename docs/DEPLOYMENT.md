@@ -775,7 +775,7 @@ reads **set** or **not set**.
 | `SPEECH_MODEL` (**Voice input model**) | `small` for `local`; none for `openai` | `local`: a size (`tiny`, `base`, `small`, `medium`, `large-v3`, `large-v3-turbo`), a Hugging Face repo id of a CTranslate2 model, or a directory on the server (see [Choosing a model](#choosing-a-model)). `openai`: the server's model name (`whisper-1` for OpenAI itself); required, and the Overview says "SPEECH_MODEL is not set" without it. |
 | `SPEECH_URL` (**Voice input server**) | none | `openai` only: the base **including `/v1`**, like `INFERENCE_<NAME>_URL`. Without it the Overview says "SPEECH_URL is not set". |
 | `SPEECH_API_KEY` (**Voice input key**) | none | `openai` only: sent as the bearer key. It stays on the server and is never logged or shown. |
-| `SPEECH_CPU_THREADS` (none) | half the machine's cores, at least 1 | `local` only: the threads one transcription uses (a count). The rest of the machine stays free for chat, narration and indexing. A value that isn't a number logs a warning and the default applies. |
+| `SPEECH_CPU_THREADS` (none) | half the machine's cores **divided by `WORKERS`**, at least 1: `max(1, cores // (2 × WORKERS))` | `local` only: the threads one transcription uses (a count), per worker. Every worker has its own engine, so with the default all the workers together stay at half the machine and the rest stays free for chat, narration and indexing. A value you set is used as is, per worker, so with `WORKERS` above 1 it multiplies. A value that isn't a number logs a warning and the default applies. |
 
 ### What it costs on the server
 
@@ -785,7 +785,7 @@ about 276 MB to the backend image (`ctranslate2` 146, `av` 128, `faster-whisper`
 a quick-start box the moment it is switched on. The `small` model is another 464
 MB under `HF_HOME` (in the container, the `cache` volume), downloaded once.
 
-**Time, as measured on one CPU-only test machine with `small`** (32 cores, so the
+**Time, as measured on one CPU-only test machine with `small`** (32 cores and one worker, so the
 default 16 threads). It is one machine, not a promise: a smaller box will be
 slower, and none of this was measured on yours.
 
@@ -800,7 +800,7 @@ slower, and none of this was measured on yours.
 
 The local engine transcribes **one recording at a time per worker process**. A
 second one waits up to 60 s, then the person sees "Voice input is busy. Try again
-in a moment." (503). Each person can have one running (409). Cancel in the browser
+in a moment." (503). Each person can have one running **per worker** (409; the count is not shared between workers). Cancel in the browser
 ends the request, but a transcription already running finishes in its thread (a
 thread can't be stopped) and holds the slot until it does: at most one 2-minute
 recording's worth of CPU.
@@ -842,9 +842,15 @@ People pick a language under **Settings → Chat → Speech language**, or leave
 **Auto**, which detects it.
 
 **A failed load.** A model that can't download or load (no network, a wrong name, a
-Transformers-format folder) shows on **Admin → Overview** as **Problem**. The
-engine doesn't retry it by itself. Fix the cause, then turn **Voice input** **Off**
-and **On** again in **Chat options**: that starts a new load, with no restart.
+Transformers-format folder) shows on **Admin → Overview** as **Problem**. Each
+worker retries a failed load by itself, **at most once every 5 minutes**, when a
+person's message box or a recording asks (so a failing download can't restart on
+every page load, and a transient failure heals on every worker within about five
+minutes). People who press the microphone meanwhile see "Voice input isn't working
+right now. Ask your admin."; "still getting ready" is only for a load in progress.
+To retry at once, fix the cause, then turn **Voice input** **Off** and **On** again
+in **Chat options**: that starts a new load, with no restart, on the worker that
+takes the click; the other workers retry on their own within 5 minutes.
 
 ### A remote engine (`SPEECH_ENGINE=openai`)
 
@@ -871,7 +877,7 @@ and watch the Overview before telling people.
 
 **A remote engine can cost money per minute, and the app has no budget for it.**
 The daily token budget counts tokens; speech is seconds. The only limits are
-2 minutes per recording, 10 MB, and one recording at a time per person. If that
+2 minutes per recording, 10 MB, and one recording at a time per person per worker. If that
 matters, watch the provider's billing.
 
 ### Recordings and your reverse proxy
@@ -880,11 +886,40 @@ The app keeps a recording in memory for one request and never writes it to disk,
 the database or a log (a log line carries the person, the engine, the seconds, the
 language and the time taken, never the words). **A reverse proxy can write it to
 disk though**: nginx buffers a request body bigger than `client_body_buffer_size`
-into a temp file before passing it on. If that matters to you, set
-`proxy_request_buffering off;` for `/v1/speech/`, or raise `client_body_buffer_size`
-above 10 MB. Also, `client_max_body_size` must allow a little over 10 MB for
-`/v1/speech/transcriptions` (the sample vhost's `100m` on `/v1/` already does; a
-stricter limit would turn every recording into a `413`).
+into a temp file before passing it on. If that matters to you, turn request
+buffering off for the speech routes. In the sample vhost
+([`sample_configs/chat.example.com.sample`](sample_configs/chat.example.com.sample))
+put a nested block inside the `location /v1/ { … }` block. It must repeat the
+`proxy_pass` and headers, because a nested location replaces what the outer one
+set up:
+
+```nginx
+    location /v1/ {
+        # … the existing block, unchanged …
+
+        location /v1/speech/ {
+            proxy_pass http://127.0.0.1:8000/v1/speech/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_http_version 1.1;
+            proxy_request_buffering off;
+            client_max_body_size 11m;
+            proxy_buffering off;
+        }
+    }
+```
+
+Or, to keep it simple, put `proxy_request_buffering off;` in the existing `/v1/`
+block itself, and know that it then applies to PDF uploads too (they then stream to
+the backend instead of being buffered first, which is fine for the app but means a
+slow client holds a backend worker for the whole upload). The other way is to raise
+`client_body_buffer_size` above 10 MB. Either way `client_max_body_size` must allow
+a little over 10 MB for `/v1/speech/transcriptions` (the sample vhost's `100m` on
+`/v1/` already does; a stricter limit would turn every recording into a `413`). The
+example block above was written from the sample vhost and not run against a real
+nginx here: test it with `nginx -t` and one recording.
 
 ### https for the microphone
 
@@ -897,7 +932,11 @@ LAN address over http.
 
 **Migration 024** runs at startup. It only widens a check on `chat_attachments` so
 a message can carry a text file; it has a Down (in the file's header) for a
-rollback. Voice stays off, and nothing downloads, until someone turns it on. An
+rollback. **Run `pip install -r requirements.txt` after pulling** on a bare-metal
+install (the container image has it built in): voice input needs `faster-whisper`
+and `av`. Without them the backend still starts, and the **Overview**'s **Voice
+input** line says which package is missing. Voice stays off, and nothing downloads,
+until someone turns it on. An
 existing **Web search** setting is not touched: both options live in the same
 `chat_options` row and each save leaves the other alone.
 

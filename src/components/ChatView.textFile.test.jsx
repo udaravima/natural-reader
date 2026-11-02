@@ -286,6 +286,47 @@ describe('a refused send and the model', () => {
     });
 });
 
+describe('final fix wave: staging', () => {
+    it('refuses an empty file with a toast naming it, and stages no chip', async () => {
+        const props = baseProps();
+        render(<Harness props={props} />);
+        pick([file('', 'empty.txt')]);
+        await waitFor(() => expect(props.showToast).toHaveBeenCalledWith('empty.txt is empty', expect.any(Number)));
+        expect(screen.queryByRole('button', { name: /empty\.txt/ })).toBeNull();
+    });
+
+    it('stages a file that is only whitespace (it has bytes; the server takes it)', async () => {
+        render(<Harness props={baseProps()} />);
+        pick([file('\n', 'blank.txt')]);
+        expect(await staged('blank.txt')).toBeInTheDocument();
+    });
+
+    it('the meter counts a staged text file at its sent size / 4 before Send', async () => {
+        render(<Harness props={baseProps({ numCtx: 16384 })} />);
+        expect(screen.queryByTestId('context-meter')).toBeNull();
+        pick([file('a'.repeat(4000), 'big.txt')]);
+        await staged('big.txt');
+        expect(screen.getByTestId('context-meter')).toHaveTextContent('~1.0k / 16k ctx');
+    });
+
+    it('the meter adds the file to the messages, and counts what would be sent (masked text, not the original)', async () => {
+        const messages = [{ role: 'user', content: 'a'.repeat(4000), id: 'u1' }];
+        render(<Harness props={baseProps({ messages, numCtx: 16384 })} />);
+        pick([file('TOKEN=' + 'x'.repeat(3994) + '\n', '.env')]);   // masks to a ~20-character placeholder
+        await staged('.env');
+        expect(screen.getByTestId('context-meter')).toHaveTextContent('~1.0k / 16k ctx');
+        fireEvent.click(await staged('.env'));
+        fireEvent.click(screen.getByRole('button', { name: 'Send real values' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Yes, send real values' }));
+        await waitFor(() => expect(screen.getByTestId('context-meter')).toHaveTextContent('~2.0k / 16k ctx'));
+    });
+
+    it('says text files in the drop overlay and the placeholder', () => {
+        render(<ChatView {...baseProps()} />);
+        expect(screen.getByPlaceholderText(/attach an image or a text file/)).toBeInTheDocument();
+    });
+});
+
 describe('a sent text attachment', () => {
     it('renders a chip with name, size and masked, not the text and not the data-gone notice', () => {
         const att = { id: 't1', kind: 'text', name: '.env', mimeType: 'text/plain', size: 20, masked: true };

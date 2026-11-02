@@ -87,3 +87,11 @@ def test_speech_rows_show_the_environment_and_never_the_key_or_url_secrets():
     assert (d["speech_model"]["value"], d["speech_model"]["source"]) == ("whisper-1", "env")
     assert (d["speech_url"]["value"], d["speech_url"]["source"]) == ("https://speech.example.com:8443/v1", "env")
     assert (d["speech_key"]["value"], d["speech_key"]["source"]) == ("set", "env")
+
+
+def test_an_openai_voice_engine_with_no_model_says_not_set_not_small():
+    d = _by_id({"SPEECH_ENGINE": "openai", "SPEECH_URL": "https://stt.example.com/v1"})
+    assert d["speech_model"]["value"] == "Not set"        # `small` is the local engine's default, not this engine's
+    assert _by_id({"SPEECH_ENGINE": "OpenAI "})["speech_model"]["value"] == "Not set"
+    assert _by_id({"SPEECH_ENGINE": "local"})["speech_model"]["value"] == "small"
+    assert _by_id({})["speech_model"]["value"] == "small"

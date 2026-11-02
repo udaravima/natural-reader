@@ -1,5 +1,5 @@
 /**
- * Helpers for image/audio attachments on chat messages.
+ * Helpers for image, audio and text-file attachments on chat messages.
  *
  * Lifecycle:
  *   1. ChatView captures a File (paperclip / drop / paste) or Blob (mic).
@@ -21,12 +21,10 @@ export const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB
 export const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // 25 MB
 
 export const IMAGE_ACCEPT = 'image/*';
-export const AUDIO_ACCEPT = 'audio/*';
 // Mirrors textAttachment.js's extension list, so the picker offers what
 // isTextFile() will take. isTextFile takes any name starting .env, but an
 // accept entry only matches a name's end, so the common siblings are listed. `.env` files often have no MIME type at all.
 export const TEXT_ACCEPT = 'text/*,.txt,.md,.env,.json,.yaml,.yml,.toml,.ini,.conf,.cfg,.csv,.tsv,.log,.xml,.html,.css,.js,.ts,.jsx,.tsx,.py,.sh,.sql,.properties,.env.local,.env.development,.env.production,.env.staging,.env.test,.env.example';
-export const ATTACHMENT_ACCEPT = `${IMAGE_ACCEPT},${AUDIO_ACCEPT},${TEXT_ACCEPT}`;
 
 // What a staged text file sends: its real text only after the person chose to.
 export const sentTextOf = (att) => (att.sendReal ? att.originalText : att.maskedText);
@@ -41,9 +39,12 @@ export const textLimitBytes = (att) => Math.max(utf8Bytes(att.originalText), utf
 export const textAttachmentWire = (att) => {
     const text = sentTextOf(att);
     const masked = !att.sendReal && att.masked > 0;
+    // The person's choice to send real values, recorded so the server keeps those values with the model they
+    // were agreed for. Not the same as `!masked`: that is also true when there was nothing to mask.
+    const real_values = !!att.sendReal && att.masked > 0;
     const size = utf8Bytes(text);
     return {
-        wire: { id: att.id, kind: 'text', mime: 'text/plain', name: att.name || '', size, masked, base64: textToBase64(text) },
+        wire: { id: att.id, kind: 'text', mime: 'text/plain', name: att.name || '', size, masked, real_values, base64: textToBase64(text) },
         meta: { id: att.id, kind: 'text', name: att.name, mimeType: 'text/plain', size, masked },
     };
 };

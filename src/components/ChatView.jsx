@@ -38,6 +38,8 @@ import {
   TEXT_ACCEPT,
   kindFromMime,
   textLimitBytes,
+  sentTextOf,
+  utf8Bytes,
 } from "../utils/attachment";
 import {
   TEXT_FILE_MAX_BYTES,
@@ -244,6 +246,10 @@ export default function ChatView({
         showToast?.(r.error, 4000);
         continue;
       }
+      if (r.text.length === 0) {
+        showToast?.(`${f.name} is empty`, 4000);
+        continue;
+      }
       const m = maskText(f.name, r.text);
       const att = {
         id: crypto.randomUUID(),
@@ -356,10 +362,18 @@ export default function ChatView({
   // Counts what actually gets sent: message contents plus the FULL pin preamble
   // (buildPinPreamble wraps each excerpt in ~57 tokens of framing), both of
   // which are re-sent on every turn.
-  const ctxTokens = estimateTokens([
-    ...messages.map((m) => m.content),
-    ...buildPinPreamble(pins).map((m) => m.content),
-  ]);
+  // Staged text files count at what would be sent (the masked or the real text, in bytes) / 4, so the meter
+  // shows a big file before Send. The new message is never trimmed: this is where the person sees it.
+  const stagedTextTokens = Math.ceil(
+    pendingAttachments
+      .filter((a) => a.kind === "text")
+      .reduce((n, a) => n + utf8Bytes(sentTextOf(a)), 0) / 4,
+  );
+  const ctxTokens =
+    estimateTokens([
+      ...messages.map((m) => m.content),
+      ...buildPinPreamble(pins).map((m) => m.content),
+    ]) + stagedTextTokens;
   const ctxRatio = numCtx ? ctxTokens / numCtx : 0;
   // The running total keeps a decimal so it visibly moves as the conversation
   // grows; the window is a fixed preset and reads better whole. This is a
@@ -446,7 +460,7 @@ export default function ChatView({
           >
             <ImagePlus size={20} className="text-blue-500" />
             <span className={`text-sm font-bold ${theme.text}`}>
-              Drop an image to attach
+              Drop an image or a text file to attach
             </span>
           </div>
         </div>
@@ -605,7 +619,7 @@ export default function ChatView({
                   ? "Can't reach the model server."
                   : !selectedModel
                     ? (compact ? "Pick a model above to start." : "Pick a model in the sidebar to start.")
-                    : "Ask the model, drop / paste / attach an image…  (Enter to send)"
+                    : "Ask the model, drop / paste / attach an image or a text file…  (Enter to send)"
               }
               rows={1}
               className={`flex-1 min-w-0 resize-none p-3 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.text} text-sm leading-relaxed outline-none focus:ring-2 focus:ring-blue-500 transition-colors`}

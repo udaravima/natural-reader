@@ -442,3 +442,22 @@ async def test_local_a_failed_load_is_retried_by_the_next_warm(fake):
     assert await eng.status() == EngineStatus(True, "ready", "")
     eng.warm()  # ready: idempotent, no second model
     assert len(fake.instances) == 1
+
+
+# ---- final fix wave, I5: "not working" (waiting won't help) is a different error from "still loading" ----
+
+async def test_local_in_error_raises_unavailable_but_loading_raises_plain_not_ready(fake):
+    from server.speech.base import EngineNotReady, EngineUnavailable
+    eng = LocalWhisper("small", 1)
+    with pytest.raises(EngineNotReady) as loading:
+        await eng.transcribe(AUDIO, "audio/webm", None)
+    assert not isinstance(loading.value, EngineUnavailable)
+    eng._state, eng._detail = "error", "OSError"
+    with pytest.raises(EngineUnavailable):
+        await eng.transcribe(AUDIO, "audio/webm", None)
+
+
+async def test_openai_config_mistake_raises_unavailable():
+    from server.speech.base import EngineUnavailable
+    with pytest.raises(EngineUnavailable):
+        await OpenAICompatible(None, None, None).transcribe(b"a", "audio/webm", None)

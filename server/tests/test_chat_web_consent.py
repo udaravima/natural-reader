@@ -883,3 +883,70 @@ def test_only_a_real_offer_is_an_offer():
     assert web_offer([run({"error": "query is required and must be non-empty."})]) is None
     assert web_offer([run({"offered": False, **OFFER})]) is None
     assert web_offer([run({"message": "x"}), run({"offered": True, **OFFER})]) == {"kind": "web_offer", **OFFER}
+
+
+# ---- a file sent with its real values never searches the web unasked (final fix wave, I2) ----
+
+FILE_TEXT = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima"
+
+
+def _file(name="secrets.env", text=FILE_TEXT, real=False):
+    return store.NewAttachment(kind="text", mime="text/plain", name=name, data=text.encode(), client_id="f1",
+                               masked=not real, real_values=real)
+
+
+async def file_turn(conn, router, user, *, attachment, model="ollama:m", sid="s-f", text="Hi"):
+    from server.llm.types import Attachment
+    import base64
+    claim = await store.begin_turn(session_id=sid, user_id=user.user_id, model_id=model, text=text,
+                                   attachments=[attachment] if attachment else [], new_session_pins=None)
+    atts = (Attachment("text", "text/plain", base64.b64encode(attachment.data).decode(), attachment.name),) if attachment else ()
+    req = TurnRequest(user_id=user.user_id, session_id=sid, model_id=model, text=text, attachments=atts,
+                      settings=CallSettings(), doc_id=None, timezone="UTC",
+                      real_values=bool(attachment and attachment.real_values))
+    events = [e async for e in run_turn(req, claim, router=router, cfg=ChatConfig(), deployment_budget=None)]
+    return events, claim
+
+
+async def test_auto_behaves_as_ask_when_a_real_values_file_is_in_the_message(conn, engine):
+    alice = await member(conn, "alice")
+    await set_mode(conn, "auto", alice)
+    router = FakeRouter()
+    await file_turn(conn, router, alice, attachment=_file(real=True), sid="s-real")
+    assert router.calls[0]["tools"] == ["offer_web_search"]
+    masked = FakeRouter()
+    await file_turn(conn, masked, alice, attachment=_file(real=False), sid="s-masked")
+    assert masked.calls[0]["tools"] == WEB_TOOLS                    # a masked file leaves Auto as Auto
+
+
+async def test_auto_behaves_as_ask_while_an_earlier_real_values_file_is_in_the_chat(conn, engine):
+    alice = await member(conn, "alice")
+    await set_mode(conn, "auto", alice)
+    await file_turn(conn, FakeRouter(), alice, attachment=_file(real=True), sid="s-h")
+    same = FakeRouter()
+    await file_turn(conn, same, alice, attachment=None, sid="s-h", text="and then?")
+    assert same.calls[0]["tools"] == ["offer_web_search"]           # kept, same model
+    other = FakeRouter()
+    events, _ = await file_turn(conn, other, alice, attachment=None, sid="s-h", text="again", model="ollama:other")
+    assert other.calls[0]["tools"] == WEB_TOOLS                     # held back from this model: nothing real in context
+    assert "data-notice" in types(events)
+
+
+async def test_a_held_back_file_is_announced_once_and_not_sent(conn, engine):
+    alice = await member(conn, "alice")
+    await file_turn(conn, FakeRouter(), alice, attachment=_file(real=True, text="TOKEN=hunter2"), sid="s-n")
+    router = FakeRouter()
+    events, _ = await file_turn(conn, router, alice, attachment=None, sid="s-n", text="next", model="ollama:other")
+    notices = [e for e in events if e["type"] == "data-notice"]
+    assert [(n["code"], n["message"]) for n in notices] == [
+        ("file_held_back", "secrets.env wasn't sent to this model: its real values were agreed for another one.")]
+    assert all("hunter2" not in m.content for m in router.calls[0]["messages"])
+
+
+async def test_file_text_cannot_leave_through_a_web_search_query(conn, engine):
+    alice = await member(conn, "alice")
+    await set_mode(conn, "auto", alice)
+    leak = [ToolCallReady(ToolCall("w1", "web_search", {"query": FILE_TEXT})), Usage(5, 5), Finish("tool_calls")]
+    router = FakeRouter(steps=[leak, reply("done")])
+    await file_turn(conn, router, alice, attachment=_file(real=False), sid="s-leak")
+    assert engine.queries == []

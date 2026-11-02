@@ -442,6 +442,34 @@ describe('useVoiceInput: cancel and release', () => {
     await act(async () => { release(answer(200, { text: 'late', language: 'en' })); });
     expect(m.onText).not.toHaveBeenCalled();
   });
+  it('leaving the chat while recording says the recording was discarded', async () => {
+    const m = await ready();
+    await startRec(m);
+    m.unmount();
+    expect(m.showToast).toHaveBeenCalledWith('Your recording was discarded: you left the chat.', expect.any(Number));
+  });
+  it('leaving the chat while transcribing says so too', async () => {
+    onPost = () => new Promise(() => {});
+    const m = await ready();
+    await startRec(m);
+    await act(async () => { m.result.current.stop(); });
+    await waitFor(() => expect(posts).toHaveLength(1));
+    m.unmount();
+    expect(m.showToast).toHaveBeenCalledWith('Your recording was discarded: you left the chat.', expect.any(Number));
+  });
+  it('unmounting while idle shows no toast', async () => {
+    const m = await ready();
+    m.unmount();
+    expect(m.showToast).not.toHaveBeenCalled();
+  });
+  it('unmounting after a finished transcription shows no toast', async () => {
+    const m = await ready();
+    await startRec(m);
+    await act(async () => { m.result.current.stop(); });
+    await waitFor(() => expect(m.onText).toHaveBeenCalled());
+    m.unmount();
+    expect(m.showToast).not.toHaveBeenCalled();
+  });
   it('unmounting before the microphone answers releases the stream that then arrives', async () => {
     let resolveGum;
     getUserMedia.mockImplementationOnce(() => new Promise((r) => { resolveGum = r; }));

@@ -100,7 +100,8 @@ def readonly_rows(env: Mapping[str, str] = os.environ) -> list[dict]:
              "SEARXNG_URL", bool(searxng) and "SEARXNG_URL" in env),
         _row("speech_engine", "Voice input engine", (env.get("SPEECH_ENGINE") or "").strip() or "local",
              "SPEECH_ENGINE", _set(env, "SPEECH_ENGINE")),
-        _row("speech_model", "Voice input model", (env.get("SPEECH_MODEL") or "").strip() or "small",
+        _row("speech_model", "Voice input model", (env.get("SPEECH_MODEL") or "").strip()
+             or ("Not set" if (env.get("SPEECH_ENGINE") or "").strip().lower() == "openai" else "small"),
              "SPEECH_MODEL", _set(env, "SPEECH_MODEL")),
         _row("speech_url", "Voice input server", safe_url(env.get("SPEECH_URL") or "") or "Not set",
              "SPEECH_URL", _set(env, "SPEECH_URL")),

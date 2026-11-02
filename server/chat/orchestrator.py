@@ -40,7 +40,7 @@ from ..services.doc_search import ReadableDoc, readable_doc
 from ..services.inference_limits import get_limits
 from . import store
 from .config import ChatConfig
-from .context import TurnInput, build_context
+from .context import TurnInput, build_context, history_real_values
 from .project_map import ProjectMap, build_map
 from .project_scope import ProjectScope, load_project_scope
 from .prompt import document_tools_offered
@@ -118,6 +118,8 @@ class TurnRequest:
     project_id: str | None = None
     # The user said yes to this web search (context.web, C2.1 spec 5.8): the app runs it before the first step.
     web_query: str | None = None
+    # A text file of this message was sent with its real values (the person's choice for THIS model).
+    real_values: bool = False
 
 
 @dataclass
@@ -288,9 +290,15 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
         max_rounds = cfg.project_max_tool_rounds if req.project_id else cfg.max_tool_rounds
         tools_on = caps.tools is not False and max_rounds > 0
         project_map, outlines = await _project_map(project, cfg, tools_on) if project else (None, {})
+        # A turn that holds a file sent with its real values never searches the web unasked: "auto" behaves as
+        # "ask", so the person sees a query before it leaves (a file's words can ride out in one). Kept files
+        # only count when this model may see them (chat/context.py); trimming is decided later, so this errs safe.
+        web_mode = options.web_search
+        if web_mode == "auto" and (req.real_values or history_real_values(history, req.model_id)):
+            web_mode = "ask"
         tool_ctx = ToolContext(req.user_id, doc, cfg=cfg, project=project, question=req.text,
                                map_shortened=bool(project_map and project_map.shortened), outlines=outlines,
-                               model=req.model_id, web_mode=options.web_search, web_approved=bool(web_query),
+                               model=req.model_id, web_mode=web_mode, web_approved=bool(web_query),
                                charge=functools.partial(_charge_reader, req.user_id),
                                reader_cfg=_turn_reader(router, models_cfg, req.model_id, model_key, settings))
         offered = [] if caps.tools is False else available_tools(tool_ctx)
@@ -312,10 +320,14 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             tools=tuple(offered if max_rounds > 0 else ()), tool_ctx=tool_ctx,
             profile=profile.text, scope=tuple(scope_docs(tool_ctx)),
             project_map=project_map.text if project_map else "", app_exchange=app_exchange,
-            default_timezone=await _deployment_timezone()), cfg)
+            default_timezone=await _deployment_timezone(),
+            model=req.model_id, current_real_values=req.real_values), cfg)
+        for notice in built.notices:
+            yield ev("data-notice", code=notice["code"], message=notice["message"])
         tool_ctx.shown.update(built.shown_chunk_ids)
         # Document text the model already has: the web search guard's reference.
         tool_ctx.seen_text.extend(built.shown_texts)
+        tool_ctx.seen_text.extend(built.file_texts)   # attached files, kept or current (a search query may not carry them)
         tool_ctx.evidence.extend(built.evidence)
         tool_ctx.seen_text.extend(str(p.get("text") or "") for p in pins if isinstance(p, dict))
         if project_map:   # its openings and headings are document text too

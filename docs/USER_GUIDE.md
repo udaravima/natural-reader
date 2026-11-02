@@ -778,7 +778,13 @@ otherwise the toast says "*name* isn't a text file".
 **The limits:** 64 KB per file ("*name* is over 64 KB"), 128 KB of text per message
 ("The attached text is over 128 KB"). Past either, that file is left out and the
 others stay. A message can carry at most 10 attachments, images included; the
-box doesn't count them, the server refuses an eleventh when you press Send.
+box doesn't count them, the server refuses an eleventh when you press Send. An empty
+file is refused when you attach it ("*name* is empty"). A file can be under 64 KB
+and still bigger than the model's context window (a small model is loaded with 4,096
+tokens unless an admin sized it): the message is never shortened, so you get "*name*
+is larger than this model's context: it may read only part of it." (it may: the
+model's provider may keep only the end of a prompt that is too long), and the
+context meter above the box counts a file you've attached before you press Send.
 
 **The chip.** The file appears above the box as a chip: its name, its size, and,
 when something was hidden, **N values masked**. **The chip's text view shows exactly
@@ -792,8 +798,10 @@ shapes, not everything.
   most lines read `KEY=value`), **every value is masked** except ones that only
   describe the shape: nothing, `true`/`false`/`yes`/`no`/`on`/`off`, and a whole
   number of up to 6 digits (a port, a count). So `PORT=8000` stays and
-  `DATABASE_URL=...` becomes `<masked URL, 55 chars>`. Keys, comments, quotes and
-  line order stay, so "which line do I change?" still has an answer.
+  `DATABASE_URL=...` becomes `<masked URL, 55 chars>`. Keys, comments and line
+  order stay, so "which line do I change?" still has an answer. A masked value
+  drops its quotes (the mark replaces them), and a secret written inside a comment
+  is masked like any other.
   **A short all-digit password is not masked**: `DB_PASSWORD=123456` looks exactly
   like a port to a program, and masking every small number would hide the ports
   the assistant needs. If a value like that is secret, change it before attaching,
@@ -813,6 +821,16 @@ when that model runs on a provider an admin marked **Cloud** (**Admin → Models
 are kept in the chat's history on the server. The agreement is for the model you
 were looking at: **change the model and masking comes back on** for every file,
 with the notice "Masking is back on: you changed the model."
+
+The agreement also stays with that model after you send. If you pick another model
+later in the same chat and ask a follow-up, the real values are **not** sent to it:
+the assistant sees only a note that the file was held back, and you get the notice
+"*name* wasn't sent to this model: its real values were agreed for another one."
+Switch back to the model you agreed for and the file is sent again. To use the
+file with another model, attach it again (masked, or with real values agreed for
+that model). A file you sent masked is unaffected and follows the chat to any
+model. While a file with real values is part of the conversation, a web search set
+to **Auto** asks you first, as **Ask** does, so you see the query before it leaves.
 
 **After you send.** Your message shows the file as a chip (name, size, "masked"),
 not its text. The assistant reads the file as part of your message, whichever
@@ -850,10 +868,14 @@ audio". If you blocked the microphone, pressing the button says "Microphone
 blocked: allow it in the browser's site settings"; allow it there and press again.
 A failed transcription leaves the box as it was and says why: "Voice input is
 still getting ready, try again in a minute" (the first download, or a restart),
+"Voice input isn't working right now. Ask your admin." (the model failed to load, or
+voice is set up wrong; waiting won't help),
 "Voice input is busy. Try again in a moment.", "The transcription server didn't
 answer", or "No speech was heard". If an admin turns Voice input off while you are
 recording, the recording can't be transcribed and you get "Voice input was turned
-off."; the button disappears.
+off."; the button disappears. If you leave the chat (to the Reader, say) while
+recording or transcribing, the recording is thrown away and a message says so: "Your
+recording was discarded: you left the chat."
 
 **Your language.** **Settings → Chat → Speech language** is **Auto (detect the
 language)** or one language by name. Auto is right when you speak more than one
@@ -865,11 +887,13 @@ model is much better at English and Spanish than at many others, and an admin ca
 choose a larger one ([DEPLOYMENT.md](DEPLOYMENT.md#choosing-a-model)).
 
 **What it does with your recording.** The server turns it into text and forgets it:
-it isn't saved to disk, the database or a log. With the default engine it never
+it isn't saved by the app to disk, the database or a log. With the default engine it never
 leaves the server; if your admin set up a remote engine, the recording goes to that
-service. A cloud model's reply isn't slowed by it; a model running on the same
-machine as the server can answer a little slower for a few seconds while a
-recording is transcribed.
+service. A cloud model's reply isn't slowed by it. A model running on the same
+machine as the server is: in one walk, on a CPU-only machine, a local model's
+reply took about 1.5 to 2 times as long while a transcription ran. The app keeps
+the recording in memory only, and a reverse proxy in front of it may buffer an
+upload to disk ([DEPLOYMENT.md](DEPLOYMENT.md#recordings-and-your-reverse-proxy)).
 
 **For admins.** **Admin → Chat options → Voice input** is **On** or **Off**
 (off to start with), saved the moment you choose, and it applies from the next

@@ -51,7 +51,8 @@ class Conversion(NamedTuple):
 
 def max_pictures() -> int:
     """DOCLING_MAX_PICTURES: pictures one document may keep. A figure past it stays
-    a placeholder, so a picture-heavy PDF can't fill the disk."""
+    a placeholder. It counts files, not bytes, so it bounds how many pictures a document keeps, not
+    how much space they take."""
     raw = (os.environ.get("DOCLING_MAX_PICTURES") or "").strip()
     if raw.isdigit():
         return int(raw)

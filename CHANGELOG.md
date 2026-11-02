@@ -20,6 +20,17 @@ All notable changes to this project will be documented in this file.
     file is **not** masked: to a program it looks like a port.
   - Changing the model puts masking back on, with the notice "Masking is back on:
     you changed the model."
+  - **Real values stay with the model you agreed for.** If you send real values to
+    one model and then pick another in the same chat, the file is **not** sent to
+    the other model: it sees a note that the file was held back, and you get "*name*
+    wasn't sent to this model: its real values were agreed for another one." Back on
+    the first model it is sent again; to use the file with another one, attach it
+    again. A masked file follows the chat to any model. While a real-values file is
+    part of the conversation, a web search set to **Auto** asks first, as **Ask**
+    does, and file text can't be copied into a search query. A file bigger than the
+    model's context window is still sent in full (the new message is never trimmed),
+    but you get "*name* is larger than this model's context: it may read only part of
+    it.", and the context meter counts a staged file before Send.
   - The model reads each file as an `<attached_file>` block in the message, so it
     works with every model and provider. The bubble shows the chip, not the text,
     and after a reload the chip stays but the text isn't shown again.
@@ -39,7 +50,17 @@ All notable changes to this project will be documented in this file.
     uses any OpenAI-compatible transcription server instead, which can cost money
     per minute with no budget in the app beyond 2 minutes and 10 MB per recording
     and one at a time per person. A recording is kept in memory for one request:
-    never written to disk, the database or a log.
+    never written to disk, the database or a log by the app (a reverse proxy in
+    front of it may buffer an upload to disk: see DEPLOYMENT.md, "Recordings and your
+    reverse proxy").
+  - On a CPU-only machine, a local model's reply took about 1.5 to 2 times as long
+    while a transcription ran (one machine; a cloud model's reply was not slowed).
+    The local engine's default threads are now shared between `WORKERS`
+    (`max(1, cores // (2 * WORKERS))`), so all workers together stay at half the
+    machine. A worker whose model failed to load retries by itself, at most every 5
+    minutes. Leaving the chat view while recording throws the recording away, with a
+    toast saying so. Without `pip install -r requirements.txt` after a bare-metal
+    pull, the backend still starts and the Overview names the missing package.
   - It needs https (or `localhost`) for the microphone. The six `SPEECH_*` and
     `CHAT_VOICE_INPUT` settings, the cost on the server, how to choose a model (it
     must be in CTranslate2 format) and the nginx notes are in

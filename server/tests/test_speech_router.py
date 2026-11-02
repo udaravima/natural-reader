@@ -1,6 +1,8 @@
 """Task 6: the speech routes. A fake transcriber stands in for the engine, so no model is loaded and no remote
 server is called."""
+import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 import httpx
 import pytest
@@ -12,7 +14,8 @@ from server.auth import scopes as token_scopes
 from server.auth.users import resolve_or_provision_user
 from server.routers import speech as speech_router
 from server.speech import service
-from server.speech.base import (AudioTooLong, BadAudio, EngineFailed, EngineNotReady, EngineStatus, Transcript)
+from server.speech.base import (AudioTooLong, BadAudio, EngineFailed, EngineNotReady, EngineStatus, EngineUnavailable,
+                                Transcript)
 from server.speech.languages import WHISPER_LANGUAGES
 
 URL = "/v1/speech/transcriptions"
@@ -72,20 +75,44 @@ def _principal(caps=frozenset({"chat"}), scopes=None):
                           account_capabilities=account)
 
 
-def _app(db_conn, principal):
+class Pool:
+    """The seam the speech routes take their short authentication connection through (routers/speech.py
+    `speech_conn`). It hands out the test's transactional connection and counts who holds it right now."""
+
+    def __init__(self, db_conn):
+        self.db_conn, self.open, self.opened = db_conn, 0, 0
+
+    @asynccontextmanager
+    async def __call__(self):
+        self.open += 1
+        self.opened += 1
+        try:
+            yield self.db_conn
+        finally:
+            self.open -= 1
+
+
+_WHO = {}
+
+
+@pytest.fixture(autouse=True)
+def _who(monkeypatch):
+    """The routes resolve the caller on their short connection (deps.resolve_principal); a test says who."""
+    async def resolve(request, conn):
+        return _WHO["principal"]
+    monkeypatch.setattr(deps, "resolve_principal", resolve)
+
+
+def _app(db_conn, principal, pool=None):
+    _WHO["principal"] = principal
     app = FastAPI()
-
-    async def _conn():
-        yield db_conn
-
-    app.dependency_overrides[deps.get_conn] = _conn
-    app.dependency_overrides[deps.get_current_user] = lambda: principal
+    app.dependency_overrides[speech_router.speech_conn] = lambda: (pool or Pool(db_conn))
     app.include_router(speech_router.router)
     return app
 
 
-def _client(db_conn, principal=None):
-    return httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, principal or _principal())),
+def _client(db_conn, principal=None, pool=None):
+    return httpx.AsyncClient(transport=ASGITransport(app=_app(db_conn, principal or _principal(), pool)),
                              base_url="http://t")
 
 
@@ -439,3 +466,134 @@ async def test_a_failed_pre_transcribe_status_check_is_logged_at_debug(db_conn, 
     assert r.status_code == 200
     assert any("RuntimeError" in rec.getMessage() for rec in caplog.records)
     assert "secret detail" not in caplog.text
+
+
+# ---------- final fix wave, I3: no pooled connection is held while a recording uploads or transcribes ----------
+
+async def test_the_connection_is_back_in_the_pool_while_a_transcription_runs(db_conn, engine):
+    await _voice(db_conn)
+    pool = Pool(db_conn)
+    started, release = asyncio.Event(), asyncio.Event()
+    held_during = []
+
+    async def slow(audio, mime, language):
+        held_during.append(pool.open)
+        started.set()
+        await release.wait()
+        return Transcript("slow words", "en", 1.0)
+    engine.transcribe = slow
+    async with _client(db_conn, pool=pool) as c:
+        task = asyncio.ensure_future(_post(c))
+        await asyncio.wait_for(started.wait(), 5)
+        assert pool.open == 0 and pool.opened == 1      # authenticated on a short connection, then let go
+        release.set()
+        r = await task
+    assert r.status_code == 200 and held_during == [0]
+
+
+async def test_the_connection_is_back_in_the_pool_while_the_status_probe_runs(db_conn, engine):
+    await _voice(db_conn)
+    pool = Pool(db_conn)
+    seen = []
+
+    async def probe():
+        seen.append(pool.open)
+        return EngineStatus(True, "ready", "")
+    engine.status = probe
+    async with _client(db_conn, pool=pool) as c:
+        assert (await c.get(STATUS)).status_code == 200
+    assert seen == [0]
+
+
+async def test_the_connection_is_back_in_the_pool_before_the_upload_is_read(db_conn, engine):
+    await _voice(db_conn)
+    pool = Pool(db_conn)
+    body = _Body([b"x" * 10])
+    async with _client(db_conn, pool=pool) as c:
+        await c.post(URL, content=body, headers=_multipart_headers())
+    assert pool.open == 0 and pool.opened == 1
+
+
+async def test_refusals_from_the_short_connection_keep_their_codes(db_conn, engine):
+    """401 (no credential), 403 (no chat capability, or a PAT without the chat scope), 404 (voice off)."""
+    from fastapi import HTTPException
+
+    async def unauthenticated(request, conn):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    await _voice(db_conn)
+    pool = Pool(db_conn)
+    app = _app(db_conn, _principal(), pool)
+    real = deps.resolve_principal
+    deps.resolve_principal = unauthenticated
+    try:
+        async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            assert (await _post(c)).status_code == 401
+            assert (await c.get(STATUS)).status_code == 401
+    finally:
+        deps.resolve_principal = real
+    assert pool.open == 0                            # a refusal gives the connection back too
+    async with _client(db_conn, _principal(caps={"reader"}), pool) as c:
+        r = await _post(c)
+        assert r.status_code == 403 and r.json()["detail"] == {"error": "missing_capability", "capability": "chat"}
+    async with _client(db_conn, _principal(caps={"chat"}, scopes=frozenset({"documents"})), pool) as c:
+        assert (await _post(c)).status_code == 403
+    await _voice(db_conn, on=None)
+    async with _client(db_conn, pool=pool) as c:
+        assert (await _post(c)).status_code == 404
+    assert pool.open == 0
+
+
+# ---------- final fix wave, I5: a failed load heals on every worker; the words say what is true ----------
+
+async def test_an_engine_in_error_retries_at_most_once_every_five_minutes(db_conn, engine, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(service, "_now", lambda: now[0])
+    await _voice(db_conn)
+    engine.state = "error"
+    async with _client(db_conn) as c:
+        async def visit(seconds):
+            now[0] += seconds
+            await c.get(STATUS)
+            return engine.warm_calls
+        assert await visit(0) == 0            # first sight of the failure starts the clock
+        assert await visit(299) == 0          # a page load inside 5 minutes retries nothing
+        assert await visit(1) == 1            # 300 s after it: one retry
+        assert await visit(10) == 1 and await visit(289) == 1
+        assert await visit(1) == 2            # and again 300 s after that
+        engine.state = "ready"
+        assert await visit(1000) == 2         # a healthy engine is never warmed
+
+
+async def test_either_route_can_make_the_retry(db_conn, engine, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(service, "_now", lambda: now[0])
+    await _voice(db_conn)
+    engine.state = "error"
+    async with _client(db_conn) as c:
+        await c.get(STATUS)
+        now[0] += service.RETRY_AFTER_S
+        await _post(c)
+    assert service.RETRY_AFTER_S == 300 and engine.warm_calls == 1
+
+
+async def test_a_broken_engine_says_it_is_not_working_and_a_loading_one_says_wait(db_conn, engine):
+    await _voice(db_conn)
+    async with _client(db_conn) as c:
+        engine.raises = EngineUnavailable("ValueError")
+        r = await _post(c)
+        assert r.status_code == 503 and _msg(r) == "Voice input isn't working right now. Ask your admin."
+        engine.raises = EngineNotReady("The speech model is still loading")
+        r = await _post(c)
+        assert r.status_code == 503 and _msg(r) == "Voice input is still getting ready, try again in a minute"
+
+
+async def test_the_pre_transcribe_probe_is_for_the_local_engine_only(db_conn, engine):
+    await _voice(db_conn)
+    engine.name = "openai"
+    async with _client(db_conn) as c:
+        assert (await _post(c)).status_code == 200
+    assert engine.status_calls == 0           # no GET /models per recording on a remote engine
+    engine.name = "local"
+    async with _client(db_conn) as c:
+        await _post(c)
+    assert engine.status_calls == 1

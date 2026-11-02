@@ -90,12 +90,8 @@ async def test_a_cancelled_request_keeps_the_local_slot_until_the_work_ends(monk
     assert (await service.transcribe_for("u2", b"a", "audio/webm", None)).text == "hi"
 
 
-async def test_too_big_a_recording_is_refused_before_any_work():
-    eng = Slow()
-    service._transcriber = eng
-    with pytest.raises(AudioTooLong):
-        await service.transcribe_for("u1", b"x" * (service.MAX_AUDIO_BYTES + 1), "audio/webm", None)
-    assert not eng.started.is_set()
+def test_the_recording_limits():
+    # The size is refused by the route, before the service is called (test_speech_router.py).
     assert (service.MAX_AUDIO_BYTES, service.MAX_AUDIO_SECONDS) == (10 * 1024 * 1024, 125)
 
 
@@ -169,3 +165,53 @@ async def test_an_engine_failure_releases_the_person_and_the_slot(name, monkeypa
     ok.release.set()
     service._transcriber = ok
     assert (await service.transcribe_for("u1", b"a", "audio/webm", None)).text == "hi"
+
+
+# ---- final fix wave: I6 (threads shared between workers) and M3 (a missing package can't take the backend down) ----
+
+def test_cpu_threads_default_is_shared_between_workers(monkeypatch):
+    monkeypatch.setattr(service.os, "cpu_count", lambda: 16)
+    assert service._cpu_threads({}) == 8
+    assert service._cpu_threads({"WORKERS": "2"}) == 4
+    assert service._cpu_threads({"WORKERS": "4"}) == 2
+    assert service._cpu_threads({"WORKERS": "64"}) == 1        # never below one
+    assert service._cpu_threads({"WORKERS": "nope"}) == 8      # a bad value is one worker, as run.py reads it
+    assert service._cpu_threads({"WORKERS": "0"}) == 8
+    assert service._cpu_threads({"WORKERS": "4", "SPEECH_CPU_THREADS": "6"}) == 6   # an explicit value wins as is
+
+
+@pytest.mark.parametrize("engine, module", [("local", "server.speech.local_whisper"),
+                                            ("openai", "server.speech.openai_engine")])
+async def test_a_missing_package_gives_a_stand_in_that_says_so(monkeypatch, engine, module):
+    import builtins
+    import sys
+
+    real_import = builtins.__import__
+
+    def failing(name, *a, **k):
+        if name in ("faster_whisper", "av", "numpy"):
+            raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+        return real_import(name, *a, **k)
+    for m in ("server.speech.local_whisper", "server.speech.openai_engine", "server.speech.audio"):
+        monkeypatch.delitem(sys.modules, m, raising=False)
+    monkeypatch.setattr(builtins, "__import__", failing)
+    eng = service.get_transcriber({"SPEECH_ENGINE": engine})        # must not raise
+    st = await eng.status()
+    assert (st.ready, st.state) == (False, "error")
+    assert "pip install -r requirements.txt" in st.detail and ("faster_whisper" in st.detail or "av" in st.detail)
+    from server.speech.base import EngineUnavailable
+    with pytest.raises(EngineNotReady) as e:
+        await eng.transcribe(b"a", "audio/webm", None)
+    assert isinstance(e.value, EngineUnavailable)
+    eng.warm()                                                      # a no-op, not an error
+
+
+def test_the_routes_and_the_service_import_without_the_audio_packages():
+    import subprocess
+    import sys
+    code = ("import sys\n"
+            "for n in ('faster_whisper', 'av', 'numpy'): sys.modules[n] = None\n"
+            "import server.speech.base, server.speech.languages, server.speech.service, server.routers.speech\n"
+            "print('ok')\n")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=str(__import__('pathlib').Path(__file__).parents[2]))
+    assert out.stdout.strip() == "ok", out.stderr[-800:]

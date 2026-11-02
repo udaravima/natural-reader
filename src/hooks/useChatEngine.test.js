@@ -636,7 +636,7 @@ describe('useChatEngine — text attachments', () => {
         await act(async () => { await result.current.sendMessage('what is this?', [stagedText()]); });
         const wire = postTurn.mock.calls[0][0].body.message.attachments;
         expect(wire).toEqual([{
-            id: 't1', kind: 'text', mime: 'text/plain', name: '.env', size: 20, masked: true,
+            id: 't1', kind: 'text', mime: 'text/plain', name: '.env', size: 20, masked: true, real_values: false,
             base64: btoa('A=<masked, 6 chars>\n'),
         }]);
         const json = JSON.stringify(result.current.messages);
@@ -648,12 +648,12 @@ describe('useChatEngine — text attachments', () => {
         });
     });
 
-    it('sends the original with masked:false once the person chose real values', async () => {
+    it('sends the original with masked:false and real_values:true once the person chose real values', async () => {
         postTurn.mockResolvedValue(ok(loadFixture('plain')));
         const { result } = renderHook(() => useChatEngine(baseProps()));
         await act(async () => { await result.current.sendMessage('q', [stagedText({ sendReal: true })]); });
         const [a] = postTurn.mock.calls[0][0].body.message.attachments;
-        expect(a).toMatchObject({ masked: false, size: 9, base64: btoa('A=secret\n') });
+        expect(a).toMatchObject({ masked: false, real_values: true, size: 9, base64: btoa('A=secret\n') });
         expect(JSON.stringify(result.current.messages)).not.toContain('secret');
     });
 

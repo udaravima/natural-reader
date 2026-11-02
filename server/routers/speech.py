@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass
+from typing import Callable
 
 from fastapi import APIRouter, Depends, Request
 from starlette.datastructures import UploadFile
@@ -18,10 +21,11 @@ from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.requests import ClientDisconnect
 
 from ..auth import deps
+from ..db import get_pool
 from ..http_errors import refusal
 from ..services import chat_options
 from ..speech import service
-from ..speech.base import (AudioTooLong, BadAudio, EngineFailed, EngineNotReady, EngineStatus, MAX_AUDIO_BYTES)
+from ..speech.base import (AudioTooLong, BadAudio, EngineFailed, EngineNotReady, EngineUnavailable, MAX_AUDIO_BYTES)
 from ..speech.languages import WHISPER_LANGUAGES
 
 logger = logging.getLogger(__name__)
@@ -52,24 +56,37 @@ async def _voice_on(conn) -> bool:
         return chat_options.from_env().voice_input
 
 
-def _warm_if_loading(engine, status: EngineStatus) -> None:
-    """Every worker process has its own engine and an admin's switch reaches only one of them, so a worker that
-    never loaded starts loading on first use. warm() is idempotent while loading. A failed load (`error`) is
-    not retried here: that is the admin's choice, made by switching Voice input on."""
-    if status.state == "loading":
-        try:
-            engine.warm()
-        except Exception:  # noqa: BLE001 - starting a load must not fail the request that noticed
-            logger.warning("The speech engine couldn't start loading", exc_info=True)
+def speech_conn() -> Callable[[], AbstractAsyncContextManager]:
+    """The seam for the one short connection these routes take: a callable that opens a pooled connection.
+    A dependency, so a test can hand over its own."""
+    return lambda: get_pool().connection()
+
+
+@dataclass(frozen=True)
+class SpeechAccess:
+    principal: deps.Principal
+    voice_on: bool
+
+
+async def speech_access(request: Request, open_conn=Depends(speech_conn)) -> SpeechAccess:
+    """Who is calling, whether they may use chat, and whether voice is on: three reads on ONE short pooled
+    connection that is released BEFORE the route reads the upload or calls the engine. (get_current_user holds
+    its connection until the route returns, and a transcription can take minutes: ten of those would starve
+    every other request on the worker, pool size 10.) The same auth functions as everywhere, the same 401, 403
+    (no chat capability, or a token without the chat scope) and 404 (voice off, in the route)."""
+    async with open_conn() as conn:
+        principal = await deps.resolve_principal(request, conn)
+        deps.check_capability(principal, "chat")
+        voice_on = await _voice_on(conn)
+    return SpeechAccess(principal, voice_on)
 
 
 @router.get("/status")
-async def speech_status(_: deps.Principal = Depends(deps.require_capability("chat")),
-                        conn=Depends(deps.get_conn, scope="function")):
+async def speech_status(access: SpeechAccess = Depends(speech_access)):
     """What the composer needs to draw the microphone: on or off, ready or not, and the languages. When voice is
     off no engine is built, probed or warmed. Whatever the engine says, this answers 200."""
     base = {"max_seconds": MAX_SECONDS, "languages": _languages()}
-    if not await _voice_on(conn):
+    if not access.voice_on:
         return {"enabled": False, "ready": False, "state": "off", **base}
     engine = service.get_transcriber()
     try:
@@ -77,7 +94,7 @@ async def speech_status(_: deps.Principal = Depends(deps.require_capability("cha
     except Exception as e:  # noqa: BLE001 - a config mistake, a server that's down or one that hangs is a state, not a 500
         logger.warning("The speech engine's status failed: %s", type(e).__name__)
         return {"enabled": True, "ready": False, "state": "error", **base}
-    _warm_if_loading(engine, status)
+    service.heal(engine, status)
     return {"enabled": True, "ready": bool(status.ready), "state": status.state, **base}
 
 
@@ -122,12 +139,11 @@ async def _read_upload(request: Request) -> tuple[str | None, UploadFile | None]
 
 
 @router.post("/transcriptions")
-async def transcribe(request: Request, principal: deps.Principal = Depends(deps.require_capability("chat")),
-                     conn=Depends(deps.get_conn, scope="function")):
+async def transcribe(request: Request, access: SpeechAccess = Depends(speech_access)):
     # Order matters: nothing is read for a request that can't succeed. Capability (the dependency), voice off, a
     # declared length over the cap; then the body is parsed in memory with a running cap (`language` lives in it,
     # so it can only be checked after), and last the file itself.
-    if not await _voice_on(conn):
+    if not access.voice_on:
         raise refusal(404, "voice_off", "Voice input is off.")
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
@@ -150,12 +166,13 @@ async def transcribe(request: Request, principal: deps.Principal = Depends(deps.
         raise refusal(400, "bad_audio", _BAD_AUDIO)
 
     engine = service.get_transcriber()
+    if engine.name == "local":   # the local engine's state costs nothing to read; a remote one's is a request per recording
+        try:
+            service.heal(engine, await asyncio.wait_for(engine.status(), STATUS_TIMEOUT_S))
+        except Exception as e:  # noqa: BLE001 - the transcription below reports a broken engine in its own words
+            logger.debug("The speech engine's status check before transcribing failed: %s", type(e).__name__)
     try:
-        _warm_if_loading(engine, await asyncio.wait_for(engine.status(), STATUS_TIMEOUT_S))
-    except Exception as e:  # noqa: BLE001 - the transcription below reports a broken engine in its own words
-        logger.debug("The speech engine's status check before transcribing failed: %s", type(e).__name__)
-    try:
-        result = await service.transcribe_for(str(principal.user_id), audio, mime, code)
+        result = await service.transcribe_for(str(access.principal.user_id), audio, mime, code)
     except AudioTooLong:
         raise refusal(413, "too_long", "The recording is over 2 minutes.") from None
     except BadAudio:
@@ -164,6 +181,8 @@ async def transcribe(request: Request, principal: deps.Principal = Depends(deps.
         raise refusal(409, "already_running", "A recording of yours is already being transcribed.") from None
     except service.Busy:
         raise refusal(503, "busy", "Voice input is busy. Try again in a moment.") from None
+    except EngineUnavailable:
+        raise refusal(503, "unavailable", "Voice input isn't working right now. Ask your admin.") from None
     except EngineNotReady:
         raise refusal(503, "not_ready",
                       "Voice input is still getting ready, try again in a minute") from None

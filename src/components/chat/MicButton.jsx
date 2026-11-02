@@ -11,7 +11,7 @@ const clock = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
  * in the site settings and press again. Recording: Stop (with the timer) and Cancel. Transcribing: the
  * frozen timer, "Transcribing…" and Cancel.
  */
-export default function MicButton({ theme, voice, disabled = false }) {
+export default function MicButton({ theme, voice }) {
   const stopRef = useRef(null);
   const cancelRef = useRef(null);
   // Start swaps the mic for Stop, which would drop the focus to the page: put it on Stop, so Enter stops.
@@ -34,7 +34,7 @@ export default function MicButton({ theme, voice, disabled = false }) {
       <button
         type="button"
         onClick={voice.start}
-        disabled={hard || disabled}
+        disabled={hard}
         aria-label="Speak a message"
         title={voice.reason || 'Speak a message'}
         className={`${base} ${theme.bgTertiary} ${theme.textSecondary} hover:text-blue-500 disabled:opacity-50`}

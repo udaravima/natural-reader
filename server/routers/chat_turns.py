@@ -60,6 +60,7 @@ class AttachmentIn(BaseModel):
     size: int = Field(default=0, ge=0)
     base64: str
     masked: bool = False   # text only: the browser hid secret values before sending
+    real_values: bool = False   # text only: the person chose "Send real values" for this model, with something masked
 
 
 TEXT_FILE_MAX_BYTES = 65_536       # one text file, UTF-8 bytes
@@ -138,6 +139,8 @@ def _decode(attachments: list[AttachmentIn]) -> list[store.NewAttachment]:
             data = b""
         if not data:
             raise refusal(422, "invalid_attachment", f"{label} could not be read.")
+        if a.real_values and a.kind != "text":
+            raise refusal(422, "invalid_attachment", f"{label} can't carry real values: only text files do.")
         if a.kind == "text":
             # The decoded bytes decide, never the client's `size`.
             if b"\x00" in data or not _is_utf8(data):
@@ -148,7 +151,8 @@ def _decode(attachments: list[AttachmentIn]) -> list[store.NewAttachment]:
             if text_total > TEXT_MESSAGE_MAX_BYTES:
                 raise refusal(422, "invalid_attachment", "The attached text is over 128 KB.")
         out.append(store.NewAttachment(kind=a.kind, mime=a.mime, name=a.name, data=data, client_id=a.id,
-                                       masked=a.masked and a.kind == "text"))
+                                       masked=a.masked and a.kind == "text",
+                                       real_values=a.real_values and a.kind == "text"))
     return out
 
 
@@ -382,6 +386,7 @@ async def post_turn(session_id: SessionId, request: Request,
         user_id=principal.user_id, session_id=session_id, model_id=model_id, text=body.message.content,
         attachments=tuple(Attachment(a.kind, a.mime, base64.b64encode(a.data).decode("ascii"), a.name)
                           for a in attachments),
+        real_values=any(a.real_values for a in attachments),
         settings=call_settings(body.settings),
         doc_id=body.context.doc_id, timezone=body.context.timezone, project_id=project_id,
         web_query=body.context.web.query if body.context.web else None)

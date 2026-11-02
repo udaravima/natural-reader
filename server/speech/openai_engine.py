@@ -12,7 +12,7 @@ import httpx
 
 from .languages import WHISPER_LANGUAGES
 from .audio import SAMPLE_RATE, decode_capped
-from .base import EngineFailed, EngineNotReady, EngineStatus, Transcript
+from .base import EngineFailed, EngineStatus, EngineUnavailable, Transcript
 
 logger = logging.getLogger("server.speech")
 
@@ -101,7 +101,7 @@ class OpenAICompatible:
 
     async def transcribe(self, audio: bytes, mime: str, language: str | None) -> Transcript:
         if self._problem:
-            raise EngineNotReady(self._problem)
+            raise EngineUnavailable(self._problem)
         # Bounded decode first, off the event loop: an over-long or unreadable recording never reaches the server.
         samples = await asyncio.to_thread(decode_capped, audio)
         decoded_s = len(samples) / SAMPLE_RATE

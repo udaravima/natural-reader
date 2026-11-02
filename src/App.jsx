@@ -123,8 +123,8 @@ export default function App() {
   const [speechLanguage, setSpeechLanguage] = usePersistedState('speechLanguage', deploymentDefaults.speechLanguage);
   // Composer in-progress state lives here (not in ChatView) so switching tabs —
   // which unmounts ChatView — doesn't discard a half-typed message. The text
-  // draft is persisted (survives a reload too); pending image attachments are
-  // in-memory only, to avoid packing base64 blobs into localStorage.
+  // draft is persisted (survives a reload too); pending attachments (images and
+  // text files) are in-memory only, to avoid packing their contents into localStorage.
   // Per signed-in user: the next user on this browser never sees it.
   const [chatDraft, setChatDraft] = useUserDraft(signedInUserId);
   const [chatPendingAttachments, setChatPendingAttachments] = useState([]);
@@ -516,7 +516,7 @@ export default function App() {
   }, [contextMenu]);
 
   // --- EVENT HANDLERS ---
-  // In chat mode, ChatView owns drag/drop for image/audio attachments. We bail
+  // In chat mode, ChatView owns drag/drop for image and text-file attachments. We bail
   // out at the window level so the reader's DragOverlay never appears and the
   // file isn't routed through processFile() (which expects PDF/TXT).
   const handleDragOver = (e) => {

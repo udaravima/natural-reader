@@ -210,6 +210,24 @@ async def test_text_attachment_without_masked_stores_false(db_conn, app):
     assert meta[0]["masked"] is False
 
 
+async def test_real_values_choice_is_recorded_for_text_files_only(db_conn, app):
+    r = await _post(app, await member(db_conn, "alice"),
+                    body=_text_body(("a.env", b"A=1", {"masked": True, "real_values": True}), ("b.txt", b"hi", {})))
+    assert r.status_code == 200
+    meta = (await _one(db_conn, "SELECT attachments FROM chat_messages WHERE role='user'"))[0]
+    assert [m["real_values"] for m in meta] == [True, False]
+    model = (await _one(db_conn, "SELECT model FROM chat_messages WHERE role='user'"))[0]
+    assert model                                   # the model the choice was agreed for travels with the message
+
+
+async def test_an_image_cannot_carry_real_values(db_conn, app):
+    body = {**BODY, "message": {"content": "look", "attachments": [
+        {"kind": "image", "mime": "image/png", "name": "a.png", "base64": PNG, "real_values": True}]}}
+    r = await _post(app, await member(db_conn, "alice"), body=body)
+    assert r.status_code == 422 and r.json()["detail"]["error"] == "invalid_attachment"
+    assert await _one(db_conn, "SELECT 1 FROM chat_sessions WHERE id='s-1'") is None
+
+
 async def test_images_carry_no_masked_key(db_conn, app):
     body = {**BODY, "message": {"content": "look", "attachments": [
         {"kind": "image", "mime": "image/png", "name": "a.png", "base64": PNG}]}}
