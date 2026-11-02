@@ -103,6 +103,16 @@ Natural Reader is now a **multi-user, authenticated application**. End-user walk
 
 Walkthroughs: [docs/USER_GUIDE.md](docs/USER_GUIDE.md#asking-a-whole-project); operator knobs: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#project-chat-the-reader-and-web-search).
 
+### 🎙️ Voice Input, Text Files & the Admin Console *(new in `v2.5.0`)*
+
+- **Speak a message** — The microphone beside the paperclip records up to 2 minutes and puts the text in the box to edit and send. Nothing is sent for you. It runs on your own server by default, and it's off until an admin turns it on.
+- **Choose the speech model** — **Admin → Chat options → Voice input → Speech model** switches models with no restart. Stock Whisper stays the default and the right choice for English. Fine-tuned Sinhala and Tamil models are in the list and convert themselves on first use, and an admin can add any Whisper model from Hugging Face. One model runs for the whole server.
+- **Attach a text file, with its secrets hidden first** — Drop in an `.env` and ask how it should change. The browser masks secret values before anything is uploaded, and clicking the file shows exactly what will be sent.
+- **An admin console that runs the deployment** — An **Overview** that checks whether everything works, then **Models**, **Documents**, usage by model and person, a timezone and defaults. Long lists scroll and search, and Save stays on screen.
+- **Keep a PDF's pictures** — **Convert → Images → Keep** keeps them, shown in **MD** view.
+
+Walkthroughs: [docs/USER_GUIDE.md](docs/USER_GUIDE.md); speech models: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#choosing-a-model).
+
 ### 🎨 User Experience
 - **Dark Mode** — Beautiful dark/light theme toggle with smooth transitions
 - **Sentence Highlighting** — Visual highlighting of the current sentence during playback

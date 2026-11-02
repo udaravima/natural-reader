@@ -86,11 +86,15 @@ All notable changes to this project will be documented in this file.
     1.9 s, and three times the memory, so there's an unconverted entry for comparing.
   - **Add a model** from Hugging Face under the list, as `owner/name`. It's checked at
     once (a typo, a private repo or a repo that isn't Whisper is refused with the
-    reason) and pinned to a commit. A model you added can be removed.
-  - **Or from a file:** `SPEECH_MODELS_FILE` adds models from YAML, which also suits a
-    server that can't reach Hugging Face, and `SPEECH_MODEL` can name any id in the list.
+    reason) and pinned to a commit. **Added here** has a **Remove** for each model you
+    added, in use or not.
+  - **Or from a file:** `SPEECH_MODELS_FILE` adds models from YAML. It's a path on the
+    host, which `startup.sh` mounts through the new `compose.speech.yml`, and
+    `SPEECH_MODEL` can name any id in the list.
   - **Converting needs `torch` and `transformers`,** which only the Docling build has.
-    On the plain image those models show greyed out with the reason.
+    On the plain image those models show greyed out with the reason, until one
+    converted elsewhere is copied in. The same route serves a server that can't reach
+    Hugging Face: see DEPLOYMENT.md.
   - With **Auto**, a model made for one language is told that language, because
     detection fails on fine-tunes (it called Sinhala Kannada at 0.92 confidence).
     **Settings -> Chat -> Speech language** says what the server's model is for.

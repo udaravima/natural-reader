@@ -64,12 +64,14 @@ Acceleration).
 
 ### Paths are host paths
 
-`DOC_STORAGE_DIR` (or the legacy `PDF_STORAGE_DIR`), `LOG_DIR` and
-`CHAT_ASSISTANT_PROFILE_FILE` in `.env` name locations **on the host**.
-`startup.sh` mounts them into the container at fixed paths, and files written
-there belong to the user who ran it. Running compose by hand? Set `NR_DATA_DIR`,
-`NR_LOG_DIR` and (optionally) `NR_PROFILE_FILE` to those host paths (absolute)
-and add `-f compose.profile.yml` for the profile; otherwise the defaults
+`DOC_STORAGE_DIR` (or the legacy `PDF_STORAGE_DIR`), `LOG_DIR`,
+`CHAT_ASSISTANT_PROFILE_FILE` and `SPEECH_MODELS_FILE` in `.env` name locations
+**on the host**. `startup.sh` mounts them into the container at fixed paths, and
+files written there belong to the user who ran it. Running compose by hand? Set
+`NR_DATA_DIR`, `NR_LOG_DIR` and (optionally) `NR_PROFILE_FILE` and
+`NR_SPEECH_MODELS_FILE` to those host paths (absolute), and add
+`-f compose.profile.yml` for the profile and `-f compose.speech.yml` for the
+speech list; otherwise the defaults
 `./data/pdfs` and `./logs` are used. On podman also add `-f compose.podman.yml`:
 without its keep-id mapping the container can't write those folders, and
 without its `in_pod: false` podman refuses to create the backend.
@@ -772,7 +774,7 @@ reads **set** or **not set**.
 |---|---|---|
 | `CHAT_VOICE_INPUT` (none: its switch is **Chat options → Voice input**) | `off` | `on` or `off`, the starting value for the switch. Anything else is ignored with a warning, and off applies. |
 | `SPEECH_ENGINE` (**Voice input engine**) | `local` | `local` runs [faster-whisper](https://github.com/SYSTRAN/faster-whisper) inside the backend, on the CPU: nothing leaves the server. `openai` calls a remote server that speaks `POST {SPEECH_URL}/audio/transcriptions`. Anything else logs a warning and means `local`. Read once at startup: changing it takes a restart. |
-| `SPEECH_MODELS_FILE` (none) | none | `local` only: a YAML file of extra speech models for **Chat options → Speech model**. See [Choosing a model](#choosing-a-model). |
+| `SPEECH_MODELS_FILE` (none) | none | `local` only: a YAML file on the host, of extra speech models for **Chat options → Speech model**. See [Choosing a model](#choosing-a-model). |
 | `SPEECH_MODEL` (**Voice input model (server setting)**) | `small` for `local`; none for `openai` | The starting model: **Chat options → Speech model** wins over it for `local`. `local`: an id from that list, a size (`tiny`, `base`, `small`, `medium`, `large-v3`, `large-v3-turbo`), a Hugging Face repo id of a CTranslate2 model, or a directory on the server (see [Choosing a model](#choosing-a-model)). `openai`: the server's model name (`whisper-1` for OpenAI itself); required, and the Overview says "SPEECH_MODEL is not set" without it. |
 | `SPEECH_URL` (**Voice input server**) | none | `openai` only: the base **including `/v1`**, like `INFERENCE_<NAME>_URL`. Without it the Overview says "SPEECH_URL is not set". |
 | `SPEECH_API_KEY` (**Voice input key**) | none | `openai` only: sent as the bearer key. It stays on the server and is never logged or shown. |
@@ -832,17 +834,21 @@ id:
 | Source | How to add to it |
 |---|---|
 | Built in | The Whisper sizes, plus a few fine-tuned models that download only if chosen |
-| A deployer's file | `SPEECH_MODELS_FILE`: read once at startup. The way to go on a server that can't reach Hugging Face |
+| A deployer's file | `SPEECH_MODELS_FILE`: a path on the host, read once at startup. `startup.sh` mounts it into the container |
 | The admin console | **Add a model from Hugging Face**, under the list |
 
 **Adding one in the console.** Enter the repo as `owner/name`. It's looked up on
 Hugging Face straight away, so a typo, a private repo, or a repo that isn't Whisper
 is refused with the reason. It's pinned to a commit (the latest, unless you give a
 revision), so it can't change under you. Language codes are optional: left empty, a
-single language on the model card is used. Nothing downloads until someone chooses
-it. **Remove this model** takes an added model off the list, and its downloaded files
-stay in `HF_HOME`. A gated or private repo needs `HF_TOKEN` in the backend's
-environment.
+single language on the model card is used if Whisper knows it. Nothing downloads
+until someone chooses it. **Added here**, under the list, has a **Remove** for each
+model you added, in use or not. Its downloaded files stay in `HF_HOME`, and if it was
+in use, the server setting applies again. A gated or private repo needs `HF_TOKEN` in
+the backend's environment.
+
+A fine-tune for a language Whisper doesn't list, such as Dhivehi, can be added, but
+nothing tells it what language it's hearing. That case hasn't been tried.
 
 **In a file.** The same shape as a model list you might already keep; each entry
 needs an `engine` and a `repo`:
@@ -862,6 +868,8 @@ models:
 A bad entry is left out with a warning in the log, and the rest stay.
 `SPEECH_MODEL` can name any id in the list as well as a size, a repo or a directory.
 The admin's choice wins over it, and **Use the server setting** hands control back.
+A directory has to exist where the backend runs, which in a container means inside
+it: use the route below, or a mount of your own.
 
 **How each engine runs.**
 
@@ -873,16 +881,35 @@ The admin's choice wins over it, and **Use the server setting** hands control ba
 
 **The trap: `torch`.** The last two need `transformers` and `torch`, and only the
 Docling build has them (`NR_WITH_DOCLING=true`). On the plain image those models show
-disabled in the list with the reason. To use one there, convert it elsewhere and
-point `SPEECH_MODEL` at the folder:
+disabled in the list with the reason, unless the model is already converted on that
+server: then it needs neither package.
+
+**Converting somewhere else.** This is the way on the plain image, and on a server
+that can't reach Hugging Face. The model has to be in the list with that repo and
+revision: the built-in fine-tunes are, and anything else goes in your file as a
+`converted-whisper` entry. Then, from the repo root on a machine with `torch` and
+`transformers`, or inside a container of the Docling build, run the app's own
+converter. It also writes the two files many fine-tunes leave out, which is why the
+plain `ct2-transformers-converter` fails on all the built-in ones. The folder's name
+has to be exact:
 
 ```bash
-ct2-transformers-converter --model <org>/<whisper-model-name> \
-  --output_dir ./whisper-ct2 --quantization int8 \
-  --copy_files tokenizer.json preprocessor_config.json
+REPO=<org>/<whisper-model-name>
+REV=<the commit in the entry>
+NAME="${REPO/\//--}--$REV--int8"
+python -m server.speech.convert "$REPO" "$REV" "./$NAME"
 ```
 
-A model that was already converted on the server needs no `torch` to load again.
+Copy that folder into `HF_HOME/speech-converted/` on the server. In a container that's
+on the `cache` volume:
+
+```bash
+podman exec <backend> mkdir -p /app/.cache/huggingface/speech-converted
+podman cp "./$NAME" <backend>:/app/.cache/huggingface/speech-converted/
+```
+
+The model now shows as available and loads with no download. A `converted-whisper`
+entry still needs Hugging Face if that folder isn't there.
 
 **The built-in fine-tunes.** Each is about 967 MB to download and, once converted,
 242 MB on disk. Ready in 105-126 s on a test line, download included; conversion

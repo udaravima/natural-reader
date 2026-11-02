@@ -934,8 +934,9 @@ the right choice for English. **Use the server setting** goes back to the defaul
 
 To add a model, open **Add a model from Hugging Face**, enter its repo as `owner/name`
 and press **Add model**. It's checked straight away, and you're told if it can't be
-used. Then choose it from the list. **Remove this model** appears for a model you
-added. A model that can't run on this server shows greyed out, with the reason below.
+used. Then choose it from the list. **Added here** lists the models you added, each
+with a **Remove**, whether it's in use or not. A model that can't run on this server
+shows greyed out, with the reason below.
 Details are in [DEPLOYMENT.md](DEPLOYMENT.md#choosing-a-model).
 
 ## Asking a whole project

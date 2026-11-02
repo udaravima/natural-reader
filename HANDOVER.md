@@ -4,7 +4,59 @@
 
 ---
 
-## 2026-11-02 — Message box inputs built, walked and reviewed; on their branch, not merged (START HERE)
+## 2026-11-02 — v2.5.0: speech models, long lists and the message box inputs (START HERE)
+
+**State.** `development`, `master` and the tag `v2.5.0` are pushed, and the GitHub release is out. **Nothing is deployed.** The live backend is still the image rebuilt at `445d2ae` on 2026-11-01 (see the entry below), with no speech models and no long-list work. Deploying needs a database backup and the `docling` role in the live Keycloak. Speech-model work is on `feat/speech-models`, merged by fast-forward.
+
+The owner's request was: make three extra models available, from the admin panel as well as config, as a stopgap until audio can go straight to a model; add a VAD; make long lists scroll and search so Save is reachable; English stays primary. The spec is `docs/superpowers/specs/2026-11-02-speech-model-choice-design.md`. It was built inline with one final reviewer rather than a plan and task reviews, because the owner wanted it in this release and each part was walked as it was built. The reviewer found six Important issues the tests hadn't.
+
+### What a person can do now
+
+- **Choose a model (admin):** **Admin → Chat options → Voice input → Speech model**. It saves on selection, and the next recording uses it on every worker. **Use the server setting** hands back. Choose before turning voice on, or `small` downloads first.
+- **Add one (admin):** **Add a model from Hugging Face** → `owner/name` → **Add model**, then choose it. It's checked and pinned at once.
+- **Remove one (admin):** **Added here** → **Remove**, in use or not.
+- **Find things in a long list:** past 12 entries a list gets a search box. Admin → Models rows scroll in their own box, and Save stays on screen.
+- **Deployer:** `SPEECH_MODELS_FILE` (a host path, mounted by `startup.sh` through `compose.speech.yml`), or `SPEECH_MODEL`. Converting elsewhere is in DEPLOYMENT, "Converting somewhere else".
+
+### Facts worth keeping
+
+- **The pasted list had a wrong commit.** The `whisper-small-si-run15` revision pasted by the owner was run12's. The real one is `ab6154e9…`. run15 has no benchmark behind it, and the `voice-agent-79` session that did the research doesn't know where that entry came from.
+- **Two pieces of research advice didn't survive measuring.** `beam_size=1` changed real Sinhala words and `condition_on_previous_text=False` dropped the end of a 269-word English recording, so both stay at Whisper's defaults. VAD threshold 0.5 doubled Tamil error; 0.2 invented text on noise; 0.4 is what's set.
+- **Trap:** Auto needs the one-language rule. run12 called Sinhala Kannada at 0.92, and the Tamil model's config lists no languages, so faster-whisper crashes on detection.
+- **Trap:** faster-whisper's own `decode_audio` fails on PyAV 19 (`metadata_errors`). The app never calls it (`server/speech/audio.py` decodes), but a one-off script will hit it.
+- **embeddinggemma-2** is on the local Ollama as `embeddinggemma-2:740m`: 768 dimensions, the same as `nomic-embed-text`, so no schema change but a full re-embed. Its capabilities list vision and audio. Not tested.
+
+### What the final review caught
+
+A card language outside Whisper's list made a model "Added" and then missing, with no way to remove it. Removing needed the model chosen first, which starts its download, and a model that can't run couldn't be removed at all. One malformed YAML `languages` entry took voice down. A failed options read swapped the running model. `SPEECH_MODELS_FILE` couldn't be reached in a container. The documented hand conversion failed on every built-in fine-tune. Eleven smaller ones were fixed too. Left as they are: the picker saves on selection, so each arrow key in the closed select is a live switch; conversions take no lock between workers, and a dead worker leaves a `.converting-*` folder.
+
+### Gates at the release
+
+Backend `2756 passed, 16 skipped, 2 deselected`, eslint clean, frontend `1523 passed` in 128 files. Cloud evals are in `docs/TESTING.md`: document QA 9/9, citations 4/4, project QA 12, 10 and 10 of 13 against 10, 9 and 9 on v2.4.0, so no regression.
+
+**Not walked:** the real plain image; `compose.speech.yml` on a running stack; more than one worker swapping; Sri Lankan Tamil; a fine-tune for a language Whisper doesn't list, past adding it.
+
+### Bucket list
+
+**Owner decisions.** Spec §2 CPU anti-goal (a local reply 1.5-2× slower during a transcription; recommended: accept and reword). Confirm the live rebuild at `445d2ae` with 024 applied was intended. Find the auto-pusher (not git hooks, cron, user timers or VS Code's post-commit; next look at Claude Code hooks and system timers). Deploy. Keep or delete the SDD workspaces. Whether a file too large for the model is refused or noted. Whether to warn before a model switch hides replies.
+
+**Next build.** Phase 2b embedding provider and trials (embeddinggemma-2, nomic, Qwen). Figures with a chosen vision model, plus the DeepSeek-OCR preset. Audio straight to a model. A model per language or person. Browser auto-stop on silence. Sri Lankan Tamil. Multi-language handling for a server with English and Sinhala speakers.
+
+**Bugs.** `/v1/synthesize` hardcodes `en-us`. The header scrolls sideways at 375 px. The `touch.stamp` second connection. A model can pass real values to `READER_MODEL`. Dead `AdminPanel.jsx`. The `af_river` label. The unidentified vitest flake. Project eval `features` fails every run. Citation quality 87.9% against the 90% target. The speech picker's keyboard switching and conversion locking, above.
+
+**Robustness.** Resumable streams. A tested backup restore. A lock around migrations. A pool-slot limit. Backup guidance.
+
+**Providers.** `/models` fallback, per-provider params, a native Anthropic adapter; vLLM, LiteLLM and Unsloth still unrun; a GPU or NPU image.
+
+**Features.** Chat search, export, edit and regenerate, saved roles, prices per model, Auto model routing, bulk upload, auto tags, MD and PDF side by side, MCP, agents, cloud stats, knowledge-base refresh, V2 compare and review-before-current, C2.2 digests.
+
+**Owed checks.** Safari and a real phone. A person without chat access. A blocked microphone prompt. The 2-minute auto-stop. A real remote speech engine. Docling Describe and Accurate. Auto turned Ask, the yes path. V1 reader error, Retry index and the freeze fix. Two users on one browser. A share recipient. Real Kokoro read-aloud. `startup.cmd` on Windows. Indexed documents with a NULL `embedding_model`.
+
+**Housekeeping.** The AppArmor pasta fix. `git config user.name` is the email. Disk space (97% full). Old merged branches. Stale memories.
+
+---
+
+## 2026-11-02 — Message box inputs built, walked and reviewed; merged in v2.5.0 (see above)
 
 **State.** The plan `docs/superpowers/plans/2026-10-27-chat-composer-inputs.md` is finished on `feat/chat-composer-inputs`. That branch is stacked on `fix/docling-keep-pictures` (`bd2eaaa`), which is stacked on `docs/accuracy-audit` (`59c2c86`), which is on `development` (`0d9305b`), so merging the top branch carries all three. **Nothing is merged into `development` by us and no version is bumped.** The auto-pusher has published these branches anyway. The ledger with every ruling is `.superpowers/sdd/2026-10-27-chat-composer-inputs/progress.md` (git-ignored, kept for the owner to decide on).
 

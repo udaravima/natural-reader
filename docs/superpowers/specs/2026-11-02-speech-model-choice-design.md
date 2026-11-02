@@ -46,4 +46,4 @@ The three models are built in, with one correction: the pasted revision for `whi
 
 ## Not verified
 
-Sri Lankan Tamil specifically. See `docs/DEPLOYMENT.md` for what was measured.
+Sri Lankan Tamil specifically, and a fine-tune for a language Whisper doesn't list: it can be added, with no language set, but nobody has tried one. See `docs/DEPLOYMENT.md` for what was measured.
