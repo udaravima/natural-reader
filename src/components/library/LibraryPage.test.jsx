@@ -44,7 +44,7 @@ const projects = [
   { id: 'p2', name: 'Project B', description: null, my_role: 'contributor', member_count: 3, doc_count: 1, can: canFor('contributor') },
 ];
 
-function mount({ showToast = vi.fn() } = {}) {
+function mount({ showToast = vi.fn(), tab = 'Documents' } = {}) {
   apiFetch.mockImplementation(async (host, port, path) => {
     if (path === '/v1/docs/d1/shares') return json(200, []);
     if (path.startsWith('/v1/docs')) return json(200, docs);
@@ -55,11 +55,25 @@ function mount({ showToast = vi.fn() } = {}) {
   render(
     <LibraryPage theme={theme} apiHost="" apiPort="" showToast={showToast} darkMode={false} effectiveIsMobile={false} />
   );
+  fireEvent.click(screen.getByRole('tab', { name: tab }));
 }
+
+// The Library opens on Projects; these look at the Documents tab.
+const onDocuments = () => fireEvent.click(screen.getByRole('tab', { name: 'Documents' }));
 
 const docsCalls = () => apiFetch.mock.calls.filter(([, , path]) => path.startsWith('/v1/docs'));
 
 describe('LibraryPage', () => {
+  it('opens on Projects, the first tab', async () => {
+    apiFetch.mockImplementation(async (h, p, path) => json(200, path === '/v1/projects' ? projects : docs));
+    render(<LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} />);
+    const tabs = screen.getAllByRole('tab');
+    expect(tabs.map((t) => t.textContent)).toEqual(['Projects', 'Documents']);
+    expect(tabs[0].getAttribute('aria-selected')).toBe('true');
+    expect(await screen.findByRole('button', { name: 'Open project Project A' })).toBeTruthy();
+    expect(screen.queryByTestId('doc-row-d1')).toBeNull();
+  });
+
   beforeEach(() => vi.clearAllMocks());
 
   it('offers Share only on rows I uploaded, and opens the share dialog', async () => {
@@ -130,6 +144,7 @@ describe('LibraryPage', () => {
     render(
       <LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} darkMode={false} effectiveIsMobile={false} />
     );
+    onDocuments();
     await screen.findByText('Teammate.pdf');
     const row = screen.getByTestId('doc-row-d2');
     // Both p1 and p2 are unlinked and addable — if the select only checked
@@ -200,6 +215,7 @@ describe('LibraryPage', () => {
     render(
       <LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} darkMode={false} effectiveIsMobile={false} />
     );
+    onDocuments();
     await screen.findByText('Owned.pdf');
     const row = screen.getByTestId('doc-row-d1');
     // p1 is caller-owned, p2 isn't — uploading the doc doesn't grant a say
@@ -233,6 +249,7 @@ describe('LibraryPage', () => {
     render(
       <LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} darkMode={false} effectiveIsMobile={false} />
     );
+    onDocuments();
     await screen.findByText('Teammate.pdf');
     const row = screen.getByTestId('doc-row-d2');
     const removeBtn = within(row).getByLabelText(/remove teammate\.pdf from project a/i);
@@ -287,6 +304,7 @@ describe('LibraryPage', () => {
     render(
       <LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} darkMode={false} effectiveIsMobile={false} />
     );
+    onDocuments();
     await screen.findByText('Teammate.pdf');
     const row = screen.getByTestId('doc-row-d2');
     fireEvent.click(within(row).getByLabelText(/remove teammate\.pdf from project a/i));
@@ -307,6 +325,7 @@ describe('LibraryPage', () => {
     render(
       <LibraryPage theme={theme} apiHost="" apiPort="" showToast={showToast} darkMode={false} effectiveIsMobile={false} />
     );
+    onDocuments();
     await screen.findByText('Teammate.pdf');
     const row = screen.getByTestId('doc-row-d2');
     fireEvent.click(within(row).getByLabelText(/remove teammate\.pdf from project a/i));
@@ -324,6 +343,7 @@ describe('LibraryPage', () => {
       return json(404, {});
     });
     render(<LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} />);
+    onDocuments();
     const select = await screen.findByLabelText('Add Owned.pdf to project');
     expect([...select.options].map((o) => o.textContent)).toEqual(['+ project', 'Project A', 'Project B']);
   });
@@ -372,6 +392,7 @@ describe('LibraryPage', () => {
       return json(404, {});
     });
     render(<LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} />);
+    onDocuments();
     await screen.findByText('Owned.pdf');
     fireEvent.click(screen.getByRole('tab', { name: 'Projects' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Open project Project B' }));
@@ -401,6 +422,7 @@ describe('LibraryPage', () => {
       return json(404, {});
     });
     render(<LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} />);
+    onDocuments();
     await screen.findByText('Teammate.pdf');
     const row = screen.getByTestId('doc-row-d2');
     fireEvent.click(within(row).getByLabelText(/remove teammate\.pdf from project a/i));
@@ -421,6 +443,7 @@ describe('LibraryPage', () => {
       return json(404, {});
     });
     render(<LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} onOpen={onOpen} />);
+    onDocuments();
     const row = await screen.findByTestId('doc-row-d1');
     expect(within(row).getByText(/Project B has a newer version \(v3\)/)).toBeInTheDocument();
     fireEvent.click(within(row).getByRole('button', { name: 'Open current version from Project B' }));
@@ -437,6 +460,7 @@ describe('LibraryPage', () => {
       return json(404, {});
     });
     render(<LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} />);
+    onDocuments();
     const row = await screen.findByTestId('doc-row-d1');
     fireEvent.change(within(row).getByLabelText(/add owned\.pdf to project/i), { target: { value: 'p2' } });
     fireEvent.click(await screen.findByRole('button', { name: 'Keep both' }));
@@ -469,6 +493,7 @@ describe('LibraryPage — New project', () => {
       <LibraryPage theme={theme} apiHost="" apiPort="" showToast={showToast}
         onProjectsChanged={onProjectsChanged} />
     );
+    onDocuments();
     return { onProjectsChanged, showToast };
   }
   const postCalls = () => apiFetch.mock.calls.filter(([, , p, o]) => p === '/v1/projects' && o?.method === 'POST');

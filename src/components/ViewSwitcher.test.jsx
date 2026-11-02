@@ -12,6 +12,12 @@ describe('ViewSwitcher', () => {
     expect(screen.getByRole('button', { name: /admin/i })).toBeInTheDocument();
   });
 
+  it('draws the Library with the library icon, not the audiobook one', () => {
+    const { container } = render(<ViewSwitcher theme={theme} viewMode="reader" setViewMode={vi.fn()} isAdmin={false} />);
+    expect(container.querySelector('.lucide-library')).toBeTruthy();
+    expect(container.querySelector('.lucide-headphones')).toBeNull();
+  });
+
   it('never renders the admin shield for a member', () => {
     render(<ViewSwitcher theme={theme} viewMode="reader" setViewMode={vi.fn()} isAdmin={false} />);
     expect(screen.queryByRole('button', { name: /admin/i })).toBeNull();

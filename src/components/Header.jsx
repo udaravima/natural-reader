@@ -1,7 +1,7 @@
 import {
     Play, Pause, Square, Upload, Volume2, SkipForward, SkipBack,
     Loader2, Download, Keyboard, Clock,
-    PanelLeftClose, Menu, Home, Library, X, Maximize2, Settings as SettingsIcon, MessagesSquare
+    PanelLeftClose, Menu, Home, Headphones, X, Maximize2, Settings as SettingsIcon, MessagesSquare
 } from 'lucide-react';
 import HeaderOverflowMenu from './HeaderOverflowMenu';
 import ProfileMenu from './ProfileMenu';
@@ -212,7 +212,7 @@ export default function Header({
                             className={`hidden lg:block p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-green-500 disabled:opacity-50`}
                             title="Export the entire document as a single audiobook .wav"
                         >
-                            <Library size={20} />
+                            <Headphones size={20} />
                         </button>
                     )
                 )}

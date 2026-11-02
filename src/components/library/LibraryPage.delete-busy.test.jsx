@@ -35,6 +35,7 @@ describe('LibraryPage delete — in-flight feedback', () => {
     render(
       <LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} darkMode={false} effectiveIsMobile={false} />
     );
+    fireEvent.click(screen.getByRole('tab', { name: 'Documents' }));
     await screen.findByText('Owned.pdf');
     const row = screen.getByTestId('doc-row-d1');
 

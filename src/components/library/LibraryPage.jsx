@@ -233,7 +233,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
   const [openingId, setOpeningId] = useState(null);
   const [creatingProject, setCreatingProject] = useState(false);
   const [projectBusy, setProjectBusy] = useState(false);
-  const [view, setView] = useState('documents');
+  const [view, setView] = useState('projects');
   const [openProjectId, setOpenProjectId] = useState(null);
   const [shareDocId, setShareDocId] = useState(null);
   const api = useMemo(() => projectsApi(apiHost, apiPort), [apiHost, apiPort]);
@@ -409,7 +409,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
         )}
 
         <div role="tablist" aria-label="Library sections" className={`flex gap-4 border-b ${theme.border}`}>
-          {[['documents', 'Documents'], ['projects', 'Projects']].map(([key, label]) => (
+          {[['projects', 'Projects'], ['documents', 'Documents']].map(([key, label]) => (
             <button key={key} role="tab" aria-selected={view === key && !openProjectId}
               onClick={() => { setView(key); setOpenProjectId(null); }}
               className={`pb-1 text-xs ${view === key ? 'border-b-2 border-blue-500 text-blue-500' : theme.textSecondary}`}>

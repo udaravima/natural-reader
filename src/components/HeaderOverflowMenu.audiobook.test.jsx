@@ -27,6 +27,14 @@ describe('overflow menu audiobook', () => {
         expect(screen.queryByText(/null/)).toBeNull();
     });
 
+    it('draws the audiobook with headphones, not the Library icon', () => {
+        render(<HeaderOverflowMenu {...base({ bookProgress: null })} />);
+        fireEvent.click(screen.getByTitle('More actions'));
+        const item = screen.getByRole('menuitem', { name: /download audiobook/i });
+        expect(item.querySelector('.lucide-headphones')).toBeTruthy();
+        expect(item.querySelector('.lucide-library')).toBeNull();
+    });
+
     it('offers no Cancel when nothing is running', () => {
         render(<HeaderOverflowMenu {...base({ bookProgress: null })} />);
         fireEvent.click(screen.getByTitle('More actions'));
