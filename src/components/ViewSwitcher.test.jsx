@@ -7,6 +7,21 @@ const theme = { bgTertiary: '', border: '', textSecondary: '' };
 describe('ViewSwitcher', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  it('offers Talk only when it can be used', () => {
+    const setViewMode = vi.fn();
+    const { rerender } = render(<ViewSwitcher theme={theme} viewMode="reader" setViewMode={setViewMode} />);
+    expect(screen.queryByRole('button', { name: /talk/i })).not.toBeInTheDocument();
+    rerender(<ViewSwitcher theme={theme} viewMode="reader" setViewMode={setViewMode} canTalk />);
+    fireEvent.click(screen.getByRole('button', { name: /talk/i }));
+    expect(setViewMode).toHaveBeenCalledWith('talk');
+  });
+
+  it('in Talk, Reader is not the one lit up', () => {
+    render(<ViewSwitcher theme={theme} viewMode="talk" setViewMode={vi.fn()} canTalk />);
+    expect(screen.getByRole('button', { name: /reader/i }).className).not.toContain('bg-blue-600');
+    expect(screen.getByRole('button', { name: /talk/i }).className).toContain('bg-blue-600');
+  });
+
   it('renders the admin shield for an admin', () => {
     render(<ViewSwitcher theme={theme} viewMode="reader" setViewMode={vi.fn()} isAdmin />);
     expect(screen.getByRole('button', { name: /admin/i })).toBeInTheDocument();

@@ -946,6 +946,38 @@ with a **Remove**, whether it's in use or not. A model that can't run on this se
 shows greyed out, with the reason below.
 Details are in [DEPLOYMENT.md](DEPLOYMENT.md#choosing-a-model).
 
+## Talking with the assistant
+
+**Talk** is a spoken conversation: you speak, it answers aloud, and you can cut in.
+It appears beside **Chat** when an admin has turned voice input on, for anyone with
+chat and read-aloud access. It's English for now.
+
+1. Open **Talk**, choose a chat model and press **Start**. The browser asks for the
+   microphone the first time.
+2. Speak, with no buttons. The circle shows **Listening**, **Hearing you**,
+   **Checking**, **Thinking** and **Speaking**.
+3. **To cut in, just speak.** The reply pauses at once. If you were really talking, it
+   stops, and your words join the conversation. If it was a cough or a knock, the reply
+   carries on from the same word.
+4. **Mute** closes the microphone. **End** stops everything and closes it. Leaving
+   **Talk** does the same.
+
+The assistant only remembers the part of a reply you actually heard, so if you stop it
+halfway it won't assume you heard the rest. Everything said appears in **Chat**
+afterwards, with the reply cut at the same point.
+
+**Your voice stays in your browser until you speak.** The listening happens on your
+own device, and only the moments it takes for speech go to the server. The first
+**Start** downloads about 17 MB, once.
+
+**What it heard** lists every clip: what it thought it heard, whether that counted as
+speech, and how long each step took. **Copy numbers** copies them, which is useful when
+reporting how it behaved.
+
+**Use headphones if it interrupts itself.** On speakers the microphone can hear the
+reply. It tries to recognise its own words and ignore them, but this hasn't been tested
+on real speakers yet.
+
 ## Asking a whole project
 
 A project is a shelf of documents for a team. A project chat lets you ask the

@@ -1,7 +1,7 @@
-import { BookOpen, MessageSquare, Library, Shield } from 'lucide-react';
+import { BookOpen, MessageSquare, Library, Mic, Shield } from 'lucide-react';
 
 /**
- * Reader / Chat / Library / Admin view toggle. The SPA has no router — viewMode
+ * Reader / Chat / Talk / Library / Admin view toggle. The SPA has no router — viewMode
  * state IS the routing. Reader and Chat are each rendered only when the caller
  * says the user holds the matching capability (canReader/canChat, default true
  * so existing callers keep always-visible behavior); the Admin shield only for
@@ -10,8 +10,9 @@ import { BookOpen, MessageSquare, Library, Shield } from 'lucide-react';
  * coercion (useViewModeGuard) make this hiding cosmetic, not the security
  * boundary.
  */
-export default function ViewSwitcher({ theme, viewMode, setViewMode, isAdmin, canReader = true, canChat = true }) {
+export default function ViewSwitcher({ theme, viewMode, setViewMode, isAdmin, canReader = true, canChat = true, canTalk = false }) {
     const inChat = viewMode === 'chat';
+    const inTalk = viewMode === 'talk';
     const inLibrary = viewMode === 'library';
     const inAdmin = viewMode === 'admin';
     const btn = (active) =>
@@ -23,7 +24,7 @@ export default function ViewSwitcher({ theme, viewMode, setViewMode, isAdmin, ca
             {canReader && (
                 <button
                     onClick={() => setViewMode('reader')}
-                    className={btn(!inChat && !inLibrary && !inAdmin)}
+                    className={btn(!inChat && !inTalk && !inLibrary && !inAdmin)}
                     title="Reader mode"
                 >
                     <BookOpen size={12} />
@@ -38,6 +39,16 @@ export default function ViewSwitcher({ theme, viewMode, setViewMode, isAdmin, ca
                 >
                     <MessageSquare size={12} />
                     <span className="hidden sm:inline">Chat</span>
+                </button>
+            )}
+            {canTalk && (
+                <button
+                    onClick={() => setViewMode('talk')}
+                    className={btn(inTalk)}
+                    title="Talk"
+                >
+                    <Mic size={12} />
+                    <span className="hidden sm:inline">Talk</span>
                 </button>
             )}
             <button

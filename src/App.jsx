@@ -11,6 +11,7 @@ import { useTtsEngine } from './hooks/useTtsEngine';
 import { useChatEngine } from './hooks/useChatEngine';
 import { useAuth } from './hooks/useAuth';
 import { useViewModeGuard } from './hooks/useViewModeGuard';
+import { useSpeechStatus } from './hooks/useSpeechWindow';
 import { useDocMetaPicker } from './hooks/useDocMetaPicker';
 import { makePin } from './hooks/pins';
 import { migrateModelId } from './lib/modelIds';
@@ -48,6 +49,7 @@ import { fetchDocFile } from './lib/serverDocFile';
 import { openServerDoc, openCitation } from './lib/openDoc';
 import SettingsDialog from './components/settings/SettingsDialog';
 import ChatSidePanel from './components/chat/ChatSidePanel';
+import { SpeechView } from './components/speech/SpeechWindow';
 import { ProfilePanel } from './components/account/ProfilePanel';
 import MobileBottomNav from './components/MobileBottomNav';
 import DoclingConvertDialog from './components/DoclingConvertDialog';
@@ -284,6 +286,7 @@ export default function App() {
 
   const inChat = viewMode === 'chat';
   const inAdmin = viewMode === 'admin';
+  const inTalk = viewMode === 'talk';
   // Library, unlike admin, is available to any authenticated active user — it's
   // a capability-free view, listed in useViewModeGuard's CAP_FREE_VIEWS so the
   // guard doesn't bounce it to reader for lack of a matching capability.
@@ -305,6 +308,8 @@ export default function App() {
   const canReader = caps.includes('reader');
   const canChat = caps.includes('chat');
   const canAdmin = caps.includes('admin');
+  const speechStatus = useSpeechStatus({ apiHost, apiPort, allowed: canChat && canReader });
+  const canTalk = canChat && canReader && speechStatus?.enabled === true;
 
   // Chat beside the page (ChatSidePanel): the reader on a wide screen only;
   // a phone has no room for both, so its Chat button opens the Chat view
@@ -520,15 +525,15 @@ export default function App() {
   // out at the window level so the reader's DragOverlay never appears and the
   // file isn't routed through processFile() (which expects PDF/TXT).
   const handleDragOver = (e) => {
-    if (inChat || inAdmin || inLibrary || settingsOpen) return;
+    if (inChat || inTalk || inAdmin || inLibrary || settingsOpen) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(true);
   };
   const handleDragLeave = (e) => {
-    if (inChat || inAdmin || inLibrary || settingsOpen) return;
+    if (inChat || inTalk || inAdmin || inLibrary || settingsOpen) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
   };
   const handleDrop = (e) => {
-    if (inChat || inAdmin || inLibrary || settingsOpen) return;
+    if (inChat || inTalk || inAdmin || inLibrary || settingsOpen) return;
     e.preventDefault(); e.stopPropagation(); setIsDragging(false);
     const files = e.dataTransfer.files;
     if (files.length === 0) return;
@@ -1191,6 +1196,7 @@ export default function App() {
           isAdmin={canAdmin}
           canReader={canReader}
           canChat={canChat}
+          canTalk={canTalk}
           status={status}
           isPlaying={isPlaying}
           isLocalhost={isLocalhost} setIsLocalhost={setIsLocalhost}
@@ -1277,7 +1283,7 @@ export default function App() {
             deleteSession={chatDeleteSession}
             renameSession={chatRenameSession}
           />
-        ) : inAdmin || inLibrary ? null : (
+        ) : inAdmin || inLibrary || inTalk ? null : (
         canReader && <Sidebar
           theme={theme}
           darkMode={darkMode}
@@ -1302,6 +1308,28 @@ export default function App() {
           // ViewSwitcher is cosmetic, this is the render-time boundary that
           // covers the brief window before useViewModeGuard's effect fires.
           canChat && <ChatView {...chatViewProps} />
+        ) : inTalk ? (
+          canChat && (
+            <SpeechView
+              theme={theme}
+              status={speechStatus}
+              apiHost={apiHost}
+              apiPort={apiPort}
+              messages={chatMessages}
+              models={availableModels}
+              selectedModel={selectedModel}
+              setSelectedModel={setSelectedModel}
+              sendMessage={chatSendMessage}
+              stopStream={chatStopStream}
+              synthesizeText={synthesizeText}
+              voice={selectedVoice}
+              speed={playbackSpeed}
+              volume={volume}
+              requestTimeout={requestTimeout}
+              showToast={showToast}
+              onStarted={() => { if (isPlaying) pauseNarration(); }}
+            />
+          )
         ) : inAdmin ? (
           // Mount gate: the console renders nothing when the current user
           // isn't an admin — hiding is cosmetic, server rails are the
@@ -1421,7 +1449,7 @@ export default function App() {
         <MobileBottomNav
           theme={theme}
           effectiveIsMobile={effectiveIsMobile}
-          hasDocument={hasDocument && !inChat && !inAdmin && !inLibrary}
+          hasDocument={hasDocument && !inChat && !inTalk && !inAdmin && !inLibrary}
           currentPage={currentPage} setCurrentPage={setCurrentPage}
           numPages={numPages}
           currentSentenceIndex={currentSentenceIndex}

@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Talk, a spoken conversation.** A new view beside **Chat**, on when voice input is:
+  speak with no buttons and hear the reply. Listening happens in the browser, so
+  nothing leaves it until you speak. To cut in, just speak: the reply pauses at once,
+  a real interruption stops it and joins the conversation, and a cough lets it carry
+  on from the same word. The model then remembers only what you heard. English for
+  now. **What it heard** shows every clip's scores and timings.
+- **`TTS_CPU_THREADS`** (default 6) and **`KOKORO_MODEL_PATH`**. Kokoro was slower on
+  every core than on six.
+
 ## [2.5.1] - 2026-11-02
 
 **Every Kokoro voice is available, and each reads in its own language.** All 50 are

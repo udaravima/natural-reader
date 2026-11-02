@@ -11,6 +11,18 @@ describe('useViewModeGuard', () => {
     expect(setViewMode).toHaveBeenCalledWith('reader');
   });
 
+  it('keeps Talk for a person who can chat', () => {
+    const setViewMode = vi.fn();
+    renderHook(() => useViewModeGuard({ viewMode: 'talk', setViewMode, authState: 'active', caps: ['chat'] }));
+    expect(setViewMode).not.toHaveBeenCalled();
+  });
+
+  it('moves a person who can\'t chat out of Talk', () => {
+    const setViewMode = vi.fn();
+    renderHook(() => useViewModeGuard({ viewMode: 'talk', setViewMode, authState: 'active', caps: ['reader'] }));
+    expect(setViewMode).toHaveBeenCalledWith('reader');
+  });
+
   it('keeps the admin view for an actual admin', () => {
     const setViewMode = vi.fn();
     renderHook(() => useViewModeGuard({

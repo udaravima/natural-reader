@@ -26,6 +26,7 @@ export default function Header({
     isAdmin,
     canReader,
     canChat,
+    canTalk,
     // Playback controls
     handlePlayPause,
     stopPlayback,
@@ -150,7 +151,7 @@ export default function Header({
                     </button>
                 )}
                 {/* Reader / Chat / Admin toggle */}
-                <ViewSwitcher theme={theme} viewMode={viewMode} setViewMode={setViewMode} isAdmin={isAdmin} canReader={canReader} canChat={canChat} />
+                <ViewSwitcher theme={theme} viewMode={viewMode} setViewMode={setViewMode} isAdmin={isAdmin} canReader={canReader} canChat={canChat} canTalk={canTalk} />
 
                 {/* Settings gear + profile menu — persistent, all widths */}
                 <button
