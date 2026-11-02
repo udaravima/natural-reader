@@ -95,7 +95,10 @@ export default function SpeechWindow({
         {models.length > 0 && (
           <div className="w-full max-w-xs">
             <SearchableSelect theme={theme} aria-label="Chat model" findLabel="Find a model" value={selectedModel}
-              onChange={setSelectedModel} options={models.map((m) => ({ value: m.id, label: m.name || m.id }))}
+              onChange={setSelectedModel} options={[
+                ...(selectedModel ? [] : [{ value: '', label: 'Choose a model' }]),
+                ...models.map((m) => ({ value: m.id, label: m.name || m.id })),
+              ]}
               className={`w-full min-h-11 px-3 text-sm rounded-xl border ${theme.border} ${theme.bg} ${theme.text}`} />
           </div>
         )}

@@ -60,7 +60,7 @@ export default function Header({
     // in the reader view only — not in chat, not in the admin console.
     const inReader = viewMode === 'reader';
     return (
-        <header className={`h-16 ${theme.bgSecondary} border-b ${theme.border} px-4 md:px-6 flex items-center justify-between z-20 sticky top-0 shadow-sm transition-colors duration-300`}>
+        <header className={`h-16 ${theme.bgSecondary} border-b ${theme.border} px-2 md:px-6 flex items-center justify-between z-20 sticky top-0 shadow-sm transition-colors duration-300`}>
             <div className="flex items-center gap-2 md:gap-3">
                 {/* Sidebar Toggle Button */}
                 <button
@@ -70,7 +70,7 @@ export default function Header({
                 >
                     {sidebarOpen ? <PanelLeftClose size={20} /> : <Menu size={20} />}
                 </button>
-                <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-cyan-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-500/30">
+                <div className="hidden sm:flex w-10 h-10 bg-gradient-to-br from-blue-500 to-cyan-600 rounded-xl items-center justify-center text-white shadow-lg shadow-blue-500/30">
                     <Volume2 size={22} />
                 </div>
                 <div className="hidden lg:block">
@@ -139,7 +139,7 @@ export default function Header({
             )}
 
             {/* RIGHT CONTROLS */}
-            <div className="flex items-center gap-1 md:gap-3">
+            <div className="flex items-center gap-0.5 md:gap-3">
                 {inReader && onToggleChatPanel && (
                     <button
                         onClick={onToggleChatPanel}

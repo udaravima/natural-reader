@@ -64,6 +64,17 @@ describe('SpeechWindow', () => {
     expect(screen.getByRole('button', { name: 'Start' })).toBeDisabled();
   });
 
+  it('with no model chosen the list says so, instead of showing the first one as if it were', () => {
+    draw({ selectedModel: '', models: [{ id: 'ollama:a', name: 'a' }, { id: 'ollama:b', name: 'b' }] });
+    expect(screen.getByLabelText('Chat model')).toHaveDisplayValue('Choose a model');
+  });
+
+  it('a chosen model needs no such line', () => {
+    draw({ models: [{ id: 'ollama:m', name: 'm' }] });
+    expect(screen.getByLabelText('Chat model')).toHaveDisplayValue('m');
+    expect(screen.queryByText('Choose a model')).not.toBeInTheDocument();
+  });
+
   it('shows each clip with what was decided and how long each step took', () => {
     draw({ speech: speech({ clips: [CLIP] }), selectedModel: 'ollama:m' });
     fireEvent.click(screen.getByText(/what it heard/i));
