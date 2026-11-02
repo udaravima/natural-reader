@@ -42,7 +42,8 @@ export function SearchableList({ theme, label, items, textOf, keep, disabled, ch
   return (
     <div className="flex flex-col gap-1 min-w-0">
       <SearchBox theme={theme} label={label} query={query} onChange={setQuery} disabled={disabled} />
-      <div className={`flex flex-col gap-1 max-h-64 overflow-y-auto p-1 rounded border ${theme.border}`}>
+      {/* Block, not a flex column: a flex column this height squeezes its rows to fit, down to 0 px, and never scrolls. */}
+      <div className={`space-y-1 max-h-64 overflow-y-auto p-1 rounded border ${theme.border}`}>
         {children(shown)}
         {shown.length === 0 && <p className={`text-xs ${theme.textSecondary}`}>Nothing matches.</p>}
       </div>

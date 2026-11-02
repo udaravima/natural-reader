@@ -6,11 +6,13 @@
 
 ## 2026-11-02 evening — All 50 voices, popup dropdowns, Library on Projects, favicon: committed on `feat/voices-and-dropdowns` (START HERE)
 
-**State.** Built and walked on `feat/voices-and-dropdowns`, cut from `development` at `06b4569`, for the next release. **Committed there as fixes, not merged and not pushed.** The owner deployed v2.5.0 on the evening of 2026-11-02 (frontend in `/var/www/chat.oraian.net/dist` at 20:56 +0530, backend image built 21:28), so the v2.5.0 entry's "Nothing is deployed" is out of date. None of this branch is live. The `en-us` bug and the `af_river` label are fixed here.
+**State.** Built and walked on `feat/voices-and-dropdowns`, cut from `development` at `06b4569`, for the next release. **Committed there as fixes, not merged and not pushed.** The owner deployed v2.5.0 on the evening of 2026-11-02, so the v2.5.0 entry's "Nothing is deployed" is out of date, and then deployed this branch at `f8af89e` at 22:38. The `en-us` bug and the `af_river` label are fixed here.
 
 **Trap:** live serves its own copy of the build, under `/var/www`, not this repo's `dist/`, so `vite build` here doesn't touch it.
 
 **How Sinhala reads.** Kokoro takes phonemes, never text. espeak switches language by itself on a script it wasn't asked for, so any voice can read Sinhala or Tamil. Each switch left `(si)` or `(enus)` in the phonemes, in characters Kokoro accepts, so it spoke them. `server/tts_language.py` removes them and picks espeak's language from the voice's first letter. English audio is identical, sample for sample, on three test texts.
+
+**The list the owner meant by "squeezed"** was **Admin → Models → Chat models offered**, found only after the popup shipped: all 424 rows measured 0 px tall on desktop. `SearchableList`'s scroll box was a height-limited flex column, and those rows carry `md:min-h-0`, so they shrank instead of scrolling; 44 px at phone width hid it from the phone walk, and the desktop walk measured Save, not rows. The box is a block now: 16 px rows, scrolling. That fix came after the 22:38 deploy, so live has the popup and the favicon but not this.
 
 **Long dropdowns** are now `PopupSelect` in `src/components/SearchableList.jsx`, replacing the search box above a `<select size>`: that design was the "squeezed" bug, with rows about 15 px tall. The popup is a portal to the nearest dialog, else `document.body`. Lists of 12 or fewer stay native selects, and lists of controls keep their search box.
 

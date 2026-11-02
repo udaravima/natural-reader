@@ -248,6 +248,16 @@ describe('SearchableList', () => {
     expect(screen.getByText('model-3').parentElement.className).not.toContain('overflow-y-auto');
   });
 
+  it('never lays long rows out in a flex column, which would squeeze them to nothing', () => {
+    // No layout in jsdom, so this pins the cause: 424 rows measured 0 px tall in a real browser in `flex flex-col`.
+    render(<SearchableList theme={theme} label="Find" items={many(LONG_LIST + 1)} textOf={(m) => m}>
+      {(shown) => shown.map((m) => <label key={m} className="min-h-11 md:min-h-0">{m}</label>)}
+    </SearchableList>);
+    const box = screen.getByText('model-0').parentElement;
+    expect(box.className).toContain('overflow-y-auto');
+    expect(box.className.split(' ')).not.toContain('flex');
+  });
+
   it('scrolls a long list in its own box and says how long it is', () => {
     mount(many(300));
     expect(screen.getByText('model-3').parentElement.className).toContain('overflow-y-auto');

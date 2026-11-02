@@ -28,6 +28,9 @@ All notable changes to this project will be documented in this file.
   box above a list, whose rows were about 15 px tall and unusable in the chat panels.
   A list of controls, such as Admin → Models → Chat models offered, keeps its search
   box.
+- **Admin → Models → Chat models offered is readable.** On a wide screen every row was
+  0 px tall, so hundreds of models lay on top of each other. The box was a flex column
+  of limited height, which squeezes its rows instead of scrolling.
 - **The Library opens on Projects,** the first tab, with Documents second.
 - **The audiobook has its own icon,** headphones. It had the Library's.
 
