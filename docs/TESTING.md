@@ -66,10 +66,10 @@ spot a feature that shipped without coverage.
 # Backend — REQUIRES Postgres up (conftest migrates natural_reader_test on a
 # real connection; without the DB every test errors, not skips). Run it with
 # the two TEST_* variables above exported, or it uses 5433.
-.venv/bin/python -m pytest server/tests/ -q          # 2646 passed, 16 skipped, 2 deselected @ 2026-11-02 (message box inputs)
+.venv/bin/python -m pytest server/tests/ -q          # 2735 passed, 16 skipped, 2 deselected @ 2026-11-02 (speech models)
 
 # Frontend (vitest, jsdom — no services needed)
-npx vitest run                                       # 1480 passed (126 files) @ 2026-11-02 (message box inputs)
+npx vitest run                                       # 1516 passed (128 files) @ 2026-11-02 (speech models)
 
 # Lint
 npx eslint .                                         # clean (the same as npm run lint)
@@ -452,6 +452,8 @@ microphone in a noisy room.
 (`http://127.0.0.1:1`) first. Its default is the usual local SearXNG port, and
 **Overview**'s Web search check will otherwise probe a live SearXNG if one is
 running there.
+
+**Speech models and long lists, walked on 2026-11-02** (scratch database and backend, real Chromium, real speech through a fake microphone): **Speech model** in the console, with run15 and the Tamil model each downloaded and converted by the app (105-126 s) and spoken Sinhala and Tamil landing in the message box in 1.7-1.9 s; the unconverted engine at 8.8 s; a model added from the real Hugging Face Hub, pinned, chosen and removed; a typo, a missing repo and a repo that isn't Whisper each refused with the reason; 340 models in **Admin → Models** at 1366 and 375 px, with Save on screen throughout, a search narrowing to 1, a tick saved; the timezone search. Conversion and both engines also ran inside the real Docling image, with no network. **Not walked:** the plain image's refusal (unit tests only); more than one worker swapping (unit tests only); Sri Lankan Tamil; a person's Settings line in a browser (unit tests only).
 
 ### Frontend: auth UI
 

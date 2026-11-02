@@ -772,7 +772,8 @@ reads **set** or **not set**.
 |---|---|---|
 | `CHAT_VOICE_INPUT` (none: its switch is **Chat options → Voice input**) | `off` | `on` or `off`, the starting value for the switch. Anything else is ignored with a warning, and off applies. |
 | `SPEECH_ENGINE` (**Voice input engine**) | `local` | `local` runs [faster-whisper](https://github.com/SYSTRAN/faster-whisper) inside the backend, on the CPU: nothing leaves the server. `openai` calls a remote server that speaks `POST {SPEECH_URL}/audio/transcriptions`. Anything else logs a warning and means `local`. Read once at startup: changing it takes a restart. |
-| `SPEECH_MODEL` (**Voice input model**) | `small` for `local`; none for `openai` | `local`: a size (`tiny`, `base`, `small`, `medium`, `large-v3`, `large-v3-turbo`), a Hugging Face repo id of a CTranslate2 model, or a directory on the server (see [Choosing a model](#choosing-a-model)). `openai`: the server's model name (`whisper-1` for OpenAI itself); required, and the Overview says "SPEECH_MODEL is not set" without it. |
+| `SPEECH_MODELS_FILE` (none) | none | `local` only: a YAML file of extra speech models for **Chat options → Speech model**. See [Choosing a model](#choosing-a-model). |
+| `SPEECH_MODEL` (**Voice input model (server setting)**) | `small` for `local`; none for `openai` | The starting model: **Chat options → Speech model** wins over it for `local`. `local`: an id from that list, a size (`tiny`, `base`, `small`, `medium`, `large-v3`, `large-v3-turbo`), a Hugging Face repo id of a CTranslate2 model, or a directory on the server (see [Choosing a model](#choosing-a-model)). `openai`: the server's model name (`whisper-1` for OpenAI itself); required, and the Overview says "SPEECH_MODEL is not set" without it. |
 | `SPEECH_URL` (**Voice input server**) | none | `openai` only: the base **including `/v1`**, like `INFERENCE_<NAME>_URL`. Without it the Overview says "SPEECH_URL is not set". |
 | `SPEECH_API_KEY` (**Voice input key**) | none | `openai` only: sent as the bearer key. It stays on the server and is never logged or shown. |
 | `SPEECH_CPU_THREADS` (none) | half the machine's cores **divided by `WORKERS`**, at least 1: `max(1, cores // (2 × WORKERS))` | `local` only: the threads one transcription uses (a count), per worker. Every worker has its own engine, so with the default all the workers together stay at half the machine and the rest stays free for chat, narration and indexing. A value you set is used as is, per worker, so with `WORKERS` above 1 it multiplies. A value that isn't a number logs a warning and the default applies. |
@@ -815,18 +816,65 @@ narration running alongside. One sentence of narration took 2.1 s alone and
 
 ### Choosing a model
 
-`SPEECH_MODEL` for the local engine takes any of: a size such as `small` or
-`large-v3-turbo` (it downloads), a Hugging Face repo id of a **CTranslate2** model,
-or a directory on the server (an offline box downloads once somewhere else and
-copies the folder in).
+**Admin console → Chat options → Voice input → Speech model** lists the models and
+switches between them with no restart. One model runs for the whole server. The
+change saves at once, and with voice on the new model starts loading: **Overview →
+Voice input** shows **Warning** "Getting ready…" and then **OK** with the model's
+name. The old model is dropped straight away, so voice says "still getting ready"
+until the new one is up, and a recording already running finishes on the old one.
+With `WORKERS` above 1, each worker swaps at its next speech request. If you mean to
+use a particular model from the start, choose it **before** turning voice on, or
+`small` downloads first for nothing.
 
-**The trap: it must be in CTranslate2 format.** faster-whisper reads a folder with
-a `model.bin`. Many Whisper fine-tunes for one language are published in the
-Transformers format instead (a `model.safetensors`), and those do not load until
-they are converted. Nothing warns you at setup: the model fails to load, the
-Overview's **Voice input** line turns **Problem** and names the error's type, and
-the button never becomes ready. Convert once (needs `transformers` and `torch`
-installed beside `ctranslate2`; this command was not run while writing this page):
+The list has three sources, and a later one replaces an earlier entry with the same
+id:
+
+| Source | How to add to it |
+|---|---|
+| Built in | The Whisper sizes, plus a few fine-tuned models that download only if chosen |
+| A deployer's file | `SPEECH_MODELS_FILE`: read once at startup. The way to go on a server that can't reach Hugging Face |
+| The admin console | **Add a model from Hugging Face**, under the list |
+
+**Adding one in the console.** Enter the repo as `owner/name`. It's looked up on
+Hugging Face straight away, so a typo, a private repo, or a repo that isn't Whisper
+is refused with the reason. It's pinned to a commit (the latest, unless you give a
+revision), so it can't change under you. Language codes are optional: left empty, a
+single language on the model card is used. Nothing downloads until someone chooses
+it. **Remove this model** takes an added model off the list, and its downloaded files
+stay in `HF_HOME`. A gated or private repo needs `HF_TOKEN` in the backend's
+environment.
+
+**In a file.** The same shape as a model list you might already keep; each entry
+needs an `engine` and a `repo`:
+
+```yaml
+models:
+  whisper-small-example:
+    engine: converted-whisper     # or faster-whisper, or transformers-whisper
+    repo: example-org/whisper-small-example
+    revision: <a commit hash>     # pin it: otherwise it follows main, converted once
+    languages: [si]               # Whisper codes; leave out for every language
+    license: apache-2.0
+    commercial: check             # yes, no or check: shown beside the model
+    note: Shown under the list when this model is chosen.
+```
+
+A bad entry is left out with a warning in the log, and the rest stay.
+`SPEECH_MODEL` can name any id in the list as well as a size, a repo or a directory.
+The admin's choice wins over it, and **Use the server setting** hands control back.
+
+**How each engine runs.**
+
+| `engine` | What it takes | What happens |
+|---|---|---|
+| `faster-whisper` | A size, a CTranslate2 repo (it has a `model.bin`), or, in a file or `SPEECH_MODEL` only, a directory | Downloads once and loads |
+| `converted-whisper` | A Transformers-format repo (`model.safetensors` or `pytorch_model.bin`), which is how most fine-tunes ship | Downloads once, then converts on this server into `HF_HOME/speech-converted/`, in a separate process that hands its memory back |
+| `transformers-whisper` | The same kind of repo | Runs as it is, inside the backend. Slower and heavier: use it to compare, not to serve |
+
+**The trap: `torch`.** The last two need `transformers` and `torch`, and only the
+Docling build has them (`NR_WITH_DOCLING=true`). On the plain image those models show
+disabled in the list with the reason. To use one there, convert it elsewhere and
+point `SPEECH_MODEL` at the folder:
 
 ```bash
 ct2-transformers-converter --model <org>/<whisper-model-name> \
@@ -834,16 +882,66 @@ ct2-transformers-converter --model <org>/<whisper-model-name> \
   --copy_files tokenizer.json preprocessor_config.json
 ```
 
-then set `SPEECH_MODEL` to the folder (a path the backend can read; in the
-container, one under a mounted folder).
+A model that was already converted on the server needs no `torch` to load again.
 
-**Languages.** `small` is weak at many languages. In the one walk, an English and
-a Spanish sentence came out right and a Hindi one had several word errors.
-Sinhala and Tamil are Whisper languages but nobody has measured them here. A
-larger model (`large-v3-turbo` handles languages other than English better, at
-several times the CPU time) or a fine-tune for the language is how to improve it.
-People pick a language under **Settings → Chat → Speech language**, or leave
-**Auto**, which detects it.
+**The built-in fine-tunes.** Each is about 967 MB to download and, once converted,
+242 MB on disk. Ready in 105-126 s on a test line, download included; conversion
+itself takes a few seconds.
+
+| Id | For | Measured on a CPU-only machine |
+|---|---|---|
+| `whisper-small-si` (run12) | Sinhala | 8.4 s of speech in about 2 s. Readable on all 8 test clips, read by eye: those clips came with no transcripts, so no error rate. Stock `small` gave gibberish on them. English comes out as gibberish here (its model card measures 98.7% word error), so don't choose it for a server that also takes English |
+| `whisper-small-si-run15` | Sinhala | About the same time and, by eye, the same quality on those clips. Not scored. Its model card reports about the same Sinhala scores as run12, with English at 8% word error |
+| `whisper-small-si-hf` | Comparing | The run12 weights unconverted: 8.9 s against 1.9 s for the same clip, and 2.28 GB peak memory against 0.78 GB |
+| `whisper-small-ta` | Tamil | On 12 Tamil clips the median character error was 0.14, against 0.35 for stock `small`. By clip: 0-3% on clean read speech, 6-35% on volunteer and dialect recordings, and worse on one single-word clip, where it added words. Not tried on Sri Lankan Tamil |
+| `whisper-turbo` | English | The pinned `large-v3-turbo`. Good on English; weak on Tamil and unusable on Sinhala |
+
+A separate benchmark by the project's owner on clean read speech, 15 clips per
+language on CPU, scored run12 at 0.028 character error and the Tamil model at 0.029.
+That's a best case: real recordings were visibly worse. The licences differ: `commercial`
+in the list says `check` for the Sinhala models, whose training data includes audio
+of unknown licence.
+
+**Languages.** One model at a time means a server can specialise in one language. A
+server that takes English should stay on a stock model such as `small`, which in
+the walk got English and Spanish right and made several word errors in Hindi. People
+pick a language under **Settings → Chat → Speech language**, or leave **Auto**. Three
+things to know about fine-tunes:
+
+- **Auto doesn't work on them, so the app doesn't use it.** Language detection called
+  Sinhala Kannada, at 0.92 confidence, and the Tamil model's config lists no languages
+  to detect from. So with Auto, a model made for one language is told that language.
+  The Settings row says what the server's model is for.
+- **A language a person chooses is honoured,** because some fine-tunes still read
+  other languages. On one that doesn't, the result is gibberish.
+- **English words inside Sinhala speech** come out in Sinhala letters, spelled
+  differently each time.
+
+### How it listens
+
+The local engines use the settings below, chosen by measuring real Sinhala, Tamil and
+English recordings. They are in `server/speech/local_whisper.py`.
+
+- **A voice activity detector always runs** (Silero, bundled with faster-whisper).
+  Without it, 4 s of silence came out as 82 characters of invented Tamil, and a 3 s
+  pause lost a whole second Sinhala sentence. With it, silence gives no text at all,
+  and speech on both sides of a 20 s pause survives.
+- **Its threshold is 0.4, not the default 0.5.** At 0.5 it cut real speech out of
+  volunteer recordings, and the median Tamil error rose from 0.14 to 0.24. Below 0.35,
+  loud steady noise started to come out as invented words.
+- **`temperature=0`:** by default Whisper retries a clip it doesn't understand, up
+  to six tries in all. Turning that off took stock `small` on 8 Sinhala clips from
+  171 s to 27 s, and the worst Tamil clip from 18.2 s to 2.7 s. A 269-word English
+  recording came out word for word the same. Those retries can rescue a clip now and
+  then, so a clip that fails now fails once.
+- **Left at Whisper's defaults on purpose:** `beam_size=1` saved about 13% and changed
+  real words ("balance" became "field"), and `condition_on_previous_text=False` saved
+  about a quarter on recordings over 30 s but lost the last two words of that English
+  one.
+
+English is the primary language for now, and it came through all of this unchanged: the
+English and Spanish test sentences read the same as before, and 101 s of English speech
+took 8.7 s.
 
 **A failed load.** A model that can't download or load (no network, a wrong name, a
 Transformers-format folder) shows on **Admin → Overview** as **Problem**. Each

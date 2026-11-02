@@ -307,6 +307,13 @@ says where its value comes from and can go back to the server's, the same way.
 pick it (see above), so it has no Save, no draft and no unsaved-changes question.
 The **Assistant profile** and **Defaults for users** keep their own Save buttons.
 
+**Long lists.** The Save at the bottom of a section stays on screen as you scroll, so
+you never have to go to the end of the page to reach it. Past 12 entries, a list gets
+a search box: the per-model lists under **Models** scroll in their own box, and a long
+dropdown (timezone, model, voice, language) narrows as you type, then shows the matches
+to pick from. Searching hides rows, not what they hold: ticks and numbers you can't
+see still save, and a box with a mistake in it stays visible.
+
 - A line under the setting says where its value comes from: **Set here.**
   (you chose it in the console), **From the server setting** `NAME` (the
   deployer's `.env`), or **The default.**
@@ -893,7 +900,8 @@ language. The row only shows when Voice input is on and you have chat access. Yo
 admin sets what it starts as under **Admin → Defaults for users → Speech language**.
 How good the result is depends on the language and the speech model: the default
 model is much better at English and Spanish than at many others, and an admin can
-choose a larger one ([DEPLOYMENT.md](DEPLOYMENT.md#choosing-a-model)).
+choose another one (below). When the server's model is made for one language, the
+row says so, and Auto listens for that language. Other languages may come out wrong.
 
 **What it does with your recording.** The server turns it into text and forgets it:
 it isn't saved by the app to disk, the database or a log. With the default engine it never
@@ -915,6 +923,20 @@ setting CHAT_VOICE_INPUT.** or **The default.**), and **Use the server setting**
 hands control back. If the Overview says **Problem**, its line says why; fix it,
 then switch Voice input Off and On to try again. The engine, model and costs are in
 [DEPLOYMENT.md](DEPLOYMENT.md#voice-input).
+
+**Choosing the speech model (admins).** **Speech model**, under the switch, lists the
+models this server can run, with the languages each is for. Picking one saves at once;
+under it you see how it runs, any note, and its licence. The first time, it downloads
+(about 1 GB for a fine-tuned model), so the **Overview** reads **Warning** for a couple
+of minutes. People get "still getting ready" until then. One model runs for everyone,
+so choose a fine-tuned one only if the server serves that language: stock models stay
+the right choice for English. **Use the server setting** goes back to the default.
+
+To add a model, open **Add a model from Hugging Face**, enter its repo as `owner/name`
+and press **Add model**. It's checked straight away, and you're told if it can't be
+used. Then choose it from the list. **Remove this model** appears for a model you
+added. A model that can't run on this server shows greyed out, with the reason below.
+Details are in [DEPLOYMENT.md](DEPLOYMENT.md#choosing-a-model).
 
 ## Asking a whole project
 

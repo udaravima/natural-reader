@@ -75,6 +75,32 @@ All notable changes to this project will be documented in this file.
   - Replaces the old microphone component, which had been switched off since 1.7
     (it sent the recording to the model as audio, which Ollama's gemma4 rejected).
     An audio *file* dropped onto the chat is still refused.
+- **Choose the speech model in the admin console.** **Admin -> Chat options -> Voice
+  input -> Speech model** lists the models and switches between them with no restart.
+  One model runs for the whole server. Stock Whisper models stay the default and the
+  right choice for English; nothing downloads until a model is chosen. Things to know:
+  - **Fine-tuned models for Sinhala and Tamil are in the list**, and they just work:
+    a Transformers-format model is converted to CTranslate2 the first time it runs (a
+    few seconds, in its own process). On the same clip, run12 went from gibberish on
+    stock `small` to readable Sinhala in about 2 s. Unconverted it took 8.9 s against
+    1.9 s, and three times the memory, so there's an unconverted entry for comparing.
+  - **Add a model** from Hugging Face under the list, as `owner/name`. It's checked at
+    once (a typo, a private repo or a repo that isn't Whisper is refused with the
+    reason) and pinned to a commit. A model you added can be removed.
+  - **Or from a file:** `SPEECH_MODELS_FILE` adds models from YAML, which also suits a
+    server that can't reach Hugging Face, and `SPEECH_MODEL` can name any id in the list.
+  - **Converting needs `torch` and `transformers`,** which only the Docling build has.
+    On the plain image those models show greyed out with the reason.
+  - With **Auto**, a model made for one language is told that language, because
+    detection fails on fine-tunes (it called Sinhala Kannada at 0.92 confidence).
+    **Settings -> Chat -> Speech language** says what the server's model is for.
+  - One model at a time means a server can't specialise in Sinhala and Tamil together.
+- **Long lists are scrollable and searchable, and Save stays on screen.** The Save bar
+  of an admin section now sticks to the bottom of the view, so a long list never makes
+  you scroll to the end to save. Past 12 entries, a list gets a search box: the
+  per-model lists under **Admin -> Models** scroll in their own box, and long dropdowns
+  (timezone, reader, chat model, voice, speech language) narrow as you type. Searching
+  hides rows, not what they hold, and a box with a mistake in it stays visible.
 - **The admin console is split into sections.** **Overview**, **People**,
   **Projects**, **Models**, **Documents**, **Chat**, **Defaults for users**,
   **Usage** and **Deployment**, in a list down the side (a picker on a phone), the way
@@ -259,6 +285,15 @@ All notable changes to this project will be documented in this file.
   deployer hosts is sized whichever way it is marked.
 - **The Deployment section no longer lists "Reading model".** The reader is set
   in **Models**, and the Overview's Reader line shows what it resolves to.
+
+### Changed
+
+- **Voice input listens better, and a clip it can't understand no longer stalls it.**
+  The local engine's voice activity detector threshold is 0.4, not 0.5, because 0.5
+  cut real speech out of volunteer recordings (median Tamil error 0.24 against 0.14).
+  `temperature=0` stops Whisper's retries: stock `small` on 8 Sinhala clips took 27 s,
+  not 171 s, and the worst Tamil clip 2.7 s, not 18.2 s. English came out word for word
+  the same. A model that fails on a recording now says so, instead of a server error.
 
 ### Fixed
 
