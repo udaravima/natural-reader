@@ -61,7 +61,7 @@ describe('originPattern', () => {
 
 describe('voices', () => {
     it('has 27 well-formed entries', () => {
-        expect(VOICES).toHaveLength(27);
+        expect(VOICES).toHaveLength(50);
         for (const v of VOICES) {
             expect(typeof v.id).toBe('string');
             expect(typeof v.name).toBe('string');
