@@ -63,7 +63,7 @@ export function resetPersisted(key) {
 /** Run a one-time browser migration `id` (before the hooks read). */
 export function runOnce(id, fn) {
     const k = `${PREFIX}migrations`;
-    let done = [];
+    let done;
     try { done = JSON.parse(localStorage.getItem(k) || '[]'); } catch { done = []; }
     if (done.includes(id)) return;
     fn();

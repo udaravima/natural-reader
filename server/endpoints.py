@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from .auth.deps import Principal, require_read_aloud
 from .model import kokoro
 from .schemas import TTSRequest, BatchTTSRequest
+from .tts_language import phonemes
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -29,6 +30,11 @@ inference_lock = asyncio.Lock()
 
 # 499: the client closed the request (nginx's code); nobody reads this reply.
 CLIENT_GONE = 499
+
+
+def _speak(text: str, voice: str, speed: float):
+    """(audio, sample rate) for this text, read in the voice's own language. Blocks: run it in the executor."""
+    return kokoro.create(phonemes(kokoro.tokenizer, text, voice), voice=voice, speed=speed, is_phonemes=True)
 
 
 async def _client_gone(http_request: Request) -> bool:
@@ -72,12 +78,7 @@ async def synthesize(request: TTSRequest, http_request: Request,
             loop = asyncio.get_event_loop()
             audio, sample_rate = await loop.run_in_executor(
                 None,
-                lambda: kokoro.create(
-                    request.text,
-                    voice=request.voice,
-                    speed=request.speed,
-                    lang="en-us"
-                )
+                lambda: _speak(request.text, request.voice, request.speed)
             )
 
         if len(audio) == 0:
@@ -132,12 +133,7 @@ async def batch_synthesize(
 
                 audio, sr = await loop.run_in_executor(
                     None,
-                    lambda s=sentence: kokoro.create(
-                        s,
-                        voice=request.voice,
-                        speed=request.speed,
-                        lang="en-us"
-                    )
+                    lambda s=sentence: _speak(s, request.voice, request.speed)
                 )
 
                 if sample_rate is None:

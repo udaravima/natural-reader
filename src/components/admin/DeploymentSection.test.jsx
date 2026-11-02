@@ -36,6 +36,10 @@ function mount({ initial = view(tz(), INFO), put, props = {} } = {}) {
 
 const puts = () => apiFetch.mock.calls.filter(([, , , o]) => o?.method === 'PUT');
 const zoneSelect = () => screen.findByLabelText('Timezone');
+const chooseZone = async (zone) => {
+  fireEvent.click(await zoneSelect());
+  fireEvent.click(screen.getByRole('option', { name: zone }));
+};
 
 describe('DeploymentSection', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -43,7 +47,7 @@ describe('DeploymentSection', () => {
   it('saves a chosen zone and reports unsaved changes until then', async () => {
     const saved = view(tz({ value: 'Asia/Colombo', source: 'admin' }), INFO);
     const { onDirtyChange, onSaved, showToast } = mount({ put: () => json(200, saved) });
-    fireEvent.change(await zoneSelect(), { target: { value: 'Asia/Colombo' } });
+    await chooseZone('Asia/Colombo');
     expect(onDirtyChange).toHaveBeenLastCalledWith(true);
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith('Asia/Colombo'));
@@ -76,7 +80,7 @@ describe('DeploymentSection', () => {
 
   it('shows a refused save inline', async () => {
     const { onSaved, onDirtyChange } = mount({ put: () => json(400, { detail: 'Unknown timezone.' }) });
-    fireEvent.change(await zoneSelect(), { target: { value: 'Asia/Colombo' } });
+    await chooseZone('Asia/Colombo');
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Unknown timezone.');
     expect(onSaved).not.toHaveBeenCalled();

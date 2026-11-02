@@ -26,7 +26,7 @@ break.
 
 ## Prerequisites
 
-- **Node.js** `^20.19` or `>=22.12` (Vite 7 / Rolldown) and **npm**
+- **Node.js** `^22.22.2` or `^24.15` (what `jsdom` 30 needs to run the tests) and **npm**
 - **Python** `3.12` or `3.13`, for the bare-metal backend and the test suite (the backend container needs none; 3.14 is untested)
 - **Docker or Podman** (for Postgres + SearXNG)
 - **Ollama** running locally, for the chat / embedding / web-search features

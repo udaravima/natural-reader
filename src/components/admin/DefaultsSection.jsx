@@ -11,7 +11,7 @@ import { SearchableSelect } from '../SearchableList';
  * person opens the app.
  */
 
-const VOICE_OPTIONS = KOKORO_VOICES.map((voice) => ({ value: voice.id, label: voice.name }));
+const VOICE_OPTIONS = KOKORO_VOICES.map((voice) => ({ value: voice.id, label: voice.name, group: voice.group }));
 
 const LABELS = {
   chatAutoTts: 'Read replies aloud automatically',
@@ -126,7 +126,7 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast, onDirtyCha
       return (
         <SearchableSelect theme={theme} findLabel="Find a language" aria-label={LABELS[name]} value={value}
           onChange={(code) => set(name, code)} className={control}
-          options={[{ value: 'auto', label: 'Auto', pinned: true },
+          options={[{ value: 'auto', label: 'Auto' },
             ...codes.map((c) => ({ value: c, label: languageNames[c] ?? c }))]} />
       );
     }

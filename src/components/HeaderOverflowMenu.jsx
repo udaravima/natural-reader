@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import {
     MoreHorizontal, Zap, Moon, Sun, Download, Keyboard, Maximize2,
-    Home, Library, Loader2, X,
+    Home, Headphones, Loader2, X,
 } from 'lucide-react';
 import { useMenuDismiss } from '../hooks/useMenuDismiss';
 
@@ -89,7 +89,7 @@ export default function HeaderOverflowMenu({
                 ? (bookProgress.total ? `Audiobook ${bookProgress.current}/${bookProgress.total}` : 'Making audiobook')
                 : 'Download audiobook',
             sublabel: bookProgress?.label,
-            Icon: bookProgress ? Loader2 : Library,
+            Icon: bookProgress ? Loader2 : Headphones,
             disabled: !!bookProgress,
             onClick: () => { close(); onDownloadBookAudio(); },
         },

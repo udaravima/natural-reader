@@ -1,7 +1,7 @@
 # Chat with PDF — Walkthrough
 
 > **Audience:** anyone running Natural Reader who wants to ask a model about what they're reading.
-> **Status:** current as of `v2.5.0` plus `[Unreleased]`; the feature first shipped in `v1.6.0`.
+> **Status:** current as of `v2.5.1` plus `[Unreleased]`; the feature first shipped in `v1.6.0`.
 > **Time to first working chat-with-doc:** ~10 minutes on a machine that already has Docker + Ollama.
 
 This document walks the whole feature end-to-end: what it does, why we built it the way we did, how to bring it up locally, and the four different ways you can pull document context into a chat — from a one-click page question to fully autonomous tool calling.
@@ -64,7 +64,7 @@ A few load-bearing decisions worth knowing:
 
 | Component | Minimum | Notes |
 |---|---|---|
-| Node.js | 20.19+ or 22.12+ | Frontend dev server (Vite 7). `startup.sh` refuses older versions. |
+| Node.js | 22.13+ or 24+ | Frontend dev server (Vite 8). `startup.sh` refuses older versions. |
 | Python | 3.12 or 3.13 | For the bare-metal backend (`BACKEND_RUNTIME=venv`) and the test suite; the backend container needs none. 3.14 is untested. |
 | Docker (or Postgres + pgvector locally) | any recent | The compose file pins `pgvector/pgvector:pg16`. |
 | Ollama | latest | `nomic-embed-text` must be pulled here whatever runs chat (indexing only calls Ollama). The chat model too, unless a provider serves it. |

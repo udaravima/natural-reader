@@ -19,8 +19,9 @@ logger = logging.getLogger("server.speech")
 # Its default threshold of 0.5 is too strict, though: it cut real speech and doubled the error on volunteer recordings.
 # Below 0.35, loud steady noise starts to come out as invented words.
 VAD_THRESHOLD = 0.4
-# temperature 0 stops the retries that took a clip from 2 s to 45 s when a model doesn't understand it, and left a
-# 269-word English recording word for word the same. The other two common speed-ups stay off because each cost words:
+# temperature 0 stops the retries a model makes when it doesn't understand a clip: stock `small` took 171 s on 8 Sinhala
+# clips, and takes 27 s now. A 269-word English recording came out word for word the same. The other two common
+# speed-ups stay off because each cost words:
 # beam_size=1 turned "balance" into "field", and condition_on_previous_text=False dropped English at the end of a
 # recording.
 DECODE = {"vad_filter": True, "vad_parameters": {"threshold": VAD_THRESHOLD}, "temperature": 0}

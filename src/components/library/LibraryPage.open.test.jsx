@@ -29,6 +29,7 @@ function mount(onOpen) {
     return json(404, {});
   });
   render(<LibraryPage theme={theme} apiHost="" apiPort="" showToast={vi.fn()} onOpen={onOpen} />);
+  fireEvent.click(screen.getByRole('tab', { name: 'Documents' }));
 }
 
 describe('LibraryPage — Open', () => {

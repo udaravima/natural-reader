@@ -1,5 +1,11 @@
 @import "tailwindcss";
 
+/* Tailwind 4.3's default leads with Roboto and Noto, which on Linux is narrower than the system font the layout was
+   drawn with. Each system's own font, as before. */
+@theme {
+  --font-sans: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+}
+
 /* Custom Scrollbar */
 .custom-scrollbar::-webkit-scrollbar { width: 6px; }
 .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }

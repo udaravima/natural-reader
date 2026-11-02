@@ -23,6 +23,7 @@ from unittest.mock import MagicMock
 if "server.model" not in sys.modules:
     _stub = types.ModuleType("server.model")
     _stub.kokoro = MagicMock()
+    _stub.kokoro.tokenizer.phonemize.return_value = "x"
     sys.modules["server.model"] = _stub
 
 import httpx  # noqa: E402

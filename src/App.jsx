@@ -145,7 +145,7 @@ export default function App() {
     if (!selectedModel) return;
     setInferenceByModel(prev => {
       if (prev[selectedModel]) return prev;
-      let legacy = false;
+      let legacy;
       try {
         legacy = JSON.parse(localStorage.getItem('neural-pdf-enableThinking') || 'false');
       } catch { legacy = false; }

@@ -25,7 +25,13 @@ class FakeKokoro:
         self.calls = 0
         self.seconds = seconds_per_sentence
 
-    def create(self, text, voice, speed, lang):
+    class tokenizer:
+        @staticmethod
+        def phonemize(text, lang):
+            return text
+
+    def create(self, text, voice, speed, is_phonemes):
+        assert is_phonemes
         self.calls += 1
         time.sleep(self.seconds)          # runs in the executor, like the real one
         return np.zeros(SR // 10, dtype=np.float32), SR

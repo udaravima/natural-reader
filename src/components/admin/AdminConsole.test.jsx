@@ -38,6 +38,11 @@ function usersPage(all, path) {
 // returns the raw created-user row (the shape older/simpler tests assert on).
 // extra(path, opts) answers routes of its own first (undefined = fall through).
 // section is the tab opened after mounting (the console opens on Overview); null stays on Overview.
+const chooseZone = async (zone) => {
+  fireEvent.click(await screen.findByLabelText('Timezone'));
+  fireEvent.click(screen.getByRole('option', { name: zone }));
+};
+
 function mount({ users, usage = [], deployment = { settings: { timezone: { value: 'UTC', source: 'default', env: 'TZ', fallback: 'UTC', fallback_source: 'default' } }, info: [] }, showToast = vi.fn(), currentUserId = 'me', enrollResponse, extra, section = 'People' } = {}) {
   apiFetch.mockImplementation(async (host, port, path, opts) => {
     const answered = extra?.(path, opts);   // a test's own routes (chat options, the assistant) win
@@ -458,7 +463,7 @@ describe('AdminConsole — deployment', () => {
   it('asks before leaving Deployment with an unsaved zone', async () => {
     mount({ users: [user()], section: null });
     openSection('Deployment');
-    fireEvent.change(await screen.findByLabelText('Timezone'), { target: { value: 'Asia/Colombo' } });
+    await chooseZone('Asia/Colombo');
     openSection('People');
     expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Deployment.');
     expect(screen.getByRole('tab', { name: 'Deployment' })).toHaveAttribute('aria-selected', 'true');
@@ -480,7 +485,7 @@ describe('AdminConsole — deployment', () => {
       section: null,
     });
     openSection('Deployment');
-    fireEvent.change(await screen.findByLabelText('Timezone'), { target: { value: 'Asia/Colombo' } });
+    await chooseZone('Asia/Colombo');
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(screen.getByLabelText('Timezone')).toHaveValue('Asia/Colombo'));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled());
@@ -572,7 +577,7 @@ describe('AdminConsole — leaving through the app header', () => {
   }
   const dirtyDeployment = async () => {
     openSection('Deployment');
-    fireEvent.change(await screen.findByLabelText('Timezone'), { target: { value: 'Asia/Colombo' } });
+    await chooseZone('Asia/Colombo');
   };
 
   it('runs a header exit straight away when nothing is unsaved', async () => {

@@ -160,6 +160,7 @@ For the full identity map — how Keycloak's `keycloak` schema and the app's `us
 - **`settings.py`** — `GET /v1/settings/defaults` (the users' defaults) and, since admin console v2, `GET /v1/settings/docling`: what the convert dialog may offer *this* person (`{enabled, may_convert, presets, ocr, picture_description, max_pages}`, from `docling_limits.user_view`). Any signed-in user may read it; it carries no secret and no env name.
 - **`inference.py`** — `GET /v1/inference/models` only: every configured provider's models as `{id, provider, kind, name, capabilities}` (`id` is `<provider>:<model>`) plus the caller's budget state. Chat itself no longer has an endpoint here — see `chat_turns.py`.
 - **`endpoints.py`** — TTS + `/v1/health` (see [TTS pipeline](#tts-pipeline)).
+- **`tts_language.py`** — the language espeak reads for a voice (the first letter of its id), and the phonemes handed to Kokoro, with espeak's language-switch markers such as `(si)` taken out. Kokoro only ever sees phonemes, which is how any voice can read Sinhala or Tamil.
 
 ### The chat orchestrator (`server/chat/`) and provider layer (`server/llm/`) — C1
 

@@ -150,7 +150,7 @@ export default function SettingsDialog({ theme, tab, onTab, onClose, profile = n
     );
 }
 
-const VOICE_OPTIONS = KOKORO_VOICES.map((x) => ({ value: x.id, label: x.name }));
+const VOICE_OPTIONS = KOKORO_VOICES.map((x) => ({ value: x.id, label: x.name, group: x.group }));
 
 const inputClass = (theme) => `text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgTertiary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`;
 
@@ -312,7 +312,7 @@ function ChatPanel({ theme, ch }) {
                             value={speechLanguages.some((l) => l.code === ch.speechLanguage) ? ch.speechLanguage : 'auto'}
                             onChange={ch.setSpeechLanguage}
                             options={[
-                                { value: 'auto', label: 'Auto (detect the language)', pinned: true },
+                                { value: 'auto', label: 'Auto (detect the language)' },
                                 ...speechLanguages.map((l) => ({ value: l.code, label: l.name })),
                             ]}
                             className={`w-full ${input}`}

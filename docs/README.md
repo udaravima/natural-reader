@@ -1,6 +1,6 @@
 # Docs index — read in this order
 
-Everything about the project, organized by audience, current as of `v2.5.0` plus `[Unreleased]` on `development`.
+Everything about the project, organized by audience, current as of `v2.5.1` plus `[Unreleased]` on `development`.
 If you're touching a feature, its "owner" doc below is the first thing to read.
 
 | # | Doc | Audience | What it owns |

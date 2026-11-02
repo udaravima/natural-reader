@@ -4,7 +4,25 @@
 
 ---
 
-## 2026-11-02 — v2.5.0: speech models, long lists and the message box inputs (START HERE)
+## 2026-11-02 evening — All 50 voices, popup dropdowns, Library on Projects, favicon: released as v2.5.1 (START HERE)
+
+**State.** Built and walked on `feat/voices-and-dropdowns`, cut from `development` at `06b4569`, then merged and **released as v2.5.1** on the owner's word. **v2.5.1 is not deployed:** live is the branch at `f8af89e`. Nothing is migrated, but it needs Node 22.13 or 24 and both halves rebuilt. The owner deployed v2.5.0 on the evening of 2026-11-02, so the v2.5.0 entry's "Nothing is deployed" is out of date, and then deployed this branch at `f8af89e` at 22:38. The `en-us` bug and the `af_river` label are fixed here.
+
+**Trap:** live serves its own copy of the build, under `/var/www`, not this repo's `dist/`, so `vite build` here doesn't touch it.
+
+**How Sinhala reads.** Kokoro takes phonemes, never text. espeak switches language by itself on a script it wasn't asked for, so any voice can read Sinhala or Tamil. Each switch left `(si)` or `(enus)` in the phonemes, in characters Kokoro accepts, so it spoke them. `server/tts_language.py` removes them and picks espeak's language from the voice's first letter. English audio is identical, sample for sample, on three test texts.
+
+**npm update.** Everything is on latest. Three traps. `npm update` alone moves `pdfjs-dist` from 5.4.530 to 5.7.284, into CVE-2026-16633 (`>=5.6.83 <6.2.108`, a malicious PDF runs script), so PDF.js 6 is a fix, not a luxury; live was built on 5.4.530 and was never in that range. Tailwind 4.3 changed its default font stack to lead with Roboto and Noto, which reflowed the reader's toolbar on Linux, and no test sees that: `src/index.css` pins the old stack. react-hooks 7.1 flags 24 working spots (load on mount, a ref holding the latest value), so those three rules are warnings in `eslint.config.js`. `npm audit` still shows 6 moderate, all `minimatch` inside ESLint, a dev tool reading our own globs; the fix needs minimatch 11 and ESLint 10 is on 10.2. Checked by comparing the live bundle with the new one in a real browser: a real PDF painted the same 26,017 dark pixels, and 18 screens differ only in Lucide's redrawn `BookOpen`.
+
+**The list the owner meant by "squeezed"** was **Admin → Models → Chat models offered**, found only after the popup shipped: all 424 rows measured 0 px tall on desktop. `SearchableList`'s scroll box was a height-limited flex column, and those rows carry `md:min-h-0`, so they shrank instead of scrolling; 44 px at phone width hid it from the phone walk, and the desktop walk measured Save, not rows. The box is a block now: 16 px rows, scrolling. That fix came after the 22:38 deploy, so live has the popup and the favicon but not this.
+
+**Long dropdowns** are now `PopupSelect` in `src/components/SearchableList.jsx`, replacing the search box above a `<select size>`: that design was the "squeezed" bug, with rows about 15 px tall. The popup is a portal to the nearest dialog, else `document.body`. Lists of 12 or fewer stay native selects, and lists of controls keep their search box.
+
+**Not verified.** How the Chinese and Japanese voices sound: Kokoro's own pipeline uses a different front end (misaki) for those two, and espeak reads kanji as the English words "Chinese letter". Whether Hindi voices are the right default for Sinhala is the owner's ear. A real phone keyboard over the popup.
+
+---
+
+## 2026-11-02 — v2.5.0: speech models, long lists and the message box inputs
 
 **State.** `development`, `master` and the tag `v2.5.0` are pushed, and the GitHub release is out. **Nothing is deployed.** The live backend is still the image rebuilt at `445d2ae` on 2026-11-01 (see the entry below), with no speech models and no long-list work. Deploying needs a database backup and the `docling` role in the live Keycloak. Speech-model work is on `feat/speech-models`, merged by fast-forward.
 
@@ -42,7 +60,7 @@ Backend `2756 passed, 16 skipped, 2 deselected`, eslint clean, frontend `1523 pa
 
 **Next build.** Phase 2b embedding provider and trials (embeddinggemma-2, nomic, Qwen). Figures with a chosen vision model, plus the DeepSeek-OCR preset. Audio straight to a model. A model per language or person. Browser auto-stop on silence. Sri Lankan Tamil. Multi-language handling for a server with English and Sinhala speakers.
 
-**Bugs.** `/v1/synthesize` hardcodes `en-us`. The header scrolls sideways at 375 px. The `touch.stamp` second connection. A model can pass real values to `READER_MODEL`. Dead `AdminPanel.jsx`. The `af_river` label. The unidentified vitest flake. Project eval `features` fails every run. Citation quality 87.9% against the 90% target. The speech picker's keyboard switching and conversion locking, above.
+**Bugs.** The header scrolls sideways at 375 px. The `touch.stamp` second connection. A model can pass real values to `READER_MODEL`. Dead `AdminPanel.jsx`. The unidentified vitest flake. Project eval `features` fails every run. Citation quality 87.9% against the 90% target. The speech picker's keyboard switching and conversion locking, above.
 
 **Robustness.** Resumable streams. A tested backup restore. A lock around migrations. A pool-slot limit. Backup guidance.
 
