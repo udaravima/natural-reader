@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-11-02
+
+**Speak a message, and hand the chat a file.** A microphone beside the paperclip
+records up to 2 minutes and puts the text in the box to edit and send, on your own
+server by default. A small text file can join a conversation, with its secrets masked
+in the browser before anything is uploaded. **The admin console now runs the
+deployment:** an Overview that checks everything, Models, Documents, usage by model
+and person, a timezone and defaults, with long lists that scroll and search and Save
+always on screen. **Speech models** are chosen and added there with no restart,
+including fine-tuned Sinhala and Tamil models. Two migrations, `023` and `024`: back up
+the database first, because 023 can't simply be rolled back.
+
 ### Added
 
 - **Attach a text file to a chat message, with its secrets hidden first.** The
