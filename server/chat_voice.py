@@ -41,6 +41,7 @@ _DIDNT_ANSWER = "Google's voice didn't answer"
 _REFUSED = "Google refused this server's key"
 _FORBIDDEN = "The service account can't use Gemini-TTS: give it Vertex AI User on its project"
 _QUOTA = "Google's quota for voices is used up for now"
+_ASK_ADMIN = "Google's voice isn't working right now. Ask your admin."   # what a person sees for a set-up problem
 
 
 @dataclass(frozen=True)
@@ -51,11 +52,14 @@ class ChatVoice:
 
 
 class GoogleVoiceError(Exception):
-    """Google didn't speak. `status` is what the route answers; the message is safe to show a person."""
+    """Google didn't speak. `status` is what the route answers; the message is for the person, `detail` for the
+    admin (the log, and the Overview for credentials). Neither carries a credential."""
 
-    def __init__(self, status: int, message: str) -> None:
+    def __init__(self, status: int, message: str, detail: str | None = None) -> None:
         super().__init__(message)
         self.status = status
+        self.detail = detail or message
+        logger.warning("Google's voice didn't speak: %s", self.detail)
 
 
 def needs(engine: str, env: Mapping[str, str] = os.environ) -> str:
@@ -119,7 +123,7 @@ async def google_speak(text: str, voice: str, speed: float, env: Mapping[str, st
     try:
         bearer, project = await token()
     except google_cloud.GoogleAuthError as e:
-        raise GoogleVoiceError(503, str(e)) from None
+        raise GoogleVoiceError(503, _ASK_ADMIN, str(e)) from None
     headers = {"Authorization": f"Bearer {bearer}"}
     if project:
         headers["x-goog-user-project"] = project
@@ -155,9 +159,9 @@ def _refusal(r: httpx.Response) -> GoogleVoiceError:
             message = ""
         return GoogleVoiceError(422, f"Google refused the sentence: {(message or 'status 400')[:300]}")
     if r.status_code == 401:
-        return GoogleVoiceError(503, _REFUSED)
+        return GoogleVoiceError(503, _ASK_ADMIN, _REFUSED)
     if r.status_code == 403:
-        return GoogleVoiceError(503, _FORBIDDEN)
+        return GoogleVoiceError(503, _ASK_ADMIN, _FORBIDDEN)
     if r.status_code == 429:
         return GoogleVoiceError(503, _QUOTA)
     return GoogleVoiceError(502, _DIDNT_ANSWER)

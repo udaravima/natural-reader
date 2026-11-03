@@ -114,7 +114,8 @@ describe('TalkButton', () => {
   });
 
   it.each([
-    ['the speech model is loading', { status: { enabled: true, ready: false } }, /getting ready/i],
+    ['the speech model is loading', { status: { enabled: true, ready: false, state: 'loading' } }, /getting ready/i],
+    ['the speech engine is broken', { status: { enabled: true, ready: false, state: 'error' } }, /ask your admin/i],
     ['no model is chosen', { selectedModel: '' }, /pick a model/i],
     ['a reply is still being written', { busy: true }, /reply to finish/i],
   ])('waits while %s, and says why', (_, over, why) => {

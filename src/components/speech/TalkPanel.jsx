@@ -61,7 +61,8 @@ function Orb({ phase, muted, orbRef }) {
 /** Talk, beside the typing box: it starts the conversation at once, or says what it's waiting for. */
 export function TalkButton({ theme, status, selectedModel, busy, onStart }) {
   let why = null;
-  if (!status?.ready) why = 'The speech model is getting ready';
+  if (status?.state === 'error') why = "Voice input isn't working right now. Ask your admin";
+  else if (!status?.ready) why = 'The speech model is getting ready';
   else if (!selectedModel) why = 'Pick a model first';
   else if (busy) why = 'Wait for the reply to finish';
   return (

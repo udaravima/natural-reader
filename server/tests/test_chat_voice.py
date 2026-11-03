@@ -129,17 +129,19 @@ async def test_a_speed_other_than_one_is_sent_as_the_speaking_rate():
     assert bodies[0]["audioConfig"] == {"audioEncoding": "LINEAR16", "speakingRate": 1.25}
 
 
-@pytest.mark.parametrize("code, status, words", [
-    (400, 422, "nope"),   # Google's own words for a bad request
-    (401, 503, "refused this server's key"),
-    (403, 503, "Vertex AI User"),
-    (429, 503, "quota"),
-    (500, 502, "didn't answer"),
+@pytest.mark.parametrize("code, status, person, admin", [
+    (400, 422, "nope", "nope"),   # Google's own words for a bad request
+    (401, 503, "Ask your admin", "refused this server's key"),
+    (403, 503, "Ask your admin", "Vertex AI User"),
+    (429, 503, "quota", "quota"),
+    (500, 502, "didn't answer", "didn't answer"),
 ])
-async def test_each_refusal_says_what_to_do(code, status, words):
+async def test_each_refusal_tells_the_person_and_the_admin_what_they_need(code, status, person, admin, caplog):
+    caplog.set_level(logging.WARNING)
     with pytest.raises(GoogleVoiceError) as caught:
         await _speak(lambda r: httpx.Response(code, json={"error": {"message": "nope"}}))
-    assert caught.value.status == status and words in str(caught.value)
+    assert caught.value.status == status and person in str(caught.value)
+    assert admin in caught.value.detail and admin in caplog.text   # the admin finds it in the log
 
 
 async def test_a_hung_google_is_a_gateway_timeout():
@@ -156,7 +158,8 @@ async def test_credentials_that_dont_work_say_so():
     with pytest.raises(GoogleVoiceError) as caught:
         await google_speak("Hi.", "Kore", 1.0, {"GOOGLE_TTS_MODEL": MODEL}, transport=httpx.MockTransport(_audio),
                            token=broken)
-    assert caught.value.status == 503 and "service-account key" in str(caught.value)
+    assert caught.value.status == 503 and "Ask your admin" in str(caught.value)
+    assert "service-account key" in caught.value.detail
 
 
 async def test_the_token_never_reaches_a_log_or_an_error(caplog):
