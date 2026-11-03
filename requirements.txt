@@ -15,6 +15,10 @@ httpx>=0.27
 authlib>=1.3
 itsdangerous>=2.1
 
+# Google Cloud speech, when a deployer configures it (server/google_cloud.py): service-account tokens only;
+# the calls are plain httpx.
+google-auth[requests]>=2.30
+
 # Required by FastAPI to parse multipart/form-data PDF uploads.
 python-multipart
 

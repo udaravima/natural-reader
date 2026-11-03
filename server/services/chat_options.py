@@ -8,7 +8,9 @@ all. All of them still need SEARXNG_URL.
 It comes from the admin console, else CHAT_VOICE_INPUT (on|off), else off.
 
 `speech_model` is the id of the speech model an admin chose, and `added_speech_models` the models an admin added
-(speech/catalogue.py says which model applies, and who wins).
+(speech/catalogue.py says which model applies, and who wins). `speech_engine` is the engine an admin chose for
+hearing speech (`local`, `openai` or `google`; speech/service.py says which applies), and `chat_voice` who speaks
+the chat's replies and Talk (`{"engine": "kokoro" | "google", "voice": ...}`; chat_voice.py).
 
 These settings share one row, `{"web_search": ..., "voice_input": ..., ...}`, and are independent: each key is read
 and written on its own, a missing key falls through to the environment without a warning, and a save or reset
@@ -43,6 +45,7 @@ ENV_VAR = "CHAT_WEB_SEARCH"
 VOICE_ENV_VAR = "CHAT_VOICE_INPUT"
 WEB_MODES = ("ask", "auto", "off")
 DEFAULT_WEB_MODE = "ask"
+SPEECH_ENGINES = ("local", "openai", "google")
 _warned: set[str] = set()   # invalid env values already reported: once each, not once per turn
 
 
@@ -54,6 +57,8 @@ class ChatOptions:
     voice_source: str = "default"   # the same three, for voice_input
     speech_model: str | None = None   # the admin's choice, an id; None: the server setting applies
     added_speech_models: Mapping = field(default_factory=dict)   # id -> what an admin entered
+    speech_engine: str | None = None   # the admin's engine for hearing speech; None: SPEECH_ENGINE applies
+    chat_voice: Mapping | None = None   # the admin's {"engine", "voice"} for the chat and Talk; None: CHAT_VOICE
 
 
 def _web_from_env(env: Mapping[str, str]) -> tuple[str, str]:
@@ -114,7 +119,12 @@ async def load_chat_options(conn, env: Mapping[str, str] = os.environ) -> ChatOp
             logger.warning("app_settings row %s holds an unusable voice_input value: ignored", KEY)
     speech_model = value.get("speech_model") if isinstance(value.get("speech_model"), str) else None
     added = value.get("added_speech_models") if isinstance(value.get("added_speech_models"), dict) else {}
-    return ChatOptions(web, web_source, voice, voice_source, speech_model, added)
+    engine = value.get("speech_engine")
+    if engine is not None and engine not in SPEECH_ENGINES:
+        logger.warning("app_settings row %s names a speech engine this server doesn't know: ignored", KEY)
+        engine = None
+    chat_voice = value.get("chat_voice") if isinstance(value.get("chat_voice"), dict) else None
+    return ChatOptions(web, web_source, voice, voice_source, speech_model, added, engine, chat_voice)
 
 
 async def _set_key(conn, name: str, value, updated_by: str) -> None:
@@ -179,6 +189,34 @@ async def save_speech_model(conn, value: str | None, *, updated_by: str,
     else:
         await _set_key(conn, "speech_model", value, updated_by)
     audit("chat_options.speech_model", by=updated_by, old=before.speech_model, new=value)
+    return await load_chat_options(conn, env)
+
+
+async def save_speech_engine(conn, value: str | None, *, updated_by: str,
+                             env: Mapping[str, str] = os.environ) -> ChatOptions:
+    """Save the admin's engine for hearing speech (one the caller has checked can run) and return what applies
+    now. None removes that key, so SPEECH_ENGINE (or local) applies again."""
+    if value is not None and value not in SPEECH_ENGINES:
+        raise ValueError(f"speech_engine must be one of {', '.join(SPEECH_ENGINES)}, or null to reset it.")
+    before = await load_chat_options(conn, env)
+    if value is None:
+        await _clear_key(conn, "speech_engine", updated_by)
+    else:
+        await _set_key(conn, "speech_engine", value, updated_by)
+    audit("chat_options.speech_engine", by=updated_by, old=before.speech_engine, new=value)
+    return await load_chat_options(conn, env)
+
+
+async def save_chat_voice(conn, value: Mapping | None, *, updated_by: str,
+                          env: Mapping[str, str] = os.environ) -> ChatOptions:
+    """Save who speaks in the chat and Talk (`{"engine", "voice"}`, checked by the caller) and return what applies
+    now. None removes that key, so CHAT_VOICE (or Kokoro) applies again."""
+    before = await load_chat_options(conn, env)
+    if value is None:
+        await _clear_key(conn, "chat_voice", updated_by)
+    else:
+        await _set_key(conn, "chat_voice", dict(value), updated_by)
+    audit("chat_options.chat_voice", by=updated_by, old=before.chat_voice, new=value)
     return await load_chat_options(conn, env)
 
 

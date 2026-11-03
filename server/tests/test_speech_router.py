@@ -278,6 +278,19 @@ async def test_each_service_error_maps_to_its_status_and_words(db_conn, engine, 
     assert r.status_code == status and _msg(r) == message
 
 
+async def test_a_recording_too_long_for_google_says_a_minute(db_conn, engine, monkeypatch):
+    await _voice(db_conn)
+    engine.name = "google"
+    monkeypatch.setenv("SPEECH_ENGINE", "google")
+
+    async def boom(*a, **k):
+        raise AudioTooLong("x")
+    monkeypatch.setattr(speech_router.service, "transcribe_for", boom)
+    async with _client(db_conn) as c:
+        r = await _post(c)
+    assert r.status_code == 413 and _msg(r) == "The recording is over a minute."
+
+
 async def test_an_engine_error_through_the_real_service_maps_the_same_way(db_conn, engine):
     await _voice(db_conn)
     engine.raises = EngineNotReady("The speech model is still loading")
@@ -660,16 +673,43 @@ async def test_a_broken_engine_says_it_is_not_working_and_a_loading_one_says_wai
         assert r.status_code == 503 and _msg(r) == "Voice input is still getting ready, try again in a minute"
 
 
-async def test_the_pre_transcribe_probe_is_for_the_local_engine_only(db_conn, engine):
+async def test_the_pre_transcribe_probe_is_for_the_local_engine_only(db_conn, engine, monkeypatch):
     await _voice(db_conn)
     engine.name = "openai"
+    monkeypatch.setenv("SPEECH_ENGINE", "openai")   # what runs is what the deployment asks for
     async with _client(db_conn) as c:
         assert (await _post(c)).status_code == 200
     assert engine.status_calls == 0           # no GET /models per recording on a remote engine
     engine.name = "local"
+    monkeypatch.delenv("SPEECH_ENGINE")
     async with _client(db_conn) as c:
         await _post(c)
     assert engine.status_calls == 1
+
+
+async def test_status_says_who_hears_and_how_long_a_recording_may_be(db_conn, engine, monkeypatch):
+    await _voice(db_conn, True)
+    async with _client(db_conn) as c:
+        body = (await c.get(STATUS)).json()
+    assert (body["heard_by"], body["max_seconds"]) == ("this server", 120)
+    engine.name, engine.where = "google", "Google Cloud"
+    monkeypatch.setenv("SPEECH_ENGINE", "google")
+    async with _client(db_conn) as c:
+        body = (await c.get(STATUS)).json()
+    assert (body["heard_by"], body["max_seconds"]) == ("Google Cloud", 55)   # Google takes a minute at most
+
+
+async def test_languages_learned_by_the_status_check_are_in_the_same_answer(db_conn, engine):
+    await _voice(db_conn, True)
+    engine.languages = ()
+
+    async def learn():
+        engine.languages = ("ta",)
+        return EngineStatus(True, "ready", "")
+    engine.status = learn
+    async with _client(db_conn) as c:
+        body = (await c.get(STATUS)).json()
+    assert body["model_languages"] == ["Tamil"]
 
 
 async def test_status_names_what_the_model_is_for(db_conn, engine, monkeypatch):

@@ -22,7 +22,8 @@ SHA = "c" * 40
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    for key in ("SPEECH_ENGINE", "SPEECH_MODEL", "SPEECH_MODELS_FILE", "CHAT_VOICE_INPUT", "CHAT_WEB_SEARCH"):
+    for key in ("SPEECH_ENGINE", "SPEECH_MODEL", "SPEECH_MODELS_FILE", "CHAT_VOICE_INPUT", "CHAT_WEB_SEARCH",
+                "SPEECH_URL", "GOOGLE_SPEECH_RECOGNIZER"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(catalogue, "_installed", lambda name: True)
     catalogue.reset_for_tests()
@@ -83,7 +84,84 @@ async def test_a_server_setting_outside_the_list_is_shown_first(client, monkeypa
 
 async def test_a_remote_engine_has_no_list(client, monkeypatch):
     monkeypatch.setenv("SPEECH_ENGINE", "openai")
-    assert (await client.get(URL)).json() == {"engine": "openai", "chosen": None, "source": "env", "models": []}
+    view = (await client.get(URL)).json()
+    assert {k: view[k] for k in ("engine", "engine_source", "chosen", "source", "models")} == {
+        "engine": "openai", "engine_source": "env", "chosen": None, "source": "env", "models": []}
+
+
+# ---------- the engine (spec 2026-11-03-google-speech) ----------
+
+GOOGLE = "projects/p/locations/global/recognizers/r"
+ENGINE_URL = "/v1/admin/speech-engine"
+
+
+async def test_the_view_lists_the_engines_and_what_each_needs(client):
+    view = (await client.get(URL)).json()
+    assert (view["engine"], view["engine_source"]) == ("local", "default")
+    engines = {e["id"]: e for e in view["engines"]}
+    assert list(engines) == ["local", "openai", "google"]
+    assert engines["local"]["available"] is True
+    assert engines["openai"]["available"] is False and "SPEECH_URL" in engines["openai"]["needs"]
+    assert engines["google"]["available"] is False and "GOOGLE_SPEECH_RECOGNIZER" in engines["google"]["needs"]
+
+
+async def test_an_engine_that_isnt_set_up_cant_be_chosen(client, db_conn):
+    res = await client.put(ENGINE_URL, json={"engine": "google"})
+    assert res.status_code == 422 and res.json()["detail"]["error"] == "engine_not_configured"
+    assert "GOOGLE_SPEECH_RECOGNIZER" in res.json()["detail"]["message"]
+    assert (await load_chat_options(db_conn)).speech_engine is None
+
+
+async def test_choosing_google_saves_it_and_the_model_list_goes(client, db_conn, monkeypatch):
+    monkeypatch.setenv("GOOGLE_SPEECH_RECOGNIZER", GOOGLE)
+    res = await client.put(ENGINE_URL, json={"engine": "google"})
+    assert res.status_code == 200
+    view = res.json()
+    assert (view["engine"], view["engine_source"], view["chosen"], view["models"]) == ("google", "admin", None, [])
+    assert (await load_chat_options(db_conn)).speech_engine == "google"
+    res = await client.put(ENGINE_URL, json={"engine": None})
+    assert (res.json()["engine"], res.json()["engine_source"]) == ("local", "default")
+
+
+async def test_an_unknown_engine_is_refused(client):
+    res = await client.put(ENGINE_URL, json={"engine": "nope"})
+    assert res.status_code == 422
+
+
+async def test_choosing_the_engine_leaves_the_other_settings_alone(client, db_conn, admin, monkeypatch):
+    monkeypatch.setenv("GOOGLE_SPEECH_RECOGNIZER", GOOGLE)
+    await chat_options.save_speech_model(db_conn, "tiny", updated_by=str(admin["id"]))
+    await chat_options.save_voice_input(db_conn, True, updated_by=str(admin["id"]))
+    await client.put(ENGINE_URL, json={"engine": "google"})
+    got = await load_chat_options(db_conn)
+    assert (got.speech_engine, got.speech_model, got.voice_input) == ("google", "tiny", True)
+
+
+async def test_the_choice_reaches_a_worker_and_back(monkeypatch):
+    from server.speech.google_engine import GoogleSpeech
+    from server.speech.local_whisper import LocalWhisper
+    monkeypatch.setenv("GOOGLE_SPEECH_RECOGNIZER", GOOGLE)
+    local = service.get_transcriber({}, wanted=catalogue.wanted(chat_options.from_env({}), {}))
+    assert isinstance(local, LocalWhisper)
+    google = service.get_transcriber(wanted=catalogue.wanted(chat_options.from_env({}), {}), engine="google")
+    assert isinstance(google, GoogleSpeech) and google.recognizer == GOOGLE
+    assert service.get_transcriber() is google   # a caller that names nothing keeps what runs
+    back = service.get_transcriber({}, wanted=catalogue.wanted(chat_options.from_env({}), {}), engine="local")
+    assert isinstance(back, LocalWhisper)
+
+
+async def test_a_row_naming_an_engine_this_server_doesnt_know_is_ignored(db_conn):
+    from psycopg.types.json import Jsonb
+    await db_conn.execute("DELETE FROM app_settings WHERE key = 'chat_options'")
+    await db_conn.execute("INSERT INTO app_settings (key, value) VALUES ('chat_options', %s)",
+                          (Jsonb({"speech_engine": "nope"}),))
+    assert (await load_chat_options(db_conn)).speech_engine is None
+
+
+async def test_a_chosen_engine_that_lost_its_setting_falls_back_to_the_servers(monkeypatch):
+    options = chat_options.ChatOptions("ask", "default", True, "admin", speech_engine="google")
+    assert service.chosen_engine(options, {}) == "local"
+    assert service.chosen_engine(options, {"GOOGLE_SPEECH_RECOGNIZER": GOOGLE}) == "google"
 
 
 async def test_choose_saves_and_reset_goes_back(client, db_conn):
