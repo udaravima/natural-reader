@@ -236,7 +236,7 @@ Each row has buttons per user:
 | **Disable** | Signs the user out **everywhere, immediately** and blocks them until reactivated. Their data is kept |
 | **Delete** | Removes the account for good, once you type their email to confirm: sessions, tokens, usage, library entries, project memberships and chats go with it, and so do documents nobody else holds. Projects survive (ownerless if this was their last Owner). With the Keycloak service account configured, their Keycloak user is deleted too |
 
-Under each row, the **capabilities** ticks (`reader`, `chat`, `admin`, `docling`) grant or remove what the person can do. A change takes effect on their very next request, with no re-login; their open tab refreshes its view on the next page load.
+Under each row, the **capabilities** ticks (`reader`, `chat`, `admin`, `docling`, `talk`) grant or remove what the person can do. `talk` gives someone [Talk](#talking-with-the-assistant), the spoken conversation in the chat; it adds to `chat` and `reader`, and alone it opens nothing. A change takes effect on their very next request, with no re-login; their open tab refreshes its view on the next page load.
 
 **Enrolling someone.** The form above the list creates an account before its owner ever logs in: their email and name, a status, a budget and capability ticks. With the Keycloak service account configured it also creates their Keycloak user and either emails them an invite or shows a one-time temporary password, once, to pass on. Without it, the row waits for its owner's first login with that email.
 
@@ -259,6 +259,13 @@ Notes:
   the server has the Keycloak service account (`KC_ADMIN_*`), so it lasts.
   Without that account a tick lasts only until the person's next login. See
   [IDENTITY_AND_ROLES.md](IDENTITY_AND_ROLES.md#where-roles-actually-live-keycloak-realm-roles--userscapabilities).
+- **A role given in Keycloak applies at the person's next login**, not on a reload.
+  A tick here applies at once. A realm set up before a role existed has to be given
+  it by hand once (**Realm roles → Create role**): `docling` from 2.5, `talk` from
+  2.6. Until then the tick says which role to create.
+- **Tick from a fresh list.** A tick sends the person's whole set of capabilities as
+  this list shows them. If they logged in since you opened it and their roles changed,
+  reload first, or the tick puts back what the list showed.
 - Each person's daily token budget is the **Budget** box on their row under
   **People** (empty = the deployment default, 0 = unlimited; press **Set**).
   **Usage** shows tokens by model, by person and by day.
@@ -948,27 +955,35 @@ Details are in [DEPLOYMENT.md](DEPLOYMENT.md#choosing-a-model).
 
 ## Talking with the assistant
 
-**Talk** is a spoken conversation: you speak, it answers aloud, and you can cut in.
-It appears beside **Chat** when an admin has turned voice input on, for anyone with
-chat and read-aloud access. It's English for now.
+**Talk** turns the chat into a spoken conversation: you speak, it answers aloud, and you
+can cut in. It's the button with the sound-wave icon beside **Send**, in **Chat** and in
+the chat beside a page. You see it when an admin has turned voice input on and given you
+the `talk` role, on top of chat and read-aloud access; an admin always has it. It's
+English for now.
 
-1. Open **Talk**, choose a chat model and press **Start**. The browser asks for the
-   microphone the first time.
-2. Speak, with no buttons. The circle shows **Listening**, **Hearing you**,
-   **Checking**, **Thinking** and **Speaking**.
-3. **To cut in, just speak.** The reply pauses at once. If you were really talking, it
-   stops, and your words join the conversation. If it was a cough or a knock, the reply
-   carries on from the same word.
-4. **Mute** closes the microphone. **End** stops everything and closes it. Leaving
-   **Talk** does the same.
+1. Choose a chat model and press **Talk**. It starts listening at once; the browser asks
+   for the microphone the first time.
+2. The typing box makes way for the conversation: a circle whose halo grows with your
+   voice, **Mute** and **End**. What you say and what it answers appear in the chat
+   above, as ordinary messages.
+3. Speak, with no buttons. Beside the circle it says **Listening**, **Hearing you**,
+   **Checking**, **Thinking** or **Speaking**.
+4. **To cut in, just speak, or tap the circle.** Speaking pauses the reply at once. If you
+   were really talking, it stops, and your words join the conversation; if it was a cough
+   or a knock, the reply carries on from the same word. Tapping the circle stops the reply
+   there and then, and it listens for what you say next.
+5. **Mute** closes the microphone; you can still tap the circle. **End**, or **Esc**,
+   stops everything, closes the microphone and gives you the typing box back. Opening
+   another chat or leaving the chat ends it too.
 
 The assistant only remembers the part of a reply you actually heard, so if you stop it
-halfway it won't assume you heard the rest. Everything said appears in **Chat**
-afterwards, with the reply cut at the same point.
+halfway it won't assume you heard the rest. The conversation stays in the chat, with a
+reply you cut short kept up to where you stopped it. On a phone, the screen stays on
+while you talk.
 
 **Your voice stays in your browser until you speak.** The listening happens on your
 own device, and only the moments it takes for speech go to the server. The first
-**Start** downloads about 17 MB, once.
+**Talk** downloads about 17 MB, once.
 
 **What it heard** lists every clip: what it thought it heard, whether that counted as
 speech, and how long each step took. **Copy numbers** copies them, which is useful when

@@ -4,7 +4,26 @@
 
 ---
 
-## 2026-11-03 — The speech window works in English, with a baseline (START HERE)
+## 2026-11-03 late morning — Talk moved into the chat, behind a `talk` role: released as v2.6.0 (START HERE)
+
+**State.** On `feat/speech-window`, merged to `development` and `master` and **released as v2.6.0** on the owner's word ("merge and drop a release"). **Not deployed.** The owner tried the Talk view and said "not smooth as other agents, but good start", and asked for it in the chat, as ChatGPT's and Gemini's talk modes are, with a role so others can use it.
+
+**What a person can do.** In the chat (or the chat beside a page), with a model chosen: **Talk** beside **Send** → it listens at once, the typing box becomes the panel (circle, **Mute**, **End**, **What it heard**), the words fill the chat. Cut in by speaking or by tapping the circle. **End** or **Esc** gives the typing box back. An admin gives `talk` under **Admin → People** (or the Enroll form), or as the Keycloak realm role.
+
+**What a person can't do yet.** Admin-curated speech models and voices for people to choose among: still the second half of the 2026-11-02 request, not built. Any language but English.
+
+**Traps found by walking it** (throwaway Keycloak on :18081, scratch DB, fake microphone; numbers in `docs/TESTING.md`):
+- **A brand-new account starts with no capabilities**; Keycloak roles are copied in at each later login, not on a reload. The owner had already added `talk` in their Keycloak: those people get it at their next login once v2.6.0 runs, or at once with a tick.
+- **A People tick sends the whole set as the list shows it.** A list loaded before the person's second login sent `['talk']` and removed their `reader` and `chat`, in Keycloak too. Pre-existing for every role; documented in USER_GUIDE, not fixed. The fix would be add/remove semantics on `PATCH /v1/admin/users/{id}`.
+- **`talk` alone gave an endless Loading…** (so did `docling` alone): fixed, the gate now needs a capability that opens a view (`src/lib/access.js`).
+- **The admin's phone header was already too wide** without the Talk view (15 px at 375, 30 at 360); the narrow padding and hidden logo stay.
+- **Pre-existing, security-relevant, not fixed: `BOOTSTRAP_ADMIN_EMAIL` doesn't reserve the seed admin.** On a fresh database with it set to `admin@example.com`, `tess@example.com` signed in first and became admin: branch 3 of `resolve_or_provision_user` claims the seed row `WHERE oidc_sub IS NULL` for any brand-new identity, without comparing the pinned email, and the callback gave her the `admin` realm role too. A deployment is exposed only between its first start and the founder's first login. The fix is for branch 3 to skip the seed row while its email is pinned. Ask the owner before changing it.
+
+**Owed.** The owner, on real hardware: speakers without headphones, a real room, a phone. Whether the smoothness is better, and what still feels rough; the open levers are a shorter silence (700 ms now), a turn detector (Smart Turn v3), and streaming the voice. Then admin-curated lists, then Sinhala and Tamil. One vitest flake seen once under load: "Escape cancels while recording" (voice input), passed alone and in two more full runs.
+
+---
+
+## 2026-11-03 — The speech window works in English, with a baseline
 
 **State.** On `feat/speech-window`, cut from `development` at `86161f2`, committed as it went on the owner's "commit as you go". **Not merged, and not deployed.** Spec: `docs/superpowers/specs/2026-11-02-speech-window-design.md`. Numbers and settings: `docs/DEPLOYMENT.md`, "The speech window". The owner chose English first, on `gemma4:31b-cloud`, and put local-model speed aside.
 

@@ -1074,10 +1074,20 @@ existing **Web search** setting is not touched: both options live in the same
 ## The speech window
 
 **Talk** is a spoken conversation built from separate parts: voice activity detection
-(Silero) in the browser, Whisper on the server, the chat model, and Kokoro. It appears
-for anyone with `chat` and `reader` when voice input is on, and it has no switch of its
-own. It uses the deployment's speech model, and English is the only language it has
-been tuned on. People's guide: [USER_GUIDE.md § Talking with the assistant](USER_GUIDE.md#talking-with-the-assistant).
+(Silero) in the browser, Whisper on the server, the chat model, and Kokoro. It runs in
+the chat itself, from a button beside **Send**: the typing box makes way for its
+controls, and what is said goes in as ordinary chat messages. It uses the deployment's
+speech model, and English is the only language it has been tuned on. People's guide:
+[USER_GUIDE.md § Talking with the assistant](USER_GUIDE.md#talking-with-the-assistant).
+
+**Who can use it.** Anyone with the `talk` capability, on top of `chat` and `reader`,
+while voice input is on; an admin always may. Give it under **Admin → People** or as the
+`talk` realm role in Keycloak. **A realm created before 2.6 doesn't have that role:
+create it once by hand** (Keycloak admin console, **Realm roles → Create role**, name
+`talk`), or the People tick refuses and says so. A role given in Keycloak applies at the
+person's next login. The server refuses a spoken turn from anyone without it (403), so
+the hidden button isn't the only lock. Details:
+[IDENTITY_AND_ROLES.md § The `talk` capability](IDENTITY_AND_ROLES.md#the-talk-capability).
 
 **What leaves the browser.** Listening happens on the person's device. The server gets
 a clip only once speech has been detected, so nothing streams while the room is quiet.
@@ -1159,7 +1169,9 @@ talking at once queue, and read-aloud shares Kokoro with them. A remote speech e
 gives no scores, so any text counts as speech. On speakers the microphone may hear the
 reply: a clip that began during a reply is dropped when 60% of its words are that
 reply's, and headphones avoid the question. Whether Chrome's echo cancelling covers the
-app's own playback is unknown.
+app's own playback is unknown. On a phone the page asks to keep the screen on while
+Talk runs (the Screen Wake Lock API); a browser that refuses, on low battery say, may
+let the screen sleep, and with it the microphone.
 
 ## Bring-up checklist
 

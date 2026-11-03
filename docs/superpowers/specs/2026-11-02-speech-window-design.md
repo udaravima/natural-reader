@@ -2,6 +2,8 @@
 
 **Date:** 2026-11-02. **Status:** approved by the owner on 2026-11-03, English first; being built on `feat/speech-window`.
 
+**Changed 2026-11-03, after the owner tried it** ("it is the chat, but pop up that conversation"): Talk is no longer a view. It is a button beside **Send**, in the chat and in the chat beside a page, that starts listening at once and puts the panel (circle, **Mute**, **End**, **What it heard**) in place of the typing box, while the chat above shows the words, as ChatGPT's voice mode does since November 2025. It uses the chat's own model, so the window's model picker went. Who may use it is the new `talk` capability, an admin always; the server refuses a spoken turn without it. Added to feel more natural: the circle's halo follows the microphone's level, a tap on the circle cuts in, **Esc** ends it, and the screen is kept awake. Released as v2.6.0. Where this document says "view" or "window" below, read "the panel in the chat".
+
 ## Why
 
 The owner wants a full speech-to-speech flow built from separate parts, not one direct speech-to-speech model, and wants to try it in this app first. You talk, it answers aloud, and you can cut in the way you would with a person.
@@ -10,7 +12,7 @@ Today the app has the parts but not the conversation. The mic records until you 
 
 ## What a person does
 
-1. A person with chat and read-aloud access opens **Talk** in the view switcher and presses **Start**. The browser asks for the microphone.
+1. A person with chat and read-aloud access, and the `talk` role, presses **Talk** beside **Send**. The browser asks for the microphone. (Until 2026-11-03: a **Talk** view with a **Start** button.)
 2. They speak, with no buttons. The window shows **Listening**, **Hearing you**, **Thinking** and **Speaking**, and the words of each turn.
 3. While it is thinking or speaking, they speak again. The reply pauses at once. If it was real speech, the reply stops and what they said joins the conversation. If it was a cough, the reply carries on from the same word.
 4. **Mute** stops listening. **End** stops everything and turns the microphone off.
