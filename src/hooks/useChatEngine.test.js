@@ -43,6 +43,103 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
+describe('useChatEngine — spoken turns', () => {
+    const spokenProps = () => baseProps({
+        chatAutoTts: true, chatTtsMode: 'streaming', isLocalhost: true, synthesizeText: vi.fn(async () => 'blob:x'),
+    });
+
+    it('hands the reply to the speech window instead of reading it aloud itself', async () => {
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        const props = spokenProps();
+        const { result } = renderHook(() => useChatEngine(props));
+        const text = [];
+        let id;
+        await act(async () => {
+            await result.current.sendMessage('Hi', [], {
+                spoken: { onStart: (messageId) => { id = messageId; }, onText: (delta) => text.push(delta) },
+            });
+        });
+        expect(text.join('')).toBe('Hello there.');
+        expect(id).toBe(result.current.messages[1].id);
+        expect(props.synthesizeText).not.toHaveBeenCalled();
+    });
+
+    it('says the turn is spoken, turns thinking off and carries what was heard', async () => {
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await act(async () => {
+            await result.current.sendMessage('Hi', [], {
+                spoken: { onStart() {}, onText() {} }, heard: { messageId: 'a-1', chars: 12 },
+            });
+        });
+        const { body } = postTurn.mock.calls[0][0];
+        expect(body.context.spoken).toBe(true);
+        expect(body.settings.think).toBe('off');
+        expect(body.heard).toEqual({ message_id: 'a-1', chars: 12 });
+    });
+
+    it('a typed turn sends none of it', async () => {
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await act(async () => { await result.current.sendMessage('Hi'); });
+        const { body } = postTurn.mock.calls[0][0];
+        expect(body.context.spoken).toBeUndefined();
+        expect(body.heard).toBeUndefined();
+    });
+
+    it('cuts the reply on screen to what was heard', async () => {
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await act(async () => { await result.current.sendMessage('Hi'); });
+        const replyId = result.current.messages[1].id;
+        postTurn.mockResolvedValue(ok(loadFixture('plain').map((e) => (e.type === 'start'
+            ? { ...e, messageId: 'a-next', userMessageId: 'u-next' } : e))));
+        await act(async () => {
+            await result.current.sendMessage('Wait', [], {
+                spoken: { onStart() {}, onText() {} }, heard: { messageId: replyId, chars: 5 },
+            });
+        });
+        expect(result.current.messages[1].content).toBe('Hello');
+    });
+
+    it('waits while the stopped turn is still being saved', async () => {
+        postTurn.mockResolvedValueOnce(refusal(409, { error: 'turn_in_progress', message: 'Still writing.' }));
+        postTurn.mockResolvedValueOnce(ok(loadFixture('plain')));
+        const props = baseProps();
+        const { result } = renderHook(() => useChatEngine(props));
+        let outcome;
+        await act(async () => {
+            outcome = await result.current.sendMessage('Hi', [], { spoken: { onStart() {}, onText() {} } });
+        });
+        expect(postTurn).toHaveBeenCalledTimes(2);
+        expect(outcome.sent).toBe(true);
+        expect(props.showToast).not.toHaveBeenCalled();
+    });
+
+    it('a typed turn is refused at once, as ever', async () => {
+        postTurn.mockResolvedValue(refusal(409, { error: 'turn_in_progress', message: 'Still writing.' }));
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        await act(async () => { await result.current.sendMessage('Hi'); });
+        expect(postTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends straight after a stop, with the old props still in hand', async () => {
+        postTurn.mockImplementationOnce(async ({ signal }) => new Promise((_, reject) => {
+            signal.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; reject(e); });
+        }));
+        const { result } = renderHook(() => useChatEngine(baseProps()));
+        let first;
+        act(() => { first = result.current.sendMessage('Hi'); });
+        await waitFor(() => expect(result.current.isStreaming).toBe(true));
+        const stale = result.current.sendMessage;   // what a callback made during the reply holds
+        await act(async () => { result.current.stopStream(); await first; });
+        postTurn.mockResolvedValue(ok(loadFixture('plain')));
+        let outcome;
+        await act(async () => { outcome = await stale('Next', [], { spoken: { onStart() {}, onText() {} } }); });
+        expect(outcome.sent).toBe(true);
+    });
+});
+
 describe('useChatEngine — turns', () => {
     it('posts one turn, adopts the server ids and renders the streamed reply', async () => {
         postTurn.mockResolvedValue(ok(loadFixture('plain')));

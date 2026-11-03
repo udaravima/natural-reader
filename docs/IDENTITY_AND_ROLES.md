@@ -76,7 +76,7 @@ Consequences worth holding onto:
    mapper only targets the access token; see
    [Where roles actually live](#where-roles-actually-live-keycloak-realm-roles--userscapabilities)).
    `caps_from_claims` (`server/auth/capabilities.py`) intersects that role list
-   with the app's known capability vocabulary (`reader`/`chat`/`admin`/`docling`),
+   with the app's known capability vocabulary (`reader`/`chat`/`admin`/`docling`/`talk`),
    dropping Keycloak built-ins like `offline_access`.
 4. `resolve_or_provision_user(conn, iss=…, sub=…, email=…, email_verified=…,
    capabilities=…)` maps the identity to a `users` row (three branches, next
@@ -130,9 +130,10 @@ hand once (the comment at the top of the SQL file has the exact `psql` command).
 ## Where roles actually live (Keycloak realm roles → `users.capabilities`)
 
 This used to say "Keycloak does not know about roles at all" — that changed.
-**Roles now live in Keycloak**, as four plain **realm roles**:
-`reader`, `chat`, `admin` and `docling` (`deploy/keycloak/realm-export.json` §`roles.realm`;
-`docling` is [described below](#the-docling-capability)).
+**Roles now live in Keycloak**, as five plain **realm roles**:
+`reader`, `chat`, `admin`, `docling` and `talk` (`deploy/keycloak/realm-export.json` §`roles.realm`;
+`docling` and `talk` are described below, in [The `docling` capability](#the-docling-capability)
+and [The `talk` capability](#the-talk-capability)).
 No group defaults them onto anyone — a brand-new Keycloak user, and a
 brand-new app row, both start with **zero capabilities**. Someone with the
 `admin` capability has to grant them, either through this app's admin console
@@ -216,6 +217,28 @@ nothing. It grants nothing else: no route other than the conversion checks it.
   realm, so it keeps `manage-users`, `view-realm` and `query-users` only. With it
   unset, the tick only writes the app's mirror, and the next login reverts it to
   what Keycloak says. You only need any of this if you want `role` mode.
+
+### The `talk` capability
+
+`talk` decides who may use **Talk**, the spoken conversation in the chat (the button
+beside **Send**). **An admin may always talk**, so the bootstrap admin set doesn't
+include it. Talk also needs `chat` (its words are chat turns) and `reader` (its voice is
+read-aloud), and voice input on; `talk` alone opens nothing, so someone holding only it
+sees the no-access screen. The server checks it too: a turn sent with
+`context.spoken: true` by someone without it is refused **403
+`{"error": "missing_capability", "capability": "talk"}`**, before anything is stored.
+
+- **Where to give it.** Tick **talk** beside the person under **People** (or when
+  enrolling them), or give them the `talk` realm role in Keycloak. A tick applies at
+  once; a role granted in Keycloak applies at the person's next login (login sync,
+  above), not on a reload.
+- **A personal access token** carries it through the `chat` scope, since a spoken turn
+  is a chat turn. A token never widens its owner.
+- **An existing realm needs the role created by hand**, exactly as for `docling`
+  above: Keycloak admin console, realm `natural-reader`, **Realm roles**, **Create
+  role**, name `talk`, Save. Until then a tick under **People** answers 409
+  `{"reason": "kc_role_missing", "role": "talk"}` and changes nothing, while the
+  service account is configured.
 
 ### The service account that makes admin-console edits real
 
@@ -368,7 +391,7 @@ matching capability (`App.jsx`: `canReader`/`canChat`/`canAdmin` derived from
   rendered only when `canAdmin` (`App.jsx`: `inAdmin` suppresses the reader
   `Sidebar` entirely while this view is active). Its **People** section holds the user list
   (activate/disable/delete, the capability editor — a per-user checkbox strip
-  for reader/chat/admin/docling — enroll with capabilities, one-time temp
+  for reader/chat/admin/docling/talk — enroll with capabilities, one-time temp
   password display when SMTP isn't configured); the other sections are in
   [USER_GUIDE.md](USER_GUIDE.md#admin-console-admins-only). The self-row hides Disable/Delete and
   disables your own `admin` checkbox — UI-only convenience (the server's real

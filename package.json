@@ -1,7 +1,7 @@
 {
   "name": "natural-reader",
   "private": true,
-  "version": "2.5.1",
+  "version": "2.6.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,6 +12,7 @@
     "test:run": "vitest run"
   },
   "dependencies": {
+    "@ricky0123/vad-web": "^0.0.31",
     "@tailwindcss/vite": "^4.1.18",
     "github-slugger": "^2.0.0",
     "lucide-react": "^1.66.0",
@@ -19,6 +20,7 @@
     "mdast-util-gfm": "^3.1.0",
     "mdast-util-to-string": "^4.0.0",
     "micromark-extension-gfm": "^3.0.0",
+    "onnxruntime-web": "^1.31.1",
     "pdfjs-dist": "^6.5.438",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

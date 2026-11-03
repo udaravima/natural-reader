@@ -15,6 +15,9 @@ import { useChatScope } from './useChatScope';
 
 const SENTENCE_TERMINATOR = /(?<=[.!?])\s+/;
 const MIN_TTS_LENGTH = 5;
+// A spoken turn can follow a stopped one at once, and the server may still be saving that one.
+const SAVE_WAIT_MS = 250;
+const SAVE_WAIT_TRIES = 12;
 const POLL_MS = 3000;   // how often a reloaded "still generating…" chat re-reads the server
 const CHAT_NOT_FOUND = "This chat doesn't exist or you don't have access.";
 
@@ -424,12 +427,15 @@ export function useChatEngine({
     // `options.web = {query}` is the user's yes to a web search the model
     // offered (C2.1 spec §5.8): it rides in this turn's context only, so the
     // server runs exactly that search and the next turn asks again.
+    // `options.spoken = {onStart(messageId), onText(delta)}` is the speech window's
+    // turn: it reads the reply aloud itself, so the chat's read-aloud stays out of it.
+    // `options.heard = {messageId, chars}` cuts an earlier reply to what was played.
     const sendMessage = useCallback(async (userText, attachments = [], options = {}) => {
         const trimmed = (userText || '').trim();
         const webQuery = typeof options?.web?.query === 'string' ? options.web.query.trim() : '';
         const cleanAttachments = (attachments || []).filter((a) => a && a.kind);
         if (!trimmed && cleanAttachments.length === 0 && pinsRef.current.length === 0) return { sent: false };
-        if (isStreaming || sendingRef.current) return { sent: false };
+        if (sendingRef.current) return { sent: false };
         const giveBack = { sent: false, refused: true, text: userText, attachments };
         if (!selectedModel) {
             showToast?.('Pick a model first.', 4000);
@@ -437,7 +443,10 @@ export function useChatEngine({
         }
 
         // Lock TTS mode + inference settings for THIS message.
-        const modeForThisMsg = chatTtsMode;
+        const spoken = options?.spoken;
+        const heard = options?.heard;
+        const readAloud = chatAutoTts && !spoken;
+        const modeForThisMsg = spoken ? 'spoken' : chatTtsMode;
         const inferenceForThisMsg = inference;
 
         // Which server session gets this turn?
@@ -484,13 +493,14 @@ export function useChatEngine({
         const now = Date.now();
         let userId = `u-local-${now}`;
         let assistantId = `a-local-${now}`;
-        setMessages((prev) => [...prev,
+        setMessages((prev) => [
+            ...(heard ? prev.map((m) => (m.id === heard.messageId ? { ...m, content: m.content.slice(0, heard.chars) } : m)) : prev),
             { role: 'user', content: trimmed, attachments: cleanAttachments.map((a) => (a.kind === 'text' ? textAttachmentWire(a).meta : a)), id: userId, timestamp: now },
             { role: 'assistant', content: '', thinking: '', id: assistantId, timestamp: now + 1, status: 'streaming' }]);
         sentenceBufferRef.current = '';
         sendingRef.current = true;
         setIsStreaming(true);
-        if (chatAutoTts) setSpeaking(assistantId);
+        if (readAloud) setSpeaking(assistantId);
         const controller = new AbortController();
         abortRef.current = controller;
         const updateAssistant = (fn) => setMessages((prev) => prev.map((m) => (m.id === assistantId ? fn(m) : m)));
@@ -503,8 +513,10 @@ export function useChatEngine({
                     : { id: a.id, kind: a.kind, mime: a.mimeType, name: a.name || '', size: a.size || 0, base64: a.base64 })),
             },
             model: selectedModel,
-            settings: toWireSettings(inferenceForThisMsg,
-                supportedKnobs(availableModelsRef.current.find((m) => m.id === selectedModel))),
+            settings: {
+                ...toWireSettings(inferenceForThisMsg, supportedKnobs(availableModelsRef.current.find((m) => m.id === selectedModel))),
+                ...(spoken ? { think: 'off' } : {}),   // nobody can sit through thinking in a conversation
+            },
             // "No document": no document, so no prefetch, no document tools (v2.4 Task E).
             // A project chat sends the open document as well (the model may be
             // asked about "this page"). `project_id` is always sent: an id sets
@@ -514,10 +526,12 @@ export function useChatEngine({
                 project_id: from.project ? from.project.id : null,
                 timezone: browserTimezone(),
                 ...(webQuery ? { web: { query: webQuery } } : {}),
+                ...(spoken ? { spoken: true } : {}),
             },
             // Always sent: the server uses it only when this turn creates the chat
             // (a retry after a first send that failed on the network included).
             session: { pins: pinsRef.current },
+            ...(heard ? { heard: { message_id: heard.messageId, chars: heard.chars } } : {}),
         };
 
         let refused = false;
@@ -525,7 +539,11 @@ export function useChatEngine({
         let completed = false;
         let replyText = '';
         try {
-            const res = await postTurn({ apiHost, apiPort, sessionId, body, signal: controller.signal });
+            let res = await postTurn({ apiHost, apiPort, sessionId, body, signal: controller.signal });
+            for (let tries = SAVE_WAIT_TRIES; spoken && res.status === 409 && tries > 0; tries -= 1) {
+                await new Promise((resolve) => { setTimeout(resolve, SAVE_WAIT_MS); });
+                res = await postTurn({ apiHost, apiPort, sessionId, body, signal: controller.signal });
+            }
             if (!res.ok) {
                 refused = true;
                 const budget = await budgetDetail(res.clone());
@@ -552,6 +570,7 @@ export function useChatEngine({
                         if (speakingMessageIdRef.current === oldAssistant) setSpeaking(ev.messageId);
                         userId = ev.userMessageId;
                         assistantId = ev.messageId;
+                        spoken?.onStart(ev.messageId);
                         continue;
                     }
                     updateAssistant((m) => applyEvent(m, ev));
@@ -559,12 +578,14 @@ export function useChatEngine({
                         // A later step's text is a new paragraph (as applyEvent
                         // does); read aloud, it also ends the sentence before it.
                         replyText += '\n\n';
+                        spoken?.onText('\n\n');
                         if (modeForThisMsg === 'streaming') {
                             sentenceBufferRef.current += '\n\n';
                             flushBufferedSentences();
                         }
                     } else if (ev.type === 'text-delta') {
                         replyText += ev.delta || '';
+                        spoken?.onText(ev.delta || '');
                         if (modeForThisMsg === 'streaming') {
                             sentenceBufferRef.current += ev.delta || '';
                             flushBufferedSentences();
@@ -592,7 +613,7 @@ export function useChatEngine({
                     const tail = sentenceBufferRef.current.trim();
                     if (tail) enqueueTts(tail);
                     sentenceBufferRef.current = '';
-                } else if (chatAutoTts) {
+                } else if (readAloud) {
                     replyText.replace(/\s+/g, ' ').split(SENTENCE_TERMINATOR)
                         .filter((s) => s.trim().length >= MIN_TTS_LENGTH)
                         .forEach(enqueueTts);
@@ -626,10 +647,10 @@ export function useChatEngine({
             } else {
                 // However the reply ended (finished, error event, dropped stream),
                 // clear the read-aloud indicator once anything queued has played.
-                if (chatAutoTts) {
-                    const spokenId = assistantId;
+                if (readAloud) {
+                    const readId = assistantId;
                     chatPlaybackPromiseRef.current.then(() => {
-                        if (speakingMessageIdRef.current === spokenId) setSpeaking(null);
+                        if (speakingMessageIdRef.current === readId) setSpeaking(null);
                     });
                 }
                 refreshSessions();
@@ -637,7 +658,7 @@ export function useChatEngine({
             }
         }
         return refused ? giveBack : { sent: true };
-    }, [isStreaming, selectedModel, chatTtsMode, chatAutoTts, inference, apiHost, apiPort, currentDocId, readScope, adoptScope, restoreScope, clearProject,
+    }, [selectedModel, chatTtsMode, chatAutoTts, inference, apiHost, apiPort, currentDocId, readScope, adoptScope, restoreScope, clearProject,
         sessionStore, showToast, flushBufferedSentences, enqueueTts, refreshSessions, refreshEvents, refreshModels]);
 
     // A reloaded chat whose reply the server is still writing: re-read it until

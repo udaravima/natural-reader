@@ -4,7 +4,47 @@
 
 ---
 
-## 2026-11-02 evening — All 50 voices, popup dropdowns, Library on Projects, favicon: released as v2.5.1 (START HERE)
+## 2026-11-03 late morning — Talk moved into the chat, behind a `talk` role: released as v2.6.0 (START HERE)
+
+**State.** On `feat/speech-window`, merged to `development` and `master` and **released as v2.6.0** on the owner's word ("merge and drop a release"). **Not deployed.** The owner tried the Talk view and said "not smooth as other agents, but good start", and asked for it in the chat, as ChatGPT's and Gemini's talk modes are, with a role so others can use it.
+
+**What a person can do.** In the chat (or the chat beside a page), with a model chosen: **Talk** beside **Send** → it listens at once, the typing box becomes the panel (circle, **Mute**, **End**, **What it heard**), the words fill the chat. Cut in by speaking or by tapping the circle. **End** or **Esc** gives the typing box back. An admin gives `talk` under **Admin → People** (or the Enroll form), or as the Keycloak realm role.
+
+**What a person can't do yet.** Admin-curated speech models and voices for people to choose among: still the second half of the 2026-11-02 request, not built. Any language but English.
+
+**Traps found by walking it** (throwaway Keycloak on :18081, scratch DB, fake microphone; numbers in `docs/TESTING.md`):
+- **A brand-new account starts with no capabilities**; Keycloak roles are copied in at each later login, not on a reload. The owner had already added `talk` in their Keycloak: those people get it at their next login once v2.6.0 runs, or at once with a tick.
+- **A People tick sends the whole set as the list shows it.** A list loaded before the person's second login sent `['talk']` and removed their `reader` and `chat`, in Keycloak too. Pre-existing for every role; documented in USER_GUIDE, not fixed. The fix would be add/remove semantics on `PATCH /v1/admin/users/{id}`.
+- **`talk` alone gave an endless Loading…** (so did `docling` alone): fixed, the gate now needs a capability that opens a view (`src/lib/access.js`).
+- **The admin's phone header was already too wide** without the Talk view (15 px at 375, 30 at 360); the narrow padding and hidden logo stay.
+- **Pre-existing, security-relevant, not fixed: `BOOTSTRAP_ADMIN_EMAIL` doesn't reserve the seed admin.** On a fresh database with it set to `admin@example.com`, `tess@example.com` signed in first and became admin: branch 3 of `resolve_or_provision_user` claims the seed row `WHERE oidc_sub IS NULL` for any brand-new identity, without comparing the pinned email, and the callback gave her the `admin` realm role too. A deployment is exposed only between its first start and the founder's first login. The fix is for branch 3 to skip the seed row while its email is pinned. Ask the owner before changing it.
+
+**Owed.** The owner, on real hardware: speakers without headphones, a real room, a phone. Whether the smoothness is better, and what still feels rough; the open levers are a shorter silence (700 ms now), a turn detector (Smart Turn v3), and streaming the voice. Then admin-curated lists, then Sinhala and Tamil. One vitest flake seen once under load: "Escape cancels while recording" (voice input), passed alone and in two more full runs.
+
+---
+
+## 2026-11-03 — The speech window works in English, with a baseline
+
+**State.** On `feat/speech-window`, cut from `development` at `86161f2`, committed as it went on the owner's "commit as you go". **Not merged, and not deployed.** Spec: `docs/superpowers/specs/2026-11-02-speech-window-design.md`. Numbers and settings: `docs/DEPLOYMENT.md`, "The speech window". The owner chose English first, on `gemma4:31b-cloud`, and put local-model speed aside.
+
+**What a person can do.** **Talk** in the view switcher, when voice input is on → choose a model → **Start** → speak. To cut in, speak: the reply pauses, real speech stops it, a cough resumes it at the same word. **Mute**, **End**. **What it heard → Copy numbers** gives every clip's scores and timings. **Admin → Chat options → Speech model** now offers **Whisper base, English only** and **Whisper small, English only**.
+
+**What a person can't do yet.** Everything in the second half of the owner's request: an admin can't offer several speech models or narrow the voices, and a user can't choose among them. One speech model still serves everyone, and the 50 voices are open to all. Design and spec are ready; it was held back so the baseline came first.
+
+**Baseline.** First sound after the person stops, median of 12 turns, cloud model, CPU only: 3.91 s as first built, **2.11 s** tuned with `base.en` (worst 3.12 s). Real browser path, `base.en`: 93 of 100 spoken words accepted, 2 of 28 hard noises. Idle listening takes 2.4% of one core. A real cut-in kept "It started small." of a 188-character reply, and the next request carried that.
+
+**Traps found by running it for real, none visible to unit tests.**
+- Silero's memory dulls it to short words: a live "stop" fired 6 in 25 against 92% offline, where each clip got a fresh model. `listen.js` clears it after the silence that ends a turn.
+- 0.4 for `no_speech` came from `small` and let 9 of 16 noises through on `base.en`. 0.25 suits all three models.
+- The first echo check threw away a repeated question. Only a clip that began during a reply can be an echo.
+- Most interruptions hit a reply saved `complete`, not `aborted`, so `heard` cuts either.
+- `int8` Kokoro is 4 times slower on a CPU. `fp16` is faster but not the same audio, so it's off until the owner has listened.
+
+**Owed.** The owner, on real hardware: speakers without headphones (whether Chrome's echo cancelling covers the app's own audio is unknown), a real room, and comparing Kokoro's `fp16` by ear. Then Sinhala and Tamil, whose `no_speech` scores are untested. Admin lists next. The CPU ruling below matters more now: Whisper, Kokoro and a local model share the machine on every turn. The header still overflows by 14 px below 375 px for an admin.
+
+---
+
+## 2026-11-02 evening — All 50 voices, popup dropdowns, Library on Projects, favicon: released as v2.5.1
 
 **State.** Built and walked on `feat/voices-and-dropdowns`, cut from `development` at `06b4569`, then merged and **released as v2.5.1** on the owner's word. **v2.5.1 is not deployed:** live is the branch at `f8af89e`. Nothing is migrated, but it needs Node 22.13 or 24 and both halves rebuilt. The owner deployed v2.5.0 on the evening of 2026-11-02, so the v2.5.0 entry's "Nothing is deployed" is out of date, and then deployed this branch at `f8af89e` at 22:38. The `en-us` bug and the `af_river` label are fixed here.
 

@@ -8,7 +8,7 @@ import { formatDay } from '../../lib/zoneFormat';
  * capabilities, and delete. Moved out of AdminConsole unchanged.
  */
 
-const CAPABILITIES = ['reader', 'chat', 'admin', 'docling'];
+const CAPABILITIES = ['reader', 'chat', 'admin', 'docling', 'talk'];
 
 const PAGE = 50;               // rows per request; the server's default page too
 const MAX_PAGE = 200;          // the server's ceiling for `limit`
@@ -99,7 +99,7 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
   const [enrollLast, setEnrollLast] = useState('');
   const [enrollStatus, setEnrollStatus] = useState('pending');
   const [enrollBudget, setEnrollBudget] = useState('');
-  const [enrollCaps, setEnrollCaps] = useState({ reader: false, chat: false, admin: false, docling: false });
+  const [enrollCaps, setEnrollCaps] = useState({ reader: false, chat: false, admin: false, docling: false, talk: false });
   const [enrollNote, setEnrollNote] = useState(null); // { kind: 'ok'|'err', text }
   const [enrolling, setEnrolling] = useState(false); // POST in flight → busy button
 
@@ -244,7 +244,7 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
       setEnrollEmail(''); setEnrollName(''); setEnrollBudget('');
       setEnrollUsername(''); setEnrollFirst(''); setEnrollLast('');
       setEnrollStatus('pending');
-      setEnrollCaps({ reader: false, chat: false, admin: false, docling: false });
+      setEnrollCaps({ reader: false, chat: false, admin: false, docling: false, talk: false });
       await loadUsers();
     } catch (e) {
       setEnrollNote({ kind: 'err', text: `Enroll failed: ${e.message}` });
@@ -455,7 +455,7 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
                   )}
                 </span>
               </div>
-              <div className="flex items-center gap-3 text-[10px]">
+              <div className="flex flex-wrap items-center gap-x-3 text-[10px]">
                 <span className={theme.textMuted}>capabilities:</span>
                 {CAPABILITIES.map((cap) => {
                   // Self-lockout guard: an admin cannot strip their own

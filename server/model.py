@@ -5,8 +5,10 @@ import os
 import onnxruntime as ort
 from kokoro_onnx import Kokoro
 
+from .tts_threads import tts_threads
+
 # --- KOKORO SETUP ---
-MODEL_PATH = "kokoro-v1.0.onnx"
+MODEL_PATH = os.environ.get("KOKORO_MODEL_PATH") or "kokoro-v1.0.onnx"
 VOICES_PATH = "voices-v1.0.bin"
 
 if not os.path.exists(MODEL_PATH) or not os.path.exists(VOICES_PATH):
@@ -81,6 +83,13 @@ def get_execution_providers():
     return providers
 
 
+def session_options():
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = tts_threads()
+    options.inter_op_num_threads = 1
+    return options
+
+
 def create_session_with_fallback(model_path, providers):
     """
     Try to create an ONNX session with fallback through providers.
@@ -92,11 +101,12 @@ def create_session_with_fallback(model_path, providers):
                 provider_name, options = provider
                 session = ort.InferenceSession(
                     model_path,
+                    sess_options=session_options(),
                     providers=[provider_name],
                     provider_options=[options]
                 )
             else:
-                session = ort.InferenceSession(model_path, providers=[provider])
+                session = ort.InferenceSession(model_path, sess_options=session_options(), providers=[provider])
             
             actual = session.get_providers()[0] if session.get_providers() else "Unknown"
             print(f"✓ Successfully created session with: {actual}")
@@ -110,7 +120,7 @@ def create_session_with_fallback(model_path, providers):
     
     # Final fallback to CPU
     print("Falling back to CPU execution...")
-    return ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+    return ort.InferenceSession(model_path, sess_options=session_options(), providers=["CPUExecutionProvider"])
 
 
 # --- Initialize model on module import ---

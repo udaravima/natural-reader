@@ -46,6 +46,17 @@ describe('AuthGate', () => {
     expect(screen.getByRole('heading', { name: /active but has no access/i })).toBeInTheDocument();
   });
 
+  // `talk` and `docling` only add to Reader or Chat: alone they open nothing, and the app would sit on Loading….
+  it.each([[['talk']], [['docling']], [['docling', 'talk']]])('shows access-not-granted for %j alone', (caps) => {
+    render(
+      <AuthGate state="active" user={{ capabilities: caps }}
+                onLogin={() => {}} onLogout={() => {}} onRetry={() => {}}>
+        <div>APP</div>
+      </AuthGate>);
+    expect(screen.queryByText('APP')).toBeNull();
+    expect(screen.getByRole('heading', { name: /active but has no access/i })).toBeInTheDocument();
+  });
+
   it('renders children when active with a capability', () => {
     render(
       <AuthGate state="active" user={{ capabilities: ['reader'] }}

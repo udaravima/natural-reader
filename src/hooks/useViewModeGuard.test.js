@@ -11,6 +11,13 @@ describe('useViewModeGuard', () => {
     expect(setViewMode).toHaveBeenCalledWith('reader');
   });
 
+  // Talk was a view while it was being built, and `talk` is a role: the role names no view.
+  it('a view that is gone moves on, even for someone holding a role of the same name', () => {
+    const setViewMode = vi.fn();
+    renderHook(() => useViewModeGuard({ viewMode: 'talk', setViewMode, authState: 'active', caps: ['reader', 'chat', 'talk'] }));
+    expect(setViewMode).toHaveBeenCalledWith('reader');
+  });
+
   it('keeps the admin view for an actual admin', () => {
     const setViewMode = vi.fn();
     renderHook(() => useViewModeGuard({

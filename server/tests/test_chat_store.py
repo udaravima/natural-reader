@@ -152,6 +152,48 @@ async def test_history_excludes_current_turn_streaming_and_empty_replies(conn):
     assert history[1].attachments[0]["ordinal"] == 0
 
 
+async def test_the_next_turn_cuts_a_finished_reply_to_what_was_heard(conn):
+    """A reply usually finishes writing long before it finishes playing, so most interruptions hit a saved one."""
+    alice = await member(conn, "alice")
+    t1 = await _begin(alice, text="first")
+    await _finish(t1, content="One sentence. Another sentence.")
+    t2 = await store.begin_turn(session_id="s-1", user_id=alice.user_id, model_id="ollama:m", text="wait",
+                                attachments=[], new_session_pins=None,
+                                heard=store.Heard(t1.assistant_message_id, 13))
+    row = await _one(conn, "SELECT content, status, finish_reason FROM chat_messages WHERE id = %s",
+                     (t1.assistant_message_id,))
+    assert row == ("One sentence.", "complete", "interrupted")
+    await _finish(t2, content="ok")
+    _, history = await store.load_turn_context("s-1", exclude=())
+    assert ("assistant", "One sentence.") in [(m.role, m.content) for m in history]
+
+
+async def test_a_stopped_reply_is_cut_the_same_way(conn):
+    alice = await member(conn, "alice")
+    t1 = await _begin(alice, text="first")
+    await _finish(t1, content="One sentence. Another.", status="aborted", reason="aborted")
+    await store.begin_turn(session_id="s-1", user_id=alice.user_id, model_id="ollama:m", text="wait",
+                           attachments=[], new_session_pins=None, heard=store.Heard(t1.assistant_message_id, 0))
+    assert await _one(conn, "SELECT content, status FROM chat_messages WHERE id = %s",
+                      (t1.assistant_message_id,)) == ("", "aborted")
+
+
+async def test_heard_touches_only_an_assistant_reply_in_this_chat(conn):
+    alice = await member(conn, "alice")
+    other = await _begin(alice, sid="s-2", text="elsewhere")
+    await _finish(other, content="Kept whole.")
+    t1 = await _begin(alice, sid="s-1", text="the question")
+    await _finish(t1, content="Reply.")
+    for message_id in (other.assistant_message_id, t1.user_message_id):
+        t = await store.begin_turn(session_id="s-1", user_id=alice.user_id, model_id="ollama:m", text="again",
+                                   attachments=[], new_session_pins=None, heard=store.Heard(message_id, 2))
+        await _finish(t, content="ok")
+    assert (await _one(conn, "SELECT content FROM chat_messages WHERE id = %s",
+                       (other.assistant_message_id,)))[0] == "Kept whole."
+    assert (await _one(conn, "SELECT content FROM chat_messages WHERE id = %s",
+                       (t1.user_message_id,)))[0] == "the question"
+
+
 async def test_attachment_bytes_load_only_what_is_asked(conn):
     alice = await member(conn, "alice")
     claim = await _begin(alice, atts=[IMG_A, IMG_B])

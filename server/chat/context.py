@@ -321,6 +321,7 @@ class TurnInput:
     project_map: str = ""              # a project chat's map of its documents (chat/project_map.py): after the rules
     app_exchange: tuple[Message, ...] = ()   # a tool exchange the app ran (the approved web search), after the prefetch's
     default_timezone: str = "UTC"            # the deployment's zone: the "Today" line's fallback when the browser sent none
+    spoken: bool = False                     # the reply will be read aloud (prompt.system_rules)
     model: str = ""                          # the turn's canonical model id (the form begin_turn stores on user rows)
 
 
@@ -362,7 +363,8 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     rules = system_rules(turn.doc, turn.tools, has_pins=bool(turn.pins),
                          prefetch=cfg.prefetch == "on" and cfg.prefetch_min_score < 1.0,
                          today=today_line(turn.now, turn.timezone, turn.default_timezone), profile=turn.profile,
-                         has_map=bool(turn.project_map), project=getattr(turn.tool_ctx, "project", None))
+                         has_map=bool(turn.project_map), project=getattr(turn.tool_ctx, "project", None),
+                         spoken=turn.spoken)
     system = Message("system", "\n\n".join(c for c in (rules, turn.project_map, pin_text(turn.pins)) if c))
     # The new message's text files cost their characters; only images and audio take the flat estimate.
     current_files = sum(len(_attachment_text(a)) for a in turn.attachments if a.kind == "text")

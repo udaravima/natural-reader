@@ -12,8 +12,19 @@ def test_caps_from_claims_empty_when_absent():
 
 
 def test_known_capabilities_frozen():
-    assert KNOWN_CAPABILITIES == frozenset({"reader", "chat", "admin", "docling"})
+    assert KNOWN_CAPABILITIES == frozenset({"reader", "chat", "admin", "docling", "talk"})
 
 
 def test_docling_is_read_from_the_realm_roles():
     assert caps_from_claims({"realm_access": {"roles": ["docling", "offline_access"]}}) == ["docling"]
+
+
+def test_talk_is_read_from_the_realm_roles():
+    assert caps_from_claims({"realm_access": {"roles": ["talk", "chat"]}}) == ["chat", "talk"]
+
+
+def test_the_realm_file_seeds_every_capability():
+    import json
+    from pathlib import Path
+    realm = json.loads((Path(__file__).parents[2] / "deploy/keycloak/realm-export.json").read_text())
+    assert {r["name"] for r in realm["roles"]["realm"]} >= KNOWN_CAPABILITIES

@@ -183,7 +183,8 @@ async def test_voice_on_returns_the_transcript(db_conn, engine):
     async with _client(db_conn) as c:
         r = await _post(c, language="si")
     assert r.status_code == 200
-    assert r.json() == {"text": "hello there", "language": "si", "duration_s": 3.5}
+    assert r.json() == {"text": "hello there", "language": "si", "duration_s": 3.5,
+                        "no_speech": None, "avg_logprob": None}
     assert engine.seen == [(3, "audio/webm", "si")]
 
 
@@ -310,6 +311,25 @@ async def test_the_transcript_is_never_logged(db_conn, engine, caplog):
         async with _client(db_conn) as c:
             await _post(c)
     assert "hello there" not in caplog.text
+
+
+async def test_the_scores_reach_the_browser(db_conn, engine, monkeypatch):
+    async def scored(audio, mime, language):
+        return Transcript("hold on", "en", 1.0, no_speech=0.03, avg_logprob=-0.4)
+    monkeypatch.setattr(engine, "transcribe", scored)
+    await _voice(db_conn)
+    async with _client(db_conn) as c:
+        out = (await _post(c)).json()
+    assert (out["no_speech"], out["avg_logprob"]) == (0.03, -0.4)
+
+
+async def test_status_carries_the_window_settings(db_conn, engine, monkeypatch):
+    monkeypatch.setenv("SPEECH_WINDOW_SILENCE_MS", "450")
+    await _voice(db_conn)
+    async with _client(db_conn) as c:
+        body = (await c.get(STATUS)).json()
+    assert body["window"]["silence_ms"] == 450
+    assert body["window"]["language"] == "en"
 
 
 async def test_status_lists_languages_sorted_by_name(db_conn, engine):

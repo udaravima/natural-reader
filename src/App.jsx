@@ -11,6 +11,7 @@ import { useTtsEngine } from './hooks/useTtsEngine';
 import { useChatEngine } from './hooks/useChatEngine';
 import { useAuth } from './hooks/useAuth';
 import { useViewModeGuard } from './hooks/useViewModeGuard';
+import { useSpeechStatus } from './hooks/useSpeechWindow';
 import { useDocMetaPicker } from './hooks/useDocMetaPicker';
 import { makePin } from './hooks/pins';
 import { migrateModelId } from './lib/modelIds';
@@ -39,6 +40,7 @@ import { createFsaWorkspace, createSnapshotWorkspace, pickEntryFile, isMarkdownP
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import { AuthGate } from './components/auth/AuthGate';
+import { hasAccess } from './lib/access';
 import PdfViewer from './components/PdfViewer';
 import ChatView from './components/ChatView';
 import ChatSidebar from './components/ChatSidebar';
@@ -305,6 +307,11 @@ export default function App() {
   const canReader = caps.includes('reader');
   const canChat = caps.includes('chat');
   const canAdmin = caps.includes('admin');
+  // Talk, the spoken conversation in the chat: the `talk` role (an admin never needs it), the chat for its words,
+  // the reader for its voice, and voice input on. The server refuses a spoken turn without the role, too.
+  const mayTalk = canChat && canReader && (canAdmin || caps.includes('talk'));
+  const speechStatus = useSpeechStatus({ apiHost, apiPort, allowed: mayTalk });
+  const canTalk = mayTalk && speechStatus?.enabled === true;
 
   // Chat beside the page (ChatSidePanel): the reader on a wide screen only;
   // a phone has no room for both, so its Chat button opens the Chat view
@@ -1079,8 +1086,8 @@ export default function App() {
   // so an unauthenticated visitor sees the login/pending/disabled screen rather
   // than the app or its loading spinner. With AUTH_ENABLED=false on a loopback
   // backend, /v1/auth/me returns the seed admin → state 'active' → app renders.
-  // Also gate active users with no capabilities — they see NoAccessScreen.
-  if (auth.state !== 'active' || !(auth.user?.capabilities?.length)) {
+  // Also gate active users with no capability that opens a view — they see NoAccessScreen.
+  if (auth.state !== 'active' || !hasAccess(auth.user)) {
     return (
       <AuthGate
         state={auth.state}
@@ -1139,6 +1146,16 @@ export default function App() {
     scope: chatScope,
     setScope: chatSetScope,
     loadProjects: projectApi.list,
+    talk: canTalk ? {
+      status: speechStatus,
+      synthesizeText,
+      voice: selectedVoice,
+      speed: playbackSpeed,
+      volume,
+      requestTimeout,
+      sessionId: chatActiveSessionId,
+      onStarted: () => { if (isPlaying) pauseNarration(); },
+    } : null,
   };
 
   return (

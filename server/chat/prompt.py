@@ -297,9 +297,16 @@ _TOOL_RESULTS_ARE_DATA = (
     "rounds are over: when you see it, answer from what you have, without calling a tool.")
 
 
+SPOKEN_RULE = (
+    "This conversation is spoken: your reply will be read aloud by a voice, and the person's words came from speech "
+    "recognition, so read past small mistakes. Answer the way a person talks: keep the first sentence to a few "
+    "words, then one or two short sentences unless they ask for more, in plain words, with no markdown, lists, "
+    "headings, links or symbols.")
+
+
 def system_rules(doc: ReadableDoc | None, tools: Iterable[_Offered], *, has_pins: bool,
                  prefetch: bool = False, today: str = "", profile: str = "", has_map: bool = False,
-                 project: ProjectScope | None = None) -> str:
+                 project: ProjectScope | None = None, spoken: bool = False) -> str:
     """The rules for this turn. `tools` are the ones offered on its first
     step; the orchestrator's last-round note covers the final tools-off step.
     `today`: "Today is …" to the day (context.today_line), or "" for none.
@@ -329,4 +336,6 @@ def system_rules(doc: ReadableDoc | None, tools: Iterable[_Offered], *, has_pins
     parts.append(_ATTACHED_FILE_RULE)
     if tools:
         parts.append(_TOOL_RESULTS_ARE_DATA)
+    if spoken:
+        parts.append(SPOKEN_RULE)
     return "\n\n".join(parts)

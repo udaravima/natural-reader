@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-11-03
+
+**Talk: a spoken conversation, back and forth, in the chat.** A button beside **Send**
+starts it: you speak, it answers aloud, and you cut in by speaking or by tapping the
+circle, while the words fill the chat like any other. It's for admins and anyone given
+the new **`talk` role**, ticked under **Admin → People**. English for now. No
+migrations; an existing Keycloak realm needs the `talk` role created once by hand.
+
+### Added
+
+- **Talk, a spoken conversation in the chat.** The button with the sound-wave icon
+  beside **Send**, in the chat and in the chat beside a page, on when voice input is.
+  It starts listening at once, and the typing box makes way for a circle, **Mute** and
+  **End** until you're done. Speak with no buttons. Listening happens in the browser,
+  so nothing leaves it until you speak. To cut in, just speak: the reply pauses at
+  once, a real interruption stops it and joins the conversation, and a cough lets it
+  carry on from the same word. Or tap the circle to stop it there. The model then
+  remembers only what you heard. The circle's halo grows with your voice, **Esc**
+  ends it, and a phone's screen stays on while you talk. **What it heard** shows every
+  clip's scores and timings. First sound arrives about 2.1 s after you stop speaking,
+  with `base.en` and a cloud model on a CPU.
+- **The `talk` capability.** Who may use Talk; an admin always may. A tick under
+  **Admin → People** and on the Enroll form, or the `talk` realm role in Keycloak
+  (applied at the next login). The server refuses a spoken turn without it (403
+  `missing_capability`), and a token's `chat` scope carries it. New realms get the role
+  from `deploy/keycloak/realm-export.json`.
+- **English-only speech models, `base.en` and `small.en`,** under **Admin → Chat
+  options → Speech model**. `base.en` is the quick one for Talk on a CPU (0.4 s a
+  clip against 1.0 s for `small`).
+- **`TTS_CPU_THREADS`** (default 6) and **`KOKORO_MODEL_PATH`**. Kokoro was slower on
+  every core than on six.
+
+### Fixed
+
+- **Someone holding only `talk` or `docling` sees "no access yet", not Loading forever.**
+  Both roles add to Reader or Chat and open no view of their own.
+- **An admin's header fits a phone.** It was 15 px too wide at 375 px and 30 px at
+  360 px; the padding is narrower there and the logo tile hides below 640 px.
+
 ## [2.5.1] - 2026-11-02
 
 **Every Kokoro voice is available, and each reads in its own language.** All 50 are

@@ -133,6 +133,23 @@ describe('AdminConsole — users', () => {
     await waitFor(() => expect(showToast).toHaveBeenCalledWith(ROLE_MISSING_MSG, 8000));
   });
 
+  it('gives someone Talk with the talk tick', async () => {
+    mount({ users: [user({ capabilities: ['reader', 'chat'] })] });
+    const row = await screen.findByTestId('user-row-u1');
+    fireEvent.click(within(row).getByRole('checkbox', { name: 'talk' }));
+    await waitFor(() => expect(calls('PATCH').length).toBe(1));
+    expect(lastBody('PATCH')).toEqual({ capabilities: ['chat', 'reader', 'talk'] });
+  });
+
+  it('can enroll someone with Talk', async () => {
+    mount({ users: [user()] });
+    fireEvent.change(await screen.findByLabelText('Enroll email'), { target: { value: 'n@example.com' } });
+    fireEvent.click(screen.getAllByRole('checkbox', { name: 'talk' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Enroll' }));
+    await waitFor(() => expect(calls('POST').length).toBe(1));
+    expect(lastBody('POST').capabilities).toEqual(['talk']);
+  });
+
   it('says which Keycloak role to create when enrolling with a capability the realm lacks', async () => {
     mount({
       users: [user()],

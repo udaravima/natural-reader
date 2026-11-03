@@ -32,6 +32,8 @@ import { estimateTokens } from "../hooks/inference";
 import { buildPinPreamble } from "../hooks/pins";
 import MicButton from "./chat/MicButton";
 import { useVoiceInput } from "../hooks/useVoiceInput";
+import { useSpeechWindow } from "../hooks/useSpeechWindow";
+import TalkPanel, { TalkButton } from "./speech/TalkPanel";
 import {
   fileToAttachment,
   IMAGE_ACCEPT,
@@ -103,6 +105,9 @@ export default function ChatView({
   apiHost = '',
   apiPort = '',
   speechLanguage = 'auto',
+  // Talk, the spoken conversation in this chat, for someone who may use it (App's canTalk), else null:
+  // { status, synthesizeText, voice, speed, volume, requestTimeout, onStarted, sessionId }.
+  talk = null,
 }) {
   const copyMessage = async (text) => {
     if (!text) return;
@@ -195,6 +200,31 @@ export default function ChatView({
     if (prevPhaseRef.current !== 'idle' && voice.phase === 'idle' && mayTakeFocus()) textareaRef.current?.focus();
     prevPhaseRef.current = voice.phase;
   }, [voice.phase]);
+  // ------ Talk ------
+  // The conversation runs in this chat: what is said goes in as messages, and the panel takes the typing box's
+  // place until End. The halo is moved straight from the microphone's frames, 31 a second, never through a render.
+  const orbRef = useRef(null);
+  const speech = useSpeechWindow({
+    apiHost, apiPort, sendMessage, stopStream, showToast, ...talk, settings: talk?.status?.window,
+    onLevel: (level) => orbRef.current?.style.setProperty('--level', String(level)),
+  });
+  const talking = speech.phase !== 'off';
+  const { end: endTalk } = speech;
+  // Another chat opened, or the right to talk gone: the conversation belongs to the chat it began in. A new chat
+  // getting its id from the first thing said is that same chat.
+  const talkChatRef = useRef(talk?.sessionId ?? null);
+  const talkSessionId = talk ? talk.sessionId ?? null : undefined;
+  useEffect(() => {
+    const before = talkChatRef.current;
+    talkChatRef.current = talkSessionId ?? null;
+    if (talkSessionId === undefined || (before !== null && talkSessionId !== before)) endTalk();
+  }, [talkSessionId, endTalk]);
+  const wasTalkingRef = useRef(false);
+  useEffect(() => {
+    if (wasTalkingRef.current && !talking && mayTakeFocus()) textareaRef.current?.focus();
+    wasTalkingRef.current = talking;
+  }, [talking]);
+
   // After the new draft is rendered: focus the box, caret just after the text.
   useEffect(() => {
     const pos = caretAfterRef.current;
@@ -561,93 +591,103 @@ export default function ChatView({
               ))}
             </div>
           )}
-          {viewing && (
-            <TextFileViewer
-              attachment={viewing}
-              theme={theme}
-              modelName={modelEntry?.name || selectedModel}
-              isCloud={modelEntry?.local === false}
-              onSendReal={() => allowRealValues(viewing.id)}
-              onClose={() => setViewingId(null)}
-            />
-          )}
-          {/* Pending attachments preview row */}
-          {pendingAttachments.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {pendingAttachments.map((att) => (
-                <AttachmentPreview
-                  key={att.id}
-                  attachment={att}
+          {talking ? (
+            <TalkPanel theme={theme} speech={speech} silenceMs={talk?.status?.window?.silence_ms ?? 0} orbRef={orbRef} />
+          ) : (
+            <>
+              {viewing && (
+                <TextFileViewer
+                  attachment={viewing}
                   theme={theme}
-                  darkMode={darkMode}
-                  onRemove={() => removePending(att.id)}
-                  onOpen={() => setViewingId(att.id)}
+                  modelName={modelEntry?.name || selectedModel}
+                  isCloud={modelEntry?.local === false}
+                  onSendReal={() => allowRealValues(viewing.id)}
+                  onClose={() => setViewingId(null)}
                 />
-              ))}
-            </div>
+              )}
+              {/* Pending attachments preview row */}
+              {pendingAttachments.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {pendingAttachments.map((att) => (
+                    <AttachmentPreview
+                      key={att.id}
+                      attachment={att}
+                      theme={theme}
+                      darkMode={darkMode}
+                      onRemove={() => removePending(att.id)}
+                      onOpen={() => setViewingId(att.id)}
+                    />
+                  ))}
+                </div>
+              )}
+
+              <div className="flex items-end gap-2">
+                {/* Paperclip — opens the picker for images and text files (audio
+                    files are refused; speaking is the microphone beside it) */}
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isStreaming}
+                  className={`p-3 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.textSecondary} hover:text-blue-500 transition-colors disabled:opacity-50`}
+                  title="Attach an image or a text file"
+                >
+                  <Paperclip size={18} />
+                </button>
+                <div ref={micRef} className="contents"><MicButton theme={theme} voice={voice} /></div>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileChange}
+                  accept={`${IMAGE_ACCEPT},${TEXT_ACCEPT}`}
+                  multiple
+                  className="hidden"
+                />
+
+                <textarea
+                  ref={textareaRef}
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  onPaste={handlePaste}
+                  placeholder={
+                    reachable === false
+                      ? "Can't reach the model server."
+                      : !selectedModel
+                        ? (compact ? "Pick a model above to start." : "Pick a model in the sidebar to start.")
+                        : "Ask the model, drop / paste / attach an image or a text file…  (Enter to send)"
+                  }
+                  rows={1}
+                  className={`flex-1 min-w-0 resize-none p-3 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.text} text-sm leading-relaxed outline-none focus:ring-2 focus:ring-blue-500 transition-colors`}
+                  style={{ maxHeight: "200px" }}
+                />
+                {talk && (
+                  <TalkButton theme={theme} status={talk.status} selectedModel={reachable === false ? '' : selectedModel}
+                    busy={isStreaming || voice.phase !== 'idle'} onStart={speech.start} />
+                )}
+                {isStreaming ? (
+                  <button
+                    onClick={stopStream}
+                    className="p-3 rounded-xl bg-red-500 hover:bg-red-600 text-white shadow-md transition-colors"
+                    title="Stop generation"
+                  >
+                    <Square size={18} fill="currentColor" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleSend}
+                    disabled={!canSend}
+                    className={`p-3 rounded-xl shadow-md transition-all ${
+                      canSend
+                        ? "bg-blue-600 hover:bg-blue-700 text-white"
+                        : `${theme.bgTertiary} ${theme.textMuted} opacity-50 cursor-not-allowed`
+                    }`}
+                    title="Send (Enter)"
+                  >
+                    <Send size={18} />
+                  </button>
+                )}
+              </div>
+            </>
           )}
-
-          <div className="flex items-end gap-2">
-            {/* Paperclip — opens the picker for images and text files (audio
-                files are refused; speaking is the microphone beside it) */}
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isStreaming}
-              className={`p-3 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.textSecondary} hover:text-blue-500 transition-colors disabled:opacity-50`}
-              title="Attach an image or a text file"
-            >
-              <Paperclip size={18} />
-            </button>
-            <div ref={micRef} className="contents"><MicButton theme={theme} voice={voice} /></div>
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleFileChange}
-              accept={`${IMAGE_ACCEPT},${TEXT_ACCEPT}`}
-              multiple
-              className="hidden"
-            />
-
-            <textarea
-              ref={textareaRef}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={handleKeyDown}
-              onPaste={handlePaste}
-              placeholder={
-                reachable === false
-                  ? "Can't reach the model server."
-                  : !selectedModel
-                    ? (compact ? "Pick a model above to start." : "Pick a model in the sidebar to start.")
-                    : "Ask the model, drop / paste / attach an image or a text file…  (Enter to send)"
-              }
-              rows={1}
-              className={`flex-1 min-w-0 resize-none p-3 rounded-xl border ${theme.border} ${theme.bgTertiary} ${theme.text} text-sm leading-relaxed outline-none focus:ring-2 focus:ring-blue-500 transition-colors`}
-              style={{ maxHeight: "200px" }}
-            />
-            {isStreaming ? (
-              <button
-                onClick={stopStream}
-                className="p-3 rounded-xl bg-red-500 hover:bg-red-600 text-white shadow-md transition-colors"
-                title="Stop generation"
-              >
-                <Square size={18} fill="currentColor" />
-              </button>
-            ) : (
-              <button
-                onClick={handleSend}
-                disabled={!canSend}
-                className={`p-3 rounded-xl shadow-md transition-all ${
-                  canSend
-                    ? "bg-blue-600 hover:bg-blue-700 text-white"
-                    : `${theme.bgTertiary} ${theme.textMuted} opacity-50 cursor-not-allowed`
-                }`}
-                title="Send (Enter)"
-              >
-                <Send size={18} />
-              </button>
-            )}
-          </div>
         </div>
       </div>
     </section>
