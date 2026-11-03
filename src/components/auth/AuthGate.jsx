@@ -1,6 +1,8 @@
 // Full-page auth gate. No router — App wraps its render in this and only the
 // `active` state mounts the app. Screens are intentionally minimal; they inherit
 // the page's default styling and can be skinned later if needed.
+import { hasAccess } from '../../lib/access';
+
 function Screen({ title, children }) {
   return (
     <div style={{
@@ -74,7 +76,7 @@ function NoAccessScreen({ onLogout, onRetry }) {
 export function AuthGate({ state, user, onLogin, onLogout, onRetry, children }) {
   switch (state) {
     case 'active':
-      if (!user?.capabilities?.length) {
+      if (!hasAccess(user)) {
         return <NoAccessScreen onLogout={onLogout} onRetry={onRetry} />;
       }
       return <>{children}</>;

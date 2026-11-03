@@ -40,6 +40,7 @@ import { createFsaWorkspace, createSnapshotWorkspace, pickEntryFile, isMarkdownP
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import { AuthGate } from './components/auth/AuthGate';
+import { hasAccess } from './lib/access';
 import PdfViewer from './components/PdfViewer';
 import ChatView from './components/ChatView';
 import ChatSidebar from './components/ChatSidebar';
@@ -1085,8 +1086,8 @@ export default function App() {
   // so an unauthenticated visitor sees the login/pending/disabled screen rather
   // than the app or its loading spinner. With AUTH_ENABLED=false on a loopback
   // backend, /v1/auth/me returns the seed admin → state 'active' → app renders.
-  // Also gate active users with no capabilities — they see NoAccessScreen.
-  if (auth.state !== 'active' || !(auth.user?.capabilities?.length)) {
+  // Also gate active users with no capability that opens a view — they see NoAccessScreen.
+  if (auth.state !== 'active' || !hasAccess(auth.user)) {
     return (
       <AuthGate
         state={auth.state}
