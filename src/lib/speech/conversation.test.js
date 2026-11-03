@@ -155,6 +155,56 @@ describe('createConversation', () => {
     expect(h.abort).not.toHaveBeenCalled();
   });
 
+  it('tapping the circle stops the reply and listens', async () => {
+    const h = harness();
+    await h.speak(SPEECH);
+    await h.reply('First part. Second part. ');
+    h.conversation.cutIn();
+    await tick();
+    expect(h.abort).toHaveBeenCalledTimes(1);
+    expect(h.audio.paused).toBe(true);
+    expect(h.phase()).toBe('listening');
+  });
+
+  it('what was heard before the tap goes with the next thing said', async () => {
+    const h = harness();
+    await h.speak(SPEECH);
+    await h.reply('First part. Second part. Third part. ');
+    h.audio.finish();
+    await tick();
+    h.audio.currentTime = 0.1;
+    h.conversation.cutIn();
+    await tick();
+    await h.speak({ ...SPEECH, text: 'Something else' });
+    expect(h.sends[1].text).toBe('Something else');
+    expect(h.sends[1].options.heard).toEqual({ messageId: 'a-1', chars: 11 });
+    expect(h.abort).toHaveBeenCalledTimes(1);
+  });
+
+  it('only the next message carries it', async () => {
+    const h = harness();
+    await h.speak(SPEECH);
+    await h.reply('First part. ');
+    h.conversation.cutIn();
+    await tick();
+    await h.speak({ ...SPEECH, text: 'One' });
+    await h.reply('Answer. ', 'a-2');
+    await h.finishReply();
+    h.audio.finish();
+    await tick();
+    await h.speak({ ...SPEECH, text: 'Two' });
+    expect(h.sends.map((t) => t.options.heard)).toEqual([undefined, { messageId: 'a-1', chars: 0 }, undefined]);
+  });
+
+  it('a tap with nothing playing changes nothing', async () => {
+    const h = harness();
+    h.conversation.begin();
+    h.conversation.cutIn();
+    await tick();
+    expect(h.abort).not.toHaveBeenCalled();
+    expect(h.phase()).toBe('listening');
+  });
+
   it('words that arrive together become one message', async () => {
     const h = harness();
     h.results.push({ ...SPEECH, text: 'First words' }, { ...SPEECH, text: 'and the rest' });

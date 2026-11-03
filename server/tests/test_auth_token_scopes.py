@@ -210,3 +210,11 @@ def test_the_documents_scope_lets_the_docling_role_through_and_read_aloud_does_n
     assert narrow(frozenset({"reader", "docling"}), frozenset({"read_aloud"})) == frozenset()
     assert narrow(account, frozenset({"chat"})) == {"chat"}
     assert narrow(account, None) == account
+
+
+def test_the_chat_scope_lets_the_talk_role_through():
+    from server.auth.scopes import narrow
+    account = frozenset({"reader", "chat", "talk"})
+    assert narrow(account, frozenset({"chat"})) == {"chat", "talk"}
+    assert narrow(account, frozenset({"documents"})) == {"reader"}
+    assert narrow(frozenset({"chat"}), frozenset({"chat"})) == {"chat"}

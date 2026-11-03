@@ -14,9 +14,6 @@ const VIEW_ORDER = ['reader', 'chat', 'admin'];
 // lands on the first permitted view.)
 const CAP_FREE_VIEWS = ['library'];
 
-// A view named after something other than the capability it needs.
-const VIEW_CAPS = { talk: 'chat' };
-
 /**
  * Boot coercion for the capability-gated views (reader/chat/admin): a persisted
  * viewMode is only valid while the current user actually holds the matching
@@ -35,8 +32,9 @@ export function useViewModeGuard({ viewMode, setViewMode, authState, caps }) {
   useEffect(() => {
     if (authState !== 'active') return;
     const capsList = caps ?? [];
-    // Permitted if it's a capability-free view, or the user holds its capability.
-    if (CAP_FREE_VIEWS.includes(viewMode) || capsList.includes(VIEW_CAPS[viewMode] ?? viewMode)) return;
+    // Permitted if it's a capability-free view, or a gated one whose capability the user holds. Not every
+    // capability is a view: `talk` and `docling` name none.
+    if (CAP_FREE_VIEWS.includes(viewMode) || (VIEW_ORDER.includes(viewMode) && capsList.includes(viewMode))) return;
     const fallback = VIEW_ORDER.find((v) => capsList.includes(v));
     if (fallback) setViewMode(fallback);
   }, [viewMode, setViewMode, authState, caps]);

@@ -45,6 +45,7 @@ export function useSpeechWindow(props) {
   const [muted, setMuted] = useState(false);
   const run = useRef(null);      // { conversation, mic, audio } while it's on
   const session = useRef(0);     // bumped by every start and end: a late microphone sees a new number
+  const awake = useRef(null);    // the screen's wake lock while talking: a phone that sleeps stops listening
   const latest = useLatest(props);
 
   const noteClip = useCallback((clip) => {
@@ -77,6 +78,18 @@ export function useSpeechWindow(props) {
     run.current = null;
     current?.conversation.end();
     current?.mic.destroy();
+    awake.current?.release().catch(() => {});
+    awake.current = null;
+  }, []);
+
+  // A browser without wake locks, or one that refuses (a phone saving its battery), talks all the same.
+  const keepAwake = useCallback(async () => {
+    const mine = session.current;
+    let lock;
+    try { lock = await navigator.wakeLock?.request('screen'); } catch { return; }
+    if (!lock) return;
+    if (mine !== session.current) { lock.release().catch(() => {}); return; }   // ended meanwhile
+    awake.current = lock;
   }, []);
 
   const start = useCallback(async () => {
@@ -107,6 +120,7 @@ export function useSpeechWindow(props) {
         onSpeechStarted: conversation.speechStarted,
         onSpeechFailed: conversation.speechFailed,
         onSpeechEnded: conversation.speechEnded,
+        onLevel: (level) => latest.current.onLevel?.(level),
       });
     } catch (e) {
       if (mine !== session.current) return;
@@ -118,7 +132,8 @@ export function useSpeechWindow(props) {
     run.current = { conversation, mic, audio };
     onStarted?.();
     conversation.begin();
-  }, [latest, transcribe, synthesize, noteClip]);
+    keepAwake();
+  }, [latest, transcribe, synthesize, noteClip, keepAwake]);
 
   const end = useCallback(() => {
     close();
@@ -133,7 +148,16 @@ export function useSpeechWindow(props) {
     setMuted(!muted);
   }, [muted]);
 
+  const cutIn = useCallback(() => { run.current?.conversation.cutIn(); }, []);
+
+  // Hiding the page lets the screen sleep again: ask again when it comes back.
+  useEffect(() => {
+    const again = () => { if (run.current && document.visibilityState === 'visible') keepAwake(); };
+    document.addEventListener('visibilitychange', again);
+    return () => document.removeEventListener('visibilitychange', again);
+  }, [keepAwake]);
+
   useEffect(() => close, [close]);
 
-  return { phase, clips, muted, start, end, toggleMute };
+  return { phase, clips, muted, start, end, toggleMute, cutIn };
 }

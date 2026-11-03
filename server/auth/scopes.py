@@ -8,7 +8,7 @@ no scopes (None) has full access, as every token did before migration 019.
     read_aloud  the two TTS routes            needs `reader`
     documents   everything `reader` gates     needs `reader` (includes read_aloud), and lets the
                 and Docling conversion        account's `docling` role through (conversion is document work)
-    chat        everything `chat` gates       needs `chat`
+    chat        everything `chat` gates       needs `chat`, and lets the account's `talk` role through
     admin       everything `admin` gates      needs `admin`
 """
 from __future__ import annotations
@@ -20,7 +20,7 @@ REQUIRES = {"read_aloud": "reader", "documents": "reader", "chat": "chat", "admi
 
 # The capabilities a scope lets through to require_capability. read_aloud lets
 # none through: only require_read_aloud honours it.
-_PASSES = {"documents": {"reader", "docling"}, "chat": {"chat"}, "admin": {"admin"}}
+_PASSES = {"documents": {"reader", "docling"}, "chat": {"chat", "talk"}, "admin": {"admin"}}
 
 
 def narrow(capabilities: frozenset[str], scopes: frozenset[str] | None) -> frozenset[str]:

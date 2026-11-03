@@ -27,6 +27,7 @@ export function createConversation({
   const waiting = [];       // clips still to be transcribed
   const accepted = [];      // { text, clip } waiting for the person to finish
   let lastSpoken = null;    // the latest reply to make a sound: { said, finishedAt }
+  let cut = null;           // a reply the person stopped with a tap: { heard, sending }, for their next message
 
   const phase = () => {
     if (ended) return 'off';
@@ -53,6 +54,10 @@ export function createConversation({
     if (!heardSpeech(result, settings)) return 'noise';
     return isEcho(result.text, echoable(clip)) ? 'echo' : 'speech';
   };
+
+  // How much of a reply was heard, if it was stopped before its end: the model is to remember only that.
+  const heardOf = (turn) => (turn.messageId && !turn.spoken.playedAll()
+    ? { messageId: turn.messageId, chars: turn.spoken.heardChars() } : undefined);
 
   const startReply = (text, clip, heard) => {
     const turn = { messageId: null, playing: false, spoken: null, sending: null, said: [], finishedAt: null };
@@ -102,17 +107,19 @@ export function createConversation({
 
   const interruptWith = async (text, clip) => {
     const before = reply;
-    let heard;
-    if (before) {
+    const tapped = cut;
+    cut = null;
+    let heard = tapped?.heard;
+    if (before || tapped) {
       reply = null;
       switching = true;
       emit();
-      if (before.messageId && !before.spoken.playedAll()) {
-        heard = { messageId: before.messageId, chars: before.spoken.heardChars() };
+      if (before) {
+        heard = heardOf(before);
+        before.spoken.stop();
+        abort();
       }
-      before.spoken.stop();
-      abort();
-      await before.sending;
+      await (before ?? tapped).sending;   // the chat takes one message at a time
       switching = false;
     }
     if (ended) return;
@@ -185,6 +192,16 @@ export function createConversation({
       onClip?.(clip);
       waiting.push({ clip, samples });
       drain();
+    },
+    /** The person tapped to stop the reply: it stops where it is, and listening carries on. */
+    cutIn() {
+      if (!reply || ended) return;
+      const before = reply;
+      reply = null;
+      cut = { heard: heardOf(before), sending: before.sending };
+      before.spoken.stop();
+      abort();
+      emit();
     },
     end() {
       ended = true;

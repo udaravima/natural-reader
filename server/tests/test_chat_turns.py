@@ -59,12 +59,27 @@ async def _one(conn, sql, params=()):
     return await cur.fetchone()
 
 
+SPOKEN = {**BODY, "context": {"timezone": "UTC", "spoken": True}}
+
+
 async def test_a_spoken_turn_asks_for_a_short_plain_reply(db_conn, app):
     _, fake, _ = app
-    alice = await member(db_conn, "alice")
-    body = {**BODY, "context": {"timezone": "UTC", "spoken": True}}
-    assert (await _post(app, alice, body=body)).status_code == 200
+    alice = await member(db_conn, "alice", caps=("chat", "talk"))
+    assert (await _post(app, alice, body=SPOKEN)).status_code == 200
     assert "read aloud" in fake.calls[0]["messages"][0].content
+
+
+async def test_a_spoken_turn_needs_the_talk_role(db_conn, app):
+    _, fake, _ = app
+    r = await _post(app, await member(db_conn, "alice"), body=SPOKEN)
+    assert r.status_code == 403
+    assert r.json()["detail"] == {"error": "missing_capability", "capability": "talk"}
+    assert fake.calls == []
+
+
+async def test_an_admin_may_always_talk(db_conn, app):
+    admin = await member(db_conn, "root", caps=("chat", "admin"))
+    assert (await _post(app, admin, body=SPOKEN)).status_code == 200
 
 
 async def test_a_typed_turn_does_not(db_conn, app):

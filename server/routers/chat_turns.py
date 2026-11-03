@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, Validation
 from starlette.types import Receive, Scope, Send
 
 from ..auth.authz import require_project_role
+from ..auth.capabilities import may_talk
 from ..auth.deps import Principal, require_capability
 from ..chat import store
 from ..chat.config import get_chat_config
@@ -348,6 +349,8 @@ async def post_turn(session_id: SessionId, request: Request,
     except ValidationError as e:
         raise refusal(422, "invalid_request", "The request is malformed.",
                       errors=e.errors(include_url=False, include_input=False, include_context=False))
+    if body.context.spoken and not may_talk(principal.capabilities):
+        raise HTTPException(status_code=403, detail={"error": "missing_capability", "capability": "talk"})
 
     # Ruling R4/ownership order: session_info() only informs refusals BEFORE
     # begin_turn; begin_turn's own NotOwner (below) is the actual authority,

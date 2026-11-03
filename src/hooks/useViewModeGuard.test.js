@@ -11,15 +11,10 @@ describe('useViewModeGuard', () => {
     expect(setViewMode).toHaveBeenCalledWith('reader');
   });
 
-  it('keeps Talk for a person who can chat', () => {
+  // Talk was a view while it was being built, and `talk` is a role: the role names no view.
+  it('a view that is gone moves on, even for someone holding a role of the same name', () => {
     const setViewMode = vi.fn();
-    renderHook(() => useViewModeGuard({ viewMode: 'talk', setViewMode, authState: 'active', caps: ['chat'] }));
-    expect(setViewMode).not.toHaveBeenCalled();
-  });
-
-  it('moves a person who can\'t chat out of Talk', () => {
-    const setViewMode = vi.fn();
-    renderHook(() => useViewModeGuard({ viewMode: 'talk', setViewMode, authState: 'active', caps: ['reader'] }));
+    renderHook(() => useViewModeGuard({ viewMode: 'talk', setViewMode, authState: 'active', caps: ['reader', 'chat', 'talk'] }));
     expect(setViewMode).toHaveBeenCalledWith('reader');
   });
 

@@ -10,7 +10,8 @@
       { "name": "reader" },
       { "name": "chat" },
       { "name": "admin" },
-      { "name": "docling" }
+      { "name": "docling" },
+      { "name": "talk" }
     ]
   },
   "clients": [

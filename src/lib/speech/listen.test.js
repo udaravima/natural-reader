@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { listen } from './listen';
+import { listen, levelOf } from './listen';
 
 const made = vi.hoisted(() => ({ options: null, vad: null }));
 vi.mock('@ricky0123/vad-web', () => ({
@@ -17,7 +17,8 @@ const frames = (score, count) => {
   for (let i = 0; i < count; i += 1) made.options.onFrameProcessed({ isSpeech: score });
 };
 
-beforeEach(async () => { await listen({ settings: SETTINGS }); });
+const onLevel = vi.fn();
+beforeEach(async () => { onLevel.mockClear(); await listen({ settings: SETTINGS, onLevel }); });
 
 describe('listen', () => {
   it('listens with the server\'s settings, from files served by this app', () => {
@@ -55,5 +56,29 @@ describe('listen', () => {
   it('a score between the two thresholds isn\'t silence', () => {
     frames(0.4, 50);
     expect(made.vad.model.reset_state).not.toHaveBeenCalled();
+  });
+
+  it('reports how loud each frame is, for the circle to move with', () => {
+    made.options.onFrameProcessed({ isSpeech: 0.9 }, new Float32Array(512).fill(0.5));
+    made.options.onFrameProcessed({ isSpeech: 0.1 }, new Float32Array(512));
+    expect(onLevel.mock.calls).toEqual([[1], [0]]);
+  });
+});
+
+describe('levelOf', () => {
+  const tone = (amplitude) => Float32Array.from({ length: 512 }, (_, i) => amplitude * Math.sin(i / 3));
+
+  it('is 0 in silence and 1 for loud speech, near the microphone', () => {
+    expect(levelOf(new Float32Array(512))).toBe(0);
+    expect(levelOf(tone(0.003))).toBe(0);   // about -54 dBFS, a quiet room
+    expect(levelOf(tone(0.5))).toBe(1);     // about -9 dBFS
+  });
+
+  it('grows with the loudness in between', () => {
+    const soft = levelOf(tone(0.02));
+    const louder = levelOf(tone(0.1));
+    expect(soft).toBeGreaterThan(0);
+    expect(louder).toBeGreaterThan(soft);
+    expect(louder).toBeLessThan(1);
   });
 });

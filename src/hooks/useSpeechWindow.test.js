@@ -117,6 +117,68 @@ describe('useSpeechWindow', () => {
     expect(result.current.muted).toBe(false);
   });
 
+  it('passes the voice level on, for the circle', async () => {
+    listen.mockResolvedValue(mic());
+    const onLevel = vi.fn();
+    const { result } = renderHook(() => useSpeechWindow(baseProps({ onLevel })));
+    await act(async () => { await result.current.start(); });
+    listen.mock.calls[0][0].onLevel(0.4);
+    expect(onLevel).toHaveBeenCalledWith(0.4);
+  });
+
+  it('a tap on the circle stops the reply but keeps listening', async () => {
+    const opened = mic();
+    listen.mockResolvedValue(opened);
+    apiFetch.mockResolvedValue(transcribed({ text: 'Tell me a story', no_speech: 0.02, avg_logprob: -0.2 }));
+    const props = baseProps({ sendMessage: vi.fn(() => new Promise(() => {})) });
+    const { result } = renderHook(() => useSpeechWindow(props));
+    await act(async () => { await result.current.start(); });
+    await act(async () => { listen.mock.calls[0][0].onSpeechEnded(new Float32Array(1600)); });
+    await waitFor(() => expect(props.sendMessage).toHaveBeenCalled());
+    act(() => { result.current.cutIn(); });
+    expect(props.stopStream).toHaveBeenCalledTimes(1);
+    expect(opened.destroy).not.toHaveBeenCalled();
+    expect(result.current.phase).toBe('listening');
+  });
+
+  it('keeps the screen awake while talking, and lets it sleep after', async () => {
+    const lock = { release: vi.fn(async () => {}) };
+    const request = vi.fn(async () => lock);
+    Object.defineProperty(navigator, 'wakeLock', { value: { request }, configurable: true });
+    onTestFinished(() => { delete navigator.wakeLock; });
+    listen.mockResolvedValue(mic());
+    const { result } = renderHook(() => useSpeechWindow(baseProps()));
+    await act(async () => { await result.current.start(); });
+    expect(request).toHaveBeenCalledWith('screen');
+    act(() => { result.current.end(); });
+    await waitFor(() => expect(lock.release).toHaveBeenCalled());
+  });
+
+  it('asks again when the page comes back, since hiding it lets the screen sleep', async () => {
+    const request = vi.fn(async () => ({ release: vi.fn(async () => {}) }));
+    Object.defineProperty(navigator, 'wakeLock', { value: { request }, configurable: true });
+    onTestFinished(() => { delete navigator.wakeLock; });
+    listen.mockResolvedValue(mic());
+    const { result } = renderHook(() => useSpeechWindow(baseProps()));
+    await act(async () => { await result.current.start(); });
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+    expect(request).toHaveBeenCalledTimes(2);
+    act(() => { result.current.end(); });
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it('a screen that may not stay awake changes nothing', async () => {
+    Object.defineProperty(navigator, 'wakeLock', {
+      value: { request: vi.fn(async () => { throw new Error('NotAllowedError'); }) }, configurable: true,
+    });
+    onTestFinished(() => { delete navigator.wakeLock; });
+    listen.mockResolvedValue(mic());
+    const { result } = renderHook(() => useSpeechWindow(baseProps()));
+    await act(async () => { await result.current.start(); });
+    expect(result.current.phase).toBe('listening');
+  });
+
   it('a refused clip shows the server\'s words', async () => {
     listen.mockResolvedValue(mic());
     apiFetch.mockResolvedValue({
