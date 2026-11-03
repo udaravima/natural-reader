@@ -144,6 +144,19 @@ async def test_each_refusal_tells_the_person_and_the_admin_what_they_need(code, 
     assert admin in caught.value.detail and admin in caplog.text   # the admin finds it in the log
 
 
+async def test_a_403_for_an_api_thats_off_tells_the_admin_which_and_where(caplog):
+    caplog.set_level(logging.WARNING)
+    off = {"error": {"code": 403, "message": "Cloud Text-to-Speech API has not been used in project p-9 before.",
+                     "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "SERVICE_DISABLED",
+                                  "metadata": {"serviceTitle": "Cloud Text-to-Speech API",
+                                               "consumer": "projects/p-9"}}]}}
+    with pytest.raises(GoogleVoiceError) as caught:
+        await _speak(lambda r: httpx.Response(403, json=off))
+    assert caught.value.status == 503 and "Ask your admin" in str(caught.value)
+    assert "Cloud Text-to-Speech API is off in project p-9" in caught.value.detail
+    assert "Vertex AI User" not in caught.value.detail and "off in project p-9" in caplog.text
+
+
 async def test_a_hung_google_is_a_gateway_timeout():
     def handler(request):
         raise httpx.ReadTimeout("slow", request=request)

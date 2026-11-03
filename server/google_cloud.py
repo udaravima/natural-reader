@@ -67,6 +67,22 @@ async def access_token() -> tuple[str, str | None]:
         return _credentials.token, _project or os.environ.get("GOOGLE_CLOUD_PROJECT") or None
 
 
+def service_off(response) -> str | None:
+    """For a 403, Google's word that the API is switched off in the project it bills, as a sentence for the admin
+    (which API, which project); None when the 403 is something else, such as a missing role."""
+    try:
+        error = response.json().get("error") or {}
+    except (ValueError, AttributeError):
+        return None
+    for detail in error.get("details") or ():
+        if isinstance(detail, dict) and detail.get("reason") == "SERVICE_DISABLED":
+            meta = detail.get("metadata") or {}
+            api = meta.get("serviceTitle") or meta.get("service") or "Google API"
+            project = str(meta.get("consumer") or "").removeprefix("projects/") or "the project Google bills"
+            return f"The {api} is off in project {project}: enable it there (APIs & Services → Library)"
+    return None
+
+
 def reset_for_tests() -> None:
     global _credentials, _project, _lock
     _credentials, _project, _lock = None, None, None

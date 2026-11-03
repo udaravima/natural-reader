@@ -74,6 +74,7 @@ class GoogleSpeech:
         self._location = match.group(2) if match else ""
         self.model = match.group(3) if match else ""    # the recognizer's id, until its model is read
         self.languages: tuple[str, ...] = ()            # the app's codes, from the recognizer: empty is every one
+        self.auto_hears: str | None = None              # the one language Auto gets, when it can't detect (below)
         self.where = "Google Cloud"
         self._codes: tuple[str, ...] = ()               # the recognizer's own codes, such as en-GB
         self._transport = transport
@@ -123,7 +124,7 @@ class GoogleSpeech:
             logger.warning("Google recognizer probe failed: %s", type(e).__name__)
             return EngineStatus(False, "error", _DIDNT_ANSWER)
         if r.status_code != 200:
-            return EngineStatus(False, "error", self._refusal(r.status_code)[1])
+            return EngineStatus(False, "error", self._refusal(r)[1])
         try:
             body = r.json()
         except ValueError:
@@ -132,14 +133,19 @@ class GoogleSpeech:
         codes = tuple(str(c) for c in body.get("languageCodes") or () if c)
         self._codes = codes
         self.languages = tuple(dict.fromkeys(_primary(c) for c in codes if c != "auto"))
+        # Asked for no language, a recognizer with several hears its first one, whatever is spoken (`long`, live
+        # 2026-11-03: English came back as Sinhala). Only `auto` (chirp_3) detects the language.
+        self.auto_hears = self.languages[0] if len(self.languages) > 1 and "auto" not in codes else None
         return EngineStatus(True, "ready", "")
 
     @staticmethod
-    def _refusal(code: int) -> tuple[type, str]:
+    def _refusal(r: httpx.Response) -> tuple[type, str]:
+        code = r.status_code
         if code == 401:
             return EngineUnavailable, _REFUSED
         if code == 403:
-            return EngineUnavailable, _FORBIDDEN
+            off = google_cloud.service_off(r)
+            return EngineUnavailable, f"{off}, or check the project in GOOGLE_SPEECH_RECOGNIZER" if off else _FORBIDDEN
         if code == 404:
             return EngineUnavailable, _MISSING
         if code == 429:
@@ -178,7 +184,7 @@ class GoogleSpeech:
             raise EngineFailed(f"Google refused the recording: {self._message(r)}")
         if r.status_code != 200:
             logger.warning("Google recognize answered %s", r.status_code)
-            kind, words = self._refusal(r.status_code)
+            kind, words = self._refusal(r)
             raise kind(words)
         try:
             results = r.json().get("results") or []

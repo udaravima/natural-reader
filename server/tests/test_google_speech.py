@@ -88,6 +88,37 @@ async def test_a_recognizer_it_cant_use_says_why(code, words):
     assert status.state == "error" and words in status.detail
 
 
+# What Google answered live (2026-11-03) for a recognizer name whose project doesn't have Speech-to-Text on.
+SERVICE_OFF = {"error": {"code": 403, "status": "PERMISSION_DENIED",
+                         "message": "Cloud Speech-to-Text API has not been used in project p-9 before or it is disabled.",
+                         "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "SERVICE_DISABLED",
+                                      "metadata": {"serviceTitle": "Cloud Speech-to-Text API",
+                                                   "service": "speech.googleapis.com",
+                                                   "consumer": "projects/p-9"}}]}}
+
+
+async def test_a_403_for_an_api_thats_off_names_the_api_and_the_project_not_a_role():
+    engine = _engine(lambda r: httpx.Response(403, json=SERVICE_OFF))
+    status = await engine.status()
+    assert "Cloud Speech-to-Text API is off in project p-9" in status.detail
+    assert "GOOGLE_SPEECH_RECOGNIZER" in status.detail and "Cloud Speech Client" not in status.detail
+    with pytest.raises(EngineUnavailable, match="off in project p-9"):
+        await engine.transcribe(_wav(1), "audio/wav", None)
+
+
+@pytest.mark.parametrize("codes, hears", [
+    (["si-LK", "ta-IN", "en-GB"], "si"),   # live 2026-11-03, model long: English came back as Sinhala
+    (["en-GB"], None),                     # one language: there is nothing else Auto could mean
+    (["auto"], None),                      # chirp_3's own detection
+    ([], None),
+])
+async def test_auto_on_a_recognizer_with_several_languages_hears_the_first(codes, hears):
+    engine = _engine(lambda r: httpx.Response(200, json={**RECOGNIZER, "languageCodes": codes}))
+    assert engine.auto_hears is None   # unknown until the recognizer is read
+    await engine.status()
+    assert engine.auto_hears == hears
+
+
 async def test_credentials_that_dont_work_are_a_status_in_words():
     async def broken():
         raise google_cloud.GoogleAuthError("The key file isn't a service-account key.")

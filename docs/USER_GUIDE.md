@@ -917,6 +917,10 @@ How good the result is depends on the language and the speech model: the default
 model is much better at English and Spanish than at many others, and an admin can
 choose another one (below). When the server's model is made for one language, the
 row says so, and Auto listens for that language. Other languages may come out wrong.
+When Google hears speech, the list holds only the languages its recognizer knows, and
+a recognizer that can't tell them apart says so: **Auto (Sinhala on this server)**, with
+"Auto hears only Sinhala: pick the language you speak" under it. Then pick yours, or
+English and Tamil come out as Sinhala.
 
 **What it does with your recording.** The server turns it into text and forgets it:
 it isn't saved by the app to disk, the database or a log. With the default engine it never
@@ -967,7 +971,11 @@ server that has Google Cloud set up ([DEPLOYMENT.md](DEPLOYMENT.md#google-cloud-
 
 Both save at once and apply from the next recording or sentence. Google bills per use,
 and **Admin → Overview** says on its **Voice input** and **Chat voice** lines whether
-Google accepts this server's key.
+Google accepts this server's key, and when the recognizer's Auto hears only one
+language. Google's voice is slower to start than Kokoro: in one live check Talk's
+first sound took about 7 s with Google speaking English, against about 3 s with Google
+hearing and Kokoro speaking. For English, Kokoro is the quicker voice; for Sinhala and
+Tamil, Google is the only one.
 
 ## Talking with the assistant
 

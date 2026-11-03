@@ -100,7 +100,7 @@ async def speech_status(access: SpeechAccess = Depends(speech_access)):
     """What the composer needs to draw the microphone: on or off, ready or not, and the languages, with the ones
     the model is made for (`model_languages`, empty for every language). When voice is off no engine is built,
     probed or warmed. Whatever the engine says, this answers 200."""
-    base = {"max_seconds": MAX_SECONDS, "languages": _languages(), "window": window.settings()}
+    base = {"max_seconds": MAX_SECONDS, "languages": _languages(), "window": window.settings(), "auto_hears": None}
     if not access.voice_on:
         return {"enabled": False, "ready": False, "state": "off", **base}
     engine = access.engine()
@@ -116,6 +116,12 @@ async def speech_status(access: SpeechAccess = Depends(speech_access)):
     # After the check: a remote engine learns its languages from it (Google reads its recognizer).
     base["model_languages"] = [WHISPER_LANGUAGES[code] for code in getattr(engine, "languages", ())
                                if code in WHISPER_LANGUAGES]
+    # Google refuses a language its recognizer doesn't list, so only those are offered; and a recognizer that
+    # can't detect the language hears one for Auto, which Settings names.
+    if engine.name == "google" and getattr(engine, "languages", ()):
+        base["languages"] = [lang for lang in base["languages"] if lang["code"] in engine.languages]
+    hears = getattr(engine, "auto_hears", None)
+    base["auto_hears"] = WHISPER_LANGUAGES.get(hears) if hears else None
     if status is None:
         return {"enabled": True, "ready": False, "state": "error", **base}
     service.heal(engine, status)

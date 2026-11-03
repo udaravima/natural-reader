@@ -245,6 +245,7 @@ function VoicePanel({ theme, v }) {
 function useSpeechLanguages(apiHost, apiPort, canChat) {
     const [languages, setLanguages] = useState(null);
     const [modelLanguages, setModelLanguages] = useState([]);   // what the server's model is made for; empty: everything
+    const [autoHears, setAutoHears] = useState(null);           // the one language Auto gets, when it can't detect
     useEffect(() => {
         // /v1/speech/status needs the chat capability: without it the answer is a 403 that makes the app re-check
         // the session. Don't ask.
@@ -258,11 +259,12 @@ function useSpeechLanguages(apiHost, apiPort, canChat) {
                 if (cancelled || body?.enabled !== true || !Array.isArray(body.languages)) return;
                 setLanguages([...body.languages].sort((a, b) => a.name.localeCompare(b.name)));
                 setModelLanguages(Array.isArray(body.model_languages) ? body.model_languages : []);
+                setAutoHears(typeof body.auto_hears === 'string' ? body.auto_hears : null);
             } catch { /* the row stays hidden */ }
         })();
         return () => { cancelled = true; };
     }, [apiHost, apiPort, canChat]);
-    return { speechLanguages: canChat ? languages : null, modelLanguages };
+    return { speechLanguages: canChat ? languages : null, modelLanguages, autoHears };
 }
 
 // Who reads the chat's replies (spec 2026-11-03-google-speech): null until known, or for Kokoro, which reads with
@@ -286,7 +288,7 @@ function useChatVoice(apiHost, apiPort, canChat) {
 }
 
 function ChatPanel({ theme, ch }) {
-    const { speechLanguages, modelLanguages } = useSpeechLanguages(ch.apiHost, ch.apiPort, ch.canChat);
+    const { speechLanguages, modelLanguages, autoHears } = useSpeechLanguages(ch.apiHost, ch.apiPort, ch.canChat);
     const chatVoice = useChatVoice(ch.apiHost, ch.apiPort, ch.canChat);
     // Which model's per-model inference knobs are being edited (defaults to the
     // active chat model). Editing writes inferenceByModel[configModel] via the
@@ -339,13 +341,17 @@ function ChatPanel({ theme, ch }) {
                             value={speechLanguages.some((l) => l.code === ch.speechLanguage) ? ch.speechLanguage : 'auto'}
                             onChange={ch.setSpeechLanguage}
                             options={[
-                                { value: 'auto', label: 'Auto (detect the language)' },
+                                { value: 'auto', label: autoHears ? `Auto (${autoHears} on this server)` : 'Auto (detect the language)' },
                                 ...speechLanguages.map((l) => ({ value: l.code, label: l.name })),
                             ]}
                             className={`w-full ${input}`}
                         />
                         <p className={`text-[9px] ${theme.textMuted}`}>What you speak into the microphone button in the message box.</p>
-                        {modelLanguages.length > 0 && (
+                        {autoHears ? (
+                            <p className={`text-[9px] ${theme.textMuted}`}>
+                                This server&apos;s speech recognizer can&apos;t tell languages apart, so Auto hears only {autoHears}: pick the language you speak.
+                            </p>
+                        ) : modelLanguages.length > 0 && (
                             <p className={`text-[9px] ${theme.textMuted}`}>
                                 This server&apos;s speech model is made for {modelLanguages.join(' and ')}. Auto listens for that, and other languages may come out wrong.
                             </p>

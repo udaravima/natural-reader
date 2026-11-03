@@ -699,6 +699,31 @@ async def test_status_says_who_hears_and_how_long_a_recording_may_be(db_conn, en
     assert (body["heard_by"], body["max_seconds"]) == ("Google Cloud", 55)   # Google takes a minute at most
 
 
+async def test_google_offers_only_its_recognizers_languages_and_says_what_auto_hears(db_conn, engine, monkeypatch):
+    await _voice(db_conn, True)
+    async with _client(db_conn) as c:
+        body = (await c.get(STATUS)).json()
+    assert body["auto_hears"] is None and len(body["languages"]) == len(WHISPER_LANGUAGES)
+    engine.name, engine.where = "google", "Google Cloud"
+    engine.languages, engine.auto_hears = ("si", "ta", "en"), "si"
+    monkeypatch.setenv("SPEECH_ENGINE", "google")
+    async with _client(db_conn) as c:
+        body = (await c.get(STATUS)).json()
+    # Any other language Google would refuse: the person isn't offered it.
+    assert body["languages"] == [{"code": "en", "name": "English"}, {"code": "si", "name": "Sinhala"},
+                                 {"code": "ta", "name": "Tamil"}]
+    assert body["auto_hears"] == "Sinhala"
+
+
+async def test_a_google_recognizer_for_every_language_offers_them_all(db_conn, engine, monkeypatch):
+    await _voice(db_conn, True)
+    engine.name, engine.languages, engine.auto_hears = "google", (), None
+    monkeypatch.setenv("SPEECH_ENGINE", "google")
+    async with _client(db_conn) as c:
+        body = (await c.get(STATUS)).json()
+    assert len(body["languages"]) == len(WHISPER_LANGUAGES) and body["auto_hears"] is None
+
+
 async def test_languages_learned_by_the_status_check_are_in_the_same_answer(db_conn, engine):
     await _voice(db_conn, True)
     engine.languages = ()

@@ -657,6 +657,15 @@ async def test_voice_ready_names_engine_model_and_place(db_conn, voice):
     assert (c.state, c.summary) == ("ok", "local · small · runs on this server")
 
 
+async def test_a_recognizer_whose_auto_hears_one_language_says_so_and_what_to_do(db_conn, voice):
+    v = voice(status=EngineStatus(True, "ready", ""))
+    v.name, v.model, v.where, v.auto_hears = "google", "long", "Google Cloud", "si"
+    c = await _voice_check(db_conn, env={"CHAT_VOICE_INPUT": "on", "SPEECH_ENGINE": "google"})
+    assert c.state == "ok" and c.summary.startswith("google · long · runs on Google Cloud. ")
+    assert "Auto hears only Sinhala" in c.summary
+    assert "chirp_3" in c.summary and "Defaults" in c.summary
+
+
 async def test_voice_loading_is_a_warning(db_conn, voice):
     voice(status=EngineStatus(False, "loading", "Loading the model"))
     c = await _voice_check(db_conn)

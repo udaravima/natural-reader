@@ -36,6 +36,7 @@ from ..llm.router import ModelInfo, UnknownModel
 from .. import chat_voice, google_cloud
 from . import assistant_profile, chat_options, docling_convert, embeddings, model_router, model_settings, web_search
 from ..speech import catalogue as speech_catalogue, service as speech_service
+from ..speech.languages import WHISPER_LANGUAGES
 from .deployment_info import NOT_A_URL, url_host
 from .doc_search import ReadableDoc
 from .inference_limits import InferenceLimits, clamp, load_inference_limits
@@ -305,7 +306,13 @@ async def _voice_input(options, env: Mapping[str, str] = os.environ) -> Check:
                                             engine=speech_service.chosen_engine(options, env))
     status = await engine.status()
     if status.state == "ready":
-        return _check("voice_input", "ok", f"{engine.name} · {engine.model} · runs on {engine.where}")
+        summary = f"{engine.name} · {engine.model} · runs on {engine.where}"
+        hears = getattr(engine, "auto_hears", None)
+        if hears:
+            summary += (f". Auto hears only {WHISPER_LANGUAGES.get(hears, hears)} with this recognizer: people "
+                        "should pick their language in Settings, or set Speech language in Defaults. For Auto "
+                        "across languages, use a chirp_3 recognizer with the language auto.")
+        return _check("voice_input", "ok", summary)
     if status.state == "loading":
         return _check("voice_input", "warn", f"Getting ready: downloading or loading {engine.model}.")
     return _check("voice_input", "error", status.detail or "The speech engine isn't working.")
