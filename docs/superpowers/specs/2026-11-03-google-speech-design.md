@@ -1,6 +1,6 @@
 # Google speech for the chat and Talk
 
-**Date:** 2026-11-03. **Status:** draft, for the owner's approval. Builds on the speech window
+**Date:** 2026-11-03. **Status:** approved by the owner 2026-11-03 ("go ahead"); built on `feat/google-speech`. Builds on the speech window
 (`2026-11-02-speech-window-design.md`) and v2.6.0.
 
 ## Why
@@ -122,11 +122,14 @@ voice leaves the server.
 - **Limits:** Google takes at most 4,000 bytes of text per call. Talk sends single
   sentences, and the chat's read-aloud already splits replies, so one sentence over the
   limit is refused with a 413, as `/v1/synthesize` does.
-- **Frontend:** Talk's synthesis, the chat's **Read aloud** and a chat message's **Audio**
-  download call `/v1/chat/voice`. The reader, the audiobook and the extension keep
-  `/v1/synthesize`. `/v1/speech/status` gains `chat_voice: {engine, voice, where}`, so
-  **Settings → Voice** can say "Chat replies use Google's voice Kore; your voice below reads
-  documents."
+- **Frontend:** Talk's synthesis and the chat's **Read aloud** call `/v1/chat/voice`.
+  (Built differently, 2026-11-03: a chat message's **Audio** download stays on Kokoro. It
+  builds one file from many sentences through the batch route, like the audiobook. A
+  refused sentence shows the server's reason as a toast, at most once in 10 seconds, so a
+  Google failure is never silent.) The reader, the audiobook and the extension keep
+  `/v1/synthesize`. `GET /v1/chat/voice` answers `{engine, voice, where}`, so
+  **Settings → Chat** can say "Replies and Talk are read by Google's voice Kore…; your voice
+  in Voice & reading still reads documents."
 - **Who may:** Read aloud in the chat needs `chat`, plus `reader` as it does now. Talk is
   unchanged: `talk`, `chat`, `reader`.
 - **The person's browser voice still wins.** Someone who chose the browser's own speech

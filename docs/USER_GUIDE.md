@@ -369,6 +369,7 @@ changes it.
 | **Docling** | Whether conversion is on |
 | **Web search** | Whether the search server answers |
 | **Voice input** | **Off** ("Off. Admin → Chat options turns it on."), **Warning** while the speech model downloads or loads ("Getting ready: downloading or loading small."), **OK** when it is ready ("local · small · runs on this server", or the host a remote engine calls), or **Problem** with the reason when it isn't working |
+| **Chat voice** | **OK** with who reads the chat and Talk ("Kokoro on this server…", or Google Gemini-TTS with its model and voice, and that replies are sent to Google Cloud), or **Problem** when Google refuses this server's key, with Google's reason |
 
 **Context windows** gives each model the number the app works with, and says
 where it came from. First match wins:
@@ -953,6 +954,21 @@ with a **Remove**, whether it's in use or not. A model that can't run on this se
 shows greyed out, with the reason below.
 Details are in [DEPLOYMENT.md](DEPLOYMENT.md#choosing-a-model).
 
+**Who hears and who speaks (admins).** Two more choices sit in **Chat options**, for a
+server that has Google Cloud set up ([DEPLOYMENT.md](DEPLOYMENT.md#google-cloud-speech)):
+- **Speech recognition**: **Whisper on this server**, **An OpenAI-compatible server** or
+  **Google Cloud**. One that isn't set up is greyed out and says which server setting
+  it needs. With Google, recordings go to Google, stop at 55 seconds, and the model
+  list goes, since Google's recognizer has its own.
+- **Voice for the chat and Talk**: **Kokoro on this server**, which reads with each
+  person's own voice, or **Google Gemini-TTS**, with one voice for everyone that you
+  pick below it. Google can speak Sinhala and Tamil. Documents and audiobooks keep
+  Kokoro either way.
+
+Both save at once and apply from the next recording or sentence. Google bills per use,
+and **Admin → Overview** says on its **Voice input** and **Chat voice** lines whether
+Google accepts this server's key.
+
 ## Talking with the assistant
 
 **Talk** turns the chat into a spoken conversation: you speak, it answers aloud, and you
@@ -976,13 +992,20 @@ English for now.
    stops everything, closes the microphone and gives you the typing box back. Opening
    another chat or leaving the chat ends it too.
 
+**Another language.** Talk listens in your **Speech language** (**Settings → Chat**)
+when you've picked one, so you can try Sinhala or Tamil; how well it hears and speaks
+them depends on the speech model and voice your admin chose. When Google hears you, the
+panel says **Heard by Google Cloud**; when Google reads replies, **Settings → Chat**
+says so, and your own voice in **Voice & reading** still reads documents.
+
 The assistant only remembers the part of a reply you actually heard, so if you stop it
 halfway it won't assume you heard the rest. The conversation stays in the chat, with a
 reply you cut short kept up to where you stopped it. On a phone, the screen stays on
 while you talk.
 
 **Your voice stays in your browser until you speak.** The listening happens on your
-own device, and only the moments it takes for speech go to the server. The first
+own device, and only the moments it takes for speech go to the server (and on to
+Google, if your admin chose Google). The first
 **Talk** downloads about 17 MB, once.
 
 **What it heard** lists every clip: what it thought it heard, whether that counted as

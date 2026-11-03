@@ -42,4 +42,18 @@ describe('the chat voice', () => {
         const { result } = renderHook(() => useTtsEngine(props));
         expect(await result.current.synthesizeChat('Hello.')).toBeNull();
     });
+
+    it('a refused sentence says why, once for a run of them', async () => {
+        apiFetch.mockImplementation(async () => ({
+            ok: false, status: 503,
+            json: async () => ({ detail: { error: 'voice_failed', message: "Google's quota for voices is used up for now" } }),
+        }));
+        vi.spyOn(console, 'error').mockImplementation(() => {});
+        const showToast = vi.fn();
+        const { result } = renderHook(() => useTtsEngine({ ...props, showToast }));
+        await result.current.synthesizeChat('One.');
+        await result.current.synthesizeChat('Two.');
+        expect(showToast).toHaveBeenCalledTimes(1);
+        expect(showToast).toHaveBeenCalledWith("Google's quota for voices is used up for now", 5000);
+    });
 });
