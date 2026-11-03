@@ -196,3 +196,28 @@ policy (none, beyond what the person does), and how the 30 voices are labelled.
 - Talk follows the person's Speech language.
 - "Heard by Google Cloud" shown in the Talk panel.
 - `google-auth` plus `httpx`, not Google's client libraries.
+
+## What the live test found (2026-11-03)
+
+Run with the owner's service-account key against their recognizer, on loopback, through the
+app's own code and then the real app in Chromium with the simulated microphone.
+
+- **The Sinhala table above was wrong for this recognizer.** `long` in `global` with
+  `en-GB`, `si-LK` and `ta-IN` heard all three correctly whenever the language was named.
+- **But `long` can't tell them apart.** Asked for no language, it hears only the first in its
+  list (`si-LK`): a human English question came back as "what is the cable frien", tagged
+  Sinhala, and Tamil as Sinhala letters. Its confidence can't pick the language either (a
+  wrong Tamil reading of Sinhala scored 0.63, the right Tamil 0.68). **`chirp_3` with the
+  language `auto`** detected all four test clips and punctuated them, about 1 s slower.
+  The app now names what Auto hears (Settings, the Overview) and offers only the
+  recognizer's languages; Talk was never caught, since it sends `SPEECH_WINDOW_LANGUAGE`.
+- **The first 403 was an API switched off, not a missing role:** the recognizer name used the
+  project of the OAuth file, which never had Speech-to-Text on. A 403 now names the API and
+  the project when Google says `SERVICE_DISABLED`.
+- **Gemini-TTS takes `speakingRate`** (1.5 gave 0.66 of the audio's length at 1.0), and
+  needed nothing beyond Vertex AI User.
+- **Speed.** Talk's first sound, median of five English questions: Whisper `base.en` +
+  Kokoro 2.07 s; Google + Kokoro 3.01 s; Google + Gemini-TTS 7.08 s (one clip each: Sinhala
+  6.30 s, Tamil 5.43 s). Gemini-TTS takes at least 2.3 s a sentence however short;
+  `gemini-2.5-flash-lite-preview-tts` saves 0.3 to 0.5 s.
+- **Noise:** hiss and coughs never reached Google; the VAD dropped them.

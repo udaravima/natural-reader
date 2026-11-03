@@ -4,6 +4,45 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-11-03
+
+**Google Cloud can hear and speak in the chat and Talk, as an option.** Off until a
+deployer configures it; then an admin chooses, under **Admin → Chat options**, who hears
+speech (Whisper here, an OpenAI-compatible server, or Google Speech-to-Text) and who reads
+the chat and Talk (Kokoro here, or Google Gemini-TTS, which speaks Sinhala and Tamil).
+Documents, audiobooks and the extension keep Kokoro. No migrations; the backend has one
+new package, `google-auth`.
+
+### Added
+
+- **Google Speech-to-Text for hearing,** through a recognizer the deployer made in Google
+  Cloud (`GOOGLE_SPEECH_RECOGNIZER`, its full name). The microphone and Talk both use it;
+  a recording stops at 55 s, Google's limit. Talk says **Heard by Google Cloud**.
+- **Google Gemini-TTS for the chat's voice and Talk** (`GOOGLE_TTS_MODEL`), with one of 30
+  voices for everyone, picked by the admin. Each sentence's language comes from its
+  letters: Sinhala, Tamil, or `GOOGLE_TTS_LANGUAGE`. **Settings → Chat** tells each person
+  that Google reads the replies.
+- **Two admin choices,** **Speech recognition** and **Voice for the chat and Talk**, each
+  greyed out with the setting it needs until the deployer sets it, and applying from the
+  next recording or sentence.
+- **Admin → Overview** gains a **Chat voice** line; both it and **Voice input** say when
+  Google refuses, and why.
+- **`startup.sh` mounts the key read-only** into the backend container
+  (`compose.google.yml`) when `GOOGLE_APPLICATION_CREDENTIALS` names a readable file.
+- **A sentence Google refuses says why,** once for a run of them, and is skipped: there is
+  no silent fallback to Kokoro. A person is told to ask their admin; the admin gets the
+  detail in the log and the Overview, an API that's off named with its project.
+
+### Notes
+
+- **A recognizer that can't tell its languages apart hears only its first for Auto.**
+  Checked live: `long` with English, Sinhala and Tamil heard English as Sinhala. Settings
+  then reads **Auto (Sinhala on this server)** and offers only the recognizer's
+  languages; a `chirp_3` recognizer with the language `auto` tells them apart.
+- **Google's voice is slower to start than Kokoro:** Talk's first sound took 7.1 s with
+  Google speaking English, 3.0 s with Google hearing and Kokoro speaking, against 2.1 s
+  for Whisper and Kokoro (medians, one connection).
+
 ## [2.6.0] - 2026-11-03
 
 **Talk: a spoken conversation, back and forth, in the chat.** A button beside **Send**

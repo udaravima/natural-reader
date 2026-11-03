@@ -4,7 +4,24 @@
 
 ---
 
-## 2026-11-03 afternoon — Google Cloud speech for the chat and Talk: built, waiting for a service-account key (START HERE)
+## 2026-11-03 evening — Google speech tested live against Google, released as v2.7.0 (START HERE)
+
+**State.** `feat/google-speech` merged to `development` and `master` and **released as v2.7.0** on the owner's earlier "go ahead" (which covered the live test, merge and release). **Not deployed.**
+
+**What a person can do.** Admin → Chat options → **Speech recognition: Google Cloud** and **Voice for the chat and Talk: Google Gemini-TTS** (30 voices). People then dictate and Talk in English, Sinhala and Tamil, picking their language in **Settings → Chat → Speech language**, which lists only the recognizer's languages.
+
+**Live findings** (owner's key, loopback, real Chromium with the simulated microphone; numbers in DEPLOYMENT "Google Cloud speech" and the spec's last section):
+- The first 403 was the Speech API off in the **OAuth file's** project, which I had wrongly taken for the recognizer's. The recognizer lives in the service account's own project. A 403 with `SERVICE_DISABLED` now names the API and project instead of telling the admin to add a role.
+- `long`/`global` handles Sinhala (the docs' table said it wouldn't), but with no language named it hears only its first (`si-LK`), so English and Tamil came back as Sinhala. Settings and the Overview now say "Auto hears only Sinhala"; `chirp_3` with `auto` tells all three apart (tested in `us` through the implicit recognizer, nothing created in the owner's project). Talk was never affected: it sends `SPEECH_WINDOW_LANGUAGE` (`en`) for Auto. The message-box microphone was.
+- First sound in Talk, medians of 5 English questions: Whisper+Kokoro 2.07 s, Google+Kokoro 3.01 s, Google+Gemini-TTS 7.08 s (Sinhala 6.30, Tamil 5.43, one clip each). Gemini-TTS has a floor of about 2.3 s per sentence; `flash-lite-preview` saves 0.3–0.5 s. `speakingRate` works.
+
+**Owed by the owner.** Listen to Gemini-TTS in Sinhala and Tamil before turning it on for people. Decide whether to make a `chirp_3` recognizer with `auto`, or set **Admin → Defaults → Speech language** for the `long` one. Real voices (the Sinhala and Tamil clips were Gemini's own). The older items below still stand: Talk on real hardware, the CPU ruling, the `BOOTSTRAP_ADMIN_EMAIL` finding, the stale People tick.
+
+**Open levers, not built.** Streaming synthesis (gRPC) would cut Gemini-TTS's first sentence; a shared HTTP client would save a TLS handshake per sentence; Talk doesn't check a stored language against the recognizer's list.
+
+---
+
+## 2026-11-03 afternoon — Google Cloud speech for the chat and Talk: built, waiting for a service-account key
 
 **State.** On `feat/google-speech`, cut from `development` at `9e05158` (v2.6.0), committed as it went on the owner's "go ahead" to the design (`docs/superpowers/specs/2026-11-03-google-speech-design.md`), which also covered testing live, merging and releasing as v2.7.0. **Not merged, not released, not deployed.** Release waits for one live test against Google with a real service-account key.
 

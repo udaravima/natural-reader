@@ -1232,6 +1232,7 @@ tells each person when Google reads the replies.
 | `SPEECH_ENGINE` | `local` | `local`, `openai` or `google`: who hears speech until an admin chooses |
 | `CHAT_VOICE` | `kokoro` | `kokoro` or `google`: who reads the chat until an admin chooses |
 | `GOOGLE_TIMEOUT_S` | `30` | Seconds before "Google didn't answer" |
+| `GOOGLE_CLOUD_PROJECT` | (unset) | The project billed for the voice when the credentials don't name one (gcloud's own login, say). A service-account key names its own |
 
 Then **Admin → Chat options**: **Speech recognition** offers every engine, and one that
 isn't configured says which variable it needs; **Voice for the chat and Talk** offers
