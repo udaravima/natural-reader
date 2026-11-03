@@ -72,6 +72,16 @@ describe('TalkPanel', () => {
     expect(screen.getByText(/allow the microphone/i)).toBeInTheDocument();
   });
 
+  it('says who hears the person when it isn\'t this server', () => {
+    draw({ heardBy: 'Google Cloud' });
+    expect(screen.getByText('Heard by Google Cloud')).toBeInTheDocument();
+  });
+
+  it('says nothing of the kind when this server hears them', () => {
+    draw({ heardBy: 'this server' });
+    expect(screen.queryByText(/heard by/i)).not.toBeInTheDocument();
+  });
+
   it('the circle is the element the voice level moves', () => {
     const orbRef = { current: null };
     draw({ orbRef });

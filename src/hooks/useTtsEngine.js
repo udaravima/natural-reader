@@ -77,11 +77,12 @@ export function useTtsEngine({
         if (previous && previous !== url) URL.revokeObjectURL(previous);
     }, []);
 
-    // Pure synthesis: returns a blob URL (or null on error). Reused by reader playback,
-    // selection read, voice preview, and chat sentence playback.
-    const synthesizeText = useCallback(async (text, { voice, speed, signal } = {}) => {
+    // Pure synthesis: returns a blob URL (or null on error). `synthesizeText` is Kokoro, for reader playback,
+    // selection read and voice preview. `synthesizeChat` is the chat's voice, for its replies and Talk: the server
+    // answers it with Kokoro, in this person's voice, or with Google, when an admin chose that.
+    const synthesizeAt = useCallback(async (path, text, { voice, speed, signal } = {}) => {
         try {
-            const response = await apiFetch(apiHost, apiPort, '/v1/synthesize', {
+            const response = await apiFetch(apiHost, apiPort, path, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -101,6 +102,10 @@ export function useTtsEngine({
             return null;
         }
     }, [apiHost, apiPort, selectedVoice, playbackSpeed]);
+    const synthesizeText = useCallback((text, options) => synthesizeAt('/v1/synthesize', text, options),
+        [synthesizeAt]);
+    const synthesizeChat = useCallback((text, options) => synthesizeAt('/v1/chat/voice', text, options),
+        [synthesizeAt]);
 
     // Play a single block of text on the chat audio channel, resolving when it ends.
     // Falls back to SpeechSynthesisUtterance when Kokoro isn't selected.
@@ -120,7 +125,7 @@ export function useTtsEngine({
 
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
-            synthesizeText(text, {
+            synthesizeChat(text, {
                 voice: selectedVoice,
                 speed: playbackSpeed,
                 signal: controller.signal,
@@ -140,7 +145,7 @@ export function useTtsEngine({
                 chatAudioRef.current.play().catch(() => resolve());
             });
         });
-    }, [isLocalhost, selectedVoice, playbackSpeed, volume, requestTimeout, synthesizeText]);
+    }, [isLocalhost, selectedVoice, playbackSpeed, volume, requestTimeout, synthesizeChat]);
 
     // One voice at a time: a chat reply about to be read aloud pauses the
     // narration. Resuming is the reader's own Read button.
@@ -877,6 +882,7 @@ export function useTtsEngine({
 
         // Reusable helpers (used by useChatEngine for AI response playback)
         synthesizeText,
+        synthesizeChat,
         playSentence,        // legacy synth+play (kept for any callers that want both in one)
         playChatUrl,         // play a pre-fetched blob URL on the chat audio channel
         playChatSpeech,      // Web Speech API fallback for !isLocalhost

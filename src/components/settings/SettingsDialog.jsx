@@ -265,8 +265,29 @@ function useSpeechLanguages(apiHost, apiPort, canChat) {
     return { speechLanguages: canChat ? languages : null, modelLanguages };
 }
 
+// Who reads the chat's replies (spec 2026-11-03-google-speech): null until known, or for Kokoro, which reads with
+// this person's own voice; else { engine, voice, where }.
+function useChatVoice(apiHost, apiPort, canChat) {
+    const [voice, setVoice] = useState(null);
+    useEffect(() => {
+        if (!canChat) return undefined;
+        let cancelled = false;
+        (async () => {
+            try {
+                const res = await apiFetch(apiHost, apiPort, '/v1/chat/voice');
+                if (!res.ok) return;
+                const body = await res.json();
+                if (!cancelled && body?.engine === 'google') setVoice(body);
+            } catch { /* the line stays hidden */ }
+        })();
+        return () => { cancelled = true; };
+    }, [apiHost, apiPort, canChat]);
+    return canChat ? voice : null;
+}
+
 function ChatPanel({ theme, ch }) {
     const { speechLanguages, modelLanguages } = useSpeechLanguages(ch.apiHost, ch.apiPort, ch.canChat);
+    const chatVoice = useChatVoice(ch.apiHost, ch.apiPort, ch.canChat);
     // Which model's per-model inference knobs are being edited (defaults to the
     // active chat model). Editing writes inferenceByModel[configModel] via the
     // same pure helpers the chat sidebar used.
@@ -291,6 +312,12 @@ function ChatPanel({ theme, ch }) {
     const input = inputClass(theme);
     return (
         <>
+                {chatVoice && (
+                    <p className={`text-[10px] leading-relaxed ${theme.textSecondary}`}>
+                        {`Replies and Talk are read by Google's voice ${chatVoice.voice}, set by your admin, so they are sent `
+                            + `to ${chatVoice.where}. Your voice in Voice & reading still reads documents.`}
+                    </p>
+                )}
                 <Field theme={theme} label="Read-aloud mode">
                     <div className={`flex p-1 rounded-lg border ${theme.border} ${theme.bgTertiary}`}>
                         <button onClick={() => ch.setChatTtsMode('streaming')} className={`flex-1 text-[10px] font-bold py-1.5 rounded-md transition-colors ${ch.chatTtsMode === 'streaming' ? 'bg-blue-600 text-white shadow' : theme.textSecondary}`}>Streaming</button>

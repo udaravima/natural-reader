@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../../utils/apiFetch';
+import { ChatVoicePicker } from './ChatVoicePicker';
 import { SpeechModelPicker } from './SpeechModelPicker';
 
 /**
@@ -214,6 +215,7 @@ export function ChatOptionsSection({ theme, apiHost, apiPort, showToast, onSaved
             )}
           </div>
           <SpeechModelPicker theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast} voiceOn={data.voice_input} />
+          <ChatVoicePicker theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast} />
         </div>
       )}
     </section>

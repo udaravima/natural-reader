@@ -56,10 +56,13 @@ export function useSpeechWindow(props) {
   }, []);
 
   const transcribe = useCallback(async (samples) => {
-    const { apiHost, apiPort, settings } = latest.current;
+    const { apiHost, apiPort, settings, language } = latest.current;
     const form = new FormData();
     form.append('file', encodeWav(samples, CLIP_RATE), 'clip.wav');
-    if (settings.language) form.append('language', settings.language);
+    // The person's own Speech language when they chose one, so Sinhala or Tamil can be tried without a
+    // redeploy; else the window's.
+    const heard = language || settings.language;
+    if (heard) form.append('language', heard);
     const res = await apiFetch(apiHost, apiPort, '/v1/speech/transcriptions', { method: 'POST', body: form });
     if (!res.ok) throw new Error((await refusalMessage(res)) ?? CLIP_FAILED);
     return res.json();
