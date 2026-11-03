@@ -170,7 +170,9 @@ Keycloak is the **source of truth**; the app keeps a **mirror**:
   server-side trusts the token itself past login, only the DB row it fed.
 - `require_capability(name)` (same file) is the deny-by-default gate: reader
   endpoints (`POST /v1/synthesize`, `/v1/batch_synthesize`) need `reader`;
-  chat/inference/web-search endpoints need `chat`; `require_admin` is
+  chat/inference/web-search endpoints need `chat`; speech (`/v1/speech/*`) needs
+  `chat`, and the chat's voice (`POST /v1/chat/voice`) needs `chat` plus
+  read-aloud access (403 `missing_capability`, `capability: reader`); `require_admin` is
   effectively `require_capability("admin")` for `/v1/admin/*`. A 403 carries
   `{"error": "missing_capability", "capability": "<name>"}` so the SPA can
   render a specific message instead of a generic "forbidden".
@@ -303,6 +305,7 @@ truth for the running session.
 | Scope | one per browser login, full account | user-managed, named, scoped (`read_aloud` / `documents` / `chat` / `admin`), optional expiry, revocable |
 | Works on chat routes (`/v1/chat/*`, `/v1/inference/*`, needs `chat` capability) | yes | only with the `chat` scope (or a full-access token) |
 | Works on `/v1/synthesize*` (needs `reader` capability) | yes | with `read_aloud` or `documents` (or full access): **this is how the browser extension reads pages aloud**; the owner must hold `reader` |
+| Works on the chat's voice (`POST /v1/chat/voice`, needs `chat` and read-aloud) | yes | only with `chat` plus `read_aloud` or `documents` (or full access); the owner must hold `chat` and `reader` |
 | Manages tokens (`/v1/auth/tokens`) | yes | only a full-access (pre-2.3.0) token; scoped tokens get 403 `token_scope` |
 
 A DB leak yields no usable credentials (hashes only). Resolution order in

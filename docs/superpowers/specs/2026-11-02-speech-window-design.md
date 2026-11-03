@@ -1,6 +1,6 @@
 # The speech window
 
-**Date:** 2026-11-02. **Status:** approved by the owner on 2026-11-03, English first; being built on `feat/speech-window`.
+**Date:** 2026-11-02. **Status:** approved by the owner on 2026-11-03, English first. **Released in v2.6.0** as Talk in the chat, behind the `talk` role (the change below). **Not built:** the [admin lists](#admin-lists). v2.7.0 added Google as an optional engine for hearing and speaking ([its spec](2026-11-03-google-speech-design.md)), which is how Sinhala and Tamil Talk can be tried.
 
 **Changed 2026-11-03, after the owner tried it** ("it is the chat, but pop up that conversation"): Talk is no longer a view. It is a button beside **Send**, in the chat and in the chat beside a page, that starts listening at once and puts the panel (circle, **Mute**, **End**, **What it heard**) in place of the typing box, while the chat above shows the words, as ChatGPT's voice mode does since November 2025. It uses the chat's own model, so the window's model picker went. Who may use it is the new `talk` capability, an admin always; the server refuses a spoken turn without it. Added to feel more natural: the circle's halo follows the microphone's level, a tap on the circle cuts in, **Esc** ends it, and the screen is kept awake. Released as v2.6.0. Where this document says "view" or "window" below, read "the panel in the chat".
 
@@ -92,7 +92,7 @@ Every value is an environment variable with this default, and reaches the browse
 
 **Playback.** The window has its own queue and `<audio>` element (`lib/speech/spokenReply.js`), not the chat's, so read-aloud can't be affected. Pause keeps the position, and synthesis runs on behind it, two sentences ahead.
 
-**The window.** A new `viewMode`, `talk`, in `ViewSwitcher`, shown only when voice input is on and the person has `chat` and `read_aloud`. It works at phone width. It carries **Mute**, **End**, the chat model, and a collapsed **What it heard** list: for each clip, how long the VAD held it, both scores, and the decision.
+**The window.** *(Superseded 2026-11-03: there is no `talk` view; the panel below takes the typing box's place in the chat, as the change note at the top says. The rest of this paragraph still holds for the panel.)* A new `viewMode`, `talk`, in `ViewSwitcher`, shown only when voice input is on and the person has `chat` and `read_aloud`. It works at phone width. It carries **Mute**, **End**, the chat model, and a collapsed **What it heard** list: for each clip, how long the VAD held it, both scores, and the decision.
 
 ## Admin lists
 

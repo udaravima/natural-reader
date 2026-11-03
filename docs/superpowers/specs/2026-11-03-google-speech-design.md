@@ -1,6 +1,6 @@
 # Google speech for the chat and Talk
 
-**Date:** 2026-11-03. **Status:** approved by the owner 2026-11-03 ("go ahead"); built on `feat/google-speech`. Builds on the speech window
+**Date:** 2026-11-03. **Status:** approved by the owner 2026-11-03 ("go ahead"); **released in v2.7.0** after a live test against Google, whose findings are [the last section](#what-the-live-test-found-2026-11-03) and correct this design where they differ. Builds on the speech window
 (`2026-11-02-speech-window-design.md`) and v2.6.0.
 
 ## Why
@@ -145,6 +145,10 @@ three is `chirp_2` in one of those three locations; `asia-southeast1` is the nea
 Lanka. The owner's `asr-si-ta` (`long`, `global`) should do English and Tamil but not
 Sinhala; the live test confirms it. The deployment docs carry this table's gist and a link to
 Google's own.
+
+**Amended after the live test:** the table was wrong for this case. `long` in `global` heard
+Sinhala correctly, and `chirp_3` with `auto` heard all three. What `long` can't do is tell
+the languages apart. DEPLOYMENT now names the two recognizers that worked, not this table.
 
 ### Talk's language
 

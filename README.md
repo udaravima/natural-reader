@@ -6,7 +6,7 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 
 ![Neural Reader](https://img.shields.io/badge/React-19.x-blue) ![PDF.js](https://img.shields.io/badge/PDF.js-6.x-orange) ![Kokoro TTS](https://img.shields.io/badge/Kokoro-TTS-green) ![Ollama](https://img.shields.io/badge/Ollama-Chat-orange) ![Vite](https://img.shields.io/badge/Vite-Rolldown-purple) ![Offline](https://img.shields.io/badge/Offline-Ready-brightgreen)
 
-> 🔌 **Works 100% Offline!** Once installed, the app runs completely without internet. PDF.js is bundled locally, and Kokoro TTS / Ollama run on your machine.
+> 🔌 **Works 100% Offline!** Once installed, the app runs completely without internet. PDF.js is bundled locally, and Kokoro TTS / Ollama run on your machine. The only exceptions are ones you opt into: cloud model providers, and Google Cloud speech (off unless a deployer configures it).
 
 ---
 
@@ -41,12 +41,12 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 - **Model Picker** — Grouped by provider (native Ollama, plus any OpenAI-compatible server an admin has configured — vLLM, OpenRouter, LiteLLM), with capability badges per model. Adding or changing providers is an operator `.env` task (`INFERENCE_PROVIDERS`, see [.env.example](.env.example)); there's no in-app provider screen yet
 - **Image Attachments** — Paperclip button, drag & drop onto the chat view, and `Ctrl + V` paste images from the clipboard. Thumbnails preview above the prompt and persist in user bubbles. Sent to vision-capable models via the per-message `images: [base64]` field. An audio file dropped onto the chat is still refused: speaking a message is the microphone button below.
 - **Text files in a message** — The same paperclip (also drag & drop, and pasting a file) takes small text files: `.env`, `.txt`, `.md`, `.json`, `.yaml`, `.toml`, `.csv`, `.log`, source files and similar, up to 64 KB each and 128 KB per message. The browser masks secret values **before anything is uploaded**: in an env file every value except ones like `true`, a port or a short number; in other files, only what looks like a secret (private keys, well-known tokens, JWTs, `password:` lines, a password in a URL). Click the file's chip to see exactly what will be sent, and **Send real values** to send the original instead (it asks first and names the model, and says when it runs on a cloud service). It is a safety net, not a guarantee: read the chip view. The model gets each file as an `<attached_file>` block in the message, so every model and provider can read it.
-- **Voice input** — A microphone button beside the paperclip records up to 2 minutes, the server turns it into text (faster-whisper on the CPU by default, or any OpenAI-compatible transcription server), and the text lands in the message box for you to edit and send. Nothing is sent for you, and the app never writes a recording to disk, the database or a log (a reverse proxy may buffer an upload: see DEPLOYMENT). **Off by default**: an admin turns it on under **Admin → Chat options → Voice input** (or `CHAT_VOICE_INPUT=on`), and the first time it downloads a ~464 MB model. Needs https (or localhost) for the microphone. **Settings → Chat → Speech language** picks a language, or **Auto**. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#voice-input) for the setup and its costs. Admins choose the speech model under **Admin → Chat options → Speech model**, and can add Whisper models from Hugging Face there: fine-tunes for Sinhala and Tamil are in the list, converted on first use.
-- **Talk** — A spoken conversation in the chat, from a button beside **Send**: speak with no buttons and hear the reply, while the words fill the chat. Listening happens in the browser, so nothing leaves it until you speak. To cut in, just speak or tap the circle: a real interruption stops the reply, a cough lets it carry on from the same word, and the model remembers only what you heard. For admins and anyone given the `talk` role. English for now. See [docs/DEPLOYMENT.md § The speech window](docs/DEPLOYMENT.md#the-speech-window).
+- **Voice input** — A microphone button beside the paperclip records up to 2 minutes, the server turns it into text (faster-whisper on the CPU by default, any OpenAI-compatible transcription server, or Google Cloud), and the text lands in the message box for you to edit and send. Nothing is sent for you, and the app never writes a recording to disk, the database or a log (a reverse proxy may buffer an upload: see DEPLOYMENT). **Off by default**: an admin turns it on under **Admin → Chat options → Voice input** (or `CHAT_VOICE_INPUT=on`), and the first time it downloads a ~464 MB model. Needs https (or localhost) for the microphone. **Settings → Chat → Speech language** picks a language, or **Auto**. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#voice-input) for the setup and its costs. Admins choose the speech model under **Admin → Chat options → Speech model**, and can add Whisper models from Hugging Face there: fine-tunes for Sinhala and Tamil are in the list, converted on first use.
+- **Talk** — A spoken conversation in the chat, from a button beside **Send**: speak with no buttons and hear the reply, while the words fill the chat. Listening happens in the browser, so nothing leaves it until you speak. To cut in, just speak or tap the circle: a real interruption stops the reply, a cough lets it carry on from the same word, and the model remembers only what you heard. For admins and anyone given the `talk` role. English on the server's own models; with Google Cloud speech configured, Sinhala and Tamil too. See [docs/DEPLOYMENT.md § The speech window](docs/DEPLOYMENT.md#the-speech-window).
 - **Google Cloud speech (optional)** — For a deployer who configures it, Google can hear speech in place of Whisper and read the chat and Talk in place of Kokoro (Gemini-TTS, with Sinhala and Tamil voices). An admin switches each under Admin → Chat options; documents keep Kokoro. Off by default. See [docs/DEPLOYMENT.md § Google Cloud speech](docs/DEPLOYMENT.md#google-cloud-speech).
 - **Model Response Stats** — Every assistant bubble has a collapsible footer showing token count, total time, and tokens/sec. Expanded view breaks out load / prompt-eval / generation phases for fine-grained latency inspection.
 - **Stick-to-Bottom Scroll** — The chat list auto-tails streaming tokens when you're at the bottom; scrolling up pauses the auto-follow so you can read history during a long response, and resumes when you scroll back down.
-- **Chat TTS** — Replies are read aloud through the same Kokoro pipeline, with bounded prefetch to avoid gaps
+- **Chat TTS** — Replies are read aloud through the same Kokoro pipeline (or Google Gemini-TTS, if an admin chose it), with bounded prefetch to avoid gaps
 - **Streaming vs After-Complete TTS** — Read sentences as they stream in, or wait for the full reply before reading
 - **Per-Message Read Aloud** — A `🔊 Read aloud` / `■ Stop` button on every assistant bubble — works even with auto-TTS off, or to re-read finished messages later
 - **Markdown Rendering** — Lists, code blocks, tables, headings, links render natively in chat bubbles
@@ -115,6 +115,13 @@ Walkthroughs: [docs/USER_GUIDE.md](docs/USER_GUIDE.md#asking-a-whole-project); o
 
 Walkthroughs: [docs/USER_GUIDE.md](docs/USER_GUIDE.md); speech models: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#choosing-a-model).
 
+### 🗣️ Talk and Google Speech *(new in `v2.6.0` and `v2.7.0`)*
+
+- **Talk with the assistant** (`v2.6.0`) — **Talk** beside **Send** turns the chat into a spoken conversation: speak with no buttons, hear the answer, cut in by speaking or tapping the circle. The words fill the same chat. About 2.1 s from the end of your question to the first sound, with `base.en` and a cloud model on a CPU. For admins and the new `talk` role.
+- **Google hears and speaks, if you want it** (`v2.7.0`) — A deployer can add Google Speech-to-Text (through their own recognizer) and Gemini-TTS. An admin then switches, under **Admin → Chat options**, who hears speech and who reads the chat and Talk, with no restart. Gemini-TTS is the app's first voice for Sinhala and Tamil. Recordings and spoken sentences then go to Google, billed per use, and the first sound takes longer (about 7 s with Gemini-TTS in English, 3 s with Google hearing and Kokoro speaking). Documents, audiobooks and the extension keep Kokoro.
+
+Walkthroughs: [docs/USER_GUIDE.md § Talking with the assistant](docs/USER_GUIDE.md#talking-with-the-assistant); setup and measurements: [docs/DEPLOYMENT.md § Google Cloud speech](docs/DEPLOYMENT.md#google-cloud-speech).
+
 ### 🎨 User Experience
 - **Dark Mode** — Beautiful dark/light theme toggle with smooth transitions
 - **Sentence Highlighting** — Visual highlighting of the current sentence during playback
@@ -167,6 +174,7 @@ Walkthroughs: [docs/USER_GUIDE.md](docs/USER_GUIDE.md); speech models: [docs/DEP
 | **Doc Chat Backend (optional, new in 1.6)** | FastAPI routers: `/v1/chat/sessions/*` and `/v1/docs/*` |
 | **Doc Storage / RAG** | Postgres 16 + [pgvector](https://github.com/pgvector/pgvector) (HNSW, cosine), embedded via Ollama `nomic-embed-text` |
 | **DB driver** | `psycopg[binary,pool]` (async) with `pgvector` codec registered per-connection |
+| **Speech** | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) on the server, Silero VAD in the browser (`@ricky0123/vad-web`); optional Google Speech-to-Text v2 and Gemini-TTS (`google-auth` + `httpx`) |
 | **PDF → Markdown (optional, new in 1.7)** | [Docling](https://github.com/DS4SD/docling) — layout-aware extraction with optional GraniteDocling VLM. Gated by `DOCLING_ENABLED=true`. |
 
 ---
@@ -440,7 +448,7 @@ The frontend talks to one backend, set under **Settings → Connection**. **Leav
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/v1/health` | `GET` | Health check — verifies the model is loaded. Cheap; safe to call during playback. |
-| `/v1/synthesize` | `POST` | Synthesize one block of text → Base64 WAV audio. Used for per-sentence reader playback, selection-read, voice preview, and chat TTS. |
+| `/v1/synthesize` | `POST` | Synthesize one block of text → Base64 WAV audio. Used for per-sentence reader playback, selection-read, voice preview and the browser extension. |
 | `/v1/batch_synthesize` | `POST` | Synthesize multiple sentences → single merged WAV with 0.3 s silence between. Used by "Download Page Audio". |
 
 #### Document Chat & RAG (same FastAPI server, new in `v1.6.0`)
@@ -467,8 +475,17 @@ Both routes need the `chat` capability (a personal access token, the `chat` scop
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/v1/speech/status` | `GET` | `{enabled, ready, state, max_seconds, languages, window, model_languages}` for the message box (`model_languages` once voice is on: what the model is made for, empty for every language). Always `200`; builds nothing while voice input is off. |
-| `/v1/speech/transcriptions` | `POST` | Multipart `file` (a recording, up to 10 MB and 125 s) and an optional `language` (a Whisper code, or `auto`). Answers `{text, language, duration_s}`. `404` when voice input is off, `409` while this person already has one running, `413` too big or too long, `503` while the engine is getting ready, busy for over 60 s, or failed. The recording is read in memory and never stored. |
+| `/v1/speech/status` | `GET` | `{enabled, ready, state, max_seconds, languages, window, auto_hears}`, plus `heard_by` and `model_languages` once voice is on, for the message box and Talk (`model_languages`: what the model is made for, empty for every language; with Google, `languages` holds only the recognizer's, `max_seconds` is 55, and `auto_hears` names the one language Auto gets when the recognizer can't tell them apart). Always `200`; builds nothing while voice input is off. |
+| `/v1/speech/transcriptions` | `POST` | Multipart `file` (a recording, up to 10 MB and 125 s; a minute with Google) and an optional `language` (a Whisper code, or `auto`). Answers `{text, language, duration_s}`. `404` when voice input is off, `409` while this person already has one running, `413` too big or too long, `503` while the engine is getting ready, busy for over 60 s, or failed. The recording is read in memory and never stored. |
+
+#### The chat's voice (same FastAPI server, new in `v2.7.0`)
+
+Who reads the chat's replies and Talk: Kokoro on the server, or Google Gemini-TTS if an admin chose it. Both need the `chat` capability; `POST` also needs read-aloud access. Docs: [docs/DEPLOYMENT.md § Google Cloud speech](docs/DEPLOYMENT.md#google-cloud-speech).
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/chat/voice` | `GET` | `{engine: "kokoro" \| "google", voice, where}`: who reads, for the Settings note. |
+| `/v1/chat/voice` | `POST` | The same body and answer as `/v1/synthesize`. With Kokoro it reads with the person's voice; with Google, the admin's voice, in the sentence's language by its letters. `413` over 4,000 bytes for Google. A Google refusal carries its reason: `422` Google refused the sentence, `503` a set-up problem ("Ask your admin") or the quota, `502`/`504` Google failed or didn't answer. |
 
 #### Model providers (same FastAPI server)
 
@@ -821,6 +838,7 @@ natural-reader/
 │   │   ├── useTtsEngine.js       # TTS playback loop, caching, voice preview, chat audio channel
 │   │   ├── useChatEngine.js      # Session state, SSE turn streaming (chatStream.js + chatEvents.js reducer), pins, per-session event log, chat TTS queue
 │   │   ├── useVoiceInput.js      # The microphone: record, Stop/Cancel/Escape, upload to /v1/speech/transcriptions, put the text in the box
+│   │   ├── useSpeechWindow.js    # Talk: the microphone, the speech engine and the chat around lib/speech/conversation.js
 │   │   ├── usePersistedState.js  # localStorage-backed state + reading progress
 │   │   ├── useKeyboardShortcuts.js
 │   │   ├── useMobileDetect.js
@@ -832,7 +850,8 @@ natural-reader/
 │   │   ├── citations.js          # "(page N)" citations in replies → buttons (remark plugin)
 │   │   ├── chatStream.js         # POST a turn + read its SSE response (partial lines, [DONE], abort)
 │   │   ├── chatEvents.js         # Pure reducer: turn events → message state (text, thinking, tool panel, status)
-│   │   └── chatTransport.js      # GET /v1/inference/models, budget parsing (no tool code here anymore — tools run server-side)
+│   │   ├── chatTransport.js      # GET /v1/inference/models, budget parsing (no tool code here anymore — tools run server-side)
+│   │   └── speech/               # Talk without React: the VAD listener, the conversation, playback that knows what was heard, the checks
 │   ├── utils/
 │   │   ├── attachment.js         # File → Attachment helper, size caps, strip-on-save for IndexedDB
 │   │   ├── textAttachment.js     # Reading a text file, and masking its secrets (detectors report ranges; one render writes the placeholders)
@@ -856,6 +875,7 @@ natural-reader/
 │       ├── AttachmentPreview.jsx   # Image-thumbnail / text-file chip (name, size, "N values masked") used in pending bar + bubbles
 │       ├── TextFileViewer.jsx      # Click a text chip: the exact text that will be sent, plus Send real values
 │       ├── chat/MicButton.jsx      # The microphone / Stop / Cancel control beside the paperclip (state lives in hooks/useVoiceInput.js)
+│       ├── speech/TalkPanel.jsx    # The Talk button and the panel that takes the typing box's place (circle, Mute, End, What it heard)
 │       ├── MobileBottomNav.jsx
 │       ├── WelcomeScreen.jsx       # Library and upload landing page
 │       ├── admin/, library/, projects/, people/, settings/, account/, auth/, chat/ # The console, Library, project pages, people picker, Settings, tokens, sign-in screens, scope chip + web card
@@ -865,9 +885,11 @@ natural-reader/
 │   ├── app.py                 # FastAPI app factory — mounts TTS + chat_sessions/chat_turns + docs routers, runs init_db + start_router on startup
 │   ├── db.py                  # psycopg async pool + migration runner + pgvector codec registration
 │   ├── endpoints.py           # /v1/synthesize, /v1/batch_synthesize, /v1/health
+│   ├── chat_voice.py          # Who reads the chat and Talk: Kokoro or Google Gemini-TTS, and each sentence's language
+│   ├── google_cloud.py        # Google credentials (google-auth), never logged; what a 403 means
 │   ├── model.py               # Kokoro ONNX loading with GPU/NPU/CPU fallback
 │   ├── schemas.py             # Pydantic request models (TTS)
-│   ├── sql/                   # 001-023, applied in order at startup; the interesting ones are in docs/ARCHITECTURE.md
+│   ├── sql/                   # 001-024, applied in order at startup; the interesting ones are in docs/ARCHITECTURE.md
 │   ├── routers/
 │   │   ├── chat_sessions.py   # /v1/chat/sessions/* — list / get / patch / delete / import (legacy-chat copy)
 │   │   ├── chat_turns.py      # POST /v1/chat/sessions/{id}/turns — runs one turn, frames orchestrator events as SSE
@@ -875,7 +897,8 @@ natural-reader/
 │   │   ├── inference.py       # GET /v1/inference/models — every provider's models + the caller's budget
 │   │   ├── projects.py, project_documents.py # /v1/projects/* — projects, members, activity, document versions
 │   │   ├── people.py, profile.py, settings.py, tools.py # people search, avatars, per-user settings, POST /v1/tools/web_search
-│   │   ├── admin.py           # /v1/admin/* — the admin console's API (people, overview, settings sections, usage)
+│   │   ├── admin.py           # /v1/admin/* — the admin console's API (people, overview, settings sections, usage, speech engine, chat voice)
+│   │   ├── speech.py, chat_voice.py # /v1/speech/* (hearing) and /v1/chat/voice (the chat's and Talk's voice)
 │   │   └── auth.py            # /v1/auth/* — OIDC login/callback, sessions, PATs
 │   ├── auth/                  # OIDC, sessions, tokens, capabilities, access checks (authz.py)
 │   ├── chat/                  # The chat orchestrator (server-side turn loop, C1)
@@ -888,7 +911,7 @@ natural-reader/
 │   │   ├── router.py          # Loads INFERENCE_PROVIDERS config, resolves "<provider>:<model>" ids
 │   │   ├── types.py           # Internal message/event types every adapter maps to/from
 │   │   └── providers/         # ollama.py, openai_compat.py adapters + shared base.py helpers
-│   ├── speech/                # Voice input: a Transcriber interface, the local (faster-whisper) and openai engines, a bounded audio decoder
+│   ├── speech/                # Voice input and Talk: a Transcriber interface, the local (faster-whisper), openai and google engines, the model catalogue, a bounded audio decoder, Talk's window settings
 │   └── services/
 │       ├── embeddings.py      # httpx client → Ollama /api/embeddings via model_router, Semaphore(4), dim assertion
 │       ├── model_router.py    # Legacy single-Ollama config: allowlist, embedding model, daily budget
@@ -899,6 +922,7 @@ natural-reader/
 ├── data/
 │   └── pdfs/                  # Uploaded document bytes (one file per doc_id)
 ├── docker-compose.yml         # Postgres (host port 5433), Keycloak, SearXNG and the backend
+├── compose.google.yml         # Added by startup.sh when GOOGLE_APPLICATION_CREDENTIALS is set: the key, mounted read-only
 ├── Containerfile              # The backend image
 ├── deploy/                    # The local OIDC rig: realm export, Postgres init, deploy/README.md
 ├── extension/                 # The Chrome read-aloud extension

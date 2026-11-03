@@ -19,6 +19,30 @@
 
 **Open levers, not built.** Streaming synthesis (gRPC) would cut Gemini-TTS's first sentence; a shared HTTP client would save a TLS handshake per sentence; Talk doesn't check a stored language against the recognizer's list.
 
+### Bucket list (current, replaces the v2.5.0 one below)
+
+Checked 2026-11-03 after the v2.7.0 docs pass. Done since the v2.5.0 list: the 375 px header, `AdminPanel.jsx`, `git config user.name`, Sinhala and Tamil (through Google).
+
+**Deploy (owner).** v2.5.1's last fix, v2.6.0 and v2.7.0 are not live (live is `f8af89e`). Back up the database; `npm install` and `npm run build` (v2.6.0 added npm packages); rebuild the backend (`google-auth`); Node 22.13 or 24; the `talk` realm role (the owner made it); `GOOGLE_*` only if Google is wanted.
+
+**Owner decisions.** `BOOTSTRAP_ADMIN_EMAIL` doesn't reserve the seed admin (security-relevant; fix in branch 3 of `resolve_or_provision_user`). A People tick from a stale list overwrites roles (fix: add/remove semantics on `PATCH /v1/admin/users/{id}`). The CPU anti-goal (recommended: accept and reword). Which recognizer for Google, and whether its voice is good enough. The auto-pusher. SDD workspaces. A file too large for the model: refuse or note. Warn before a model switch hides replies.
+
+**Owed on real hardware (owner).** Talk with speakers and no headphones (echo), a real room, a phone, Safari; Kokoro `fp16` by ear; real Sinhala and Tamil voices through Google; Chinese and Japanese voices; a phone keyboard over the popup.
+
+**Owed checks (never run).** A person without chat access; a blocked microphone prompt; the 2-minute stop; a real OpenAI-compatible speech server; several workers swapping speech models; `compose.speech.yml` on a running stack; Docling Describe and Accurate; Auto turned Ask, the yes path; V1 reader error, Retry index, the freeze fix; two users on one browser; a share recipient; `startup.cmd` on Windows; indexed documents with a NULL `embedding_model`.
+
+**Next builds.** Admin-curated speech models and voices people choose among (spec: the speech window's "Admin lists"). Talk smoothness: a shorter silence (700 ms now), a turn detector (Smart Turn v3), streaming voice. Phase 2b embeddings (embeddinggemma-2, nomic, Qwen). Figures with a vision model and the DeepSeek-OCR preset. Audio straight to a model; a model per language or person; Sri Lankan Tamil.
+
+**Bugs and limits.** Two people talking at once queue. The speech picker switches on every arrow key; conversions take no lock between workers. The `touch.stamp` second connection. A model can pass real values to `READER_MODEL`. Vitest flakes under load. Project eval `features` fails every run; citations 87.9% against 90%; the eval scorer's `_REFUSAL` lacks "list".
+
+**Robustness.** Resumable streams, a tested backup restore, a lock around migrations, a pool-slot limit, backup guidance.
+
+**Providers.** A `/models` fallback, per-provider params, a native Anthropic adapter; vLLM, LiteLLM and Unsloth unrun; a GPU or NPU image.
+
+**Features (the owner's wish-list).** Bulk project upload; auto tags and descriptions; Markdown and PDF side by side; MCP; agents; knowledge-base refresh; chat search, export, edit and regenerate; saved roles; prices per model; Auto model routing; V2 compare and review-before-current; C2.2 digests.
+
+**Housekeeping.** The AppArmor pasta fix (sudo); disk 92% full (40 GB free); 23 merged branches; stale memories.
+
 ---
 
 ## 2026-11-03 afternoon — Google Cloud speech for the chat and Talk: built, waiting for a service-account key

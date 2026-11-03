@@ -1,6 +1,6 @@
 # Choosing the speech model
 
-**Date:** 2026-11-02. **Status:** built on `feat/speech-models`.
+**Date:** 2026-11-02. **Status:** released in v2.5.0. Since v2.7.0 the model list applies only while Whisper on the server hears speech: with an OpenAI-compatible server or Google Cloud, the engine brings its own model ([Google speech](2026-11-03-google-speech-design.md)).
 
 ## Why
 

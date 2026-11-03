@@ -368,7 +368,7 @@ changes it.
 | **Embeddings** | Whether the embedding model answers, and returns the width (768) the database holds; and how many documents are waiting to be rebuilt |
 | **Docling** | Whether conversion is on |
 | **Web search** | Whether the search server answers |
-| **Voice input** | **Off** ("Off. Admin → Chat options turns it on."), **Warning** while the speech model downloads or loads ("Getting ready: downloading or loading small."), **OK** when it is ready ("local · small · runs on this server", or the host a remote engine calls), or **Problem** with the reason when it isn't working |
+| **Voice input** | **Off** ("Off. Admin → Chat options turns it on."), **Warning** while the speech model downloads or loads ("Getting ready: downloading or loading small."), **OK** when it is ready ("local · small · runs on this server", the host a remote engine calls, or "google · long · runs on Google Cloud", with what Auto hears when the recognizer can't tell its languages apart), or **Problem** with the reason when it isn't working |
 | **Chat voice** | **OK** with who reads the chat and Talk ("Kokoro on this server…", or Google Gemini-TTS with its model and voice, and that replies are sent to Google Cloud), or **Problem** when Google refuses this server's key, with Google's reason |
 
 **Context windows** gives each model the number the app works with, and says
@@ -982,8 +982,10 @@ Tamil, Google is the only one.
 **Talk** turns the chat into a spoken conversation: you speak, it answers aloud, and you
 can cut in. It's the button with the sound-wave icon beside **Send**, in **Chat** and in
 the chat beside a page. You see it when an admin has turned voice input on and given you
-the `talk` role, on top of chat and read-aloud access; an admin always has it. It's
-English for now.
+the `talk` role, on top of chat and read-aloud access; an admin always has it. On the
+server's own models it's English. If your admin has Google hearing and speaking, it
+hears the language you pick under **Settings → Chat → Speech language**, so Sinhala and
+Tamil work too.
 
 1. Choose a chat model and press **Talk**. It starts listening at once; the browser asks
    for the microphone the first time.
