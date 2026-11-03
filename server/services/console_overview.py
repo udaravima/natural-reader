@@ -33,8 +33,10 @@ from ..chat.prompt import system_rules
 from ..chat.tools import ToolContext, available_tools, tool_spec
 from ..llm.providers.base import ProviderConfig
 from ..llm.router import ModelInfo, UnknownModel
+from .. import chat_voice, google_cloud
 from . import assistant_profile, chat_options, docling_convert, embeddings, model_router, model_settings, web_search
 from ..speech import catalogue as speech_catalogue, service as speech_service
+from ..speech.languages import WHISPER_LANGUAGES
 from .deployment_info import NOT_A_URL, url_host
 from .doc_search import ReadableDoc
 from .inference_limits import InferenceLimits, clamp, load_inference_limits
@@ -54,6 +56,7 @@ _TITLES = {   # id -> (title, section), in the order the Overview shows them
     "docling": ("Docling", "documents"),
     "web_search": ("Web search", "chat"),
     "voice_input": ("Voice input", "chat"),
+    "chat_voice": ("Chat voice", "chat"),
 }
 
 
@@ -299,13 +302,35 @@ async def _voice_input(options, env: Mapping[str, str] = os.environ) -> Check:
     status (an exception becomes the type-named error line from _bounded)."""
     if not options.voice_input:
         return _check("voice_input", "off", "Off. Admin → Chat options turns it on.")
-    engine = speech_service.get_transcriber(wanted=speech_catalogue.wanted(options, env))
+    engine = speech_service.get_transcriber(wanted=speech_catalogue.wanted(options, env),
+                                            engine=speech_service.chosen_engine(options, env))
     status = await engine.status()
     if status.state == "ready":
-        return _check("voice_input", "ok", f"{engine.name} · {engine.model} · runs on {engine.where}")
+        summary = f"{engine.name} · {engine.model} · runs on {engine.where}"
+        hears = getattr(engine, "auto_hears", None)
+        if hears:
+            summary += (f". Auto hears only {WHISPER_LANGUAGES.get(hears, hears)} with this recognizer: people "
+                        "should pick their language in Settings, or set Speech language in Defaults. For Auto "
+                        "across languages, use a chirp_3 recognizer with the language auto.")
+        return _check("voice_input", "ok", summary)
     if status.state == "loading":
         return _check("voice_input", "warn", f"Getting ready: downloading or loading {engine.model}.")
     return _check("voice_input", "error", status.detail or "The speech engine isn't working.")
+
+
+async def _chat_voice(options, env: Mapping[str, str] = os.environ) -> Check:
+    """Who reads the chat and Talk. Google's credentials are checked (a token costs nothing); nothing is spoken,
+    since every sentence is billed."""
+    voice = chat_voice.current(options, env)
+    if voice.engine == "kokoro":
+        return _check("chat_voice", "ok", "Kokoro on this server reads the chat and Talk, in each person's own voice.")
+    try:
+        await google_cloud.access_token()
+    except google_cloud.GoogleAuthError as e:
+        return _check("chat_voice", "error", str(e))
+    model = (env.get("GOOGLE_TTS_MODEL") or "").strip()
+    return _check("chat_voice", "ok", f"Google Gemini-TTS ({model}), voice {voice.voice}: the chat's replies and "
+                                      "Talk are sent to Google Cloud to be spoken.")
 
 
 async def _bounded(id: str, run: Callable[[], Awaitable[Check]]) -> Check:
@@ -348,6 +373,7 @@ async def run_checks(conn, llm, env: Mapping[str, str] = os.environ,
             _bounded("docling", _docling),
             _bounded("web_search", lambda: _web_search(client, web_mode)),
             _bounded("voice_input", lambda: _voice_input(options, env)),
+            _bounded("chat_voice", lambda: _chat_voice(options, env)),
         ))
     finally:
         if owned:

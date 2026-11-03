@@ -272,12 +272,41 @@ describe('SettingsDialog — the context size the server will use (admin console
       return b;
     };
 
+    it('says when Google reads the chat\'s replies, and that the voice here still reads documents', async () => {
+      apiFetch.mockImplementation(async (h, p, path) => (path === '/v1/chat/voice'
+        ? { ok: true, json: async () => ({ engine: 'google', voice: 'Kore', where: 'Google Cloud' }) }
+        : { ok: false, status: 404, json: async () => ({}) }));
+      render(<SettingsDialog {...chat()} />);
+      expect(await screen.findByText(/Replies and Talk are read by Google's voice Kore/)).toBeTruthy();
+      expect(screen.getByText(/still reads documents/)).toBeTruthy();
+    });
+
+    it('says nothing of the kind with Kokoro', async () => {
+      apiFetch.mockImplementation(async (h, p, path) => (path === '/v1/chat/voice'
+        ? { ok: true, json: async () => ({ engine: 'kokoro', voice: null, where: 'this server' }) }
+        : { ok: false, status: 404, json: async () => ({}) }));
+      render(<SettingsDialog {...chat()} />);
+      await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/chat/voice'));
+      expect(screen.queryByText(/read by Google/)).toBeNull();
+    });
+
     it('says what the speech model is made for', async () => {
       apiFetch.mockImplementation(async (h, p, path) => (path === '/v1/speech/status'
         ? { ok: true, json: async () => ({ ...STATUS, model_languages: ['Sinhala'] }) }
         : { ok: false, status: 404, json: async () => ({}) }));
       render(<SettingsDialog {...chat()} />);
       expect(await screen.findByText(/speech model is made for Sinhala/)).toBeTruthy();
+    });
+
+    it('says when Auto hears only one language, instead of promising to detect it', async () => {
+      apiFetch.mockImplementation(async (h, p, path) => (path === '/v1/speech/status'
+        ? { ok: true, json: async () => ({ ...STATUS, model_languages: ['Sinhala', 'Tamil', 'English'], auto_hears: 'Sinhala' }) }
+        : { ok: false, status: 404, json: async () => ({}) }));
+      render(<SettingsDialog {...chat()} />);
+      const select = await screen.findByRole('combobox', { name: 'Speech language' });
+      expect(select.options[0].textContent).toBe('Auto (Sinhala on this server)');
+      expect(screen.getByText(/Auto hears only Sinhala: pick the language you speak/)).toBeTruthy();
+      expect(screen.queryByText(/speech model is made for/)).toBeNull();
     });
 
     it('says nothing about a model made for every language', async () => {

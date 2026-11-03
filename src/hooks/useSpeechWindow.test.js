@@ -52,6 +52,16 @@ describe('useSpeechWindow', () => {
     expect(result.current.clips[0]).toMatchObject({ verdict: 'speech', text: 'Hello there' });
   });
 
+  it('the person\'s own Speech language wins over the window\'s', async () => {
+    listen.mockResolvedValue(mic());
+    apiFetch.mockResolvedValue(transcribed({ text: '', no_speech: null, avg_logprob: null }));
+    const { result } = renderHook(() => useSpeechWindow(baseProps({ language: 'si' })));
+    await act(async () => { await result.current.start(); });
+    await act(async () => { listen.mock.calls[0][0].onSpeechEnded(new Float32Array(1600)); });
+    await waitFor(() => expect(apiFetch).toHaveBeenCalled());
+    expect(apiFetch.mock.calls[0][3].body.get('language')).toBe('si');
+  });
+
   it('an empty language is left for Whisper to detect', async () => {
     listen.mockResolvedValue(mic());
     apiFetch.mockResolvedValue(transcribed({ text: '', no_speech: null, avg_logprob: null }));

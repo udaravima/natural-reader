@@ -375,7 +375,7 @@ export default function App() {
     readSelection, stopSelectionRead,
     previewVoice, stopVoicePreview, downloadPageAudio, downloadTextAudio,
     downloadBookAudio, cancelBookDownload, clearCache,
-    synthesizeText, playChatUrl, playChatSpeech, stopChatPlayback,
+    synthesizeChat, playChatUrl, playChatSpeech, stopChatPlayback,
   } = ttsEngine;
 
   const chatEngine = useChatEngine({
@@ -385,7 +385,8 @@ export default function App() {
     apiHost, apiPort,
     currentDocId,
     userId: auth.user?.id ?? null,
-    synthesizeText, playChatUrl, playChatSpeech, stopChatPlayback,
+    // The chat's replies speak with the chat voice (Kokoro, or Google when an admin chose it); documents don't.
+    synthesizeText: synthesizeChat, playChatUrl, playChatSpeech, stopChatPlayback,
     showToast,
   });
 
@@ -1148,7 +1149,8 @@ export default function App() {
     loadProjects: projectApi.list,
     talk: canTalk ? {
       status: speechStatus,
-      synthesizeText,
+      synthesizeText: synthesizeChat,
+      language: speechLanguage === 'auto' ? null : speechLanguage,
       voice: selectedVoice,
       speed: playbackSpeed,
       volume,

@@ -139,7 +139,7 @@ async def test_a_check_that_raises_says_which_kind_of_failure(db_conn, monkeypat
 async def test_checks_come_in_a_fixed_order(db_conn):
     checks = await run_checks(db_conn, _router(), {}, http=_searxng_ok())
     assert [c.id for c in checks] == ["providers", "reader", "context", "embeddings", "docling", "web_search",
-                                      "voice_input"]
+                                      "voice_input", "chat_voice"]
 
 
 async def test_providers_states(db_conn):
@@ -424,7 +424,7 @@ async def test_overview_route_is_admin_only(db_conn, monkeypatch):
         r = await c.get("/v1/admin/overview")
     assert r.status_code == 200
     assert [x["id"] for x in r.json()["checks"]] == ["providers", "reader", "context", "embeddings", "docling", "web_search",
-                                      "voice_input"]
+                                      "voice_input", "chat_voice"]
 
 
 _LIMITS = InferenceLimits(num_ctx_max=32768, keep_alive_max_s=1800)
@@ -579,7 +579,7 @@ async def test_a_malformed_env_value_costs_one_line_not_the_page(db_conn, monkey
     checks = {c.id: c for c in await run_checks(db_conn, _router(), {"INFERENCE_DAILY_TOKEN_BUDGET": "lots"},
                                                 http=_searxng_ok())}
     assert list(checks) == ["providers", "reader", "context", "embeddings", "docling", "web_search",
-                                      "voice_input"]
+                                      "voice_input", "chat_voice"]
     assert (checks["context"].state, checks["context"].summary) == ("error", "The check failed: ValueError.")
     assert checks["providers"].state == "ok" and checks["web_search"].state == "ok"
 
@@ -657,6 +657,15 @@ async def test_voice_ready_names_engine_model_and_place(db_conn, voice):
     assert (c.state, c.summary) == ("ok", "local · small · runs on this server")
 
 
+async def test_a_recognizer_whose_auto_hears_one_language_says_so_and_what_to_do(db_conn, voice):
+    v = voice(status=EngineStatus(True, "ready", ""))
+    v.name, v.model, v.where, v.auto_hears = "google", "long", "Google Cloud", "si"
+    c = await _voice_check(db_conn, env={"CHAT_VOICE_INPUT": "on", "SPEECH_ENGINE": "google"})
+    assert c.state == "ok" and c.summary.startswith("google · long · runs on Google Cloud. ")
+    assert "Auto hears only Sinhala" in c.summary
+    assert "chirp_3" in c.summary and "Defaults" in c.summary
+
+
 async def test_voice_loading_is_a_warning(db_conn, voice):
     voice(status=EngineStatus(False, "loading", "Loading the model"))
     c = await _voice_check(db_conn)
@@ -680,3 +689,37 @@ async def test_the_admin_choice_turns_the_check_on(db_conn, voice):
     await chat_options.save_voice_input(db_conn, True, updated_by=None)
     c = await _voice_check(db_conn, env={})
     assert c.state == "ok"
+
+
+# ---------- the chat's voice (spec 2026-11-03-google-speech) ----------
+
+async def _chat_voice_check(db_conn, env):
+    await db_conn.execute("DELETE FROM app_settings WHERE key = 'chat_options'")
+    return (await _by_id(db_conn, _router(), env=env))["chat_voice"]
+
+
+async def test_kokoro_reads_the_chat_by_default(db_conn):
+    c = await _chat_voice_check(db_conn, {})
+    assert (c.state, c.title, c.section) == ("ok", "Chat voice", "chat")
+    assert "Kokoro" in c.summary
+
+
+async def test_google_says_where_the_replies_go(db_conn, monkeypatch):
+    from server import google_cloud
+
+    async def token():
+        return "t", "p"
+    monkeypatch.setattr(google_cloud, "access_token", token)
+    c = await _chat_voice_check(db_conn, {"CHAT_VOICE": "google", "GOOGLE_TTS_MODEL": "gemini-2.5-flash-tts"})
+    assert c.state == "ok"
+    assert "Gemini-TTS" in c.summary and "Kore" in c.summary and "Google Cloud" in c.summary
+
+
+async def test_google_with_credentials_that_dont_work_is_an_error_in_words(db_conn, monkeypatch):
+    from server import google_cloud
+
+    async def token():
+        raise google_cloud.GoogleAuthError("The Google key file isn't a service-account key.")
+    monkeypatch.setattr(google_cloud, "access_token", token)
+    c = await _chat_voice_check(db_conn, {"CHAT_VOICE": "google", "GOOGLE_TTS_MODEL": "gemini-2.5-flash-tts"})
+    assert c.state == "error" and "service-account key" in c.summary

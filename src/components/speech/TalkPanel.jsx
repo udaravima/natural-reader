@@ -61,7 +61,8 @@ function Orb({ phase, muted, orbRef }) {
 /** Talk, beside the typing box: it starts the conversation at once, or says what it's waiting for. */
 export function TalkButton({ theme, status, selectedModel, busy, onStart }) {
   let why = null;
-  if (!status?.ready) why = 'The speech model is getting ready';
+  if (status?.state === 'error') why = "Voice input isn't working right now. Ask your admin";
+  else if (!status?.ready) why = 'The speech model is getting ready';
   else if (!selectedModel) why = 'Pick a model first';
   else if (busy) why = 'Wait for the reply to finish';
   return (
@@ -77,7 +78,7 @@ export function TalkButton({ theme, status, selectedModel, busy, onStart }) {
  * The conversation's controls, in place of the typing box while it runs; the chat above shows its words. It holds no
  * state of its own: the conversation lives in useSpeechWindow.
  */
-export default function TalkPanel({ theme, speech, silenceMs, orbRef }) {
+export default function TalkPanel({ theme, speech, silenceMs, orbRef, heardBy = 'this server' }) {
   const { phase, clips, muted, end, toggleMute, cutIn } = speech;
   const panel = useRef(null);
   useEffect(() => { panel.current?.focus(); }, []);
@@ -106,6 +107,9 @@ export default function TalkPanel({ theme, speech, silenceMs, orbRef }) {
         <div className={`flex-1 min-w-0 ${theme.text}`}>
           <p role="status" className="text-sm font-bold">{muted ? 'Muted' : WORDS[phase]}</p>
           {hint && <p className={`text-xs ${theme.textSecondary}`}>{hint}</p>}
+          {heardBy && heardBy !== 'this server' && (
+            <p className={`text-xs ${theme.textSecondary}`}>{`Heard by ${heardBy}`}</p>
+          )}
         </div>
         <div className="flex gap-2">
           <button type="button" onClick={toggleMute} className={`${button} ${theme.bgTertiary} ${theme.text}`}>

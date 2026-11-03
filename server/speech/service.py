@@ -20,8 +20,12 @@ logger = logging.getLogger("server.speech")
 LOCAL_WAIT_S = 60  # how long a second recording waits for the local engine before "busy"
 RETRY_AFTER_S = 300  # a worker whose engine failed to load tries again by itself at most this often (seconds)
 
-__all__ = ["AlreadyRunning", "Busy", "LOCAL_WAIT_S", "MAX_AUDIO_BYTES", "MAX_AUDIO_SECONDS", "RETRY_AFTER_S",
-           "engine_name", "get_transcriber", "heal", "reset_for_tests", "transcribe_for"]
+__all__ = ["AlreadyRunning", "Busy", "ENGINES", "LOCAL_WAIT_S", "MAX_AUDIO_BYTES", "MAX_AUDIO_SECONDS",
+           "RETRY_AFTER_S", "chosen_engine", "engine_name", "engine_needs", "engine_source", "engines",
+           "get_transcriber", "heal", "reset_for_tests", "transcribe_for"]
+
+ENGINES = ("local", "openai", "google")
+_LABELS = {"local": "Whisper on this server", "openai": "An OpenAI-compatible server", "google": "Google Cloud"}
 
 
 class AlreadyRunning(Exception):
@@ -88,6 +92,38 @@ def engine_name(env: Mapping[str, str] = os.environ) -> str:
     return (env.get("SPEECH_ENGINE") or "local").strip().lower()
 
 
+def engine_needs(name: str, env: Mapping[str, str] = os.environ) -> str:
+    """What an engine still needs from the environment before it can be chosen; empty when nothing."""
+    if name == "openai":
+        missing = [k for k in ("SPEECH_URL", "SPEECH_MODEL") if not (env.get(k) or "").strip()]
+        return " and ".join(missing)
+    if name == "google":
+        from .google_engine import is_recognizer_name
+        return "" if is_recognizer_name(env.get("GOOGLE_SPEECH_RECOGNIZER")) else "GOOGLE_SPEECH_RECOGNIZER"
+    return ""
+
+
+def engines(env: Mapping[str, str] = os.environ) -> list[dict]:
+    return [{"id": name, "label": _LABELS[name], "available": not engine_needs(name, env),
+             "needs": engine_needs(name, env)} for name in ENGINES]
+
+
+def chosen_engine(options, env: Mapping[str, str] = os.environ) -> str:
+    """The engine for hearing speech: the admin's choice while it can still run here, else SPEECH_ENGINE (or
+    local). A choice whose setting a deployer has since removed falls back rather than breaking voice input."""
+    choice = getattr(options, "speech_engine", None)
+    if choice in ENGINES and not engine_needs(choice, env):
+        return choice
+    return engine_name(env)
+
+
+def engine_source(options, env: Mapping[str, str] = os.environ) -> str:
+    choice = getattr(options, "speech_engine", None)
+    if choice in ENGINES and not engine_needs(choice, env):
+        return "admin"
+    return "env" if (env.get("SPEECH_ENGINE") or "").strip() else "default"
+
+
 def _build_local(spec: SpeechModel, env: Mapping[str, str]) -> Transcriber:
     try:
         if spec.engine == catalogue.TRANSFORMERS:
@@ -99,7 +135,8 @@ def _build_local(spec: SpeechModel, env: Mapping[str, str]) -> Transcriber:
     return Engine(spec, _cpu_threads(env))
 
 
-def get_transcriber(env: Mapping[str, str] = os.environ, wanted: SpeechModel | None = None) -> Transcriber:
+def get_transcriber(env: Mapping[str, str] = os.environ, wanted: SpeechModel | None = None,
+                    engine: str | None = None) -> Transcriber:
     """Build (once) from SPEECH_ENGINE. Never raises for a config mistake: a bad setting shows up in the
     engine's status() instead, so the status route and the admin Overview can't be crashed by a typo. A missing
     Python package is such a mistake: the engine is a stand-in whose status is `error` naming the package.
@@ -107,15 +144,21 @@ def get_transcriber(env: Mapping[str, str] = os.environ, wanted: SpeechModel | N
     `wanted` is the model the deployment's options ask for (catalogue.wanted). If this worker's local engine runs
     another, it's replaced now and loads on first use: an admin's switch reaches one worker, and every other
     worker finds out here, on the next speech request. The old model goes as soon as nothing is using it, so two
-    are never kept loaded on purpose. A recording already running finishes on the engine it started on."""
+    are never kept loaded on purpose. A recording already running finishes on the engine it started on.
+
+    `engine` is the engine the options ask for (chosen_engine); None keeps whatever runs, or SPEECH_ENGINE."""
     global _transcriber, _attempt_at
-    engine = engine_name(env)
     if _transcriber is not None:
+        same_engine = engine is None or _transcriber.name == engine
         running = getattr(_transcriber, "spec", None)   # only a local engine has one
-        if wanted is None or running is None or running == wanted:
+        if same_engine and (wanted is None or running is None or running == wanted):
             return _transcriber
+    engine = engine or engine_name(env)
     model = (env.get("SPEECH_MODEL") or "").strip()
-    if engine == "openai":
+    if engine == "google":
+        from .google_engine import GoogleSpeech, timeout_from
+        _transcriber = GoogleSpeech(env.get("GOOGLE_SPEECH_RECOGNIZER"), timeout_s=timeout_from(env))
+    elif engine == "openai":
         try:
             from .openai_engine import OpenAICompatible
         except ImportError as e:
@@ -124,7 +167,7 @@ def get_transcriber(env: Mapping[str, str] = os.environ, wanted: SpeechModel | N
             _transcriber = OpenAICompatible(env.get("SPEECH_URL"), env.get("SPEECH_API_KEY"), model)
     else:
         if engine != "local":
-            logger.warning("SPEECH_ENGINE=%r is not 'local' or 'openai'; using local", engine)
+            logger.warning("SPEECH_ENGINE=%r is not 'local', 'openai' or 'google'; using local", engine)
         _transcriber = _build_local(wanted or catalogue.wanted(_NO_CHOICE, env), env)
         _attempt_at = None
     if isinstance(_transcriber, _MissingPackage):

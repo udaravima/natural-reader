@@ -3,13 +3,25 @@ import { apiFetch } from '../../utils/apiFetch';
 import { SearchableList, SearchableSelect } from '../SearchableList';
 
 /**
- * Admin console: which speech model voice input runs (spec 2026-11-02-speech-model-choice). One model for the whole
- * deployment. The list comes from the server (speech/catalogue.py): the built-in models, a deployer's
- * SPEECH_MODELS_FILE, and models added here. A change applies from the next recording on every worker. A remote
- * speech engine has no list, so nothing shows then.
+ * Admin console: who hears speech (spec 2026-11-03-google-speech) and which speech model voice input runs (spec
+ * 2026-11-02-speech-model-choice). One engine and one model for the whole deployment. An engine shows only once the
+ * deployer has configured it. The model list comes from the server (speech/catalogue.py): the built-in models, a
+ * deployer's SPEECH_MODELS_FILE, and models added here; a remote engine has no list. A change applies from the next
+ * recording on every worker.
  */
 
 const LIST = '/v1/admin/speech-models';
+const ENGINE = '/v1/admin/speech-engine';
+const ENGINE_SOURCE_LINE = {
+  admin: 'Set here.',
+  env: 'From the server setting SPEECH_ENGINE.',
+  default: 'The default.',
+};
+const ENGINE_LINE = {
+  openai: 'Recordings go to the OpenAI-compatible server in SPEECH_URL; SPEECH_MODEL names its model.',
+  google: 'Recordings go to Google Cloud, to the recognizer in GOOGLE_SPEECH_RECOGNIZER, whose own settings apply. '
+    + 'A recording stops at 55 seconds, as Google takes a minute at most.',
+};
 const SOURCE_LINE = {
   admin: 'Set here.',
   env: 'From the server setting SPEECH_MODEL.',
@@ -83,6 +95,26 @@ export function SpeechModelPicker({ theme, apiHost, apiPort, showToast, voiceOn 
       : `Speech model: ${label}. It loads when Voice input is on.`, 5000);
   };
 
+  const chooseEngine = async (engine) => {
+    if (saving || engine === data.engine) return;
+    const out = await send(ENGINE, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ engine }),
+    });
+    if (typeof out === 'string') {
+      showToast?.(`That didn't work: ${out}`, 5000);
+      return;
+    }
+    const label = out.engines?.find((e) => e.id === out.engine)?.label ?? out.engine;
+    showToast?.(`Speech recognition: ${label}, from the next recording.`, 5000);
+  };
+
+  const resetEngine = async () => {
+    const out = await send(ENGINE, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ engine: null }),
+    });
+    if (typeof out === 'string') showToast?.(`That didn't work: ${out}`, 5000);
+  };
+
   const reset = async () => {
     const out = await send(`${LIST}/choice`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: null }),
@@ -118,7 +150,42 @@ export function SpeechModelPicker({ theme, apiHost, apiPort, showToast, voiceOn 
     showToast?.(typeof out === 'string' ? `That didn't work: ${out}` : `Removed ${model.label}.`, 5000);
   };
 
-  if (data?.engine !== 'local') return null;
+  if (!data) return null;
+  const engines = data.engines ?? [];
+  const engineChoice = engines.length > 0 && (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-1">
+        <span className={`text-xs font-bold ${theme.text}`}>Speech recognition</span>
+        <SearchableSelect
+          theme={theme}
+          aria-label="Speech recognition"
+          findLabel="Find an engine"
+          value={data.engine}
+          onChange={chooseEngine}
+          aria-busy={saving}
+          options={engines.map((e) => ({
+            value: e.id, label: e.available ? e.label : `${e.label} (needs ${e.needs})`, disabled: !e.available,
+          }))}
+          className={`min-h-11 md:min-h-0 px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} ${theme.text}`}
+        />
+      </div>
+      {ENGINE_LINE[data.engine] && <p className={`text-[10px] ${theme.textSecondary}`}>{ENGINE_LINE[data.engine]}</p>}
+      <div className="flex flex-wrap items-center gap-3 text-[10px]">
+        <span className={theme.textSecondary}>{ENGINE_SOURCE_LINE[data.engine_source] ?? data.engine_source}</span>
+        {data.engine_source === 'admin' && (
+          <button
+            onClick={resetEngine}
+            disabled={saving}
+            aria-label="Use the server setting for speech recognition"
+            className="min-h-11 md:min-h-0 underline text-blue-500 disabled:opacity-40 disabled:no-underline"
+          >
+            Use the server setting
+          </button>
+        )}
+      </div>
+    </div>
+  );
+  if (data.engine !== 'local') return <div className="flex flex-col gap-2 pt-2">{engineChoice}</div>;
   const current = data.models.find((m) => m.id === data.chosen);
   const blocked = data.models.find((m) => m.why_not);
   const added = data.models.filter((m) => m.removable);
@@ -127,6 +194,7 @@ export function SpeechModelPicker({ theme, apiHost, apiPort, showToast, voiceOn 
 
   return (
     <div className="flex flex-col gap-2 pt-2">
+      {engineChoice}
       <div className="flex flex-col gap-1">
         <span className={`text-xs font-bold ${theme.text}`}>Speech model</span>
         <SearchableSelect

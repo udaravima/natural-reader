@@ -592,7 +592,8 @@ export default function ChatView({
             </div>
           )}
           {talking ? (
-            <TalkPanel theme={theme} speech={speech} silenceMs={talk?.status?.window?.silence_ms ?? 0} orbRef={orbRef} />
+            <TalkPanel theme={theme} speech={speech} silenceMs={talk?.status?.window?.silence_ms ?? 0} orbRef={orbRef}
+              heardBy={talk?.status?.heard_by} />
           ) : (
             <>
               {viewing && (

@@ -114,6 +114,27 @@ def test_speech_models_overlay_only_for_a_readable_file(proj, tmp_path):
     assert "not readable" in out.stderr
 
 
+def test_google_key_overlay_only_for_a_readable_file(proj, tmp_path):
+    f = tmp_path / "google.json"
+    f.write_text("{}")
+    script = 'export_backend_env; compose_files podman; echo "file=$NR_GOOGLE_CREDENTIALS"'
+    out = run(proj, script, SYSTEM_PATH, {"GOOGLE_APPLICATION_CREDENTIALS": str(f)})
+    assert "compose.google.yml" in out.stdout.split() and f"file={f}" in out.stdout.split()
+    out = run(proj, 'export_backend_env; compose_files podman', SYSTEM_PATH,
+              {"GOOGLE_APPLICATION_CREDENTIALS": str(tmp_path / "missing.json")})
+    assert "compose.google.yml" not in out.stdout.split()
+    assert "not readable" in out.stderr and "missing.json" not in out.stderr
+
+
+def test_google_key_path_may_start_with_home(proj, tmp_path):
+    home = tmp_path / "home"
+    (home / ".config").mkdir(parents=True)
+    (home / ".config" / "g.json").write_text("{}")
+    out = run(proj, 'export_backend_env; echo "file=$NR_GOOGLE_CREDENTIALS"', SYSTEM_PATH,
+              {"GOOGLE_APPLICATION_CREDENTIALS": "~/.config/g.json", "HOME": str(home)})
+    assert f"file={home}/.config/g.json" in out.stdout.split()
+
+
 def test_compose_files_by_engine_and_mode(proj):
     assert run(proj, "compose_files docker", SYSTEM_PATH).stdout.split() == ["docker-compose.yml"]
     assert run(proj, "compose_files podman", SYSTEM_PATH).stdout.split() == ["docker-compose.yml", "compose.podman.yml"]

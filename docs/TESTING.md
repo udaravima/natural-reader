@@ -66,10 +66,10 @@ spot a feature that shipped without coverage.
 # Backend — REQUIRES Postgres up (conftest migrates natural_reader_test on a
 # real connection; without the DB every test errors, not skips). Run it with
 # the two TEST_* variables above exported, or it uses 5433.
-.venv/bin/python -m pytest server/tests/ -q          # 2812 passed, 16 skipped, 2 deselected @ 2026-11-03 (Talk in the chat)
+.venv/bin/python -m pytest server/tests/ -q          # 2902 passed, 16 skipped, 2 deselected @ 2026-11-03 (Google speech)
 
 # Frontend (vitest, jsdom — no services needed)
-npx vitest run                                       # 1663 passed (138 files) @ 2026-11-03 (Talk in the chat)
+npx vitest run                                       # 1684 passed (140 files) @ 2026-11-03 (Google speech)
 
 # Lint
 npx eslint .                                         # 0 errors; 24 warnings, see eslint.config.js (the same as npm run lint)
@@ -80,6 +80,8 @@ npx eslint .                                         # 0 errors; 24 warnings, se
 ```
 
 **Test speech on a stream, in a real browser.** A VAD has memory, so a test that hands it one clip at a time and a fresh model measures something else: offline a spoken "stop" passed 92% of the time, and live 24%. To drive the real path, replace `navigator.mediaDevices.getUserMedia` in a Playwright init script with a `MediaStreamDestination`, play clips into it with a `BufferSource`, and read the numbers through **What it heard → Copy numbers**. Everything but the microphone is then real. Test audio stays out of the repo: ESC-50 is non-commercial. Still by hand: a real room, real speakers, a phone.
+
+**Test Google speech live, and only on purpose.** Unit tests reach Google through an `httpx.MockTransport` and a fake token, so nothing is billed. The live check (2026-11-03) used a scratch backend on loopback with a real service-account key: first the app's own `GoogleSpeech` and `google_speak` from a script, then the real app with the simulated microphone. Google's own error body tells an API that's off (`SERVICE_DISABLED`, with its project) from a missing role; read it before guessing. Clips spoken by Gemini-TTS and heard back by Google test the round trip in Sinhala and Tamil, not accuracy on real voices. Two things only a live run showed: a `long` recognizer with several languages hears only its first when none is named, and Gemini-TTS takes 2.3 s or more for any sentence. Print the key file's type and field names, never its contents.
 
 **Talk in the chat, walked on 2026-11-03** (scratch database, a scratch backend on loopback with sign-in on against a throwaway Keycloak on :18081, real Chromium, the fake microphone above, `base.en` and `gemma4:31b-cloud`): the admin's **Talk** swaps the typing box for the panel, the halo follows the voice, two questions are answered in the chat and **End** gives the box back, focused, with no live microphone track; a tap on the circle mid-reply is listening again in 57 ms, and the reply is kept as the 30 of its 202 characters that played; Mute, Escape. A member without `talk` sees no button and a hand-made spoken turn gets 403; the **People** tick writes the role to the app and to Keycloak, and a reload shows the button; a role given in Keycloak shows it at the next login. 375 and 360 px phones fit, talking included; the chat beside a page; five questions, first sound median 2.09 s. Found and fixed: someone left with only `talk` saw **Loading…** forever. Found, not fixed: a tick from a **People** list loaded before the person's roles synced sends the stale set (USER_GUIDE says to reload first).
 

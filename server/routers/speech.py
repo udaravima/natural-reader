@@ -39,6 +39,7 @@ _BAD_AUDIO = "That recording couldn't be read."
 _TOO_LARGE = "The recording is over 10 MB."
 
 MAX_SECONDS = 120   # what the browser records; the server allows a little more (base.MAX_AUDIO_SECONDS)
+GOOGLE_MAX_SECONDS = 55   # Google's synchronous recognize takes a minute at most: the browser stops short of it
 
 
 def _languages() -> list[dict]:
@@ -75,7 +76,10 @@ class SpeechAccess:
     def engine(self):
         """This worker's engine, on the model the deployment chose (a change reaches a worker here). Without the
         row nobody knows what was chosen, so whatever runs keeps running: a database blip must not reload a model."""
-        return service.get_transcriber(wanted=catalogue.wanted(self.options) if self.from_row else None)
+        if not self.from_row:
+            return service.get_transcriber()
+        return service.get_transcriber(wanted=catalogue.wanted(self.options),
+                                       engine=service.chosen_engine(self.options))
 
 
 async def speech_access(request: Request, open_conn=Depends(speech_conn)) -> SpeechAccess:
@@ -96,15 +100,29 @@ async def speech_status(access: SpeechAccess = Depends(speech_access)):
     """What the composer needs to draw the microphone: on or off, ready or not, and the languages, with the ones
     the model is made for (`model_languages`, empty for every language). When voice is off no engine is built,
     probed or warmed. Whatever the engine says, this answers 200."""
-    base = {"max_seconds": MAX_SECONDS, "languages": _languages(), "window": window.settings()}
+    base = {"max_seconds": MAX_SECONDS, "languages": _languages(), "window": window.settings(), "auto_hears": None}
     if not access.voice_on:
         return {"enabled": False, "ready": False, "state": "off", **base}
     engine = access.engine()
-    base["model_languages"] = [WHISPER_LANGUAGES[code] for code in getattr(engine, "languages", ())]
+    # Who hears the person (Talk says so when it isn't this server), and how long one recording may be.
+    base["heard_by"] = getattr(engine, "where", "this server")
+    if engine.name == "google":
+        base["max_seconds"] = GOOGLE_MAX_SECONDS
     try:
         status = await asyncio.wait_for(engine.status(), STATUS_TIMEOUT_S)
     except Exception as e:  # noqa: BLE001 - a config mistake, a server that's down or one that hangs is a state, not a 500
         logger.warning("The speech engine's status failed: %s", type(e).__name__)
+        status = None
+    # After the check: a remote engine learns its languages from it (Google reads its recognizer).
+    base["model_languages"] = [WHISPER_LANGUAGES[code] for code in getattr(engine, "languages", ())
+                               if code in WHISPER_LANGUAGES]
+    # Google refuses a language its recognizer doesn't list, so only those are offered; and a recognizer that
+    # can't detect the language hears one for Auto, which Settings names.
+    if engine.name == "google" and getattr(engine, "languages", ()):
+        base["languages"] = [lang for lang in base["languages"] if lang["code"] in engine.languages]
+    hears = getattr(engine, "auto_hears", None)
+    base["auto_hears"] = WHISPER_LANGUAGES.get(hears) if hears else None
+    if status is None:
         return {"enabled": True, "ready": False, "state": "error", **base}
     service.heal(engine, status)
     return {"enabled": True, "ready": bool(status.ready), "state": status.state, **base}
@@ -187,7 +205,8 @@ async def transcribe(request: Request, access: SpeechAccess = Depends(speech_acc
     try:
         result = await service.transcribe_for(str(access.principal.user_id), audio, mime, code)
     except AudioTooLong:
-        raise refusal(413, "too_long", "The recording is over 2 minutes.") from None
+        limit = "a minute" if engine.name == "google" else "2 minutes"
+        raise refusal(413, "too_long", f"The recording is over {limit}.") from None
     except BadAudio:
         raise refusal(400, "bad_audio", "That recording couldn't be read.") from None
     except service.AlreadyRunning:

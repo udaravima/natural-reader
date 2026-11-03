@@ -72,6 +72,16 @@ describe('TalkPanel', () => {
     expect(screen.getByText(/allow the microphone/i)).toBeInTheDocument();
   });
 
+  it('says who hears the person when it isn\'t this server', () => {
+    draw({ heardBy: 'Google Cloud' });
+    expect(screen.getByText('Heard by Google Cloud')).toBeInTheDocument();
+  });
+
+  it('says nothing of the kind when this server hears them', () => {
+    draw({ heardBy: 'this server' });
+    expect(screen.queryByText(/heard by/i)).not.toBeInTheDocument();
+  });
+
   it('the circle is the element the voice level moves', () => {
     const orbRef = { current: null };
     draw({ orbRef });
@@ -104,7 +114,8 @@ describe('TalkButton', () => {
   });
 
   it.each([
-    ['the speech model is loading', { status: { enabled: true, ready: false } }, /getting ready/i],
+    ['the speech model is loading', { status: { enabled: true, ready: false, state: 'loading' } }, /getting ready/i],
+    ['the speech engine is broken', { status: { enabled: true, ready: false, state: 'error' } }, /ask your admin/i],
     ['no model is chosen', { selectedModel: '' }, /pick a model/i],
     ['a reply is still being written', { busy: true }, /reply to finish/i],
   ])('waits while %s, and says why', (_, over, why) => {

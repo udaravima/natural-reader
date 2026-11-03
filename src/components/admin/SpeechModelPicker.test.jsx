@@ -18,7 +18,16 @@ const tamil = {
   language_names: ['Tamil'], license: 'apache-2.0', commercial: 'yes', note: 'Test it first.',
 };
 const mine = { ...small, id: 'owner-name', label: 'Mine', engine: 'converted-whisper', removable: true };
-const view = (over = {}) => ({ engine: 'local', chosen: 'small', source: 'default', models: [small, tamil], ...over });
+const ENGINES = [
+  { id: 'local', label: 'Whisper on this server', available: true, needs: '' },
+  { id: 'openai', label: 'An OpenAI-compatible server', available: false, needs: 'SPEECH_URL and SPEECH_MODEL' },
+  { id: 'google', label: 'Google Cloud', available: true, needs: '' },
+];
+const view = (over = {}) => ({
+  engine: 'local', engine_source: 'default', engines: ENGINES, chosen: 'small', source: 'default',
+  models: [small, tamil], ...over,
+});
+const engineSelect = () => screen.findByRole('combobox', { name: 'Speech recognition' });
 
 const calls = (method) => apiFetch.mock.calls.filter(([, , , o]) => o?.method === method);
 const bodyOf = (call) => JSON.parse(call[3].body);
@@ -57,11 +66,39 @@ describe('SpeechModelPicker', () => {
     expect(line.textContent).toContain('Commercial use: yes.');
   });
 
-  it('shows nothing for a remote engine', async () => {
-    mount({ engine: 'openai', chosen: null, source: 'env', models: [] });
-    await waitFor(() => expect(apiFetch).toHaveBeenCalled());
-    await new Promise((r) => { setTimeout(r); });
+  it('shows no model list for a remote engine', async () => {
+    mount(view({ engine: 'openai', engine_source: 'env', chosen: null, source: 'env', models: [] }));
+    expect((await engineSelect()).value).toBe('openai');
     expect(screen.queryByRole('combobox', { name: 'Speech model' })).toBeNull();
+  });
+
+  it('offers each engine, and one that isn\'t set up says what it needs', async () => {
+    mount(view());
+    expect((await engineSelect()).value).toBe('local');
+    expect(screen.getByRole('option', { name: 'Google Cloud' }).disabled).toBe(false);
+    const openai = screen.getByRole('option', { name: 'An OpenAI-compatible server (needs SPEECH_URL and SPEECH_MODEL)' });
+    expect(openai.disabled).toBe(true);
+  });
+
+  it('switches to Google, says where speech goes, and the model list goes', async () => {
+    const showToast = mount(view(), {
+      PUT: () => view({ engine: 'google', engine_source: 'admin', chosen: null, source: 'env', models: [] }),
+    });
+    fireEvent.change(await engineSelect(), { target: { value: 'google' } });
+    await waitFor(() => expect(calls('PUT').length).toBe(1));
+    expect(calls('PUT')[0][2]).toBe('/v1/admin/speech-engine');
+    expect(bodyOf(calls('PUT')[0])).toEqual({ engine: 'google' });
+    await waitFor(() => expect(screen.queryByRole('combobox', { name: 'Speech model' })).toBeNull());
+    expect(screen.getByText(/recordings go to Google Cloud/i)).toBeTruthy();
+    expect(showToast).toHaveBeenCalledWith(expect.stringContaining('Google Cloud'), 5000);
+  });
+
+  it('goes back to the server\'s engine', async () => {
+    mount(view({ engine: 'google', engine_source: 'admin', chosen: null, source: 'env', models: [] }),
+      { PUT: () => view() });
+    fireEvent.click(await screen.findByRole('button', { name: 'Use the server setting for speech recognition' }));
+    await waitFor(() => expect(calls('PUT').length).toBe(1));
+    expect(bodyOf(calls('PUT')[0])).toEqual({ engine: null });
   });
 
   it('shows nothing if the list cannot be read', async () => {

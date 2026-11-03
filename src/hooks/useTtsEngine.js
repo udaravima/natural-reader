@@ -1,8 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { KOKORO_VOICES } from '../constants';
 import { apiFetch } from '../utils/apiFetch';
+import { refusalMessage } from '../lib/apiErrors';
 import { markdownToSpeech } from '../utils/markdownToSpeech';
 import { concatWavs } from '../utils/wavConcat';
+
+const CHAT_VOICE_PATH = '/v1/chat/voice';
+const VOICE_TOAST_GAP_MS = 10000;   // one refusal toast for a run of refused sentences
 
 /**
  * Manages TTS playback engine: audio caching, buffering, playback loop,
@@ -77,11 +81,13 @@ export function useTtsEngine({
         if (previous && previous !== url) URL.revokeObjectURL(previous);
     }, []);
 
-    // Pure synthesis: returns a blob URL (or null on error). Reused by reader playback,
-    // selection read, voice preview, and chat sentence playback.
-    const synthesizeText = useCallback(async (text, { voice, speed, signal } = {}) => {
+    // Pure synthesis: returns a blob URL (or null on error). `synthesizeText` is Kokoro, for reader playback,
+    // selection read and voice preview. `synthesizeChat` is the chat's voice, for its replies and Talk: the server
+    // answers it with Kokoro, in this person's voice, or with Google, when an admin chose that.
+    const voiceToastAtRef = useRef(0);
+    const synthesizeAt = useCallback(async (path, text, { voice, speed, signal } = {}) => {
         try {
-            const response = await apiFetch(apiHost, apiPort, '/v1/synthesize', {
+            const response = await apiFetch(apiHost, apiPort, path, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -91,7 +97,15 @@ export function useTtsEngine({
                 }),
                 signal,
             });
-            if (!response.ok) throw new Error('TTS Fail');
+            if (!response.ok) {
+                // The chat voice may be Google's, which can refuse (quota, key): say why, once for a run of them.
+                const reason = path === CHAT_VOICE_PATH ? await refusalMessage(response) : null;
+                if (reason && Date.now() - voiceToastAtRef.current > VOICE_TOAST_GAP_MS) {
+                    voiceToastAtRef.current = Date.now();
+                    showToast?.(reason, 5000);
+                }
+                throw new Error('TTS Fail');
+            }
             const data = await response.json();
             const b64 = data.audio_base64 || data.audio;
             const blob = await (await fetch(`data:audio/wav;base64,${b64}`)).blob();
@@ -100,7 +114,11 @@ export function useTtsEngine({
             if (err.name !== 'AbortError') console.error('Synthesis error:', err);
             return null;
         }
-    }, [apiHost, apiPort, selectedVoice, playbackSpeed]);
+    }, [apiHost, apiPort, selectedVoice, playbackSpeed, showToast]);
+    const synthesizeText = useCallback((text, options) => synthesizeAt('/v1/synthesize', text, options),
+        [synthesizeAt]);
+    const synthesizeChat = useCallback((text, options) => synthesizeAt(CHAT_VOICE_PATH, text, options),
+        [synthesizeAt]);
 
     // Play a single block of text on the chat audio channel, resolving when it ends.
     // Falls back to SpeechSynthesisUtterance when Kokoro isn't selected.
@@ -120,7 +138,7 @@ export function useTtsEngine({
 
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), requestTimeout * 1000);
-            synthesizeText(text, {
+            synthesizeChat(text, {
                 voice: selectedVoice,
                 speed: playbackSpeed,
                 signal: controller.signal,
@@ -140,7 +158,7 @@ export function useTtsEngine({
                 chatAudioRef.current.play().catch(() => resolve());
             });
         });
-    }, [isLocalhost, selectedVoice, playbackSpeed, volume, requestTimeout, synthesizeText]);
+    }, [isLocalhost, selectedVoice, playbackSpeed, volume, requestTimeout, synthesizeChat]);
 
     // One voice at a time: a chat reply about to be read aloud pauses the
     // narration. Resuming is the reader's own Read button.
@@ -877,6 +895,7 @@ export function useTtsEngine({
 
         // Reusable helpers (used by useChatEngine for AI response playback)
         synthesizeText,
+        synthesizeChat,
         playSentence,        // legacy synth+play (kept for any callers that want both in one)
         playChatUrl,         // play a pre-fetched blob URL on the chat audio channel
         playChatSpeech,      // Web Speech API fallback for !isLocalhost

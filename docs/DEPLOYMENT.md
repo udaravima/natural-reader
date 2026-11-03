@@ -1173,6 +1173,103 @@ app's own playback is unknown. On a phone the page asks to keep the screen on wh
 Talk runs (the Screen Wake Lock API); a browser that refuses, on low battery say, may
 let the screen sleep, and with it the microphone.
 
+## Google Cloud speech
+
+**Optional, and off until you configure it.** Google Cloud can hear speech in place of
+Whisper (the microphone and Talk), and speak the chat's replies and Talk in place of
+Kokoro, through Gemini-TTS. It is for languages the local models handle badly, and for
+comparing. Gemini-TTS lists Tamil as generally available and Sinhala in Preview. Documents,
+audiobooks, a message's **Audio** download and the browser extension keep Kokoro whatever
+you choose.
+
+**What changes when it's on.** Recordings go to Google instead of staying on the server,
+and so does every sentence of a reply that is read aloud. Google bills per minute heard
+and per character spoken; the app has no spending cap, so set a budget and alerts in
+Google's console. The Talk panel says "Heard by Google Cloud", and **Settings → Chat**
+tells each person when Google reads the replies.
+
+### In Google Cloud
+
+1. **APIs** (APIs & Services → Library): Cloud Speech-to-Text, Cloud Text-to-Speech and
+   Vertex AI. Gemini-TTS checks a Vertex AI permission.
+2. **A recognizer** (Speech-to-Text → Recognizers → Create), for hearing. It lives in a
+   project with Cloud Speech-to-Text on, and its full name names *that* project: copy the
+   name from the recognizer's page, not from another credential. (A name with the wrong
+   project gets "the Cloud Speech-to-Text API is off in project …" on the Overview.) Two
+   that work, both checked live on 2026-11-03 with English, Sinhala and Tamil:
+   - **`long` in `global`, with `en-GB`, `si-LK` and `ta-IN`.** Quick (about 1.2 s for a
+     short question) and right in all three when the person names their language. It
+     can't tell them apart, though: asked for no language, it hears only the first in its
+     list, so English and Tamil come out as Sinhala. The app says so in **Settings → Chat**
+     ("Auto hears only Sinhala") and on the Overview, and offers only the recognizer's
+     languages. Set **Admin → Defaults → Speech language** to the one most people speak.
+   - **`chirp_3` with the language `auto`** (tested in `us`). It tells English, Sinhala
+     and Tamil apart on its own and adds punctuation, about 1 s slower than `long`.
+
+   [Google's table](https://docs.cloud.google.com/speech-to-text/docs/languages) lists
+   what each model and location supports. Leave the recognizer's features as you want
+   them: the app never changes them, and only sends the language when the person picked
+   one.
+3. **A service account** (IAM & Admin → Service accounts) with **Cloud Speech Client**
+   (`roles/speech.client`) on the recognizer's project, and **Vertex AI User**
+   (`roles/aiplatform.user`) for the voice. If Google says the caller lacks
+   `serviceusage.services.use`, add **Service Usage Consumer**.
+4. **Its key:** the account → Keys → Add key → **JSON**. The file has
+   `"type": "service_account"` in it. An OAuth client ID file (from APIs & Services →
+   Credentials) is a different thing and won't work: the Overview says so. If key
+   creation is refused, the organisation policy `iam.disableServiceAccountKeyCreation`
+   is on for the project.
+
+### In the app
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `GOOGLE_APPLICATION_CREDENTIALS` | (unset) | The key file. With `startup.sh` it's a path on the host, and is mounted read-only into the container (`compose.google.yml`); the file must be readable by the backend's user (`NR_APP_UID`, 1000) |
+| `GOOGLE_SPEECH_RECOGNIZER` | (unset) | The recognizer's full name, `projects/<project>/locations/<location>/recognizers/<id>`. Set: Google can be chosen to hear speech |
+| `GOOGLE_TTS_MODEL` | (unset) | A Gemini-TTS model, such as `gemini-2.5-flash-tts`. Set: Google can be chosen for the chat's voice |
+| `GOOGLE_TTS_VOICE` | `Kore` | One of Gemini-TTS's 30 voices, until an admin picks one |
+| `GOOGLE_TTS_LANGUAGE` | `en-US` | The language of a sentence that isn't mostly Sinhala or Tamil letters |
+| `SPEECH_ENGINE` | `local` | `local`, `openai` or `google`: who hears speech until an admin chooses |
+| `CHAT_VOICE` | `kokoro` | `kokoro` or `google`: who reads the chat until an admin chooses |
+| `GOOGLE_TIMEOUT_S` | `30` | Seconds before "Google didn't answer" |
+| `GOOGLE_CLOUD_PROJECT` | (unset) | The project billed for the voice when the credentials don't name one (gcloud's own login, say). A service-account key names its own |
+
+Then **Admin → Chat options**: **Speech recognition** offers every engine, and one that
+isn't configured says which variable it needs; **Voice for the chat and Talk** offers
+Kokoro or Google, and with Google one voice for everyone. Both apply from the next
+recording or sentence, with no restart. **Admin → Overview** shows the Voice input and
+Chat voice lines, with the reason when Google refuses: a key it won't take, a missing
+role, or an API that's off, named with its project.
+
+### How it behaves
+
+- **Hearing:** each recording is decoded on the server and sent as 16 kHz WAV, one call
+  per recording. Google's synchronous call takes a minute at most, so with Google the
+  microphone stops at **55 s** instead of 2 minutes.
+- **Talk:** Google gives none of Whisper's scores, so a clip counts as speech when Google
+  returns words, and as noise when it returns nothing. In the live check, hiss and coughs
+  never got that far: the VAD dropped them, and nothing was sent.
+- **Speed.** Talk's time from the end of a question to the first sound of the answer,
+  measured on 2026-11-03 from one home connection with a cloud LLM (median of five
+  English questions; yours will differ with your distance to Google):
+
+  | Hears | Speaks | First sound |
+  |---|---|---|
+  | Whisper `base.en` here | Kokoro | 2.1 s |
+  | Google (`long`) | Kokoro | 3.0 s |
+  | Google (`long`) | Gemini-TTS | 7.1 s (Sinhala 6.3 s, Tamil 5.4 s) |
+
+  Gemini-TTS takes 2.3 s or more for any sentence, however short, so for English the
+  quicker mix is Google hearing with Kokoro speaking. For Sinhala and Tamil, Gemini-TTS
+  is the only voice the app has. `gemini-2.5-flash-lite-preview-tts` is about 0.4 s
+  quicker per sentence, and is a Preview model.
+- **Talk's language:** the person's own **Speech language** when they chose one, else
+  `SPEECH_WINDOW_LANGUAGE`. That is how someone tries Sinhala or Tamil Talk.
+- **Speaking:** one call per sentence, at most 4,000 bytes. Each sentence's language comes
+  from its letters: mostly Sinhala is `si-LK`, mostly Tamil `ta-IN`, anything else
+  `GOOGLE_TTS_LANGUAGE`. If Google fails, the sentence is skipped and the person sees
+  Google's reason; there is no silent fallback to Kokoro.
+
 ## Bring-up checklist
 
 1. **DNS:** `chat.example.com` and `auth.example.com` both resolve to the host.

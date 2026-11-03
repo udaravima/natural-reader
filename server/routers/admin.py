@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
+from .. import chat_voice
 from ..auth import deps, users
 from ..auth.capabilities import KNOWN_CAPABILITIES
 from ..auth.config import load_auth_config
@@ -602,9 +603,56 @@ async def put_chat_options(
 
 def _warm_speech(options: chat_options.ChatOptions) -> None:
     try:
-        speech_service.get_transcriber(wanted=speech_catalogue.wanted(options)).warm()
+        speech_service.get_transcriber(wanted=speech_catalogue.wanted(options),
+                                       engine=speech_service.chosen_engine(options)).warm()
     except Exception:  # noqa: BLE001 - a saved setting must not become a 500; status shows the engine's state
         logger.warning("The speech engine couldn't start loading", exc_info=True)
+
+
+# ---------- the chat's voice (spec 2026-11-03-google-speech) ----------
+
+class ChatVoiceIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    engine: Literal["kokoro", "google"] | None   # null: CHAT_VOICE (or Kokoro) applies again
+    voice: str | None = Field(default=None, max_length=40)   # Google's voice; empty: GOOGLE_TTS_VOICE, else Kore
+
+
+def _chat_voice_view(options: chat_options.ChatOptions) -> dict:
+    voice = chat_voice.current(options)
+    return {"engine": voice.engine, "voice": voice.voice, "source": voice.source, "engines": chat_voice.engines(),
+            "voices": list(chat_voice.GOOGLE_VOICES), "model": (os.environ.get("GOOGLE_TTS_MODEL") or "").strip() or None}
+
+
+@router.get("/chat-voice")
+async def get_chat_voice(
+    _: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    return _chat_voice_view(await chat_options.load_chat_options(conn))
+
+
+@router.put("/chat-voice")
+async def put_chat_voice(
+    body: ChatVoiceIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Choose who speaks the chat's replies and Talk: Kokoro, with each person's own voice, or Google Gemini-TTS,
+    with one voice for everyone. Documents and audiobooks keep Kokoro whatever this says. Applies from the next
+    sentence read."""
+    value = None
+    if body.engine == "google":
+        needs = chat_voice.needs("google")
+        if needs:
+            raise refusal(422, "engine_not_configured", f"Google's voice isn't set up on this server: it needs {needs}.")
+        voice = body.voice or chat_voice.default_voice()
+        if voice not in chat_voice.GOOGLE_VOICES:
+            raise refusal(422, "unknown_voice", "That isn't one of Google's voices.")
+        value = {"engine": "google", "voice": voice}
+    elif body.engine == "kokoro":
+        value = {"engine": "kokoro"}
+    saved = await chat_options.save_chat_voice(conn, value, updated_by=str(principal.user_id))
+    return _chat_voice_view(saved)
 
 
 # ---------- speech models (spec 2026-11-02-speech-model-choice) ----------
@@ -624,14 +672,42 @@ class SpeechModelIn(BaseModel):
 
 
 def _speech_models_view(options: chat_options.ChatOptions) -> dict:
-    """The list, and which model applies. A remote engine has no list: SPEECH_MODEL names its model."""
-    if speech_service.engine_name() == "openai":
-        return {"engine": "openai", "chosen": None, "source": "env", "models": []}
+    """The engines and which one hears speech, then the list and which model applies. A remote engine has no list:
+    SPEECH_MODEL names an OpenAI-compatible server's model, and a Google recognizer carries its own."""
+    engine = speech_service.chosen_engine(options)
+    base = {"engine": engine, "engine_source": speech_service.engine_source(options),
+            "engines": speech_service.engines()}
+    if engine != "local":
+        return {**base, "chosen": None, "source": "env", "models": []}
     models = speech_catalogue.all_models(os.environ, options.added_speech_models)
     current = speech_catalogue.wanted(options)
     listed = ([] if current.id in models else [current]) + list(models.values())
-    return {"engine": "local", "chosen": current.id, "source": speech_catalogue.source(options),
+    return {**base, "chosen": current.id, "source": speech_catalogue.source(options),
             "models": [speech_catalogue.view(m) for m in listed]}
+
+
+class SpeechEngineChoice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    engine: Literal["local", "openai", "google"] | None   # null: the server setting applies again
+
+
+@router.put("/speech-engine")
+async def put_speech_engine(
+    body: SpeechEngineChoice,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Choose who hears speech: Whisper here, the OpenAI-compatible server, or Google Cloud. Only an engine the
+    deployer has configured can be chosen. With voice on, the new engine starts now on this worker, and on the
+    others at their next speech request."""
+    if body.engine is not None:
+        needs = speech_service.engine_needs(body.engine)
+        if needs:
+            raise refusal(422, "engine_not_configured", f"That engine isn't set up on this server: it needs {needs}.")
+    saved = await chat_options.save_speech_engine(conn, body.engine, updated_by=str(principal.user_id))
+    if saved.voice_input:
+        _warm_speech(saved)
+    return _speech_models_view(saved)
 
 
 @router.get("/speech-models")
@@ -659,7 +735,7 @@ async def put_speech_model_choice(
         if reason:
             raise refusal(422, "speech_model_cannot_run", reason)
     saved = await chat_options.save_speech_model(conn, body.id, updated_by=str(principal.user_id))
-    if saved.voice_input and speech_service.engine_name() != "openai":
+    if saved.voice_input and speech_service.chosen_engine(saved) == "local":
         _warm_speech(saved)
     return _speech_models_view(saved)
 
