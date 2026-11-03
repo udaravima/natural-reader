@@ -221,7 +221,7 @@ resolve_engine() {
 # an exported XDG_DATA_HOME breaks podman's socket resolution and every compose
 # call fails. The unset is scoped to the invocation only.
 # Compose files for this invocation: the base file, the podman overlay
-# (keep-id), the assistant-profile and speech-models overlays when
+# (keep-id), the assistant-profile, speech-models and Google-key overlays when
 # export_backend_env found those files readable, and the dev overlay when
 # COMPOSE_DEV=1.
 compose_files() {
@@ -230,6 +230,7 @@ compose_files() {
 	[[ "$engine" == "podman" ]] && printf '%s\n' "compose.podman.yml"
 	[[ -n "${NR_PROFILE_FILE:-}" ]] && printf '%s\n' "compose.profile.yml"
 	[[ -n "${NR_SPEECH_MODELS_FILE:-}" ]] && printf '%s\n' "compose.speech.yml"
+	[[ -n "${NR_GOOGLE_CREDENTIALS:-}" ]] && printf '%s\n' "compose.google.yml"
 	[[ "${COMPOSE_DEV:-0}" == "1" ]] && printf '%s\n' "compose.dev.yml"
 	return 0
 }
@@ -478,6 +479,17 @@ export_backend_env() {
 			export NR_SPEECH_MODELS_FILE
 		else
 			warn "SPEECH_MODELS_FILE is not readable; the speech model list stays as it is."
+		fi
+	fi
+	# The Google key (spec 2026-11-03-google-speech) is mounted read-only; its path is never printed.
+	unset NR_GOOGLE_CREDENTIALS
+	if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]]; then
+		local key="${GOOGLE_APPLICATION_CREDENTIALS/#\~/$HOME}"
+		if [[ -r "$key" && -f "$key" ]]; then
+			NR_GOOGLE_CREDENTIALS="$(cd "$(dirname "$key")" && pwd)/$(basename "$key")"
+			export NR_GOOGLE_CREDENTIALS
+		else
+			warn "GOOGLE_APPLICATION_CREDENTIALS is not readable; Google speech can't sign in."
 		fi
 	fi
 	if [[ -n "${LOG_AUDIT_FILE:-}" ]]; then

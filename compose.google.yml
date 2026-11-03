@@ -1,0 +1,8 @@
+# Added by startup.sh only when GOOGLE_APPLICATION_CREDENTIALS names a readable file: mount
+# the Google service-account key read-only at a fixed path and point the app there.
+services:
+  backend:
+    volumes:
+      - ${NR_GOOGLE_CREDENTIALS}:/app/config/google-credentials.json:ro
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /app/config/google-credentials.json

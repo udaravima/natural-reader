@@ -37,7 +37,7 @@ def test_containerfile_pins_python_313_and_runs_unprivileged():
 
 
 COMPOSE_FILES = ["docker-compose.yml", "compose.podman.yml", "compose.dev.yml", "compose.profile.yml",
-                 "compose.speech.yml"]
+                 "compose.speech.yml", "compose.google.yml"]
 
 
 def _render(tmp_path, env_lines=None, files=("docker-compose.yml",), extra_env=None):
@@ -116,6 +116,13 @@ def test_speech_overlay_mounts_the_file_read_only(tmp_path):
                 extra_env={"NR_SPEECH_MODELS_FILE": "/home/u/speech.yaml"})["backend"]
     assert "/home/u/speech.yaml:/app/config/speech-models.yaml:ro" in b["volumes"]
     assert b["environment"]["SPEECH_MODELS_FILE"] == "/app/config/speech-models.yaml"
+
+
+def test_google_overlay_mounts_the_key_read_only_and_points_the_app_at_it(tmp_path):
+    b = _render(tmp_path, env_lines=[], files=("docker-compose.yml", "compose.google.yml"),
+                extra_env={"NR_GOOGLE_CREDENTIALS": "/home/u/.config/google.json"})["backend"]
+    assert "/home/u/.config/google.json:/app/config/google-credentials.json:ro" in b["volumes"]
+    assert b["environment"]["GOOGLE_APPLICATION_CREDENTIALS"] == "/app/config/google-credentials.json"
 
 
 def test_podman_never_puts_the_keep_id_backend_in_a_pod(tmp_path):
