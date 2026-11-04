@@ -4,7 +4,23 @@
 
 ---
 
-## 2026-11-04 afternoon — v2.8.0 merged and tagged; next, speech models and voices each person chooses (START HERE)
+## 2026-11-04 evening — speech each person chooses: built, walked, on `feat/speech-choices`, not merged (START HERE)
+
+**State.** `feat/speech-choices` from `development` (cb70b8f), 12 commits, every one on the owner's delegated "you have your decision to commit": magnetic sliders (096c350), the phone header (f3a09f5), the plan (afd1216), the seven plan tasks (3e7821a..89c175f) and a Home/End fix (e790752). Not merged into `development`: that still needs the owner's word. The auto-pusher pushes the branch. Gates on e790752: pytest 2946 passed / 16 skipped, vitest 1806 in 150 files, eslint 0 errors (24 old warnings), build OK.
+
+**What a person can do now** (spec `docs/superpowers/specs/2026-11-04-speech-choices-per-person-design.md`, plan `docs/superpowers/plans/2026-11-04-speech-choices.md`):
+- **Admin → Chat options → Speech model → Offered to people**: tick the Sinhala and Tamil fine-tunes; ticking downloads them (the console says Downloading until they're here).
+- **The Speaking chip** beside the microphone (above the message box on a phone) and in the Talk panel: Auto, English, Sinhala, Tamil, each with its model; one tap, the next clip goes in that language, Talk keeps going. On Auto Talk says "Auto (English)" (Talk sends SPEECH_WINDOW_LANGUAGE on Auto: the likely reason Google "only heard English"). What it heard names each clip's language and model.
+- **Settings → Chat → Reply voice** when Google reads the replies: Google's voices, the admin's as default, a sample in three languages fetched once per voice per session.
+- The server keeps up to `SPEECH_MODELS_LOADED` (3) models per worker, holds each request's engine, waits for a load, falls back to the default, trims memory on drop.
+
+**Measured.** One Talk conversation Sinhala → English → Tamil (scratch, Chromium): heard by whisper-small-si / small / whisper-small-ta with correct text; first clips 1.8 / 0.8 / 1.6 s; the backend 1,238 → 2,854 MB. Talk's limits hold on the fine-tunes (3/3 synthetic clips each), but **they say no_speech 0.00 for any voice**, an English question and a colleague's English included, so on them only the VAD, empty text and echo checks filter (DEPLOYMENT.md, Offering models to people). Stock `small` dropped short Sinhala and Tamil greetings as noise. The real Sinhala/Tamil recordings of v2.5.0 aren't on disk any more: the check used Gemini-TTS voices.
+
+**Not done.** The non-admin walk through a throwaway Keycloak (a scratch admin walked every screen). A real Google reply voice (the walk stubbed /v1/chat/voice: the owner's key wasn't used). Real Sinhala/Tamil speakers in Talk. Deferred minors in the ledger summary: a stale default id in the pool after an admin switch, conversion on offer with 1 thread, language names in English.
+
+**Next.** The owner tries it; merge into development and release when they say. Still open: speaker verification (the busy-room colleague), the current_time tool, inline tool calls, the showHeaderControlsOnMobile phone overflow.
+
+## 2026-11-04 afternoon — v2.8.0 merged and tagged; next, speech models and voices each person chooses
 
 **State.** On the owner's "merge and tag currently where we are": `fix/talk-in-a-room` (3d43a4b, bf9f211, the release commit) fast-forwarded into `development`, `development` merged into `master`, annotated tag `v2.8.0` on that merge. Not pushed by this session and no GitHub release (the owner said merge and tag only); the outside auto-pusher had already pushed the branch up to bf9f211. The model-choice design (`docs/superpowers/specs/2026-11-04-speech-choices-per-person-design.md`) is NOT in the tag: it is being revised with the owner's 14:22 input.
 
