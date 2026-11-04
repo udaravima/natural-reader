@@ -15,6 +15,15 @@ All notable changes to this project will be documented in this file.
 - **Volume and the Talk settings' sliders** pull onto round values the same way (5%,
   100 ms, 50 ms, 0.05), with finer values between.
 
+### Fixed
+
+- **On a phone, Settings was cut off on the right for an admin.** The header's row of
+  views (Reader, Chat, Library, Admin) and the reader's buttons took 370 px of a 360 px
+  screen, so the page widened to 422 px and everything sized to it overflowed. Where the
+  row doesn't fit, one button now shows the open view and opens a menu of the others: on
+  a phone, and in the reader below 1280 px, where the playback controls need the room (a
+  768 px tablet overflowed by 164 px). Checked from 320 to 1440 px in every view.
+
 ## [2.8.0] - 2026-11-04
 
 **Talk settings, and Talk in a busy room.** Each person can now change how Talk listens

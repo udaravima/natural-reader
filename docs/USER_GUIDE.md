@@ -71,7 +71,9 @@ navigation (reader) and the model picker + sessions (chat). Everything about
   by 0.01. A change applies from the next sentence; the reading carries on. **Volume**
   and the sliders under **Settings → Talk** pull onto round values the same way.
 - **Admin** console — a separate view opened from the **shield** button in the
-  top view switcher (Reader / Chat / Library / Admin). Only admins see it.
+  top view switcher (Reader / Chat / Library / Admin). Only admins see it. Where the
+  row of views doesn't fit (a phone, or the reader on a screen under 1280 px wide), one
+  button shows the open view's icon: tap it for the others.
   **No token creation happens here.**
 
 ## Listening while you do something else
