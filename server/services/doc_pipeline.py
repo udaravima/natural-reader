@@ -19,7 +19,8 @@ from ..db import get_pool, is_ready
 from . import doc_storage, docling_convert, extract, model_router
 from .doc_outlines import BOOKMARKS, HEADINGS, NO_OUTLINE, Outline, save_outline
 from .doc_search import ReadableDoc
-from .embeddings import EMBEDDING_DIM, current_profile, embed_documents, profile_model
+from . import embedding_state
+from .embeddings import EMBEDDING_DIM, Embedder, current_profile, embed_documents, profile_model, profile_of
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +79,6 @@ async def run_embed(doc_id: str) -> None:
     Held under a per-doc lock so concurrent /index calls coalesce instead of
     duplicating work.
     """
-    # Read once per job so the recorded metadata matches what embed_one
-    # actually used (both source from model_router).
-    embed_model = model_router.get_config().embed_model
-    profile = current_profile()
     lock = doc_lock(doc_id)
     async with lock:
         if not is_ready():
@@ -90,6 +87,10 @@ async def run_embed(doc_id: str) -> None:
         pool = get_pool()
         try:
             async with pool.connection() as conn:
+                # Read once per job, so the recorded model and profile are the
+                # ones the vectors were made with.
+                e = await embedding_state.current(conn)
+                embed_model, profile = e.model, profile_of(e)
                 # Pull only the chunks we still need to embed. The model name
                 # is captured per row so a swap (which requires re-creating
                 # the column) doesn't silently mix dims.
@@ -123,7 +124,7 @@ async def run_embed(doc_id: str) -> None:
             for i in range(0, len(rows), BATCH):
                 slice_ = rows[i : i + BATCH]
                 texts = [r[1] for r in slice_]
-                vectors = await embed_documents(texts)
+                vectors = await embed_documents(texts, e)
                 async with pool.connection() as conn:
                     async with conn.cursor() as cur:
                         for (chunk_id, _text), vec in zip(slice_, vectors):
@@ -299,11 +300,11 @@ async def run_legacy_swap(doc_id: str) -> None:
     first; one transaction then swaps them in. Any failure keeps the old
     index untouched and leaves extracted_by='client' so a later upload retries.
     A conversion made from the old, unverified bytes is discarded with it."""
-    embed_model = model_router.get_config().embed_model
     async with doc_lock(doc_id):
         if not is_ready():
             return
         async with get_pool().connection() as conn:
+            e = await embedding_state.current(conn)
             cur = await conn.execute(
                 "SELECT state, extracted_by, bytes_path, file_type FROM documents "
                 "WHERE doc_id = %s", (doc_id,))
@@ -329,7 +330,7 @@ async def run_legacy_swap(doc_id: str) -> None:
             texts = [c.text for c in chunks]
             vectors = []
             for i in range(0, len(texts), EMBED_BATCH):
-                vectors += await embed_documents(texts[i:i + EMBED_BATCH])
+                vectors += await embed_documents(texts[i:i + EMBED_BATCH], e)
             if any(v is None for v in vectors):
                 raise RuntimeError("embedding service skipped some chunks")
         except Exception as e:
@@ -337,7 +338,7 @@ async def run_legacy_swap(doc_id: str) -> None:
             return
         async with get_pool().connection() as conn:
             async with conn.transaction():
-                await replace_chunks(conn, doc_id, chunks, embeddings=vectors, model=embed_model)
+                await replace_chunks(conn, doc_id, chunks, embeddings=vectors, model=e.model)
                 await save_outline(conn, doc_id, _native_outline(result, row[3]))
                 await conn.execute("DELETE FROM doc_pages WHERE doc_id = %s", (doc_id,))
                 await conn.execute(
@@ -346,7 +347,7 @@ async def run_legacy_swap(doc_id: str) -> None:
                     "conversion_state = NULL, conversion_options = NULL, conversion_error = NULL, "
                     "converted_at = NULL, error_message = NULL, updated_at = now() "
                     "WHERE doc_id = %s",
-                    (result.page_count, embed_model, EMBEDDING_DIM, current_profile(), doc_id))
+                    (result.page_count, e.model, EMBEDDING_DIM, profile_of(e), doc_id))
         doc_storage.remove_figures(doc_id)   # their Markdown just went
         logger.warning("Legacy content %s re-extracted from verified bytes", doc_id)
 
@@ -401,7 +402,7 @@ def _embedding_part(profile: str | None) -> str | None:
     return "|".join(profile.split("|")[:3]) if profile else None
 
 
-async def _reusable_vectors(conn, doc_id: str, old_profile: str | None) -> dict[str, Any]:
+async def _reusable_vectors(conn, doc_id: str, old_profile: str | None, e: Embedder) -> dict[str, Any]:
     """The vectors a rebuild can keep, by chunk text. A vector depends only on
     its text, the model and the document prefix, so one made under the same
     model and prefixes is as good as a fresh one, and embedding is the slow
@@ -410,12 +411,12 @@ async def _reusable_vectors(conn, doc_id: str, old_profile: str | None) -> dict[
     The profile is the document's as a whole; a row is also checked on its own
     (embedding_model), since a document whose re-index partly failed can hold
     vectors from two models under one profile."""
-    if _embedding_part(old_profile) != _embedding_part(current_profile()):
+    if _embedding_part(old_profile) != _embedding_part(profile_of(e)):
         return {}
     cur = await conn.execute(
         "SELECT text, embedding FROM doc_chunks "
         "WHERE doc_id = %s AND embedding IS NOT NULL AND embedding_model = %s",
-        (doc_id, model_router.get_config().embed_model))
+        (doc_id, e.model))
     return dict(await cur.fetchall())
 
 
@@ -452,9 +453,11 @@ async def run_rebuild(doc_id: str) -> None:
     async with _rebuild_gate, doc_lock(doc_id):
         if not is_ready():
             return
-        profile, embed_model = current_profile(), model_router.get_config().embed_model
+        profile = None
         try:
             async with get_pool().connection() as conn:
+                e = await embedding_state.current(conn)
+                profile, embed_model = profile_of(e), e.model
                 cur = await conn.execute(
                     "SELECT state, embedding_profile, file_type, bytes_path, conversion_state, extracted_by "
                     "FROM documents WHERE doc_id = %s", (doc_id,))
@@ -462,7 +465,7 @@ async def run_rebuild(doc_id: str) -> None:
                 if not row or row[0] != "indexed" or row[1] == profile:
                     return
                 chunks, outline = await _rebuild_source(conn, doc_id, row[2:])
-                reusable = await _reusable_vectors(conn, doc_id, row[1])
+                reusable = await _reusable_vectors(conn, doc_id, row[1], e)
             if not chunks:
                 logger.warning("Rebuild of %s found no text; keeping the old index", doc_id)
                 _failed[doc_id] = (profile, _clock() + REBUILD_RETRY_S)
@@ -472,7 +475,7 @@ async def run_rebuild(doc_id: str) -> None:
             embedded: dict[str, Any] = {}
             for i in range(0, len(missing), EMBED_BATCH):
                 batch = missing[i:i + EMBED_BATCH]
-                embedded.update(zip(batch, await embed_documents(batch)))
+                embedded.update(zip(batch, await embed_documents(batch, e)))
             if any(v is None for v in embedded.values()):
                 raise RuntimeError("the embedding service skipped some chunks")
             vectors = [reusable[c.text] if c.text in reusable else embedded[c.text] for c in chunks]

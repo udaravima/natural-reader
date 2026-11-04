@@ -19,9 +19,11 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+import psycopg
+from psycopg_pool import PoolTimeout
 
+from ..db import get_pool
 from ..llm.providers.base import ProviderConfig, auth_headers
-from . import model_router
 from .extract import embedding_max_chars
 
 logger = logging.getLogger(__name__)
@@ -147,7 +149,7 @@ async def embed_texts(e: Embedder, texts: list[str]) -> list[list[float]]:
 async def embed_batch(texts: list[str], e: Embedder | None = None) -> list[list[float] | None]:
     """Like embed_texts, but a failed request marks its own texts None instead of failing the rest, so
     indexing keeps what it got and skips the gaps."""
-    e = e or env_embedder()
+    e = e or await current_embedder()
 
     async def safe(batch: list[str]) -> list[list[float] | None]:
         try:
@@ -215,34 +217,49 @@ async def probe(provider: ProviderConfig, model: str, *, client: httpx.AsyncClie
 
 
 def env_embedder(env=None) -> Embedder:
-    """The embedder the environment describes: the Ollama at OLLAMA_URL and EMBEDDING_MODEL."""
-    cfg = model_router.load_inference_config(env if env is not None else os.environ)
-    return Embedder(ProviderConfig(name="ollama", kind="ollama", url=cfg.ollama_url), cfg.embed_model, None,
-                    cfg.embed_document_prefix, cfg.embed_query_prefix)
+    """The embedder the environment alone describes (EMBEDDING_PROVIDER, EMBEDDING_MODEL; else the Ollama at
+    OLLAMA_URL with nomic-embed-text): what applies when the database can't be read."""
+    from .embedding_state import env_target
+    return env_target(env if env is not None else os.environ)
+
+
+async def current_embedder() -> Embedder:
+    """What the stored vectors were made with (embedding_state.current), read on a short pooled connection.
+    Without a database (a worker still starting, a unit test), the environment's embedder."""
+    from .embedding_state import current
+    try:
+        async with get_pool().connection() as conn:
+            return await current(conn)
+    except (RuntimeError, psycopg.Error, PoolTimeout) as err:
+        logger.debug("Embedding with the environment's model: the database can't be read (%s)", type(err).__name__)
+        return env_embedder()
 
 
 # ---------- what is embedded, and how (v2.3 Task E) ----------
 
 async def embed_query(text: str, e: Embedder | None = None) -> list[float]:
-    """A question or search, with the model's query prefix. Raises EmbeddingError."""
-    e = e or env_embedder()
+    """A question or search, with the current model's query prefix. Raises EmbeddingError."""
+    e = e or await current_embedder()
     return (await embed_texts(e, [e.query_prefix + text]))[0]
 
 
 async def embed_documents(texts: list[str], e: Embedder | None = None) -> list[list[float] | None]:
     """Document chunks, with the model's document prefix (see embed_batch)."""
-    e = e or env_embedder()
+    e = e or await current_embedder()
     return await embed_batch([e.document_prefix + t for t in texts], e)
 
 
-def current_profile() -> str:
-    """How chunks embedded now are made: model | prefixes | chunker. A
+def profile_of(e: Embedder) -> str:
+    """How chunks embedded with `e` are made: model | prefixes | chunker. A
     document indexed under another profile is rebuilt (doc_pipeline); vectors
     are only compared within one model."""
     from .extract import CHUNKER_VERSION
-    cfg = model_router.get_config()
-    return "|".join((cfg.embed_model, repr(cfg.embed_document_prefix), repr(cfg.embed_query_prefix),
-                     CHUNKER_VERSION))
+    return "|".join((e.model, repr(e.document_prefix), repr(e.query_prefix), CHUNKER_VERSION))
+
+
+def current_profile() -> str:
+    """The environment's profile. Only ensure_current still reads it, until it reads the database (Task 4)."""
+    return profile_of(env_embedder())
 
 
 def profile_model(profile: str | None) -> str | None:

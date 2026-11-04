@@ -32,7 +32,7 @@ from .routers.settings import router as settings_router
 from .routers.speech import router as speech_router
 from .routers.profile import router as profile_router
 from .routers.tools import router as tools_router
-from .services import chat_options, doc_storage, docling_convert, project_events
+from .services import chat_options, doc_storage, docling_convert, embedding_state, project_events
 from .speech import catalogue as speech_catalogue, service as speech_service
 from .services.embeddings import start_client as start_embeddings, stop_client as stop_embeddings
 from .services.web_search import start_client as start_web_search, stop_client as stop_web_search
@@ -121,6 +121,13 @@ def create_app() -> FastAPI:
             except Exception:
                 logger.warning("Stale chat-turn recovery failed", exc_info=True)
             project_events.start_retention()
+            # What the stored vectors were made with is a database fact (embedding_state): the first start
+            # records the environment's model as current. Later starts leave it alone.
+            try:
+                async with get_pool().connection() as conn:
+                    await embedding_state.init(conn)
+            except Exception:
+                logger.warning("Embedding state not recorded; queries use the environment's model", exc_info=True)
             # Voice input is off by default; when it's on, start loading the speech model now so the first
             # recording doesn't wait for it. A database read that fails here just skips the warm-up: the status
             # route warms a worker's engine on first use.

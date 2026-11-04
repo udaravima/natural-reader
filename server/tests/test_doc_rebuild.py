@@ -159,7 +159,7 @@ async def test_a_converted_document_is_rebuilt_from_its_markdown_pages(db_conn, 
 
 
 async def test_a_failed_rebuild_keeps_the_old_index(db_conn, monkeypatch, store):
-    async def failing_embed(texts):
+    async def failing_embed(texts, e=None):
         return [None for _ in texts]
 
     build_docs_app(db_conn, monkeypatch, storage_dir=store, embed=failing_embed)
@@ -252,7 +252,7 @@ async def test_identical_parts_are_kept_as_separate_chunks_on_their_own_pages(db
 async def test_a_failed_rebuild_is_not_retried_at_once(db_conn, monkeypatch, store):
     """Review I2: without a backoff, every turn on the document started another
     full re-embed that failed the same way."""
-    async def failing_embed(texts):
+    async def failing_embed(texts, e=None):
         return [None for _ in texts]
 
     build_docs_app(db_conn, monkeypatch, storage_dir=store, embed=failing_embed)
@@ -325,7 +325,7 @@ async def test_the_profile_is_recorded_only_when_every_chunk_embedded(db_conn, m
     await _unembedded(db_conn, owner.user_id, 2)
     vec = [1.0] + [0.0] * (embeddings.EMBEDDING_DIM - 1)
 
-    async def fake_embed_documents(texts):
+    async def fake_embed_documents(texts, e=None):
         return [vec, None] if fail_one else [vec for _ in texts]
 
     monkeypatch.setattr(doc_pipeline, "embed_documents", fake_embed_documents)
@@ -378,7 +378,7 @@ async def _guide_rows(db_conn):
 def _record_embeddings(monkeypatch):
     inputs: list[str] = []
 
-    async def record(texts):
+    async def record(texts, e=None):
         inputs.extend(texts)
         return [[1.0] + [0.0] * (embeddings.EMBEDDING_DIM - 1) for _ in texts]
 
@@ -471,10 +471,10 @@ async def test_reused_vectors_are_read_per_text_and_only_for_the_same_embedding(
         await db_conn.execute(
             "INSERT INTO doc_chunks (doc_id, ord, page, chunk_type, text, text_hash, embedding, embedding_model) "
             "VALUES (%s, %s, 1, 'page', %s, %s, %s::vector, %s)", (DOC, i, text, f"h{i}", v, model))
-    same = _profile_with("split1:1:1")
-    assert list(await doc_pipeline._reusable_vectors(db_conn, DOC, same)) == ["embedded"]
-    assert await doc_pipeline._reusable_vectors(db_conn, DOC, None) == {}
-    assert await doc_pipeline._reusable_vectors(db_conn, DOC, "other-model|''|''|split1:1:1") == {}
+    same, e = _profile_with("split1:1:1"), embeddings.env_embedder()
+    assert list(await doc_pipeline._reusable_vectors(db_conn, DOC, same, e)) == ["embedded"]
+    assert await doc_pipeline._reusable_vectors(db_conn, DOC, None, e) == {}
+    assert await doc_pipeline._reusable_vectors(db_conn, DOC, "other-model|''|''|split1:1:1", e) == {}
 
 
 async def test_a_vector_made_by_another_model_is_not_kept_even_under_the_documents_profile(db_conn, monkeypatch,
@@ -529,7 +529,7 @@ async def test_a_rebuild_dropped_because_the_document_changed_saves_no_outline(d
     owner = await _member(db_conn, "owner")
     await _index_guide_before_code_chunks(db_conn, owner.user_id, store, profile=_profile_with("split1:1200:200"))
 
-    async def embed_and_reset(texts):
+    async def embed_and_reset(texts, e=None):
         await db_conn.execute("UPDATE documents SET state = 'stored' WHERE doc_id = %s", (GUIDE_DOC,))
         return [[1.0] + [0.0] * (embeddings.EMBEDDING_DIM - 1) for _ in texts]
 

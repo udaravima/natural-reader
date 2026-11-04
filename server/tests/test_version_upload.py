@@ -25,7 +25,7 @@ class _CountingEmbed:
     def __init__(self):
         self.calls = 0
 
-    async def __call__(self, texts):
+    async def __call__(self, texts, e=None):
         self.calls += 1
         return await fake_embed(texts)
 

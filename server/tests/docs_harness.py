@@ -28,7 +28,7 @@ class _PoolShim:
         yield self._conn
 
 
-async def fake_embed(texts):
+async def fake_embed(texts, e=None):
     return [[1.0] + [0.0] * (EMBEDDING_DIM - 1) for _ in texts]
 
 

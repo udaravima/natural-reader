@@ -30,6 +30,11 @@ class InferenceConfig:
     embed_query_prefix: str = ""
 
 
+def prefixes(env: Mapping[str, str], model: str) -> tuple[str, str]:
+    """(document, query) prefixes for `model`: EMBEDDING_*_PREFIX when set, else its family's."""
+    return _prefixes(env, model)
+
+
 def _prefixes(env: Mapping[str, str], model: str) -> tuple[str, str]:
     # The prefixes the model's family was trained with (embedding_models.KNOWN); unlisted: none.
     fam = embedding_models.family(model)
