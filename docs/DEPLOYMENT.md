@@ -1233,8 +1233,11 @@ Every rule ends the person's turns, which no setting did without the gate. **Non
 a colleague talking nonstop at that level out**: once one of their sentences opens a turn,
 Whisper accepts it, because it is speech, and loudness can't say whose it is. The walks
 ran for different lengths, so compare the shares, not the counts. An earlier walk of the
-first version, with every question at the usual level, sent only the questions; it ran
-Whisper `base.en`, which probably called the colleague's echoing voice noise (likely, not checked).
+first version sent only the questions; it differed in two ways, Whisper `base.en` and
+every question at the usual level. Which one kept the colleague out isn't known. It
+wasn't Whisper rejecting the colleague's voice: on 4 s pieces of the same recording,
+`base.en` calls 5 of 6 speech, `small` 4 and `base` 3, while all seven of the person's
+questions are speech on all three (`no_speech` at most 0.03 against a limit of 0.25).
 
 **Setting it.** 9 dB suits a voice well below the person's: the simulation keeps a
 colleague 14 dB or more below out of every turn but the first. If it cuts the person

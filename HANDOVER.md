@@ -4,7 +4,13 @@
 
 ---
 
-## 2026-11-04 midday — Talk settings, and the busy-room gate made a setting: committed on `fix/talk-in-a-room` (START HERE)
+## 2026-11-04 afternoon — v2.8.0 merged and tagged; next, speech models and voices each person chooses (START HERE)
+
+**State.** On the owner's "merge and tag currently where we are": `fix/talk-in-a-room` (3d43a4b, bf9f211, the release commit) fast-forwarded into `development`, `development` merged into `master`, annotated tag `v2.8.0` on that merge. Not pushed by this session and no GitHub release (the owner said merge and tag only); the outside auto-pusher had already pushed the branch up to bf9f211. The model-choice design (`docs/superpowers/specs/2026-11-04-speech-model-per-person-design.md`) is NOT in the tag: it is being revised with the owner's 14:22 input.
+
+**The owner's input, 14:22.** Today speaking Sinhala, English or Tamil means an admin switching the deployment's one model. They want to switch between (about) three models during a conversation. Google speech-to-text worked only for English for them (cause not checked; v2.7.0's live test heard all three, so likely their recognizer's language list), while Google's Sinhala voice is good: Google stays an admin choice because it costs money, but when the admin turns Google's voice on, a person should pick their own voice and hear a short sample first. Kokoro needs a finer speed control than the presets: a slider that moves linearly but hops between round values, 0.05 apart.
+
+## 2026-11-04 midday — Talk settings, and the busy-room gate made a setting: committed on `fix/talk-in-a-room`
 
 **State.** Branch `fix/talk-in-a-room`: `3d43a4b` (the first gate) and the commit after it (this work), both committed on the owner's word. Nothing pushed; `development`'s `d48209f` isn't pushed either, and the branch isn't merged into `development`. At 13:30 the owner was deploying this commit to check it live; until then their stack ran the first gate (rebuilt 10:13–10:16), where `SPEECH_WINDOW_GATE_DB=0` turns it off. With this commit that value is out of range (3 to 30): one warning, and the gate is off by default anyway.
 
@@ -17,7 +23,7 @@
 
 **What the tests found, in order** (scratch: `vadlevel/real*.py`, `drop*.py`, `office*.py`, `talk2/sitback.mjs`, results in `walk3/`):
 1. On 20 real recordings, sitting back 6 dB: first gate 0–75% of speech kept, no gate 69–100%, the new rule 65–100%.
-2. Walked in Chromium (Whisper `small`, a colleague reading nonstop ~13 dB below, three of four questions 6 dB further back): **every rule let her sentences through as turns once one opened**: first gate 19 of 22 clips hers, new rule at 9 dB 41 of 43, at 6 dB 52 of 56. Loudness can't say whose voice it is, and Whisper accepts her words because they are speech. The earlier clean walk of the first gate used `base.en`, which probably rejected her voice as noise (likely, not checked).
+2. Walked in Chromium (Whisper `small`, a colleague reading nonstop ~13 dB below, three of four questions 6 dB further back): **every rule let her sentences through as turns once one opened**: first gate 19 of 22 clips hers, new rule at 9 dB 41 of 43, at 6 dB 52 of 56. Loudness can't say whose voice it is, and Whisper accepts her words because they are speech. The earlier clean walk of the first gate used `base.en` with every question at the usual level; which of the two kept her out isn't known. Not the model rejecting her: measured at 13:55 (scratch `pool/verdicts.py`), `base.en` calls 5 of 6 four-second pieces of her recording speech, `small` 4, `base` 3, and all 7 questions are speech on all three.
 3. Tried and dropped: the last accepted turn alone (she took over at once); a strict 4 dB start with the in-turn rule (sitting back lost whole utterances again); a start needing 6 of 8 loud frames (lost real speech even at the usual level).
 Every rule ends turns in that room, which gate-off never does. docs/DEPLOYMENT.md "Talk in a busy room" has the tables and says plainly what it can't do.
 
@@ -25,7 +31,7 @@ Every rule ends turns in that room, which gate-off never does. docs/DEPLOYMENT.m
 
 **Next, proposed and not built.**
 - **Speaker verification**: recognise the person's voice, so a colleague's turn is dropped whatever its loudness. The real fix for the office.
-- **Each person chooses their speech model**: design written, `docs/superpowers/specs/2026-11-04-speech-model-per-person-design.md`, not approved. Measured for it: `small` int8 adds ~515 MB loaded, 660 MB after its first clip.
+- **Each person chooses their speech model**: design `docs/superpowers/specs/2026-11-04-speech-model-per-person-design.md`, revised 14:00 after reading the code and measuring, not approved, uncommitted. The read found two things the first draft missed: the transcription route swaps the worker's one engine and reads it back, so two people on two models could be heard by each other's model; and a model that isn't loaded refuses the recording with 503. Measured (scratch `pool/`): a dropped model keeps ~250 MB in the process unless `malloc_trim(0)` runs; `small` + `base` held 886 MB; Talk's speech-or-noise limits hold on `small`, `base` and `base.en`.
 - Still open from the night entry: the `current_time` tool and inline tool calls.
 
 ## 2026-11-04 night — Talk in a busy room: built and walked on `fix/talk-in-a-room`

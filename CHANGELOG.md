@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-11-04
+
 **Talk settings, and Talk in a busy room.** Each person can now change how Talk listens
 on their own device, under **Settings → Talk**, with this server's tested value shown
 beside every control. One of them ignores a colleague a few desks away. No migrations;
