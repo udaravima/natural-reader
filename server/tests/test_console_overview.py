@@ -19,7 +19,7 @@ from server.llm.router import ModelInfo, UnknownModel
 from server.llm.types import Capabilities
 from server.routers import admin as admin_router
 from server.auth.users import SEED_ADMIN_ID
-from server.services import (chat_options, console_overview, console_settings, docling_convert, embeddings, model_settings,
+from server.services import (chat_options, console_overview, console_settings, docling_convert, embedding_state, embeddings, model_settings,
                              web_search)
 from server.services.inference_limits import InferenceLimits
 from server.chat.config import ChatConfig
@@ -80,15 +80,17 @@ def _router():
 
 
 def _embedding(width=768):
-    return lambda request: httpx.Response(200, json={"embedding": [0.1] * width})
+    return lambda request: httpx.Response(200, json={"embeddings": [[0.1] * width]})
 
 
-def _searxng(status=200, embed=None):
-    """One client for both network checks: /healthz answers SearXNG's, /api/embeddings the embedding probe's
-    (a healthy 768-wide model unless `embed` says otherwise)."""
+def _searxng(status=200, embed=None, loaded=()):
+    """One client for both network checks: /healthz answers SearXNG's, /api/embed the embedding probe's (a
+    healthy 768-wide model unless `embed` says otherwise), /api/ps the models Ollama has loaded (`loaded`)."""
     def handler(request):
-        if request.url.path == "/api/embeddings":
+        if request.url.path == "/api/embed":
             return (embed or _embedding())(request)
+        if request.url.path == "/api/ps":
+            return httpx.Response(200, json={"models": [{"name": n, "model": n} for n in loaded]})
         assert request.url.path == "/healthz"
         return httpx.Response(status)
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -297,38 +299,46 @@ async def test_embeddings_states(db_conn):
         raise httpx.ConnectError("no")
     c = (await _by_id(db_conn, _router(), http=_with_embed(refuses)))["embeddings"]
     assert c.state == "error"
-    assert c.summary == "Can't reach the embedding model nomic-embed-text at localhost:11434: documents can't be indexed or searched."
+    assert c.summary == ("Can't reach ollama at localhost:11434 for nomic-embed-text (ConnectError): "
+                         "documents can't be indexed or searched.")
 
     def slow(_request):
         raise httpx.ReadTimeout("slow")
     c = (await _by_id(db_conn, _router(), http=_with_embed(slow)))["embeddings"]
-    assert c.summary.startswith("Can't reach the embedding model nomic-embed-text")
+    assert c.summary.startswith("Can't reach ollama at localhost:11434 for nomic-embed-text")
 
 
 async def test_a_model_that_was_never_pulled_reads_as_an_http_error_not_as_unreachable(db_conn):
     c = (await _by_id(db_conn, _router(), http=_with_embed(lambda _r: httpx.Response(404, json={"error": "model not found"}))))["embeddings"]
-    assert (c.state, c.summary) == ("error", "nomic-embed-text at localhost:11434 answered HTTP 404: documents can't be indexed or searched.")
+    assert (c.state, c.summary) == ("error", "nomic-embed-text isn't on ollama at localhost:11434 (HTTP 404): documents can't be indexed or searched.")
 
 
 async def test_an_answer_with_no_embedding_is_reported_as_such(db_conn):
-    for answer in (httpx.Response(200, json={}), httpx.Response(200, json={"embedding": []}),
+    for answer in (httpx.Response(200, json={}), httpx.Response(200, json={"embeddings": []}),
+                   httpx.Response(200, json={"embeddings": [[]]}),
                    httpx.Response(200, text="not json"), httpx.Response(200, json=[1, 2])):
         c = (await _by_id(db_conn, _router(), http=_with_embed(lambda _r, a=answer: a)))["embeddings"]
         assert c.state == "error"
-        assert c.summary == "nomic-embed-text at localhost:11434 answered, but returned no embedding: documents can't be indexed or searched."
+        assert c.summary.startswith("nomic-embed-text") and "localhost:11434" in c.summary
+        assert c.summary.endswith(": documents can't be indexed or searched.")
 
 
-async def test_the_probe_sends_embed_ones_request_and_asks_for_no_dimensions(db_conn):
+async def test_the_probe_unloads_a_model_it_had_to_load(db_conn):
+    """Ledger ruling P6: opening the Overview loaded the embedding model and kept it in memory for Ollama's five
+    minutes, which looked like the chat holding it. A model that wasn't loaded is unloaded right after."""
     seen = []
 
     def spy(request):
         seen.append(request)
-        return httpx.Response(200, json={"embedding": [0.1] * 768})
-    await _by_id(db_conn, _router(), env={"OLLAMA_URL": "http://embed.example.com:11434", "EMBEDDING_MODEL": "other-model"},
-                 http=_with_embed(spy))
+        return httpx.Response(200, json={"embeddings": [[0.1] * 768]})
+    env = {"OLLAMA_URL": "http://embed.example.com:11434", "EMBEDDING_MODEL": "other-model"}
+    await _by_id(db_conn, _router(), env=env, http=_with_embed(spy))
     assert len(seen) == 1
-    assert str(seen[0].url) == "http://embed.example.com:11434/api/embeddings"
-    assert json.loads(seen[0].content) == {"model": "other-model", "prompt": console_overview.EMBEDDING_PROBE}
+    assert str(seen[0].url) == "http://embed.example.com:11434/api/embed"
+    assert json.loads(seen[0].content) == {"model": "other-model", "input": [console_overview.EMBEDDING_PROBE],
+                                           "keep_alive": 0}
+    await _by_id(db_conn, _router(), env=env, http=_searxng(200, spy, loaded=("other-model:latest",)))
+    assert json.loads(seen[1].content) == {"model": "other-model", "input": [console_overview.EMBEDDING_PROBE]}
 
 
 async def test_a_busy_indexing_queue_does_not_make_a_healthy_model_look_down(db_conn):   # T5
@@ -346,10 +356,31 @@ async def test_embeddings_warns_about_documents_under_an_older_setup(db_conn):
         await seed.seed_doc(db_conn, f"old{i}", None, state="indexed")
         await db_conn.execute("UPDATE documents SET embedding_profile = 'older' WHERE doc_id = %s", (f"old{i}",))
     await seed.seed_doc(db_conn, "cur", None, state="indexed")
-    await db_conn.execute("UPDATE documents SET embedding_profile = %s WHERE doc_id = 'cur'", (embeddings.current_profile(),))
+    await db_conn.execute("UPDATE documents SET embedding_profile = %s WHERE doc_id = 'cur'",
+                          (embeddings.profile_of(embedding_state.env_target({})),))
     c = (await _by_id(db_conn, _router()))["embeddings"]
     assert c.state == "warn"
     assert "2 documents were indexed under an older embedding setup; each rebuilds the next time someone uses it." in c.summary
+
+
+async def test_embeddings_shows_a_re_embed_in_progress_and_the_rebuild_queue(db_conn):
+    await db_conn.execute("DELETE FROM app_settings WHERE key = 'embedding_state'")
+    await embedding_state.init(db_conn, {})
+    state = await embedding_state.read_state(db_conn)
+    await embedding_state.write_state(db_conn, {**state, "next": {"provider": "ollama", "model": "embeddinggemma-2:740m"},
+                                                "filled": 1234, "total": 5000})
+    for i, kind in enumerate(("queued", "running", "failed")):
+        await seed.seed_doc(db_conn, f"q{i}", None, state="indexed")
+        await db_conn.execute("INSERT INTO doc_rebuilds (doc_id, profile, state) VALUES (%s, 'p', %s)", (f"q{i}", kind))
+    c = (await _by_id(db_conn, _router()))["embeddings"]
+    assert "Re-embedding for embeddinggemma-2:740m: 1,234 of 5,000 passages." in c.summary
+    assert "2 documents waiting to be rebuilt." in c.summary
+    assert "1 rebuild failed and will be retried." in c.summary
+    assert c.state == "warn"
+    await embedding_state.write_state(db_conn, {**state, "next": {"provider": "ollama", "model": "embeddinggemma-2:740m"},
+                                                "filled": 10, "total": 50, "error": "Can't reach ollama"})
+    c = (await _by_id(db_conn, _router()))["embeddings"]
+    assert "Re-embedding for embeddinggemma-2:740m is paused: Can't reach ollama" in c.summary
 
 
 async def test_docling_states(db_conn, monkeypatch):

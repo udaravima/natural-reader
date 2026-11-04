@@ -34,7 +34,8 @@ from ..chat.tools import ToolContext, available_tools, tool_spec
 from ..llm.providers.base import ProviderConfig
 from ..llm.router import ModelInfo, UnknownModel
 from .. import chat_voice, google_cloud
-from . import assistant_profile, chat_options, docling_convert, embeddings, model_router, model_settings, web_search
+from . import (assistant_profile, chat_options, docling_convert, embedding_console, embedding_state, embeddings, model_router,
+               model_settings, rebuild_queue, web_search)
 from ..speech import catalogue as speech_catalogue, service as speech_service
 from ..speech.languages import WHISPER_LANGUAGES
 from .deployment_info import NOT_A_URL, url_host
@@ -154,40 +155,63 @@ async def _reader(llm, ms: model_settings.ModelsSettings, env: Mapping[str, str]
     return _check("reader", "ok", f"{name}, from {ms.reader_env or 'READER_MODEL'}.")
 
 
-async def _embeddings(http: httpx.AsyncClient, env: Mapping[str, str], stale: int) -> Check:
-    cfg = model_router.load_inference_config(env)
-    model, host = cfg.embed_model, url_host(cfg.ollama_url)
-    dim = embeddings.EMBEDDING_DIM
-    # The probe makes its own single request to the endpoint embed_one uses, with the same body, instead of
-    # calling embed_one: that one waits on the shared indexing semaphore, so right after an upload a healthy
-    # model would read as "didn't answer". No `dimensions` is asked for: the length that comes back is the
-    # model's own.
+async def _loaded(http: httpx.AsyncClient, e: embeddings.Embedder) -> bool:
+    """Whether this Ollama has the model in memory now (/api/ps). Unknown counts as not."""
     try:
-        resp = await http.post(f"{cfg.ollama_url}/api/embeddings",
-                               json={"model": model, "prompt": EMBEDDING_PROBE})
+        resp = await http.get(f"{e.provider.url}/api/ps")
         resp.raise_for_status()
-        vec = resp.json().get("embedding")
-    except httpx.HTTPStatusError as e:   # reachable, but refusing: a model that was never pulled is a 404
-        return _check("embeddings", "error", f"{model} at {host} answered HTTP {e.response.status_code}: "
-                                             "documents can't be indexed or searched.")
-    except (httpx.HTTPError, httpx.InvalidURL):
-        return _check("embeddings", "error", f"Can't reach the embedding model {model} at {host}: "
-                                             "documents can't be indexed or searched.")
-    except (ValueError, AttributeError):   # an answer that isn't JSON, or isn't an object
-        vec = None
-    if not isinstance(vec, list) or not vec:
-        return _check("embeddings", "error", f"{model} at {host} answered, but returned no embedding: "
-                                             "documents can't be indexed or searched.")
-    got = len(vec)
+        names = [m.get("name") or m.get("model") or "" for m in resp.json().get("models", [])]
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, AttributeError):
+        return False
+    return any(n.removesuffix(":latest") == e.model.removesuffix(":latest") for n in names)
+
+
+async def _embeddings(http: httpx.AsyncClient, e: embeddings.Embedder, state: Mapping | None, stale: int,
+                      queue: Mapping[str, int]) -> Check:
+    """The current embedder (what the stored vectors were made with) answers with 768 numbers; and how far a
+    re-embed and the rebuild queue are, read from the database.
+
+    The probe makes its own request instead of going through embed_texts: that one waits on the shared indexing
+    semaphore, so right after an upload a healthy model would read as "didn't answer". On Ollama it first asks
+    /api/ps whether the model is loaded, and a model it had to load is unloaded right after (keep_alive 0):
+    opening the console must not keep a model in memory for five minutes (ledger ruling P6)."""
+    dim = embeddings.EMBEDDING_DIM
+    stake = "documents can't be indexed or searched."
+    extra = {"keep_alive": 0} if e.provider.kind == "ollama" and not await _loaded(http, e) else None
+    try:
+        vectors = await embeddings.request_vectors(e, [EMBEDDING_PROBE], client=http, extra=extra)
+    except embeddings.EmbeddingError as err:
+        return _check("embeddings", "error", f"{err}: {stake}")
+    vec = vectors[0]
+    got = len(vec) if isinstance(vec, list) else 0
+    host = url_host(e.provider.url)
+    if not got:
+        return _check("embeddings", "error", f"{e.model} at {host} answered, but returned no embedding: {stake}")
     if got != dim:
-        return _check("embeddings", "error", f"{model} returned {got} dimensions; the database holds {dim}.")
-    summary = f"{model} at {host}: {dim} dimensions."
+        return _check("embeddings", "error", f"{e.model} returned {got} dimensions; the database holds {dim}.")
+    notes, warn = [], False
+    migration = embedding_console.migration_view(state)
+    if migration["state"] in ("building", "switching"):
+        notes.append(f"Re-embedding for {migration['model']}: {migration['filled']:,} of {migration['total']:,} "
+                     "passages.")
+    elif migration["state"] == "failed":
+        warn = True
+        notes.append(f"Re-embedding for {migration['model']} is paused: {migration['error']}" if migration["model"]
+                     else f"The chosen embedding model isn't used: {migration['error']}")
     if stale:
+        warn = True
         was = "was" if stale == 1 else "were"
         each = "it rebuilds" if stale == 1 else "each rebuilds"
-        return _check("embeddings", "warn", f"{summary} {_plural(stale, 'document')} {was} indexed under an older "
-                                            f"embedding setup; {each} the next time someone uses it.")
-    return _check("embeddings", "ok", summary)
+        notes.append(f"{_plural(stale, 'document')} {was} indexed under an older embedding setup; {each} the next "
+                     "time someone uses it.")
+    waiting = queue.get("queued", 0) + queue.get("running", 0)
+    if waiting:
+        notes.append(f"{_plural(waiting, 'document')} waiting to be rebuilt.")
+    if queue.get("failed"):
+        warn = True
+        notes.append(f"{_plural(queue['failed'], 'rebuild')} failed and will be retried.")
+    summary = " ".join([f"{e.model} at {host}: {dim} dimensions.", *notes])
+    return _check("embeddings", "warn" if warn else "ok", summary)
 
 
 async def _docling() -> Check:
@@ -349,13 +373,15 @@ async def run_checks(conn, llm, env: Mapping[str, str] = os.environ,
     options = await chat_options.load_chat_options(conn, env)
     web_mode = options.web_search
     try:
-        current = embeddings.current_profile()
+        embedder = await embedding_state.current(conn, env)
     except ValueError:   # a malformed INFERENCE_* value: the embeddings and context checks report it themselves
-        stale = 0
+        embedder, stale = None, 0
     else:
         cur = await conn.execute("SELECT count(*) FROM documents WHERE state = 'indexed' "
-                                 "AND embedding_profile IS DISTINCT FROM %s", (current,))
+                                 "AND embedding_profile IS DISTINCT FROM %s", (embeddings.profile_of(embedder),))
         stale = (await cur.fetchone())[0]
+    state = await embedding_state.read_state(conn)
+    queue = await rebuild_queue.queue_counts(conn)
     profile = (await assistant_profile.load_profile(conn)).text
     try:
         ms = await model_settings.load_models_settings(conn, env)
@@ -370,7 +396,8 @@ async def run_checks(conn, llm, env: Mapping[str, str] = os.environ,
             _bounded("providers", lambda: _providers(llm)),
             _bounded("reader", lambda: _reader(llm, ms, env)),
             _bounded("context", lambda: _context(llm, ms, env, web_mode, profile)),
-            _bounded("embeddings", lambda: _embeddings(client, env, stale)),
+            _bounded("embeddings", lambda: _embeddings(client, embedder or embedding_state.env_target(env), state,
+                                                       stale, queue)),
             _bounded("docling", _docling),
             _bounded("web_search", lambda: _web_search(client, web_mode)),
             _bounded("voice_input", lambda: _voice_input(options, env)),

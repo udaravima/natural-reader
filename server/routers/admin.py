@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
 import logging
 import os
@@ -27,7 +28,8 @@ from ..speech import catalogue as speech_catalogue, convert as speech_convert, d
 from ..speech import google_names
 from ..speech.languages import WHISPER_LANGUAGES
 from ..services import (assistant_profile, chat_options, console_overview, console_settings, deployment_info, deployment_settings,
-                        doc_content, docling_limits, inference_budget, inference_limits, model_router, model_settings, people, user_defaults,
+                        doc_content, docling_limits, embedding_console, embedding_migration, inference_budget,
+                        inference_limits, model_router, model_settings, people, user_defaults,
                         web_search as web_search_service)
 from ..services.console_settings import Section, SettingError
 
@@ -1020,3 +1022,67 @@ async def put_settings_section(
     except SettingError as e:
         raise refusal(422, "invalid_setting", str(e), setting=e.name) from None
     return await _section_view(conn, section)
+
+
+# ---------- Models → Embeddings (admin console v2 phase 2b, spec §4.2.3–4.2.4) ----------
+
+class EmbeddingChoiceIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider: str | None = None   # a configured provider's name; null = the default one
+    model: str | None = None      # null (with provider null): back to the environment's
+
+
+def _embedding_refusal(e: embedding_console.Refused) -> HTTPException:
+    return refusal(422, e.code, str(e))
+
+
+@router.get("/embeddings")
+async def get_embeddings(
+    _: deps.Principal = Depends(deps.require_admin), conn=Depends(deps.get_conn, scope="function"),
+):
+    """The model the library's vectors were made with, the one chosen, and a re-embed in progress."""
+    return await embedding_console.view(conn)
+
+
+@router.get("/embeddings/models")
+async def get_embedding_models(provider: str, _: deps.Principal = Depends(deps.require_admin)):
+    try:
+        return {"models": await embedding_console.models(provider)}
+    except embedding_console.Refused as e:
+        raise _embedding_refusal(e) from None
+
+
+@router.post("/embeddings/probe")
+async def probe_embedding_model(body: EmbeddingChoiceIn, _: deps.Principal = Depends(deps.require_admin)):
+    """Check a model before choosing it: its native size, whether it may be shortened to 768, or why not."""
+    try:
+        verdict = await embedding_console.check(body.provider, body.model or "")
+    except embedding_console.Refused as e:
+        raise _embedding_refusal(e) from None
+    return dataclasses.asdict(verdict)
+
+
+@router.put("/embeddings")
+async def put_embeddings(
+    body: EmbeddingChoiceIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Choose the embedding model. It is checked again here; another model starts a re-embed (the library stays
+    searchable with the current one until the switch); the same model elsewhere switches at once."""
+    try:
+        await embedding_console.choose(conn, body.provider, body.model, by=str(principal.user_id))
+    except embedding_console.Refused as e:
+        raise _embedding_refusal(e) from None
+    except SettingError as e:
+        raise refusal(422, "invalid_setting", str(e), setting=e.name) from None
+    return await embedding_console.view(conn)
+
+
+@router.delete("/embeddings/migration")
+async def cancel_embedding_migration(
+    principal: deps.Principal = Depends(deps.require_admin), conn=Depends(deps.get_conn, scope="function"),
+):
+    """Stop a re-embed before its switch: the new vectors are dropped and the current model stays."""
+    await embedding_migration.cancel(conn, by=str(principal.user_id))
+    return await embedding_console.view(conn)

@@ -17,6 +17,7 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 import psycopg
@@ -75,8 +76,21 @@ def _get_client() -> httpx.AsyncClient:
     return _client
 
 
+def host_of(url: str) -> str:
+    """host[:port] of a provider URL, never its credentials or path."""
+    try:
+        parts = urlsplit(url)
+        return f"{parts.hostname}:{parts.port}" if parts.port else (parts.hostname or "")
+    except ValueError:
+        return ""
+
+
+def _at(e: Embedder) -> str:
+    return f"{e.provider.name} at {host_of(e.provider.url)}"
+
+
 def _where(e: Embedder) -> str:
-    return f"{e.model} on {e.provider.name}"
+    return f"{e.model} on {_at(e)}"
 
 
 async def request_vectors(e: Embedder, texts: list[str], *, client: httpx.AsyncClient | None = None,
@@ -98,12 +112,12 @@ async def request_vectors(e: Embedder, texts: list[str], *, client: httpx.AsyncC
     except httpx.HTTPStatusError as err:   # reachable, but refusing
         code = err.response.status_code
         if code == 404:     # Ollama: never pulled; an OpenAI-compatible server: no such model
-            raise EmbeddingError(f"{e.model} isn't on {e.provider.name} (HTTP 404)") from None
+            raise EmbeddingError(f"{e.model} isn't on {_at(e)} (HTTP 404)") from None
         if code == 501:     # Ollama: a chat model asked for embeddings
-            raise EmbeddingError(f"{e.model} on {e.provider.name} doesn't make embeddings (HTTP 501)") from None
+            raise EmbeddingError(f"{_where(e)} doesn't make embeddings (HTTP 501)") from None
         raise EmbeddingError(f"{_where(e)} answered HTTP {code}") from None
     except httpx.HTTPError as err:
-        raise EmbeddingError(f"Can't reach {e.provider.name} for {e.model} ({type(err).__name__})") from None
+        raise EmbeddingError(f"Can't reach {_at(e)} for {e.model} ({type(err).__name__})") from None
     except ValueError:
         raise EmbeddingError(f"{_where(e)} answered with something that isn't JSON") from None
     try:
@@ -160,6 +174,27 @@ async def embed_batch(texts: list[str], e: Embedder | None = None) -> list[list[
 
     out = await asyncio.gather(*(safe(b) for b in _batches(texts)))
     return [vec for batch in out for vec in batch]
+
+
+LIST_TIMEOUT_S = 5.0
+
+
+async def list_model_names(provider: ProviderConfig, *, timeout: float = LIST_TIMEOUT_S) -> list[str]:
+    """Every model the provider lists (Ollama's /api/tags, an OpenAI-compatible /models), for the console's
+    picker; the chat allow-lists don't apply to an embedding model. [] when it doesn't answer: the picker then
+    takes a typed name."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as http:
+            if provider.kind == "ollama":
+                resp = await http.get(f"{provider.url}/api/tags")
+                resp.raise_for_status()
+                return [m["name"] for m in resp.json().get("models", []) if isinstance(m, dict) and m.get("name")]
+            resp = await http.get(f"{provider.url}/models", headers=auth_headers(provider))
+            resp.raise_for_status()
+            return [m["id"] for m in resp.json().get("data", []) if isinstance(m, dict) and m.get("id")]
+    except (httpx.HTTPError, ValueError, AttributeError) as err:
+        logger.info("Couldn't list %s's models: %s", provider.name, type(err).__name__)
+        return []
 
 
 # ---------- the probe: may this model fill a 768-number column? (spec §4.2.4) ----------
@@ -258,7 +293,8 @@ def profile_of(e: Embedder) -> str:
 
 
 def current_profile() -> str:
-    """The environment's profile. Only ensure_current still reads it, until it reads the database (Task 4)."""
+    """The environment's profile (what a fresh install records as current). The app reads the database's
+    (embedding_state.current); tests use this as the default library's profile."""
     return profile_of(env_embedder())
 
 
