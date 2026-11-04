@@ -15,6 +15,7 @@ const TOOL_STATUS = {
     document_outline: 'Reading an outline…',
     read_web_pages: 'Reading web pages…',
     offer_web_search: 'Offering a web search…',
+    current_time: 'Checking the time…',
 };
 
 export function toolStatusFor(toolName, round) {

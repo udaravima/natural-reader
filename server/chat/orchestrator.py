@@ -300,7 +300,9 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             web_mode = "ask"
         if web_mode == "ask" and req.spoken:
             web_mode = "off"   # "ask" ends the turn on a card to press, and a spoken conversation has none
+        default_timezone = await _deployment_timezone()   # the "Today" line's fallback, and current_time's
         tool_ctx = ToolContext(req.user_id, doc, cfg=cfg, project=project, question=req.text,
+                               timezone=req.timezone, default_timezone=default_timezone,
                                map_shortened=bool(project_map and project_map.shortened), outlines=outlines,
                                model=req.model_id, web_mode=web_mode, web_approved=bool(web_query),
                                charge=functools.partial(_charge_reader, req.user_id),
@@ -324,7 +326,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             tools=tuple(offered if max_rounds > 0 else ()), tool_ctx=tool_ctx,
             profile=profile.text, scope=tuple(scope_docs(tool_ctx)),
             project_map=project_map.text if project_map else "", app_exchange=app_exchange,
-            default_timezone=await _deployment_timezone(),
+            default_timezone=default_timezone,
             model=req.model_id, spoken=req.spoken), cfg)
         tool_ctx.shown.update(built.shown_chunk_ids)
         # Document text the model already has: the web search guard's reference.

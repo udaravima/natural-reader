@@ -79,15 +79,44 @@ class SpeechAccess:
         running: a database blip must not reload a model."""
         if not self.from_row:
             return service.get_transcriber()
+        chosen = service.chosen_engine(self.options)
+        if chosen == "google":
+            # The first recognizer that lists the language, else the first (spec 2026-11-04-google-recognizers).
+            current = service.get_transcriber(engine="google", recognizers=self.recognizer_names)
+            ticked = self.recognizers(current)
+            return service.google_for(ticked, language) if ticked else current
         return service.get_transcriber(wanted=catalogue.for_language(self.options, language),
-                                       engine=service.chosen_engine(self.options),
-                                       default=catalogue.wanted(self.options))
+                                       engine=chosen, default=catalogue.wanted(self.options))
+
+    @property
+    def recognizer_names(self) -> tuple[str, ...]:
+        return service.recognizer_names(self.options)
+
+    def recognizers(self, current=None) -> list:
+        """The Google recognizers in use, in order; empty unless Google hears speech (or when the running engine was
+        put in place from outside, which is kept as it is)."""
+        if not self.from_row or service.chosen_engine(self.options) != "google":
+            return []
+        current = current or service.get_transcriber(engine="google", recognizers=self.recognizer_names)
+        if getattr(current, "recognizer", None) is None or not self.recognizer_names:
+            return []
+        return service.google_engines(self.recognizer_names)
+
+    async def learn_languages(self) -> list:
+        """Read each recognizer's languages (cached by each engine, STATUS_TTL_S) so a clip is routed by them, even
+        on a worker that never answered a status request. A recognizer that can't answer lists nothing."""
+        ticked = self.recognizers()
+        await asyncio.gather(*(asyncio.wait_for(r.status(), STATUS_TIMEOUT_S) for r in ticked), return_exceptions=True)
+        return ticked
 
 
 def _model_of(engine) -> str | None:
-    """Which model heard a clip: a local engine's catalogue id, else the remote engine's model name."""
+    """Which model heard a clip: a local engine's catalogue id, a Google recognizer with its model, else the remote
+    engine's model name."""
     spec = getattr(engine, "spec", None)
-    return spec.id if spec is not None else (getattr(engine, "model", None) or None)
+    if spec is not None:
+        return spec.id
+    return getattr(engine, "label", None) or getattr(engine, "model", None) or None
 
 
 async def speech_access(request: Request, open_conn=Depends(speech_conn)) -> SpeechAccess:
@@ -122,26 +151,45 @@ async def speech_status(access: SpeechAccess = Depends(speech_access)):
         base["hears"] = catalogue.hears(access.options)
         default = catalogue.wanted(access.options)
         base["default_model"] = {"id": default.id, "label": default.label}
+    ticked = []
     if engine.name == "google":
         base["max_seconds"] = GOOGLE_MAX_SECONDS
+        ticked = await access.learn_languages()   # every recognizer in use, read at once (each cached)
     try:
         status = await asyncio.wait_for(engine.status(), STATUS_TIMEOUT_S)
     except Exception as e:  # noqa: BLE001 - a config mistake, a server that's down or one that hangs is a state, not a 500
         logger.warning("The speech engine's status failed: %s", type(e).__name__)
         status = None
-    # After the check: a remote engine learns its languages from it (Google reads its recognizer).
-    base["model_languages"] = [WHISPER_LANGUAGES[code] for code in getattr(engine, "languages", ())
-                               if code in WHISPER_LANGUAGES]
-    # Google refuses a language its recognizer doesn't list, so only those are offered; and a recognizer that
+    # After the check: a remote engine learns its languages from it (Google reads its recognizer). With several
+    # Google recognizers, each language is heard by the first that lists it.
+    heard = _google_hears(ticked) if ticked else []
+    languages = tuple(h["code"] for h in heard) if ticked else tuple(getattr(engine, "languages", ()))
+    if ticked:
+        base["hears"] = heard
+        base["default_model"] = {"id": ticked[0].id, "label": ticked[0].label}
+    base["model_languages"] = [WHISPER_LANGUAGES[code] for code in languages if code in WHISPER_LANGUAGES]
+    # Google refuses a language its recognizers don't list, so only those are offered; and a recognizer that
     # can't detect the language hears one for Auto, which Settings names.
-    if engine.name == "google" and getattr(engine, "languages", ()):
-        base["languages"] = [lang for lang in base["languages"] if lang["code"] in engine.languages]
+    if engine.name == "google" and languages:
+        base["languages"] = [lang for lang in base["languages"] if lang["code"] in languages]
     hears = getattr(engine, "auto_hears", None)
     base["auto_hears"] = WHISPER_LANGUAGES.get(hears) if hears else None
     if status is None:
         return {"enabled": True, "ready": False, "state": "error", **base}
     service.heal(engine, status)
     return {"enabled": True, "ready": bool(status.ready), "state": status.state, **base}
+
+
+def _google_hears(ticked) -> list[dict]:
+    """Each language a ticked recognizer lists, once, with the first recognizer that lists it."""
+    out, done = [], set()
+    for recognizer in ticked:
+        for code in getattr(recognizer, "languages", ()):
+            if code not in done and code in WHISPER_LANGUAGES:
+                done.add(code)
+                out.append({"code": code, "name": WHISPER_LANGUAGES[code], "model": recognizer.id,
+                            "label": recognizer.label})
+    return out
 
 
 class MemoryMultipartParser(MultiPartParser):
@@ -213,6 +261,8 @@ async def transcribe(request: Request, access: SpeechAccess = Depends(speech_acc
 
     # The model for this clip's language, held to the end of its transcription (speech/service.py): nothing another
     # request does meanwhile can swap it.
+    if code is not None:
+        await access.learn_languages()   # Google: route by each recognizer's languages; nothing for the others
     engine = access.engine(code)
     if engine.name == "local":   # the local engine's state costs nothing to read; a remote one's is a request per recording
         try:

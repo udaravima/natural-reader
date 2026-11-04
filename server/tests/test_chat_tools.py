@@ -58,8 +58,8 @@ async def test_search_documents_is_offered_only_for_an_indexed_readable_doc(inde
     conn, alice = indexed
     doc = await doc_search.readable_doc(conn, DOC, alice.user_id)
     # The default mode asks first: the web is offered as an offer, not as search tools (Task 13).
-    assert [t.name for t in available_tools(ToolContext(alice.user_id, doc))] == ["search_documents", "read_document_pages", "extract_from_documents", "offer_web_search"]
-    assert [t.name for t in available_tools(ToolContext(alice.user_id, None))] == ["offer_web_search"]
+    assert [t.name for t in available_tools(ToolContext(alice.user_id, doc))] == ["search_documents", "read_document_pages", "extract_from_documents", "offer_web_search", "current_time"]
+    assert [t.name for t in available_tools(ToolContext(alice.user_id, None))] == ["offer_web_search", "current_time"]
     extracting = doc_search.ReadableDoc(DOC, "x", "extracting")
     assert "search_documents" not in [t.name for t in available_tools(ToolContext(alice.user_id, extracting))]
 
@@ -209,7 +209,7 @@ async def test_web_search_validates_count_and_summarizes(monkeypatch):
 def test_registry_order_is_stable():
     assert [t.name for t in chat_tools.REGISTRY] == ["search_documents", "read_document_pages",
                                                      "extract_from_documents", "document_outline", "web_search",
-                                                     "read_web_pages", "offer_web_search"]
+                                                     "read_web_pages", "offer_web_search", "current_time"]
 
 
 class _NullPool:

@@ -408,3 +408,86 @@ def test_switching_to_a_remote_engine_lets_the_local_models_go(fakes):
     service.get_transcriber({}, SI, default=TINY)
     service.get_transcriber({"SPEECH_ENGINE": "openai", "SPEECH_URL": "http://x", "SPEECH_MODEL": "m"}, engine="openai")
     assert _pooled() == [] and dropped
+
+
+# ---------- Google recognizers, one per language (spec 2026-11-04-google-recognizers) ----------
+
+from types import SimpleNamespace  # noqa: E402
+
+from server.speech.google_engine import GoogleSpeech  # noqa: E402
+
+G_SI = "projects/p-1/locations/asia-southeast1/recognizers/asr-si"
+G_TA = "projects/p-1/locations/asia-southeast1/recognizers/asr-ta-en"
+ENV_NAME = "projects/p-1/locations/global/recognizers/from-env"
+
+
+def _options(*names, engine="google"):
+    return SimpleNamespace(google_recognizers=tuple(names), speech_engine=engine)
+
+
+def _heard(engines, languages):
+    for engine, langs in zip(engines, languages):
+        engine.languages = tuple(langs)   # as status() leaves them after reading the recognizer
+    return engines
+
+
+def test_the_admins_recognizers_win_over_the_environments():
+    env = {"GOOGLE_SPEECH_RECOGNIZER": ENV_NAME}
+    assert service.recognizer_names(_options(G_TA, G_SI), env) == (G_TA, G_SI)
+    assert service.recognizer_source(_options(G_TA, G_SI), env) == "admin"
+    assert service.recognizer_names(_options(), env) == (ENV_NAME,)
+    assert service.recognizer_source(_options(), env) == "env"
+    assert service.recognizer_names(_options(), {}) == ()
+    assert service.recognizer_source(_options(), {}) == "none"
+
+
+def test_a_language_goes_to_the_first_recognizer_that_lists_it():
+    ta, si = _heard(service.google_engines((G_TA, G_SI), {}), [("ta", "en"), ("si",)])
+    assert service.google_for([ta, si], "si") is si
+    assert service.google_for([ta, si], "ta") is ta
+    assert service.google_for([ta, si], "en") is ta
+    assert service.google_for([si, ta], "en") is ta      # the first that LISTS it, not the first
+
+
+def test_auto_and_an_unlisted_language_go_to_the_first():
+    ta, si = _heard(service.google_engines((G_TA, G_SI), {}), [("ta", "en"), ("si",)])
+    assert service.google_for([ta, si], None) is ta
+    assert service.google_for([ta, si], "fr") is ta
+    unread = service.google_engines(("projects/p-1/locations/us/recognizers/never-read",), {})[0]
+    assert unread.languages == ()                                      # never answered: lists nothing yet
+    assert service.google_for([ta, unread], "si") is ta
+
+
+def test_one_engine_is_kept_per_recognizer():
+    first = service.google_engines((G_TA, G_SI), {})
+    again = service.google_engines((G_SI, G_TA), {})
+    assert again[0] is first[1] and again[1] is first[0]
+    assert all(isinstance(e, GoogleSpeech) for e in first)
+    assert [e.recognizer for e in first] == [G_TA, G_SI]
+
+
+def test_google_can_be_chosen_once_a_recognizer_is_ticked():
+    assert service.engine_needs("google", {}) != ""
+    assert service.engine_needs("google", {}, _options(G_SI)) == ""
+    assert service.engine_needs("google", {"GOOGLE_SPEECH_RECOGNIZER": ENV_NAME}) == ""
+    assert service.engine_needs("google", {"GOOGLE_SPEECH_RECOGNIZER": "projects/p/locations/a.b/recognizers/r"}) != ""
+    assert service.chosen_engine(_options(G_SI), {}) == "google"
+    assert service.chosen_engine(_options(), {}) == "local"            # nothing ticked, nothing set: Whisper
+    google = {e["id"]: e for e in service.engines({}, _options(G_SI))}["google"]
+    assert google["available"] is True
+
+
+def test_the_recognizer_list_is_offered_once_google_is_configured():
+    assert not service.google_offered(_options(), {})
+    assert service.google_offered(_options(), {"GOOGLE_APPLICATION_CREDENTIALS": "/run/key.json"})
+    assert service.google_offered(_options(), {"GOOGLE_SPEECH_RECOGNIZER": ENV_NAME})
+    assert service.google_offered(_options(G_SI), {})
+
+
+def test_switching_recognizers_replaces_the_current_engine():
+    first = service.get_transcriber({}, engine="google", recognizers=(G_TA, G_SI))
+    assert first.recognizer == G_TA
+    assert service.get_transcriber({}, engine="google", recognizers=(G_TA, G_SI)) is first
+    second = service.get_transcriber({}, engine="google", recognizers=(G_SI,))
+    assert second.recognizer == G_SI
+    assert service.get_transcriber({}, engine="google", recognizers=()).recognizer == ""   # a status, not a crash

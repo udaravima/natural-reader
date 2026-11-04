@@ -57,6 +57,14 @@ class Engine:
                                              "snippet": "A snippet."}]}
 
 
+@pytest.fixture(autouse=True)
+def _no_clock(monkeypatch):
+    """These tests pin which web and document tools each case offers. current_time is offered on every turn and is
+    tested on its own (test_chat_current_time.py, and in test_chat_orchestrator.py's tool lists): left out here."""
+    from server.chat.tools import current_time as ct_tool
+    monkeypatch.setattr(ct_tool.TOOL, "available", lambda ctx: False)
+
+
 @pytest.fixture
 def conn(db_conn, monkeypatch):
     shim_pool(monkeypatch, db_conn, store, orchestrator, ctx_mod, sd_tool)

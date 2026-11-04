@@ -105,7 +105,7 @@ async def test_plain_reply_streams_saves_and_releases(conn, web_auto):
     assert await _one(conn, "SELECT prompt_tokens, eval_tokens FROM inference_usage WHERE user_id=%s",
                       (alice.user_id,)) == (10, 3)
     sent = router.calls[0]
-    assert sent["tools"] == ["web_search", "read_web_pages"]                  # no open document: no search_documents
+    assert sent["tools"] == ["web_search", "read_web_pages", "current_time"]  # no open document: no search_documents
     # v2.3: the rules are the one leading system message, and name only the
     # tool offered. v2.4: the date is in them; the user message is what they typed.
     system, only = sent["messages"]
@@ -152,6 +152,27 @@ async def test_one_tool_round_then_answer(conn, monkeypatch, web_auto):
     assert_fixture("tool_round", events)
 
 
+async def test_the_clock_tool_answers_in_the_persons_own_timezone(conn, monkeypatch):
+    """The browser's timezone reaches the tools, as it reaches the "Today is" line."""
+    from datetime import datetime as _dt, timezone as _tz
+
+    from server.chat.tools import current_time as ct_tool
+    monkeypatch.setattr(ct_tool, "_now", lambda: _dt(2026, 11, 4, 16, 10, tzinfo=_tz.utc))
+    router = FakeRouter(steps=[
+        [ToolCallReady(ToolCall("c1", "current_time", {})), Usage(5, 2), Finish("tool_calls")],
+        [TextDelta("It's 9:40 pm."), Usage(9, 4), Finish("stop")]])
+    user = await member(conn, "alice")
+    claim = await store.begin_turn(session_id="s-1", user_id=user.user_id, model_id="ollama:m", text="What time is it?",
+                                   attachments=[], new_session_pins=None)
+    req = TurnRequest(user_id=user.user_id, session_id="s-1", model_id="ollama:m", text="What time is it?",
+                      attachments=(), settings=CallSettings(), doc_id=None, timezone="Asia/Colombo")
+    events = [e async for e in run_turn(req, claim, router=router, cfg=ChatConfig(max_tool_rounds=1), deployment_budget=None)]
+    assert "current_time" in router.calls[0]["tools"]
+    answer = json.loads(router.calls[1]["messages"][-1].content)
+    assert (answer["time"], answer["timezone"]) == ("21:40", "Asia/Colombo")
+    assert events[-1]["type"] == "finish"
+
+
 async def test_silent_final_step_after_the_cap_is_max_steps(conn, monkeypatch):
     monkeypatch.setattr(ws_tool, "web_search", fake_web_search)
     router = FakeRouter(steps=[
@@ -166,7 +187,8 @@ async def test_two_rounds_when_the_cap_allows_it(conn, monkeypatch, web_auto):
     call = lambda i: [ToolCallReady(ToolCall(f"c{i}", "web_search", {"query": "a"})), Usage(1, 1), Finish("tool_calls")]
     router = FakeRouter(steps=[call(1), call(2), reply("done")])
     events, _ = await _run(conn, router, cfg=ChatConfig(max_tool_rounds=2))
-    assert [c["tools"] for c in router.calls] == [["web_search", "read_web_pages"], ["web_search", "read_web_pages"], []]
+    assert [c["tools"] for c in router.calls] == [["web_search", "read_web_pages", "current_time"],
+                                                 ["web_search", "read_web_pages", "current_time"], []]
     assert events[-1]["finishReason"] == "stop"
 
 
@@ -723,7 +745,8 @@ async def test_the_last_round_says_so_in_its_results_and_the_rules_never_change(
         reply("The result is X (page 3).")])
     events, claim = await _run(conn, router, cfg=ChatConfig(max_tool_rounds=1), text="what is the result?")
     first, final = router.calls
-    assert first["tools"] == ["search_documents", "read_document_pages", "extract_from_documents", "web_search", "read_web_pages"] and final["tools"] == []
+    assert first["tools"] == ["search_documents", "read_document_pages", "extract_from_documents", "web_search", "read_web_pages",
+                             "current_time"] and final["tools"] == []
     assert first["messages"][0].role == "system"
     assert final["messages"][0].content == first["messages"][0].content    # same rules on every step
     tool_msg = final["messages"][-1]
@@ -889,7 +912,8 @@ async def test_no_note_while_rounds_remain(conn, open_doc, web_auto):
         reply("Done (page 1).")])
     await _run(conn, router, cfg=ChatConfig(max_tool_rounds=2), text="q")
     assert "note" not in json.loads(router.calls[1]["messages"][-1].content)
-    assert router.calls[1]["tools"] == ["search_documents", "read_document_pages", "extract_from_documents", "web_search", "read_web_pages"]
+    assert router.calls[1]["tools"] == ["search_documents", "read_document_pages", "extract_from_documents", "web_search", "read_web_pages",
+                                         "current_time"]
 
 
 async def test_a_tool_call_written_as_text_is_run_not_saved(conn, open_doc, caplog):

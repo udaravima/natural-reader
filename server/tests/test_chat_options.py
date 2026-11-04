@@ -504,3 +504,27 @@ async def test_removing_an_added_model_takes_it_off_the_offered_list(db_conn):
     await chat_options.save_offered_speech_models(db_conn, ["a-b", "whisper-small-ta"], updated_by=by)
     got = await chat_options.remove_speech_model(db_conn, "a-b", updated_by=by)
     assert got.offered_speech_models == ("whisper-small-ta",)
+
+
+# ---------- the Google recognizers an admin ticked (spec 2026-11-04-google-recognizers) ----------
+
+SI = "projects/p-1/locations/asia-southeast1/recognizers/asr-si"
+TA = "projects/p-1/locations/asia-southeast1/recognizers/asr-ta-en"
+
+
+async def test_google_recognizers_are_saved_in_order_and_an_empty_list_clears_them(db_conn):
+    by = await _user_id(db_conn)
+    assert (await load_chat_options(db_conn)).google_recognizers == ()
+    saved = await chat_options.save_google_recognizers(db_conn, [TA, SI], updated_by=by)
+    assert saved.google_recognizers == (TA, SI)
+    assert (await load_chat_options(db_conn)).google_recognizers == (TA, SI)
+    assert (await chat_options.save_google_recognizers(db_conn, [], updated_by=by)).google_recognizers == ()
+
+
+async def test_a_stored_recognizer_that_isnt_a_well_formed_name_is_dropped(db_conn):
+    by = await _user_id(db_conn)
+    await chat_options._set_key(db_conn, "google_recognizers", [SI, "projects/p/locations/evil.example#/recognizers/r",
+                                                                 3, None], by)
+    assert (await load_chat_options(db_conn)).google_recognizers == (SI,)
+    await chat_options._set_key(db_conn, "google_recognizers", {"not": "a list"}, by)
+    assert (await load_chat_options(db_conn)).google_recognizers == ()

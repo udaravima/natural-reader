@@ -93,6 +93,7 @@ describe('tool status for the project tools (C2.1)', () => {
         ['document_outline', 'Reading an outline…'],
         ['read_web_pages', 'Reading web pages…'],
         ['offer_web_search', 'Offering a web search…'],
+        ['current_time', 'Checking the time…'],
     ])('%s says "%s"', (toolName, label) => {
         expect(toolStatusFor(toolName, 1)).toBe(label);
         expect(applyEvent({}, { type: 'tool-input-available', toolCallId: 'c', toolName, round: 1 }).toolStatus).toBe(label);

@@ -24,6 +24,7 @@ from ..auth.kc_admin import KCAdminError, KCRoleMissing
 from ..llm.router import get_router
 from ..http_errors import refusal
 from ..speech import catalogue as speech_catalogue, convert as speech_convert, disk as speech_disk, service as speech_service
+from ..speech import google_names
 from ..speech.languages import WHISPER_LANGUAGES
 from ..services import (assistant_profile, chat_options, console_overview, console_settings, deployment_info, deployment_settings,
                         doc_content, docling_limits, inference_budget, inference_limits, model_router, model_settings, people, user_defaults,
@@ -604,7 +605,8 @@ async def put_chat_options(
 def _warm_speech(options: chat_options.ChatOptions) -> None:
     try:
         speech_service.get_transcriber(wanted=speech_catalogue.wanted(options),
-                                       engine=speech_service.chosen_engine(options)).warm()
+                                       engine=speech_service.chosen_engine(options),
+                                       recognizers=speech_service.recognizer_names(options)).warm()
     except Exception:  # noqa: BLE001 - a saved setting must not become a 500; status shows the engine's state
         logger.warning("The speech engine couldn't start loading", exc_info=True)
 
@@ -676,7 +678,11 @@ def _speech_models_view(options: chat_options.ChatOptions) -> dict:
     SPEECH_MODEL names an OpenAI-compatible server's model, and a Google recognizer carries its own."""
     engine = speech_service.chosen_engine(options)
     base = {"engine": engine, "engine_source": speech_service.engine_source(options),
-            "engines": speech_service.engines()}
+            "engines": speech_service.engines(options=options),
+            # Whether to show Google's recognizers to tick, and the ones in use (spec 2026-11-04-google-recognizers).
+            "google": {"offered": speech_service.google_offered(options),
+                       "chosen": list(speech_service.recognizer_names(options)),
+                       "source": speech_service.recognizer_source(options)}}
     if engine != "local":
         return {**base, "chosen": None, "source": "env", "models": []}
     models = speech_catalogue.all_models(os.environ, options.added_speech_models)
@@ -711,7 +717,7 @@ async def put_speech_engine(
     deployer has configured can be chosen. With voice on, the new engine starts now on this worker, and on the
     others at their next speech request."""
     if body.engine is not None:
-        needs = speech_service.engine_needs(body.engine)
+        needs = speech_service.engine_needs(body.engine, options=await chat_options.load_chat_options(conn))
         if needs:
             raise refusal(422, "engine_not_configured", f"That engine isn't set up on this server: it needs {needs}.")
     saved = await chat_options.save_speech_engine(conn, body.engine, updated_by=str(principal.user_id))
@@ -746,6 +752,77 @@ async def put_speech_model_choice(
             raise refusal(422, "speech_model_cannot_run", reason)
     saved = await chat_options.save_speech_model(conn, body.id, updated_by=str(principal.user_id))
     if saved.voice_input and speech_service.chosen_engine(saved) == "local":
+        _warm_speech(saved)
+    return _speech_models_view(saved)
+
+
+# ---------- Google recognizers, ticked from Google's own listing (spec 2026-11-04-google-recognizers) ----------
+
+MAX_RECOGNIZERS = 10
+
+
+def _recognizer_projects(names) -> list[str]:
+    """The projects of recognizers already named, listed beside the key's own."""
+    return list(dict.fromkeys(parts[0] for parts in map(google_names.split_name, names) if parts))
+
+
+def _recognizer_row(row: dict, chosen: list[str]) -> dict:
+    return {**row, "languages": [{"code": c, "name": WHISPER_LANGUAGES.get(c, c)} for c in row["languages"]],
+            "chosen": row["name"] in chosen}
+
+
+@router.get("/google-recognizers")
+async def get_google_recognizers(
+    _: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Every recognizer Google lists for this server's key, read live: the ticked ones first, in order. A refusal
+    is a line in Google's words; a ticked one Google didn't list is `missing`."""
+    from ..speech import google_engine   # the audio packages load only when this is asked for
+    options = await chat_options.load_chat_options(conn)
+    chosen = list(options.google_recognizers)
+    listing = await google_engine.list_recognizers(
+        _recognizer_projects([*chosen, *speech_service.recognizer_names(options)]))
+    found = {r["name"]: r for r in listing.recognizers}
+    ordered = [found[n] for n in chosen if n in found] + sorted(
+        (r for r in listing.recognizers if r["name"] not in chosen), key=lambda r: (r["location"], r["id"]))
+    return {"recognizers": [_recognizer_row(r, chosen) for r in ordered], "chosen": chosen,
+            "missing": [n for n in chosen if n not in found], "problems": listing.problems,
+            "source": speech_service.recognizer_source(options),
+            "in_use": list(speech_service.recognizer_names(options))}
+
+
+class GoogleRecognizersIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    names: list[Annotated[str, Field(max_length=200)]] = Field(max_length=MAX_RECOGNIZERS + 5)
+
+
+@router.put("/google-recognizers")
+async def put_google_recognizers(
+    body: GoogleRecognizersIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Tick Google recognizers, in order; an empty list goes back to GOOGLE_SPEECH_RECOGNIZER. Only a name Google
+    itself lists for this server's key is saved: its location is the host the server sends its token to."""
+    names = list(dict.fromkeys(n.strip() for n in body.names))
+    if len(names) > MAX_RECOGNIZERS:
+        raise refusal(422, "too_many_recognizers", f"At most {MAX_RECOGNIZERS} recognizers.")
+    bad = next((n for n in names if not google_names.is_recognizer_name(n)), None)
+    if bad is not None:
+        raise refusal(422, "bad_recognizer", "That isn't a Google recognizer's full name.")
+    if names:
+        from ..speech import google_engine
+        listing = await google_engine.list_recognizers(_recognizer_projects(names))
+        names = list(dict.fromkeys(google_engine.canonical(n, listing) for n in names))   # as Google lists them
+        found = {r["name"] for r in listing.recognizers}
+        unknown = [n for n in names if n not in found]
+        if unknown:
+            why = f" Google said: {'; '.join(listing.problems)}" if listing.problems else ""
+            raise refusal(422, "unknown_recognizer",
+                          f"Google doesn't list {google_names.split_name(unknown[0])[2]} for this server's key.{why}")
+    saved = await chat_options.save_google_recognizers(conn, names, updated_by=str(principal.user_id))
+    if saved.voice_input and speech_service.chosen_engine(saved) == "google":
         _warm_speech(saved)
     return _speech_models_view(saved)
 

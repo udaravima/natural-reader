@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../utils/apiFetch';
 import { SearchableList, SearchableSelect } from '../SearchableList';
+import { GoogleRecognizers } from './GoogleRecognizers';
 
 /**
  * Admin console: who hears speech (spec 2026-11-03-google-speech) and which speech model voice input runs (spec
@@ -8,7 +9,8 @@ import { SearchableList, SearchableSelect } from '../SearchableList';
  * deployer has configured it. Models made for one language can be offered to people, each then hearing its
  * language (spec 2026-11-04-speech-choices). The model list comes from the server (speech/catalogue.py): the built-in models, a
  * deployer's SPEECH_MODELS_FILE, and models added here; a remote engine has no list. A change applies from the next
- * recording on every worker.
+ * recording on every worker. Google's recognizers are ticked from Google's own list (GoogleRecognizers.jsx, spec
+ * 2026-11-04-google-recognizers), shown once Google is set up, and before Google can be chosen.
  */
 
 const LIST = '/v1/admin/speech-models';
@@ -20,7 +22,7 @@ const ENGINE_SOURCE_LINE = {
 };
 const ENGINE_LINE = {
   openai: 'Recordings go to the OpenAI-compatible server in SPEECH_URL; SPEECH_MODEL names its model.',
-  google: 'Recordings go to Google Cloud, to the recognizer in GOOGLE_SPEECH_RECOGNIZER, whose own settings apply. '
+  google: 'Recordings go to Google Cloud, to the recognizers ticked below, whose own settings apply. '
     + 'A recording stops at 55 seconds, as Google takes a minute at most.',
 };
 const SOURCE_LINE = {
@@ -193,7 +195,14 @@ export function SpeechModelPicker({ theme, apiHost, apiPort, showToast, voiceOn 
       </div>
     </div>
   );
-  if (data.engine !== 'local') return <div className="flex flex-col gap-2 pt-2">{engineChoice}</div>;
+  // Google's recognizers: to tick before Google can be chosen, to change once it hears speech, and still there after
+  // the first tick makes Google choosable (it must not vanish under the admin's click).
+  const googleEngine = engines.find((e) => e.id === 'google');
+  const recognizers = data.google?.offered
+    && (data.engine === 'google' || googleEngine?.available === false || data.google.source === 'admin') && (
+    <GoogleRecognizers theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast} onSaved={setData} />
+  );
+  if (data.engine !== 'local') return <div className="flex flex-col gap-2 pt-2">{engineChoice}{recognizers}</div>;
   const current = data.models.find((m) => m.id === data.chosen);
   // Offer to people (spec 2026-11-04-speech-choices): a ticked model hears the language it is made for, when a
   // person says they speak it. The list's order decides between two models for one language.
@@ -213,6 +222,7 @@ export function SpeechModelPicker({ theme, apiHost, apiPort, showToast, voiceOn 
   return (
     <div className="flex flex-col gap-2 pt-2">
       {engineChoice}
+      {recognizers}
       <div className="flex flex-col gap-1">
         <span className={`text-xs font-bold ${theme.text}`}>Speech model</span>
         <SearchableSelect

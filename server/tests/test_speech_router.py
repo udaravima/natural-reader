@@ -850,3 +850,98 @@ async def test_a_remote_engine_hears_every_clip_and_ignores_the_offer(db_conn, e
         assert (await c.get(STATUS)).json()["hears"] == []
         r = await _post(c, language="si")
     assert r.status_code == 200 and engine.seen[0][2] == "si"
+
+
+# ---------- Google recognizers, one per language (spec 2026-11-04-google-recognizers) ----------
+
+G_SI = "projects/p-1/locations/asia-southeast1/recognizers/asr-si"
+G_TA = "projects/p-1/locations/asia-southeast1/recognizers/asr-ta-en"
+_RECOGNIZERS = {G_SI: ("chirp_2", ["si-LK"]), G_TA: ("chirp_3", ["ta-IN", "en-GB"])}
+
+
+@pytest.fixture
+def google(monkeypatch):
+    """Two real GoogleSpeech engines over a fake Google: each recognizer answers its own model and languages, and
+    every recognize call is recorded as (recognizer id, the language codes sent)."""
+    from server.speech.google_engine import GoogleSpeech
+    service.reset_for_tests()
+    calls = {"get": [], "recognize": []}
+
+    def handler(request):
+        path = request.url.path
+        if path.endswith(":recognize"):
+            rid = path.rsplit("/", 1)[1].split(":")[0]
+            sent = json.loads(request.content)["config"].get("languageCodes")
+            calls["recognize"].append((rid, sent))
+            return httpx.Response(200, json={"results": [{"alternatives": [{"transcript": f"heard by {rid}"}],
+                                                          "languageCode": (sent or ["en-GB"])[0].lower()}]})
+        name = path.split("/v2/", 1)[1]
+        calls["get"].append(name.rsplit("/", 1)[1])
+        model, codes = _RECOGNIZERS[name]
+        return httpx.Response(200, json={"name": name, "model": model, "languageCodes": codes})
+
+    async def token():
+        return "t", "p-1"
+    for name in _RECOGNIZERS:
+        service._google[name] = GoogleSpeech(name, transport=httpx.MockTransport(handler), token=token)
+    monkeypatch.delenv("SPEECH_ENGINE", raising=False)
+    monkeypatch.delenv("GOOGLE_SPEECH_RECOGNIZER", raising=False)
+    yield calls
+    service.reset_for_tests()
+
+
+async def _tick(db_conn, names):
+    await db_conn.execute("""UPDATE app_settings SET value = value || jsonb_build_object(
+                                 'speech_engine', 'google', 'google_recognizers', %s::jsonb)
+                             WHERE key = 'chat_options'""", (json.dumps(names),))
+
+
+def _wav():
+    import io as _io
+
+    import numpy as _np
+    import soundfile as _sf
+    buf = _io.BytesIO()
+    _sf.write(buf, (0.1 * _np.sin(_np.arange(16000) / 3)).astype(_np.float32), 16000, format="WAV")
+    return buf.getvalue()
+
+
+async def test_google_status_lists_each_language_with_the_recognizer_that_hears_it(db_conn, google):
+    await _voice(db_conn)
+    await _tick(db_conn, [G_TA, G_SI])
+    async with _client(db_conn) as c:
+        body = (await c.get(STATUS)).json()
+    assert (body["engine"], body["ready"]) == ("google", True)
+    assert [(h["code"], h["model"], h["label"]) for h in body["hears"]] == [
+        ("ta", "asr-ta-en", "asr-ta-en (chirp_3)"), ("en", "asr-ta-en", "asr-ta-en (chirp_3)"),
+        ("si", "asr-si", "asr-si (chirp_2)")]
+    assert body["default_model"] == {"id": "asr-ta-en", "label": "asr-ta-en (chirp_3)"}
+    assert [lang["code"] for lang in body["languages"]] == ["en", "si", "ta"]   # every ticked one's, not the first's
+
+
+async def test_a_sinhala_clip_goes_to_the_sinhala_recognizer_on_a_worker_that_never_answered_status(db_conn, google):
+    await _voice(db_conn)
+    await _tick(db_conn, [G_TA, G_SI])
+    async with _client(db_conn) as c:
+        r = await _post(c, body=_wav(), language="si", name="a.wav", ctype="audio/wav")
+    assert r.status_code == 200, r.text
+    assert google["recognize"] == [("asr-si", ["si-LK"])]
+    assert r.json()["text"] == "heard by asr-si" and r.json()["model"] == "asr-si (chirp_2)"
+
+
+async def test_english_goes_to_the_first_recognizer_that_lists_it_in_its_own_code(db_conn, google):
+    await _voice(db_conn)
+    await _tick(db_conn, [G_SI, G_TA])
+    async with _client(db_conn) as c:
+        r = await _post(c, body=_wav(), language="en", name="a.wav", ctype="audio/wav")
+    assert r.status_code == 200, r.text
+    assert google["recognize"] == [("asr-ta-en", ["en-GB"])]
+
+
+async def test_auto_goes_to_the_first_recognizer(db_conn, google):
+    await _voice(db_conn)
+    await _tick(db_conn, [G_SI, G_TA])
+    async with _client(db_conn) as c:
+        r = await _post(c, body=_wav(), name="a.wav", ctype="audio/wav")
+    assert r.status_code == 200, r.text
+    assert google["recognize"] == [("asr-si", None)]       # no language sent: the recognizer's own apply
