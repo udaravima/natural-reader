@@ -201,3 +201,52 @@ def view(model: SpeechModel, env: Mapping[str, str] = os.environ) -> dict:
             "language_names": [WHISPER_LANGUAGES[code] for code in model.languages],
             "license": model.license, "commercial": model.commercial, "note": model.note,
             "removable": model.source == "admin", "why_not": why_not(model, env)}
+
+
+# ---------- the models offered to people, and which one hears a language (spec 2026-11-04-speech-choices) ----------
+
+def offered(options, env: Mapping[str, str] = os.environ) -> list[SpeechModel]:
+    """The models an admin offers to people, in the admin's order: known here, able to run here, and made for
+    particular languages. A model that hears every language is left out: offering it changes nothing, since the
+    default model already hears every language nothing else covers."""
+    models = all_models(env, options.added_speech_models)
+    out = []
+    for model_id in getattr(options, "offered_speech_models", ()):
+        model = models.get(model_id)
+        if model is not None and model.languages and not why_not(model, env):
+            out.append(model)
+    return out
+
+
+def _disk_check(on_disk):
+    if on_disk is not None:
+        return on_disk
+    from .disk import on_disk as check   # speech/disk.py imports this module
+    return check
+
+
+def for_language(options, code: str | None, env: Mapping[str, str] = os.environ, on_disk=None) -> SpeechModel:
+    """The model that hears `code`: the first offered model made for it that is on this server's disk, else the
+    default (`wanted`). Auto (None or empty) and a language nothing is offered for go to the default. Only a model on
+    the admin's list is ever returned: nothing a person sends can load anything else."""
+    if code:
+        check = _disk_check(on_disk)
+        for model in offered(options, env):
+            if code in model.languages and check(model):
+                return model
+    return wanted(options, env)
+
+
+def hears(options, env: Mapping[str, str] = os.environ, on_disk=None) -> list[dict]:
+    """Each language an offered model on disk is made for, once, with the model that hears it."""
+    check = _disk_check(on_disk)
+    out, done = [], set()
+    for model in offered(options, env):
+        if not check(model):
+            continue
+        for code in model.languages:
+            if code not in done:
+                done.add(code)
+                out.append({"code": code, "name": WHISPER_LANGUAGES.get(code, code), "model": model.id,
+                            "label": model.label})
+    return out

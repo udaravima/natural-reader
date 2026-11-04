@@ -471,3 +471,36 @@ async def test_the_assistant_preview_follows_the_environment_when_the_admin_has_
         monkeypatch.delenv("CHAT_WEB_SEARCH")
         assert _names((await client.get("/v1/admin/assistant")).json()["preview"]) \
             == _DOCUMENT_TOOLS | {"offer_web_search"}
+
+
+# ---------- the speech models an admin offers to people (spec 2026-11-04-speech-choices-per-person) ----------
+
+async def test_offered_speech_models_are_saved_in_order_and_read_back(db_conn):
+    by = await _user_id(db_conn)
+    saved = await chat_options.save_offered_speech_models(db_conn, ["whisper-small-si", "whisper-small-ta"], updated_by=by)
+    assert saved.offered_speech_models == ("whisper-small-si", "whisper-small-ta")
+    assert (await load_chat_options(db_conn)).offered_speech_models == ("whisper-small-si", "whisper-small-ta")
+
+
+async def test_a_row_without_offered_models_offers_nothing(db_conn):
+    assert (await load_chat_options(db_conn)).offered_speech_models == ()
+    by = await _user_id(db_conn)
+    await chat_options.save_offered_speech_models(db_conn, ["whisper-small-si"], updated_by=by)
+    assert (await chat_options.save_offered_speech_models(db_conn, [], updated_by=by)).offered_speech_models == ()
+
+
+async def test_an_unusable_offered_list_is_ignored(db_conn):
+    by = await _user_id(db_conn)
+    await chat_options._set_key(db_conn, "offered_speech_models", {"not": "a list"}, by)
+    assert (await load_chat_options(db_conn)).offered_speech_models == ()
+    await chat_options._set_key(db_conn, "offered_speech_models", ["ok", 3, None], by)
+    assert (await load_chat_options(db_conn)).offered_speech_models == ("ok",)
+
+
+async def test_removing_an_added_model_takes_it_off_the_offered_list(db_conn):
+    by = await _user_id(db_conn)
+    entry = {"label": "Mine", "engine": "converted-whisper", "repo": "a/b", "revision": "r", "languages": ["si"]}
+    await chat_options.add_speech_model(db_conn, "a-b", entry, updated_by=by)
+    await chat_options.save_offered_speech_models(db_conn, ["a-b", "whisper-small-ta"], updated_by=by)
+    got = await chat_options.remove_speech_model(db_conn, "a-b", updated_by=by)
+    assert got.offered_speech_models == ("whisper-small-ta",)
