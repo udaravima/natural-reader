@@ -1424,13 +1424,17 @@ tells each person when Google reads the replies.
    | `chirp_3` | `us` | `ta-IN`, `en-GB` | Right in both, and it picks between the two by itself when the person is on Auto |
    | `chirp_2` | `asia-southeast1` | `si-LK` | Right. Google's console lets a `chirp_2` recognizer hold one language |
    | `chirp_2` | `us-central1` | `si-LK` | Right |
+   | `chirp_2` | `asia-southeast1` | `ta-IN` | Right on three real recordings, through the app (1.6–2.2 s); no punctuation |
+   | `chirp_2` | `asia-southeast1` | `si-LK`, sent an English clip named English | Right: the app sends the person's language with the clip (`en-US` when no recognizer lists English), lowercase and without punctuation |
    | `chirp_3` | `asia-southeast1` | `en-GB`, `ta-IN` | **Refused on every clip**: "no longer generally available in region asia-southeast1" |
 
    **The last row is a trap:** Google's console still creates a `chirp_3` recognizer in
    `asia-southeast1`, and reading it works, so the console and the Overview say it's
    ready while every clip fails. People see "Voice input isn't working right now"; the
    backend log has Google's own words (`Google recognize answered 403 for <id>: …`).
-   Google's Chirp 3 page lists `us` and `eu` as its regions. Check a recognizer's
+   Google's Chirp 3 page lists `us` and `eu` as its regions. A language no ticked
+   recognizer lists isn't on the people's **Speaking** chip, so for English on the chip,
+   tick a recognizer that lists it. Check a recognizer's
    language codes in the console's list too: `sl-SI` reads "Slovenian" there, and is easy
    to pick for Sinhala.
 3. **A service account** (IAM & Admin → Service accounts) with **Cloud Speech Client**
