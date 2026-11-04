@@ -115,6 +115,7 @@ async def speech_status(access: SpeechAccess = Depends(speech_access)):
     engine = access.engine()
     # Who hears the person (Talk says so when it isn't this server), and how long one recording may be.
     base["heard_by"] = getattr(engine, "where", "this server")
+    base["engine"] = engine.name   # the Speaking switch lists the recognizer's languages for Google
     # The languages the admin offered a model for, each with its model, and the model that hears the rest. Read from
     # the list and the disk: nothing but the default is loaded here, on every page load.
     if engine.name == "local" and access.from_row:

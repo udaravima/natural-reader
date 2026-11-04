@@ -1145,6 +1145,9 @@ export default function App() {
     apiHost,
     apiPort,
     speechLanguage,
+    // The Speaking switch beside the microphone and in Talk sets it; All languages… opens Settings → Chat.
+    setSpeechLanguage,
+    onOpenSpeechSettings: () => openSettings('chat'),
     openDocName: currentDocId ? pdfFileName : null,
     openDocVersion: currentDocId && versionOld ? versionOld.version : null,
     openDocProjects: docProjects,

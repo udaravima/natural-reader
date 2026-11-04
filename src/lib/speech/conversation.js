@@ -160,6 +160,8 @@ export function createConversation({
       if (result) {
         clip.text = result.text;
         clip.scores = { noSpeech: result.no_speech, avgLogprob: result.avg_logprob };
+        clip.heardIn = result.language ?? null;   // the language and model that heard it (What it heard)
+        clip.heardBy = result.model ?? null;
         clip.verdict = verdictOf(result, clip);
       } else {
         clip.verdict = 'failed';

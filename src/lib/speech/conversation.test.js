@@ -326,6 +326,14 @@ describe('createConversation', () => {
     expect(clip.scores).toEqual({ noSpeech: 0.05, avgLogprob: -0.3 });
   });
 
+  // Spec 2026-11-04-speech-choices: What it heard says which language and model heard each clip.
+  it('a clip keeps the language and the model that heard it', async () => {
+    const h = harness();
+    await h.speak({ ...SPEECH, language: 'si', model: 'whisper-small-si' });
+    const clip = [...h.clips.values()][0];
+    expect([clip.heardIn, clip.heardBy]).toEqual(['si', 'whisper-small-si']);
+  });
+
   it('end stops everything, and a late answer changes nothing', async () => {
     const h = harness();
     await h.speak(SPEECH);

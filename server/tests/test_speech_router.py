@@ -786,6 +786,7 @@ async def test_status_lists_the_languages_the_offered_models_hear(db_conn, poole
         body = (await c.get(STATUS)).json()
     assert [(h["code"], h["model"]) for h in body["hears"]] == [("si", "whisper-small-si"), ("ta", "whisper-small-ta")]
     assert body["default_model"] == {"id": "small", "label": "Whisper small"}
+    assert body["engine"] == "local"   # the Speaking switch lists a Google recognizer's languages instead
 
 
 async def test_status_loads_nothing_but_the_default(db_conn, pooled):

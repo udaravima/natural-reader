@@ -35,6 +35,8 @@ import { useVoiceInput } from "../hooks/useVoiceInput";
 import { useSpeechWindow } from "../hooks/useSpeechWindow";
 import { talkSettings } from '../lib/speech/talkSettings';
 import TalkPanel, { TalkButton } from "./speech/TalkPanel";
+import { SpeakingSwitch } from "./speech/SpeakingSwitch";
+import { speakingOptions } from "../lib/speech/speaking";
 import {
   fileToAttachment,
   IMAGE_ACCEPT,
@@ -106,6 +108,9 @@ export default function ChatView({
   apiHost = '',
   apiPort = '',
   speechLanguage = 'auto',
+  // The Speaking switch (spec 2026-11-04-speech-choices): null hides it. `onOpenSpeechSettings`: All languages….
+  setSpeechLanguage = null,
+  onOpenSpeechSettings = null,
   // Talk, the spoken conversation in this chat, for someone who may use it (App's canTalk), else null:
   // { status, synthesizeText, voice, speed, volume, requestTimeout, onStarted, sessionId }.
   talk = null,
@@ -207,6 +212,7 @@ export default function ChatView({
   const orbRef = useRef(null);
   // The server's window settings with the person's own on top (Settings, Talk; lib/speech/talkSettings.js).
   const talkWindow = talk?.status?.window;
+  const talkLanguage = talkWindow?.language || null;   // what Talk sends on Auto (SPEECH_WINDOW_LANGUAGE)
   const talkChoices = talk?.choices;
   const listening = useMemo(() => (talkWindow ? talkSettings(talkWindow, talkChoices) : undefined),
     [talkWindow, talkChoices]);
@@ -215,6 +221,13 @@ export default function ChatView({
     onLevel: (level) => orbRef.current?.style.setProperty('--level', String(level)),
   });
   const talking = speech.phase !== 'off';
+  // The Speaking switch for the message box (spec 2026-11-04-speech-choices): beside the microphone, or on a phone and
+  // in the narrow column beside the page, in the row of chips above the message box, where it doesn't squeeze it.
+  const narrowComposer = effectiveIsMobile || compact;
+  const speakingSwitch = setSpeechLanguage && voice.status?.enabled === true ? (
+    <SpeakingSwitch theme={theme} value={speechLanguage} onChange={setSpeechLanguage} onMore={onOpenSpeechSettings}
+      options={speakingOptions(voice.status, speechLanguage, voice.status?.window?.language ?? null)} />
+  ) : null;
   const { end: endTalk } = speech;
   // Another chat opened, or the right to talk gone: the conversation belongs to the chat it began in. A new chat
   // getting its id from the first thing said is that same chat.
@@ -570,16 +583,21 @@ export default function ChatView({
               ~{fmtTotal(ctxTokens)}{numCtx ? ` / ${fmtWindow(numCtx)}` : ''} ctx
             </div>
           )}
-          {scope && setScope && (
-            <ScopeChip
-              theme={theme}
-              scope={scope}
-              openDocName={openDocName}
-              openDocVersion={openDocVersion}
-              openDocProjects={openDocProjects}
-              onChange={setScope}
-              loadProjects={loadProjects}
-            />
+          {((scope && setScope) || (speakingSwitch && narrowComposer)) && (
+            <div data-testid="composer-chips" className="flex flex-wrap items-center gap-2">
+              {scope && setScope && (
+                <ScopeChip
+                  theme={theme}
+                  scope={scope}
+                  openDocName={openDocName}
+                  openDocVersion={openDocVersion}
+                  openDocProjects={openDocProjects}
+                  onChange={setScope}
+                  loadProjects={loadProjects}
+                />
+              )}
+              {narrowComposer && !talking && speakingSwitch}
+            </div>
           )}
           {/* Pin row — docs/pages/selections pinned via "Ask page" or
                         "Ask AI" on a selection. Persist across sends until
@@ -599,7 +617,12 @@ export default function ChatView({
           )}
           {talking ? (
             <TalkPanel theme={theme} speech={speech} silenceMs={listening?.silence_ms ?? 0} orbRef={orbRef}
-              heardBy={talk?.status?.heard_by} settings={listening ?? null} onSettings={talk?.onOpenSettings ?? null} />
+              heardBy={talk?.status?.heard_by} settings={listening ?? null} onSettings={talk?.onOpenSettings ?? null}
+              speaking={setSpeechLanguage ? {
+                value: speechLanguage, onChange: setSpeechLanguage, onMore: onOpenSpeechSettings,
+                options: speakingOptions(talk?.status, speechLanguage, talkLanguage),
+                autoMeans: talk?.status?.languages?.find((l) => l.code === talkLanguage)?.name ?? talkLanguage,
+              } : null} />
           ) : (
             <>
               {viewing && (
@@ -640,6 +663,7 @@ export default function ChatView({
                   <Paperclip size={18} />
                 </button>
                 <div ref={micRef} className="contents"><MicButton theme={theme} voice={voice} /></div>
+                {!narrowComposer && speakingSwitch}
                 <input
                   type="file"
                   ref={fileInputRef}

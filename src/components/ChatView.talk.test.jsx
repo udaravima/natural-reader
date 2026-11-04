@@ -82,6 +82,46 @@ describe('ChatView: Talk', () => {
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
   });
 
+  // The Speaking switch sits where the person is talking, not only in Settings (spec 2026-11-04-speech-choices).
+  const SPEAKING_STATUS = {
+    enabled: true, ready: true, engine: 'local', heard_by: 'this server', window: WINDOW,
+    languages: [{ code: 'en', name: 'English' }, { code: 'si', name: 'Sinhala' }],
+    hears: [{ code: 'si', name: 'Sinhala', model: 'whisper-small-si', label: 'Whisper small, Sinhala (run12)' }],
+    default_model: { id: 'small', label: 'Whisper small' },
+  };
+
+  it('the Talk panel has the Speaking switch, and a tap sets the Speech language', async () => {
+    const setSpeechLanguage = vi.fn();
+    await startTalking({ talk: { ...TALK, status: SPEAKING_STATUS }, speechLanguage: 'auto', setSpeechLanguage });
+    fireEvent.click(screen.getByRole('button', { name: 'Speaking: Auto (English)' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /Sinhala/ }));
+    expect(setSpeechLanguage).toHaveBeenCalledWith('si');
+  });
+
+  it('the message box has the Speaking switch beside the microphone', async () => {
+    const { apiFetch } = await import('../utils/apiFetch');
+    apiFetch.mockImplementation(async (h, p, path) => (path === '/v1/speech/status'
+      ? { ok: true, status: 200, json: async () => SPEAKING_STATUS }
+      : { ok: false, status: 404, json: async () => ({}) }));
+    const setSpeechLanguage = vi.fn();
+    render(<Harness talk={TALK} speechLanguage="si" setSpeechLanguage={setSpeechLanguage} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Speaking: Sinhala' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: /English/ }));
+    expect(setSpeechLanguage).toHaveBeenCalledWith('en');
+  });
+
+  // On a phone the message box's row has no room: the switch sits in the row of chips just above it.
+  it('on a phone the Speaking switch sits above the message box, not squeezing it', async () => {
+    const { apiFetch } = await import('../utils/apiFetch');
+    apiFetch.mockImplementation(async (h, p, path) => (path === '/v1/speech/status'
+      ? { ok: true, status: 200, json: async () => SPEAKING_STATUS }
+      : { ok: false, status: 404, json: async () => ({}) }));
+    render(<Harness talk={TALK} effectiveIsMobile speechLanguage="auto" setSpeechLanguage={vi.fn()} />);
+    const chip = await screen.findByRole('button', { name: 'Speaking: Auto' });
+    expect(chip.closest('[data-testid="composer-chips"]')).not.toBeNull();
+    expect(screen.getAllByRole('button', { name: /^Speaking: / })).toHaveLength(1);
+  });
+
   it('the circle moves with the voice', async () => {
     await startTalking();
     act(() => { listen.mock.calls[0][0].onLevel(0.6); });

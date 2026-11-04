@@ -62,6 +62,22 @@ describe('useSpeechWindow', () => {
     expect(apiFetch.mock.calls[0][3].body.get('language')).toBe('si');
   });
 
+  // The Speaking switch (spec 2026-11-04-speech-choices): a tap mid-conversation, and the next clip is in that language.
+  it('a language switched mid-conversation goes with the next clip, without stopping Talk', async () => {
+    listen.mockResolvedValue(mic());
+    apiFetch.mockResolvedValue(transcribed({ text: '', no_speech: null, avg_logprob: null }));
+    const { result, rerender } = renderHook((props) => useSpeechWindow(props), { initialProps: baseProps({ language: null }) });
+    await act(async () => { await result.current.start(); });
+    await act(async () => { listen.mock.calls[0][0].onSpeechEnded(new Float32Array(1600)); });
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));
+    rerender(baseProps({ language: 'si' }));
+    await act(async () => { listen.mock.calls[0][0].onSpeechEnded(new Float32Array(1600)); });
+    await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(2));
+    expect(apiFetch.mock.calls.map((c) => c[3].body.get('language'))).toEqual(['en', 'si']);
+    expect(listen).toHaveBeenCalledTimes(1);
+    expect(result.current.phase).not.toBe('off');
+  });
+
   it('an empty language is left for Whisper to detect', async () => {
     listen.mockResolvedValue(mic());
     apiFetch.mockResolvedValue(transcribed({ text: '', no_speech: null, avg_logprob: null }));

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { AudioLines, Loader2, Mic, MicOff, PhoneOff, SlidersHorizontal } from 'lucide-react';
 import { clipTimes, medianFirstSound } from '../../lib/speech/clipTimes';
+import { SpeakingSwitch } from './SpeakingSwitch';
 
 const WORDS = {
   starting: 'Starting', listening: 'Listening', hearing: 'Hearing you', checking: 'Checking', thinking: 'Thinking',
@@ -33,6 +34,11 @@ function ClipRow({ clip, silenceMs, theme }) {
         {`Speech ${(clip.speechMs / 1000).toFixed(2)} s · no-speech ${clip.scores?.noSpeech?.toFixed(2) ?? '–'}`}
         {` · confidence ${clip.scores?.avgLogprob?.toFixed(2) ?? '–'}`}
       </p>
+      {(clip.heardIn || clip.heardBy) && (
+        <p className={theme.textSecondary}>
+          {['Heard', clip.heardIn && `in ${clip.heardIn}`, clip.heardBy && `by ${clip.heardBy}`].filter(Boolean).join(' ')}
+        </p>
+      )}
       <p className={`tabular-nums ${theme.textSecondary}`}>
         {`Whisper ${secs(times.whisper)} · Model ${secs(times.model)} · Voice ${secs(times.voice)}`}
         {` · First sound ${secs(times.firstSound)}`}
@@ -81,9 +87,10 @@ export function TalkButton({ theme, status, selectedModel, busy, onStart }) {
 /**
  * `settings`: what Talk listens with, the server's defaults and the person's choices (lib/speech/talkSettings.js).
  * `onSettings`: opens Settings at the Talk tab.
+ * `speaking`: the Speaking switch, { value, options, onChange, onMore, autoMeans } (SpeakingSwitch), or null.
  */
 export default function TalkPanel({ theme, speech, silenceMs, orbRef, heardBy = 'this server', settings = null,
-  onSettings = null }) {
+  onSettings = null, speaking = null }) {
   const { phase, clips, muted, microphone = null, end, toggleMute, cutIn, send } = speech;
   const panel = useRef(null);
   const heardList = useRef(null);
@@ -130,7 +137,8 @@ export default function TalkPanel({ theme, speech, silenceMs, orbRef, heardBy = 
             <p className={`text-xs ${theme.textSecondary}`}>{`Ignoring voices ${settings.gate_db} dB quieter than yours`}</p>
           )}
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          {speaking && <SpeakingSwitch theme={theme} {...speaking} />}
           {onSettings && (
             <button type="button" onClick={onSettings} aria-label="Talk settings" title="Talk settings"
               className={`${button} ${theme.bgTertiary} ${theme.text}`}>
