@@ -66,6 +66,82 @@ describe('TalkPanel', () => {
     expect(screen.queryByRole('button', { name: 'Cut in' })).not.toBeInTheDocument();
   });
 
+  // The way out when a room's noise holds a turn open: the circle, so nothing moves under a thumb mid-sentence.
+  it('while it hears you, a tap on the circle sends what you said', () => {
+    const send = vi.fn();
+    draw({ speech: speech({ phase: 'hearing', send }) });
+    expect(screen.getByText(/tap the circle to send/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Send now' }));
+    expect(send).toHaveBeenCalled();
+  });
+
+  it('muted, it hears nothing, so there is nothing to send', () => {
+    draw({ speech: speech({ phase: 'hearing', muted: true }) });
+    expect(screen.queryByRole('button', { name: 'Send now' })).not.toBeInTheDocument();
+  });
+
+  it('while it listens, there is nothing to send yet', () => {
+    draw();
+    expect(screen.queryByRole('button', { name: 'Send now' })).not.toBeInTheDocument();
+  });
+
+  // A phone may keep its own gain whatever the app asks, and that weakens the voice gate: the numbers say so.
+  it('says when the person turned automatic gain off and the browser kept it on, and copies both', () => {
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    draw({
+      speech: speech({ clips: [CLIP], microphone: { autoGainControl: true } }),
+      settings: { auto_gain: false, gate: true, gate_db: 9 },
+    });
+    expect(screen.getByText(/automatic gain is still on: this browser kept it/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy numbers' }));
+    expect(JSON.parse(writeText.mock.calls[0][0])).toMatchObject({
+      microphone: { autoGainControl: true }, settings: { auto_gain: false, gate: true, gate_db: 9 },
+    });
+  });
+
+  it('says nothing about gain when the person left it on', () => {
+    draw({ speech: speech({ clips: [CLIP], microphone: { autoGainControl: true } }), settings: { auto_gain: true } });
+    expect(screen.queryByText(/automatic gain/i)).not.toBeInTheDocument();
+  });
+
+  // Whoever finds their turns cut short should see why at a glance.
+  it('says when it is ignoring quieter voices, and not otherwise', () => {
+    const { rerender } = draw({ settings: { gate: true, gate_db: 9 } });
+    expect(screen.getByText('Ignoring voices 9 dB quieter than yours')).toBeInTheDocument();
+    rerender(<TalkPanel theme={theme} speech={speech()} silenceMs={700} settings={{ gate: false, gate_db: 9 }} />);
+    expect(screen.queryByText(/ignoring voices/i)).not.toBeInTheDocument();
+  });
+
+  it('opens the Talk settings', () => {
+    const onSettings = vi.fn();
+    draw({ onSettings });
+    fireEvent.click(screen.getByRole('button', { name: 'Talk settings' }));
+    expect(onSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('has no settings button when there is nowhere to open them', () => {
+    draw();
+    expect(screen.queryByRole('button', { name: 'Talk settings' })).not.toBeInTheDocument();
+  });
+
+  // A long conversation's clips mustn't push the chat off the screen: the list scrolls inside a fixed height.
+  it('what it heard scrolls inside itself, and keeps the newest clip in view', () => {
+    const clips = [1, 2, 3].map((id) => ({ ...CLIP, id }));
+    const { rerender } = draw({ speech: speech({ clips }) });
+    const list = screen.getByTestId('clip-1').parentElement;
+    expect(list.className).toMatch(/max-h-/);
+    expect(list.className).toMatch(/overflow-y-auto/);
+    Object.defineProperty(list, 'scrollHeight', { value: 900, configurable: true });
+    rerender(<TalkPanel theme={theme} speech={speech({ clips: [...clips, { ...CLIP, id: 4 }] })} silenceMs={700} />);
+    expect(list.scrollTop).toBe(900);
+  });
+
+  it('says nothing about gain when the browser turned it off as asked', () => {
+    draw({ speech: speech({ clips: [CLIP], microphone: { autoGainControl: false } }), settings: { auto_gain: false } });
+    expect(screen.queryByText(/automatic gain/i)).not.toBeInTheDocument();
+  });
+
   it('asks for the microphone while it starts', () => {
     draw({ speech: speech({ phase: 'starting' }) });
     expect(screen.getByRole('status')).toHaveTextContent('Starting');

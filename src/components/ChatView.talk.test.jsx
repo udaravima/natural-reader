@@ -61,6 +61,27 @@ describe('ChatView: Talk', () => {
     expect(screen.getByRole('textbox')).toHaveFocus();
   });
 
+  // Settings, Talk: what the person changed on this device, over the server's defaults.
+  it('listens with the person\'s own Talk settings over the server\'s', async () => {
+    await startTalking({ talk: { ...TALK, choices: { gate: true, gate_db: 6, auto_gain: false, silence_ms: 1200 } } });
+    expect(listen.mock.calls[0][0].settings).toMatchObject({
+      ...WINDOW, gate: true, gate_db: 6, auto_gain: false, silence_ms: 1200, noise_suppression: true,
+    });
+    expect(screen.getByText('Ignoring voices 6 dB quieter than yours')).toBeInTheDocument();
+  });
+
+  it('with no choices, exactly what the server says, the gate off', async () => {
+    await startTalking();
+    expect(listen.mock.calls[0][0].settings).toMatchObject({ ...WINDOW, gate: false, auto_gain: true });
+  });
+
+  it('the Talk settings are a tap away while talking', async () => {
+    const onOpenSettings = vi.fn();
+    await startTalking({ talk: { ...TALK, onOpenSettings } });
+    fireEvent.click(screen.getByRole('button', { name: 'Talk settings' }));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+  });
+
   it('the circle moves with the voice', async () => {
     await startTalking();
     act(() => { listen.mock.calls[0][0].onLevel(0.6); });

@@ -1,7 +1,7 @@
 # Chat with PDF — Walkthrough
 
 > **Audience:** anyone running Natural Reader who wants to ask a model about what they're reading.
-> **Status:** current as of `v2.6.0` plus `[Unreleased]`; the feature first shipped in `v1.6.0`.
+> **Status:** current as of `v2.7.0` plus `[Unreleased]`; the feature first shipped in `v1.6.0`.
 > **Time to first working chat-with-doc:** ~10 minutes on a machine that already has Docker + Ollama.
 
 This document walks the whole feature end-to-end: what it does, why we built it the way we did, how to bring it up locally, and the four different ways you can pull document context into a chat — from a one-click page question to fully autonomous tool calling.
@@ -563,7 +563,7 @@ Trade-offs:
 - **GPU**: if you've installed `onnxruntime-gpu` and have an NVIDIA card, one worker on the GPU is faster than four on CPU. Multi-worker on a single GPU isn't useful — they fight over VRAM.
 - **Postgres pool** is per-process, so N workers means N × `max_size=10` connections to Postgres. Default Postgres `max_connections` is 100 — fine up to ~9 workers, retune above that.
 
-Same trick helps any synth-heavy workflow (the reader's per-page TTS, "Read selection", chat read-aloud), not just audiobook export.
+Same trick helps any synth-heavy workflow (the reader's per-page TTS, "Read selection", chat read-aloud with Kokoro), not just audiobook export. When an admin has Google Gemini-TTS read the chat (v2.7.0), chat read-aloud leaves Kokoro's workers alone.
 
 The backend also ships as a container (`./startup.sh start`, see [DEPLOYMENT.md](DEPLOYMENT.md)); set `WORKERS=4` in `.env` and it reaches the container. Bare metal, wrap `WORKERS=4 python run.py` in your favorite process manager (systemd / supervisor / pm2-with-python-interpreter).
 

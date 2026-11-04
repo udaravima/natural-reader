@@ -773,7 +773,7 @@ reads **set** or **not set**.
 | Variable (Deployment label) | Default | What it does, and when it applies |
 |---|---|---|
 | `CHAT_VOICE_INPUT` (none: its switch is **Chat options → Voice input**) | `off` | `on` or `off`, the starting value for the switch. Anything else is ignored with a warning, and off applies. |
-| `SPEECH_ENGINE` (**Voice input engine**) | `local` | `local` runs [faster-whisper](https://github.com/SYSTRAN/faster-whisper) inside the backend, on the CPU: nothing leaves the server. `openai` calls a remote server that speaks `POST {SPEECH_URL}/audio/transcriptions`. Anything else logs a warning and means `local`. Read once at startup: changing it takes a restart. |
+| `SPEECH_ENGINE` (**Voice input engine**) | `local` | `local` runs [faster-whisper](https://github.com/SYSTRAN/faster-whisper) inside the backend, on the CPU: nothing leaves the server. `openai` calls a remote server that speaks `POST {SPEECH_URL}/audio/transcriptions`. `google` uses Google Cloud ([Google Cloud speech](#google-cloud-speech)). Anything else logs a warning and means `local`. Since v2.7.0 it is the starting choice: **Admin → Chat options → Speech recognition** wins over it, with no restart, while the engine it names is configured. |
 | `SPEECH_MODELS_FILE` (none) | none | `local` only: a YAML file on the host, of extra speech models for **Chat options → Speech model**. See [Choosing a model](#choosing-a-model). |
 | `SPEECH_MODEL` (**Voice input model (server setting)**) | `small` for `local`; none for `openai` | The starting model: **Chat options → Speech model** wins over it for `local`. `local`: an id from that list, a size (`tiny`, `base`, `small`, `medium`, `large-v3`, `large-v3-turbo`), a Hugging Face repo id of a CTranslate2 model, or a directory on the server (see [Choosing a model](#choosing-a-model)). `openai`: the server's model name (`whisper-1` for OpenAI itself); required, and the Overview says "SPEECH_MODEL is not set" without it. |
 | `SPEECH_URL` (**Voice input server**) | none | `openai` only: the base **including `/v1`**, like `INFERENCE_<NAME>_URL`. Without it the Overview says "SPEECH_URL is not set". |
@@ -1147,10 +1147,136 @@ nothing is lost. The 28 noises are the coughs, sneezes, barks and laughs of the 
 tested that were likeliest to pass. The recordings are clean: **a real room and real
 speakers are untested**.
 
+### Talk in a busy room
+
+Silero tells speech from noise, not near from far. A clean voice turned down by 35 dB,
+to 5 dB above the room's hiss, still scores 0.97, and 95% of its frames stay above the
+0.35 that keeps a turn going. So no threshold separates the person at the microphone
+from a colleague two desks away. The colleague's voice holds every turn open and pauses replies.
+
+So Talk can ignore voices much quieter than the person's (`src/lib/speech/gate.js`).
+It is **off by default**: it compares voices by loudness, and a person who sits back
+from the microphone gets quieter too. Each person switches it on for their own device
+under **Settings → Talk → Ignore quieter voices**; `SPEECH_WINDOW_GATE=on` makes on the
+default for everyone.
+
+**How it decides.** A frame more than the margin below the person's level counts as
+silence. The margin is `SPEECH_WINDOW_GATE_DB` (9 dB), which a person changes as **How
+much quieter**, and it decides both starting a turn and staying in one. Which level:
+
+- **In a turn, that turn's own**, learned as it goes from the frames that already count
+  as the person's. Someone who sat back is judged by how loud they are now.
+- **Between turns, the loudest of the person's last three turns that Whisper accepted
+  as speech.** A cough alone teaches nothing, one loud turn sets the bar for the next
+  three, and a person who moved back is followed after three. Nothing heard between
+  turns teaches it.
+
+The gate decides only when a turn starts and ends: the clip sent to Whisper is
+untouched.
+
+**Two simpler rules failed.**
+
+- **One running level, raised fast and lowered slowly, with a 4 dB rule to start**, the
+  first version. In its first real room (2026-11-04), a person who sat back from the
+  microphone had their turns cut in half: the log showed sentences arriving as two clips
+  (4.7 s then 3.1 s, 8.4 s then 2.1 s). A louder turn set a bar the quieter ones
+  couldn't reach.
+- **The last accepted turn alone.** Walked in Chromium: one quieter turn brought the
+  colleague within the margin, the colleague's turns were accepted as speech (they are
+  speech), the bar became the colleague's, and Talk answered the colleague's sentences. The loudest of three turns delays
+  that; it doesn't prevent it (the walk below).
+
+**Sitting back**, on 20 recordings of real people (five speakers, Common Voice among
+them): each speaker's turns played again quieter, after one turn at their usual level.
+The share of their speech that ended up inside a turn:
+
+| Their voice vs. an earlier turn | No gate | First version | Now (9 dB) |
+|---|---|---|---|
+| 3 dB quieter | 66–100% | 33–100% | 62–100% |
+| 6 dB quieter (about twice as far from the microphone) | 69–100% | 0–75% | 65–100% |
+| 9 dB quieter | 69–100% | 0–61% | 40–95% |
+
+Below 100% without the gate are pauses longer than the 0.7 s that ends a turn. One of
+the 20 recordings is lost at any margin: it is more than 20 dB quieter than the one
+before it.
+
+**A colleague who never stops**, simulated through Silero v5 and the VAD library's own
+start and stop rules: five English turns at −22 dBFS, steady, with office echo (RT60
+0.5 s). Seconds from the person's last word to the end of their turn, and the turns the
+other voice opened on its own, each of which would pause a playing reply:
+
+| The other voice quieter by | No gate | Now, 9 dB | Now, 6 dB |
+|---|---|---|---|
+| 8 dB | no turn ends | 1.2–1.9 s; it opened 6 | 0.3–1.1 s, one never ends; 1 |
+| 11 dB | 4 of 5 never end | 0.4–1.8 s; 3 | 0.2–1.2 s; 1 |
+| 14 dB | 2 of 5 never end | 0.4–1.2 s; 1 | 0.2–0.6 s; 1 |
+| 18 dB | turns end; it paused replies 6 times | 0.4–0.6 s; 1 | 0.2–0.6 s; 1 |
+
+The single turn it opens is the one before the person first speaks (the first turn,
+below). Cutting in stays at 0.24–0.29 s at 9 dB (Talk's minimum is 0.25 s); at 6 dB one
+cut-in in five took 0.96 s. The first version's 4 dB start kept a nearer colleague out
+better (at 8 dB it opened 3 turns, at 11 dB 1), which is what 6 dB is for now.
+
+**Walked in Chromium** (2026-11-04): the real VAD library through a simulated
+microphone, Whisper `small`, a colleague reading a script that never stops, about 13 dB
+below the person on average, with echo. The first question at the person's usual level,
+three more from 6 dB further back:
+
+| Gate | Turns ended after the last word | Clips sent that were the colleague's alone |
+|---|---|---|
+| Off | never | (one turn that never ends) |
+| First version (9, start 4) | 0.6–3.7 s | 19 of 22 |
+| Now, 9 dB | 1.6–3.7 s | 41 of 43 |
+| Now, 6 dB | 0.6–2.1 s | 52 of 56 |
+
+Every rule ends the person's turns, which no setting did without the gate. **None keeps
+a colleague talking nonstop at that level out**: once one of their sentences opens a turn,
+Whisper accepts it, because it is speech, and loudness can't say whose it is. The walks
+ran for different lengths, so compare the shares, not the counts. An earlier walk of the
+first version sent only the questions; it differed in two ways, Whisper `base.en` and
+every question at the usual level. Which one kept the colleague out isn't known. It
+wasn't Whisper rejecting the colleague's voice: on 4 s pieces of the same recording,
+`base.en` calls 5 of 6 speech, `small` 4 and `base` 3, while all seven of the person's
+questions are speech on all three (`no_speech` at most 0.03 against a limit of 0.25).
+
+**Setting it.** 9 dB suits a voice well below the person's: the simulation keeps a
+colleague 14 dB or more below out of every turn but the first. If it cuts the person
+off, raise it, or they sit closer; lower keeps a nearer voice out of more starts, and
+cuts more of theirs. With the gate on, switch **Automatic gain** off too: it turns a far voice up the
+moment the person stops. It stays on by default because it also evens out a person who
+moves. Against a colleague who talks nonstop nearby, the gate isn't enough: use a
+headset microphone, or tap the circle to send.
+
+**Known limits.**
+
+- **The first turn.** Until Talk has heard the person, every voice counts. If someone
+  else is talking when **Talk** starts, their words open the first turn, and they are
+  sent.
+- **Whose voice it is.** Loudness can't tell; once a colleague's sentence opens a turn,
+  it is sent. When the person's voice comes near the colleague's (the person sat far back,
+  or the colleague is near, or talks nonstop), the colleague's turns get through. Sit closer, or use a
+  headset microphone: at 3 cm from the mouth, against a colleague at 4 m, it gives
+  roughly 30–40 dB of separation in open air (an estimate, not measured). The real fix
+  is to recognise the person's voice (speaker verification), which Talk doesn't do yet.
+- **Some phones keep their own gain** whatever the app asks. **What it heard** says so
+  when the person asked for it off, and **Copy numbers** includes what the browser
+  applied and the settings Talk listened with.
+- The clips are synthetic voices with simulated echo, plus the 20 recordings above: **a
+  real office is untested** beyond one real room's try of the first version.
+
+When a room still holds a turn open, the person taps the circle to send.
+
 ### Settings
 
 Each is an environment variable, read per request. Change one at a time: they're
 measured together.
+
+Five of them are also a person's own, under **Settings → Talk**, on each device: the gate
+and its margin, the pause that ends a turn, the speech that counts as a turn, and how
+sure the VAD must be (with the three microphone switches, which are the browser's own and
+default to on). The variable sets everyone's default, each control shows it beside the
+person's value, and **Reset to defaults** goes back to it. A person who moves a control
+back to the default follows the variable again when an admin changes it.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -1163,6 +1289,8 @@ measured together.
 | `SPEECH_WINDOW_MAX_NO_SPEECH` | `0.25` | Whisper's `no_speech` at or above which a clip is noise |
 | `SPEECH_WINDOW_MIN_LOGPROB` | `-1.0` | Whisper's `avg_logprob` below which a clip is noise |
 | `SPEECH_WINDOW_LANGUAGE` | `en` | Sent with every clip. Empty: Whisper detects it |
+| `SPEECH_WINDOW_GATE` | `off` | Ignore voices much quieter than the person's ([Talk in a busy room](#talk-in-a-busy-room)). `on` or `off`. Each person can switch it for their own device |
+| `SPEECH_WINDOW_GATE_DB` | `9` | With the gate on: decibels below the person's voice at which another stops counting as theirs, to start a turn and to stay in it. 3 to 30. Lower keeps a nearer voice out; higher lets the person's softer words through |
 
 **Limits.** Whisper and Kokoro each run one job at a time per worker, so two people
 talking at once queue, and read-aloud shares Kokoro with them. A remote speech engine

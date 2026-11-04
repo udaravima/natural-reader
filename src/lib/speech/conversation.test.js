@@ -58,6 +58,22 @@ describe('createConversation', () => {
     expect(h.phase()).toBe('thinking');
   });
 
+  // The voice gate holds the person to the level of their last turn Whisper accepted (gate.js): noise teaches nothing.
+  it('a clip that is speech teaches the voice gate, and one that isn\'t teaches it nothing', async () => {
+    const h = harness();
+    h.conversation.begin();
+    const noise = vi.fn();
+    const speech = vi.fn();
+    h.results.push(NOISE, SPEECH);
+    h.conversation.speechStarted();
+    h.conversation.speechEnded(new Float32Array(160), noise);
+    h.conversation.speechStarted();
+    h.conversation.speechEnded(new Float32Array(160), speech);
+    await tick();
+    expect(noise).not.toHaveBeenCalled();
+    expect(speech).toHaveBeenCalledTimes(1);
+  });
+
   it('noise sends nothing and goes back to listening', async () => {
     const h = harness();
     await h.speak(NOISE);

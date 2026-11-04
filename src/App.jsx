@@ -68,6 +68,8 @@ import ContextMenu from './components/overlays/ContextMenu';
 import KeyboardShortcutsModal from './components/overlays/KeyboardShortcutsModal';
 import ReadSelectionButton from './components/overlays/ReadSelectionButton';
 
+const NO_TALK_CHOICES = {};   // one object, so Talk's settings don't change on every render
+
 export default function App() {
   // One-time migration: 'localhost' was the pre-auth default apiHost, but every
   // /v1 call now sends credentials — a cross-origin localhost:5173 →
@@ -123,6 +125,8 @@ export default function App() {
   const [chatAutoTts, setChatAutoTts] = usePersistedState('chatAutoTts', deploymentDefaults.chatAutoTts);
   // 'auto' (the engine detects it) or a language code; sent with each voice-input recording.
   const [speechLanguage, setSpeechLanguage] = usePersistedState('speechLanguage', deploymentDefaults.speechLanguage);
+  // Settings, Talk: what this person changed about how Talk listens, on this device; the server's are the defaults.
+  const [talkChoices, setTalkChoices] = usePersistedState('talkSettings', NO_TALK_CHOICES);
   // Composer in-progress state lives here (not in ChatView) so switching tabs —
   // which unmounts ChatView — doesn't discard a half-typed message. The text
   // draft is persisted (survives a reload too); pending attachments (images and
@@ -1157,6 +1161,8 @@ export default function App() {
       requestTimeout,
       sessionId: chatActiveSessionId,
       onStarted: () => { if (isPlaying) pauseNarration(); },
+      choices: talkChoices,
+      onOpenSettings: () => openSettings('talk'),
     } : null,
   };
 
@@ -1258,6 +1264,7 @@ export default function App() {
         ) : null}
         voiceSettings={{ selectedVoice, setSelectedVoice, playbackSpeed, setPlaybackSpeed, volume, setVolume, isLocalhost, setIsLocalhost, requestTimeout, setRequestTimeout, unlimitedBatchTimeout, setUnlimitedBatchTimeout, isPreviewingVoice, previewVoice, stopVoicePreview, clearCache }}
         chatSettings={{ chatTtsMode, setChatTtsMode, chatAutoTts, setChatAutoTts, speechLanguage, setSpeechLanguage, apiHost, apiPort, canChat, inferenceByModel, setInferenceByModel, inferenceBase, availableModels, selectedModel }}
+        talkSettings={canTalk ? { defaults: speechStatus?.window ?? null, choices: talkChoices, setChoices: setTalkChoices } : null}
         connectionSettings={{ apiHost, setApiHost, apiPort, setApiPort, backendAvailable }}
         appearanceSettings={{ darkMode, setDarkMode, layoutMode, setLayoutMode, mobileBreakpoint, setMobileBreakpoint, showHeaderControlsOnMobile, setShowHeaderControlsOnMobile }}
         accountProps={{ apiHost, apiPort, user: auth.user }}

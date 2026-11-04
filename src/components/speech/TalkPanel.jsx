@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { AudioLines, Loader2, Mic, MicOff, PhoneOff } from 'lucide-react';
+import { AudioLines, Loader2, Mic, MicOff, PhoneOff, SlidersHorizontal } from 'lucide-react';
 import { clipTimes, medianFirstSound } from '../../lib/speech/clipTimes';
 
 const WORDS = {
@@ -9,7 +9,7 @@ const WORDS = {
 const CUT_IN = 'Talk, or tap the circle, to cut in.';
 const HINTS = {
   starting: 'Allow the microphone if your browser asks.', listening: 'Talk whenever you like.',
-  thinking: CUT_IN, speaking: CUT_IN,
+  hearing: 'Tap the circle to send now.', thinking: CUT_IN, speaking: CUT_IN,
 };
 const MUTED_HINT = "It can't hear you until you unmute.";
 const VERDICTS = { speech: 'Speech', noise: 'Noise', echo: 'Its own voice', failed: 'Failed', refused: 'Refused' };
@@ -78,10 +78,20 @@ export function TalkButton({ theme, status, selectedModel, busy, onStart }) {
  * The conversation's controls, in place of the typing box while it runs; the chat above shows its words. It holds no
  * state of its own: the conversation lives in useSpeechWindow.
  */
-export default function TalkPanel({ theme, speech, silenceMs, orbRef, heardBy = 'this server' }) {
-  const { phase, clips, muted, end, toggleMute, cutIn } = speech;
+/**
+ * `settings`: what Talk listens with, the server's defaults and the person's choices (lib/speech/talkSettings.js).
+ * `onSettings`: opens Settings at the Talk tab.
+ */
+export default function TalkPanel({ theme, speech, silenceMs, orbRef, heardBy = 'this server', settings = null,
+  onSettings = null }) {
+  const { phase, clips, muted, microphone = null, end, toggleMute, cutIn, send } = speech;
   const panel = useRef(null);
+  const heardList = useRef(null);
   useEffect(() => { panel.current?.focus(); }, []);
+  // The list scrolls inside a fixed height; a new clip scrolls it to the bottom, where the newest is.
+  useEffect(() => {
+    if (heardList.current) heardList.current.scrollTop = heardList.current.scrollHeight;
+  }, [clips.length]);
   // A muted microphone sends no more frames: the halo would stay where the last one left it.
   useEffect(() => { if (muted) orbRef?.current?.style.setProperty('--level', '0'); }, [muted, orbRef]);
   const median = medianFirstSound(clips, silenceMs);
@@ -103,15 +113,30 @@ export default function TalkPanel({ theme, speech, silenceMs, orbRef, heardBy = 
             className="rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500">
             {orb}
           </button>
+        ) : phase === 'hearing' && !muted ? (
+          <button type="button" onClick={send} aria-label="Send now" title="Tap to send now"
+            className="rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500">
+            {orb}
+          </button>
         ) : orb}
-        <div className={`flex-1 min-w-0 ${theme.text}`}>
+        {/* At least 10rem: on a phone the buttons wrap below it, instead of the words wrapping one per line. */}
+        <div className={`flex-1 min-w-40 ${theme.text}`}>
           <p role="status" className="text-sm font-bold">{muted ? 'Muted' : WORDS[phase]}</p>
           {hint && <p className={`text-xs ${theme.textSecondary}`}>{hint}</p>}
           {heardBy && heardBy !== 'this server' && (
             <p className={`text-xs ${theme.textSecondary}`}>{`Heard by ${heardBy}`}</p>
           )}
+          {settings?.gate && (
+            <p className={`text-xs ${theme.textSecondary}`}>{`Ignoring voices ${settings.gate_db} dB quieter than yours`}</p>
+          )}
         </div>
         <div className="flex gap-2">
+          {onSettings && (
+            <button type="button" onClick={onSettings} aria-label="Talk settings" title="Talk settings"
+              className={`${button} ${theme.bgTertiary} ${theme.text}`}>
+              <SlidersHorizontal size={16} aria-hidden="true" />
+            </button>
+          )}
           <button type="button" onClick={toggleMute} className={`${button} ${theme.bgTertiary} ${theme.text}`}>
             {muted ? <Mic size={16} aria-hidden="true" /> : <MicOff size={16} aria-hidden="true" />}
             {muted ? 'Unmute' : 'Mute'}
@@ -129,12 +154,19 @@ export default function TalkPanel({ theme, speech, silenceMs, orbRef, heardBy = 
             {median != null && ` · typical first sound ${secs(median)}`}
           </summary>
           <button type="button" className="mt-2 underline"
-            onClick={() => navigator.clipboard?.writeText(JSON.stringify(clips.map((clip) => ({
-              ...clip, times: clipTimes(clip, silenceMs),
-            })), null, 2))}>
+            onClick={() => navigator.clipboard?.writeText(JSON.stringify({
+              settings,
+              microphone,
+              clips: clips.map((clip) => ({ ...clip, times: clipTimes(clip, silenceMs) })),
+            }, null, 2))}>
             Copy numbers
           </button>
-          <ul className="mt-2">
+          {settings?.auto_gain === false && microphone?.autoGainControl === true && (
+            <p className={`mt-2 ${theme.textSecondary}`}>
+              Automatic gain is still on: this browser kept it, so other voices in the room are harder to ignore.
+            </p>
+          )}
+          <ul ref={heardList} className="mt-2 max-h-48 overflow-y-auto overscroll-contain">
             {clips.map((clip) => <ClipRow key={clip.id} clip={clip} silenceMs={silenceMs} theme={theme} />)}
           </ul>
         </details>

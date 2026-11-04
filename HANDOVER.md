@@ -4,7 +4,59 @@
 
 ---
 
-## 2026-11-03 evening — Google speech tested live against Google, released as v2.7.0 (START HERE)
+## 2026-11-04 afternoon — v2.8.0 merged and tagged; next, speech models and voices each person chooses (START HERE)
+
+**State.** On the owner's "merge and tag currently where we are": `fix/talk-in-a-room` (3d43a4b, bf9f211, the release commit) fast-forwarded into `development`, `development` merged into `master`, annotated tag `v2.8.0` on that merge. Not pushed by this session and no GitHub release (the owner said merge and tag only); the outside auto-pusher had already pushed the branch up to bf9f211. The model-choice design (`docs/superpowers/specs/2026-11-04-speech-model-per-person-design.md`) is NOT in the tag: it is being revised with the owner's 14:22 input.
+
+**The owner's input, 14:22.** Today speaking Sinhala, English or Tamil means an admin switching the deployment's one model. They want to switch between (about) three models during a conversation. Google speech-to-text worked only for English for them (cause not checked; v2.7.0's live test heard all three, so likely their recognizer's language list), while Google's Sinhala voice is good: Google stays an admin choice because it costs money, but when the admin turns Google's voice on, a person should pick their own voice and hear a short sample first. Kokoro needs a finer speed control than the presets: a slider that moves linearly but hops between round values, 0.05 apart.
+
+## 2026-11-04 midday — Talk settings, and the busy-room gate made a setting: committed on `fix/talk-in-a-room`
+
+**State.** Branch `fix/talk-in-a-room`: `3d43a4b` (the first gate) and the commit after it (this work), both committed on the owner's word. Nothing pushed; `development`'s `d48209f` isn't pushed either, and the branch isn't merged into `development`. At 13:30 the owner was deploying this commit to check it live; until then their stack ran the first gate (rebuilt 10:13–10:16), where `SPEECH_WINDOW_GATE_DB=0` turns it off. With this commit that value is out of range (3 to 30): one warning, and the gate is off by default anyway.
+
+**The owner's report.** With the first gate their turns were "gone before I even finish": the live log showed sentences arriving as pairs of clips (4.7 s then 3.1 s, 8.4 s then 2.1 s). They had sat back from the microphone. They asked for runtime settings, with the known-good values referenced, and for people to choose a Whisper model from an admin's list.
+
+**What changed.**
+- **Settings → Talk** (`src/components/settings/TalkSettingsPanel.jsx`, logic in `src/lib/speech/talkSettings.js`), for someone who may talk: the three microphone switches, Ignore quieter voices and How much quieter, the pause that ends a turn, the speech that counts as a turn, how sure the VAD must be. Defaults are the server's `/v1/speech/status` window (the microphone's: on), shown beside each control; per device (`usePersistedState('talkSettings')`), only changed values stored, a value moved back to the default forgotten; Reset to defaults. The Talk panel has a sliders button to it, says "Ignoring voices N dB quieter than yours", and Copy numbers includes the settings.
+- **The gate is off by default** (`SPEECH_WINDOW_GATE`, new; `SPEECH_WINDOW_GATE_DB` now 3 to 30). Automatic gain is back on by default.
+- **The gate's rule** (`gate.js`): in a turn, that turn's own level; between turns, the loudest of the last three turns Whisper accepted; one margin for starting and staying. `endTurn()` returns `learn`, which the conversation calls on a speech verdict.
+
+**What the tests found, in order** (scratch: `vadlevel/real*.py`, `drop*.py`, `office*.py`, `talk2/sitback.mjs`, results in `walk3/`):
+1. On 20 real recordings, sitting back 6 dB: first gate 0–75% of speech kept, no gate 69–100%, the new rule 65–100%.
+2. Walked in Chromium (Whisper `small`, a colleague reading nonstop ~13 dB below, three of four questions 6 dB further back): **every rule let her sentences through as turns once one opened**: first gate 19 of 22 clips hers, new rule at 9 dB 41 of 43, at 6 dB 52 of 56. Loudness can't say whose voice it is, and Whisper accepts her words because they are speech. The earlier clean walk of the first gate used `base.en` with every question at the usual level; which of the two kept her out isn't known. Not the model rejecting her: measured at 13:55 (scratch `pool/verdicts.py`), `base.en` calls 5 of 6 four-second pieces of her recording speech, `small` 4, `base` 3, and all 7 questions are speech on all three.
+3. Tried and dropped: the last accepted turn alone (she took over at once); a strict 4 dB start with the in-turn rule (sitting back lost whole utterances again); a start needing 6 of 8 loud frames (lost real speech even at the usual level).
+Every rule ends turns in that room, which gate-off never does. docs/DEPLOYMENT.md "Talk in a busy room" has the tables and says plainly what it can't do.
+
+**Verified.** vitest 1751 in 144 files, pytest 2906 passed / 16 skipped, eslint 0 errors (24 old warnings, none in changed files). Every gate rule is checked by a wrong gate it catches. Settings → Talk and the panel walked at 1366 and 360 px (a phone's 44 px button rule had made the switch a circle; fixed). The 360 px page scrolls sideways because of the header, on every Settings tab: older than this work, not chased.
+
+**Next, proposed and not built.**
+- **Speaker verification**: recognise the person's voice, so a colleague's turn is dropped whatever its loudness. The real fix for the office.
+- **Each person chooses their speech model**: design `docs/superpowers/specs/2026-11-04-speech-model-per-person-design.md`, revised 14:00 after reading the code and measuring, not approved, uncommitted. The read found two things the first draft missed: the transcription route swaps the worker's one engine and reads it back, so two people on two models could be heard by each other's model; and a model that isn't loaded refuses the recording with 503. Measured (scratch `pool/`): a dropped model keeps ~250 MB in the process unless `malloc_trim(0)` runs; `small` + `base` held 886 MB; Talk's speech-or-noise limits hold on `small`, `base` and `base.en`.
+- Still open from the night entry: the `current_time` tool and inline tool calls.
+
+## 2026-11-04 night — Talk in a busy room: built and walked on `fix/talk-in-a-room`
+
+**Superseded the next morning.** The owner deployed this and the gate cut their turns in half when they sat back from the microphone: its learned level only ratchets up, and a turn needs a voice within 4 dB of it to start. The entry above makes the gate a setting, off by default, and changes how it learns.
+
+**State.** Branch `fix/talk-in-a-room` from `development` (`d48209f`, the v2.7.0 docs commit, which is committed and NOT pushed). All of the work below is uncommitted, awaiting the owner's word. The backend container on the owner's machine was rebuilt 2026-11-03 21:59 with v2.7.0 code, so the deploy has probably happened (frontend not checked).
+
+**The owner's report.** In an office, on a phone, Talk heard a colleague two desks away and never sent the turn. On a laptop they work around it by lowering the microphone volume; a phone has no such control.
+
+**Why.** Silero tells speech from noise, not near from far: a voice 35 dB quieter still scores 0.97. So her voice held every turn open and opened turns of its own. Threshold settings can't fix that. Walked in Chromium with her voice 14 dB quieter throughout: no turn ended without Send, no reply ever played, and the clips were 14–72 s of mostly her words.
+
+**What changed.** `src/lib/speech/gate.js`: a frame more than `SPEECH_WINDOW_GATE_DB` (default 9) below the person's learned level is silence; a start needs 4 dB. The level is learned only during a turn under way (the walk caught her syllables between turns pulling it down 5 dB in 6 s), and a clip Whisper calls noise gives back what its turn taught (otherwise a cough could make Talk deaf for good). It hooks vad-web 0.0.31's private `frameProcessor.modelProcessFunc`; `listen.contract.test.js` fails if an upgrade moves it. The microphone opens without automatic gain. Tapping the circle while **Hearing you** sends at once (`setOptions({ redemptionMs: 32 })`, no microphone restart). **What it heard** scrolls inside 192 px, says when a phone kept its own gain, and **Copy numbers** includes what the browser applied. The walk with the gate on: turns ended 0.6–1.0 s after the last word, transcripts clean, no reply paused.
+
+**Known limit.** If someone else is talking when Talk starts, the first turn begins with their words and ends about 3.7 s late. Real office, real voices and phones are untested: the owner's phone session is the check. The scratch DB `nr_websearch_walk` on :5434 and the walk scripts (`scratchpad/talk2/office*.mjs`, `scratchpad/vadlevel/office*.py`) are scratch.
+
+**Found, not built: the owner's other three points of 2026-11-04.**
+
+- **Web search** is fine underneath: an approved search answered the weather with sources in 6.2 s. In "Ask first" mode, though, a typed reply says "I don't have access…" above the card (`OFFER_NOTE_NO_DOCUMENT`), and Talk never searches (`orchestrator.py:301`: ask becomes off for spoken turns). With **Search without asking**, Talk answered weather and news in 3–4 s. The owner said to skip this part for now.
+- **No clock.** Since v2.4 the rules carry only the date (`context.today_line`), to keep the prompt cache and because a minute clock was misread. Proposal: a `current_time` tool.
+- **Tool calls out of order.** A reply's step texts are one string, and its tool calls are a separate list drawn under the whole reply (`ChatView.jsx` `ToolCallsDisclosure`). Nothing records where each call happened. Proposal: record the text offset on each call (live and saved) and draw a one-line chip there.
+
+---
+
+## 2026-11-03 evening — Google speech tested live against Google, released as v2.7.0
 
 **State.** `feat/google-speech` merged to `development` and `master` and **released as v2.7.0** on the owner's earlier "go ahead" (which covered the live test, merge and release). **Not deployed.**
 
@@ -18,6 +70,30 @@
 **Owed by the owner.** Listen to Gemini-TTS in Sinhala and Tamil before turning it on for people. Decide whether to make a `chirp_3` recognizer with `auto`, or set **Admin → Defaults → Speech language** for the `long` one. Real voices (the Sinhala and Tamil clips were Gemini's own). The older items below still stand: Talk on real hardware, the CPU ruling, the `BOOTSTRAP_ADMIN_EMAIL` finding, the stale People tick.
 
 **Open levers, not built.** Streaming synthesis (gRPC) would cut Gemini-TTS's first sentence; a shared HTTP client would save a TLS handshake per sentence; Talk doesn't check a stored language against the recognizer's list.
+
+### Bucket list (current, replaces the v2.5.0 one below)
+
+Checked 2026-11-03 after the v2.7.0 docs pass. Done since the v2.5.0 list: the 375 px header, `AdminPanel.jsx`, `git config user.name`, Sinhala and Tamil (through Google).
+
+**Deploy (owner).** v2.5.1's last fix, v2.6.0 and v2.7.0 are not live (live is `f8af89e`). Back up the database; `npm install` and `npm run build` (v2.6.0 added npm packages); rebuild the backend (`google-auth`); Node 22.13 or 24; the `talk` realm role (the owner made it); `GOOGLE_*` only if Google is wanted.
+
+**Owner decisions.** `BOOTSTRAP_ADMIN_EMAIL` doesn't reserve the seed admin (security-relevant; fix in branch 3 of `resolve_or_provision_user`). A People tick from a stale list overwrites roles (fix: add/remove semantics on `PATCH /v1/admin/users/{id}`). The CPU anti-goal (recommended: accept and reword). Which recognizer for Google, and whether its voice is good enough. The auto-pusher. SDD workspaces. A file too large for the model: refuse or note. Warn before a model switch hides replies.
+
+**Owed on real hardware (owner).** Talk with speakers and no headphones (echo), a real room, a phone, Safari; Kokoro `fp16` by ear; real Sinhala and Tamil voices through Google; Chinese and Japanese voices; a phone keyboard over the popup.
+
+**Owed checks (never run).** A person without chat access; a blocked microphone prompt; the 2-minute stop; a real OpenAI-compatible speech server; several workers swapping speech models; `compose.speech.yml` on a running stack; Docling Describe and Accurate; Auto turned Ask, the yes path; V1 reader error, Retry index, the freeze fix; two users on one browser; a share recipient; `startup.cmd` on Windows; indexed documents with a NULL `embedding_model`.
+
+**Next builds.** Admin-curated speech models and voices people choose among (spec: the speech window's "Admin lists"). Talk smoothness: a shorter silence (700 ms now), a turn detector (Smart Turn v3), streaming voice. Phase 2b embeddings (embeddinggemma-2, nomic, Qwen). Figures with a vision model and the DeepSeek-OCR preset. Audio straight to a model; a model per language or person; Sri Lankan Tamil.
+
+**Bugs and limits.** Two people talking at once queue. The speech picker switches on every arrow key; conversions take no lock between workers. The `touch.stamp` second connection. A model can pass real values to `READER_MODEL`. Vitest flakes under load. Project eval `features` fails every run; citations 87.9% against 90%; the eval scorer's `_REFUSAL` lacks "list".
+
+**Robustness.** Resumable streams, a tested backup restore, a lock around migrations, a pool-slot limit, backup guidance.
+
+**Providers.** A `/models` fallback, per-provider params, a native Anthropic adapter; vLLM, LiteLLM and Unsloth unrun; a GPU or NPU image.
+
+**Features (the owner's wish-list).** Bulk project upload; auto tags and descriptions; Markdown and PDF side by side; MCP; agents; knowledge-base refresh; chat search, export, edit and regenerate; saved roles; prices per model; Auto model routing; V2 compare and review-before-current; C2.2 digests.
+
+**Housekeeping.** The AppArmor pasta fix (sudo); disk 92% full (40 GB free); 23 merged branches; stale memories.
 
 ---
 

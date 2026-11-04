@@ -53,6 +53,15 @@ describe('SettingsDialog — a dialog over the current view', () => {
     expect(screen.getByRole('tab', { name: 'Voice & reading' })).toHaveAttribute('aria-selected', 'true');
   });
 
+  // Talk is behind the `talk` role: someone who can't talk has no Talk settings to change.
+  it('has a Talk tab after Chat for someone who may talk, and none for anyone else', () => {
+    const talkSettings = { defaults: { silence_ms: 700 }, choices: {}, setChoices: vi.fn() };
+    render(<SettingsDialog {...bags({ tab: 'talk', talkSettings })} />);
+    expect(screen.getAllByRole('tab').map((t) => t.textContent))
+      .toEqual(['Voice & reading', 'Chat', 'Talk', 'Appearance', 'Connection', 'Access tokens']);
+    expect(screen.getByRole('slider', { name: 'Pause that ends your turn' })).toBeInTheDocument();
+  });
+
   it('shows the Profile tab first when given a profile panel', () => {
     render(<SettingsDialog {...bags({ tab: 'profile', profile: <p>my profile</p> })} />);
     expect(screen.getAllByRole('tab')[0]).toHaveTextContent('Profile');

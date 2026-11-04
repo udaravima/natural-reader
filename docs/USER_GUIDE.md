@@ -55,8 +55,9 @@ navigation (reader) and the model picker + sessions (chat). Everything about
 - **Settings** — a window over whatever you have open, from the header
   **gear** or the profile menu, so the narration, a reply being written and
   your place in the document all carry on underneath. Tabs: **Profile**,
-  **Voice & reading**, **Chat**, **Appearance**, **Connection** and **Access
-  tokens** (the only place tokens are created). **Esc**, the **×** or a click
+  **Voice & reading**, **Chat**, **Talk** (for someone who may use Talk),
+  **Appearance**, **Connection** and **Access tokens** (the only place tokens
+  are created). **Esc**, the **×** or a click
   outside closes it; it opens on the tab you used last.
 
   **Voice** on **Voice & reading** holds all 50 of Kokoro's voices, grouped by
@@ -368,7 +369,7 @@ changes it.
 | **Embeddings** | Whether the embedding model answers, and returns the width (768) the database holds; and how many documents are waiting to be rebuilt |
 | **Docling** | Whether conversion is on |
 | **Web search** | Whether the search server answers |
-| **Voice input** | **Off** ("Off. Admin → Chat options turns it on."), **Warning** while the speech model downloads or loads ("Getting ready: downloading or loading small."), **OK** when it is ready ("local · small · runs on this server", or the host a remote engine calls), or **Problem** with the reason when it isn't working |
+| **Voice input** | **Off** ("Off. Admin → Chat options turns it on."), **Warning** while the speech model downloads or loads ("Getting ready: downloading or loading small."), **OK** when it is ready ("local · small · runs on this server", the host a remote engine calls, or "google · long · runs on Google Cloud", with what Auto hears when the recognizer can't tell its languages apart), or **Problem** with the reason when it isn't working |
 | **Chat voice** | **OK** with who reads the chat and Talk ("Kokoro on this server…", or Google Gemini-TTS with its model and voice, and that replies are sent to Google Cloud), or **Problem** when Google refuses this server's key, with Google's reason |
 
 **Context windows** gives each model the number the app works with, and says
@@ -982,8 +983,10 @@ Tamil, Google is the only one.
 **Talk** turns the chat into a spoken conversation: you speak, it answers aloud, and you
 can cut in. It's the button with the sound-wave icon beside **Send**, in **Chat** and in
 the chat beside a page. You see it when an admin has turned voice input on and given you
-the `talk` role, on top of chat and read-aloud access; an admin always has it. It's
-English for now.
+the `talk` role, on top of chat and read-aloud access; an admin always has it. On the
+server's own models it's English. If your admin has Google hearing and speaking, it
+hears the language you pick under **Settings → Chat → Speech language**, so Sinhala and
+Tamil work too.
 
 1. Choose a chat model and press **Talk**. It starts listening at once; the browser asks
    for the microphone the first time.
@@ -1023,6 +1026,24 @@ reporting how it behaved.
 **Use headphones if it interrupts itself.** On speakers the microphone can hear the
 reply. It tries to recognise its own words and ignore them, but this hasn't been tested
 on real speakers yet.
+
+**Talk settings.** The sliders button in the Talk panel, or **Settings → Talk**, holds
+how Talk listens on this device: the microphone's own processing (automatic gain, noise
+suppression, echo cancellation), ignoring quieter voices, the pause that ends your turn,
+how much speech counts as a turn, and how sure it must be that it's speech. Each shows
+its default, this server's tested value, beside yours, and **Reset to defaults** puts
+them all back. Changes apply the next time you start Talk. A phone and a laptop keep
+their own.
+
+**In a busy room.** Switch on **Settings → Talk → Ignore quieter voices**, and turn
+**Automatic gain** off. Talk then ignores voices much quieter than yours, such as a
+colleague a few desks away, so your turn ends when you stop; the panel says *Ignoring
+voices 9 dB quieter than yours* while it's on. It compares with your recent turns: if
+it cuts you off, raise **How much quieter**, or sit closer. It goes by loudness, so it
+can't keep out a colleague who talks nonstop close by: if their sentences start getting
+answered, use a headset microphone, which works best of all. If **Hearing you** stays on
+after you've finished, **tap the circle to send** what you said. Some phones keep their
+own volume control whatever the app asks; **What it heard** says so when yours does.
 
 ## Asking a whole project
 
