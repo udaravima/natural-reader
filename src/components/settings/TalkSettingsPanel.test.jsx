@@ -40,7 +40,9 @@ describe('TalkSettingsPanel', () => {
 
   it('a slider stores the number, and shows it beside the default', () => {
     render(<Harness />);
-    fireEvent.change(screen.getByRole('slider', { name: 'Pause that ends your turn' }), { target: { value: '1200' } });
+    const pause = screen.getByRole('slider', { name: 'Pause that ends your turn' });
+    fireEvent.pointerDown(pause);
+    fireEvent.change(pause, { target: { value: '1200' } });
     expect(stored()).toEqual({ silence_ms: 1200 });
     expect(within(row('Pause that ends your turn')).getByText('1200 ms')).toBeInTheDocument();
   });
@@ -48,9 +50,29 @@ describe('TalkSettingsPanel', () => {
   // Back at the default, the choice is forgotten: it follows the server again if an admin changes it.
   it('moving a control back to its default forgets the choice', () => {
     render(<Harness initial={{ silence_ms: 1200, auto_gain: false }} />);
-    fireEvent.change(screen.getByRole('slider', { name: 'Pause that ends your turn' }), { target: { value: '700' } });
+    const pause = screen.getByRole('slider', { name: 'Pause that ends your turn' });
+    fireEvent.pointerDown(pause);
+    fireEvent.change(pause, { target: { value: '700' } });
     fireEvent.click(screen.getByRole('switch', { name: 'Automatic gain' }));
     expect(stored()).toEqual({});
+  });
+
+  // The owner, 2026-11-04: every slider drags linearly but is pulled onto round values.
+  it('a dragged slider lands on the round value near it, and in between moves by its fine step', () => {
+    render(<Harness />);
+    const pause = screen.getByRole('slider', { name: 'Pause that ends your turn' });
+    Object.defineProperty(pause, 'clientWidth', { value: 470, configurable: true });
+    fireEvent.pointerDown(pause);
+    fireEvent.change(pause, { target: { value: '1220' } });
+    expect(stored()).toEqual({ silence_ms: 1200 });
+    fireEvent.change(pause, { target: { value: '1250' } });
+    expect(stored()).toEqual({ silence_ms: 1250 });
+  });
+
+  it('a key moves a slider to the next round value', () => {
+    render(<Harness />);
+    fireEvent.keyDown(screen.getByRole('slider', { name: 'Pause that ends your turn' }), { key: 'ArrowRight' });
+    expect(stored()).toEqual({ silence_ms: 800 });
   });
 
   it('Reset to defaults forgets every choice, and is off when there is none', () => {

@@ -1,4 +1,5 @@
 import { TALK_CONTROLS, talkDefaults, talkSettings, shownValue } from '../../lib/speech/talkSettings';
+import { SnapSlider } from '../SnapSlider';
 
 const GROUPS = [...new Set(TALK_CONTROLS.map((c) => c.group))];
 
@@ -53,8 +54,9 @@ export function TalkSettingsPanel({ theme, t }) {
                 )}
               </div>
               {c.kind === 'range' && (
-                <input type="range" aria-label={c.label} min={c.min} max={c.max} step={c.step} value={current[c.key]}
-                  onChange={(e) => set(c.key, Number(e.target.value))} className="w-full accent-blue-600" />
+                <SnapSlider label={c.label} value={current[c.key]} min={c.min} max={c.max} fine={c.fine} every={c.step}
+                  valueText={(value) => shownValue(c, value)} onChange={(value) => set(c.key, value)}
+                  className="w-full accent-blue-600" />
               )}
               <p className={muted}>
                 {`Default: ${shownValue(c, defaults[c.key])}`}

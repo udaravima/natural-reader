@@ -1,6 +1,7 @@
 """Task 6: the speech routes. A fake transcriber stands in for the engine, so no model is loaded and no remote
 server is called."""
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -157,25 +158,24 @@ async def test_a_failed_options_read_keeps_the_model_running(db_conn, running, m
     assert service.get_transcriber() is running
 
 
-async def test_a_switch_during_an_upload_doesnt_swap_the_worker_back(db_conn, running, monkeypatch):
-    # The options were read before the upload. An admin switches while it arrives, and a status call moves this
-    # worker to the new model: those old options must not then move it back for the rest of the recording.
+async def test_a_switch_during_an_upload_swaps_nobodys_model(db_conn, pooled, monkeypatch):
+    # The options were read before the upload. An admin switches while it arrives, and a status call loads the new
+    # model on this worker. There is no one engine to swap any more (speech/service.py's pool): the clip is heard by
+    # the model its own request chose, and the new one stays loaded for whoever asked for it.
     await _voice(db_conn)
     await db_conn.execute("""UPDATE app_settings SET value = value || '{"speech_model": "whisper-small-ta"}'::jsonb
                              WHERE key = 'chat_options'""")
-    later = FakeEngine()
-    later.spec = catalogue.all_models({})["tiny"]
     real_read = speech_router._read_upload
 
     async def read(request):
         out = await real_read(request)
-        service._transcriber = later     # the switch lands while the upload is being read
+        service.get_transcriber(wanted=catalogue.all_models({})["tiny"])   # the switch lands while the upload arrives
         return out
     monkeypatch.setattr(speech_router, "_read_upload", read)
     async with _client(db_conn) as c:
         r = await _post(c)
-    assert r.status_code == 200
-    assert service.get_transcriber() is later and later.seen
+    assert r.status_code == 200 and r.json()["model"] == "whisper-small-ta"
+    assert pooled["whisper-small-ta"].seen and "tiny" in service._pool
 
 
 async def test_voice_on_returns_the_transcript(db_conn, engine):
@@ -184,7 +184,7 @@ async def test_voice_on_returns_the_transcript(db_conn, engine):
         r = await _post(c, language="si")
     assert r.status_code == 200
     assert r.json() == {"text": "hello there", "language": "si", "duration_s": 3.5,
-                        "no_speech": None, "avg_logprob": None}
+                        "no_speech": None, "avg_logprob": None, "model": "small"}
     assert engine.seen == [(3, "audio/webm", "si")]
 
 
@@ -749,3 +749,104 @@ async def test_a_model_for_every_language_names_none(db_conn, engine):
     await _voice(db_conn, True)
     async with _client(db_conn) as c:
         assert (await c.get(STATUS)).json()["model_languages"] == []
+
+
+# ---------- the language a person speaks picks its model (spec 2026-11-04-speech-choices-per-person) ----------
+
+@pytest.fixture
+def pooled(monkeypatch):
+    """Local engines built on demand, every model on disk, nothing really loaded."""
+    from server.speech import disk
+    service.reset_for_tests()
+    built = {}
+
+    def build(spec, env):
+        fake = FakeEngine()
+        fake.spec, fake.model, fake.languages = spec, spec.id, spec.languages
+        built[spec.id] = fake
+        return fake
+    monkeypatch.setattr(service, "_build_local", build)
+    monkeypatch.setattr(service, "_release_memory", lambda: None)
+    monkeypatch.setattr(disk, "on_disk", lambda model, env=None: True)
+    monkeypatch.delenv("SPEECH_MODEL", raising=False)
+    monkeypatch.delenv("SPEECH_ENGINE", raising=False)
+    yield built
+    service.reset_for_tests()
+
+
+async def _offer(db_conn, ids):
+    await db_conn.execute("""UPDATE app_settings SET value = value || jsonb_build_object('offered_speech_models', %s::jsonb)
+                             WHERE key = 'chat_options'""", (json.dumps(ids),))
+
+
+async def test_status_lists_the_languages_the_offered_models_hear(db_conn, pooled):
+    await _voice(db_conn)
+    await _offer(db_conn, ["whisper-small-si", "whisper-small-ta"])
+    async with _client(db_conn) as c:
+        body = (await c.get(STATUS)).json()
+    assert [(h["code"], h["model"]) for h in body["hears"]] == [("si", "whisper-small-si"), ("ta", "whisper-small-ta")]
+    assert body["default_model"] == {"id": "small", "label": "Whisper small"}
+    assert body["engine"] == "local"   # the Speaking switch lists a Google recognizer's languages instead
+
+
+async def test_status_loads_nothing_but_the_default(db_conn, pooled):
+    await _voice(db_conn)
+    await _offer(db_conn, ["whisper-small-si", "whisper-small-ta"])
+    async with _client(db_conn) as c:
+        await c.get(STATUS)
+    assert list(pooled) == ["small"]
+
+
+async def test_a_sinhala_clip_is_heard_by_the_sinhala_model_and_says_so(db_conn, pooled):
+    await _voice(db_conn)
+    await _offer(db_conn, ["whisper-small-si"])
+    async with _client(db_conn) as c:
+        r = await _post(c, language="si")
+    assert r.status_code == 200 and r.json()["model"] == "whisper-small-si"
+    assert pooled["whisper-small-si"].seen == [(3, "audio/webm", "si")]
+
+
+async def test_a_clip_in_a_language_nobody_offers_is_heard_by_the_default(db_conn, pooled):
+    await _voice(db_conn)
+    await _offer(db_conn, ["whisper-small-si"])
+    async with _client(db_conn) as c:
+        r = await _post(c, language="de")
+    assert r.json()["model"] == "small" and "whisper-small-si" not in pooled
+
+
+async def test_a_model_withdrawn_mid_conversation_leaves_the_next_clip_to_the_default(db_conn, pooled):
+    await _voice(db_conn)
+    await _offer(db_conn, ["whisper-small-si"])
+    async with _client(db_conn) as c:
+        assert (await _post(c, language="si")).json()["model"] == "whisper-small-si"
+        await _offer(db_conn, [])                       # the admin untick it between two clips
+        r = await _post(c, language="si")
+    assert r.status_code == 200 and r.json()["model"] == "small"
+
+
+async def test_a_model_that_fails_to_load_hands_the_clip_to_the_default(db_conn, pooled, monkeypatch):
+    await _voice(db_conn)
+    await _offer(db_conn, ["whisper-small-si"])
+    real = service._build_local
+
+    def build(spec, env):
+        fake = real(spec, env)
+        if spec.id == "whisper-small-si":
+            fake.raises = EngineUnavailable("ValueError")
+        return fake
+    monkeypatch.setattr(service, "_build_local", build)
+    async with _client(db_conn) as c:
+        r = await _post(c, language="si")
+    assert r.status_code == 200 and r.json()["model"] == "small"
+    assert pooled["small"].seen[0][2] == "si"              # heard in the language asked for
+
+
+async def test_a_remote_engine_hears_every_clip_and_ignores_the_offer(db_conn, engine, monkeypatch):
+    await _voice(db_conn)
+    await _offer(db_conn, ["whisper-small-si"])
+    engine.name = "openai"
+    monkeypatch.setenv("SPEECH_ENGINE", "openai")
+    async with _client(db_conn) as c:
+        assert (await c.get(STATUS)).json()["hears"] == []
+        r = await _post(c, language="si")
+    assert r.status_code == 200 and engine.seen[0][2] == "si"

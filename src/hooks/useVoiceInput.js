@@ -267,5 +267,6 @@ export function useVoiceInput({ apiHost, apiPort, language = 'auto', onText, sho
   else if (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) reason = REASON_NO_RECORDER;
   else if (blocked) reason = REASON_BLOCKED;
 
-  return { available, reason, phase, seconds, start, stop, cancel };
+  // `status`: the last /v1/speech/status answer, for the Speaking switch beside the microphone.
+  return { available, reason, phase, seconds, start, stop, cancel, status };
 }

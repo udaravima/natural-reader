@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 import pytest
 
@@ -103,7 +104,7 @@ async def test_the_log_line_has_no_text(caplog):
     await service.transcribe_for("u7", b"a", "audio/webm", None)
     msgs = [r.getMessage() for r in caplog.records if r.name == "server.speech"]
     assert len(msgs) == 1
-    assert msgs[0].startswith("transcribed user=u7 engine=openai seconds=2.0 language=en elapsed_ms=")
+    assert msgs[0].startswith("transcribed user=u7 engine=openai model=m seconds=2.0 language=en elapsed_ms=")
 
 
 async def test_service_engine_from_env(monkeypatch, caplog):
@@ -239,10 +240,10 @@ def test_the_unconverted_engine_is_built_for_its_kind():
     assert isinstance(service.get_transcriber({}, UNCONVERTED), TransformersWhisper)
 
 
-def test_a_swap_restarts_the_retry_clock(monkeypatch):
-    service._attempt_at = 123.0
+def test_a_newly_built_engine_has_no_retry_clock_of_its_own():
+    service._attempt_at["tiny"] = 123.0
     service.get_transcriber({}, TINY)
-    assert service._attempt_at is None
+    assert "tiny" not in service._attempt_at
 
 
 def test_a_remote_engine_ignores_the_choice():
@@ -264,3 +265,146 @@ async def test_a_recording_in_progress_finishes_on_the_engine_it_started_on():
     service.get_transcriber({}, TAMIL)                # the admin switches while it runs
     old.release.set()
     assert (await first).text == "hi" and old.finished == 1
+
+
+# ---------- several models per worker (spec 2026-11-04-speech-choices-per-person, Part 2) ----------
+
+SI = SpeechModel("si", "Sinhala", "converted-whisper", "a/si", "r", ("si",))
+TA = SpeechModel("ta", "Tamil", "converted-whisper", "a/ta", "r", ("ta",))
+EN = SpeechModel("small.en", "English", "faster-whisper", "small.en", languages=("en",))
+
+
+class FakeLocal:
+    """A local engine on one model that loads when warmed (after `load_s`), hears with its id as the text, and can
+    be held mid-transcription."""
+    name, where = "local", "this server"
+
+    def __init__(self, spec, ready=True, load_s=0.0, fails=False):
+        self.spec, self.model, self.languages = spec, spec.id, spec.languages
+        self.state = "ready" if ready else "loading"
+        self.load_s, self.fails = load_s, fails
+        self.hold = None
+        self.started = asyncio.Event()
+        self.finished = 0
+
+    async def status(self):
+        return EngineStatus(self.state == "ready", self.state, "broken" if self.state == "error" else "")
+
+    def warm(self):
+        if self.state != "loading":
+            return
+        asyncio.get_running_loop().call_later(self.load_s, setattr, self, "state", "error" if self.fails else "ready")
+
+    async def transcribe(self, audio, mime, language):
+        if self.state != "ready":
+            raise EngineNotReady("The speech model is still loading")
+        self.started.set()
+        if self.hold is not None:
+            await self.hold.wait()
+        self.finished += 1
+        return Transcript(self.spec.id, language or "en", 1.0)
+
+
+@pytest.fixture
+def fakes(monkeypatch):
+    built = {}
+
+    def build(spec, env):
+        built[spec.id] = FakeLocal(spec)
+        return built[spec.id]
+    monkeypatch.setattr(service, "_build_local", build)
+    dropped = []
+    monkeypatch.setattr(service, "_release_memory", lambda: dropped.append(True))
+    return built, dropped
+
+
+def _pooled():
+    return list(service._pool)
+
+
+def test_up_to_the_limit_of_models_stay_loaded_and_the_least_recently_used_goes(fakes):
+    _, dropped = fakes
+    env = {"SPEECH_MODELS_LOADED": "2"}
+    for spec in (TINY, SI, TA):
+        service.get_transcriber(env, spec, default=TINY)
+    assert _pooled() == ["tiny", "ta"] and len(dropped) == 1
+
+
+def test_the_default_keeps_its_place(fakes):
+    env = {"SPEECH_MODELS_LOADED": "2"}
+    service.get_transcriber(env, TINY)
+    for spec in (SI, TA, EN, SI):
+        service.get_transcriber(env, spec, default=TINY)
+        assert "tiny" in _pooled() and len(_pooled()) == 2
+
+
+def test_with_one_place_models_take_turns(fakes):
+    env = {"SPEECH_MODELS_LOADED": "1"}
+    service.get_transcriber(env, TINY)
+    service.get_transcriber(env, SI, default=TINY)
+    assert _pooled() == ["si"]
+
+
+async def test_a_model_in_use_is_never_dropped(fakes, monkeypatch):
+    monkeypatch.setenv("SPEECH_MODELS_LOADED", "2")   # transcribe_for reads the limit from the environment
+    env = os.environ
+    service.get_transcriber(env, TINY)
+    si = service.get_transcriber(env, SI, default=TINY)
+    si.hold = asyncio.Event()
+    running = asyncio.create_task(service.transcribe_for("u1", b"a", "audio/wav", "si", engine=si))
+    await si.started.wait()
+    service.get_transcriber(env, TA, default=TINY)
+    assert set(_pooled()) == {"tiny", "si", "ta"}      # over the limit while Sinhala is heard
+    si.hold.set()
+    assert (await running).text == "si"
+    assert _pooled() == ["tiny", "ta"]                 # Sinhala goes once it is no longer heard
+
+
+def test_the_limit_defaults_to_3_and_a_bad_value_warns(caplog):
+    assert service.models_loaded({}) == 3
+    assert service.models_loaded({"SPEECH_MODELS_LOADED": "1"}) == 1
+    assert service.models_loaded({"SPEECH_MODELS_LOADED": "4"}) == 4
+    with caplog.at_level(logging.WARNING, logger="server.speech"):
+        for raw in ("0", "5", "x"):
+            assert service.models_loaded({"SPEECH_MODELS_LOADED": raw}) == 3
+    assert "SPEECH_MODELS_LOADED" in caplog.text
+
+
+async def test_each_clip_is_heard_by_the_engine_its_request_resolved(fakes):
+    si = service.get_transcriber({}, SI, default=TINY)
+    si.hold = asyncio.Event()
+    first = asyncio.create_task(service.transcribe_for("u1", b"a", "audio/wav", "si", engine=si))
+    await si.started.wait()
+    ta = service.get_transcriber({}, TA, default=TINY)   # someone else, on another model, while Sinhala is heard
+    second = asyncio.create_task(service.transcribe_for("u2", b"b", "audio/wav", "ta", engine=ta))
+    si.hold.set()
+    assert ((await first).text, (await second).text) == ("si", "ta")
+
+
+async def test_a_clip_for_a_model_still_loading_waits_for_it(monkeypatch):
+    monkeypatch.setattr(service, "_release_memory", lambda: None)
+    loading = FakeLocal(SI, ready=False, load_s=0.3)
+    assert (await service.transcribe_for("u1", b"a", "audio/wav", "si", engine=loading)).text == "si"
+
+
+async def test_a_model_that_fails_to_load_is_unavailable_not_busy(monkeypatch):
+    from server.speech.base import EngineUnavailable
+    monkeypatch.setattr(service, "_release_memory", lambda: None)
+    broken = FakeLocal(SI, ready=False, load_s=0.1, fails=True)
+    with pytest.raises(EngineUnavailable):
+        await service.transcribe_for("u1", b"a", "audio/wav", "si", engine=broken)
+
+
+async def test_the_log_line_names_the_model(caplog, monkeypatch):
+    monkeypatch.setattr(service, "_release_memory", lambda: None)
+    with caplog.at_level(logging.INFO, logger="server.speech"):
+        await service.transcribe_for("u1", b"a", "audio/wav", None, engine=FakeLocal(TINY))
+    assert "model=tiny" in caplog.text
+
+
+def test_switching_to_a_remote_engine_lets_the_local_models_go(fakes):
+    _, dropped = fakes
+    service.get_transcriber({}, TINY)
+    service.get_transcriber({}, SI, default=TINY)
+    service.get_transcriber({"SPEECH_ENGINE": "openai", "SPEECH_URL": "http://x", "SPEECH_MODEL": "m"}, engine="openai")
+    assert _pooled() == [] and dropped

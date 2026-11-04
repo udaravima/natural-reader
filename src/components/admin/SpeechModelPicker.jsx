@@ -5,7 +5,8 @@ import { SearchableList, SearchableSelect } from '../SearchableList';
 /**
  * Admin console: who hears speech (spec 2026-11-03-google-speech) and which speech model voice input runs (spec
  * 2026-11-02-speech-model-choice). One engine and one model for the whole deployment. An engine shows only once the
- * deployer has configured it. The model list comes from the server (speech/catalogue.py): the built-in models, a
+ * deployer has configured it. Models made for one language can be offered to people, each then hearing its
+ * language (spec 2026-11-04-speech-choices). The model list comes from the server (speech/catalogue.py): the built-in models, a
  * deployer's SPEECH_MODELS_FILE, and models added here; a remote engine has no list. A change applies from the next
  * recording on every worker.
  */
@@ -60,6 +61,13 @@ export function SpeechModelPicker({ theme, apiHost, apiPort, showToast, voiceOn 
   }, [apiHost, apiPort]);
 
   useEffect(() => { load(); }, [load]);
+  // A ticked model downloads in the background: look again every 5 s until each one is on this server.
+  const downloading = Boolean(data?.models?.some((m) => m.offered && m.on_disk === false));
+  useEffect(() => {
+    if (!downloading) return undefined;
+    const timer = setTimeout(load, 5000);
+    return () => clearTimeout(timer);
+  }, [downloading, data, load]);
 
   // One way to change anything here. Returns the reason on a refusal, so the add form can keep what was typed.
   const send = async (path, options) => {
@@ -187,6 +195,16 @@ export function SpeechModelPicker({ theme, apiHost, apiPort, showToast, voiceOn 
   );
   if (data.engine !== 'local') return <div className="flex flex-col gap-2 pt-2">{engineChoice}</div>;
   const current = data.models.find((m) => m.id === data.chosen);
+  // Offer to people (spec 2026-11-04-speech-choices): a ticked model hears the language it is made for, when a
+  // person says they speak it. The list's order decides between two models for one language.
+  const offerable = data.models.filter((m) => m.offerable);
+  const offer = async (model) => {
+    const ids = data.models.filter((m) => (m.id === model.id ? !m.offered : m.offered)).map((m) => m.id);
+    const out = await send(`${LIST}/offered`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }),
+    });
+    if (typeof out === 'string') showToast?.(`That didn't work: ${out}`, 5000);
+  };
   const blocked = data.models.find((m) => m.why_not);
   const added = data.models.filter((m) => m.removable);
   const label = `flex flex-col gap-1 text-[10px] ${theme.textSecondary}`;
@@ -228,6 +246,27 @@ export function SpeechModelPicker({ theme, apiHost, apiPort, showToast, voiceOn 
           </button>
         )}
       </div>
+      {offerable.length > 0 && (
+        <div role="group" aria-label="Offered to people" className="flex flex-col gap-1">
+          <span className={`text-xs font-bold ${theme.text}`}>Offered to people</span>
+          <p className={`text-[10px] ${theme.textSecondary}`}>
+            People pick the language they speak beside the microphone and in Talk; a ticked model hears its language.
+            The model above hears everything else.
+          </p>
+          {offerable.map((m) => (
+            <label key={m.id} className={`min-h-11 md:min-h-0 flex items-center gap-2 text-[10px] ${theme.text}`}>
+              <input type="checkbox" checked={Boolean(m.offered)} disabled={saving} onChange={() => offer(m)}
+                className="h-3 w-3 accent-blue-500" />
+              <span className="min-w-0 flex-1 truncate">{optionText(m)}</span>
+              {m.offered && (
+                <span className={theme.textSecondary}>
+                  {m.on_disk ? 'On this server' : "Downloading: people see it once it's here"}
+                </span>
+              )}
+            </label>
+          ))}
+        </div>
+      )}
       {added.length > 0 && (
         <div className="flex flex-col gap-1">
           <span className={`text-[10px] ${theme.textSecondary}`}>Added here</span>

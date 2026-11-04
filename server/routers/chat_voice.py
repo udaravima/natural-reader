@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Request
 from .. import chat_voice, endpoints
 from ..auth import deps
 from ..http_errors import refusal
-from ..schemas import TTSRequest
+from ..schemas import ChatVoiceRequest
 from ..services import chat_options
 from .speech import speech_conn
 
@@ -38,12 +38,15 @@ async def voice_access(request: Request, open_conn=Depends(speech_conn)):
 @router.get("/voice")
 async def who_speaks(access=Depends(voice_access)):
     voice = chat_voice.current(access[1])
-    return {"engine": voice.engine, "voice": voice.voice,
-            "where": "Google Cloud" if voice.engine == "google" else "this server"}
+    out = {"engine": voice.engine, "voice": voice.voice,
+           "where": "Google Cloud" if voice.engine == "google" else "this server"}
+    if voice.engine == "google":
+        out["voices"] = list(chat_voice.GOOGLE_VOICES)   # each person picks one in Settings → Chat
+    return out
 
 
 @router.post("/voice")
-async def speak(body: TTSRequest, http_request: Request, access=Depends(voice_access)):
+async def speak(body: ChatVoiceRequest, http_request: Request, access=Depends(voice_access)):
     principal, options = access
     if not principal.can_read_aloud:
         raise refusal(403, "missing_capability", "Reading aloud needs read-aloud access.", capability="reader")
@@ -53,7 +56,9 @@ async def speak(body: TTSRequest, http_request: Request, access=Depends(voice_ac
     if len(body.text.encode("utf-8")) > chat_voice.MAX_TEXT_BYTES:
         raise refusal(413, "too_long", "That's more than Google's voice reads at once.")
     try:
-        wav, seconds = await chat_voice.google_speak(body.text, voice.voice, body.speed, os.environ)
+        # The person's own Google voice when it is one of Google's; the admin's otherwise.
+        chosen = body.google_voice if body.google_voice in chat_voice.GOOGLE_VOICES else voice.voice
+        wav, seconds = await chat_voice.google_speak(body.text, chosen, body.speed, os.environ)
     except chat_voice.GoogleVoiceError as e:
         raise refusal(e.status, "voice_failed", str(e)) from None
     return {"audio_base64": base64.b64encode(wav).decode("ascii"), "duration_seconds": seconds}

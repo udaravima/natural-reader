@@ -222,3 +222,45 @@ def test_view_says_what_the_console_shows(monkeypatch):
     assert view["id"] == "whisper-small-si-run15" and view["languages"] == ["si"]
     assert view["language_names"] == ["Sinhala"] and view["removable"] is False and view["why_not"] == ""
     assert view["commercial"] == "check" and view["license"] == "apache-2.0"
+
+
+# ---------- which model hears a language (spec 2026-11-04-speech-choices-per-person) ----------
+
+def test_offered_keeps_the_admins_order_and_leaves_out_unknown_and_all_language_models():
+    opts = options(offered_speech_models=("whisper-small-ta", "nope", "small", "whisper-small-si"))
+    # "small" hears every language: offering it changes nothing, the default already does
+    assert [m.id for m in catalogue.offered(opts, {})] == ["whisper-small-ta", "whisper-small-si"]
+
+
+def test_a_model_that_cant_run_here_is_not_offered(monkeypatch):
+    monkeypatch.setattr(catalogue, "why_not", lambda model, env=None: "needs torch" if model.id == "whisper-small-si" else "")
+    opts = options(offered_speech_models=("whisper-small-si", "whisper-small-ta"))
+    assert [m.id for m in catalogue.offered(opts, {})] == ["whisper-small-ta"]
+
+
+def test_a_language_is_heard_by_the_first_offered_model_on_disk_made_for_it():
+    opts = options(offered_speech_models=("whisper-small-si", "whisper-small-si-run15", "whisper-small-ta"))
+    assert catalogue.for_language(opts, "si", {}, on_disk=lambda m: True).id == "whisper-small-si"
+    assert catalogue.for_language(opts, "ta", {}, on_disk=lambda m: True).id == "whisper-small-ta"
+
+
+def test_a_model_not_on_disk_yet_leaves_its_language_to_the_next_or_the_default():
+    opts = options(offered_speech_models=("whisper-small-si", "whisper-small-si-run15"))
+    later = catalogue.for_language(opts, "si", {}, on_disk=lambda m: m.id == "whisper-small-si-run15")
+    assert later.id == "whisper-small-si-run15"
+    assert catalogue.for_language(opts, "si", {}, on_disk=lambda m: False) == catalogue.wanted(opts, {})
+
+
+def test_auto_and_an_unoffered_language_are_heard_by_the_default():
+    opts = options(offered_speech_models=("whisper-small-si",), speech_model="base.en")
+    for code in (None, "", "de"):
+        assert catalogue.for_language(opts, code, {}, on_disk=lambda m: True).id == "base.en"
+
+
+def test_hears_lists_each_offered_language_once_with_its_model():
+    opts = options(offered_speech_models=("whisper-small-si", "whisper-small-si-run15", "whisper-small-ta"))
+    assert catalogue.hears(opts, {}, on_disk=lambda m: True) == [
+        {"code": "si", "name": "Sinhala", "model": "whisper-small-si", "label": "Whisper small, Sinhala (run12)"},
+        {"code": "ta", "name": "Tamil", "model": "whisper-small-ta", "label": "Whisper small, Tamil"},
+    ]
+    assert catalogue.hears(opts, {}, on_disk=lambda m: False) == []

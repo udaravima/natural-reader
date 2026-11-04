@@ -778,6 +778,7 @@ reads **set** or **not set**.
 | `SPEECH_MODEL` (**Voice input model (server setting)**) | `small` for `local`; none for `openai` | The starting model: **Chat options → Speech model** wins over it for `local`. `local`: an id from that list, a size (`tiny`, `base`, `small`, `medium`, `large-v3`, `large-v3-turbo`), a Hugging Face repo id of a CTranslate2 model, or a directory on the server (see [Choosing a model](#choosing-a-model)). `openai`: the server's model name (`whisper-1` for OpenAI itself); required, and the Overview says "SPEECH_MODEL is not set" without it. |
 | `SPEECH_URL` (**Voice input server**) | none | `openai` only: the base **including `/v1`**, like `INFERENCE_<NAME>_URL`. Without it the Overview says "SPEECH_URL is not set". |
 | `SPEECH_API_KEY` (**Voice input key**) | none | `openai` only: sent as the bearer key. It stays on the server and is never logged or shown. |
+| `SPEECH_MODELS_LOADED` (none) | `3` | `local` only: how many speech models a worker keeps loaded, 1 to 4 ([Offering models to people](#offering-models-to-people)). A ceiling: a model loads only when someone speaks its language. Memory is per worker. Anything else logs a warning and 3 applies. |
 | `SPEECH_CPU_THREADS` (none) | half the machine's cores **divided by `WORKERS`**, at least 1: `max(1, cores // (2 × WORKERS))` | `local` only: the threads one transcription uses (a count), per worker. Every worker has its own engine, so with the default all the workers together stay at half the machine and the rest stays free for chat, narration and indexing. A value you set is used as is, per worker, so with `WORKERS` above 1 it multiplies. A value that isn't a number logs a warning and the default applies. |
 
 ### What it costs on the server
@@ -929,7 +930,8 @@ That's a best case: real recordings were visibly worse. The licences differ: `co
 in the list says `check` for the Sinhala models, whose training data includes audio
 of unknown licence.
 
-**Languages.** One model at a time means a server can specialise in one language. A
+**Languages.** With one model, a server specialises in one language;
+[Offering models to people](#offering-models-to-people) gives each language its own. A
 server that takes English should stay on a stock model such as `small`, which in
 the walk got English and Spanish right and made several word errors in Hindi. People
 pick a language under **Settings → Chat → Speech language**, or leave **Auto**. Three
@@ -943,6 +945,78 @@ things to know about fine-tunes:
   other languages. On one that doesn't, the result is gibberish.
 - **English words inside Sinhala speech** come out in Sinhala letters, spelled
   differently each time.
+
+### Offering models to people
+
+One model no longer has to hear everyone. Under **Admin → Chat options → Speech model**,
+**Offered to people** has a tick for each model made for particular languages (the
+Sinhala and Tamil fine-tunes, the English-only sizes). A ticked model hears its language
+whenever a person says they speak it: the **Speaking** chip beside the microphone and in
+Talk, or **Settings → Chat → Speech language**. The model above the ticks hears every
+other language, and Auto. Of two ticked models for one language, the first in the list
+wins. A model that hears every language can't be ticked: the one above already does.
+
+- **Ticking it downloads it**, in the background and without loading it, into
+  `HF_HOME`, which every worker shares. Until it's there the console says
+  **Downloading: people see it once it's here**, and people don't see it. Ticking again
+  retries a download that failed. Sizes: `base` ~145 MB, `small` ~480 MB, `medium`
+  ~1.5 GB, `large-v3` ~3 GB; a fine-tune that needs converting is converted once.
+- **Only a ticked model is ever loaded for a person.** The browser sends a language,
+  and the server picks the model from the list.
+- **Several models per worker.** A worker keeps up to `SPEECH_MODELS_LOADED` loaded
+  (default 3, 1 to 4). It is a ceiling: a model loads only when someone speaks its
+  language. The model above keeps its place; of the others, the least recently used goes
+  first, never one that is hearing a clip. A clip for a model that isn't loaded waits for
+  it (about 1 s from disk) instead of being refused; if it can't load, the model above
+  hears the clip, in the language asked for. Each answer names the model that heard it,
+  and so does the log line (`model=`).
+- **Recordings take turns** in one slot per worker, whatever their model, so a slow
+  model slows everyone on that worker.
+
+**What it costs**, measured 2026-11-04 (faster-whisper 1.2.1, int8, 4 threads, a 2 s
+clip, the resident memory of one process):
+
+| | Memory |
+|---|---|
+| The process before any model | 70 MB |
+| `small` loaded / after its first clip | 584 MB / 756 MB |
+| `small` and `base` both held, after a clip each | 886 MB |
+| … then `base` dropped | 482 MB |
+
+Memory is per worker: multiply by `WORKERS`. In a walk of one Talk conversation in
+Sinhala, English and Tamil (2026-11-04, one worker, Kokoro reading the replies), the
+whole backend went from 1,238 MB to 2,854 MB: the Sinhala model added 781 MB, `small`
+(already loaded) 176 MB, the Tamil model 659 MB. `medium` is about three times `small`,
+`large-v3` about six (estimates by parameter count). A dropped model's memory is handed back with `malloc_trim`: without it about
+250 MB of each stayed with the process. Loading from disk took about 1 s for `small`
+and 0.8 s for `base` (with the clip), on an idle machine.
+
+**Talk's speech-or-noise check** (`SPEECH_WINDOW_MAX_NO_SPEECH`,
+`SPEECH_WINDOW_MIN_LOGPROB`) was measured on `small`. The same clips on other models,
+with the app's decoding:
+
+| | `small` | `base` | `base.en` |
+|---|---|---|---|
+| 7 English questions, 3 of them 6 dB quieter | 7 speech | 7 speech | 7 speech |
+| Highest `no_speech` among them (limit 0.25) | 0.03 | 0.03 | 0.01 |
+| 6 four-second pieces of a colleague's voice, ~13 dB below | 4 speech | 3 speech | 5 speech |
+| Room noise | noise | noise | noise |
+
+On the Sinhala and Tamil fine-tunes, sent as their language (three clips each: one
+sentence and two short greetings, **synthetic Gemini-TTS voices, not real people**):
+
+| | Sinhala fine-tune | `small` as Sinhala | Tamil fine-tune | `small` as Tamil |
+|---|---|---|---|---|
+| The 3 clips | 3 speech, `no_speech` 0.00 | 1 speech, 2 noise (0.32, 0.34); text "වවවව…" | 3 speech, `no_speech` 0.00 | the sentence right; both greetings noise (0.49, 0.26) |
+| An English question, a colleague's English | speech, transliterated | | speech, transliterated | |
+| Room noise | noise (the VAD removed it) | | noise | |
+
+So a language's own model is what lets short Sinhala and Tamil turns through: `small`
+drops them as noise. **The fine-tunes say `no_speech` 0.00 for anything with a voice
+in it**, so on them that limit never fires, and only the VAD, the empty-text check and
+the echo check stand between Talk and a stray voice. Real Sinhala and Tamil speakers in
+Talk are untested.
+
 
 ### How it listens
 
@@ -1392,11 +1466,18 @@ role, or an API that's off, named with its project.
   is the only voice the app has. `gemini-2.5-flash-lite-preview-tts` is about 0.4 s
   quicker per sentence, and is a Preview model.
 - **Talk's language:** the person's own **Speech language** when they chose one, else
-  `SPEECH_WINDOW_LANGUAGE`. That is how someone tries Sinhala or Tamil Talk.
+  `SPEECH_WINDOW_LANGUAGE` (`en`). **So on Auto every Talk clip is sent as English**, and
+  Google hears Sinhala as if it were English. The **Speaking** chip in Talk says so
+  (*Auto (English)*) and switches the language in one tap; the message box's microphone
+  sends nothing on Auto, so there Google hears the recognizer's first language.
 - **Speaking:** one call per sentence, at most 4,000 bytes. Each sentence's language comes
   from its letters: mostly Sinhala is `si-LK`, mostly Tamil `ta-IN`, anything else
   `GOOGLE_TTS_LANGUAGE`. If Google fails, the sentence is skipped and the person sees
   Google's reason; there is no silent fallback to Kokoro.
+- **Each person's voice:** the admin's voice is the default, and each person can pick
+  another of Google's under **Settings → Chat → Reply voice**, after **Hear it**: a short
+  sample in English, Sinhala and Tamil, fetched from Google once per voice per session
+  (a few hundred characters of quota). Turning Google on or off stays the admin's.
 
 ## Bring-up checklist
 

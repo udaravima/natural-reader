@@ -131,7 +131,7 @@ export function DefaultsSection({ theme, apiHost, apiPort, showToast, onDirtyCha
       );
     }
     return (
-      <input type="number" aria-label={LABELS[name]} min={0.5} max={2} step={0.1} value={v}
+      <input type="number" aria-label={LABELS[name]} min={0.5} max={2} step={0.05} value={v}
         onChange={(e) => set(name, Math.min(2, Math.max(0.5, parseFloat(e.target.value) || 1)))}
         className={`${control} w-20`} />
     );

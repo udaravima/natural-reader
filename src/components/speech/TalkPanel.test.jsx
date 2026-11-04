@@ -125,6 +125,11 @@ describe('TalkPanel', () => {
     expect(screen.queryByRole('button', { name: 'Talk settings' })).not.toBeInTheDocument();
   });
 
+  it('What it heard says the language and the model that heard each clip', () => {
+    draw({ speech: speech({ clips: [{ ...CLIP, heardIn: 'si', heardBy: 'whisper-small-si' }] }) });
+    expect(screen.getByTestId('clip-1')).toHaveTextContent('Heard in si by whisper-small-si');
+  });
+
   // A long conversation's clips mustn't push the chat off the screen: the list scrolls inside a fixed height.
   it('what it heard scrolls inside itself, and keeps the newest clip in view', () => {
     const clips = [1, 2, 3].map((id) => ({ ...CLIP, id }));

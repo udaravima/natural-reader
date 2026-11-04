@@ -4,6 +4,54 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-11-04
+
+**Speak the language you speak.** Each person switches the language they speak, Sinhala,
+English or Tamil, in one tap beside the microphone and in Talk, and each language is
+heard by the model an admin offered for it. With Google reading the replies, each person
+picks Google's voice for them, after hearing it. No migrations: the offered list is one
+more key in the chat options row. Both halves rebuild.
+
+### Added
+
+- **The Speaking chip**, beside the microphone (on a phone, just above the message box)
+  and in the Talk panel: Auto, English, and each language with its own model, with the
+  model that hears it; **All languages…** opens Settings. It sets the Speech language, so
+  the next clip goes in it without stopping Talk. On Auto, Talk says **Auto (English)**:
+  Talk sends `SPEECH_WINDOW_LANGUAGE` on Auto, which is why Google seemed to hear only
+  English. **What it heard** names the language and model of each clip.
+- **Admin → Chat options → Speech model → Offered to people**: a tick for each model made
+  for particular languages. A ticked model hears its language; the model above hears the
+  rest. Ticking downloads it, and people see it once it's on the server.
+- **Several speech models per worker**, up to `SPEECH_MODELS_LOADED` (default 3). A
+  request keeps the model it was sent to, so two people on two models are each heard by
+  their own; a clip for a model still loading waits for it instead of failing; one that
+  can't load is heard by the default; a dropped model's memory is handed back.
+  `/v1/speech/transcriptions` answers which model heard it, and the log line says so.
+- **Settings → Chat → Reply voice**, when Google reads the replies: Google's voices, the
+  admin's as the default, with a sample in English, Sinhala and Tamil, fetched once per
+  voice per session.
+
+### Changed
+
+- **Reading speed is a slider**, from 0.5× to 2×, instead of six fixed speeds. It drags
+  smoothly but is pulled onto round values, every 0.05 and harder onto 1×: in a drag
+  across it, about 80% of positions land on one, and the values in between are a little
+  further push away. Arrow keys jump to the next round value; Shift with an arrow moves
+  by 0.01. Kokoro can't go outside that range. A saved speed carries over. **Admin →
+  Defaults → Reading speed** takes 0.05 steps.
+- **Volume and the Talk settings' sliders** pull onto round values the same way (5%,
+  100 ms, 50 ms, 0.05), with finer values between.
+
+### Fixed
+
+- **On a phone, Settings was cut off on the right for an admin.** The header's row of
+  views (Reader, Chat, Library, Admin) and the reader's buttons took 370 px of a 360 px
+  screen, so the page widened to 422 px and everything sized to it overflowed. Where the
+  row doesn't fit, one button now shows the open view and opens a menu of the others: on
+  a phone, and in the reader below 1280 px, where the playback controls need the room (a
+  768 px tablet overflowed by 164 px). Checked from 320 to 1440 px in every view.
+
 ## [2.8.0] - 2026-11-04
 
 **Talk settings, and Talk in a busy room.** Each person can now change how Talk listens

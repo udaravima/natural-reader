@@ -59,6 +59,9 @@ class ChatOptions:
     added_speech_models: Mapping = field(default_factory=dict)   # id -> what an admin entered
     speech_engine: str | None = None   # the admin's engine for hearing speech; None: SPEECH_ENGINE applies
     chat_voice: Mapping | None = None   # the admin's {"engine", "voice"} for the chat and Talk; None: CHAT_VOICE
+    # The speech models an admin offers to people, in the admin's order: each hears the language it is made for, when
+    # a person says they speak it (speech/catalogue.py for_language). Empty: the default model hears everything.
+    offered_speech_models: tuple[str, ...] = ()
 
 
 def _web_from_env(env: Mapping[str, str]) -> tuple[str, str]:
@@ -124,7 +127,9 @@ async def load_chat_options(conn, env: Mapping[str, str] = os.environ) -> ChatOp
         logger.warning("app_settings row %s names a speech engine this server doesn't know: ignored", KEY)
         engine = None
     chat_voice = value.get("chat_voice") if isinstance(value.get("chat_voice"), dict) else None
-    return ChatOptions(web, web_source, voice, voice_source, speech_model, added, engine, chat_voice)
+    raw_offered = value.get("offered_speech_models")
+    offered = tuple(i for i in raw_offered if isinstance(i, str)) if isinstance(raw_offered, list) else ()
+    return ChatOptions(web, web_source, voice, voice_source, speech_model, added, engine, chat_voice, offered)
 
 
 async def _set_key(conn, name: str, value, updated_by: str) -> None:
@@ -220,6 +225,19 @@ async def save_chat_voice(conn, value: Mapping | None, *, updated_by: str,
     return await load_chat_options(conn, env)
 
 
+async def save_offered_speech_models(conn, ids: list[str], *, updated_by: str,
+                                     env: Mapping[str, str] = os.environ) -> ChatOptions:
+    """Save the models offered to people (ids the caller has checked), in order. An empty list removes the key: the
+    default model hears everything again."""
+    before = await load_chat_options(conn, env)
+    if ids:
+        await _set_key(conn, "offered_speech_models", list(ids), updated_by)
+    else:
+        await _clear_key(conn, "offered_speech_models", updated_by)
+    audit("chat_options.offered_speech_models", by=updated_by, old=list(before.offered_speech_models), new=list(ids))
+    return await load_chat_options(conn, env)
+
+
 async def add_speech_model(conn, model_id: str, entry: dict, *, updated_by: str,
                            env: Mapping[str, str] = os.environ) -> ChatOptions:
     """Add one model to the admin's list, in one statement, so two admins adding at once both land."""
@@ -240,7 +258,8 @@ async def add_speech_model(conn, model_id: str, entry: dict, *, updated_by: str,
 
 async def remove_speech_model(conn, model_id: str, *, updated_by: str,
                               env: Mapping[str, str] = os.environ) -> ChatOptions:
-    """Take one model off the admin's list, and off the choice if it was the choice. The files stay in HF_HOME."""
+    """Take one model off the admin's list, off the choice if it was the choice, and off the models offered to
+    people. The files stay in HF_HOME."""
     await conn.execute(
         "UPDATE app_settings SET value = value #- ARRAY['added_speech_models', %s], updated_by = %s, updated_at = now() "
         "WHERE key = %s AND jsonb_typeof(value) = 'object'", (model_id, updated_by, KEY))
@@ -252,4 +271,8 @@ async def remove_speech_model(conn, model_id: str, *, updated_by: str,
     else:
         await conn.execute("DELETE FROM app_settings WHERE key = %s AND value = '{}'::jsonb", (KEY,))
     audit("chat_options.speech_model_removed", by=updated_by, id=model_id)
-    return await load_chat_options(conn, env)
+    now = await load_chat_options(conn, env)
+    if model_id in now.offered_speech_models:
+        return await save_offered_speech_models(conn, [i for i in now.offered_speech_models if i != model_id],
+                                                updated_by=updated_by, env=env)
+    return now

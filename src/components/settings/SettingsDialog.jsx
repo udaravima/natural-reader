@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { KOKORO_VOICES } from '../../constants';
-import { PlayCircle, Square, Clock, VolumeX, Volume1, Volume2, Moon, Sun, Zap, X } from 'lucide-react';
+import { PlayCircle, Square, Clock, Gauge, VolumeX, Volume1, Volume2, Moon, Sun, Zap, X } from 'lucide-react';
 import { InferenceRow } from '../chat/InferenceRow';
 import { KEEP_ALIVE_OPTIONS, NUM_CTX_OPTIONS, serverContextSize, shownValue, withAutoLabel, withinLimit } from '../../lib/inferenceLimits';
 import { AccountPanel } from '../account/AccountPanel';
@@ -8,6 +8,8 @@ import { resolveForModel, patchForModel } from '../../hooks/inference';
 import { apiFetch } from '../../utils/apiFetch';
 import { migrateModelId, modelOptions, supportedKnobs } from '../../lib/modelIds';
 import { SearchableSelect } from '../SearchableList';
+import { SnapSlider } from '../SnapSlider';
+import { voiceSample, SAMPLE_TEXT } from '../../lib/speech/voiceSample';
 import { TalkSettingsPanel } from './TalkSettingsPanel';
 
 function Field({ theme, label, children }) {
@@ -154,6 +156,9 @@ export default function SettingsDialog({ theme, tab, onTab, onClose, profile = n
 }
 
 const VOICE_OPTIONS = KOKORO_VOICES.map((x) => ({ value: x.id, label: x.name, group: x.group }));
+const SLIDER = 'flex-1 h-2 appearance-none bg-slate-300 dark:bg-slate-600 rounded-full cursor-pointer accent-blue-500';
+const speedText = (speed) => `${Number(speed).toFixed(2)}×`;
+const volumeText = (volume) => `${Math.round(volume * 100)}%`;
 
 const inputClass = (theme) => `text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgTertiary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`;
 
@@ -188,27 +193,30 @@ function VoicePanel({ theme, v }) {
                     )}
                 </Field>
 
+                {/* Kokoro takes 0.5 to 2.0 and refuses anything else. The slider drags linearly but is pulled onto every
+                    0.05, and harder onto 1× (SnapSlider). Each change only drops prepared audio: what is playing carries
+                    on, and the next sentence is read at the new speed. */}
                 <Field theme={theme} label="Speed">
-                    <select
-                        aria-label="Speed"
-                        value={v.playbackSpeed}
-                        onChange={(e) => { v.setPlaybackSpeed(parseFloat(e.target.value)); v.clearCache(); }}
-                        className={`w-full ${input}`}
-                    >
-                        {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((s) => <option key={s} value={s}>{s}x Speed</option>)}
-                    </select>
+                    <div className={`flex items-center gap-3 p-2 rounded-lg border ${theme.border} ${theme.bgTertiary}`}>
+                        <Gauge size={16} className={theme.textSecondary} aria-hidden="true" />
+                        <SnapSlider
+                            label="Speed" value={v.playbackSpeed} min={0.5} max={2} fine={0.01} every={0.05} home={[1]}
+                            valueText={speedText}
+                            onChange={(speed) => { v.setPlaybackSpeed(speed); v.clearCache(); }}
+                            className={SLIDER}
+                        />
+                        <span className={`text-xs font-bold tabular-nums ${theme.textSecondary} w-12 text-right`}>{speedText(v.playbackSpeed)}</span>
+                    </div>
                 </Field>
 
                 <Field theme={theme} label="Volume">
                     <div className={`flex items-center gap-3 p-2 rounded-lg border ${theme.border} ${theme.bgTertiary}`}>
                         <VolumeIcon size={16} className={theme.textSecondary} />
-                        <input
-                            type="range" min="0" max="1" step="0.1" aria-label="Volume"
-                            value={v.volume}
-                            onChange={(e) => v.setVolume(parseFloat(e.target.value))}
-                            className="flex-1 h-2 appearance-none bg-slate-300 dark:bg-slate-600 rounded-full cursor-pointer accent-blue-500"
+                        <SnapSlider
+                            label="Volume" value={v.volume} min={0} max={1} fine={0.01} every={0.05}
+                            valueText={volumeText} onChange={v.setVolume} className={SLIDER}
                         />
-                        <span className={`text-xs font-bold ${theme.textSecondary} w-8`}>{Math.round(v.volume * 100)}%</span>
+                        <span className={`text-xs font-bold tabular-nums ${theme.textSecondary} w-12 text-right`}>{volumeText(v.volume)}</span>
                     </div>
                 </Field>
 
@@ -293,6 +301,38 @@ function useChatVoice(apiHost, apiPort, canChat) {
 function ChatPanel({ theme, ch }) {
     const { speechLanguages, modelLanguages, autoHears } = useSpeechLanguages(ch.apiHost, ch.apiPort, ch.canChat);
     const chatVoice = useChatVoice(ch.apiHost, ch.apiPort, ch.canChat);
+    // The reply voice, when Google reads the replies (spec 2026-11-04-speech-choices): the person's own if it is one
+    // of Google's, else the admin's. Hear it plays a sample kept for the session (lib/speech/voiceSample.js).
+    const voices = Array.isArray(chatVoice?.voices) ? chatVoice.voices : [];
+    const ownVoice = voices.includes(ch.googleVoice) ? ch.googleVoice : '';
+    const replyVoice = ownVoice || chatVoice?.voice;
+    const [hearing, setHearing] = useState(false);
+    const sampleAudio = useRef(null);
+    const hearIt = async () => {
+        const audio = sampleAudio.current ?? (sampleAudio.current = new Audio());
+        if (hearing) { audio.pause(); setHearing(false); return; }
+        const voice = replyVoice;
+        const speed = ch.playbackSpeed ?? 1;
+        try {
+            setHearing(true);
+            const url = await voiceSample(`${voice}@${speed}`, async () => {
+                const res = await apiFetch(ch.apiHost, ch.apiPort, '/v1/chat/voice', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: SAMPLE_TEXT, google_voice: voice, speed }),
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const { audio_base64: b64 } = await res.json();
+                const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+                return URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+            });
+            audio.src = url;
+            audio.onended = () => setHearing(false);
+            await audio.play();
+        } catch {
+            setHearing(false);
+        }
+    };
+    useEffect(() => () => sampleAudio.current?.pause(), []);
     // Which model's per-model inference knobs are being edited (defaults to the
     // active chat model). Editing writes inferenceByModel[configModel] via the
     // same pure helpers the chat sidebar used.
@@ -319,9 +359,28 @@ function ChatPanel({ theme, ch }) {
         <>
                 {chatVoice && (
                     <p className={`text-[10px] leading-relaxed ${theme.textSecondary}`}>
-                        {`Replies and Talk are read by Google's voice ${chatVoice.voice}, set by your admin, so they are sent `
-                            + `to ${chatVoice.where}. Your voice in Voice & reading still reads documents.`}
+                        {`Replies and Talk are read by Google's voice ${replyVoice}${ownVoice ? '' : ', set by your admin'}, so `
+                            + `they are sent to ${chatVoice.where}. Your voice in Voice & reading still reads documents.`}
                     </p>
+                )}
+                {chatVoice && ch.setGoogleVoice && voices.length > 0 && (
+                    <Field theme={theme} label="Reply voice">
+                        <div className="flex gap-2">
+                            <select aria-label="Reply voice" value={ownVoice ? ch.googleVoice : ''}
+                                onChange={(e) => ch.setGoogleVoice(e.target.value)} className={`flex-1 ${input}`}>
+                                <option value="">{`Default (${chatVoice.voice})`}</option>
+                                {voices.map((v) => <option key={v} value={v}>{v}</option>)}
+                            </select>
+                            <button type="button" onClick={hearIt} aria-label={`Hear ${replyVoice}`} title={`Hear ${replyVoice}`}
+                                className={`px-3 rounded-lg border transition-all flex items-center justify-center ${hearing ? 'bg-blue-600 text-white border-blue-600 animate-pulse' : `${theme.border} ${theme.hover} ${theme.textSecondary}`}`}>
+                                {hearing ? <Square size={14} /> : <PlayCircle size={14} />}
+                            </button>
+                        </div>
+                        <p className={`text-[10px] leading-relaxed ${theme.textMuted}`}>
+                            A short sample in English, Sinhala and Tamil, at your reading speed. Each voice is fetched from
+                            Google once a session.
+                        </p>
+                    </Field>
                 )}
                 <Field theme={theme} label="Read-aloud mode">
                     <div className={`flex p-1 rounded-lg border ${theme.border} ${theme.bgTertiary}`}>
@@ -349,7 +408,7 @@ function ChatPanel({ theme, ch }) {
                             ]}
                             className={`w-full ${input}`}
                         />
-                        <p className={`text-[9px] ${theme.textMuted}`}>What you speak into the microphone button in the message box.</p>
+                        <p className={`text-[9px] ${theme.textMuted}`}>What you speak, into the microphone and in Talk. The Speaking chip beside them changes it in one tap.</p>
                         {autoHears ? (
                             <p className={`text-[9px] ${theme.textMuted}`}>
                                 This server&apos;s speech recognizer can&apos;t tell languages apart, so Auto hears only {autoHears}: pick the language you speak.

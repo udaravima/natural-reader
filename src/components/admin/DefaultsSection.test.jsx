@@ -46,6 +46,16 @@ describe('Admin → Defaults', () => {
         await waitFor(() => expect(apiFetch).toHaveBeenCalledWith('', '', '/v1/admin/defaults/think/apply-to-everyone', expect.objectContaining({ method: 'POST' })));
     });
 
+    // The same steps as a person's speed slider (Settings → Voice & reading), so any default is one they can pick.
+    it('the reading speed moves in steps of 0.05, from 0.5× to 2×', async () => {
+        api({ first: view() });
+        render(<DefaultsSection {...props} />);
+        const speed = await screen.findByRole('spinbutton', { name: 'Reading speed' });
+        expect(speed).toHaveAttribute('step', '0.05');
+        expect(speed).toHaveAttribute('min', '0.5');
+        expect(speed).toHaveAttribute('max', '2');
+    });
+
     it('marks a default that differs from the built-in', async () => {
         api({ first: view({ values: { ...BUILT_IN, think: 'on' }, overridden: ['think'] }) });
         render(<DefaultsSection {...props} />);

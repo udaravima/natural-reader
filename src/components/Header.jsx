@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import HeaderOverflowMenu from './HeaderOverflowMenu';
 import ProfileMenu from './ProfileMenu';
-import ViewSwitcher from './ViewSwitcher';
+import ViewSwitcher, { ViewMenu } from './ViewSwitcher';
 import NarrationMiniPlayer from './NarrationMiniPlayer';
 
 export default function Header({
@@ -149,8 +149,14 @@ export default function Header({
                         <MessagesSquare size={20} />
                     </button>
                 )}
-                {/* Reader / Chat / Admin toggle */}
-                <ViewSwitcher theme={theme} viewMode={viewMode} setViewMode={setViewMode} isAdmin={isAdmin} canReader={canReader} canChat={canChat} />
+                {/* Reader / Chat / Library / Admin: a row of buttons, or one button with a menu where the row doesn't
+                    fit. On a 360 px phone an admin's row and the reader's buttons were 370 px: the page widened to fit
+                    and Settings, sized to the page, was cut off. In the reader the playback controls (271 px from md)
+                    take the room the 289 px row needs until xl: 768 px overflowed by 164, 1024 by 15. */}
+                <ViewSwitcher theme={theme} viewMode={viewMode} setViewMode={setViewMode} isAdmin={isAdmin} canReader={canReader} canChat={canChat}
+                    className={inReader ? 'hidden xl:flex' : 'hidden sm:flex'} />
+                <ViewMenu theme={theme} viewMode={viewMode} setViewMode={setViewMode} isAdmin={isAdmin} canReader={canReader} canChat={canChat}
+                    className={inReader ? 'xl:hidden' : 'sm:hidden'} />
 
                 {/* Settings gear + profile menu — persistent, all widths */}
                 <button

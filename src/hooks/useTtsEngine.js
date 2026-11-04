@@ -25,6 +25,7 @@ export function useTtsEngine({
     numPages,
     selectedVoice,
     playbackSpeed,
+    googleVoice = '',   // the person's Google voice for replies, '' for the admin's
     isLocalhost,
     volume,
     apiHost,
@@ -94,6 +95,8 @@ export function useTtsEngine({
                     text,
                     voice: voice || selectedVoice,
                     speed: speed || playbackSpeed,
+                    // The person's own Google voice, used when Google reads the replies (spec 2026-11-04-speech-choices).
+                    ...(path === CHAT_VOICE_PATH && googleVoice ? { google_voice: googleVoice } : {}),
                 }),
                 signal,
             });
@@ -114,7 +117,7 @@ export function useTtsEngine({
             if (err.name !== 'AbortError') console.error('Synthesis error:', err);
             return null;
         }
-    }, [apiHost, apiPort, selectedVoice, playbackSpeed, showToast]);
+    }, [apiHost, apiPort, selectedVoice, playbackSpeed, googleVoice, showToast]);
     const synthesizeText = useCallback((text, options) => synthesizeAt('/v1/synthesize', text, options),
         [synthesizeAt]);
     const synthesizeChat = useCallback((text, options) => synthesizeAt(CHAT_VOICE_PATH, text, options),
