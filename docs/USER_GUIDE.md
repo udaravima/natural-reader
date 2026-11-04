@@ -968,7 +968,7 @@ model hears its language whenever someone picks it on their **Speaking** chip; t
 above hears everything else. Ticking one downloads it, and it says **Downloading: people
 see it once it's here** until it is on the server; tick it again if a download failed.
 Each worker keeps up to three models loaded (`SPEECH_MODELS_LOADED`), so offer only
-what people need: each `small`-sized model is about 0.5–0.7 GB of memory. Details in
+what people need: each `small`-sized model took about 0.7–0.8 GB of memory in a walk. Details in
 [DEPLOYMENT.md](DEPLOYMENT.md#offering-models-to-people).
 
 To add a model, open **Add a model from Hugging Face**, enter its repo as `owner/name`

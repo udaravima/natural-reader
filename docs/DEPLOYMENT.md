@@ -983,10 +983,11 @@ clip, the resident memory of one process):
 | `small` and `base` both held, after a clip each | 886 MB |
 | … then `base` dropped | 482 MB |
 
-Memory is per worker: multiply by `WORKERS`. Three `small`-sized models take about
-1.8–2 GB per worker (an estimate: 515 MB of weights each, plus working memory);
-`medium` is about three times `small`, `large-v3` about six (estimates by parameter
-count). A dropped model's memory is handed back with `malloc_trim`: without it about
+Memory is per worker: multiply by `WORKERS`. In a walk of one Talk conversation in
+Sinhala, English and Tamil (2026-11-04, one worker, Kokoro reading the replies), the
+whole backend went from 1,238 MB to 2,854 MB: the Sinhala model added 781 MB, `small`
+(already loaded) 176 MB, the Tamil model 659 MB. `medium` is about three times `small`,
+`large-v3` about six (estimates by parameter count). A dropped model's memory is handed back with `malloc_trim`: without it about
 250 MB of each stayed with the process. Loading from disk took about 1 s for `small`
 and 0.8 s for `base` (with the clip), on an idle machine.
 
