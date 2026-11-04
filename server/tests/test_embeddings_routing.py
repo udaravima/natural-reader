@@ -1,48 +1,47 @@
+import json
+
 import httpx
 import respx
 from server.services import embeddings
 
 
+def _answer(request):
+    n = len(json.loads(request.content)["input"])
+    return httpx.Response(200, json={"embeddings": [[0.0] * 768 for _ in range(n)]})
+
+
 @respx.mock
-async def test_embed_one_uses_model_router(monkeypatch):
+async def test_embedding_follows_the_env_model_and_url(monkeypatch):
     # model_router re-reads env on every call — setenv steers both the
     # upstream URL and the model name.
     monkeypatch.setenv("OLLAMA_URL", "http://ollama.test")
     monkeypatch.setenv("EMBEDDING_MODEL", "my-embed")
-    route = respx.post("http://ollama.test/api/embeddings").mock(
-        return_value=httpx.Response(200, json={"embedding": [0.0] * 768})
-    )
+    route = respx.post("http://ollama.test/api/embed").mock(side_effect=_answer)
     await embeddings.start_client()
     try:
-        await embeddings.embed_one("some text")
+        await embeddings.embed_query("some text")
     finally:
         await embeddings.stop_client()
-    body = route.calls.last.request.content.decode()
-    assert '"model": "my-embed"' in body or '"model":"my-embed"' in body
+    assert json.loads(route.calls.last.request.content)["model"] == "my-embed"
 
 
 @respx.mock
-async def test_embed_one_env_change_takes_effect_without_reload(monkeypatch):
+async def test_an_env_change_takes_effect_without_reload(monkeypatch):
     monkeypatch.setenv("OLLAMA_URL", "http://ollama.test")
-    route = respx.post("http://ollama.test/api/embeddings").mock(
-        return_value=httpx.Response(200, json={"embedding": [0.0] * 768})
-    )
+    route = respx.post("http://ollama.test/api/embed").mock(side_effect=_answer)
     await embeddings.start_client()
     try:
         monkeypatch.setenv("EMBEDDING_MODEL", "first-model")
-        await embeddings.embed_one("text one")
+        await embeddings.embed_query("text one")
         monkeypatch.setenv("EMBEDDING_MODEL", "second-model")
-        await embeddings.embed_one("text two")
+        await embeddings.embed_query("text two")
     finally:
         await embeddings.stop_client()
-    bodies = [call.request.content.decode() for call in route.calls]
-    assert "first-model" in bodies[0]
-    assert "second-model" in bodies[1]
+    models = [json.loads(call.request.content)["model"] for call in route.calls]
+    assert models == ["first-model", "second-model"]
 
 
 # ---- v2.3 Task E: the embedding model's own prefixes, and the profile ----
-
-import json  # noqa: E402
 
 import pytest  # noqa: E402
 
@@ -53,6 +52,7 @@ from server.services import model_router  # noqa: E402
     ({"EMBEDDING_MODEL": "nomic-embed-text"}, "search_document: ", "search_query: "),
     ({"EMBEDDING_MODEL": "nomic-embed-text:v1.5"}, "search_document: ", "search_query: "),
     ({"EMBEDDING_MODEL": "mxbai-embed-large"}, "", ""),
+    ({"EMBEDDING_MODEL": "embeddinggemma-2:740m"}, "title: none | text: ", "task: search result | query: "),
     ({"EMBEDDING_MODEL": "e5", "EMBEDDING_DOCUMENT_PREFIX": "passage: ", "EMBEDDING_QUERY_PREFIX": "query: "},
      "passage: ", "query: "),
     # Set but empty turns nomic's prefixes off.
@@ -67,16 +67,15 @@ def test_prefixes_default_per_model_and_can_be_set(env, doc, query):
 async def test_queries_and_documents_are_embedded_with_their_prefixes(monkeypatch):
     monkeypatch.setenv("OLLAMA_URL", "http://ollama.test")
     monkeypatch.setenv("EMBEDDING_MODEL", "nomic-embed-text")
-    route = respx.post("http://ollama.test/api/embeddings").mock(
-        return_value=httpx.Response(200, json={"embedding": [0.0] * 768}))
+    route = respx.post("http://ollama.test/api/embed").mock(side_effect=_answer)
     await embeddings.start_client()
     try:
         await embeddings.embed_query("what is it?")
         await embeddings.embed_documents(["Page text."])
     finally:
         await embeddings.stop_client()
-    prompts = [json.loads(c.request.content)["prompt"] for c in route.calls]
-    assert prompts == ["search_query: what is it?", "search_document: Page text."]
+    prompts = [json.loads(c.request.content)["input"] for c in route.calls]
+    assert prompts == [["search_query: what is it?"], ["search_document: Page text."]]
 
 
 def test_the_profile_names_the_model_the_prefixes_and_the_chunker(monkeypatch):

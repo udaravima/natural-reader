@@ -104,9 +104,9 @@ def _with_embed(embed):
 
 @pytest.fixture(autouse=True)
 def _defaults(monkeypatch):
-    async def not_this(_text):   # the probe makes its own request: embed_one waits on the indexing semaphore
-        raise AssertionError("the embedding check must not go through embed_one")
-    monkeypatch.setattr(embeddings, "embed_one", not_this)
+    async def not_this(*_args):   # the probe makes its own request: _one_request waits on the indexing semaphore
+        raise AssertionError("the embedding check must not go through the indexing semaphore")
+    monkeypatch.setattr(embeddings, "_one_request", not_this)
     monkeypatch.setattr(web_search, "SEARXNG_URL", "http://searx.example.com:8080")
 
 

@@ -14,6 +14,8 @@ import os
 from dataclasses import dataclass
 from typing import Mapping
 
+from . import embedding_models
+
 
 @dataclass(frozen=True)
 class InferenceConfig:
@@ -28,12 +30,10 @@ class InferenceConfig:
     embed_query_prefix: str = ""
 
 
-# Prefixes a model was trained with, by model-name prefix. Unlisted: none.
-_KNOWN_PREFIXES = {"nomic-embed-text": ("search_document: ", "search_query: ")}
-
-
 def _prefixes(env: Mapping[str, str], model: str) -> tuple[str, str]:
-    known = next((p for name, p in _KNOWN_PREFIXES.items() if model.startswith(name)), ("", ""))
+    # The prefixes the model's family was trained with (embedding_models.KNOWN); unlisted: none.
+    fam = embedding_models.family(model)
+    known = (fam.prefix_document, fam.prefix_query) if fam else ("", "")
     # Set (even to "") wins: an empty value turns a known model's prefix off.
     return (env.get("EMBEDDING_DOCUMENT_PREFIX", known[0]), env.get("EMBEDDING_QUERY_PREFIX", known[1]))
 

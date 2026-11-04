@@ -39,7 +39,7 @@ def embedded(db_conn, monkeypatch, store):
     while the new ones are being embedded."""
     seen = {"texts": [], "old_chunks_during": []}
 
-    async def fake_embed(texts):
+    async def fake_embed(texts, e=None):
         cur = await db_conn.execute("SELECT count(*) FROM doc_chunks WHERE doc_id = %s AND text = 'old'",
                                     (DOC,))
         seen["old_chunks_during"].append((await cur.fetchone())[0])
