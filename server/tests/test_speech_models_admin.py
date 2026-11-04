@@ -102,13 +102,14 @@ async def test_the_view_lists_the_engines_and_what_each_needs(client):
     assert list(engines) == ["local", "openai", "google"]
     assert engines["local"]["available"] is True
     assert engines["openai"]["available"] is False and "SPEECH_URL" in engines["openai"]["needs"]
-    assert engines["google"]["available"] is False and "GOOGLE_SPEECH_RECOGNIZER" in engines["google"]["needs"]
+    # Google needs a recognizer: one ticked in the console (spec 2026-11-04-google-recognizers) or the env's.
+    assert engines["google"]["available"] is False and engines["google"]["needs"] == "a recognizer ticked below"
 
 
 async def test_an_engine_that_isnt_set_up_cant_be_chosen(client, db_conn):
     res = await client.put(ENGINE_URL, json={"engine": "google"})
     assert res.status_code == 422 and res.json()["detail"]["error"] == "engine_not_configured"
-    assert "GOOGLE_SPEECH_RECOGNIZER" in res.json()["detail"]["message"]
+    assert "a recognizer ticked below" in res.json()["detail"]["message"]
     assert (await load_chat_options(db_conn)).speech_engine is None
 
 
@@ -434,3 +435,127 @@ async def test_only_an_admin_may_offer(db_conn):
     async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
         r = await c.put(f"{URL}/offered", json={"ids": ["whisper-small-si"]})
     assert r.status_code == 403
+
+
+# ---------- Google recognizers ticked in the console (spec 2026-11-04-google-recognizers) ----------
+
+RECOGNIZERS_URL = "/v1/admin/google-recognizers"
+G_SI = "projects/p-1/locations/asia-southeast1/recognizers/asr-si"
+G_TA = "projects/p-1/locations/asia-southeast1/recognizers/asr-ta-en"
+G_OLD = "projects/p-1/locations/global/recognizers/asr-si-ta"
+
+
+def _row(name, model, codes, languages):
+    project, location, rid = name.split("/")[1], name.split("/")[3], name.split("/")[5]
+    return {"name": name, "id": rid, "project": project, "location": location, "model": model, "codes": codes,
+            "languages": languages}
+
+
+@pytest.fixture
+def google_listing(monkeypatch):
+    """Google's listing, faked: what it holds, what it refuses, and which projects each call asked for."""
+    from server.speech import google_engine
+    state = {"rows": [_row(G_SI, "chirp_2", ["si-LK"], ["si"]), _row(G_TA, "chirp_3", ["ta-IN", "en-GB"], ["ta", "en"])],
+             "problems": [], "asked": []}
+
+    async def fake(projects, **kw):
+        state["asked"].append(list(projects or ()))
+        return google_engine.Listing(list(state["rows"]), list(state["problems"]), {"my-project": "p-1"})
+    monkeypatch.setattr(google_engine, "list_recognizers", fake)
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/run/secrets/key.json")
+    return state
+
+
+async def test_the_view_says_when_to_show_the_recognizers(client, monkeypatch):
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS", raising=False)
+    assert (await client.get(URL)).json()["google"] == {"offered": False, "chosen": [], "source": "none"}
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/run/secrets/key.json")
+    view = (await client.get(URL)).json()
+    assert view["google"]["offered"] is True
+    google = {e["id"]: e for e in view["engines"]}["google"]
+    assert google["available"] is False and google["needs"] == "a recognizer ticked below"
+
+
+async def test_the_console_lists_googles_recognizers_with_which_are_ticked(client, google_listing):
+    await client.put(RECOGNIZERS_URL, json={"names": [G_TA]})
+    body = (await client.get(RECOGNIZERS_URL)).json()
+    assert [r["id"] for r in body["recognizers"]] == ["asr-ta-en", "asr-si"]      # ticked first, in order
+    ta = body["recognizers"][0]
+    assert ta["chosen"] is True and ta["model"] == "chirp_3" and ta["location"] == "asia-southeast1"
+    assert ta["languages"] == [{"code": "ta", "name": "Tamil"}, {"code": "en", "name": "English"}]
+    assert body["chosen"] == [G_TA] and body["missing"] == [] and body["problems"] == []
+    assert body["in_use"] == [G_TA] and body["source"] == "admin"
+
+
+async def test_ticking_saves_only_recognizers_google_listed(client, db_conn, google_listing):
+    r = await client.put(RECOGNIZERS_URL, json={"names": [G_TA, G_SI, G_TA]})
+    assert r.status_code == 200, r.text
+    view = r.json()
+    assert view["google"] == {"offered": True, "chosen": [G_TA, G_SI], "source": "admin"}
+    assert {e["id"]: e for e in view["engines"]}["google"]["available"] is True
+    assert (await load_chat_options(db_conn)).google_recognizers == (G_TA, G_SI)
+    assert ["p-1"] in google_listing["asked"]                     # the names' own project is listed
+
+
+@pytest.mark.parametrize("name, error", [
+    (G_OLD, "unknown_recognizer"),                                           # well formed, but Google didn't list it
+    ("projects/p-1/locations/evil.example#/recognizers/r", "bad_recognizer"),  # could pick the host the token goes to
+    ("asr-si", "bad_recognizer"),
+])
+async def test_a_name_google_didnt_list_is_refused(client, db_conn, google_listing, name, error):
+    r = await client.put(RECOGNIZERS_URL, json={"names": [G_TA, name]})
+    assert r.status_code == 422 and r.json()["detail"]["error"] == error
+    assert (await load_chat_options(db_conn)).google_recognizers == ()
+
+
+async def test_a_refused_listing_keeps_the_saved_ticks_and_says_why(client, db_conn, google_listing):
+    await client.put(RECOGNIZERS_URL, json={"names": [G_SI]})
+    google_listing["rows"], google_listing["problems"] = [], ["Google refused to list recognizers in p-1, global: 403"]
+    body = (await client.get(RECOGNIZERS_URL)).json()
+    assert body["problems"] == ["Google refused to list recognizers in p-1, global: 403"]
+    assert body["missing"] == [G_SI] and body["chosen"] == [G_SI]
+    r = await client.put(RECOGNIZERS_URL, json={"names": [G_TA]})
+    assert r.status_code == 422 and "403" in r.json()["detail"]["message"]
+    assert (await load_chat_options(db_conn)).google_recognizers == (G_SI,)
+
+
+async def test_an_empty_list_goes_back_to_the_server_setting(client, db_conn, google_listing, monkeypatch):
+    await client.put(RECOGNIZERS_URL, json={"names": [G_SI]})
+    monkeypatch.setenv("GOOGLE_SPEECH_RECOGNIZER", G_OLD)
+    view = (await client.put(RECOGNIZERS_URL, json={"names": []})).json()
+    assert view["google"] == {"offered": True, "chosen": [G_OLD], "source": "env"}
+    assert (await load_chat_options(db_conn)).google_recognizers == ()
+
+
+async def test_at_most_ten_recognizers(client, google_listing):
+    names = [f"projects/p-1/locations/global/recognizers/r-{i}" for i in range(11)]
+    assert (await client.put(RECOGNIZERS_URL, json={"names": names})).status_code == 422
+
+
+async def test_choosing_google_needs_a_recognizer_and_then_works(client, google_listing):
+    r = await client.put("/v1/admin/speech-engine", json={"engine": "google"})
+    assert r.status_code == 422 and "a recognizer ticked below" in r.json()["detail"]["message"]
+    await client.put(RECOGNIZERS_URL, json={"names": [G_SI]})
+    r = await client.put("/v1/admin/speech-engine", json={"engine": "google"})
+    assert r.status_code == 200 and r.json()["engine"] == "google"
+
+
+async def test_only_an_admin_may_list_or_tick_recognizers(db_conn):
+    app = FastAPI()
+
+    async def _conn():
+        yield db_conn
+    app.dependency_overrides[deps.get_conn] = _conn
+    app.dependency_overrides[deps.get_current_user] = lambda: deps.Principal(user_id="u", email="m@x.io", role="member")
+    app.include_router(admin_router.router)
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        assert (await c.get(RECOGNIZERS_URL)).status_code == 403
+        assert (await c.put(RECOGNIZERS_URL, json={"names": []})).status_code == 403
+
+
+async def test_a_name_with_the_project_id_is_saved_as_the_name_google_lists(client, db_conn, google_listing):
+    """Google lists a recognizer under its project's number; a name typed with the project's id is the same one."""
+    typed = "projects/my-project/locations/asia-southeast1/recognizers/asr-si"
+    r = await client.put(RECOGNIZERS_URL, json={"names": [typed]})
+    assert r.status_code == 200, r.text
+    assert (await load_chat_options(db_conn)).google_recognizers == (G_SI,)

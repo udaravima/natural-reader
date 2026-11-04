@@ -4,7 +4,19 @@
 
 ---
 
-## 2026-11-04 night — v2.9.0 released: speech each person chooses (START HERE)
+## 2026-11-04 late night — Google recognizers chosen in the console: built and walked live on `feat/google-recognizers`, UNCOMMITTED (START HERE)
+
+**State.** Branch `feat/google-recognizers` from `development` (bf2c012, v2.9.0), on the owner's "sure go ahead" to a recognizer list in the panel. Spec `docs/superpowers/specs/2026-11-04-google-recognizers-design.md`, plan `docs/superpowers/plans/2026-11-04-google-recognizers.md`. **Nothing committed**: commits for this work weren't delegated, so they wait for the owner's word. Gates: pytest 2988 passed / 16 skipped, vitest 1816 in 151 files, eslint 0 errors (24 old warnings), build OK.
+
+**What an admin can do.** **Admin → Chat options → Google recognizers** (once `GOOGLE_APPLICATION_CREDENTIALS` or `GOOGLE_SPEECH_RECOGNIZER` is set): every ACTIVE recognizer in the key's project, read live from all 17 regions in about 3 s, with model, languages by name and location; tick in order, **Move up**; a clip goes to the first ticked recognizer that lists its language, Auto to the first. Only a name Google listed is saved (its location is the host the token goes to; names also pass a strict pattern, `server/speech/google_names.py`). The Speaking chip and What it heard name the recognizer.
+
+**Live, with the owner's key (scratch backend and DB, Chromium 1366/360 px).** The console listed their two recognizers, reordered and saved through the UI. Three real Sinhala recordings → `asr-si-en` (`chirp_2`, `si-LK`, asia-southeast1) → Sinhala text in 1.0–1.5 s. Tamil and English reach `asr-ta-en` with the right codes, but **Google refuses `chirp_3` in asia-southeast1 on every clip** ("no longer generally available in region asia-southeast1") while reading the recognizer works, so status says ready. Through Google's default recognizer: `chirp_3` in `us` heard Tamil and English right and picks between them on Auto; `chirp_2` heard Sinhala in asia-southeast1 and us-central1. **The owner's fix:** a `chirp_3` recognizer in `us` (or `eu`) with `ta-IN` and `en-GB`, ticked in place of `asr-ta-en`.
+
+**Found and fixed while walking.** Google names projects by number in recognizer names (a typed id is now saved as Google's name, and one project is listed once); six regions at once took 5.5 s, all at once 3 s; `chirp_3` with several languages no longer shows "Auto hears only …"; a refused clip now logs Google's words. Trap for walks: this shell is zsh, so `${2:+-F language=$2}` doesn't split and curl sent no language.
+
+**Owner asks still open (not designed).** Agent profiles: several named assistant profiles (librarian-default, call-agent, librarian-telephony), add/edit/delete, one active, ready for a future PBX channel; today there is one `assistant_profile` (`server/services/assistant_profile.py`). The bucket list below is still pending. And the cache volume's 2.8 GB of original checkpoints (offered fix, no answer yet).
+
+## 2026-11-04 night — v2.9.0 released: speech each person chooses
 
 **State.** On the owner's "merge this to main and we can release this": `feat/speech-choices` (8c3b70a) fast-forwarded into `development`, the release commit on top (version 2.9.0, changelog dated, `docs/Release_notes/RELEASE_NOTES_v2.9.0.md`, TESTING counts), `development` merged into `master`, annotated tag `v2.9.0`. Gates on the merged tree: pytest 2946 passed / 16 skipped, vitest 1806 in 150 files, eslint 0 errors, build OK.
 

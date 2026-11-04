@@ -5,7 +5,8 @@
  *
  * - Whisper here (`engine: 'local'`): Auto, the Talk language (`window.language`, heard by the default model), each
  *   language an admin offered a model for (`hears`), in the admin's order.
- * - Google: Auto and the recognizer's languages (`languages`, already only the recognizer's).
+ * - Google: Auto and the recognizers' languages (`languages`, already only theirs), each with the recognizer that
+ *   hears it when an admin ticked several (`hears`, spec 2026-11-04-google-recognizers).
  * - An OpenAI-compatible server: Auto and the Talk language.
  * And always the person's current language, if it isn't listed: one picked from Settings' full list still shows.
  */
@@ -14,9 +15,9 @@
 export function speakingOptions(status, current, talkLanguage) {
   const enabled = status?.enabled === true;
   const names = new Map((enabled && Array.isArray(status.languages) ? status.languages : []).map((l) => [l.code, l.name]));
-  const local = enabled && status.engine === 'local';
   const remote = enabled && status.engine !== 'local';
-  const byDefault = local ? (status.default_model?.label ?? '') : (remote ? (status.heard_by ?? '') : '');
+  // Auto's: the default model, or the first Google recognizer; else who hears (a remote server).
+  const byDefault = enabled ? (status.default_model?.label ?? (remote ? (status.heard_by ?? '') : '')) : '';
   const out = [{ code: 'auto', label: 'Auto', detail: byDefault }];
   if (!enabled) return out;
   const seen = new Set(['auto']);
@@ -25,9 +26,9 @@ export function speakingOptions(status, current, talkLanguage) {
     seen.add(code);
     out.push({ code, label: names.get(code) ?? code, detail });
   };
-  const offered = new Map((local && Array.isArray(status.hears) ? status.hears : []).map((h) => [h.code, h.label]));
+  const offered = new Map((Array.isArray(status.hears) ? status.hears : []).map((h) => [h.code, h.label]));
   if (status.engine === 'google') {
-    for (const code of names.keys()) add(code, status.heard_by ?? '');
+    for (const code of names.keys()) add(code, offered.get(code) ?? status.heard_by ?? '');
   } else {
     add(talkLanguage, offered.get(talkLanguage) ?? byDefault);
     for (const [code, label] of offered) add(code, label);

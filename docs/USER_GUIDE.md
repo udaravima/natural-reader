@@ -981,9 +981,18 @@ Details are in [DEPLOYMENT.md](DEPLOYMENT.md#choosing-a-model).
 **Who hears and who speaks (admins).** Two more choices sit in **Chat options**, for a
 server that has Google Cloud set up ([DEPLOYMENT.md](DEPLOYMENT.md#google-cloud-speech)):
 - **Speech recognition**: **Whisper on this server**, **An OpenAI-compatible server** or
-  **Google Cloud**. One that isn't set up is greyed out and says which server setting
-  it needs. With Google, recordings go to Google, stop at 55 seconds, and the model
-  list goes, since Google's recognizer has its own.
+  **Google Cloud**. One that isn't set up is greyed out and says what it needs. With
+  Google, recordings go to Google, stop at 55 seconds, and the model list goes, since
+  Google's recognizers have their own.
+- **Google recognizers**, once Google is set up: every recognizer in the server's
+  Google project, read from Google when the section opens (a few seconds), each with
+  its model, languages and location. Tick the ones to use. Each language goes to the
+  first ticked recognizer that lists it, so a Sinhala recognizer and a Tamil-and-English
+  one each hear their own; Auto, and any language none lists, goes to the first (marked
+  **Auto**), and **Move up** changes the order. People see each language on the
+  **Speaking** chip with the recognizer that hears it. Recognizers are made in Google's
+  console; check their languages here (a slip like `sl-SI` reads "Slovenian"). With
+  nothing ticked, the server setting `GOOGLE_SPEECH_RECOGNIZER` is the one.
 - **Voice for the chat and Talk**: **Kokoro on this server**, which reads with each
   person's own voice, or **Google Gemini-TTS**, with the voice you pick below it as the
   default. Each person can pick another of Google's voices under **Settings → Chat →

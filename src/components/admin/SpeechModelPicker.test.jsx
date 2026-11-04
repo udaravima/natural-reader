@@ -272,4 +272,42 @@ describe('SpeechModelPicker', () => {
     expect(screen.getByRole('searchbox', { name: 'Find a speech model' })).toBeTruthy();
     expect(screen.getByRole('listbox', { name: 'Speech model' })).toBeTruthy();
   });
+
+  it('shows Google\'s recognizers before Google can be chosen, and while it hears speech', async () => {
+    const recognizers = { recognizers: [], chosen: [], missing: [], problems: [], source: 'none', in_use: [] };
+    const needs = ENGINES.map((e) => (e.id === 'google' ? { ...e, available: false, needs: 'a recognizer ticked below' } : e));
+    apiFetch.mockImplementation(async (h, p, path) => json(200, path === '/v1/admin/google-recognizers'
+      ? recognizers : view({ engines: needs, google: { offered: true, chosen: [], source: 'none' } })));
+    const { unmount } = render(<SpeechModelPicker theme={theme} apiHost="" apiPort="" showToast={vi.fn()} voiceOn />);
+    expect(await screen.findByRole('group', { name: 'Google recognizers' })).toBeTruthy();
+    unmount();
+    apiFetch.mockImplementation(async (h, p, path) => json(200, path === '/v1/admin/google-recognizers'
+      ? recognizers : view({ google: { offered: false, chosen: [], source: 'none' } })));
+    render(<SpeechModelPicker theme={theme} apiHost="" apiPort="" showToast={vi.fn()} voiceOn />);
+    await select();
+    expect(screen.queryByRole('group', { name: 'Google recognizers' })).toBeNull();   // no Google set up: nothing to tick
+  });
+
+  it('keeps Google\'s recognizers on screen after the first tick, while Whisper still hears', async () => {
+    const SI = 'projects/p-1/locations/asia-southeast1/recognizers/asr-si';
+    const row = { name: SI, id: 'asr-si', project: 'p-1', location: 'asia-southeast1', model: 'chirp_2', codes: ['si-LK'],
+      languages: [{ code: 'si', name: 'Sinhala' }], chosen: false };
+    const needs = ENGINES.map((e) => (e.id === 'google' ? { ...e, available: false, needs: 'a recognizer ticked below' } : e));
+    apiFetch.mockImplementation(async (h, p, path, opts) => {
+      if (path === '/v1/admin/google-recognizers' && opts?.method === 'PUT') {
+        return json(200, view({ google: { offered: true, chosen: [SI], source: 'admin' } }));   // Google now choosable
+      }
+      if (path === '/v1/admin/google-recognizers') {
+        return json(200, { recognizers: [row], chosen: [], missing: [], problems: [], source: 'none', in_use: [] });
+      }
+      return json(200, view({ engines: needs, google: { offered: true, chosen: [], source: 'none' } }));
+    });
+    render(<SpeechModelPicker theme={theme} apiHost="" apiPort="" showToast={vi.fn()} voiceOn />);
+    fireEvent.click(await screen.findByRole('checkbox', { name: /asr-si ·/ }));
+    await waitFor(() => expect(calls('PUT')).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByRole('group', { name: 'Google recognizers' })).toBeTruthy();
+    expect(screen.getByRole('checkbox', { name: /asr-si ·/ }).checked).toBe(true);
+  });
 });
+

@@ -119,6 +119,31 @@ async def test_auto_on_a_recognizer_with_several_languages_hears_the_first(codes
     assert engine.auto_hears == hears
 
 
+async def test_chirp_3_picks_among_its_languages_so_auto_isnt_only_the_first():
+    """Live 2026-11-04: chirp_3 given ta-IN and en-GB heard an English clip as en-GB and a Tamil one as ta-IN."""
+    engine = _engine(lambda r: httpx.Response(200, json={**RECOGNIZER, "model": "chirp_3",
+                                                         "languageCodes": ["ta-IN", "en-GB"]}))
+    await engine.status()
+    assert engine.auto_hears is None and engine.languages == ("ta", "en")
+
+
+async def test_a_refused_clip_logs_googles_own_words(caplog):
+    """Live 2026-11-04: a chirp_3 recognizer in asia-southeast1 reads fine but every clip is refused; only Google's
+    message says why, so the log carries it (it holds no credential)."""
+    words = ("Permission denied for project 1 on model chirp_3 locale en-GB. It is no longer generally available in "
+             "region asia-southeast1. Try a different region, model, or locale.")
+
+    def handler(request):
+        if request.url.path.endswith(":recognize"):
+            return httpx.Response(403, json={"error": {"code": 403, "status": "PERMISSION_DENIED", "message": words}})
+        return httpx.Response(200, json=RECOGNIZER)
+    engine = _engine(handler)
+    with caplog.at_level(logging.WARNING, logger="server.speech"), pytest.raises(EngineUnavailable):
+        await engine.transcribe(_wav(1), "audio/wav", "en")
+    assert "no longer generally available in region asia-southeast1" in caplog.text
+    assert TOKEN not in caplog.text
+
+
 async def test_credentials_that_dont_work_are_a_status_in_words():
     async def broken():
         raise google_cloud.GoogleAuthError("The key file isn't a service-account key.")
@@ -287,3 +312,134 @@ async def test_google_cloud_project_names_the_billed_project_when_the_key_doesnt
 def test_the_engine_module_doesnt_import_google_auth_until_used():
     # A deployment without google-auth installed must still start: only the credentials call needs it.
     assert "google.auth" not in google_engine.__dict__
+
+
+# ---------- recognizers listed from Google, for the console (spec 2026-11-04-google-recognizers) ----------
+
+@pytest.mark.parametrize("name", [
+    "projects/p/locations/evil.example#/recognizers/r",   # the location becomes the host the token goes to
+    "projects/p/locations/a.b/recognizers/r",
+    "projects/p/locations/x?y/recognizers/r",
+    "projects/p/locations/u@h/recognizers/r",
+    "projects/P/locations/global/recognizers/r",
+    "projects/p/locations/global/recognizers/R_1",
+    "projects/p/locations/global/recognizers/r/extra",
+])
+def test_a_name_whose_location_could_pick_another_host_is_refused(name):
+    assert not google_engine.is_recognizer_name(name)
+    assert google_engine.split_name(name) is None
+    assert GoogleSpeech(name).endpoint == "https://speech.googleapis.com"   # never a host built from it
+
+
+@pytest.mark.parametrize("name, parts", [
+    ("projects/example-project-123456/locations/asia-southeast1/recognizers/asr-si-en",
+     ("example-project-123456", "asia-southeast1", "asr-si-en")),
+    ("projects/123456789012/locations/global/recognizers/asr-si-ta", ("123456789012", "global", "asr-si-ta")),
+])
+def test_real_names_pass_and_split(name, parts):
+    assert google_engine.is_recognizer_name(name)
+    assert google_engine.split_name(name) == parts
+
+
+def _recognizer(project, location, rid, model, codes, state="ACTIVE"):
+    return {"name": f"projects/{project}/locations/{location}/recognizers/{rid}", "model": model,
+            "languageCodes": codes, "state": state}
+
+
+NUMBERS = {"p-1": "111"}   # the fake Google's project id -> number
+
+
+def _google(locations_pages, recognizers, refused=()):
+    """A fake Speech v2: locations in pages; recognizers per location, each a list of pages; `refused` locations
+    answer 403. Records every URL asked for and every Authorization header."""
+    seen = []
+
+    def handler(request):
+        seen.append((str(request.url), request.headers.get("authorization")))
+        token = request.url.params.get("pageToken")
+        path = request.url.path
+        if path.endswith("/locations"):
+            page = int(token or 0)
+            asked = path.split("/projects/")[1].split("/")[0]
+            number = NUMBERS.get(asked, asked)   # Google names a location with the project's number
+            body = {"locations": [{"name": f"projects/{number}/locations/{loc}", "locationId": loc}
+                                  for loc in locations_pages[page]]}
+            if page + 1 < len(locations_pages):
+                body["nextPageToken"] = str(page + 1)
+            return httpx.Response(200, json=body)
+        location = path.split("/locations/")[1].split("/")[0]
+        if location in refused:
+            return httpx.Response(403, json={"error": {"code": 403, "message": "Permission denied on resource"}})
+        pages = recognizers.get(location, [[]])
+        page = int(token or 0)
+        body = {"recognizers": pages[page]}
+        if page + 1 < len(pages):
+            body["nextPageToken"] = str(page + 1)
+        return httpx.Response(200, json=body)
+    return handler, seen
+
+
+async def test_listing_reads_every_location_and_every_page():
+    si = _recognizer("p-1", "asia-southeast1", "asr-si", "chirp_2", ["si-LK"])
+    ta = _recognizer("p-1", "asia-southeast1", "asr-ta-en", "chirp_3", ["ta-IN", "en-GB"])
+    gone = _recognizer("p-1", "asia-southeast1", "old", "long", ["en-US"], state="DELETED")
+    us = _recognizer("p-1", "us", "asr-en", "chirp_3", ["en-US"])
+    handler, seen = _google([["asia-northeast1", "asia-southeast1"], ["global", "us"]],
+                            {"asia-southeast1": [[si, gone], [ta]], "us": [[us]]})
+    listing = await google_engine.list_recognizers(["p-1"], transport=httpx.MockTransport(handler), token=_token)
+    assert listing.problems == []
+    by_id = {r["id"]: r for r in listing.recognizers}
+    assert sorted(by_id) == ["asr-en", "asr-si", "asr-ta-en"]           # DELETED left out, both pages read
+    assert by_id["asr-ta-en"] == {
+        "name": ta["name"], "id": "asr-ta-en", "project": "p-1", "location": "asia-southeast1", "model": "chirp_3",
+        "codes": ["ta-IN", "en-GB"], "languages": ["ta", "en"]}
+    hosts = {url.split("/v2/")[0] for url, _ in seen}
+    assert "https://asia-southeast1-speech.googleapis.com" in hosts and "https://us-speech.googleapis.com" in hosts
+    assert "https://speech.googleapis.com" in hosts                     # locations, and global's recognizers
+    assert all(auth == f"Bearer {TOKEN}" for _, auth in seen)
+
+
+async def test_listing_without_projects_lists_the_keys_own():
+    handler, seen = _google([["global"]], {"global": [[_recognizer("p-1", "global", "r", "long", ["en-US"])]]})
+    listing = await google_engine.list_recognizers(None, transport=httpx.MockTransport(handler), token=_token)
+    assert [r["id"] for r in listing.recognizers] == ["r"]
+    assert all("/projects/p-1/" in url for url, _ in seen)
+
+
+async def test_listing_reports_googles_refusal_in_its_words():
+    ok = _recognizer("p-1", "global", "r", "long", ["en-US"])
+    handler, _ = _google([["eu", "global"]], {"global": [[ok]]}, refused=("eu",))
+    listing = await google_engine.list_recognizers(["p-1"], transport=httpx.MockTransport(handler), token=_token)
+    assert [r["id"] for r in listing.recognizers] == ["r"]
+    assert len(listing.problems) == 1
+    assert "eu" in listing.problems[0] and "Permission denied" in listing.problems[0]
+    assert TOKEN not in listing.problems[0]
+
+
+async def test_listing_with_credentials_that_dont_work_is_a_problem_not_a_crash():
+    async def broken():
+        raise google_cloud.GoogleAuthError("No Google credentials: set GOOGLE_APPLICATION_CREDENTIALS")
+    listing = await google_engine.list_recognizers(None, transport=httpx.MockTransport(lambda r: None), token=broken)
+    assert listing.recognizers == [] and listing.problems == ["No Google credentials: set GOOGLE_APPLICATION_CREDENTIALS"]
+
+
+async def test_label_names_the_recognizer_and_its_model():
+    engine = _engine(lambda r: httpx.Response(200, json=RECOGNIZER))
+    assert (engine.id, engine.label) == ("r-1", "r-1")            # its model isn't known until it's read
+    await engine.status()
+    assert engine.label == "r-1 (long)"
+
+
+async def test_a_project_asked_for_by_id_and_by_number_is_listed_once():
+    """Google writes a recognizer's project as its number; the console asks for the key's project by id and for a
+    ticked one's by number. They are one project: listed once, and the id is mapped to the number."""
+    row = _recognizer("111", "global", "r", "long", ["en-US"])
+    handler, seen = _google([["global"]], {"global": [[row]]})
+    listing = await google_engine.list_recognizers(["111"], transport=httpx.MockTransport(handler), token=_token)
+    assert [r["name"] for r in listing.recognizers] == ["projects/111/locations/global/recognizers/r"]
+    assert sum(url.endswith("/locations") for url, _ in seen) == 1
+    assert listing.projects == {"p-1": "111"}
+    assert google_engine.canonical("projects/p-1/locations/global/recognizers/r", listing) \
+        == "projects/111/locations/global/recognizers/r"
+    assert google_engine.canonical("projects/other/locations/global/recognizers/r", listing) \
+        == "projects/other/locations/global/recognizers/r"

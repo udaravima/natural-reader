@@ -21,6 +21,7 @@ from . import catalogue
 from .base import (MAX_AUDIO_BYTES, MAX_AUDIO_SECONDS, EngineNotReady, EngineStatus, EngineUnavailable,
                    Transcriber, Transcript)
 from .catalogue import SpeechModel
+from .google_names import is_recognizer_name
 # The engines import faster-whisper, PyAV and numpy. They are imported inside get_transcriber, so a deployment
 # that pulled new code without `pip install -r requirements.txt` still starts, and says so in the voice status.
 
@@ -107,34 +108,96 @@ def engine_name(env: Mapping[str, str] = os.environ) -> str:
     return (env.get("SPEECH_ENGINE") or "local").strip().lower()
 
 
-def engine_needs(name: str, env: Mapping[str, str] = os.environ) -> str:
-    """What an engine still needs from the environment before it can be chosen; empty when nothing."""
+GOOGLE_NEEDS = "a recognizer ticked below"
+
+
+def engine_needs(name: str, env: Mapping[str, str] = os.environ, options=None) -> str:
+    """What an engine still needs before it can be chosen; empty when nothing. Google needs a recognizer: one an
+    admin ticked (`options`), else GOOGLE_SPEECH_RECOGNIZER."""
     if name == "openai":
         missing = [k for k in ("SPEECH_URL", "SPEECH_MODEL") if not (env.get(k) or "").strip()]
         return " and ".join(missing)
     if name == "google":
-        from .google_engine import is_recognizer_name
-        return "" if is_recognizer_name(env.get("GOOGLE_SPEECH_RECOGNIZER")) else "GOOGLE_SPEECH_RECOGNIZER"
+        return "" if any(is_recognizer_name(n) for n in recognizer_names(options, env)) else GOOGLE_NEEDS
     return ""
 
 
-def engines(env: Mapping[str, str] = os.environ) -> list[dict]:
-    return [{"id": name, "label": _LABELS[name], "available": not engine_needs(name, env),
-             "needs": engine_needs(name, env)} for name in ENGINES]
+def engines(env: Mapping[str, str] = os.environ, options=None) -> list[dict]:
+    return [{"id": name, "label": _LABELS[name], "available": not engine_needs(name, env, options),
+             "needs": engine_needs(name, env, options)} for name in ENGINES]
+
+
+# ---------- Google recognizers, one per language (spec 2026-11-04-google-recognizers) ----------
+
+def recognizer_names(options, env: Mapping[str, str] = os.environ) -> tuple[str, ...]:
+    """The Google recognizers in use, in order: the ones an admin ticked, else GOOGLE_SPEECH_RECOGNIZER (as it is:
+    a malformed one becomes a status that says so), else none."""
+    ticked = tuple(getattr(options, "google_recognizers", None) or ())
+    if ticked:
+        return ticked
+    one = (env.get("GOOGLE_SPEECH_RECOGNIZER") or "").strip()
+    return (one,) if one else ()
+
+
+def recognizer_source(options, env: Mapping[str, str] = os.environ) -> str:
+    if getattr(options, "google_recognizers", None):
+        return "admin"
+    return "env" if (env.get("GOOGLE_SPEECH_RECOGNIZER") or "").strip() else "none"
+
+
+def google_offered(options, env: Mapping[str, str] = os.environ) -> bool:
+    """Whether the console shows Google's recognizers to tick: once Google credentials or a recognizer are set."""
+    return bool((env.get("GOOGLE_APPLICATION_CREDENTIALS") or "").strip() or recognizer_names(options, env))
+
+
+_google: dict = {}   # recognizer name -> its GoogleSpeech, so each keeps its own probe and languages
+
+
+def google_engines(names, env: Mapping[str, str] = os.environ) -> list:
+    """One engine per recognizer name, kept between requests; names no longer in use are let go (a request that
+    holds one finishes on it)."""
+    from .google_engine import GoogleSpeech, timeout_from
+    out = []
+    for name in names:
+        engine = _google.get(name)
+        if engine is None:
+            engine = _google[name] = GoogleSpeech(name, timeout_s=timeout_from(env))
+        out.append(engine)
+    for gone in set(_google) - set(names):
+        _google.pop(gone)
+    return out
+
+
+def google_for(engines, code: str | None):
+    """The recognizer that hears `code`: the first that lists it, else the first (Auto, and any language none
+    lists). A recognizer Google hasn't answered for lists nothing yet, so only Auto reaches it if it is first."""
+    if code:
+        for engine in engines:
+            if code in getattr(engine, "languages", ()):
+                return engine
+    return engines[0]
+
+
+def _keeps_google(recognizers) -> bool:
+    """Whether the running Google engine is the one `recognizers` asks for (None: whichever runs)."""
+    held = getattr(_transcriber, "recognizer", None)
+    if recognizers is None or held is None:   # None: one put in place from outside (a test), kept as the pool keeps one
+        return True
+    return held == (recognizers[0] if recognizers else "")
 
 
 def chosen_engine(options, env: Mapping[str, str] = os.environ) -> str:
     """The engine for hearing speech: the admin's choice while it can still run here, else SPEECH_ENGINE (or
     local). A choice whose setting a deployer has since removed falls back rather than breaking voice input."""
     choice = getattr(options, "speech_engine", None)
-    if choice in ENGINES and not engine_needs(choice, env):
+    if choice in ENGINES and not engine_needs(choice, env, options):
         return choice
     return engine_name(env)
 
 
 def engine_source(options, env: Mapping[str, str] = os.environ) -> str:
     choice = getattr(options, "speech_engine", None)
-    if choice in ENGINES and not engine_needs(choice, env):
+    if choice in ENGINES and not engine_needs(choice, env, options):
         return "admin"
     return "env" if (env.get("SPEECH_ENGINE") or "").strip() else "default"
 
@@ -209,7 +272,8 @@ def _drop_local_models() -> None:
 
 
 def get_transcriber(env: Mapping[str, str] = os.environ, wanted: SpeechModel | None = None,
-                    engine: str | None = None, default: SpeechModel | None = None) -> Transcriber:
+                    engine: str | None = None, default: SpeechModel | None = None,
+                    recognizers: tuple[str, ...] | None = None) -> Transcriber:
     """Build (once) from SPEECH_ENGINE. Never raises for a config mistake: a bad setting shows up in the
     engine's status() instead, so the status route and the admin Overview can't be crashed by a typo. A missing
     Python package is such a mistake: the engine is a stand-in whose status is `error` naming the package.
@@ -220,20 +284,27 @@ def get_transcriber(env: Mapping[str, str] = os.environ, wanted: SpeechModel | N
     switching back is quick; a recording already running finishes on the engine it started on.
 
     `engine` is the engine the options ask for (chosen_engine); None keeps whatever runs, or SPEECH_ENGINE.
-    `default` is the deployment's model (catalogue.wanted), which keeps its place in the pool; None: `wanted` is it."""
+    `default` is the deployment's model (catalogue.wanted), which keeps its place in the pool; None: `wanted` is it.
+    `recognizers` are the Google recognizers in use (recognizer_names); the first is the current engine, the one Auto
+    goes to; None keeps whichever runs, or GOOGLE_SPEECH_RECOGNIZER."""
     global _transcriber, _default_id
     if _transcriber is not None:
         same_engine = engine is None or _transcriber.name == engine
         running = getattr(_transcriber, "spec", None)   # only a local engine has one
-        if same_engine and (wanted is None or running is None or running == wanted):
+        if same_engine and (wanted is None or running is None or running == wanted) \
+                and (_transcriber.name != "google" or _keeps_google(recognizers)):
             return _transcriber
     engine = engine or engine_name(env)
     model = (env.get("SPEECH_MODEL") or "").strip()
     if engine in ("google", "openai") and _pool:
         _drop_local_models()
     if engine == "google":
-        from .google_engine import GoogleSpeech, timeout_from
-        _transcriber = GoogleSpeech(env.get("GOOGLE_SPEECH_RECOGNIZER"), timeout_s=timeout_from(env))
+        names = recognizer_names(None, env) if recognizers is None else tuple(recognizers)
+        if names:
+            _transcriber = google_engines(names, env)[0]
+        else:
+            from .google_engine import GoogleSpeech
+            _transcriber = GoogleSpeech(None)   # a status that says to tick a recognizer
     elif engine == "openai":
         try:
             from .openai_engine import OpenAICompatible
@@ -301,6 +372,7 @@ def reset_for_tests() -> None:
     _transcriber = None
     _slot = None
     _default_id = None
+    _google.clear()
     _attempt_at.clear()
     _pool.clear()
     _in_use.clear()

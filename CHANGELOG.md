@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+**Google speech through a recognizer per language.** An admin ticks Google's recognizers
+in the console, read live from Google, and each clip goes to the first ticked one that
+lists its language. No one Google model suits Sinhala, Tamil and English together
+(Sinhala isn't on `chirp_3`), so a recognizer per language is how each gets a model that
+hears it. No migrations: one more key in the chat options row. Both halves rebuild.
+
+### Added
+
+- **Admin → Chat options → Google recognizers**, once Google is set up: every ACTIVE
+  recognizer in the key's project, from every region and every page of Google's list,
+  with its model, languages (by name) and location, in about 3 s. Tick them in order:
+  a clip goes to the first that lists its language, Auto and any language none lists to
+  the first (**Auto**), and **Move up** reorders. A recognizer Google no longer lists is
+  shown, to untick; a refusal shows in Google's words. `GET` and
+  `PUT /v1/admin/google-recognizers`.
+- The **Speaking** chip and **What it heard** name the Google recognizer and its model
+  for each language and clip, as they do Whisper's models.
+
+### Changed
+
+- **Only a recognizer Google listed for this server's key can be saved**, and every
+  recognizer name, `GOOGLE_SPEECH_RECOGNIZER` included, must match a strict pattern
+  before a request is built from it: its location becomes the host the server sends its
+  Google token to, and a location such as `evil.example#` would have sent it elsewhere.
+  Every real Google name fits. A name typed with the project's id is saved as Google lists
+  it, with the project's number.
+- `GOOGLE_SPEECH_RECOGNIZER` is the one recognizer while none is ticked, as before; Google
+  can now also be chosen once one is ticked. An engine's "needs" says
+  **a recognizer ticked below**.
+- **A `chirp_3` recognizer with several languages no longer reads "Auto hears only …"**:
+  measured live, it picks among its languages (English and Tamil clips came back in their
+  own language). The note stays for models that hear only their first, such as `long`.
+- **A clip Google refuses is logged in Google's words**, with the recognizer: a `chirp_3`
+  recognizer in `asia-southeast1` reads as ready but refuses every clip ("no longer
+  generally available in region asia-southeast1"), and only that message says why
+  (docs/DEPLOYMENT.md, "Several recognizers, one per language").
+
 ## [2.9.0] - 2026-11-04
 
 **Speak the language you speak.** Each person switches the language they speak, Sinhala,

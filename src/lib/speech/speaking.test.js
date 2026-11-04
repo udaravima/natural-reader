@@ -33,6 +33,19 @@ describe('speakingOptions: what the Speaking switch lists', () => {
     expect(speakingOptions(google, 'auto', 'en')[1].detail).toBe('Google Cloud');
   });
 
+  it('with several Google recognizers, each language with the recognizer that hears it, Auto with the first', () => {
+    const google = { enabled: true, engine: 'google', heard_by: 'Google Cloud', window: { language: 'en' },
+      languages: [{ code: 'en', name: 'English' }, { code: 'si', name: 'Sinhala' }, { code: 'ta', name: 'Tamil' }],
+      hears: [{ code: 'ta', name: 'Tamil', model: 'asr-ta-en', label: 'asr-ta-en (chirp_3)' },
+        { code: 'en', name: 'English', model: 'asr-ta-en', label: 'asr-ta-en (chirp_3)' },
+        { code: 'si', name: 'Sinhala', model: 'asr-si', label: 'asr-si (chirp_2)' }],
+      default_model: { id: 'asr-ta-en', label: 'asr-ta-en (chirp_3)' } };
+    const out = speakingOptions(google, 'auto', 'en');
+    expect(out.map((o) => [o.code, o.detail])).toEqual([
+      ['auto', 'asr-ta-en (chirp_3)'], ['en', 'asr-ta-en (chirp_3)'], ['si', 'asr-si (chirp_2)'],
+      ['ta', 'asr-ta-en (chirp_3)']]);
+  });
+
   it('with no status yet, voice off, or no languages, Auto alone', () => {
     expect(codes(speakingOptions(null, 'auto', 'en'))).toEqual(['auto']);
     expect(codes(speakingOptions({ enabled: false }, 'auto', 'en'))).toEqual(['auto']);

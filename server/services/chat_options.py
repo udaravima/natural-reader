@@ -37,6 +37,7 @@ from typing import Mapping
 from psycopg.types.json import Jsonb
 
 from ..audit import audit
+from ..speech.google_names import is_recognizer_name
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,9 @@ class ChatOptions:
     # The speech models an admin offers to people, in the admin's order: each hears the language it is made for, when
     # a person says they speak it (speech/catalogue.py for_language). Empty: the default model hears everything.
     offered_speech_models: tuple[str, ...] = ()
+    # The Google recognizers an admin ticked, in order (spec 2026-11-04-google-recognizers): a clip goes to the first
+    # that lists its language, Auto to the first. Empty: GOOGLE_SPEECH_RECOGNIZER is the one.
+    google_recognizers: tuple[str, ...] = ()
 
 
 def _web_from_env(env: Mapping[str, str]) -> tuple[str, str]:
@@ -129,7 +133,11 @@ async def load_chat_options(conn, env: Mapping[str, str] = os.environ) -> ChatOp
     chat_voice = value.get("chat_voice") if isinstance(value.get("chat_voice"), dict) else None
     raw_offered = value.get("offered_speech_models")
     offered = tuple(i for i in raw_offered if isinstance(i, str)) if isinstance(raw_offered, list) else ()
-    return ChatOptions(web, web_source, voice, voice_source, speech_model, added, engine, chat_voice, offered)
+    # A name is where the server sends its Google token: one that isn't well formed never leaves the row.
+    raw_google = value.get("google_recognizers")
+    google = tuple(n for n in raw_google if isinstance(n, str) and is_recognizer_name(n)) \
+        if isinstance(raw_google, list) else ()
+    return ChatOptions(web, web_source, voice, voice_source, speech_model, added, engine, chat_voice, offered, google)
 
 
 async def _set_key(conn, name: str, value, updated_by: str) -> None:
@@ -222,6 +230,19 @@ async def save_chat_voice(conn, value: Mapping | None, *, updated_by: str,
     else:
         await _set_key(conn, "chat_voice", dict(value), updated_by)
     audit("chat_options.chat_voice", by=updated_by, old=before.chat_voice, new=value)
+    return await load_chat_options(conn, env)
+
+
+async def save_google_recognizers(conn, names: list[str], *, updated_by: str,
+                                  env: Mapping[str, str] = os.environ) -> ChatOptions:
+    """Save the ticked Google recognizers (names the caller found in Google's own listing), in order. An empty list
+    removes the key: GOOGLE_SPEECH_RECOGNIZER applies again."""
+    before = await load_chat_options(conn, env)
+    if names:
+        await _set_key(conn, "google_recognizers", list(names), updated_by)
+    else:
+        await _clear_key(conn, "google_recognizers", updated_by)
+    audit("chat_options.google_recognizers", by=updated_by, old=list(before.google_recognizers), new=list(names))
     return await load_chat_options(conn, env)
 
 

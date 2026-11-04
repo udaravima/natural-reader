@@ -1412,6 +1412,27 @@ tells each person when Google reads the replies.
    what each model and location supports. Leave the recognizer's features as you want
    them: the app never changes them, and only sends the language when the person picked
    one.
+
+   **Several recognizers, one per language.** No one Google model suits Sinhala, Tamil
+   and English together: Google lists Sinhala (`si-LK`) for `chirp` and `chirp_2` only,
+   never `chirp_3`. So make a recognizer per language (or pair), and tick them in the
+   console (below). Checked live on 2026-11-04 with real recordings, each through
+   Google's default recognizer with the model named:
+
+   | Model | Location | Languages | Result |
+   |---|---|---|---|
+   | `chirp_3` | `us` | `ta-IN`, `en-GB` | Right in both, and it picks between the two by itself when the person is on Auto |
+   | `chirp_2` | `asia-southeast1` | `si-LK` | Right. Google's console lets a `chirp_2` recognizer hold one language |
+   | `chirp_2` | `us-central1` | `si-LK` | Right |
+   | `chirp_3` | `asia-southeast1` | `en-GB`, `ta-IN` | **Refused on every clip**: "no longer generally available in region asia-southeast1" |
+
+   **The last row is a trap:** Google's console still creates a `chirp_3` recognizer in
+   `asia-southeast1`, and reading it works, so the console and the Overview say it's
+   ready while every clip fails. People see "Voice input isn't working right now"; the
+   backend log has Google's own words (`Google recognize answered 403 for <id>: …`).
+   Google's Chirp 3 page lists `us` and `eu` as its regions. Check a recognizer's
+   language codes in the console's list too: `sl-SI` reads "Slovenian" there, and is easy
+   to pick for Sinhala.
 3. **A service account** (IAM & Admin → Service accounts) with **Cloud Speech Client**
    (`roles/speech.client`) on the recognizer's project, and **Vertex AI User**
    (`roles/aiplatform.user`) for the voice. If Google says the caller lacks
@@ -1427,7 +1448,7 @@ tells each person when Google reads the replies.
 | Variable | Default | Meaning |
 |---|---|---|
 | `GOOGLE_APPLICATION_CREDENTIALS` | (unset) | The key file. With `startup.sh` it's a path on the host, and is mounted read-only into the container (`compose.google.yml`); the file must be readable by the backend's user (`NR_APP_UID`, 1000) |
-| `GOOGLE_SPEECH_RECOGNIZER` | (unset) | The recognizer's full name, `projects/<project>/locations/<location>/recognizers/<id>`. Set: Google can be chosen to hear speech |
+| `GOOGLE_SPEECH_RECOGNIZER` | (unset) | One recognizer's full name, `projects/<project>/locations/<location>/recognizers/<id>`, used while none is ticked in the console. Set (or a recognizer ticked): Google can be chosen to hear speech |
 | `GOOGLE_TTS_MODEL` | (unset) | A Gemini-TTS model, such as `gemini-2.5-flash-tts`. Set: Google can be chosen for the chat's voice |
 | `GOOGLE_TTS_VOICE` | `Kore` | One of Gemini-TTS's 30 voices, until an admin picks one |
 | `GOOGLE_TTS_LANGUAGE` | `en-US` | The language of a sentence that isn't mostly Sinhala or Tamil letters |
@@ -1437,7 +1458,16 @@ tells each person when Google reads the replies.
 | `GOOGLE_CLOUD_PROJECT` | (unset) | The project billed for the voice when the credentials don't name one (gcloud's own login, say). A service-account key names its own |
 
 Then **Admin → Chat options**: **Speech recognition** offers every engine, and one that
-isn't configured says which variable it needs; **Voice for the chat and Talk** offers
+isn't configured says what it needs; **Google recognizers**, shown once
+`GOOGLE_APPLICATION_CREDENTIALS` or `GOOGLE_SPEECH_RECOGNIZER` is set, lists every
+recognizer in the key's project, read from Google (each region is its own address, so
+it takes about 3 s), with its model, languages and location. Tick the ones to use: a
+clip goes to the first ticked recognizer that lists its language, and Auto (with any
+language none lists) to the first, so order them with **Move up**. Only a recognizer
+Google listed can be saved, because its location is the host the server sends its token
+to. Listing needs the key to be allowed `speech.recognizers.list`; when Google refuses,
+the list says so in Google's words. Google names a recognizer's project by its number
+(`projects/123456789012/…`), not its id: the same recognizer either way; **Voice for the chat and Talk** offers
 Kokoro or Google, and with Google one voice for everyone. Both apply from the next
 recording or sentence, with no restart. **Admin → Overview** shows the Voice input and
 Chat voice lines, with the reason when Google refuses: a key it won't take, a missing

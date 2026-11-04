@@ -303,7 +303,8 @@ async def _voice_input(options, env: Mapping[str, str] = os.environ) -> Check:
     if not options.voice_input:
         return _check("voice_input", "off", "Off. Admin → Chat options turns it on.")
     engine = speech_service.get_transcriber(wanted=speech_catalogue.wanted(options, env),
-                                            engine=speech_service.chosen_engine(options, env))
+                                            engine=speech_service.chosen_engine(options, env),
+                                            recognizers=speech_service.recognizer_names(options, env))
     status = await engine.status()
     if status.state == "ready":
         summary = f"{engine.name} · {engine.model} · runs on {engine.where}"
