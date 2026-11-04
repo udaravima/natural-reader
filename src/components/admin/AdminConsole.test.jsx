@@ -138,7 +138,15 @@ describe('AdminConsole — users', () => {
     const row = await screen.findByTestId('user-row-u1');
     fireEvent.click(within(row).getByRole('checkbox', { name: 'talk' }));
     await waitFor(() => expect(calls('PATCH').length).toBe(1));
-    expect(lastBody('PATCH')).toEqual({ capabilities: ['chat', 'reader', 'talk'] });
+    expect(lastBody('PATCH')).toEqual({ add_capabilities: ['talk'] });
+  });
+
+  it('unticking sends only the one taken away, so roles the list hasn\'t seen stay', async () => {
+    mount({ users: [user({ capabilities: ['reader', 'chat', 'talk'] })] });
+    const row = await screen.findByTestId('user-row-u1');
+    fireEvent.click(within(row).getByRole('checkbox', { name: 'talk' }));
+    await waitFor(() => expect(calls('PATCH').length).toBe(1));
+    expect(lastBody('PATCH')).toEqual({ remove_capabilities: ['talk'] });
   });
 
   it('can enroll someone with Talk', async () => {
@@ -217,9 +225,7 @@ describe('AdminConsole — users', () => {
     fireEvent.click(within(row).getByRole('checkbox', { name: 'chat' }));
     await waitFor(() => expect(calls('PATCH').length).toBe(1));
     expect(calls('PATCH')[0][2]).toBe('/v1/admin/users/u2');
-    const caps = lastBody('PATCH').capabilities;
-    expect(caps).toEqual(expect.arrayContaining(['reader', 'chat']));
-    expect(caps).toHaveLength(2);
+    expect(lastBody('PATCH')).toEqual({ add_capabilities: ['chat'] });
   });
 
   it('offers the docling capability on a person and when enrolling', async () => {
@@ -229,7 +235,7 @@ describe('AdminConsole — users', () => {
     const row = screen.getByTestId('user-row-u2');
     fireEvent.click(within(row).getByRole('checkbox', { name: 'docling' }));
     await waitFor(() => expect(calls('PATCH').length).toBe(1));
-    expect(lastBody('PATCH').capabilities.sort()).toEqual(['docling', 'reader']);
+    expect(lastBody('PATCH')).toEqual({ add_capabilities: ['docling'] });
     const form = screen.getByLabelText(/enroll email/i).closest('form');
     expect(within(form).getByRole('checkbox', { name: 'docling' })).not.toBeChecked();
   });

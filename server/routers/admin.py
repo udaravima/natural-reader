@@ -40,7 +40,12 @@ _PG_INT_MAX = 2**31 - 1
 class UserPatchIn(BaseModel):
     status: str | None = None
     inference_daily_token_budget: int | None = None
+    # The whole set, or a change to the row as it is now. A tick sends a change: a set
+    # read from a list loaded before the person's last login would remove the roles that
+    # login brought (in Keycloak too).
     capabilities: list[str] | None = None
+    add_capabilities: list[str] | None = None
+    remove_capabilities: list[str] | None = None
     project_limit: int | None = None
 
 
@@ -110,6 +115,23 @@ async def list_all(
     return rows
 
 
+def _capabilities_after(data: dict, current: set[str]) -> list[str] | None:
+    """The capabilities a PATCH leaves, or None when it doesn't touch them."""
+    add = set(data.get("add_capabilities") or ())
+    remove = set(data.get("remove_capabilities") or ())
+    whole = data.get("capabilities")
+    if whole is None and not (add or remove):
+        return None
+    if whole is not None and (add or remove):
+        raise HTTPException(status_code=422, detail="send capabilities, or add/remove, not both")
+    if add & remove:
+        raise HTTPException(status_code=422, detail="a capability both added and removed")
+    after = set(whole) if whole is not None else (current | add) - remove
+    if not (after | add | remove).issubset(KNOWN_CAPABILITIES):
+        raise HTTPException(status_code=422, detail="unknown capability")
+    return sorted(after)
+
+
 @router.patch("/users/{user_id}")
 async def patch_user(
     user_id: str,
@@ -126,6 +148,7 @@ async def patch_user(
     if target is None:
         raise HTTPException(status_code=404, detail="User not found")
     sub = target["oidc_sub"]
+    caps = _capabilities_after(data, set(target["capabilities"]))  # refuses before any write
 
     if "status" in data:
         if data["status"] not in ("active", "pending", "disabled"):
@@ -145,10 +168,7 @@ async def patch_user(
                 await kc.set_enabled(sub, data["status"] == "active")
             except Exception:
                 logger.warning("KC set_enabled failed for %s", sub)
-    if "capabilities" in data:
-        caps = sorted(set(data["capabilities"]))
-        if not set(caps).issubset(KNOWN_CAPABILITIES):
-            raise HTTPException(status_code=422, detail="unknown capability")
+    if caps is not None:
         if (
             "admin" in set(target["capabilities"])
             and "admin" not in set(caps)

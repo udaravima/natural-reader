@@ -189,11 +189,12 @@ export function PeopleSection({ theme, apiHost, apiPort, currentUserId, showToas
   // belt-and-suspenders no-op: the checkbox that calls this is also disabled,
   // so onChange never fires, but this keeps the guard co-located with the
   // mutation rather than relying solely on the disabled prop.
+  // Sends only the change: the server applies it to the row as it is now, so roles
+  // the person's login brought after this list loaded aren't taken away.
   const toggleCapability = (u, cap, locked) => {
     if (locked) return;
-    const current = new Set(u.capabilities ?? []);
-    if (current.has(cap)) current.delete(cap); else current.add(cap);
-    patchUser(u.id, { capabilities: [...current].sort() });
+    const held = (u.capabilities ?? []).includes(cap);
+    patchUser(u.id, held ? { remove_capabilities: [cap] } : { add_capabilities: [cap] });
   };
 
   const toggleEnrollCap = (cap) =>
