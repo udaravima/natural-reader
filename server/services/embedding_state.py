@@ -168,5 +168,14 @@ async def current(conn, env: Mapping[str, str] = os.environ) -> Embedder:
     return await load_target(conn, env)
 
 
+async def locked_current(conn, env: Mapping[str, str] = os.environ) -> Embedder:
+    """The current embedder, with the state row held FOR SHARE until the caller's transaction ends: a writer of
+    vectors calls it in its write transaction, so a switch can't happen between its check and its write."""
+    state = await read_state(conn, lock="share")
+    if state and isinstance(state.get("current"), dict):
+        return from_json(state["current"], env)
+    return await load_target(conn, env)
+
+
 async def needs_migration(conn, env: Mapping[str, str] = os.environ) -> bool:
     return vector_identity(await load_target(conn, env)) != vector_identity(await current(conn, env))

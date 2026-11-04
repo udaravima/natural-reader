@@ -123,22 +123,31 @@ async def run_embed(doc_id: str) -> None:
             for i in range(0, len(rows), BATCH):
                 slice_ = rows[i : i + BATCH]
                 texts = [r[1] for r in slice_]
-                vectors = await embed_documents(texts, e)
-                async with pool.connection() as conn:
-                    async with conn.cursor() as cur:
-                        for (chunk_id, _text), vec in zip(slice_, vectors):
-                            if vec is None:
-                                skipped_count += 1
-                                continue
-                            await cur.execute(
-                                """
-                                UPDATE doc_chunks
-                                SET embedding = %s, embedding_model = %s
-                                WHERE id = %s
-                                """,
-                                (vec, embed_model, chunk_id),
-                            )
-                            embedded_count += 1
+                while True:
+                    vectors = await embed_documents(texts, e)
+                    async with pool.connection() as conn, conn.transaction():
+                        # The library may have switched models while this batch was embedded (ledger ruling
+                        # P2): the state row, held FOR SHARE, says which model `embedding` is for now.
+                        now = await embedding_state.locked_current(conn)
+                        if embedding_state.vector_identity(now) != embedding_state.vector_identity(e):
+                            e = now
+                            embed_model, profile = e.model, profile_of(e)
+                            continue   # embed this batch again, with the new model
+                        async with conn.cursor() as cur:
+                            for (chunk_id, _text), vec in zip(slice_, vectors):
+                                if vec is None:
+                                    skipped_count += 1
+                                    continue
+                                await cur.execute(
+                                    """
+                                    UPDATE doc_chunks
+                                    SET embedding = %s, embedding_model = %s
+                                    WHERE id = %s
+                                    """,
+                                    (vec, embed_model, chunk_id),
+                                )
+                                embedded_count += 1
+                    break
 
             # Searchable with what did embed; but the profile is recorded only
             # when every chunk embedded, so a document with gaps stays stale
@@ -337,6 +346,11 @@ async def run_legacy_swap(doc_id: str) -> None:
             return
         async with get_pool().connection() as conn:
             async with conn.transaction():
+                if embedding_state.vector_identity(await embedding_state.locked_current(conn)) != \
+                        embedding_state.vector_identity(e):   # switched models meanwhile (ruling P2)
+                    logger.warning("Legacy re-extraction of %s dropped: the embedding model changed meanwhile; "
+                                   "the next upload tries again", doc_id)
+                    return
                 await replace_chunks(conn, doc_id, chunks, embeddings=vectors, model=e.model)
                 await save_outline(conn, doc_id, _native_outline(result, row[3]))
                 await conn.execute("DELETE FROM doc_pages WHERE doc_id = %s", (doc_id,))
@@ -529,6 +543,11 @@ async def run_rebuild(doc_id: str) -> str | None:
                     now = await cur.fetchone()
                     if not now or now[0] != "indexed" or now[1] != row[1]:
                         logger.info("Doc %s changed during its rebuild; dropped the rebuilt set", doc_id)
+                        return None
+                    if embedding_state.vector_identity(await embedding_state.locked_current(conn)) != \
+                            embedding_state.vector_identity(e):   # switched models meanwhile (ruling P2)
+                        logger.info("The embedding model changed during the rebuild of %s; its next use queues "
+                                    "it again", doc_id)
                         return None
                     await replace_chunks(conn, doc_id, chunks, embeddings=vectors, model=embed_model)
                     await save_outline(conn, doc_id, outline)
