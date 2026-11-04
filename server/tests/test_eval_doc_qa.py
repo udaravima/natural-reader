@@ -43,7 +43,11 @@ def test_cited_pages_reads_what_the_app_links(answer, pages):
     ("The document doesn't seem to cover the 2030 capital budget.", True),
     ("I couldn't find anything about that in the document.", True),
     ("The report does not mention a capital budget.", True),
+    # How cloud models came to say it by 2026-10 (HANDOVER 2026-10-25): scored a miss until "list" was added.
+    ("The documents do not list a capital budget for 2030.", True),
+    ("The report doesn't list any figures for 2030.", True),
     ("The capital budget is 4 million (page 3).", False),
+    ("The report lists the capital budget as 4 million (page 3).", False),
 ])
 def test_a_refusal_is_recognised(answer, refused):
     assert doc_qa.is_refusal(answer) == refused
