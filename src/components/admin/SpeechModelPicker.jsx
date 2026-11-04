@@ -172,6 +172,7 @@ export function SpeechModelPicker({ theme, apiHost, apiPort, showToast, voiceOn 
           findLabel="Find an engine"
           value={data.engine}
           onChange={chooseEngine}
+          settle
           aria-busy={saving}
           options={engines.map((e) => ({
             value: e.id, label: e.available ? e.label : `${e.label} (needs ${e.needs})`, disabled: !e.available,
@@ -231,6 +232,7 @@ export function SpeechModelPicker({ theme, apiHost, apiPort, showToast, voiceOn 
           findLabel="Find a speech model"
           value={data.chosen}
           onChange={choose}
+          settle
           aria-busy={saving}
           options={data.models.map((m) => ({ value: m.id, label: optionText(m), disabled: Boolean(m.why_not) }))}
           className={`min-h-11 md:min-h-0 px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} ${theme.text}`}

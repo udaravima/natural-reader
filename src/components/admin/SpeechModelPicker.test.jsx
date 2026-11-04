@@ -119,6 +119,32 @@ describe('SpeechModelPicker', () => {
     expect((await select()).value).toBe('whisper-small-ta');
   });
 
+  it('stepping through the models with the keys loads only the one settled on', async () => {
+    const third = { ...small, id: 'base', label: 'Whisper base' };
+    const after = view({ chosen: 'base', source: 'admin', models: [small, tamil, third] });
+    mount(view({ models: [small, tamil, third] }), { PUT: () => after });
+    const box = await select();
+    fireEvent.keyDown(box, { key: 'ArrowDown' });
+    fireEvent.change(box, { target: { value: 'whisper-small-ta' } });
+    fireEvent.keyDown(box, { key: 'ArrowDown' });
+    fireEvent.change(box, { target: { value: 'base' } });
+    expect(calls('PUT')).toHaveLength(0);
+    fireEvent.blur(box);
+    await waitFor(() => expect(calls('PUT')).toHaveLength(1));
+    expect(bodyOf(calls('PUT')[0])).toEqual({ id: 'base' });
+  });
+
+  it('stepping through the engines switches only on Enter', async () => {
+    mount(view(), { PUT: () => view({ engine: 'google', engine_source: 'admin' }) });
+    const box = await engineSelect();
+    fireEvent.keyDown(box, { key: 'ArrowDown' });
+    fireEvent.change(box, { target: { value: 'google' } });
+    expect(calls('PUT')).toHaveLength(0);
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(calls('PUT')).toHaveLength(1));
+    expect(bodyOf(calls('PUT')[0])).toEqual({ engine: 'google' });
+  });
+
   it('says a choice waits for Voice input when it is off', async () => {
     const after = view({ chosen: 'whisper-small-ta', source: 'admin' });
     const toast = mount(view(), { PUT: () => after }, { voiceOn: false });

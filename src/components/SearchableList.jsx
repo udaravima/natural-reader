@@ -234,8 +234,68 @@ const drawn = (o) => <option key={o.value} value={o.value} disabled={o.disabled}
  * `options`: [{ value, label, group?, disabled? }]. A `group` draws a heading. `onChange` gets a string, as a native
  * select gives. Everything else goes on the control itself, which keeps its own label.
  */
+// Keys that move a closed native select's choice, firing a change for each step.
+const STEP_KEYS = new Set(['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown']);
+
+const SETTLE_MS = 1000;   // a stepped-to choice is chosen after this long without another step
+
+/**
+ * A plain <select>. With `settle`, a choice made by stepping with the keys is only shown until Enter, leaving the
+ * list, or a second without another step, so stepping past four speech models doesn't load four. (On a Mac the
+ * arrows open the menu instead, and the Enter that closes it never reaches the page: the pause chooses it.) A pick
+ * with the pointer chooses at once, and stepping back to where it started chooses nothing. The popup already
+ * chooses only on Enter or a click.
+ */
+function NativeSelect({ options, value, onChange, disabled, settle, onKeyDown, onBlur, onPointerDown, ...control }) {
+  const [shown, setShown] = useState(null);   // a stepped-to value not yet chosen
+  const pending = useRef(null);
+  const stepping = useRef(false);
+  const timer = useRef(null);
+  const latest = useRef({ value, onChange });  // for the timer, which outlives the render that set it
+  useEffect(() => { latest.current = { value, onChange }; });
+  useEffect(() => () => clearTimeout(timer.current), []);
+  const settleNow = () => {
+    clearTimeout(timer.current);
+    stepping.current = false;
+    const chosen = pending.current;
+    if (chosen === null) return;
+    pending.current = null;
+    setShown(null);
+    if (chosen !== String(latest.current.value)) latest.current.onChange(chosen);
+  };
+  return (
+    <select
+      {...control} value={shown ?? value} disabled={disabled}
+      onKeyDown={(e) => {
+        if (settle && STEP_KEYS.has(e.key)) stepping.current = true;
+        if (settle && e.key === 'Enter') settleNow();
+        onKeyDown?.(e);
+      }}
+      onBlur={(e) => { if (settle) settleNow(); onBlur?.(e); }}
+      onPointerDown={(e) => { stepping.current = false; onPointerDown?.(e); }}
+      onChange={(e) => {
+        if (settle && stepping.current) {
+          pending.current = e.target.value;
+          setShown(e.target.value);
+          clearTimeout(timer.current);
+          timer.current = setTimeout(settleNow, SETTLE_MS);
+          return;
+        }
+        clearTimeout(timer.current);
+        pending.current = null;
+        setShown(null);
+        onChange(e.target.value);
+      }}
+    >
+      {grouped(options).map(({ group, options: inGroup }) => (group
+        ? <optgroup key={group} label={group}>{inGroup.map(drawn)}</optgroup>
+        : inGroup.map(drawn)))}
+    </select>
+  );
+}
+
 export function SearchableSelect({
-  theme, options, value, onChange, findLabel, wrapperClassName = '', disabled, ...control
+  theme, options, value, onChange, findLabel, wrapperClassName = '', disabled, settle = false, ...control
 }) {
   if (options.length > LONG_LIST) {
     return (
@@ -243,11 +303,6 @@ export function SearchableSelect({
         wrapperClassName={wrapperClassName} disabled={disabled} {...control} />
     );
   }
-  return (
-    <select {...control} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)}>
-      {grouped(options).map(({ group, options: inGroup }) => (group
-        ? <optgroup key={group} label={group}>{inGroup.map(drawn)}</optgroup>
-        : inGroup.map(drawn)))}
-    </select>
-  );
+  return <NativeSelect options={options} value={value} onChange={onChange} disabled={disabled} settle={settle}
+    {...control} />;
 }

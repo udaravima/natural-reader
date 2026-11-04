@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { useState } from 'react';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, within } from '@testing-library/react';
 import { SearchableList, SearchableSelect } from './SearchableList';
 import { LONG_LIST, hits } from '../lib/listSearch';
 
@@ -40,6 +40,86 @@ describe('SearchableSelect', () => {
     render(<Picker options={short} initial="model-0" />);
     expect(screen.queryByRole('searchbox')).toBeNull();
     expect(trigger().tagName).toBe('SELECT');
+  });
+
+  describe('settle: a short list whose choice is costly (it loads a speech model)', () => {
+    const short = ['small', 'base', 'medium'].map((m) => ({ value: m, label: m }));
+
+    it('arrowing through it chooses nothing until Enter', () => {
+      const onPick = vi.fn();
+      render(<Picker options={short} initial="small" onPick={onPick} settle />);
+      fireEvent.keyDown(trigger(), { key: 'ArrowDown' });
+      fireEvent.change(trigger(), { target: { value: 'base' } });
+      fireEvent.keyDown(trigger(), { key: 'ArrowDown' });
+      fireEvent.change(trigger(), { target: { value: 'medium' } });
+      expect(onPick).not.toHaveBeenCalled();
+      expect(trigger().value).toBe('medium');
+      fireEvent.keyDown(trigger(), { key: 'Enter' });
+      expect(onPick.mock.calls).toEqual([['medium']]);
+    });
+
+    it('leaving it chooses what it shows, and arrowing back to the start chooses nothing', () => {
+      const onPick = vi.fn();
+      render(<Picker options={short} initial="small" onPick={onPick} settle />);
+      fireEvent.keyDown(trigger(), { key: 'ArrowDown' });
+      fireEvent.change(trigger(), { target: { value: 'base' } });
+      fireEvent.blur(trigger());
+      expect(onPick.mock.calls).toEqual([['base']]);
+      fireEvent.keyDown(trigger(), { key: 'ArrowDown' });
+      fireEvent.change(trigger(), { target: { value: 'medium' } });
+      fireEvent.keyDown(trigger(), { key: 'ArrowUp' });
+      fireEvent.change(trigger(), { target: { value: 'base' } });
+      fireEvent.blur(trigger());
+      expect(onPick).toHaveBeenCalledTimes(1);
+    });
+
+    it('a pause after stepping chooses what it shows (a Mac\'s arrows open the menu, and its Enter never reaches us)', () => {
+      vi.useFakeTimers();
+      try {
+        const onPick = vi.fn();
+        render(<Picker options={short} initial="small" onPick={onPick} settle />);
+        fireEvent.keyDown(trigger(), { key: 'ArrowDown' });
+        fireEvent.change(trigger(), { target: { value: 'base' } });
+        vi.advanceTimersByTime(500);
+        fireEvent.keyDown(trigger(), { key: 'ArrowDown' });
+        fireEvent.change(trigger(), { target: { value: 'medium' } });
+        vi.advanceTimersByTime(900);
+        expect(onPick).not.toHaveBeenCalled();
+        act(() => { vi.advanceTimersByTime(200); });
+        expect(onPick.mock.calls).toEqual([['medium']]);
+        fireEvent.blur(trigger());
+        expect(onPick).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a pick with the pointer chooses at once', () => {
+      const onPick = vi.fn();
+      render(<Picker options={short} initial="small" onPick={onPick} settle />);
+      fireEvent.change(trigger(), { target: { value: 'medium' } });
+      expect(onPick.mock.calls).toEqual([['medium']]);
+    });
+
+    it('a pointer pick after stepping chooses at once', () => {
+      const onPick = vi.fn();
+      render(<Picker options={short} initial="small" onPick={onPick} settle />);
+      fireEvent.keyDown(trigger(), { key: 'ArrowDown' });
+      fireEvent.change(trigger(), { target: { value: 'base' } });
+      fireEvent.pointerDown(trigger());
+      fireEvent.change(trigger(), { target: { value: 'medium' } });
+      expect(onPick.mock.calls).toEqual([['medium']]);
+      fireEvent.blur(trigger());
+      expect(onPick).toHaveBeenCalledTimes(1);
+    });
+
+    it('without it, a short list chooses on every change, as a native select does', () => {
+      const onPick = vi.fn();
+      render(<Picker options={short} initial="small" onPick={onPick} />);
+      fireEvent.keyDown(trigger(), { key: 'ArrowDown' });
+      fireEvent.change(trigger(), { target: { value: 'base' } });
+      expect(onPick.mock.calls).toEqual([['base']]);
+    });
   });
 
   it('shows one control until it is opened: no box, no list', () => {
