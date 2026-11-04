@@ -59,6 +59,15 @@ describe('EmbeddingPicker', () => {
     expect(screen.queryByRole('button', { name: 'Back to the server’s setting' })).toBeNull();
   });
 
+  it('shows a model once when the provider lists it with :latest', async () => {
+    mount();
+    const field = await screen.findByLabelText('Embedding model');
+    await waitFor(() => expect(field.querySelector('option[value="nomic-embed-text:latest"]')).toBeTruthy());
+    expect([...screen.getByLabelText('Embedding model').options].map((o) => o.value))
+      .toEqual(['nomic-embed-text:latest', 'embeddinggemma-2:740m', 'gemma4:e4b']);
+    expect(screen.getByLabelText('Embedding model').value).toBe('nomic-embed-text:latest');
+  });
+
   it('checks a picked model and shows the verdict in the server’s words', async () => {
     mount({ probe: SHORTENED });
     await pick('Embedding model', 'embeddinggemma-2:740m');

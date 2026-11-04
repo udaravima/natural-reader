@@ -16,6 +16,7 @@ const POLL_MS = 5000;
 const ACTIVE = new Set(['building', 'switching', 'failed']);
 const sectionTitle = 'text-xs font-bold uppercase tracking-wider text-blue-500';
 const fmt = (n) => n.toLocaleString('en-US');
+const bare = (name) => name.trim().replace(/:latest$/, '');
 
 async function reasonOf(res) {
   try {
@@ -180,7 +181,9 @@ export function EmbeddingPicker({ theme, apiHost, apiPort, showToast }) {
   const control = `px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg} min-h-11 md:min-h-0`;
   const button = 'min-h-11 md:min-h-0 px-3 py-1 rounded text-xs font-bold disabled:opacity-40';
   const listed = models ?? [];
-  const modelOptions = [...new Set([...listed, ...(model && !listed.includes(model) ? [model] : [])])]
+  // `x` and `x:latest` are one model: the provider's own spelling stands for the chosen one.
+  const shown = listed.find((name) => bare(name) === bare(model)) ?? model;
+  const modelOptions = [...listed, ...(shown && !listed.includes(shown) ? [shown] : [])]
     .map((name) => ({ value: name, label: name }));
   const fromEnv = source.model === 'env' || source.model === 'default';
 
@@ -228,7 +231,7 @@ export function EmbeddingPicker({ theme, apiHost, apiPort, showToast }) {
             onChange={(e) => choose(provider, e.target.value)} className={`${control} w-64`} />
         ) : (
           <SearchableSelect
-            theme={theme} findLabel="Find an embedding model" id="embeddings-model" value={model} disabled={busy}
+            theme={theme} findLabel="Find an embedding model" id="embeddings-model" value={shown} disabled={busy}
             onChange={(name) => choose(provider, name)} className={control} options={modelOptions}
           />
         )}
