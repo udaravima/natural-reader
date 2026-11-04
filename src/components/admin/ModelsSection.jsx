@@ -3,6 +3,7 @@ import { apiFetch } from '../../utils/apiFetch';
 import { useSectionSettings } from '../../hooks/useSectionSettings';
 import { SearchableList, SearchableSelect } from '../SearchableList';
 import { SettingRow, SectionSaveBar } from './SettingRow';
+import { EmbeddingPicker } from './EmbeddingPicker';
 
 /**
  * Admin console: Models (spec §4.2.1), what the server does with the models it can reach: which model reads
@@ -318,6 +319,8 @@ export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChang
           </div>
         </>
       )}
+      {/* Its own Check and Use, not the Save bar: choosing an embedding model starts a re-embed. */}
+      <EmbeddingPicker theme={theme} apiHost={apiHost} apiPort={apiPort} showToast={showToast} />
     </section>
   );
 }
