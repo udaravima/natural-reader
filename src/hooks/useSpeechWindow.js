@@ -43,6 +43,7 @@ export function useSpeechWindow(props) {
   const [phase, setPhase] = useState('off');
   const [clips, setClips] = useState([]);
   const [muted, setMuted] = useState(false);
+  const [microphone, setMicrophone] = useState(null);   // what the browser applied: a phone may keep its own gain
   const run = useRef(null);      // { conversation, mic, audio } while it's on
   const session = useRef(0);     // bumped by every start and end: a late microphone sees a new number
   const awake = useRef(null);    // the screen's wake lock while talking: a phone that sleeps stops listening
@@ -133,6 +134,7 @@ export function useSpeechWindow(props) {
     }
     if (mine !== session.current) { mic.destroy(); return; }   // gave up meanwhile
     run.current = { conversation, mic, audio };
+    setMicrophone(mic.applied?.() ?? null);
     onStarted?.();
     conversation.begin();
     keepAwake();
@@ -153,6 +155,9 @@ export function useSpeechWindow(props) {
 
   const cutIn = useCallback(() => { run.current?.conversation.cutIn(); }, []);
 
+  /** Send: the person says they're done, when a noisy room would hold the turn open. The microphone stays open. */
+  const send = useCallback(() => { run.current?.mic.endTurn?.(); }, []);
+
   // Hiding the page lets the screen sleep again: ask again when it comes back.
   useEffect(() => {
     const again = () => { if (run.current && document.visibilityState === 'visible') keepAwake(); };
@@ -162,5 +167,5 @@ export function useSpeechWindow(props) {
 
   useEffect(() => close, [close]);
 
-  return { phase, clips, muted, start, end, toggleMute, cutIn };
+  return { phase, clips, muted, microphone, start, end, toggleMute, cutIn, send };
 }

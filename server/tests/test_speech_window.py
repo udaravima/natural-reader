@@ -38,8 +38,20 @@ def test_no_segments_means_no_scores():
 def test_the_defaults_are_the_measured_values():
     assert window.settings({}) == {
         "vad_start": 0.5, "vad_stay": 0.35, "min_speech_ms": 250, "pre_roll_ms": 300, "silence_ms": 700,
-        "first_clause_chars": 30, "max_no_speech": 0.25, "min_logprob": -1.0, "language": "en",
+        "first_clause_chars": 30, "max_no_speech": 0.25, "min_logprob": -1.0, "gate_db": 9, "language": "en",
     }
+
+
+def test_the_gate_can_be_turned_off_or_loosened():
+    """0 lets every voice through, as before the gate; a larger margin lets a quieter one through."""
+    assert window.settings({"SPEECH_WINDOW_GATE_DB": "0"})["gate_db"] == 0
+    assert window.settings({"SPEECH_WINDOW_GATE_DB": "15"})["gate_db"] == 15
+
+
+def test_a_gate_out_of_range_keeps_the_default(caplog):
+    assert window.settings({"SPEECH_WINDOW_GATE_DB": "-3"})["gate_db"] == 9
+    assert window.settings({"SPEECH_WINDOW_GATE_DB": "41"})["gate_db"] == 9
+    assert "SPEECH_WINDOW_GATE_DB" in caplog.text
 
 
 def test_a_setting_comes_from_the_environment():

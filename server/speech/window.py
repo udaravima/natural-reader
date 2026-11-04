@@ -20,6 +20,9 @@ _NUMBERS = {
     "first_clause_chars": ("SPEECH_WINDOW_FIRST_CLAUSE_CHARS", 30, 0, 1000),   # 0: never cut a reply's opening
     "max_no_speech": ("SPEECH_WINDOW_MAX_NO_SPEECH", 0.25, 0.0, 1.0),  # Whisper's score above which a clip is noise
     "min_logprob": ("SPEECH_WINDOW_MIN_LOGPROB", -1.0, -10.0, 0.0),   # Whisper's score below which a clip is noise
+    # dB below the person's own voice at which the browser stops counting a voice as theirs (src/lib/speech/gate.js);
+    # 0: every voice counts, as before the gate
+    "gate_db": ("SPEECH_WINDOW_GATE_DB", 9, 0, 40),
 }
 _warned: set[str] = set()
 

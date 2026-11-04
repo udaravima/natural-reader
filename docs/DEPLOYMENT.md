@@ -1147,6 +1147,65 @@ nothing is lost. The 28 noises are the coughs, sneezes, barks and laughs of the 
 tested that were likeliest to pass. The recordings are clean: **a real room and real
 speakers are untested**.
 
+### Talk in a busy room
+
+Silero tells speech from noise, not near from far. A clean voice turned down by 35 dB,
+to 5 dB above the room's hiss, still scores 0.97, and 95% of its frames stay above the
+0.35 that keeps a turn going. So no threshold separates the person at the microphone
+from a colleague two desks away. Her voice holds every turn open and pauses replies.
+
+Talk therefore gates by loudness (`src/lib/speech/gate.js`). It learns how loud the
+person's own voice is, and a frame more than `SPEECH_WINDOW_GATE_DB` below that level
+counts as silence. Starting a turn needs a voice within 4 dB of it; once the turn has
+started, softer words within the margin count. Two rules keep the level honest:
+
+- **Only a turn under way teaches it.** Between turns a colleague's loudest syllables
+  come within the margin; when they could teach it, they pulled it down 5 dB in 6 s,
+  until they opened turns of their own and paused replies.
+- **A turn that wasn't speech gives back what it taught.** When Whisper calls a clip
+  noise (or it is Talk's own voice, or it failed), the level returns to where it was
+  as the turn started. Otherwise a cough the VAD took for speech could raise the bar
+  above the person's voice, and nothing would ever bring it down.
+
+The gate decides only when a turn starts and ends: the clip sent to Whisper is
+untouched. The microphone is opened without automatic gain, which would raise a far
+voice exactly when the person stops.
+
+Simulated through Silero v5 and the VAD library's own start and stop rules: five
+English turns at −22 dBFS, over a voice that never stops, with office echo (RT60 0.5 s):
+
+| Other voice quieter by | Without the gate | With it (9 dB, 4 dB to start) |
+|---|---|---|
+| 8 dB | no turn ends | turns end 1.2–1.9 s after the last word; 0 of hers sent; she started 3 turns that would pause a reply |
+| 11 dB | 4 of 5 never end | 0.6–1.8 s; 0 of hers sent |
+| 14 dB | 2 of 5 never end | 0.5–1.2 s; 0 of hers sent |
+| 18 dB | turns end, and she paused replies 6 times in a minute | 0.4–0.6 s; once, before the person first spoke |
+
+The strict start leaves cutting in at 0.24–0.29 s (Talk's minimum is 0.25 s), and no
+opening words were lost. A margin of 6 dB cut a turn short; 12 dB let a closer voice keep
+turns open.
+
+**Walked in Chromium** (2026-11-04: the real VAD library through a simulated microphone,
+Whisper `small`, her voice 14 dB below the questions the whole time):
+
+| | Gate off (as before) | Gate on |
+|---|---|---|
+| A question's turn ends | never, until **Send** | 0.6–1.0 s after the last word |
+| What was transcribed | 14–72 s clips, mostly her words | the question alone |
+| Replies | none played: her voice opened the next turn at once | all played, none paused |
+
+**Known limit: the first turn.** Until Talk has heard the person, it has no level to
+compare with. If someone else is talking when **Talk** starts, the first turn begins
+with their words and ends late (3.7 s in the walk); from the second turn on it is as
+above. The clips are synthetic voices with simulated echo: **a real office, real voices
+and phones are untested**.
+
+Some phones keep their own gain whatever the app asks, and the gate is weaker there.
+Talk's **What it heard** says so, and **Copy numbers** includes what the browser
+applied. When a room still holds a turn open, the person taps the circle to send. A
+headset microphone is the surest fix: at 3 cm from the mouth, against a colleague at
+4 m, it gives roughly 30–40 dB of separation in open air (an estimate, not measured).
+
 ### Settings
 
 Each is an environment variable, read per request. Change one at a time: they're
@@ -1163,6 +1222,7 @@ measured together.
 | `SPEECH_WINDOW_MAX_NO_SPEECH` | `0.25` | Whisper's `no_speech` at or above which a clip is noise |
 | `SPEECH_WINDOW_MIN_LOGPROB` | `-1.0` | Whisper's `avg_logprob` below which a clip is noise |
 | `SPEECH_WINDOW_LANGUAGE` | `en` | Sent with every clip. Empty: Whisper detects it |
+| `SPEECH_WINDOW_GATE_DB` | `9` | Decibels below the person's own voice at which another voice stops counting as theirs ([Talk in a busy room](#talk-in-a-busy-room)). `0`: every voice counts, as before 2.7.1. Larger lets a quieter voice through |
 
 **Limits.** Whisper and Kokoro each run one job at a time per worker, so two people
 talking at once queue, and read-aloud shares Kokoro with them. A remote speech engine

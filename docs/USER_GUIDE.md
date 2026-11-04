@@ -1026,6 +1026,13 @@ reporting how it behaved.
 reply. It tries to recognise its own words and ignore them, but this hasn't been tested
 on real speakers yet.
 
+**In a busy room.** Talk learns how loud your voice is and ignores voices well below it,
+such as a colleague a few desks away, so your turn ends when you stop. A voice close by,
+or one as loud as yours, can still get through. If **Hearing you** stays on after you've
+finished, **tap the circle to send** what you said. A headset microphone works best. Some
+phones keep their own volume control whatever the app asks; **What it heard** says so
+when yours does.
+
 ## Asking a whole project
 
 A project is a shelf of documents for a team. A project chat lets you ask the

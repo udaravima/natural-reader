@@ -127,6 +127,24 @@ describe('useSpeechWindow', () => {
     expect(result.current.muted).toBe(false);
   });
 
+  it('Send ends the turn now, and leaves the microphone open', async () => {
+    const opened = { ...mic(), endTurn: vi.fn() };
+    listen.mockResolvedValue(opened);
+    const { result } = renderHook(() => useSpeechWindow(baseProps()));
+    await act(async () => { await result.current.start(); });
+    act(() => { result.current.send(); });
+    expect(opened.endTurn).toHaveBeenCalledTimes(1);
+    expect(opened.pause).not.toHaveBeenCalled();
+  });
+
+  it('says what the browser did with the microphone, which a phone may not do as asked', async () => {
+    listen.mockResolvedValue({ ...mic(), applied: () => ({ autoGainControl: true }) });
+    const { result } = renderHook(() => useSpeechWindow(baseProps()));
+    expect(result.current.microphone).toBe(null);
+    await act(async () => { await result.current.start(); });
+    expect(result.current.microphone).toEqual({ autoGainControl: true });
+  });
+
   it('passes the voice level on, for the circle', async () => {
     listen.mockResolvedValue(mic());
     const onLevel = vi.fn();

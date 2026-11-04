@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+**Talk in a busy room.** A colleague a few desks away no longer holds your turn open or
+pauses the reply. Silero tells speech from noise, not near from far, so Talk now also
+compares each voice with yours. No migrations; both halves rebuild.
+
+### Fixed
+
+- **A far voice kept Talk "Hearing you" for ever,** and opened turns of its own, so no
+  reply played. Talk learns how loud the person's voice is, during their turns only, and
+  counts a voice more than `SPEECH_WINDOW_GATE_DB` (default 9) below it as silence. A
+  turn needs a voice within 4 dB of the person's to start. A turn Whisper calls noise
+  gives back what it taught, so a cough can't raise the bar for good. The clip sent for
+  transcription is unchanged. `0` restores the old behaviour. If someone else is talking
+  when Talk starts, the first turn still begins with their words.
+- **The microphone opens without automatic gain** in Talk, which turned a far voice up
+  just as the person stopped. Echo cancellation and noise suppression stay on.
+
+### Added
+
+- **Tap the circle to send** while Talk is hearing you, for a room that still holds a
+  turn open. The microphone stays open.
+- **What it heard** says when the browser kept automatic gain on anyway, as some phones
+  do, and **Copy numbers** includes what the browser applied.
+
 ## [2.7.0] - 2026-11-03
 
 **Google Cloud can hear and speak in the chat and Talk, as an option.** Off until a

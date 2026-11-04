@@ -145,7 +145,7 @@ export function createConversation({
     if (draining) return;
     draining = true;
     while (waiting.length > 0 && !ended) {
-      const { clip, samples } = waiting.shift();
+      const { clip, samples, giveBack } = waiting.shift();
       checking = true;
       emit();
       let result = null;
@@ -166,6 +166,7 @@ export function createConversation({
       }
       onClip?.(clip);
       if (clip.verdict === 'speech') accepted.push({ text: result.text, clip });
+      else giveBack?.();   // not the person speaking: the voice gate forgets what this turn taught it (gate.js)
     }
     draining = false;
     settle();
@@ -185,12 +186,13 @@ export function createConversation({
       settle();
       emit();
     },
-    speechEnded(samples) {
+    /** `giveBack`: from the microphone (listen.js), undoes what this turn taught the voice gate. */
+    speechEnded(samples, giveBack) {
       hearing = false;
       const clip = { id: nextClip, speechMs: samples.length / SAMPLES_PER_MS, endedAt: now() };
       nextClip += 1;
       onClip?.(clip);
-      waiting.push({ clip, samples });
+      waiting.push({ clip, samples, giveBack });
       drain();
     },
     /** The person tapped to stop the reply: it stops where it is, and listening carries on. */

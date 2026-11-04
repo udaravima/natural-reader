@@ -4,7 +4,29 @@
 
 ---
 
-## 2026-11-03 evening — Google speech tested live against Google, released as v2.7.0 (START HERE)
+## 2026-11-04 night — Talk in a busy room: built and walked on `fix/talk-in-a-room`
+
+**Superseded the next morning.** The owner deployed this and the gate cut their turns in half when they sat back from the microphone: its learned level only ratchets up, and a turn needs a voice within 4 dB of it to start. The entry above makes the gate a setting, off by default, and fixes how it learns.
+
+**State.** Branch `fix/talk-in-a-room` from `development` (`d48209f`, the v2.7.0 docs commit, which is committed and NOT pushed). All of the work below is uncommitted, awaiting the owner's word. The backend container on the owner's machine was rebuilt 2026-11-03 21:59 with v2.7.0 code, so the deploy has probably happened (frontend not checked).
+
+**The owner's report.** In an office, on a phone, Talk heard a colleague two desks away and never sent the turn. On a laptop they work around it by lowering the microphone volume; a phone has no such control.
+
+**Why.** Silero tells speech from noise, not near from far: a voice 35 dB quieter still scores 0.97. So her voice held every turn open and opened turns of its own. Threshold settings can't fix that. Walked in Chromium with her voice 14 dB quieter throughout: no turn ended without Send, no reply ever played, and the clips were 14–72 s of mostly her words.
+
+**What changed.** `src/lib/speech/gate.js`: a frame more than `SPEECH_WINDOW_GATE_DB` (default 9) below the person's learned level is silence; a start needs 4 dB. The level is learned only during a turn under way (the walk caught her syllables between turns pulling it down 5 dB in 6 s), and a clip Whisper calls noise gives back what its turn taught (otherwise a cough could make Talk deaf for good). It hooks vad-web 0.0.31's private `frameProcessor.modelProcessFunc`; `listen.contract.test.js` fails if an upgrade moves it. The microphone opens without automatic gain. Tapping the circle while **Hearing you** sends at once (`setOptions({ redemptionMs: 32 })`, no microphone restart). **What it heard** scrolls inside 192 px, says when a phone kept its own gain, and **Copy numbers** includes what the browser applied. The walk with the gate on: turns ended 0.6–1.0 s after the last word, transcripts clean, no reply paused.
+
+**Known limit.** If someone else is talking when Talk starts, the first turn begins with their words and ends about 3.7 s late. Real office, real voices and phones are untested: the owner's phone session is the check. The scratch DB `nr_websearch_walk` on :5434 and the walk scripts (`scratchpad/talk2/office*.mjs`, `scratchpad/vadlevel/office*.py`) are scratch.
+
+**Found, not built: the owner's other three points of 2026-11-04.**
+
+- **Web search** is fine underneath: an approved search answered the weather with sources in 6.2 s. In "Ask first" mode, though, a typed reply says "I don't have access…" above the card (`OFFER_NOTE_NO_DOCUMENT`), and Talk never searches (`orchestrator.py:301`: ask becomes off for spoken turns). With **Search without asking**, Talk answered weather and news in 3–4 s. The owner said to skip this part for now.
+- **No clock.** Since v2.4 the rules carry only the date (`context.today_line`), to keep the prompt cache and because a minute clock was misread. Proposal: a `current_time` tool.
+- **Tool calls out of order.** A reply's step texts are one string, and its tool calls are a separate list drawn under the whole reply (`ChatView.jsx` `ToolCallsDisclosure`). Nothing records where each call happened. Proposal: record the text offset on each call (live and saved) and draw a one-line chip there.
+
+---
+
+## 2026-11-03 evening — Google speech tested live against Google, released as v2.7.0
 
 **State.** `feat/google-speech` merged to `development` and `master` and **released as v2.7.0** on the owner's earlier "go ahead" (which covered the live test, merge and release). **Not deployed.**
 

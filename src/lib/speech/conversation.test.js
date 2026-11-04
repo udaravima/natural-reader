@@ -58,6 +58,22 @@ describe('createConversation', () => {
     expect(h.phase()).toBe('thinking');
   });
 
+  // The voice gate learns the person's level from each turn (gate.js); a turn Whisper calls noise gives it back.
+  it('a clip that wasn\'t speech gives back what its turn taught the voice gate, and speech keeps it', async () => {
+    const h = harness();
+    h.conversation.begin();
+    const noise = vi.fn();
+    const speech = vi.fn();
+    h.results.push(NOISE, SPEECH);
+    h.conversation.speechStarted();
+    h.conversation.speechEnded(new Float32Array(160), noise);
+    h.conversation.speechStarted();
+    h.conversation.speechEnded(new Float32Array(160), speech);
+    await tick();
+    expect(noise).toHaveBeenCalledTimes(1);
+    expect(speech).not.toHaveBeenCalled();
+  });
+
   it('noise sends nothing and goes back to listening', async () => {
     const h = harness();
     await h.speak(NOISE);
