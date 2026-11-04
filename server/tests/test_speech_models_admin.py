@@ -370,3 +370,67 @@ async def test_overview_names_the_chosen_model(db_conn, admin):
     options = await load_chat_options(db_conn)
     check = await console_overview._voice_input(options, {})
     assert check.state == "warn" and "whisper-small-ta" in check.summary
+
+
+# ---------- offering models to people (spec 2026-11-04-speech-choices-per-person) ----------
+
+@pytest.fixture
+def disk_state(monkeypatch):
+    """Which models are on disk, and which downloads were started."""
+    from server.speech import disk
+    here, started = set(), []
+    monkeypatch.setattr(disk, "on_disk", lambda model, env=None: model.id in here)
+    monkeypatch.setattr(disk, "start_download", lambda model, env=None: started.append(model.id))
+    return here, started
+
+
+async def test_the_admin_offers_models_in_order_and_downloads_the_missing_ones(client, db_conn, disk_state):
+    here, started = disk_state
+    here.add("whisper-small-ta")
+    r = await client.put(f"{URL}/offered", json={"ids": ["whisper-small-ta", "whisper-small-si"]})
+    assert r.status_code == 200
+    assert (await load_chat_options(db_conn)).offered_speech_models == ("whisper-small-ta", "whisper-small-si")
+    assert started == ["whisper-small-si"]
+
+
+async def test_offering_an_unknown_or_unrunnable_model_is_refused(client, db_conn, disk_state, monkeypatch):
+    r = await client.put(f"{URL}/offered", json={"ids": ["nope"]})
+    assert r.status_code == 422 and r.json()["detail"]["error"] == "unknown_speech_model"
+    r = await client.put(f"{URL}/offered", json={"ids": ["small"]})   # hears every language: nothing to offer
+    assert r.status_code == 422 and r.json()["detail"]["error"] == "not_offerable"
+    monkeypatch.setattr(catalogue, "_installed", lambda name: False)
+    r = await client.put(f"{URL}/offered", json={"ids": ["whisper-small-si-hf"]})   # needs torch
+    assert r.status_code == 422 and r.json()["detail"]["error"] == "speech_model_cannot_run"
+    assert (await load_chat_options(db_conn)).offered_speech_models == ()
+
+
+async def test_the_list_says_which_models_are_offered_offerable_and_on_disk(client, disk_state):
+    here, _ = disk_state
+    here.add("whisper-small-si")
+    await client.put(f"{URL}/offered", json={"ids": ["whisper-small-si", "whisper-small-ta"]})
+    models = {m["id"]: m for m in (await client.get(URL)).json()["models"]}
+    assert (models["whisper-small-si"]["offered"], models["whisper-small-si"]["on_disk"]) == (True, True)
+    assert (models["whisper-small-ta"]["offered"], models["whisper-small-ta"]["on_disk"]) == (True, False)
+    assert models["whisper-small-ta"]["offerable"] is True and models["small"]["offerable"] is False
+
+
+async def test_offering_again_retries_a_failed_download(client, disk_state):
+    _, started = disk_state
+    await client.put(f"{URL}/offered", json={"ids": ["whisper-small-si"]})
+    await client.put(f"{URL}/offered", json={"ids": ["whisper-small-si"]})
+    assert started == ["whisper-small-si", "whisper-small-si"]
+
+
+async def test_only_an_admin_may_offer(db_conn):
+    member = await resolve_or_provision_user(db_conn, iss="i", sub="m", email="m@x.io")
+    app = FastAPI()
+
+    async def _conn():
+        yield db_conn
+    app.dependency_overrides[deps.get_conn] = _conn
+    app.dependency_overrides[deps.get_current_user] = lambda: deps.Principal(
+        user_id=str(member["id"]), email=member["email"], role="member")
+    app.include_router(admin_router.router)
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.put(f"{URL}/offered", json={"ids": ["whisper-small-si"]})
+    assert r.status_code == 403

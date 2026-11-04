@@ -73,13 +73,21 @@ class SpeechAccess:
     def voice_on(self) -> bool:
         return self.options.voice_input
 
-    def engine(self):
-        """This worker's engine, on the model the deployment chose (a change reaches a worker here). Without the
-        row nobody knows what was chosen, so whatever runs keeps running: a database blip must not reload a model."""
+    def engine(self, language: str | None = None):
+        """The engine that hears `language`: the model the admin offered for it, else the deployment's model (a
+        change reaches a worker here). Without the row nobody knows what was chosen, so whatever runs keeps
+        running: a database blip must not reload a model."""
         if not self.from_row:
             return service.get_transcriber()
-        return service.get_transcriber(wanted=catalogue.wanted(self.options),
-                                       engine=service.chosen_engine(self.options))
+        return service.get_transcriber(wanted=catalogue.for_language(self.options, language),
+                                       engine=service.chosen_engine(self.options),
+                                       default=catalogue.wanted(self.options))
+
+
+def _model_of(engine) -> str | None:
+    """Which model heard a clip: a local engine's catalogue id, else the remote engine's model name."""
+    spec = getattr(engine, "spec", None)
+    return spec.id if spec is not None else (getattr(engine, "model", None) or None)
 
 
 async def speech_access(request: Request, open_conn=Depends(speech_conn)) -> SpeechAccess:
@@ -100,12 +108,19 @@ async def speech_status(access: SpeechAccess = Depends(speech_access)):
     """What the composer needs to draw the microphone: on or off, ready or not, and the languages, with the ones
     the model is made for (`model_languages`, empty for every language). When voice is off no engine is built,
     probed or warmed. Whatever the engine says, this answers 200."""
-    base = {"max_seconds": MAX_SECONDS, "languages": _languages(), "window": window.settings(), "auto_hears": None}
+    base = {"max_seconds": MAX_SECONDS, "languages": _languages(), "window": window.settings(), "auto_hears": None,
+            "hears": [], "default_model": None}
     if not access.voice_on:
         return {"enabled": False, "ready": False, "state": "off", **base}
     engine = access.engine()
     # Who hears the person (Talk says so when it isn't this server), and how long one recording may be.
     base["heard_by"] = getattr(engine, "where", "this server")
+    # The languages the admin offered a model for, each with its model, and the model that hears the rest. Read from
+    # the list and the disk: nothing but the default is loaded here, on every page load.
+    if engine.name == "local" and access.from_row:
+        base["hears"] = catalogue.hears(access.options)
+        default = catalogue.wanted(access.options)
+        base["default_model"] = {"id": default.id, "label": default.label}
     if engine.name == "google":
         base["max_seconds"] = GOOGLE_MAX_SECONDS
     try:
@@ -178,7 +193,6 @@ async def transcribe(request: Request, access: SpeechAccess = Depends(speech_acc
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
         raise refusal(413, "too_large", _TOO_LARGE)
-    access.engine()   # now: by the end of the upload these options can be stale, and would swap a newer model back
     language, file = await _read_upload(request)
     try:
         code = None if language in (None, "", "auto") else language
@@ -196,14 +210,25 @@ async def transcribe(request: Request, access: SpeechAccess = Depends(speech_acc
     if not audio:
         raise refusal(400, "bad_audio", _BAD_AUDIO)
 
-    engine = service.get_transcriber()
+    # The model for this clip's language, held to the end of its transcription (speech/service.py): nothing another
+    # request does meanwhile can swap it.
+    engine = access.engine(code)
     if engine.name == "local":   # the local engine's state costs nothing to read; a remote one's is a request per recording
         try:
             service.heal(engine, await asyncio.wait_for(engine.status(), STATUS_TIMEOUT_S))
         except Exception as e:  # noqa: BLE001 - the transcription below reports a broken engine in its own words
             logger.debug("The speech engine's status check before transcribing failed: %s", type(e).__name__)
     try:
-        result = await service.transcribe_for(str(access.principal.user_id), audio, mime, code)
+        try:
+            result = await service.transcribe_for(str(access.principal.user_id), audio, mime, code, engine=engine)
+        except EngineUnavailable:
+            fallback = access.engine(None)
+            if fallback is engine:
+                raise
+            # The language's own model can't load here: the default hears the clip, in the language asked for.
+            logger.warning("speech model %r couldn't hear a clip; the default heard it", _model_of(engine))
+            engine = fallback
+            result = await service.transcribe_for(str(access.principal.user_id), audio, mime, code, engine=engine)
     except AudioTooLong:
         limit = "a minute" if engine.name == "google" else "2 minutes"
         raise refusal(413, "too_long", f"The recording is over {limit}.") from None
@@ -221,4 +246,4 @@ async def transcribe(request: Request, access: SpeechAccess = Depends(speech_acc
     except EngineFailed as e:
         raise refusal(503, "engine_failed", str(e) or "Voice input failed.") from None
     return {"text": result.text, "language": result.language, "duration_s": result.duration_s,
-            "no_speech": result.no_speech, "avg_logprob": result.avg_logprob}
+            "no_speech": result.no_speech, "avg_logprob": result.avg_logprob, "model": _model_of(engine)}

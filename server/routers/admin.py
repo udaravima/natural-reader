@@ -8,7 +8,7 @@ import os
 import re
 import secrets
 import uuid
-from typing import Any, Callable, Literal, Mapping
+from typing import Annotated, Any, Callable, Literal, Mapping
 from urllib.parse import urlsplit
 
 from datetime import datetime, timezone
@@ -23,7 +23,7 @@ from ..auth.config import load_auth_config
 from ..auth.kc_admin import KCAdminError, KCRoleMissing
 from ..llm.router import get_router
 from ..http_errors import refusal
-from ..speech import catalogue as speech_catalogue, convert as speech_convert, service as speech_service
+from ..speech import catalogue as speech_catalogue, convert as speech_convert, disk as speech_disk, service as speech_service
 from ..speech.languages import WHISPER_LANGUAGES
 from ..services import (assistant_profile, chat_options, console_overview, console_settings, deployment_info, deployment_settings,
                         doc_content, docling_limits, inference_budget, inference_limits, model_router, model_settings, people, user_defaults,
@@ -682,8 +682,18 @@ def _speech_models_view(options: chat_options.ChatOptions) -> dict:
     models = speech_catalogue.all_models(os.environ, options.added_speech_models)
     current = speech_catalogue.wanted(options)
     listed = ([] if current.id in models else [current]) + list(models.values())
+    offered = set(options.offered_speech_models)
+
+    def row(model):
+        # Offerable: made for particular languages, and able to run here. The disk is checked for offered models
+        # only: it is what people wait on, and checking every model would make the console slow to open.
+        out = speech_catalogue.view(model)
+        out["offered"] = model.id in offered
+        out["offerable"] = bool(model.languages) and not out["why_not"]
+        out["on_disk"] = speech_disk.on_disk(model) if model.id in offered else None
+        return out
     return {**base, "chosen": current.id, "source": speech_catalogue.source(options),
-            "models": [speech_catalogue.view(m) for m in listed]}
+            "models": [row(m) for m in listed]}
 
 
 class SpeechEngineChoice(BaseModel):
@@ -737,6 +747,39 @@ async def put_speech_model_choice(
     saved = await chat_options.save_speech_model(conn, body.id, updated_by=str(principal.user_id))
     if saved.voice_input and speech_service.chosen_engine(saved) == "local":
         _warm_speech(saved)
+    return _speech_models_view(saved)
+
+
+class OfferedSpeechModelsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ids: list[Annotated[str, Field(max_length=100)]] = Field(max_length=20)
+
+
+@router.put("/speech-models/offered")
+async def put_offered_speech_models(
+    body: OfferedSpeechModelsIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """The models offered to people, in order: each hears the language it is made for when a person says they speak
+    it (spec 2026-11-04-speech-choices-per-person). A model not on this server's disk starts downloading now, and
+    people see it once it's here; sending it again retries a download that failed."""
+    options = await chat_options.load_chat_options(conn)
+    models = speech_catalogue.all_models(os.environ, options.added_speech_models)
+    ids = list(dict.fromkeys(body.ids))
+    for model_id in ids:
+        model = models.get(model_id)
+        if model is None:
+            raise refusal(422, "unknown_speech_model", "That speech model isn't in the list.")
+        if not model.languages:
+            raise refusal(422, "not_offerable", "That model hears every language: the speech model above already does.")
+        reason = speech_catalogue.why_not(model)
+        if reason:
+            raise refusal(422, "speech_model_cannot_run", reason)
+    saved = await chat_options.save_offered_speech_models(conn, ids, updated_by=str(principal.user_id))
+    for model_id in ids:
+        if not speech_disk.on_disk(models[model_id]):
+            speech_disk.start_download(models[model_id])
     return _speech_models_view(saved)
 
 
