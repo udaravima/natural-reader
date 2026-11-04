@@ -24,7 +24,7 @@ class _PoolShim:
         self._conn = conn
 
     @asynccontextmanager
-    async def connection(self):
+    async def connection(self, timeout=None):
         yield self._conn
 
 

@@ -1,6 +1,7 @@
 """
 FastAPI application factory with CORS and router setup.
 """
+import asyncio
 import logging
 import os
 import secrets
@@ -32,7 +33,7 @@ from .routers.settings import router as settings_router
 from .routers.speech import router as speech_router
 from .routers.profile import router as profile_router
 from .routers.tools import router as tools_router
-from .services import chat_options, doc_storage, docling_convert, embedding_state, project_events
+from .services import chat_options, doc_pipeline, doc_storage, docling_convert, embedding_state, project_events
 from .speech import catalogue as speech_catalogue, service as speech_service
 from .services.embeddings import start_client as start_embeddings, stop_client as stop_embeddings
 from .services.web_search import start_client as start_web_search, stop_client as stop_web_search
@@ -45,6 +46,7 @@ def create_app() -> FastAPI:
     # app module rather than going through run.py's __main__.
     configure_logging()
     app = FastAPI()
+    _background: list[asyncio.Task] = []   # loops started with the app, cancelled at shutdown
     install_handlers(app)
 
     # CORS origins come from FRONTEND_ORIGIN (comma-separated); unset allows no
@@ -128,6 +130,8 @@ def create_app() -> FastAPI:
                     await embedding_state.init(conn)
             except Exception:
                 logger.warning("Embedding state not recorded; queries use the environment's model", exc_info=True)
+            # One rebuild runner per worker process: it drains the database's queue (doc_rebuilds).
+            _background.append(asyncio.get_running_loop().create_task(doc_pipeline.run_queue_forever()))
             # Voice input is off by default; when it's on, start loading the speech model now so the first
             # recording doesn't wait for it. A database read that fails here just skips the warm-up: the status
             # route warms a worker's engine on first use.
@@ -151,6 +155,9 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:
+        for task in _background:
+            task.cancel()
+        _background.clear()
         await project_events.stop_retention()
         await stop_llm_router()
         await stop_embeddings()

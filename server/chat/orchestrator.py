@@ -778,8 +778,8 @@ async def _open_doc(req: TurnRequest) -> ReadableDoc | None:
     try:
         async with get_pool().connection() as conn:
             doc = await readable_doc(conn, req.doc_id, req.user_id)
-        # First use under a new embedding profile starts a background rebuild.
-        return doc_pipeline.ensure_current(doc)
+            # First use under a new embedding profile queues a background rebuild.
+            return await doc_pipeline.ensure_current(conn, doc)
     except Exception:  # noqa: BLE001 — no document context is a safe fallback
         logger.warning("Open-document lookup failed for %s", req.doc_id, exc_info=True)
         return None

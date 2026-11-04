@@ -770,9 +770,9 @@ async def search_document(
         row = await cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Document not found")
-    # v2.3 Task E: first use under a new embedding profile starts a rebuild;
-    # vectors from another model can't be compared with this query's.
-    current = doc_pipeline.ensure_current(ReadableDoc(doc_id, "", row[0], None, row[1], row[2]))
+        # v2.3 Task E: first use under a new embedding profile starts a rebuild;
+        # vectors from another model can't be compared with this query's.
+        current = await doc_pipeline.ensure_current(conn, ReadableDoc(doc_id, "", row[0], None, row[1], row[2]))
     if current.state == "reindexing":
         raise HTTPException(status_code=409, detail={
             "error": "reindexing",
