@@ -143,3 +143,19 @@ async def test_a_recent_touch_is_not_repeated(scratch):
         assert (await cur.fetchone())[0] == recent
     finally:
         await conn.close()
+
+
+async def test_a_full_pool_skips_the_stamp_instead_of_waiting_on_itself(scratch):
+    # Every request holds its own pooled connection while it stamps on a second one. With every connection held
+    # by a request that wants to stamp, each waited for the others until PoolTimeout (reproduced at pool size 2).
+    # The stamp is worth nothing more precise than a minute, so with no connection free soon it is skipped.
+    url, uid = scratch
+    raw = await _session(url, uid, last_seen=datetime.now(timezone.utc) - STALE)
+    pool = db.get_pool()
+    held = [await pool.getconn() for _ in range(pool.max_size)]
+    try:
+        user = await asyncio.wait_for(sessions.resolve_session(held[0], raw), timeout=3)
+        assert user is not None and user["id"] == uid
+    finally:
+        for conn in held:
+            await pool.putconn(conn)
