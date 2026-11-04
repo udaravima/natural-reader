@@ -26,6 +26,12 @@ class TTSRequest(BaseModel):
     speed: float = 1.0
 
 
+class ChatVoiceRequest(TTSRequest):
+    """A piece of a reply to read aloud (POST /v1/chat/voice). `google_voice`: the person's own Google voice, used
+    when Google reads the replies and it is one of Google's (spec 2026-11-04-speech-choices); else the admin's."""
+    google_voice: str | None = Field(default=None, max_length=40)
+
+
 class BatchTTSRequest(BaseModel):
     sentences: list[Annotated[str, Field(max_length=MAX_SENTENCE_CHARS)]] = Field(
         max_length=MAX_SENTENCES

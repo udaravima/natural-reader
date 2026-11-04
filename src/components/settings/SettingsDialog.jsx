@@ -9,6 +9,7 @@ import { apiFetch } from '../../utils/apiFetch';
 import { migrateModelId, modelOptions, supportedKnobs } from '../../lib/modelIds';
 import { SearchableSelect } from '../SearchableList';
 import { SnapSlider } from '../SnapSlider';
+import { voiceSample, SAMPLE_TEXT } from '../../lib/speech/voiceSample';
 import { TalkSettingsPanel } from './TalkSettingsPanel';
 
 function Field({ theme, label, children }) {
@@ -300,6 +301,38 @@ function useChatVoice(apiHost, apiPort, canChat) {
 function ChatPanel({ theme, ch }) {
     const { speechLanguages, modelLanguages, autoHears } = useSpeechLanguages(ch.apiHost, ch.apiPort, ch.canChat);
     const chatVoice = useChatVoice(ch.apiHost, ch.apiPort, ch.canChat);
+    // The reply voice, when Google reads the replies (spec 2026-11-04-speech-choices): the person's own if it is one
+    // of Google's, else the admin's. Hear it plays a sample kept for the session (lib/speech/voiceSample.js).
+    const voices = Array.isArray(chatVoice?.voices) ? chatVoice.voices : [];
+    const ownVoice = voices.includes(ch.googleVoice) ? ch.googleVoice : '';
+    const replyVoice = ownVoice || chatVoice?.voice;
+    const [hearing, setHearing] = useState(false);
+    const sampleAudio = useRef(null);
+    const hearIt = async () => {
+        const audio = sampleAudio.current ?? (sampleAudio.current = new Audio());
+        if (hearing) { audio.pause(); setHearing(false); return; }
+        const voice = replyVoice;
+        const speed = ch.playbackSpeed ?? 1;
+        try {
+            setHearing(true);
+            const url = await voiceSample(`${voice}@${speed}`, async () => {
+                const res = await apiFetch(ch.apiHost, ch.apiPort, '/v1/chat/voice', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: SAMPLE_TEXT, google_voice: voice, speed }),
+                });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const { audio_base64: b64 } = await res.json();
+                const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+                return URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+            });
+            audio.src = url;
+            audio.onended = () => setHearing(false);
+            await audio.play();
+        } catch {
+            setHearing(false);
+        }
+    };
+    useEffect(() => () => sampleAudio.current?.pause(), []);
     // Which model's per-model inference knobs are being edited (defaults to the
     // active chat model). Editing writes inferenceByModel[configModel] via the
     // same pure helpers the chat sidebar used.
@@ -326,9 +359,28 @@ function ChatPanel({ theme, ch }) {
         <>
                 {chatVoice && (
                     <p className={`text-[10px] leading-relaxed ${theme.textSecondary}`}>
-                        {`Replies and Talk are read by Google's voice ${chatVoice.voice}, set by your admin, so they are sent `
-                            + `to ${chatVoice.where}. Your voice in Voice & reading still reads documents.`}
+                        {`Replies and Talk are read by Google's voice ${replyVoice}${ownVoice ? '' : ', set by your admin'}, so `
+                            + `they are sent to ${chatVoice.where}. Your voice in Voice & reading still reads documents.`}
                     </p>
+                )}
+                {chatVoice && ch.setGoogleVoice && voices.length > 0 && (
+                    <Field theme={theme} label="Reply voice">
+                        <div className="flex gap-2">
+                            <select aria-label="Reply voice" value={ownVoice ? ch.googleVoice : ''}
+                                onChange={(e) => ch.setGoogleVoice(e.target.value)} className={`flex-1 ${input}`}>
+                                <option value="">{`Default (${chatVoice.voice})`}</option>
+                                {voices.map((v) => <option key={v} value={v}>{v}</option>)}
+                            </select>
+                            <button type="button" onClick={hearIt} aria-label={`Hear ${replyVoice}`} title={`Hear ${replyVoice}`}
+                                className={`px-3 rounded-lg border transition-all flex items-center justify-center ${hearing ? 'bg-blue-600 text-white border-blue-600 animate-pulse' : `${theme.border} ${theme.hover} ${theme.textSecondary}`}`}>
+                                {hearing ? <Square size={14} /> : <PlayCircle size={14} />}
+                            </button>
+                        </div>
+                        <p className={`text-[10px] leading-relaxed ${theme.textMuted}`}>
+                            A short sample in English, Sinhala and Tamil, at your reading speed. Each voice is fetched from
+                            Google once a session.
+                        </p>
+                    </Field>
                 )}
                 <Field theme={theme} label="Read-aloud mode">
                     <div className={`flex p-1 rounded-lg border ${theme.border} ${theme.bgTertiary}`}>
@@ -356,7 +408,7 @@ function ChatPanel({ theme, ch }) {
                             ]}
                             className={`w-full ${input}`}
                         />
-                        <p className={`text-[9px] ${theme.textMuted}`}>What you speak into the microphone button in the message box.</p>
+                        <p className={`text-[9px] ${theme.textMuted}`}>What you speak, into the microphone and in Talk. The Speaking chip beside them changes it in one tap.</p>
                         {autoHears ? (
                             <p className={`text-[9px] ${theme.textMuted}`}>
                                 This server&apos;s speech recognizer can&apos;t tell languages apart, so Auto hears only {autoHears}: pick the language you speak.

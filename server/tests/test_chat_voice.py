@@ -252,6 +252,39 @@ async def test_with_google_the_route_reads_with_the_admins_voice(voice_client, d
     assert calls == [("Hello.", "Charon", 1.1)]
 
 
+# Spec 2026-11-04-speech-choices, Part 3: with Google reading the replies, each person picks Google's voice.
+async def _google_calls(db_conn, monkeypatch, admins="Charon"):
+    monkeypatch.setenv("GOOGLE_TTS_MODEL", MODEL)
+    await _choose(db_conn, {"engine": "google", "voice": admins})
+    calls = []
+
+    async def speak(text, voice, speed, env, **_):
+        calls.append(voice)
+        return _wav(), 0.5
+    monkeypatch.setattr(chat_voice, "google_speak", speak)
+    return calls
+
+
+async def test_a_persons_google_voice_reads_their_reply(voice_client, db_conn, monkeypatch):
+    calls = await _google_calls(db_conn, monkeypatch)
+    r = await voice_client.post("/v1/chat/voice", json={"text": "Hello.", "google_voice": "Puck"})
+    assert r.status_code == 200 and calls == ["Puck"]
+
+
+async def test_a_voice_that_isnt_googles_reads_with_the_admins(voice_client, db_conn, monkeypatch):
+    calls = await _google_calls(db_conn, monkeypatch)
+    for voice in ("bf_emma", "", "puck"):
+        await voice_client.post("/v1/chat/voice", json={"text": "Hello.", "google_voice": voice})
+    assert calls == ["Charon", "Charon", "Charon"]
+
+
+async def test_kokoro_ignores_the_google_voice(voice_client, monkeypatch):
+    spoken = []
+    monkeypatch.setattr(endpoints, "_speak", lambda text, voice, speed: spoken.append(voice) or (np.zeros(240, dtype=np.float32), 24000))
+    r = await voice_client.post("/v1/chat/voice", json={"text": "Hi.", "voice": "bf_emma", "google_voice": "Puck"})
+    assert r.status_code == 200 and spoken == ["bf_emma"]
+
+
 async def test_googles_refusal_reaches_the_person_in_words(voice_client, db_conn, monkeypatch):
     monkeypatch.setenv("GOOGLE_TTS_MODEL", MODEL)
     await _choose(db_conn, {"engine": "google", "voice": "Kore"})
@@ -284,7 +317,8 @@ async def test_anyone_who_chats_can_ask_who_speaks(voice_client, db_conn, monkey
     monkeypatch.setenv("GOOGLE_TTS_MODEL", MODEL)
     await _choose(db_conn, {"engine": "google", "voice": "Puck"})
     assert (await voice_client.get("/v1/chat/voice")).json() == {"engine": "google", "voice": "Puck",
-                                                                 "where": "Google Cloud"}
+                                                                 "where": "Google Cloud",
+                                                                 "voices": list(chat_voice.GOOGLE_VOICES)}
 
 
 # ---------- the admin's switch ----------

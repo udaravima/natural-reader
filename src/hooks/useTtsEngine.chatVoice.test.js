@@ -30,6 +30,15 @@ describe('the chat voice', () => {
         expect(JSON.parse(request.body)).toEqual({ text: 'Hello.', voice: 'bf_emma', speed: 1.2 });
     });
 
+    // Spec 2026-11-04-speech-choices: the person's own Google voice, for when Google reads the replies.
+    it('a chosen Google voice goes with the reply speech, and not with a document\'s', async () => {
+        const { result } = renderHook(() => useTtsEngine({ ...props, googleVoice: 'Puck' }));
+        await result.current.synthesizeChat('Hello.');
+        expect(JSON.parse(apiFetch.mock.calls[0][3].body)).toEqual({ text: 'Hello.', voice: 'bf_emma', speed: 1.2, google_voice: 'Puck' });
+        await result.current.synthesizeText('Page one.');
+        expect(JSON.parse(apiFetch.mock.calls[1][3].body)).not.toHaveProperty('google_voice');
+    });
+
     it('a document sentence still goes to Kokoro', async () => {
         const { result } = renderHook(() => useTtsEngine(props));
         await result.current.synthesizeText('Page one.');
