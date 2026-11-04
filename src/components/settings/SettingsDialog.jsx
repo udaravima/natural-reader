@@ -8,6 +8,7 @@ import { resolveForModel, patchForModel } from '../../hooks/inference';
 import { apiFetch } from '../../utils/apiFetch';
 import { migrateModelId, modelOptions, supportedKnobs } from '../../lib/modelIds';
 import { SearchableSelect } from '../SearchableList';
+import { TalkSettingsPanel } from './TalkSettingsPanel';
 
 function Field({ theme, label, children }) {
     return (
@@ -19,11 +20,12 @@ function Field({ theme, label, children }) {
 }
 
 // The tabs, in order. `profile` shows only when the dialog is given a
-// profile panel (a signed-in user).
+// profile panel (a signed-in user), and `talk` only for someone who may talk.
 const SETTINGS_TABS = [
     { id: 'profile', label: 'Profile' },
     { id: 'voice', label: 'Voice & reading' },
     { id: 'chat', label: 'Chat' },
+    { id: 'talk', label: 'Talk' },
     { id: 'appearance', label: 'Appearance' },
     { id: 'connection', label: 'Connection' },
     { id: 'tokens', label: 'Access tokens' },
@@ -42,9 +44,9 @@ const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), selec
  * closes the dialog. Escape, the backdrop and the close button all close it,
  * and focus goes back to whatever opened it.
  */
-export default function SettingsDialog({ theme, tab, onTab, onClose, profile = null, voiceSettings, chatSettings, connectionSettings, appearanceSettings, accountProps }) {
+export default function SettingsDialog({ theme, tab, onTab, onClose, profile = null, voiceSettings, chatSettings, talkSettings = null, connectionSettings, appearanceSettings, accountProps }) {
     const open = tab != null;
-    const tabs = SETTINGS_TABS.filter((t) => t.id !== 'profile' || profile);
+    const tabs = SETTINGS_TABS.filter((t) => (t.id !== 'profile' || profile) && (t.id !== 'talk' || talkSettings));
     const active = tabs.some((t) => t.id === tab) ? tab : tabs[0].id;
     const boxRef = useRef(null);
 
@@ -137,6 +139,7 @@ export default function SettingsDialog({ theme, tab, onTab, onClose, profile = n
                             {active === 'profile' && profile}
                             {active === 'voice' && <VoicePanel theme={theme} v={voiceSettings} />}
                             {active === 'chat' && <ChatPanel theme={theme} ch={chatSettings} />}
+                            {active === 'talk' && <TalkSettingsPanel theme={theme} t={talkSettings} />}
                             {active === 'appearance' && <AppearancePanel theme={theme} a={appearanceSettings} />}
                             {active === 'connection' && <ConnectionPanel theme={theme} c={connectionSettings} />}
                             {active === 'tokens' && (

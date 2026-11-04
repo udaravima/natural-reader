@@ -4,9 +4,33 @@
 
 ---
 
+## 2026-11-04 midday — Talk settings, and the busy-room gate made a setting: committed on `fix/talk-in-a-room` (START HERE)
+
+**State.** Branch `fix/talk-in-a-room`: `3d43a4b` (the first gate) and the commit after it (this work), both committed on the owner's word. Nothing pushed; `development`'s `d48209f` isn't pushed either, and the branch isn't merged into `development`. At 13:30 the owner was deploying this commit to check it live; until then their stack ran the first gate (rebuilt 10:13–10:16), where `SPEECH_WINDOW_GATE_DB=0` turns it off. With this commit that value is out of range (3 to 30): one warning, and the gate is off by default anyway.
+
+**The owner's report.** With the first gate their turns were "gone before I even finish": the live log showed sentences arriving as pairs of clips (4.7 s then 3.1 s, 8.4 s then 2.1 s). They had sat back from the microphone. They asked for runtime settings, with the known-good values referenced, and for people to choose a Whisper model from an admin's list.
+
+**What changed.**
+- **Settings → Talk** (`src/components/settings/TalkSettingsPanel.jsx`, logic in `src/lib/speech/talkSettings.js`), for someone who may talk: the three microphone switches, Ignore quieter voices and How much quieter, the pause that ends a turn, the speech that counts as a turn, how sure the VAD must be. Defaults are the server's `/v1/speech/status` window (the microphone's: on), shown beside each control; per device (`usePersistedState('talkSettings')`), only changed values stored, a value moved back to the default forgotten; Reset to defaults. The Talk panel has a sliders button to it, says "Ignoring voices N dB quieter than yours", and Copy numbers includes the settings.
+- **The gate is off by default** (`SPEECH_WINDOW_GATE`, new; `SPEECH_WINDOW_GATE_DB` now 3 to 30). Automatic gain is back on by default.
+- **The gate's rule** (`gate.js`): in a turn, that turn's own level; between turns, the loudest of the last three turns Whisper accepted; one margin for starting and staying. `endTurn()` returns `learn`, which the conversation calls on a speech verdict.
+
+**What the tests found, in order** (scratch: `vadlevel/real*.py`, `drop*.py`, `office*.py`, `talk2/sitback.mjs`, results in `walk3/`):
+1. On 20 real recordings, sitting back 6 dB: first gate 0–75% of speech kept, no gate 69–100%, the new rule 65–100%.
+2. Walked in Chromium (Whisper `small`, a colleague reading nonstop ~13 dB below, three of four questions 6 dB further back): **every rule let her sentences through as turns once one opened**: first gate 19 of 22 clips hers, new rule at 9 dB 41 of 43, at 6 dB 52 of 56. Loudness can't say whose voice it is, and Whisper accepts her words because they are speech. The earlier clean walk of the first gate used `base.en`, which probably rejected her voice as noise (likely, not checked).
+3. Tried and dropped: the last accepted turn alone (she took over at once); a strict 4 dB start with the in-turn rule (sitting back lost whole utterances again); a start needing 6 of 8 loud frames (lost real speech even at the usual level).
+Every rule ends turns in that room, which gate-off never does. docs/DEPLOYMENT.md "Talk in a busy room" has the tables and says plainly what it can't do.
+
+**Verified.** vitest 1751 in 144 files, pytest 2906 passed / 16 skipped, eslint 0 errors (24 old warnings, none in changed files). Every gate rule is checked by a wrong gate it catches. Settings → Talk and the panel walked at 1366 and 360 px (a phone's 44 px button rule had made the switch a circle; fixed). The 360 px page scrolls sideways because of the header, on every Settings tab: older than this work, not chased.
+
+**Next, proposed and not built.**
+- **Speaker verification**: recognise the person's voice, so a colleague's turn is dropped whatever its loudness. The real fix for the office.
+- **Each person chooses their speech model**: design written, `docs/superpowers/specs/2026-11-04-speech-model-per-person-design.md`, not approved. Measured for it: `small` int8 adds ~515 MB loaded, 660 MB after its first clip.
+- Still open from the night entry: the `current_time` tool and inline tool calls.
+
 ## 2026-11-04 night — Talk in a busy room: built and walked on `fix/talk-in-a-room`
 
-**Superseded the next morning.** The owner deployed this and the gate cut their turns in half when they sat back from the microphone: its learned level only ratchets up, and a turn needs a voice within 4 dB of it to start. The entry above makes the gate a setting, off by default, and fixes how it learns.
+**Superseded the next morning.** The owner deployed this and the gate cut their turns in half when they sat back from the microphone: its learned level only ratchets up, and a turn needs a voice within 4 dB of it to start. The entry above makes the gate a setting, off by default, and changes how it learns.
 
 **State.** Branch `fix/talk-in-a-room` from `development` (`d48209f`, the v2.7.0 docs commit, which is committed and NOT pushed). All of the work below is uncommitted, awaiting the owner's word. The backend container on the owner's machine was rebuilt 2026-11-03 21:59 with v2.7.0 code, so the deploy has probably happened (frontend not checked).
 

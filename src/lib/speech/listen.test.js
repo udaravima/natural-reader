@@ -18,8 +18,9 @@ vi.mock('@ricky0123/vad-web', () => ({
 }));
 
 const SETTINGS = {
-  vad_start: 0.5, vad_stay: 0.35, min_speech_ms: 250, pre_roll_ms: 300, silence_ms: 700, gate_db: 9,
+  vad_start: 0.5, vad_stay: 0.35, min_speech_ms: 250, pre_roll_ms: 300, silence_ms: 700, gate: false, gate_db: 9,
 };
+const GATED = { ...SETTINGS, gate: true };
 const frames = (score, count) => {
   for (let i = 0; i < count; i += 1) made.options.onFrameProcessed({ isSpeech: score });
 };
@@ -96,16 +97,24 @@ describe('listen, in a room with other voices', () => {
     Object.defineProperty(navigator, 'mediaDevices', { value: { getUserMedia }, configurable: true });
   });
 
-  // Automatic gain turns a far voice up whenever the person goes quiet: the moment a turn should end.
-  it('asks for the microphone without automatic gain, keeping echo cancellation and noise suppression', async () => {
+  it('asks for the microphone with the browser\'s own processing, as Talk always has, unless the person changed it', async () => {
     await made.options.getStream();
     await made.options.resumeStream();
     for (const [constraints] of getUserMedia.mock.calls) {
       expect(constraints.audio).toEqual({
-        channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false,
+        channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true,
       });
     }
     expect(getUserMedia).toHaveBeenCalledTimes(2);
+  });
+
+  // Automatic gain turns a far voice up whenever the person goes quiet: the moment a turn should end.
+  it('asks for what the person chose in Settings, Talk', async () => {
+    await listen({ settings: { ...SETTINGS, auto_gain: false, noise_suppression: false, echo_cancellation: false } });
+    await made.options.getStream();
+    expect(getUserMedia.mock.calls.at(-1)[0].audio).toEqual({
+      channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+    });
   });
 
   it('says what the browser actually applied, which a phone may not', async () => {
@@ -114,39 +123,49 @@ describe('listen, in a room with other voices', () => {
     expect(mic.applied()).toEqual({ autoGainControl: false, echoCancellation: true });
   });
 
-  /** A turn of the person's, at -22 dBFS, that the gate learns from. */
-  const aTurn = async () => {
+  /** A turn of the person's at `db`, ended; Whisper accepts it as speech unless `accepted` is false. */
+  const aTurn = async (db = -22, { accepted = true } = {}) => {
     made.options.onSpeechRealStart();
-    await scored(-22, 30);
+    await scored(db, 30);
     made.options.onSpeechEnd(new Float32Array(1));
+    const [, learn] = onSpeechEnded.mock.calls.at(-1);
+    if (accepted) learn();
   };
 
-  it('a voice well below the person\'s own scores as silence', async () => {
+  it('the gate is off unless it is switched on: every voice counts', async () => {
+    await aTurn();
+    expect(await scored(-45)).toBe(0.9);
+  });
+
+  it('switched on, a voice well below the person\'s last turn scores as silence', async () => {
+    await listen({ settings: GATED, onSpeechEnded });
     await aTurn();
     expect(await scored(-35)).toBe(0);
   });
 
-  it('the person\'s softer words count once their turn has really started', async () => {
+  it('a turn teaches the gate only once Whisper accepts it as speech', async () => {
+    await listen({ settings: GATED, onSpeechEnded });
+    await aTurn(-22, { accepted: false });
+    expect(await scored(-45)).toBe(0.9);
     await aTurn();
-    expect(await scored(-28)).toBe(0);
+    expect(await scored(-45)).toBe(0);
+  });
+
+  it('in a turn, the bar is that turn\'s own level: sitting back, the softer words still count', async () => {
+    await listen({ settings: GATED, onSpeechEnded });
+    await aTurn(-22);
+    await scored(-60, 30);   // the room between turns
     made.options.onSpeechRealStart();
-    expect(await scored(-28)).toBe(0.9);
+    await scored(-28, 30);
+    expect(await scored(-36)).toBe(0.9);
     made.options.onSpeechEnd(new Float32Array(1));
-    expect(await scored(-28)).toBe(0);
+    expect(await scored(-36)).toBe(0);   // between turns, the last accepted turn's level: -22 still
   });
 
-  it('each turn ends with a way to give back what it taught, for a clip that wasn\'t speech', async () => {
+  it('a server without the settings listens as before, every voice counting', async () => {
+    const { gate: _, gate_db: __, ...older } = SETTINGS;
+    await listen({ settings: older, onSpeechEnded });
     await aTurn();
-    const [, giveBack] = onSpeechEnded.mock.calls[0];
-    giveBack();
-    expect(await scored(-45)).toBe(0.9);   // the level it learned is gone: every voice counts again
-  });
-
-  it('a server without the setting listens as before, every voice counting', async () => {
-    const { gate_db: _, ...older } = SETTINGS;
-    await listen({ settings: older });
-    made.options.onSpeechRealStart();
-    await scored(-22, 30);
     expect(await scored(-45)).toBe(0.9);
   });
 

@@ -55,8 +55,9 @@ navigation (reader) and the model picker + sessions (chat). Everything about
 - **Settings** — a window over whatever you have open, from the header
   **gear** or the profile menu, so the narration, a reply being written and
   your place in the document all carry on underneath. Tabs: **Profile**,
-  **Voice & reading**, **Chat**, **Appearance**, **Connection** and **Access
-  tokens** (the only place tokens are created). **Esc**, the **×** or a click
+  **Voice & reading**, **Chat**, **Talk** (for someone who may use Talk),
+  **Appearance**, **Connection** and **Access tokens** (the only place tokens
+  are created). **Esc**, the **×** or a click
   outside closes it; it opens on the tab you used last.
 
   **Voice** on **Voice & reading** holds all 50 of Kokoro's voices, grouped by
@@ -1026,12 +1027,23 @@ reporting how it behaved.
 reply. It tries to recognise its own words and ignore them, but this hasn't been tested
 on real speakers yet.
 
-**In a busy room.** Talk learns how loud your voice is and ignores voices well below it,
-such as a colleague a few desks away, so your turn ends when you stop. A voice close by,
-or one as loud as yours, can still get through. If **Hearing you** stays on after you've
-finished, **tap the circle to send** what you said. A headset microphone works best. Some
-phones keep their own volume control whatever the app asks; **What it heard** says so
-when yours does.
+**Talk settings.** The sliders button in the Talk panel, or **Settings → Talk**, holds
+how Talk listens on this device: the microphone's own processing (automatic gain, noise
+suppression, echo cancellation), ignoring quieter voices, the pause that ends your turn,
+how much speech counts as a turn, and how sure it must be that it's speech. Each shows
+its default, this server's tested value, beside yours, and **Reset to defaults** puts
+them all back. Changes apply the next time you start Talk. A phone and a laptop keep
+their own.
+
+**In a busy room.** Switch on **Settings → Talk → Ignore quieter voices**, and turn
+**Automatic gain** off. Talk then ignores voices much quieter than yours, such as a
+colleague a few desks away, so your turn ends when you stop; the panel says *Ignoring
+voices 9 dB quieter than yours* while it's on. It compares with your recent turns: if
+it cuts you off, raise **How much quieter**, or sit closer. It goes by loudness, so it
+can't keep out a colleague who talks nonstop close by: if their sentences start getting
+answered, use a headset microphone, which works best of all. If **Hearing you** stays on
+after you've finished, **tap the circle to send** what you said. Some phones keep their
+own volume control whatever the app asks; **What it heard** says so when yours does.
 
 ## Asking a whole project
 

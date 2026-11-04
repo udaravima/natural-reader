@@ -4,28 +4,39 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-**Talk in a busy room.** A colleague a few desks away no longer holds your turn open or
-pauses the reply. Silero tells speech from noise, not near from far, so Talk now also
-compares each voice with yours. No migrations; both halves rebuild.
-
-### Fixed
-
-- **A far voice kept Talk "Hearing you" for ever,** and opened turns of its own, so no
-  reply played. Talk learns how loud the person's voice is, during their turns only, and
-  counts a voice more than `SPEECH_WINDOW_GATE_DB` (default 9) below it as silence. A
-  turn needs a voice within 4 dB of the person's to start. A turn Whisper calls noise
-  gives back what it taught, so a cough can't raise the bar for good. The clip sent for
-  transcription is unchanged. `0` restores the old behaviour. If someone else is talking
-  when Talk starts, the first turn still begins with their words.
-- **The microphone opens without automatic gain** in Talk, which turned a far voice up
-  just as the person stopped. Echo cancellation and noise suppression stay on.
+**Talk settings, and Talk in a busy room.** Each person can now change how Talk listens
+on their own device, under **Settings → Talk**, with this server's tested value shown
+beside every control. One of them ignores a colleague a few desks away. No migrations;
+both halves rebuild.
 
 ### Added
 
+- **Settings → Talk**, for someone who may use Talk: automatic gain, noise suppression
+  and echo cancellation; **Ignore quieter voices** and **How much quieter**; the pause
+  that ends a turn; the speech that counts as a turn; how sure it must be that it's
+  speech. Each shows its default (the server's `SPEECH_WINDOW_*` value, or the
+  browser's own processing, on) and **Reset to defaults** forgets every change. Kept per
+  device, so a phone and a laptop each have their own; a control moved back to its
+  default follows the server again. The Talk panel's sliders button opens it.
+- **Ignore quieter voices**, off by default (`SPEECH_WINDOW_GATE=on` for everyone).
+  Silero tells speech from noise, not near from far, so a colleague's voice held every
+  turn open. With it on, a voice more than the margin (`SPEECH_WINDOW_GATE_DB`, 9 dB)
+  below the person's counts as silence, judged in a turn against that turn's own level
+  and between turns against the loudest of the person's last three accepted turns. The
+  panel says when it's on. Turns now end in a room where they never did; but loudness
+  can't tell whose voice it is, so a colleague talking nonstop nearby still gets their
+  sentences sent once one opens a turn, and the first turn begins with whoever was
+  talking when Talk started (docs/DEPLOYMENT.md, "Talk in a busy room"). A headset
+  microphone is the sure fix.
 - **Tap the circle to send** while Talk is hearing you, for a room that still holds a
   turn open. The microphone stays open.
-- **What it heard** says when the browser kept automatic gain on anyway, as some phones
-  do, and **Copy numbers** includes what the browser applied.
+- **What it heard** says when the person turned automatic gain off and the browser kept
+  it on, as some phones do, and **Copy numbers** includes what the browser applied and
+  the settings Talk listened with.
+
+### Fixed
+
+- **What it heard** scrolls inside a fixed height instead of pushing the chat away.
 
 ## [2.7.0] - 2026-11-03
 

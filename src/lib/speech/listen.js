@@ -9,9 +9,18 @@ const ASSETS = `${import.meta.env.BASE_URL}vad/`;
 const FRAME_MS = 32;   // Silero v5 takes 512 samples at 16 kHz
 const QUIET_DB = -50;   // dBFS that shows as still: a quiet room is about -57
 const LOUD_DB = -10;    // dBFS that shows as full: speech close to the microphone
-// No automatic gain: it turns a far voice up whenever the person goes quiet, the moment a turn should end, and it
-// would move the level the gate compares with (gate.js). Echo cancellation stays: the reply mustn't hear itself.
-const MICROPHONE = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false };
+/**
+ * The browser's own processing, all on as Talk always had it, unless the person changed it (Settings, Talk). Automatic
+ * gain turns a far voice up whenever the person goes quiet, the moment a turn should end, so with the voice gate it is
+ * best off; but it also evens out a person who sits back, which is why it stays on by default. Echo cancellation is
+ * what keeps a reply from hearing itself through the speakers.
+ */
+const microphoneFor = (settings) => ({
+  channelCount: 1,
+  echoCancellation: settings.echo_cancellation ?? true,
+  noiseSuppression: settings.noise_suppression ?? true,
+  autoGainControl: settings.auto_gain ?? true,
+});
 
 /** How loud a frame is, 0 to 1 on a decibel scale, so a soft voice still shows. */
 export function levelOf(frame) {
@@ -26,15 +35,14 @@ export async function listen({ settings, onSpeechStarted, onSpeechFailed, onSpee
   // Silero's memory runs on from whatever it last heard, and that dulls it to the next short word. In a continuous
   // stream a real "stop" fired 8 times in 25; with the memory cleared after a silence, 24 (docs/DEPLOYMENT.md).
   const quietFrames = Math.floor(settings.silence_ms / FRAME_MS);
-  const gate = createGate({ marginDb: settings.gate_db, startScore: settings.vad_start });
+  const gate = createGate({ marginDb: settings.gate ? settings.gate_db : 0, startScore: settings.vad_start });
   let quiet = 0;
   let vad = null;
-  let applied = null;    // what the browser did with MICROPHONE: a phone may keep its own gain
-  let started = false;   // the turn has really started: the gate lets the person's softer words count, and learns
-  let before = null;     // the gate's level as this turn started, to give back if it wasn't speech
+  let applied = null;    // what the browser did with the microphone asked for: a phone may keep its own gain
+  let started = false;   // the turn has really started: the gate learns this turn's level
   let sending = false;   // Send was pressed: silence until the turn has ended
   const open = async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: MICROPHONE });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: microphoneFor(settings) });
     applied = stream.getAudioTracks?.()[0]?.getSettings?.() ?? null;
     return stream;
   };
@@ -66,17 +74,19 @@ export async function listen({ settings, onSpeechStarted, onSpeechFailed, onSpee
     },
     onSpeechRealStart: () => {
       started = true;
-      before = gate.voiceDb();
       onSpeechStarted?.();
     },
     onVADMisfire: () => {
+      gate.endTurn();   // too short to be a turn: it teaches nothing
       settle();
       onSpeechFailed?.();
     },
+    // `learn`, for the conversation to call once Whisper accepts the clip as speech: this turn's level joins the
+    // ones the gate's bar between turns is set by. A clip that wasn't speech (a cough) teaches nothing.
     onSpeechEnd: (audio) => {
-      const level = before;
+      const learn = gate.endTurn();
       settle();
-      onSpeechEnded?.(audio, () => gate.lowerTo(level));
+      onSpeechEnded?.(audio, learn);
     },
   });
   // The score every frame is judged by. vad-web has no public way in: its FrameProcessor asks this function for

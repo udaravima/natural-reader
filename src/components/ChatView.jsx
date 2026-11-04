@@ -33,6 +33,7 @@ import { buildPinPreamble } from "../hooks/pins";
 import MicButton from "./chat/MicButton";
 import { useVoiceInput } from "../hooks/useVoiceInput";
 import { useSpeechWindow } from "../hooks/useSpeechWindow";
+import { talkSettings } from '../lib/speech/talkSettings';
 import TalkPanel, { TalkButton } from "./speech/TalkPanel";
 import {
   fileToAttachment,
@@ -204,8 +205,13 @@ export default function ChatView({
   // The conversation runs in this chat: what is said goes in as messages, and the panel takes the typing box's
   // place until End. The halo is moved straight from the microphone's frames, 31 a second, never through a render.
   const orbRef = useRef(null);
+  // The server's window settings with the person's own on top (Settings, Talk; lib/speech/talkSettings.js).
+  const talkWindow = talk?.status?.window;
+  const talkChoices = talk?.choices;
+  const listening = useMemo(() => (talkWindow ? talkSettings(talkWindow, talkChoices) : undefined),
+    [talkWindow, talkChoices]);
   const speech = useSpeechWindow({
-    apiHost, apiPort, sendMessage, stopStream, showToast, ...talk, settings: talk?.status?.window,
+    apiHost, apiPort, sendMessage, stopStream, showToast, ...talk, settings: listening,
     onLevel: (level) => orbRef.current?.style.setProperty('--level', String(level)),
   });
   const talking = speech.phase !== 'off';
@@ -592,8 +598,8 @@ export default function ChatView({
             </div>
           )}
           {talking ? (
-            <TalkPanel theme={theme} speech={speech} silenceMs={talk?.status?.window?.silence_ms ?? 0} orbRef={orbRef}
-              heardBy={talk?.status?.heard_by} />
+            <TalkPanel theme={theme} speech={speech} silenceMs={listening?.silence_ms ?? 0} orbRef={orbRef}
+              heardBy={talk?.status?.heard_by} settings={listening ?? null} onSettings={talk?.onOpenSettings ?? null} />
           ) : (
             <>
               {viewing && (

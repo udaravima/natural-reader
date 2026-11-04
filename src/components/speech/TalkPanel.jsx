@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { AudioLines, Loader2, Mic, MicOff, PhoneOff } from 'lucide-react';
+import { AudioLines, Loader2, Mic, MicOff, PhoneOff, SlidersHorizontal } from 'lucide-react';
 import { clipTimes, medianFirstSound } from '../../lib/speech/clipTimes';
 
 const WORDS = {
@@ -78,7 +78,12 @@ export function TalkButton({ theme, status, selectedModel, busy, onStart }) {
  * The conversation's controls, in place of the typing box while it runs; the chat above shows its words. It holds no
  * state of its own: the conversation lives in useSpeechWindow.
  */
-export default function TalkPanel({ theme, speech, silenceMs, orbRef, heardBy = 'this server' }) {
+/**
+ * `settings`: what Talk listens with, the server's defaults and the person's choices (lib/speech/talkSettings.js).
+ * `onSettings`: opens Settings at the Talk tab.
+ */
+export default function TalkPanel({ theme, speech, silenceMs, orbRef, heardBy = 'this server', settings = null,
+  onSettings = null }) {
   const { phase, clips, muted, microphone = null, end, toggleMute, cutIn, send } = speech;
   const panel = useRef(null);
   const heardList = useRef(null);
@@ -114,14 +119,24 @@ export default function TalkPanel({ theme, speech, silenceMs, orbRef, heardBy = 
             {orb}
           </button>
         ) : orb}
-        <div className={`flex-1 min-w-0 ${theme.text}`}>
+        {/* At least 10rem: on a phone the buttons wrap below it, instead of the words wrapping one per line. */}
+        <div className={`flex-1 min-w-40 ${theme.text}`}>
           <p role="status" className="text-sm font-bold">{muted ? 'Muted' : WORDS[phase]}</p>
           {hint && <p className={`text-xs ${theme.textSecondary}`}>{hint}</p>}
           {heardBy && heardBy !== 'this server' && (
             <p className={`text-xs ${theme.textSecondary}`}>{`Heard by ${heardBy}`}</p>
           )}
+          {settings?.gate && (
+            <p className={`text-xs ${theme.textSecondary}`}>{`Ignoring voices ${settings.gate_db} dB quieter than yours`}</p>
+          )}
         </div>
         <div className="flex gap-2">
+          {onSettings && (
+            <button type="button" onClick={onSettings} aria-label="Talk settings" title="Talk settings"
+              className={`${button} ${theme.bgTertiary} ${theme.text}`}>
+              <SlidersHorizontal size={16} aria-hidden="true" />
+            </button>
+          )}
           <button type="button" onClick={toggleMute} className={`${button} ${theme.bgTertiary} ${theme.text}`}>
             {muted ? <Mic size={16} aria-hidden="true" /> : <MicOff size={16} aria-hidden="true" />}
             {muted ? 'Unmute' : 'Mute'}
@@ -140,14 +155,15 @@ export default function TalkPanel({ theme, speech, silenceMs, orbRef, heardBy = 
           </summary>
           <button type="button" className="mt-2 underline"
             onClick={() => navigator.clipboard?.writeText(JSON.stringify({
+              settings,
               microphone,
               clips: clips.map((clip) => ({ ...clip, times: clipTimes(clip, silenceMs) })),
             }, null, 2))}>
             Copy numbers
           </button>
-          {microphone?.autoGainControl === true && (
+          {settings?.auto_gain === false && microphone?.autoGainControl === true && (
             <p className={`mt-2 ${theme.textSecondary}`}>
-              Automatic gain on: this browser kept it, so other voices in the room are harder to ignore.
+              Automatic gain is still on: this browser kept it, so other voices in the room are harder to ignore.
             </p>
           )}
           <ul ref={heardList} className="mt-2 max-h-48 overflow-y-auto overscroll-contain">

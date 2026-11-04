@@ -145,7 +145,7 @@ export function createConversation({
     if (draining) return;
     draining = true;
     while (waiting.length > 0 && !ended) {
-      const { clip, samples, giveBack } = waiting.shift();
+      const { clip, samples, learn } = waiting.shift();
       checking = true;
       emit();
       let result = null;
@@ -165,8 +165,10 @@ export function createConversation({
         clip.verdict = 'failed';
       }
       onClip?.(clip);
-      if (clip.verdict === 'speech') accepted.push({ text: result.text, clip });
-      else giveBack?.();   // not the person speaking: the voice gate forgets what this turn taught it (gate.js)
+      if (clip.verdict === 'speech') {
+        learn?.();   // the person speaking: the voice gate learns their level from this turn (gate.js)
+        accepted.push({ text: result.text, clip });
+      }
     }
     draining = false;
     settle();
@@ -186,13 +188,13 @@ export function createConversation({
       settle();
       emit();
     },
-    /** `giveBack`: from the microphone (listen.js), undoes what this turn taught the voice gate. */
-    speechEnded(samples, giveBack) {
+    /** `learn`: from the microphone (listen.js), for a clip Whisper accepts as speech: the voice gate learns from it. */
+    speechEnded(samples, learn) {
       hearing = false;
       const clip = { id: nextClip, speechMs: samples.length / SAMPLES_PER_MS, endedAt: now() };
       nextClip += 1;
       onClip?.(clip);
-      waiting.push({ clip, samples, giveBack });
+      waiting.push({ clip, samples, learn });
       drain();
     },
     /** The person tapped to stop the reply: it stops where it is, and listening carries on. */
