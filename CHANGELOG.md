@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-11-04
+
 **Speak the language you speak.** Each person switches the language they speak, Sinhala,
 English or Tamil, in one tap beside the microphone and in Talk, and each language is
 heard by the model an admin offered for it. With Google reading the replies, each person

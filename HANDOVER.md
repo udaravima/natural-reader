@@ -4,7 +4,15 @@
 
 ---
 
-## 2026-11-04 evening — speech each person chooses: built, walked, on `feat/speech-choices`, not merged (START HERE)
+## 2026-11-04 night — v2.9.0 released: speech each person chooses (START HERE)
+
+**State.** On the owner's "merge this to main and we can release this": `feat/speech-choices` (8c3b70a) fast-forwarded into `development`, the release commit on top (version 2.9.0, changelog dated, `docs/Release_notes/RELEASE_NOTES_v2.9.0.md`, TESTING counts), `development` merged into `master`, annotated tag `v2.9.0`. Gates on the merged tree: pytest 2946 passed / 16 skipped, vitest 1806 in 150 files, eslint 0 errors, build OK.
+
+**Found since, not built.**
+- **The owner's two new Google recognizers** (`asr-si-en`, `asr-ta-en`, `asia-southeast1`, `chirp_3`): the Sinhala one lists `sl-SI`, which is Slovenian. Google's Chirp 3 language table (read 2026-11-04) has no Sinhala at all; its supported-languages table lists `si-LK` only for `chirp` and `chirp_2`, in `asia-southeast1` among others. Today's engine takes one `GOOGLE_SPEECH_RECOGNIZER`; a recognizer per language is the owner's next ask (design not yet approved).
+- **Disk:** the backend's `cache` volume holds 4.4 GB, of which about 2.8 GB are the original checkpoints of the three converted fine-tunes (925 MB each), never read once converted (`server/speech/convert.py` downloads into HF_HOME and keeps them). The owner was offered a fix: convert from a temporary download, and clear the three originals from the live volume (needs their yes).
+
+## 2026-11-04 evening — speech each person chooses: built, walked, on `feat/speech-choices`, then released as v2.9.0
 
 **State.** `feat/speech-choices` from `development` (cb70b8f), 12 commits, every one on the owner's delegated "you have your decision to commit": magnetic sliders (096c350), the phone header (f3a09f5), the plan (afd1216), the seven plan tasks (3e7821a..89c175f) and a Home/End fix (e790752). Not merged into `development`: that still needs the owner's word. The auto-pusher pushes the branch. Gates on e790752: pytest 2946 passed / 16 skipped, vitest 1806 in 150 files, eslint 0 errors (24 old warnings), build OK.
 
