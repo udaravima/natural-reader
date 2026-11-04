@@ -4,6 +4,47 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+**Fixes from the bucket list.** No migrations. Both halves rebuild.
+
+### Fixed
+
+- **`BOOTSTRAP_ADMIN_EMAIL` now reserves the admin account.** With it set, whoever
+  signed in first on a fresh database still became the admin, because the first-login
+  path claimed the seed row without looking at the pinned email. Now only that email,
+  verified, claims it; anyone else signing in first lands as a pending member.
+- **The founder named by `BOOTSTRAP_ADMIN_EMAIL` gets admin, reader and chat on their
+  first login**, as a founder who signs in first always did. Before, a Keycloak user
+  with no realm roles was left an admin with no access. Keycloak stays authoritative
+  from the second login (docs/DEPLOYMENT.md, Trap 4).
+- **A People tick changes only that capability.** It sent the whole set the list
+  showed, so a list opened before someone's login took away the roles that login
+  brought, in Keycloak too. `PATCH /v1/admin/users/{id}` takes `add_capabilities` and
+  `remove_capabilities`, applied to the person as they are now; `capabilities` (the
+  whole set) still works, and a request can't send both.
+- **Stepping through the speech model or engine list with the arrow keys no longer
+  switches at every step.** Each step loaded (or downloaded) that model. The choice is
+  made on Enter, on leaving the list, or with a click.
+- **A converted speech model no longer keeps its original.** A fine-tune's checkpoint
+  (about 925 MB for a `small`) was downloaded into the Hugging Face cache and kept,
+  though never read once converted. It now downloads into the conversion's scratch
+  folder and goes with it. Originals left by earlier versions stay until removed
+  (docs/DEPLOYMENT.md, "Originals left by 2.10 and earlier").
+- **One worker converts a model at a time.** Two workers asked for the same new model
+  each downloaded and converted it. A second one now waits for the first's result.
+- **A full database pool no longer stalls every signed-in request.** A request
+  stamped "last seen" on a second connection while holding its first; with every
+  connection held that way, all of them waited until the pool timed out. The stamp
+  now waits at most half a second and is otherwise skipped until the next request.
+- **The Speaking chip says "Auto (Sinhala)"** when Google's first ticked recognizer
+  hears only one language, as Talk says "Auto (English)".
+- The document eval counts "The documents do not list …" as declining to answer.
+
+### Changed
+
+- `filelock` is listed in `requirements.txt` (it already came with `huggingface_hub`).
+- **Docs:** what the reader model is sent (the question, a goal the chat model writes,
+  the pages), so a reader at another provider receives conversation content too.
+
 ## [2.10.0] - 2026-11-04
 
 **Google speech through a recognizer per language.** An admin ticks Google's recognizers

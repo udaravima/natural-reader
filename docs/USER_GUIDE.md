@@ -271,9 +271,10 @@ Notes:
   A tick here applies at once. A realm set up before a role existed has to be given
   it by hand once (**Realm roles → Create role**): `docling` from 2.5, `talk` from
   2.6. Until then the tick says which role to create.
-- **Tick from a fresh list.** A tick sends the person's whole set of capabilities as
-  this list shows them. If they logged in since you opened it and their roles changed,
-  reload first, or the tick puts back what the list showed.
+- **A tick changes only that capability.** It adds or removes the one you ticked,
+  on the person as they are now, so roles their login brought since you opened the
+  list stay. (Up to 2.10 a tick sent the whole set the list showed, and could take
+  those roles away.)
 - Each person's daily token budget is the **Budget** box on their row under
   **People** (empty = the deployment default, 0 = unlimited; press **Set**).
   **Usage** shows tokens by model, by person and by day.
@@ -467,6 +468,13 @@ the person's. A reader on a model the app doesn't size (Ollama cloud, an
 OpenAI-compatible provider) sends no size. Each
 reader batch is cut to fit its model's window: never above `READER_INPUT_CHARS`,
 and at most 16 passages.
+
+**What the reader is sent.** Each reader call carries the person's question, a goal
+of up to 500 characters that the chat model writes, and the pages being read. The
+chat model chooses what goes in that goal, so anything in the conversation can reach
+the reader, not just the document. With the reader on the chat model that changes
+nothing. With a reader at another provider, say a cloud reader behind a local chat
+model, treat the conversation as going to that provider too.
 
 **Providers: local or cloud.** This flag is about cost, not sizing: the
 Overview's quota hint, the **Where** column in **Usage**, and the **Auto** label. **Auto**

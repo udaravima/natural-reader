@@ -4,7 +4,17 @@
 
 ---
 
-## 2026-11-04 late night — v2.10.0 released: a recognizer for each language, and the time (START HERE)
+## 2026-11-04 near midnight — bucket-list fixes on `fix/bucket-list`, UNCOMMITTED (START HERE)
+
+**State.** Branch `fix/bucket-list` from `development` (`b25cf35`, v2.10.0), on the owner's "let's finish our long pending tasks". Nothing committed: commits wait for the owner's word. Gates: pytest 3010 passed / 16 skipped, vitest 1830 in 151 files, eslint 0 errors (24 old warnings), build OK. CHANGELOG `[Unreleased]` lists each fix.
+
+**Fixed (each with a test that failed first).** `BOOTSTRAP_ADMIN_EMAIL` now reserves the seed admin (branch 3 claims it only while its email is the sentinel `admin@localhost`), and the founder's email claim gets the bootstrap capabilities (the founder-lockout trap on the first login). A People tick sends `add_capabilities` / `remove_capabilities`, applied to the row as it is now. A short native list marked `settle` (speech engine, speech model) chooses on Enter, blur, or 1 s after the last arrow step: on a Mac the arrows open the menu and its Enter never reaches the page, hence the pause. Conversion downloads the original into its scratch folder (no more ~925 MB kept per fine-tune) under a `filelock` per model in `HF_HOME/speech-converting`. `touch.stamp` waits at most 0.5 s for a pooled connection, else skips. The Speaking chip says "Auto (Sinhala)" when Google's first recognizer hears one language. The eval scorer takes "do not list". The reader's goal text documented as a path for conversation content to a reader at another provider (USER_GUIDE).
+
+**Walked in Chromium** (scratch backend :8100 with a dummy `SPEECH_URL`, DB `nr_bucket_walk`, dropped after): stepping the engine list down and back sent nothing, a step and a pause sent one PUT; a tick on a list loaded before Tess's roles changed kept them (`{chat,reader,talk}`).
+
+**Live volume, owner's call:** the three originals (~2.8 GB) are still in the live `cache` volume; DEPLOYMENT "Originals left by 2.10 and earlier" has the commands.
+
+## 2026-11-04 late night — v2.10.0 released: a recognizer for each language, and the time
 
 **State.** On the owner's "commit and do a release": the clock tool and docs committed on `feat/google-recognizers` (`de7ac05`, `4654670`), the branch fast-forwarded into `development`, the release commit on top (version 2.10.0, changelog dated, `docs/Release_notes/RELEASE_NOTES_v2.10.0.md`, TESTING rows), `development` merged into `master`, annotated tag `v2.10.0`. **Not deployed**: the live backend image is v2.9.0 code, and the live `.env`'s `GOOGLE_SPEECH_RECOGNIZER` names the deleted `asr-si-ta` (live speech has been Whisper since 19:01). To deploy: `./startup.sh rebuild`, `npm run build`, `sudo ./deploy.sh`; then Admin → Chat options → Google Cloud and tick `asr-si-en`, `asr-ta-en`, `asr-en`.
 

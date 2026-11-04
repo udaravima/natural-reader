@@ -277,12 +277,12 @@ first-login bootstrap, are both **transient** — the next login re-syncs from t
 (empty) token. Three mechanisms are meant to seed the first admin, and it is easy
 to disarm all three at once:
 
-- **First-user-admin (branch 3)** force-grants `{admin,reader,chat}` to whoever
-  first claims the seed row — **but only via the race path.** Setting
-  `BOOTSTRAP_ADMIN_EMAIL` to the founder's email routes them through the
-  *email-claim* path (branch 2) instead, which has **no capability floor**, so the
-  empty token wins. Setting `BOOTSTRAP_ADMIN_EMAIL` (otherwise recommended) is
-  exactly what removes this net.
+- **The seed admin's first claim** force-grants `{admin,reader,chat}`, whether the
+  founder claims it by signing in first or, with `BOOTSTRAP_ADMIN_EMAIL` set, by
+  their verified email. **But only for that first login**: the next one mirrors the
+  token again, so an empty token wins from the second login on. (Up to 2.10 the
+  `BOOTSTRAP_ADMIN_EMAIL` path had no floor at all, and the first login already
+  locked the founder out.)
 - **The realm export can grant the founder the roles directly.** The `admin-user`
   entry in [`../deploy/keycloak/realm-export.json`](../deploy/keycloak/realm-export.json)
   now carries `"realmRoles": ["admin","reader","chat"]` — but only a **fresh
@@ -914,7 +914,21 @@ entry still needs Hugging Face if that folder isn't there.
 
 **The built-in fine-tunes.** Each is about 967 MB to download and, once converted,
 242 MB on disk. Ready in 105-126 s on a test line, download included; conversion
-itself takes a few seconds.
+itself takes a few seconds. The download goes into the conversion's own scratch
+folder and is deleted with it, so only the 242 MB stays. One worker converts a model
+at a time; another that wants it meanwhile waits for that result instead of
+downloading it again.
+
+**Originals left by 2.10 and earlier.** Those versions downloaded the original into the
+Hugging Face cache and kept it, about 925 MB per converted fine-tune, never read
+again. To get the space back, delete each converted model's repo from the cache's
+`hub` folder (only `converted-whisper` repos: a `faster-whisper` model loads from
+there):
+
+```bash
+podman exec <backend> sh -c 'ls -d /app/.cache/huggingface/hub/models--*'   # find them
+podman exec <backend> rm -rf /app/.cache/huggingface/hub/models--<owner>--<name>
+```
 
 | Id | For | Measured on a CPU-only machine |
 |---|---|---|
