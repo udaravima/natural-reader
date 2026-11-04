@@ -93,8 +93,13 @@ async def request_vectors(e: Embedder, texts: list[str], *, client: httpx.AsyncC
         resp = await (client or _get_client()).post(url, json=body, headers=headers)
         resp.raise_for_status()
         data = resp.json()
-    except httpx.HTTPStatusError as err:   # reachable, but refusing: a model never pulled is a 404
-        raise EmbeddingError(f"{_where(e)} answered HTTP {err.response.status_code}") from None
+    except httpx.HTTPStatusError as err:   # reachable, but refusing
+        code = err.response.status_code
+        if code == 404:     # Ollama: never pulled; an OpenAI-compatible server: no such model
+            raise EmbeddingError(f"{e.model} isn't on {e.provider.name} (HTTP 404)") from None
+        if code == 501:     # Ollama: a chat model asked for embeddings
+            raise EmbeddingError(f"{e.model} on {e.provider.name} doesn't make embeddings (HTTP 501)") from None
+        raise EmbeddingError(f"{_where(e)} answered HTTP {code}") from None
     except httpx.HTTPError as err:
         raise EmbeddingError(f"Can't reach {e.provider.name} for {e.model} ({type(err).__name__})") from None
     except ValueError:
@@ -153,6 +158,60 @@ async def embed_batch(texts: list[str], e: Embedder | None = None) -> list[list[
 
     out = await asyncio.gather(*(safe(b) for b in _batches(texts)))
     return [vec for batch in out for vec in batch]
+
+
+# ---------- the probe: may this model fill a 768-number column? (spec §4.2.4) ----------
+
+PROBE_SENTENCE = "The quick brown fox jumps over the lazy dog."
+PROBE_TIMEOUT_S = 60.0   # the first call may load the model
+
+
+@dataclass
+class ProbeResult:
+    ok: bool
+    native: int | None       # numbers the model gives by itself; None when it didn't answer
+    dimensions: int | None   # the `dimensions` to send from now on; None = send none
+    reason: str              # one plain sentence, shown in the console
+
+
+async def probe(provider: ProviderConfig, model: str, *, client: httpx.AsyncClient | None = None) -> ProbeResult:
+    """Two steps. First without `dimensions`, to learn the native size, since a returned length can't be
+    trusted once `dimensions` is sent: Ollama cuts any vector to it and renormalizes, with no error. Then,
+    only for a family trained to be shortened, once more asking for 768."""
+    from .embedding_models import KNOWN, family
+    own = client is None
+    http = client or httpx.AsyncClient(timeout=PROBE_TIMEOUT_S)
+    try:
+        try:
+            first = (await request_vectors(Embedder(provider, model, None, "", ""), [PROBE_SENTENCE],
+                                           client=http))[0]
+        except EmbeddingError as err:
+            return ProbeResult(False, None, None, f"{err}.")
+        native = len(first) if isinstance(first, list) else 0
+        if native == EMBEDDING_DIM:
+            return ProbeResult(True, native, None, f"{model} gives {native} numbers, the size the library holds.")
+        fam = family(model)
+        if native < EMBEDDING_DIM or fam is None or not fam.shortenable:
+            why = ("it can't be lengthened" if native < EMBEDDING_DIM else
+                   "it isn't in a family trained to be shortened (" + ", ".join(KNOWN) + "), and cutting "
+                   "its vectors would make search worse with no error")
+            return ProbeResult(False, native, None,
+                               f"{model} gives {native} numbers and the library holds {EMBEDDING_DIM}: {why}.")
+        try:
+            short = (await request_vectors(Embedder(provider, model, EMBEDDING_DIM, "", ""), [PROBE_SENTENCE],
+                                           client=http))[0]
+        except EmbeddingError as err:
+            return ProbeResult(False, native, None, f"Asked for {EMBEDDING_DIM} numbers, {err}.")
+        got = len(short) if isinstance(short, list) else 0
+        if got != EMBEDDING_DIM:
+            return ProbeResult(False, native, None, f"{model} gives {native} numbers, and asked for {EMBEDDING_DIM} "
+                                                    f"it still gave {got}: this server doesn't shorten it.")
+        return ProbeResult(True, native, EMBEDDING_DIM,
+                           f"{model} gives {native} numbers and is trained to be shortened: it will be asked "
+                           f"for {EMBEDDING_DIM}.")
+    finally:
+        if own:
+            await http.aclose()
 
 
 def env_embedder(env=None) -> Embedder:
