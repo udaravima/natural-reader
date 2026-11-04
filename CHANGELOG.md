@@ -4,7 +4,46 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-**Fixes from the bucket list.** No migrations. Both halves rebuild.
+**Choose the embedding model in the console, and change it without losing search**
+(admin console v2 phase 2b). Migration 025 (`doc_rebuilds`). Both halves rebuild.
+
+### Added
+
+- **Admin console → Models → Embeddings.** Pick a provider and a model, **Check** it,
+  then **Use this model**. Check admits a model that gives 768 numbers, or one trained
+  to be shortened to 768 (qwen3-embedding, embeddinggemma, nomic-embed-text,
+  text-embedding-3), and refuses any other with its size and why: Ollama cuts any
+  vector to the size asked for without an error, and a cut 1024-number model searches
+  worse.
+- **Changing the embedding model re-embeds the library in the background, then
+  switches in one step.** Search keeps using the current model until every passage
+  has a new vector; the console and the Overview show "Re-embedding for … : 1,234 of
+  5,000 passages", and **Cancel the re-embed** keeps the current model. A restart or a
+  crash resumes it. The same model on another provider switches at once. A changed
+  `EMBEDDING_MODEL` in `.env` starts the same re-embed at the next start.
+- **Embeddings through any provider.** `EMBEDDING_PROVIDER` names one of
+  `INFERENCE_PROVIDERS`; an `openai`-kind provider is called at `<url>/embeddings`.
+  Texts go 32 per request (Ollama's `/api/embed`) instead of one call each.
+- **embeddinggemma's prefixes** are known, as nomic's were.
+
+### Changed
+
+- **Rebuilds of one document are queued in the database** (`doc_rebuilds`), claimed
+  by one worker at a time: with several workers a document is rebuilt once, a restart
+  resumes the queue, and the Overview counts waiting and failed rebuilds.
+- **`EMBEDDING_TIMEOUT_S` defaults to 120 s** (was 30), since a request carries 32
+  passages.
+- A deployment whose `EMBEDDING_MODEL` is an embeddinggemma gains its trained
+  prefixes, so its documents are rebuilt on first use.
+
+### Fixed
+
+- **Opening the admin console kept the embedding model loaded.** The Overview's check
+  loaded `nomic-embed-text` and Ollama kept it in memory for five minutes, which
+  looked like the chat holding it. A model the check had to load is now unloaded
+  right after.
+
+**Fixes from the bucket list.** No migrations.
 
 ### Fixed
 

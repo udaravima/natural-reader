@@ -437,9 +437,11 @@ vllm serve Qwen/Qwen3-8B --port 8001 --api-key change-me --max-model-len 32768 \
 
 What each one will surprise you with:
 
-- **Indexing still needs Ollama.** Embeddings go to `OLLAMA_URL` whatever
-  `INFERENCE_PROVIDERS` says, so a vLLM-only or Claude-only deployment can chat
-  but can't index documents.
+- **Embeddings go to the Ollama at `OLLAMA_URL` unless you say otherwise.** A
+  vLLM-only or cloud-only deployment sets `EMBEDDING_PROVIDER` to one of its
+  providers, or chooses it in **Admin console → Models → Embeddings** (see
+  [Embeddings](#embeddings-provider-model-and-re-embedding)). Claude has no
+  embeddings API: pair it with another provider for those.
 - **vLLM:** without `--enable-auto-tool-choice` and the `--tool-call-parser` of the
   model's family (`hermes` for Qwen) it refuses tool requests. The app then turns
   that model's tools off, and it never searches the document.
@@ -474,12 +476,11 @@ and no usage, so it isn't counted against the daily budget):
 | anything else | "The model provider returned an error:" and the provider's own message, redacted |
 
 **Trap:** `OLLAMA_URL` keeps its old job of running document **embeddings**
-even after you set `INFERENCE_PROVIDERS` — it doesn't stop meaning
-"the Ollama chat provider" and start meaning nothing. Remove `OLLAMA_URL`
-after adding providers and indexing breaks, calling `localhost:11434` with
-nothing listening there. There is no admin screen for any of this yet:
-adding, removing, or renaming a provider is an operator `.env` change and a
-restart, same as any other config in this file.
+even after you set `INFERENCE_PROVIDERS`, unless `EMBEDDING_PROVIDER` (or the
+console) names another provider. Remove `OLLAMA_URL` after adding providers
+and indexing breaks, calling `localhost:11434` with nothing listening there.
+Adding, removing or renaming a provider is still an operator `.env` change
+and a restart; the console only chooses among the configured ones.
 
 Full `.env.example` block: [`../.env.example`](../.env.example), just after
 `INFERENCE_TIMEOUT_S`.
@@ -537,6 +538,84 @@ has the screen.
   with `INFERENCE_LOCAL_NUM_CTX`, on a machine short of RAM.
 - A person's own context size stops applying to those models once the admin
   sets one.
+
+### Embeddings: provider, model and re-embedding
+
+Search compares a question's vector with every passage's, so all of them must
+come from one model. Which model that is lives in the database (the
+`embedding_state` row in `app_settings`), separate from the model an admin
+*chooses*. The two differ only while the library is being re-embedded.
+
+**Choosing.** `EMBEDDING_PROVIDER` names one of `INFERENCE_PROVIDERS` (its URL
+and key are reused); unset, it's the Ollama at `OLLAMA_URL`. `EMBEDDING_MODEL`
+defaults to `nomic-embed-text`. **Admin console → Models → Embeddings** wins over
+both: pick a provider and a model, press **Check**, then **Use this model**.
+**Back to the server's setting** removes the console's choice. An `ollama`
+provider is called at `/api/embed`, an `openai` one at `<its URL>/embeddings`,
+32 passages per request.
+
+**What Check admits.** The vectors column holds 768 numbers. A model is admitted
+when it gives 768 by itself, or when it belongs to a family trained to be
+shortened (`qwen3-embedding`, `embeddinggemma`, `nomic-embed-text`,
+`text-embedding-3-*`), in which case it is asked for 768. Anything else is
+refused, and the refusal gives its size. The trap this avoids: Ollama cuts any
+model's vector to the size asked for and renormalizes it with no error, so a
+1024-number model (`bge-m3`, `mxbai-embed-large`) asked for 768 returns 768
+numbers that search noticeably worse. Ollama's own `ollama show` is no guide
+either: it prints a model's internal width, which for `embeddinggemma-2` is 512
+while it gives 768. Check measures what comes back. A missing model says
+"isn't on" the provider; a chat model says it "doesn't make embeddings".
+
+**What Use does.** The same model on another provider switches at once: the
+vectors don't change. Another model, or other prefixes, starts a **re-embed**:
+
+1. A second column, `doc_chunks.embedding_next`, is added with its own HNSW
+   index and filled 32 passages at a time with the new model, by one worker at
+   a time (a claim another worker takes over after 3 minutes of silence, so a
+   restart or a crash resumes where it was).
+2. Meanwhile questions are still embedded with the current model and search the
+   current column, so **every document stays searchable**. Both models must stay
+   reachable until the switch; if the new one stops answering, the re-embed
+   pauses, the Overview says why, and it retries every 30 seconds.
+3. When every passage has a new vector, one transaction drops the old column,
+   renames the new one into its place and makes the new model current. A
+   passage indexed during the re-embed is caught before the switch.
+4. **Cancel the re-embed** (Models → Embeddings) drops the new column before the
+   switch; the library stays on its model.
+
+Changing `EMBEDDING_MODEL` (or a prefix) in `.env` starts the same re-embed at
+the next start. A model Check would refuse is refused there too: the library
+stays on its model and the Overview says why.
+
+**What it costs.** One more copy of the vectors and an index while it runs:
+768 four-byte numbers per passage, about 3 KB, plus the index, so roughly
+6 KB per passage in all. On a laptop CPU with no GPU (i9-13980HX), re-embedding
+took about **2.5 minutes per 1,000 passages with `nomic-embed-text`** (6.4
+passages a second, measured mid-run) and **about 6 with `embeddinggemma-2:740m`**
+(313 passages in 109 s, model load included). Expect a GPU to be much faster;
+that wasn't measured.
+
+**Rebuilds of one document** (after a chunker change, or for a document indexed
+before an upgrade) are queued in the `doc_rebuilds` table and claimed by one
+worker at a time with `FOR UPDATE SKIP LOCKED`, so with `WORKERS > 1` a document
+is rebuilt once, a restart resumes the queue, and the Overview counts it. A
+rebuild that fails waits 15 minutes before it is tried again.
+
+**The Overview** checks the current model with one sentence. On Ollama it asks
+`/api/ps` first and, if the model wasn't loaded, unloads it right after: opening
+the console no longer keeps the embedding model in memory for Ollama's five
+minutes.
+
+**Upgrading to this release.** Migration 025 adds `doc_rebuilds`; the first
+start records the environment's model as current. Nothing is re-embedded,
+with one exception: a deployment whose `EMBEDDING_MODEL` is an `embeddinggemma`
+now gets that family's trained prefixes, so its documents are rebuilt on first
+use, as after any prefix change. `EMBEDDING_TIMEOUT_S` now defaults to 120 s,
+since one request carries 32 passages. **Downgrading:** cancel any re-embed first
+(the previous image doesn't know the second column), then run 025's Down block.
+
+**Not verified:** no `openai`-kind embeddings endpoint (vLLM, OpenAI,
+OpenRouter) was called in testing; the requests follow the OpenAI API.
 
 ### Streaming through a proxy
 
