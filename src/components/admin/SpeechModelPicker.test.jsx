@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { SpeechModelPicker } from './SpeechModelPicker';
 
 vi.mock('../../utils/apiFetch', () => ({ apiFetch: vi.fn() }));
@@ -223,6 +223,46 @@ describe('SpeechModelPicker', () => {
     await select();
     expect(screen.queryByRole('button', { name: /^Remove/ })).toBeNull();
     expect(screen.queryByText('Added here')).toBeNull();
+  });
+
+  // Spec 2026-11-04-speech-choices: people pick the language they speak; a ticked model hears its language.
+  const sinhala = {
+    ...tamil, id: 'whisper-small-si', label: 'Whisper small, Sinhala', languages: ['si'], language_names: ['Sinhala'],
+    offerable: true, offered: true, on_disk: true,
+  };
+  const tamilFree = { ...tamil, offerable: true, offered: false, on_disk: null };
+  const everything = { ...small, offerable: false, offered: false, on_disk: null };
+
+  it('offers a model to people with one tick, keeping the list order', async () => {
+    mount(view({ models: [everything, sinhala, tamilFree] }), {
+      PUT: () => view({ models: [everything, sinhala, { ...tamilFree, offered: true, on_disk: false }] }),
+    });
+    const group = await screen.findByRole('group', { name: 'Offered to people' });
+    fireEvent.click(within(group).getByRole('checkbox', { name: /Tamil/ }));
+    await waitFor(() => expect(calls('PUT')).toHaveLength(1));
+    expect(calls('PUT')[0][2]).toBe(`${LIST}/offered`);
+    expect(bodyOf(calls('PUT')[0])).toEqual({ ids: ['whisper-small-si', 'whisper-small-ta'] });
+    expect(await within(group).findByText("Downloading: people see it once it's here")).toBeTruthy();
+  });
+
+  it('says which offered models are on this server', async () => {
+    mount(view({ models: [everything, sinhala, { ...tamilFree, offered: true, on_disk: false }] }));
+    const group = await screen.findByRole('group', { name: 'Offered to people' });
+    expect(within(group).getByText('On this server')).toBeTruthy();
+    expect(within(group).getByText("Downloading: people see it once it's here")).toBeTruthy();
+  });
+
+  it('has no tick for a model that hears every language or can\'t run here', async () => {
+    mount(view({ models: [everything, sinhala, { ...tamilFree, offerable: false, why_not: 'Needs torch.' }] }));
+    const group = await screen.findByRole('group', { name: 'Offered to people' });
+    expect(within(group).getAllByRole('checkbox')).toHaveLength(1);
+    expect(within(group).queryByRole('checkbox', { name: /Whisper small$/ })).toBeNull();
+  });
+
+  it('hides the ticks with a remote engine', async () => {
+    mount(view({ engine: 'google', models: [] }));
+    await engineSelect();
+    expect(screen.queryByRole('group', { name: 'Offered to people' })).toBeNull();
   });
 
   it('keeps its name once the list is long enough to search', async () => {
