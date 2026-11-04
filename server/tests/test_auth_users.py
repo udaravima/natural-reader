@@ -79,6 +79,50 @@ async def test_first_login_claims_seed_admin_with_bootstrap_caps(db_conn):
     assert u["role"] == "admin"
 
 
+async def test_a_pinned_seed_admin_isnt_claimed_by_whoever_signs_in_first(db_conn):
+    # BOOTSTRAP_ADMIN_EMAIL re-points the seed's email (server/db.py bootstrap_admin).
+    # Someone else signing in first on the fresh database must not become admin.
+    await db_conn.execute("UPDATE users SET email='founder@x.io' WHERE id=%s", (SEED,))
+    tess = await resolve_or_provision_user(
+        db_conn, iss="i", sub="tess", email="tess@x.io", email_verified=True,
+        capabilities=["admin", "reader", "chat"],
+    )
+    assert tess["id"] != SEED
+    assert tess["status"] == "pending" and tess["role"] == "member"
+    seed = await get_user(db_conn, SEED)
+    assert seed["oidc_sub"] is None and seed["email"] == "founder@x.io"
+    # The founder still claims it afterwards.
+    founder = await resolve_or_provision_user(
+        db_conn, iss="i", sub="f", email="founder@x.io", email_verified=True,
+    )
+    assert founder["id"] == SEED
+
+
+async def test_the_founder_claiming_the_pinned_seed_gets_the_admin_capabilities(db_conn):
+    # The founder-lockout trap: a Keycloak user with no realm roles claimed the pinned
+    # seed through the email branch and was left with nothing. The seed's first claim
+    # gets the bootstrap set whichever branch claims it.
+    await set_capabilities(db_conn, SEED, [])
+    await db_conn.execute("UPDATE users SET email='founder@x.io' WHERE id=%s", (SEED,))
+    u = await resolve_or_provision_user(
+        db_conn, iss="i", sub="f", email="founder@x.io", email_verified=True, capabilities=[],
+    )
+    assert u["id"] == SEED
+    assert set(u["capabilities"]) == {"admin", "reader", "chat"}
+    assert u["role"] == "admin"
+
+
+async def test_an_enrolled_member_claiming_their_row_keeps_the_tokens_roles(db_conn):
+    # Only the seed gets the floor: any other pre-provisioned row mirrors the token.
+    await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="a@x.io")  # seed
+    await db_conn.execute(
+        "INSERT INTO users (email, role, status) VALUES ('m@x.io', 'member', 'active')")
+    m = await resolve_or_provision_user(
+        db_conn, iss="i", sub="m", email="m@x.io", email_verified=True, capabilities=["reader"],
+    )
+    assert set(m["capabilities"]) == {"reader"}
+
+
 async def test_brand_new_user_is_pending_with_no_caps(db_conn):
     await resolve_or_provision_user(db_conn, iss="i", sub="s1", email="a@x.io")  # seed
     m = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io",
