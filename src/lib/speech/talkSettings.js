@@ -6,7 +6,8 @@
  * default an admin changes still reaches everyone who left it alone, and "Reset to defaults" forgets them all.
  */
 
-// `fallback`: the measured value, for a server too old to send the setting. Ranges are the server's own.
+// `fallback`: the measured value, for a server too old to send the setting. Ranges are the server's own. A slider is
+// pulled onto every `step` and can be dragged to any `fine` step between (components/SnapSlider.jsx).
 export const TALK_CONTROLS = [
   {
     key: 'auto_gain', group: 'Microphone', kind: 'switch', label: 'Automatic gain', fallback: true,
@@ -29,22 +30,22 @@ export const TALK_CONTROLS = [
   },
   {
     key: 'gate_db', group: 'Other voices in the room', kind: 'range', label: 'How much quieter', unit: 'dB',
-    min: 3, max: 30, step: 1, fallback: 9, onlyWith: 'gate',
+    min: 3, max: 30, step: 1, fine: 1, fallback: 9, onlyWith: 'gate',
     help: 'If it cuts you off, raise it, or sit closer. Lower keeps a nearer voice out more often, and cuts more of yours.',
   },
   {
     key: 'silence_ms', group: 'Ending your turn', kind: 'range', label: 'Pause that ends your turn', unit: 'ms',
-    min: 100, max: 5000, step: 100, fallback: 700,
+    min: 100, max: 5000, step: 100, fine: 10, fallback: 700,
     help: 'Raise it if Talk answers while you are still thinking; lower it for quicker replies.',
   },
   {
     key: 'min_speech_ms', group: 'Ending your turn', kind: 'range', label: 'Speech that counts as a turn', unit: 'ms',
-    min: 0, max: 2000, step: 50, fallback: 250,
+    min: 0, max: 2000, step: 50, fine: 10, fallback: 250,
     help: 'Shorter, and a reply pauses sooner when you speak; longer, and coughs and short noises are ignored more.',
   },
   {
     key: 'vad_start', group: 'Ending your turn', kind: 'range', label: 'How sure it must be that it\'s speech',
-    min: 0, max: 1, step: 0.05, fallback: 0.5,
+    min: 0, max: 1, step: 0.05, fine: 0.01, fallback: 0.5,
     help: 'Higher ignores more noise and may miss a quiet word.',
   },
 ];

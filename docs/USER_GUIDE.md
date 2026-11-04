@@ -64,7 +64,12 @@ navigation (reader) and the model picker + sessions (chat). Everything about
   language: open it and type to find one, and the play button beside it previews it.
   Each reads its own language best. Sinhala and Tamil have no voices of their own, but
   any voice can read them, and English words among them stay English. Try the Hindi
-  voices first. Japanese voices read kana but not kanji.
+  voices first. Japanese voices read kana but not kanji. **Speed** is a slider from
+  0.5× to 2×. It drags smoothly but pulls onto round values (every 0.05, and harder onto
+  1×, the voice's own pace), so it usually stops on one; drag a little further for the
+  values in between. Arrow keys jump to the next round value, Shift with an arrow moves
+  by 0.01. A change applies from the next sentence; the reading carries on. **Volume**
+  and the sliders under **Settings → Talk** pull onto round values the same way.
 - **Admin** console — a separate view opened from the **shield** button in the
   top view switcher (Reader / Chat / Library / Admin). Only admins see it.
   **No token creation happens here.**

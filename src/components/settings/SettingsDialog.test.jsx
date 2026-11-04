@@ -109,13 +109,47 @@ describe('SettingsDialog — a dialog over the current view', () => {
     opener.remove();
   });
 
-  it('changing the speed calls setPlaybackSpeed', () => {
+  it('dragging the speed calls setPlaybackSpeed', () => {
     const b = bags();
     const setPlaybackSpeed = vi.fn();
     b.voiceSettings.setPlaybackSpeed = setPlaybackSpeed;
     render(<SettingsDialog {...b} />);
-    fireEvent.change(screen.getByLabelText(/speed/i), { target: { value: '1.5' } });
+    const slider = screen.getByLabelText(/speed/i);
+    fireEvent.pointerDown(slider);
+    fireEvent.change(slider, { target: { value: '1.5' } });
     expect(setPlaybackSpeed).toHaveBeenCalledWith(1.5);
+  });
+
+  // The owner, 2026-11-04: a slider that moves linearly but is pulled onto round values, with nothing else around it.
+  // Kokoro refuses a speed outside 0.5 to 2.0 (kokoro_onnx raises ValueError).
+  it('the speed is a slider from 0.5× to 2× that lands on round values, showing the value and nothing more', () => {
+    const b = bags();
+    b.voiceSettings.playbackSpeed = 1.25;
+    const setPlaybackSpeed = vi.fn();
+    b.voiceSettings.setPlaybackSpeed = setPlaybackSpeed;
+    render(<SettingsDialog {...b} />);
+    const slider = screen.getByRole('slider', { name: 'Speed' });
+    expect(slider).toHaveAttribute('min', '0.5');
+    expect(slider).toHaveAttribute('max', '2');
+    expect(screen.getByText('1.25×')).toBeInTheDocument();
+    expect(screen.queryByText('1.5×')).not.toBeInTheDocument();   // no marks under it
+    fireEvent.pointerDown(slider);
+    fireEvent.change(slider, { target: { value: '1.14' } });
+    expect(setPlaybackSpeed).toHaveBeenLastCalledWith(1.15);
+    fireEvent.keyDown(slider, { key: 'ArrowRight' });
+    expect(setPlaybackSpeed).toHaveBeenLastCalledWith(1.3);
+  });
+
+  it('the volume lands on 5% steps too', () => {
+    const b = bags();
+    const setVolume = vi.fn();
+    b.voiceSettings.volume = 0.5;
+    b.voiceSettings.setVolume = setVolume;
+    render(<SettingsDialog {...b} />);
+    const slider = screen.getByRole('slider', { name: 'Volume' });
+    fireEvent.pointerDown(slider);
+    fireEvent.change(slider, { target: { value: '0.71' } });
+    expect(setVolume).toHaveBeenLastCalledWith(0.7);
   });
 
   it('toggling dark mode calls setDarkMode', () => {

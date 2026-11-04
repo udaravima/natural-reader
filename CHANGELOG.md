@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- **Reading speed is a slider**, from 0.5× to 2×, instead of six fixed speeds. It drags
+  smoothly but is pulled onto round values, every 0.05 and harder onto 1×: in a drag
+  across it, about 80% of positions land on one, and the values in between are a little
+  further push away. Arrow keys jump to the next round value; Shift with an arrow moves
+  by 0.01. Kokoro can't go outside that range. A saved speed carries over. **Admin →
+  Defaults → Reading speed** takes 0.05 steps.
+- **Volume and the Talk settings' sliders** pull onto round values the same way (5%,
+  100 ms, 50 ms, 0.05), with finer values between.
+
 ## [2.8.0] - 2026-11-04
 
 **Talk settings, and Talk in a busy room.** Each person can now change how Talk listens

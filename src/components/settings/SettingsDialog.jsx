@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { KOKORO_VOICES } from '../../constants';
-import { PlayCircle, Square, Clock, VolumeX, Volume1, Volume2, Moon, Sun, Zap, X } from 'lucide-react';
+import { PlayCircle, Square, Clock, Gauge, VolumeX, Volume1, Volume2, Moon, Sun, Zap, X } from 'lucide-react';
 import { InferenceRow } from '../chat/InferenceRow';
 import { KEEP_ALIVE_OPTIONS, NUM_CTX_OPTIONS, serverContextSize, shownValue, withAutoLabel, withinLimit } from '../../lib/inferenceLimits';
 import { AccountPanel } from '../account/AccountPanel';
@@ -8,6 +8,7 @@ import { resolveForModel, patchForModel } from '../../hooks/inference';
 import { apiFetch } from '../../utils/apiFetch';
 import { migrateModelId, modelOptions, supportedKnobs } from '../../lib/modelIds';
 import { SearchableSelect } from '../SearchableList';
+import { SnapSlider } from '../SnapSlider';
 import { TalkSettingsPanel } from './TalkSettingsPanel';
 
 function Field({ theme, label, children }) {
@@ -154,6 +155,9 @@ export default function SettingsDialog({ theme, tab, onTab, onClose, profile = n
 }
 
 const VOICE_OPTIONS = KOKORO_VOICES.map((x) => ({ value: x.id, label: x.name, group: x.group }));
+const SLIDER = 'flex-1 h-2 appearance-none bg-slate-300 dark:bg-slate-600 rounded-full cursor-pointer accent-blue-500';
+const speedText = (speed) => `${Number(speed).toFixed(2)}×`;
+const volumeText = (volume) => `${Math.round(volume * 100)}%`;
 
 const inputClass = (theme) => `text-xs font-bold p-2 rounded-lg border ${theme.border} ${theme.bgTertiary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none transition-colors`;
 
@@ -188,27 +192,30 @@ function VoicePanel({ theme, v }) {
                     )}
                 </Field>
 
+                {/* Kokoro takes 0.5 to 2.0 and refuses anything else. The slider drags linearly but is pulled onto every
+                    0.05, and harder onto 1× (SnapSlider). Each change only drops prepared audio: what is playing carries
+                    on, and the next sentence is read at the new speed. */}
                 <Field theme={theme} label="Speed">
-                    <select
-                        aria-label="Speed"
-                        value={v.playbackSpeed}
-                        onChange={(e) => { v.setPlaybackSpeed(parseFloat(e.target.value)); v.clearCache(); }}
-                        className={`w-full ${input}`}
-                    >
-                        {[0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((s) => <option key={s} value={s}>{s}x Speed</option>)}
-                    </select>
+                    <div className={`flex items-center gap-3 p-2 rounded-lg border ${theme.border} ${theme.bgTertiary}`}>
+                        <Gauge size={16} className={theme.textSecondary} aria-hidden="true" />
+                        <SnapSlider
+                            label="Speed" value={v.playbackSpeed} min={0.5} max={2} fine={0.01} every={0.05} home={[1]}
+                            valueText={speedText}
+                            onChange={(speed) => { v.setPlaybackSpeed(speed); v.clearCache(); }}
+                            className={SLIDER}
+                        />
+                        <span className={`text-xs font-bold tabular-nums ${theme.textSecondary} w-12 text-right`}>{speedText(v.playbackSpeed)}</span>
+                    </div>
                 </Field>
 
                 <Field theme={theme} label="Volume">
                     <div className={`flex items-center gap-3 p-2 rounded-lg border ${theme.border} ${theme.bgTertiary}`}>
                         <VolumeIcon size={16} className={theme.textSecondary} />
-                        <input
-                            type="range" min="0" max="1" step="0.1" aria-label="Volume"
-                            value={v.volume}
-                            onChange={(e) => v.setVolume(parseFloat(e.target.value))}
-                            className="flex-1 h-2 appearance-none bg-slate-300 dark:bg-slate-600 rounded-full cursor-pointer accent-blue-500"
+                        <SnapSlider
+                            label="Volume" value={v.volume} min={0} max={1} fine={0.01} every={0.05}
+                            valueText={volumeText} onChange={v.setVolume} className={SLIDER}
                         />
-                        <span className={`text-xs font-bold ${theme.textSecondary} w-8`}>{Math.round(v.volume * 100)}%</span>
+                        <span className={`text-xs font-bold tabular-nums ${theme.textSecondary} w-12 text-right`}>{volumeText(v.volume)}</span>
                     </div>
                 </Field>
 
