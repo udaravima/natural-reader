@@ -47,6 +47,20 @@ describe('SnapSlider', () => {
     expect(el).toHaveValue('1.11');
   });
 
+  // A native slider's Home and End go to the ends, and Page Up and Down move by a larger step: they must still.
+  it('Home and End go to the ends; Page Up and Page Down move five round values', () => {
+    render(<Speed initial={1.1} />);
+    const el = slider();
+    fireEvent.keyDown(el, { key: 'End' });
+    expect(el).toHaveValue('2');
+    fireEvent.keyDown(el, { key: 'Home' });
+    expect(el).toHaveValue('0.5');
+    fireEvent.keyDown(el, { key: 'PageUp' });
+    expect(el).toHaveValue('0.75');
+    fireEvent.keyDown(el, { key: 'PageDown' });
+    expect(el).toHaveValue('0.5');
+  });
+
   // A screen reader's "increase" changes the value by the fine step, with no pointer down: the pull would put it
   // straight back, and it would never move.
   it('a change with no pointer down, as a screen reader makes, steps to the next round value', () => {

@@ -4,12 +4,15 @@ import { magnet, stepTo, fineStep, pulls } from '../lib/snap';
 const PULL_PX = 6;        // how far, on the track, a round value pulls the thumb
 const HOME_PULL_PX = 9;   // a home value (1× speed) pulls further
 const KEYS = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1 };
+const PAGE = { PageUp: 1, PageDown: -1 };
+const PAGE_STEPS = 5;   // round values a Page key moves, as a native slider's larger step
 
 /**
  * A range input that drags linearly but is pulled onto round values (lib/snap.js has the why and the rules). It is a
  * real <input type="range">, so it keeps the browser's touch handling and its slider role. Three ways in:
  * - a drag (a pointer is down on it): the value under the pointer, pulled onto the round value near it;
- * - an arrow key: the next round value, or with Shift the next fine step;
+ * - an arrow key: the next round value, or with Shift the next fine step; Home and End: the ends; Page Up and Page
+ *   Down: five round values;
  * - anything else that changes it with no pointer down, which is a screen reader's increase or decrease: the next
  *   round value that way (the pull would otherwise put a fine step straight back).
  *
@@ -45,6 +48,18 @@ export function SnapSlider({ label, value, onChange, min, max, fine, every, home
         }
       }}
       onKeyDown={(e) => {
+        if (e.key === 'Home' || e.key === 'End') {
+          e.preventDefault();
+          set(e.key === 'Home' ? min : max);
+          return;
+        }
+        if (PAGE[e.key]) {
+          e.preventDefault();
+          let next = value;
+          for (let i = 0; i < PAGE_STEPS; i += 1) next = stepTo(next, PAGE[e.key], grid);
+          set(next);
+          return;
+        }
         const direction = KEYS[e.key];
         if (!direction) return;
         e.preventDefault();
