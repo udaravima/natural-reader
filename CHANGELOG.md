@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+**Speak the language you speak.** Each person switches the language they speak, Sinhala,
+English or Tamil, in one tap beside the microphone and in Talk, and each language is
+heard by the model an admin offered for it. With Google reading the replies, each person
+picks Google's voice for them, after hearing it. No migrations: the offered list is one
+more key in the chat options row. Both halves rebuild.
+
+### Added
+
+- **The Speaking chip**, beside the microphone (on a phone, just above the message box)
+  and in the Talk panel: Auto, English, and each language with its own model, with the
+  model that hears it; **All languages…** opens Settings. It sets the Speech language, so
+  the next clip goes in it without stopping Talk. On Auto, Talk says **Auto (English)**:
+  Talk sends `SPEECH_WINDOW_LANGUAGE` on Auto, which is why Google seemed to hear only
+  English. **What it heard** names the language and model of each clip.
+- **Admin → Chat options → Speech model → Offered to people**: a tick for each model made
+  for particular languages. A ticked model hears its language; the model above hears the
+  rest. Ticking downloads it, and people see it once it's on the server.
+- **Several speech models per worker**, up to `SPEECH_MODELS_LOADED` (default 3). A
+  request keeps the model it was sent to, so two people on two models are each heard by
+  their own; a clip for a model still loading waits for it instead of failing; one that
+  can't load is heard by the default; a dropped model's memory is handed back.
+  `/v1/speech/transcriptions` answers which model heard it, and the log line says so.
+- **Settings → Chat → Reply voice**, when Google reads the replies: Google's voices, the
+  admin's as the default, with a sample in English, Sinhala and Tamil, fetched once per
+  voice per session.
+
 ### Changed
 
 - **Reading speed is a slider**, from 0.5× to 2×, instead of six fixed speeds. It drags

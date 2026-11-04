@@ -916,8 +916,11 @@ off."; the button disappears. If you leave the chat (to the Reader, say) while
 recording or transcribing, the recording is thrown away and a message says so: "Your
 recording was discarded: you left the chat."
 
-**Your language.** **Settings → Chat → Speech language** is **Auto (detect the
-language)** or one language by name. Auto is right when you speak more than one
+**Your language.** The **Speaking** chip beside the microphone (on a phone, just above
+the message box) says what you speak, and one tap changes it: it lists **Auto**, English,
+and each language your admin offers its own model for, with the model that hears it,
+and **All languages…** opens **Settings → Chat → Speech language**, the same setting,
+which is **Auto (detect the language)** or one language by name. Auto is right when you speak more than one
 language; choose one when the same sentences keep being mistaken for another
 language. The row only shows when Voice input is on and you have chat access. Your
 admin sets what it starts as under **Admin → Defaults for users → Speech language**.
@@ -959,6 +962,15 @@ of minutes. People get "still getting ready" until then. One model runs for ever
 so choose a fine-tuned one only if the server serves that language: stock models stay
 the right choice for English. **Use the server setting** goes back to the default.
 
+**Offered to people (admins).** Under the list, **Offered to people** has a tick for each
+model made for particular languages, such as the Sinhala and Tamil fine-tunes. A ticked
+model hears its language whenever someone picks it on their **Speaking** chip; the model
+above hears everything else. Ticking one downloads it, and it says **Downloading: people
+see it once it's here** until it is on the server; tick it again if a download failed.
+Each worker keeps up to three models loaded (`SPEECH_MODELS_LOADED`), so offer only
+what people need: each `small`-sized model is about 0.5–0.7 GB of memory. Details in
+[DEPLOYMENT.md](DEPLOYMENT.md#offering-models-to-people).
+
 To add a model, open **Add a model from Hugging Face**, enter its repo as `owner/name`
 and press **Add model**. It's checked straight away, and you're told if it can't be
 used. Then choose it from the list. **Added here** lists the models you added, each
@@ -973,9 +985,10 @@ server that has Google Cloud set up ([DEPLOYMENT.md](DEPLOYMENT.md#google-cloud-
   it needs. With Google, recordings go to Google, stop at 55 seconds, and the model
   list goes, since Google's recognizer has its own.
 - **Voice for the chat and Talk**: **Kokoro on this server**, which reads with each
-  person's own voice, or **Google Gemini-TTS**, with one voice for everyone that you
-  pick below it. Google can speak Sinhala and Tamil. Documents and audiobooks keep
-  Kokoro either way.
+  person's own voice, or **Google Gemini-TTS**, with the voice you pick below it as the
+  default. Each person can pick another of Google's voices under **Settings → Chat →
+  Reply voice**, after hearing a sample. Google can speak Sinhala and Tamil. Documents
+  and audiobooks keep Kokoro either way.
 
 Both save at once and apply from the next recording or sentence. Google bills per use,
 and **Admin → Overview** says on its **Voice input** and **Chat voice** lines whether
@@ -990,10 +1003,10 @@ Tamil, Google is the only one.
 **Talk** turns the chat into a spoken conversation: you speak, it answers aloud, and you
 can cut in. It's the button with the sound-wave icon beside **Send**, in **Chat** and in
 the chat beside a page. You see it when an admin has turned voice input on and given you
-the `talk` role, on top of chat and read-aloud access; an admin always has it. On the
-server's own models it's English. If your admin has Google hearing and speaking, it
-hears the language you pick under **Settings → Chat → Speech language**, so Sinhala and
-Tamil work too.
+the `talk` role, on top of chat and read-aloud access; an admin always has it. It
+listens for English unless you pick another language on its **Speaking** chip, and it
+hears Sinhala or Tamil well when your admin offers a model for them or has Google
+hearing you.
 
 1. Choose a chat model and press **Talk**. It starts listening at once; the browser asks
    for the microphone the first time.
@@ -1010,9 +1023,13 @@ Tamil work too.
    stops everything, closes the microphone and gives you the typing box back. Opening
    another chat or leaving the chat ends it too.
 
-**Another language.** Talk listens in your **Speech language** (**Settings → Chat**)
-when you've picked one, so you can try Sinhala or Tamil; how well it hears and speaks
-them depends on the speech model and voice your admin chose. When Google hears you, the
+**Another language.** The **Speaking** chip in the Talk panel switches the language you
+speak in one tap, mid-conversation: the next thing you say is heard in it, by the model
+your admin offers for it. On **Auto** Talk listens for English, and the chip says
+**Auto (English)**. **What it heard** says which language and model heard each clip.
+How well it speaks back depends on the voice your admin chose. When Google reads the
+replies, **Settings → Chat → Reply voice** picks your own Google voice: press the play
+button to hear a short sample in English, Sinhala and Tamil first. When Google hears you, the
 panel says **Heard by Google Cloud**; when Google reads replies, **Settings → Chat**
 says so, and your own voice in **Voice & reading** still reads documents.
 
