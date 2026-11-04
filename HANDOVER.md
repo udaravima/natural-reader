@@ -4,7 +4,13 @@
 
 ---
 
-## 2026-11-04 late night — Google recognizers chosen in the console: built and walked live on `feat/google-recognizers`, UNCOMMITTED (START HERE)
+## 2026-11-04 late night — v2.10.0 released: a recognizer for each language, and the time (START HERE)
+
+**State.** On the owner's "commit and do a release": the clock tool and docs committed on `feat/google-recognizers` (`de7ac05`, `4654670`), the branch fast-forwarded into `development`, the release commit on top (version 2.10.0, changelog dated, `docs/Release_notes/RELEASE_NOTES_v2.10.0.md`, TESTING rows), `development` merged into `master`, annotated tag `v2.10.0`. **Not deployed**: the live backend image is v2.9.0 code, and the live `.env`'s `GOOGLE_SPEECH_RECOGNIZER` names the deleted `asr-si-ta` (live speech has been Whisper since 19:01). To deploy: `./startup.sh rebuild`, `npm run build`, `sudo ./deploy.sh`; then Admin → Chat options → Google Cloud and tick `asr-si-en`, `asr-ta-en`, `asr-en`.
+
+**Next, per the owner:** the bucket list below (the 2026-11-03 one), then the PBX. Agent profiles stay parked ("for later days"), but a PBX channel will need them.
+
+## 2026-11-04 late night — Google recognizers chosen in the console: built and walked live, committed, released in v2.10.0
 
 **Update 21:50.** The recognizer work is committed (`cd1c3bd`, owner's "Yes commit"). The owner now has three Chirp 2 recognizers in asia-southeast1, one language each: `asr-si-en` (si-LK), `asr-ta-en` (ta-IN), `asr-en` (en-GB); Sinhala and Tamil walked through the app, Chirp 2 en-GB through Google's default recognizer. **Also built, UNCOMMITTED:** the `current_time` chat tool (owner: "for tool yes"), walked with `gemma4:31b-cloud`, plus DEPLOYMENT rows for the Chirp 2 results. Gates: pytest 2997 / 16 skipped, vitest 1817, eslint 0 errors, build OK. Profiles are parked by the owner ("for later days").
 

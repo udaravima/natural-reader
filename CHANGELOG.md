@@ -4,11 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-11-04
+
 **Google speech through a recognizer per language.** An admin ticks Google's recognizers
 in the console, read live from Google, and each clip goes to the first ticked one that
 lists its language. No one Google model suits Sinhala, Tamil and English together
 (Sinhala isn't on `chirp_3`), so a recognizer per language is how each gets a model that
-hears it. No migrations: one more key in the chat options row. Both halves rebuild.
+hears it. And the assistant can tell the time. No migrations: one more key in the chat
+options row. Both halves rebuild.
 
 ### Added
 
