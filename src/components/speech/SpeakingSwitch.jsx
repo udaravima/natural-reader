@@ -8,7 +8,8 @@ import { useMenuDismiss } from '../../hooks/useMenuDismiss';
  * with what hears it, and All languages… opens Settings for the rest. It changes the person's Speech language, the
  * same value as Settings → Chat; the next clip goes in it. Hidden when there is nothing to choose but Auto.
  *
- * `autoMeans`: the language Auto is sent as here (Talk sends its window language), shown as "Auto (English)".
+ * `autoMeans`: the language Auto is sent as here (Talk sends its window language), shown as "Auto (English)". Without
+ * it, an Auto option's `means` (the one language Google's first recognizer hears) shows the same way.
  */
 export function SpeakingSwitch({ theme, value, options, onChange, onMore = null, autoMeans = null, className = '' }) {
   const [open, setOpen] = useState(false);
@@ -17,7 +18,9 @@ export function SpeakingSwitch({ theme, value, options, onChange, onMore = null,
   useMenuDismiss({ open, onClose: () => setOpen(false), wrapRef, openerRef });
   if (!options || options.length < 2) return null;
   const current = options.find((o) => o.code === value) ?? options[0];
-  const chip = current.code === 'auto' && autoMeans ? `Auto (${autoMeans})` : current.label;
+  // Talk's own language first: Talk sends it on Auto. Else the one language Auto can be heard in, if any.
+  const auto = autoMeans ?? current.means;
+  const chip = current.code === 'auto' && auto ? `Auto (${auto})` : current.label;
   return (
     <div ref={wrapRef} data-own-keys className={`relative ${className}`}>
       <button

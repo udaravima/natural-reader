@@ -46,6 +46,36 @@ describe('speakingOptions: what the Speaking switch lists', () => {
       ['ta', 'asr-ta-en (chirp_3)']]);
   });
 
+  it('with Google, Auto says the language when the first recognizer hears only one', () => {
+    const three = { enabled: true, engine: 'google', heard_by: 'Google Cloud', window: { language: 'en' },
+      languages: [{ code: 'si', name: 'Sinhala' }, { code: 'ta', name: 'Tamil' }, { code: 'en', name: 'English' }],
+      hears: [{ code: 'si', name: 'Sinhala', model: 'asr-si-en', label: 'asr-si-en (chirp_2)' },
+        { code: 'ta', name: 'Tamil', model: 'asr-ta-en', label: 'asr-ta-en (chirp_2)' },
+        { code: 'en', name: 'English', model: 'asr-en', label: 'asr-en (chirp_2)' }],
+      default_model: { id: 'asr-si-en', label: 'asr-si-en (chirp_2)' } };
+    expect(speakingOptions(three, 'auto', 'en')[0]).toEqual(
+      { code: 'auto', label: 'Auto', detail: 'asr-si-en (chirp_2)', means: 'Sinhala' });
+    // One recognizer from the server setting, nothing ticked: its one language.
+    const one = { ...three, hears: undefined, languages: [{ code: 'si', name: 'Sinhala' }],
+      default_model: undefined };
+    expect(speakingOptions(one, 'auto', 'en')[0].means).toBe('Sinhala');
+  });
+
+  it('with Google, Auto names no language when the first recognizer tells several apart', () => {
+    const chirp3 = { enabled: true, engine: 'google', heard_by: 'Google Cloud', window: { language: 'en' },
+      languages: [{ code: 'ta', name: 'Tamil' }, { code: 'en', name: 'English' }],
+      hears: [{ code: 'ta', name: 'Tamil', model: 'asr-ta-en', label: 'asr-ta-en (chirp_3)' },
+        { code: 'en', name: 'English', model: 'asr-ta-en', label: 'asr-ta-en (chirp_3)' }],
+      default_model: { id: 'asr-ta-en', label: 'asr-ta-en (chirp_3)' }, auto_hears: null };
+    expect(speakingOptions(chirp3, 'auto', 'en')[0].means).toBeUndefined();
+    // One that hears only its first language on Auto (`long`): the server names it.
+    expect(speakingOptions({ ...chirp3, auto_hears: 'Tamil' }, 'auto', 'en')[0].means).toBe('Tamil');
+  });
+
+  it('with Whisper, Auto detects, so it names no language', () => {
+    expect(speakingOptions(LOCAL, 'auto', 'en')[0].means).toBeUndefined();
+  });
+
   it('with no status yet, voice off, or no languages, Auto alone', () => {
     expect(codes(speakingOptions(null, 'auto', 'en'))).toEqual(['auto']);
     expect(codes(speakingOptions({ enabled: false }, 'auto', 'en'))).toEqual(['auto']);

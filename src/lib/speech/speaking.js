@@ -11,7 +11,22 @@
  * And always the person's current language, if it isn't listed: one picked from Settings' full list still shows.
  */
 
-/** [{code, label, detail}] for the switch. `current`: the Speech language; `talkLanguage`: what Auto means in Talk. */
+/**
+ * The language Auto is heard in, when it can only be one: Google sends Auto to the first recognizer, and one that
+ * lists a single language (or, like `long`, hears only its first: `auto_hears`) hears that. Whisper detects, and so
+ * does a `chirp_3` recognizer with several languages: then none.
+ */
+function autoMeans(status, names) {
+  if (status.engine !== 'google') return null;
+  if (typeof status.auto_hears === 'string' && status.auto_hears) return status.auto_hears;
+  const first = status.default_model?.id;
+  const firsts = Array.isArray(status.hears) && first
+    ? status.hears.filter((h) => h.model === first).map((h) => h.code)
+    : [...names.keys()];
+  return firsts.length === 1 ? (names.get(firsts[0]) ?? null) : null;
+}
+
+/** [{code, label, detail, means?}] for the switch; Auto's `means` is the one language it can be heard in, if so. `current`: the Speech language; `talkLanguage`: what Auto means in Talk. */
 export function speakingOptions(status, current, talkLanguage) {
   const enabled = status?.enabled === true;
   const names = new Map((enabled && Array.isArray(status.languages) ? status.languages : []).map((l) => [l.code, l.name]));
@@ -20,6 +35,8 @@ export function speakingOptions(status, current, talkLanguage) {
   const byDefault = enabled ? (status.default_model?.label ?? (remote ? (status.heard_by ?? '') : '')) : '';
   const out = [{ code: 'auto', label: 'Auto', detail: byDefault }];
   if (!enabled) return out;
+  const means = autoMeans(status, names);
+  if (means) out[0].means = means;
   const seen = new Set(['auto']);
   const add = (code, detail) => {
     if (!code || seen.has(code)) return;

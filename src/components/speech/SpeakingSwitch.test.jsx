@@ -17,6 +17,14 @@ describe('SpeakingSwitch', () => {
     expect(button).toHaveTextContent('Auto (English)');
   });
 
+  it('says what Auto hears when only one language can be, and Talk\'s own language wins there', () => {
+    const withMeans = [{ ...OPTIONS[0], means: 'Sinhala' }, ...OPTIONS.slice(1)];
+    const { rerender } = render(<SpeakingSwitch theme={theme} value="auto" options={withMeans} onChange={vi.fn()} />);
+    expect(screen.getByRole('button', { name: 'Speaking: Auto (Sinhala)' })).toBeInTheDocument();
+    rerender(<SpeakingSwitch theme={theme} value="auto" options={withMeans} onChange={vi.fn()} autoMeans="English" />);
+    expect(screen.getByRole('button', { name: 'Speaking: Auto (English)' })).toBeInTheDocument();
+  });
+
   it('a tap on a language switches to it and closes', () => {
     const onChange = vi.fn();
     render(<SpeakingSwitch theme={theme} value="en" options={OPTIONS} onChange={onChange} />);
