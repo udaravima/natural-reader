@@ -815,3 +815,11 @@ def test_a_spoken_turn_is_told_how_to_talk():
     assert "read aloud" in rules and "markdown" in rules
     assert "first sentence" in rules   # the wait for the first sound grows with it
     assert "read aloud" not in system_rules(None, [], has_pins=False)
+
+
+def test_the_clock_line_comes_before_the_live_line_and_only_with_the_tool():
+    """"Anything about today" sends a question to the web: a question about the time must reach the clock first."""
+    with_clock = system_rules(FIELD(), [*DOC_TOOLS, *AUTO_WEB, TOOLS["current_time"]], has_pins=False)
+    clock = with_clock.index("call current_time")
+    assert clock < with_clock.index("Live information")
+    assert "current_time" not in system_rules(FIELD(), [*DOC_TOOLS, *AUTO_WEB], has_pins=False)

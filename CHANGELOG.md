@@ -21,6 +21,13 @@ hears it. No migrations: one more key in the chat options row. Both halves rebui
   `PUT /v1/admin/google-recognizers`.
 - The **Speaking** chip and **What it heard** name the Google recognizer and its model
   for each language and clip, as they do Whisper's models.
+- **The assistant can tell the time.** A `current_time` tool gives the time where the
+  person is (their browser's timezone, else the deployment's, else UTC); the rules still
+  carry only today's date, so the prompt cache lasts the day. Offered on every turn with
+  tools, so a chat with web search off and no document now sends one tool too; a model
+  marked as not taking tools gets none, as before. Walked with `gemma4:31b-cloud`: "What
+  time is it?" and "How long until 11 pm?" called it and answered right; "What's the date
+  today?" didn't.
 
 ### Changed
 

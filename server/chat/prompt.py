@@ -143,6 +143,11 @@ def _project_line(project: ProjectScope) -> str:
 NO_OFFER_IN_WORDS = " Don't ask in words whether to search: offer_web_search asks the user."
 
 
+CLOCK = "current_time"
+# The rules carry today's date only (context.today_line); the time of day comes from the tool.
+CLOCK_LINE = "   - The time now, or how long until or since a time: call current_time."
+
+
 def _live_line(offered: set[str], noun: str | None, names_sites: bool = False) -> str:
     """Step 1's line for live information and facts outside the documents, by the web tools offered:
     web_search (auto mode) searches and reads; read_web_pages without it is the turn after the user approved a
@@ -259,6 +264,8 @@ def _procedure(doc: ReadableDoc | None, offered: set[str], prefetch: bool = Fals
                      "term that may come from it: go to step 2.")
     elif doc is not None:
         lines.append("   - Questions about the open document: say it can't be searched yet, as explained above.")
+    if CLOCK in offered:   # before the live line: "anything about today" there must not send a time question to the web
+        lines.append(CLOCK_LINE)
     lines.append(_live_line(offered, ("documents" if project is not None else "document") if doc_tools else None,
                             names_sites=not (doc_tools or prefetched_only)))
     lines.append("   - Other general questions: answer from your own knowledge.")

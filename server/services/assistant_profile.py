@@ -30,7 +30,7 @@ KEY = "assistant_profile"
 PROFILE_MAX_CHARS = 8000   # characters; every one is read before every reply
 # The app describes the tools offered each turn; a profile that names one
 # that isn't offered sends the model calling it in vain.
-APP_TOOLS = ("search_documents", "read_document_pages", "web_search")
+APP_TOOLS = ("search_documents", "read_document_pages", "web_search", "current_time")
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")   # all but \t and \n
 _warned_paths: set[str] = set()
 

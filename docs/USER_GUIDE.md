@@ -582,7 +582,8 @@ list) still decides whether conversion exists at all.
 **Timezone** decides where a day starts and ends for three things: the daily
 token budget (it resets at the next **local** midnight, including the night
 the clocks change), the days in **Usage**, and the "Today is …" line a chat
-falls back to when the browser sent no zone. It also sets the day shown beside
+falls back to when the browser sent no zone (and the time the assistant gives
+when asked "what time is it?"). It also sets the day shown beside
 each account in **People**. Pick a zone by its name (`Asia/Colombo`). Its source
 line reads **Set here.**, **From the server setting** `TZ`, or **The default.**
 (UTC; before this setting existed these days were always UTC). It applies from

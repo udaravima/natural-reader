@@ -63,13 +63,16 @@ class ToolContext:
     # this turn's model), and the context size every reader call sends. None: the tools read the environment's
     # knobs and send no size (a tool run outside a turn, as in tests).
     reader_cfg: ReaderConfig | None = field(default=None, hash=False, compare=False)
+    # Where the person is, for current_time: the browser's IANA zone (None: it sent none), else the deployment's.
+    timezone: str | None = None
+    default_timezone: str = "UTC"
 
 
 class Tool(Protocol):
     name: str
     spec: ToolSpec   # what it does and how to use it; never contradicts the strategy (server/chat/prompt.py)
     # A tool whose wording depends on the scope also has `project_spec`, sent in a project chat (tool_spec).
-    source: str      # "document" | "web": where its results come from
+    source: str      # "document" | "web" | "app" (the server's own, such as its clock): where its results come from
     reads_documents: bool   # its results are document text (brings the data rule)
 
     def available(self, ctx: ToolContext) -> bool: ...
@@ -93,11 +96,12 @@ class ToolRun:
         return "error" not in self.result
 
 
-from . import (document_outline, extract_from_documents, offer_web_search, read_document_pages,  # noqa: E402 — after the shared types, by convention
-               read_web_pages, search_documents, web_search)
+from . import (current_time, document_outline, extract_from_documents, offer_web_search,  # noqa: E402 — after the shared types, by convention
+               read_document_pages, read_web_pages, search_documents, web_search)
 
 REGISTRY: list[Tool] = [search_documents.TOOL, read_document_pages.TOOL, extract_from_documents.TOOL,
-                        document_outline.TOOL, web_search.TOOL, read_web_pages.TOOL, offer_web_search.TOOL]
+                        document_outline.TOOL, web_search.TOOL, read_web_pages.TOOL, offer_web_search.TOOL,
+                        current_time.TOOL]
 
 
 def available_tools(ctx: ToolContext) -> list[Tool]:
