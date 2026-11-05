@@ -14,6 +14,35 @@
 
 **Mistake owned.** `a2f7707` was committed with one test red (the gate read only the summary line); `fc3bcaa` fixed the test's stand-in, and commits since are gated on "passed" with no "failed".
 
+### Bucket list (current, 2026-11-05; replaces the 2026-11-03 one below)
+
+**Done since 2026-11-03.** On `fix/bucket-list` (unmerged): `BOOTSTRAP_ADMIN_EMAIL` reserves the seed admin, a People tick changes only that capability, the speech lists settle instead of switching at each arrow, conversions use a scratch download under a lock, `touch.stamp` skips on a full pool, the eval scorer takes "do not list". On `feat/embeddings-2b` (unmerged): phase 2b embeddings and its follow-ups. Released: a recognizer per language and the current time (v2.10.0); speech models offered to people, a model by language, a reply voice per person (v2.9.0).
+
+**Waiting on the owner.**
+- Merge `fix/bucket-list`, then `feat/embeddings-2b`, into `development` (or a PR); then a release.
+- Deploy: the live backend runs v2.9.0 code, so v2.10.0 and everything after isn't live. The live `.env`'s `GOOGLE_SPEECH_RECOGNIZER` names the deleted `asr-si-ta`. About 2.8 GB of original checkpoints sit in the live `cache` volume (DEPLOYMENT, "Originals left by 2.10 and earlier").
+- Decisions: the CPU anti-goal (recommended: accept and reword); a file too large for the model (refuse or note); warn before a model switch hides replies; the auto-pusher; how SDD workspaces are kept (phase 2b's is kept until then).
+
+**Owed on real hardware (owner).** Talk with speakers and no headphones (echo), a real room, a phone, Safari; Kokoro `fp16` by ear; real Sinhala and Tamil voices through Google, and whether they're good enough; Chinese and Japanese voices; a phone keyboard over the popup; embeddings and re-embed speed on a GPU.
+
+**Owed checks (never run).** A person without chat access; the speech choices as a non-admin (throwaway Keycloak); a blocked microphone prompt; the 2-minute stop; a real OpenAI-compatible speech server; several workers swapping speech models; `compose.speech.yml` on a running stack; Docling Describe and Accurate; Auto turned Ask, the yes path; V1 reader error, Retry index, the freeze fix; two users on one browser; a share recipient; `startup.cmd` on Windows; indexed documents with a NULL `embedding_model`; embeddings on vLLM, OpenAI and OpenRouter themselves (Ollama's `/v1` was walked).
+
+**Next builds, in the owner's order.** (1) Figures: keep pictures, describe them with a vision model, let the chat show them; the DeepSeek-OCR preset (embeddinggemma-2 can embed pictures too). (2) The rest of this list. (3) Agent profiles. (4) The PBX.
+
+**Notifications for each person (new, the owner, 2026-11-05; not designed, not placed in the order).** An inbox per person, **not a popup**: a list they open, **Mark all as read**, and a **scheduled cleanup** of old ones. The owner's three points; the rest is to settle in its design. Likely first senders (my guesses): a re-embed done or paused, passages a model refused and that were shortened (today only in the server log), a conversion or indexing finished or failed, rebuilds that failed. Open questions: who gets an admin notice (every admin?), how long one is kept, where the unread count shows.
+
+**Other builds, unplaced.** Talk smoothness: a shorter silence (700 ms now), a turn detector (Smart Turn v3), streaming voice; speaker verification (the busy-room colleague); audio straight to a model; Sri Lankan Tamil; tool calls drawn inline where they happened.
+
+**Bugs and limits.** Two people talking at once queue. A model can pass real values to `READER_MODEL`. Vitest flakes under load. Project eval `features` fails every run; citations 87.9% against 90%. A passage shortened for an embedding model shows only in the server log. The `showHeaderControlsOnMobile` phone overflow (not rechecked since 2026-11-04).
+
+**Robustness.** Resumable streams, a tested backup restore, a lock around migrations, a pool-slot limit, backup guidance.
+
+**Providers.** A `/models` fallback, per-provider params, a native Anthropic adapter; vLLM, LiteLLM and Unsloth unrun; a GPU or NPU image.
+
+**Features (the owner's wish-list).** Bulk project upload; auto tags and descriptions; Markdown and PDF side by side; MCP; agents; knowledge-base refresh; chat search, export, edit and regenerate; saved roles; prices per model; Auto model routing; V2 compare and review-before-current; C2.2 digests.
+
+**Housekeeping.** The AppArmor pasta fix (sudo); disk 91% full (43 GB free, 2026-11-05); 26 branches merged into `development` that could go; stale memories.
+
 ---
 
 ## 2026-11-05 early morning — embeddings, admin console v2 phase 2b, on `feat/embeddings-2b`
@@ -156,7 +185,7 @@ Every rule ends turns in that room, which gate-off never does. docs/DEPLOYMENT.m
 
 **Open levers, not built.** Streaming synthesis (gRPC) would cut Gemini-TTS's first sentence; a shared HTTP client would save a TLS handshake per sentence; Talk doesn't check a stored language against the recognizer's list.
 
-### Bucket list (current, replaces the v2.5.0 one below)
+### Bucket list (2026-11-03; replaced by the 2026-11-05 one at the top)
 
 Checked 2026-11-03 after the v2.7.0 docs pass. Done since the v2.5.0 list: the 375 px header, `AdminPanel.jsx`, `git config user.name`, Sinhala and Tamil (through Google).
 
