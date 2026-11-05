@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-11-05
+
 **Choose the embedding model in the console, and change it without losing search**
 (admin console v2 phase 2b). Migration 025 (`doc_rebuilds`). Both halves rebuild.
 
@@ -67,7 +69,7 @@ All notable changes to this project will be documented in this file.
 - **The Overview's Embeddings line opened Deployment**; it opens Models, where the
   picker is.
 
-**Fixes from the bucket list.** No migrations.
+**And fixes from the bucket list.**
 
 ### Fixed
 

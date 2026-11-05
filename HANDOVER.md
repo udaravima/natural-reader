@@ -4,7 +4,15 @@
 
 ---
 
-## 2026-11-05 morning — the phase 2b follow-ups, on `feat/embeddings-2b` (START HERE)
+## 2026-11-05 — v2.11.0 released: choose the embedding model, and change it without losing search (START HERE)
+
+**State.** On the owner's "Merge" and then "please do the release": `fix/bucket-list` and `feat/embeddings-2b` fast-forwarded into `development` (`dbf346c`, 30 commits), the release commit on top (version 2.11.0, changelog dated, `docs/Release_notes/RELEASE_NOTES_v2.11.0.md`, TESTING rows), `development` merged into `master`, annotated tag `v2.11.0`, pushed, and a GitHub release from the notes. Gates on the merged tree: pytest 3099 passed / 16 skipped, vitest 1849 in 152 files, eslint 0 errors, build OK. The only review of phase 2b is my own (no fresh reviewer: agents only when the owner asks). The scratch test database container stopped by itself once this morning (clean exit around 10:02); `podman start nr-c21-testpg` brought it back, and every test erroring at once is that, not the code.
+
+**Not deployed.** The live backend still runs v2.9.0 code, so one deploy brings 2.10 and 2.11 together. Back up first (migration 025 runs at start), then `./startup.sh rebuild`, `npm run build`, `sudo ./deploy.sh`; then Admin → Chat options → Google Cloud and tick the recognizers, since the live `.env`'s `GOOGLE_SPEECH_RECOGNIZER` names the deleted `asr-si-ta`. The 2.8 GB of original checkpoints in the live `cache` volume can go after (DEPLOYMENT, "Originals left by 2.10 and earlier").
+
+**Next.** The owner's decision sheet (a private doc they're filling in) sets the order; the bucket list below is the inventory. My recommended start: deploy, then design notifications for each person, then figures.
+
+## 2026-11-05 morning — the phase 2b follow-ups, on `feat/embeddings-2b` (merged, released in v2.11.0)
 
 **State.** Same branch, nine more commits after `b00209f`, on the owner's "First fix the issues you found" and their question "why to check embedding available do load the model … loading unloading constantly will kill the ram right?". Not merged, not pushed. Gates: pytest 3099 passed / 16 skipped, vitest 1849 in 152 files, eslint 0 errors (the same 24 warnings).
 
@@ -16,11 +24,10 @@
 
 ### Bucket list (current, 2026-11-05; replaces the 2026-11-03 one below)
 
-**Done since 2026-11-03.** On `fix/bucket-list` (unmerged): `BOOTSTRAP_ADMIN_EMAIL` reserves the seed admin, a People tick changes only that capability, the speech lists settle instead of switching at each arrow, conversions use a scratch download under a lock, `touch.stamp` skips on a full pool, the eval scorer takes "do not list". On `feat/embeddings-2b` (unmerged): phase 2b embeddings and its follow-ups. Released: a recognizer per language and the current time (v2.10.0); speech models offered to people, a model by language, a reply voice per person (v2.9.0).
+**Done since 2026-11-03.** Released in v2.11.0, from `fix/bucket-list`: `BOOTSTRAP_ADMIN_EMAIL` reserves the seed admin, a People tick changes only that capability, the speech lists settle instead of switching at each arrow, conversions use a scratch download under a lock, `touch.stamp` skips on a full pool, the eval scorer takes "do not list". From `feat/embeddings-2b`: phase 2b embeddings and its follow-ups. Earlier: a recognizer per language and the current time (v2.10.0); speech models offered to people, a model by language, a reply voice per person (v2.9.0).
 
 **Waiting on the owner.**
-- Merge `fix/bucket-list`, then `feat/embeddings-2b`, into `development` (or a PR); then a release.
-- Deploy: the live backend runs v2.9.0 code, so v2.10.0 and everything after isn't live. The live `.env`'s `GOOGLE_SPEECH_RECOGNIZER` names the deleted `asr-si-ta`. About 2.8 GB of original checkpoints sit in the live `cache` volume (DEPLOYMENT, "Originals left by 2.10 and earlier").
+- Deploy: the live backend runs v2.9.0 code, so v2.10.0 and v2.11.0 aren't live. The live `.env`'s `GOOGLE_SPEECH_RECOGNIZER` names the deleted `asr-si-ta`. About 2.8 GB of original checkpoints sit in the live `cache` volume (DEPLOYMENT, "Originals left by 2.10 and earlier").
 - Decisions: the CPU anti-goal (recommended: accept and reword); a file too large for the model (refuse or note); warn before a model switch hides replies; the auto-pusher; how SDD workspaces are kept (phase 2b's is kept until then).
 
 **Owed on real hardware (owner).** Talk with speakers and no headphones (echo), a real room, a phone, Safari; Kokoro `fp16` by ear; real Sinhala and Tamil voices through Google, and whether they're good enough; Chinese and Japanese voices; a phone keyboard over the popup; embeddings and re-embed speed on a GPU.
