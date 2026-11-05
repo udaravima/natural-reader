@@ -23,7 +23,7 @@ import logging
 import os
 import time
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Any, Mapping
 
 from ..db import get_pool, is_ready
@@ -46,25 +46,28 @@ UNREACHABLE_RETRY_S = 300.0
 RATE_WEIGHT = 0.3
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
+async def _db_now(conn) -> datetime:
+    """The database's clock. Claims and retry times are written by one worker and read by another, so they are
+    all judged by this one clock, never a host's own (hosts can disagree by minutes)."""
+    cur = await conn.execute("SELECT clock_timestamp()")
+    return (await cur.fetchone())[0]
 
 
-def _lapsed(claimed_at: str | None) -> bool:
+def _lapsed(claimed_at: str | None, now: datetime) -> bool:
     if not claimed_at:
         return True
     try:
-        return _now() - datetime.fromisoformat(claimed_at) > timedelta(seconds=CLAIM_LAPSE_S)
+        return now - datetime.fromisoformat(claimed_at) > timedelta(seconds=CLAIM_LAPSE_S)
     except ValueError:
         return True
 
 
-def _due(at: str | None) -> bool:
+def _due(at: str | None, now: datetime) -> bool:
     """Whether a recorded retry time has come. None: never (a final refusal)."""
     if not at:
         return False
     try:
-        return _now() >= datetime.fromisoformat(at)
+        return now >= datetime.fromisoformat(at)
     except ValueError:
         return True
 
@@ -147,10 +150,11 @@ async def fill_step(worker: str, *, env: Mapping[str, str] = os.environ) -> str:
             state = await read_state(conn, lock="update")
             if not state or not state.get("next"):
                 return "idle"
-            if state.get("claimed_by") not in (None, worker) and not _lapsed(state.get("claimed_at")):
+            now = await _db_now(conn)
+            if state.get("claimed_by") not in (None, worker) and not _lapsed(state.get("claimed_at"), now):
                 return "claimed-elsewhere"
             nxt = state["next"]
-            await write_state(conn, {**state, "claimed_by": worker, "claimed_at": _now().isoformat()})
+            await write_state(conn, {**state, "claimed_by": worker, "claimed_at": now.isoformat()})
         cur = await conn.execute("SELECT id, text_hash, text FROM doc_chunks "
                                  "WHERE embedding IS NOT NULL AND embedding_next IS NULL ORDER BY id LIMIT %s",
                                  (FILL_BATCH,))
@@ -181,7 +185,7 @@ async def fill_step(worker: str, *, env: Mapping[str, str] = os.environ) -> str:
                     "AND embedding IS NOT NULL AND embedding_next IS NULL", (vec, chunk_id, text_hash))
                 written += cur.rowcount
             await write_state(conn, {**state, "filled": state.get("filled", 0) + written,
-                                     "claimed_at": _now().isoformat(), "error": None,
+                                     "claimed_at": (await _db_now(conn)).isoformat(), "error": None,
                                      "rate": _rate(state.get("rate"), written, time.monotonic() - began)})
     return "filled"
 
@@ -245,46 +249,60 @@ async def cancel(conn, *, by: str | None = None, env: Mapping[str, str] = os.env
 
 
 async def tick(worker: str, *, env: Mapping[str, str] = os.environ) -> str:
-    """One step of the loop. With a migration running: fill, and switch when ready. Without: when the target
-    differs from current (a console choice saved on another worker, or an env change at startup, ruling R3),
-    probe it and start; a refusal is recorded once, not probed again until the target changes. Returns what it
-    did: "idle", "filled", "switched", "started", "refused", "checked", "claimed-elsewhere" or "error"."""
+    """One step of the loop. With a migration running for the target: fill, and switch when ready. When the
+    target differs from current (a console choice saved on another worker, or an env change at startup, ruling
+    R3), probe it and start; a refusal is recorded once, and probed again only if the model didn't answer. A
+    target changed again mid-re-embed stops the build: back to current, or over for the new model. With nothing
+    to do, the model in use is checked once (_check_current). Returns what it did: "idle", "filled", "switched",
+    "started", "refused", "checked", "claimed-elsewhere" or "error"."""
     async with get_pool().connection() as conn:
         state = await read_state(conn)
         if state is None:
             await embedding_state.init(conn, env)
             state = await read_state(conn)
         target = await embedding_state.load_target(conn, env)
-    if state.get("next"):
-        step = await fill_step(worker, env=env)
-        if step != "ready":
-            return step
-        async with get_pool().connection() as conn:
-            return "switched" if await switch(conn, env=env) else "filled"
+        now = await _db_now(conn)
     current = from_json(state["current"], env)
     key = vector_identity(target)
+    if state.get("next"):
+        nxt = from_json(state["next"], env)
+        if key == vector_identity(nxt):
+            if target.provider.name != nxt.provider.name:   # the same vectors from elsewhere: keep what's filled
+                async with get_pool().connection() as conn:
+                    await start(conn, replace(target, dimensions=nxt.dimensions), env=env)
+            step = await fill_step(worker, env=env)
+            if step != "ready":
+                return step
+            async with get_pool().connection() as conn:
+                return "switched" if await switch(conn, env=env) else "filled"
+        # The target changed again before the switch (an env edit and a restart): what is being built isn't
+        # wanted any more. Back to current stops it (start's same-vectors path); another model starts over.
     if key == vector_identity(current):
-        if target.provider.name == current.provider.name:
-            return await _check_current(state, current, env)
+        if target.provider.name == current.provider.name and not state.get("next"):
+            return await _check_current(state, current, env, now)
         async with get_pool().connection() as conn:
             return await start(conn, target, env=env)
-    if state.get("error_for") == key and not _due(state.get("error_retry_at")):
+    if state.get("error_for") == key and not _due(state.get("error_retry_at"), now):
         return "idle"
     verdict = await probe(target.provider, target.model, unload=False)   # the filler uses it next
     async with get_pool().connection() as conn:
         if not verdict.ok:
             # A model that answered with the wrong size stays refused; one that didn't answer is tried again.
-            retry = None if verdict.native is not None else \
-                (_now() + timedelta(seconds=UNREACHABLE_RETRY_S)).isoformat()
             async with conn.transaction():
                 state = await _locked(conn, env)
+                retry = None if verdict.native is not None else \
+                    (await _db_now(conn) + timedelta(seconds=UNREACHABLE_RETRY_S)).isoformat()
+                if state.get("next"):           # a re-embed for a model no longer wanted: stop it
+                    await _drop_next(conn)
+                    state = _cleared(state)
                 await write_state(conn, {**state, "error": verdict.reason, "error_for": key, "error_retry_at": retry})
             logger.warning("Not re-embedding with %s: %s", target.model, verdict.reason)
             return "refused"
         return await start(conn, replace(target, dimensions=verdict.dimensions), env=env)
 
 
-async def _check_current(state: Mapping[str, Any], current: Embedder, env: Mapping[str, str]) -> str:
+async def _check_current(state: Mapping[str, Any], current: Embedder, env: Mapping[str, str],
+                         now: datetime) -> str:
     """The model in use is probed once, and the answer kept in the state row (`checked`, `current_error`), so the
     Overview can say whether it gives 768 numbers without loading it (the owner, 2026-11-05). A model that became
     current by a switch was probed when chosen; this is for one made current at startup from the environment.
@@ -294,7 +312,7 @@ async def _check_current(state: Mapping[str, Any], current: Embedder, env: Mappi
     key = vector_identity(current)
     if state.get("checked") == key or state.get("current_error"):
         return "idle"
-    if state.get("check_retry_at") and not _due(state["check_retry_at"]):
+    if state.get("check_retry_at") and not _due(state["check_retry_at"], now):
         return "idle"
     verdict = await probe(current.provider, current.model)
     async with get_pool().connection() as conn:
@@ -308,7 +326,7 @@ async def _check_current(state: Mapping[str, Any], current: Embedder, env: Mappi
             elif verdict.native is not None:
                 changes = {"current_error": verdict.reason, "check_retry_at": None}
             else:
-                changes = {"check_retry_at": (_now() + timedelta(seconds=UNREACHABLE_RETRY_S)).isoformat()}
+                changes = {"check_retry_at": (await _db_now(conn) + timedelta(seconds=UNREACHABLE_RETRY_S)).isoformat()}
             await write_state(conn, {**state, **changes})
     if not verdict.ok:
         logger.warning("The embedding model in use, %s: %s", current.model, verdict.reason)

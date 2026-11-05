@@ -383,3 +383,82 @@ async def test_each_fill_step_keeps_a_running_rate_for_the_time_left(db_conn, li
     assert await mig.fill_step("w") == "filled"
     assert (await embedding_state.read_state(db_conn))["rate"] > 0
     assert await mig.progress(db_conn) == (4, 6)
+
+
+async def test_a_target_changed_mid_re_embed_restarts_for_the_new_one(db_conn, lib, monkeypatch):
+    """Final review minor, fixed for the owner (2026-11-05): an env model changed again mid-re-embed finished the
+    first model, switched to it, then re-embedded everything for the second: double the work, and a stretch on a
+    model nobody wanted any more."""
+    seen, probe = _probes()
+    monkeypatch.setattr(mig, "probe", probe)
+    monkeypatch.setattr(mig, "FILL_BATCH", 2)
+    monkeypatch.setenv("EMBEDDING_MODEL", GEMMA.model)
+    assert await mig.tick("w") == "started"
+    assert await mig.tick("w") == "filled"
+    monkeypatch.setenv("EMBEDDING_MODEL", MXBAI.model)
+    assert await mig.tick("w") == "started"
+    assert seen == [(GEMMA.model, False), (MXBAI.model, False)]
+    assert (await embedding_state.read_state(db_conn))["next"]["model"] == MXBAI.model
+    assert set((await _where_ones(db_conn, "embedding_next")).values()) == {None}   # gemma's batch is gone
+    while (step := await mig.tick("w")) == "filled":
+        pass
+    assert step == "switched" and (await embedding_state.current(db_conn)).model == MXBAI.model
+
+
+async def test_a_target_changed_back_mid_re_embed_stops_it(db_conn, lib, monkeypatch):
+    seen, probe = _probes()
+    monkeypatch.setattr(mig, "probe", probe)
+    monkeypatch.setenv("EMBEDDING_MODEL", GEMMA.model)
+    assert await mig.tick("w") == "started"
+    monkeypatch.setenv("EMBEDDING_MODEL", "nomic-embed-text")
+    assert await mig.tick("w") == "switched"                  # back to what the library already uses
+    assert not await _has_next_column(db_conn)
+    state = await embedding_state.read_state(db_conn)
+    assert state["next"] is None and state["current"]["model"] == "nomic-embed-text"
+
+
+async def test_a_refused_new_target_mid_re_embed_stops_the_old_one(db_conn, lib, monkeypatch):
+    seen, probe = _probes({MXBAI.model: ProbeResult(False, 1024, None, "mxbai-embed-large gives 1024 numbers")})
+    monkeypatch.setattr(mig, "probe", probe)
+    monkeypatch.setenv("EMBEDDING_MODEL", GEMMA.model)
+    assert await mig.tick("w") == "started"
+    monkeypatch.setenv("EMBEDDING_MODEL", MXBAI.model)
+    assert await mig.tick("w") == "refused"
+    assert not await _has_next_column(db_conn)                # gemma isn't wanted any more either
+    state = await embedding_state.read_state(db_conn)
+    assert state["next"] is None and "1024" in state["error"]
+    assert await mig.tick("w") == "idle" and len(seen) == 2
+
+
+async def test_a_new_provider_for_the_model_being_built_carries_on(db_conn, lib, monkeypatch):
+    seen, probe = _probes()
+    monkeypatch.setattr(mig, "probe", probe)
+    monkeypatch.setattr(mig, "FILL_BATCH", 2)
+    for k, v in {"INFERENCE_PROVIDERS": "ollama,other", "INFERENCE_OLLAMA_KIND": "ollama",
+                 "INFERENCE_OLLAMA_URL": "http://ollama.test", "INFERENCE_OTHER_KIND": "ollama",
+                 "INFERENCE_OTHER_URL": "http://other.test"}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("EMBEDDING_MODEL", GEMMA.model)
+    assert await mig.tick("w") == "started"
+    assert await mig.tick("w") == "filled"
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "other")
+    assert await mig.tick("w") == "filled"                    # the same vectors: nothing is thrown away
+    state = await embedding_state.read_state(db_conn)
+    assert state["next"]["provider"] == "other" and await mig.progress(db_conn) == (4, 6)
+
+
+async def test_the_claim_uses_the_databases_clock_not_the_workers(db_conn, lib, monkeypatch):
+    """Final review minor, fixed for the owner (2026-11-05): each worker judged a claim by its own clock, so one
+    whose clock ran an hour ahead saw a live claim as lapsed and filled alongside it."""
+    from datetime import datetime, timedelta
+    real = datetime
+
+    class Ahead(real):
+        @classmethod
+        def now(cls, tz=None):
+            return real.now(tz) + timedelta(hours=1)
+    monkeypatch.setattr(mig, "FILL_BATCH", 2)
+    await mig.start(db_conn, GEMMA, by=SEED_ADMIN)
+    assert await mig.fill_step("a") == "filled"
+    monkeypatch.setattr(mig, "datetime", Ahead)               # "b" runs on a host an hour ahead
+    assert await mig.fill_step("b") == "claimed-elsewhere"
