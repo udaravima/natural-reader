@@ -6,8 +6,10 @@ which the backend otherwise never imports. So it runs in a process of its own (`
 its memory goes back when it ends, and a crash there is a failed load here, not a dead worker.
 
 The result lands in HF_HOME/speech-converted/<owner>--<name>--<revision>--int8. A conversion builds in a scratch
-directory beside it and is renamed into place, so a half-finished one is never loaded. Two workers may both
-convert the first time; whichever finishes second finds the result there and drops its own.
+directory beside it and is renamed into place, so a half-finished one is never loaded. The original checkpoint
+(about 1 GB for a `small`) is downloaded into that scratch directory too, and goes with it: once converted it is
+never read again, so it isn't kept in the Hugging Face cache. One worker converts a model at a time (a lock file
+per model in HF_HOME/speech-converting); another that wants it meanwhile waits, then loads the result.
 
 inspect_repo answers an admin adding a model from the console: does it exist, is it Whisper, and does it need
 converting. Nothing here imports a heavy package at module level: the admin routes import this.
@@ -31,6 +33,7 @@ if TYPE_CHECKING:
     from .catalogue import SpeechModel
 
 CONVERT_TIMEOUT_S = 3600   # the download is most of it; a large repo on a slow line can take a long while
+LOCK_WAIT_S = CONVERT_TIMEOUT_S + 60   # a worker waiting on another's conversion waits as long as that may take
 HUB_TIMEOUT_S = 10         # an admin is waiting on the lookup
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # What a conversion needs from a repo, and no more: repos also hold Flax weights, training state and sample audio.
@@ -67,12 +70,32 @@ def converted_dir(model: SpeechModel, env: Mapping[str, str] = os.environ) -> Pa
     return _hf_home(env) / "speech-converted" / name
 
 
+def _lock_for(final: Path, env: Mapping[str, str] = os.environ):
+    """The lock one model's conversion holds, shared by every worker on this server. It lives outside
+    speech-converted, so nothing but models is in there."""
+    from filelock import FileLock
+    locks = _hf_home(env) / "speech-converting"
+    locks.mkdir(parents=True, exist_ok=True)
+    return FileLock(str(locks / f"{final.name}.lock"), timeout=LOCK_WAIT_S)
+
+
 def ensure_converted(model: SpeechModel, cpu_threads: int, env: Mapping[str, str] = os.environ) -> Path:
     """The converted model's directory, converting it first if this server hasn't yet. Blocks: the engine calls
-    it from its loading thread."""
+    it from its loading thread, and a second worker asking meanwhile waits for the first's result."""
     final = converted_dir(model, env)
     if (final / "model.bin").exists():
         return final
+    from filelock import Timeout
+    try:
+        with _lock_for(final, env):
+            if (final / "model.bin").exists():    # converted by another worker while this one waited
+                return final
+            return _convert_into(model, final, cpu_threads, env)
+    except Timeout:
+        raise ConversionFailed(f"Another worker has been converting {model.repo} for over an hour") from None
+
+
+def _convert_into(model: SpeechModel, final: Path, cpu_threads: int, env: Mapping[str, str]) -> Path:
     final.parent.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix=".converting-", dir=final.parent))
     try:
@@ -94,7 +117,7 @@ def ensure_converted(model: SpeechModel, cpu_threads: int, env: Mapping[str, str
         try:
             built.rename(final)
         except OSError:
-            if not (final / "model.bin").exists():    # not the other worker getting here first
+            if not (final / "model.bin").exists():    # not a conversion from before the lock getting here first
                 raise
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -138,9 +161,13 @@ def _convert(repo: str, revision: str, out: str) -> None:
     from huggingface_hub import snapshot_download
     from transformers import AutoTokenizer, WhisperFeatureExtractor
 
-    source = snapshot_download(repo, revision=revision, allow_patterns=[*_CONFIG_FILES, *_SAFETENSORS])
+    # Into the scratch directory the parent removes afterwards, not the shared cache (module docstring).
+    download = str(Path(out).parent / "download")
+    source = snapshot_download(repo, revision=revision, allow_patterns=[*_CONFIG_FILES, *_SAFETENSORS],
+                               cache_dir=download)
     if not any(Path(source).glob("*.safetensors")):   # older repos: Transformers loads these with weights_only
-        source = snapshot_download(repo, revision=revision, allow_patterns=[*_CONFIG_FILES, *_PICKLE_WEIGHTS])
+        source = snapshot_download(repo, revision=revision, allow_patterns=[*_CONFIG_FILES, *_PICKLE_WEIGHTS],
+                                   cache_dir=download)
     ctranslate2.converters.TransformersConverter(source, low_cpu_mem_usage=True).convert(out, quantization="int8")
     # faster-whisper reads both of these beside the model. Many repos ship neither in the form it wants: without a
     # tokenizer.json it would fetch a stock one, and that doesn't match a fine-tune's added tokens.

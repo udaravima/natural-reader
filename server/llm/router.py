@@ -36,6 +36,7 @@ _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 # and then goes silent can't empty the picker for every provider (final review
 # I2); httpx's own read timeout is INFERENCE_TIMEOUT_S, far too long for this.
 LIST_TIMEOUT_S = 5.0
+_warned: set[str] = set()   # each misconfiguration is logged once per process, not on every read
 
 
 def load_provider_configs(env: Mapping[str, str]) -> list[ProviderConfig]:
@@ -49,20 +50,27 @@ def load_provider_configs(env: Mapping[str, str]) -> list[ProviderConfig]:
         if not name:
             continue
         if not _NAME_RE.match(name) or any(c.name == name for c in out):
-            logger.warning("Skipping inference provider %r: invalid or duplicate name", name)
+            _warn_once(f"Skipping inference provider {name!r}: invalid or duplicate name")
             continue
         key = name.upper().replace("-", "_")
         kind = (env.get(f"INFERENCE_{key}_KIND") or "").strip().lower()
         url = (env.get(f"INFERENCE_{key}_URL") or "").strip().rstrip("/")
         if kind not in KINDS or not url:
-            logger.warning("Skipping inference provider %r: INFERENCE_%s_KIND must be ollama or "
-                           "openai, and INFERENCE_%s_URL is required", name, key, key)
+            _warn_once(f"Skipping inference provider {name!r}: INFERENCE_{key}_KIND must be ollama or "
+                       f"openai, and INFERENCE_{key}_URL is required")
             continue
         models_raw = (env.get(f"INFERENCE_{key}_MODELS") or "").strip()
         models = tuple(m.strip() for m in models_raw.split(",") if m.strip()) if models_raw else None
         out.append(ProviderConfig(name=name, kind=kind, url=url, models=models,
                                   api_key=(env.get(f"INFERENCE_{key}_API_KEY") or "").strip()))
     return out
+
+
+def _warn_once(message: str) -> None:
+    """The providers are parsed on every embedding and every model list, so one bad setting would repeat."""
+    if message not in _warned:
+        _warned.add(message)
+        logger.warning("%s", message)
 
 
 @dataclass(frozen=True)

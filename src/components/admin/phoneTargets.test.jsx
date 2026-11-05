@@ -134,6 +134,30 @@ describe('Admin console: 44 px tap targets below md', () => {
     expect(desktopChanged(container)).toEqual([]);
   });
 
+  it('Models: the Embeddings controls too (Check, Use, Cancel, back to the server)', async () => {
+    const EMBEDDINGS = {
+      current: { provider: 'ollama', model: 'nomic-embed-text', dimensions: null },
+      target: { provider: 'ollama', model: 'embeddinggemma-2:740m' },
+      source: { provider: 'admin', model: 'admin' },
+      env: { provider: 'EMBEDDING_PROVIDER', model: 'EMBEDDING_MODEL' },
+      migration: { state: 'building', model: 'embeddinggemma-2:740m', filled: 3, total: 40, error: null },
+      providers: [{ name: 'ollama', kind: 'ollama' }],
+    };
+    const more = {
+      '/v1/admin/embeddings': EMBEDDINGS,
+      '/v1/admin/embeddings/models?provider=ollama': { models: ['nomic-embed-text:latest', 'embeddinggemma-2:740m'] },
+    };
+    apiFetch.mockImplementation(async (h, p, path) => (
+      path in more ? json(200, more[path]) : path in ROUTES ? json(200, ROUTES[path]) : json(404, {})));
+    const { container } = render(SECTIONS.Models.ui);
+    await screen.findByLabelText('Reader');
+    await screen.findByRole('button', { name: 'Cancel the re-embed' });
+    await screen.findByRole('option', { name: 'nomic-embed-text:latest' });
+    expect(screen.getByRole('button', { name: 'Back to the server\u2019s setting' })).toBeTruthy();
+    expect(unsized(container)).toEqual([]);
+    expect(desktopChanged(container)).toEqual([]);
+  });
+
   it('People: the delete confirmation controls too', async () => {
     const { container } = render(SECTIONS.People.ui);
     await screen.findByLabelText('Enroll email');

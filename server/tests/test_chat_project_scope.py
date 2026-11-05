@@ -128,7 +128,6 @@ async def test_two_long_names_that_differ_after_the_cap_stay_two_documents_every
 
 
 async def test_unindexed_documents_are_listed_not_searchable(db_conn, monkeypatch):
-    monkeypatch.setattr(doc_pipeline, "_schedule_rebuild", lambda doc_id: None)
     alice = await member(db_conn, "alice")
     pid = await seed.make_project(db_conn, alice.user_id)
     await _doc(db_conn, A1, alice, "A failed.pdf", state="failed")

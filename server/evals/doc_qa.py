@@ -101,7 +101,7 @@ _CITATION = re.compile(r"\(page\s+(\d+)\)|\bpage\s+(\d+)\b", re.IGNORECASE)   # 
 _HYPHENS = re.compile("[‐‑‒–—−]")
 _NEG = r"(?:n't|not|never)"
 _REFUSAL = re.compile(
-    rf"{_NEG} (?:seem to |appear to )?(?:cover|mention|say|contain|include|discuss|provide|specify|give|state)"
+    rf"{_NEG} (?:seem to |appear to )?(?:cover|mention|say|contain|include|discuss|provide|specify|give|state|list)"
     rf"|(?:{_NEG}|unable to|cannot) (?:be )?(?:find|found|locate)"
     rf"|{_NEG} (?:mentioned|covered|found|included|stated|specified|provided|given)"
     r"|nothing (?:about|on|regarding)|says nothing|no (?:information|mention|details?|data) (?:about|on|of|regarding)"

@@ -24,11 +24,11 @@ class _PoolShim:
         self._conn = conn
 
     @asynccontextmanager
-    async def connection(self):
+    async def connection(self, timeout=None):
         yield self._conn
 
 
-async def fake_embed(texts):
+async def fake_embed(texts, e=None):
     return [[1.0] + [0.0] * (EMBEDDING_DIM - 1) for _ in texts]
 
 

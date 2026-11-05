@@ -8,6 +8,9 @@ from typing import Any
 from psycopg import errors as pg_errors
 
 SEED_ADMIN_ID = "00000000-0000-0000-0000-000000000001"
+# Migration 005 seeds it with this email. BOOTSTRAP_ADMIN_EMAIL re-points it (server/db.py
+# bootstrap_admin); from then on the seed is pinned: only that email, verified, claims it.
+SEED_SENTINEL_EMAIL = "admin@localhost"
 
 _KEYS = [
     "id", "email", "display_name", "role", "status", "oidc_iss", "oidc_sub",
@@ -148,8 +151,9 @@ async def resolve_or_provision_user(
     `capabilities`, when not None, is the token's realm-role-derived capability
     set (see `caps_from_claims`) and is synced onto the resolved user on every
     login for known/linked identities. The seed admin's first claim always
-    forces `BOOTSTRAP_ADMIN_CAPABILITIES` regardless of the token, and a
-    brand-new self-registered user is provisioned with no capabilities.
+    forces `BOOTSTRAP_ADMIN_CAPABILITIES` regardless of the token (branch 3, or
+    branch 2 once BOOTSTRAP_ADMIN_EMAIL has pinned it), and a brand-new
+    self-registered user is provisioned with no capabilities.
     """
     # 1) Known identity — refresh email/display_name, return it.
     found = await _fetch_by(conn, "oidc_iss=%s AND oidc_sub=%s", (iss, sub))
@@ -177,19 +181,26 @@ async def resolve_or_provision_user(
             f"display_name=COALESCE(%s, display_name), {_NAMES_SET}, updated_at=now() WHERE id=%s",
             (iss, sub, display_name, username, first_name, last_name, by_email["id"]),
         )
-        if capabilities is not None:
+        if by_email["id"] == SEED_ADMIN_ID:
+            # The founder named by BOOTSTRAP_ADMIN_EMAIL gets what branch 3 gives, or a
+            # Keycloak user with no realm roles yet is left an admin with no access.
+            from .capabilities import BOOTSTRAP_ADMIN_CAPABILITIES
+            await set_capabilities(conn, SEED_ADMIN_ID, BOOTSTRAP_ADMIN_CAPABILITIES)
+        elif capabilities is not None:
             await set_capabilities(conn, by_email["id"], capabilities)
         return await get_user(conn, by_email["id"])
 
     # 3) Brand-new identity. Atomically claim the still-unlinked seed admin
     #    (first-user-admin). The conditional UPDATE serializes concurrent first
     #    logins via a row lock: exactly one flips oidc_sub from NULL, the rest
-    #    see rowcount 0 and fall through to a pending member.
+    #    see rowcount 0 and fall through to a pending member. A seed pinned by
+    #    BOOTSTRAP_ADMIN_EMAIL is never claimed here: only branch 2 claims it.
     cur = await conn.execute(
         "UPDATE users SET oidc_iss=%s, oidc_sub=%s, email=%s, "
         f"display_name=COALESCE(%s, display_name), {_NAMES_SET}, updated_at=now() "
-        "WHERE id=%s AND oidc_sub IS NULL",
-        (iss, sub, email, display_name, username, first_name, last_name, SEED_ADMIN_ID),
+        "WHERE id=%s AND oidc_sub IS NULL AND email=%s",
+        (iss, sub, email, display_name, username, first_name, last_name, SEED_ADMIN_ID,
+         SEED_SENTINEL_EMAIL),
     )
     if cur.rowcount == 1:
         from .capabilities import BOOTSTRAP_ADMIN_CAPABILITIES

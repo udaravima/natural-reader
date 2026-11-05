@@ -216,10 +216,19 @@ async def test_capabilities_from_show_and_unsupported_features_are_omitted():
              show={"capabilities": ["completion"], "model_info": {"llama.context_length": 8192}})
     provider = OllamaProvider(CFG, up.client())
     assert await provider.capabilities("m") == Capabilities(
-        tools=False, thinking=False, vision=False, audio=False, context_window=8192)
+        tools=False, thinking=False, vision=False, audio=False, context_window=8192, embedding=False)
     await _collect(provider.stream_chat("m", HI, [TOOL], CallSettings(think="on")))
     body = up.bodies("/api/chat")[0]
     assert "think" not in body and "tools" not in body
+
+
+async def test_an_embedding_model_says_so_in_its_capabilities():
+    """Ollama's /api/show lists `embedding` and no `completion` for a model that can't chat (EmbeddingGemma 2 on
+    Ollama 0.40: ["embedding", "vision", "audio"]), so the chat picker can leave it out."""
+    up = _up(lambda: ndjson(DONE), show={"capabilities": ["embedding", "vision", "audio"], "model_info": {}})
+    assert (await OllamaProvider(CFG, up.client()).capabilities("embeddinggemma-2:740m")).embedding is True
+    up = _up(lambda: ndjson(DONE), show={"capabilities": ["completion", "embedding"], "model_info": {}})
+    assert (await OllamaProvider(CFG, up.client()).capabilities("both")).embedding is False   # it chats too
 
 
 async def test_older_ollama_without_capability_list_is_unknown():

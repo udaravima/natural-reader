@@ -4,7 +4,6 @@ The old chunks stay searchable until the new set swaps in (Review focus 6);
 a document embedded by another model isn't searched meanwhile."""
 from __future__ import annotations
 
-import asyncio
 import hashlib
 
 import pytest
@@ -17,13 +16,6 @@ from server.tests.test_doc_pipeline import _member
 
 LONG = " ".join(f"Sentence number {i} says something about the method." for i in range(120)).encode()
 DOC = hashlib.sha256(LONG).hexdigest()
-
-
-@pytest.fixture(autouse=True)
-def _fresh_rebuild_state(monkeypatch):
-    """The pipeline's per-process rebuild bookkeeping, empty for each test."""
-    monkeypatch.setattr(doc_pipeline, "_failed", {})
-    monkeypatch.setattr(doc_pipeline, "_rebuilding", set())
 
 
 @pytest.fixture
@@ -39,7 +31,7 @@ def embedded(db_conn, monkeypatch, store):
     while the new ones are being embedded."""
     seen = {"texts": [], "old_chunks_during": []}
 
-    async def fake_embed(texts):
+    async def fake_embed(texts, e=None):
         cur = await db_conn.execute("SELECT count(*) FROM doc_chunks WHERE doc_id = %s AND text = 'old'",
                                     (DOC,))
         seen["old_chunks_during"].append((await cur.fetchone())[0])
@@ -97,22 +89,15 @@ async def test_a_stale_document_is_rebuilt_with_split_prefixed_chunks(db_conn, e
     assert await _state(db_conn) == ("indexed", embeddings.current_profile(), "nomic-embed-text")
 
 
-async def test_ensure_current_schedules_one_rebuild_and_keeps_a_same_model_document_searchable(
-        db_conn, embedded, store, monkeypatch):
+async def test_ensure_current_queues_one_rebuild_and_keeps_a_same_model_document_searchable(
+        db_conn, embedded, store):
     owner = await _member(db_conn, "owner")
     await _old_index(db_conn, owner.user_id, store)
-    started = []
-
-    async def fake_rebuild(doc_id):
-        started.append(doc_id)
-        await asyncio.sleep(0)
-
-    monkeypatch.setattr(doc_pipeline, "run_rebuild", fake_rebuild)
     doc = await readable_doc(db_conn, DOC, owner.user_id)
-    first = doc_pipeline.ensure_current(doc)
-    second = doc_pipeline.ensure_current(doc)
-    await asyncio.sleep(0.01)
-    assert started == [DOC]                                                  # one rebuild, not two
+    first = await doc_pipeline.ensure_current(db_conn, doc)
+    second = await doc_pipeline.ensure_current(db_conn, doc)
+    cur = await db_conn.execute("SELECT doc_id, state, profile FROM doc_rebuilds")
+    assert await cur.fetchall() == [(DOC, "queued", embeddings.current_profile())]   # one rebuild, not two
     assert first.state == second.state == "indexed"                          # old chunks still answer
 
 
@@ -121,21 +106,20 @@ async def test_a_document_embedded_by_another_model_is_not_searched_until_rebuil
     owner = await _member(db_conn, "owner")
     await _old_index(db_conn, owner.user_id, store, model="mxbai-embed-large", profile="mxbai-embed-large|''|''|x")
 
-    async def fake_rebuild(doc_id):
-        return None
-
-    monkeypatch.setattr(doc_pipeline, "run_rebuild", fake_rebuild)
-    doc = doc_pipeline.ensure_current(await readable_doc(db_conn, DOC, owner.user_id))
+    doc = await doc_pipeline.ensure_current(db_conn, await readable_doc(db_conn, DOC, owner.user_id))
     assert doc.state == "reindexing"
 
 
-def test_a_current_or_unindexed_document_is_left_alone(monkeypatch):
-    monkeypatch.setattr(doc_pipeline, "_schedule_rebuild", lambda doc_id: pytest.fail("scheduled"))
+async def test_a_current_or_unindexed_document_is_left_alone(db_conn, monkeypatch):
+    async def never(*_args):
+        pytest.fail("queued")
+    monkeypatch.setattr(doc_pipeline, "_enqueue_soon", never)
+    monkeypatch.setenv("EMBEDDING_MODEL", "nomic-embed-text")
     current = ReadableDoc(DOC, "x", "indexed", 1, embeddings.current_profile(), "nomic-embed-text")
-    assert doc_pipeline.ensure_current(current) is current
+    assert await doc_pipeline.ensure_current(db_conn, current) is current
     extracting = ReadableDoc(DOC, "x", "extracting", None, None, None)
-    assert doc_pipeline.ensure_current(extracting) is extracting
-    assert doc_pipeline.ensure_current(None) is None
+    assert await doc_pipeline.ensure_current(db_conn, extracting) is extracting
+    assert await doc_pipeline.ensure_current(db_conn, None) is None
 
 
 async def test_a_legacy_document_without_stored_bytes_is_rebuilt_from_its_own_chunks(db_conn, embedded):
@@ -159,7 +143,7 @@ async def test_a_converted_document_is_rebuilt_from_its_markdown_pages(db_conn, 
 
 
 async def test_a_failed_rebuild_keeps_the_old_index(db_conn, monkeypatch, store):
-    async def failing_embed(texts):
+    async def failing_embed(texts, e=None):
         return [None for _ in texts]
 
     build_docs_app(db_conn, monkeypatch, storage_dir=store, embed=failing_embed)
@@ -205,7 +189,6 @@ async def test_a_turn_on_a_mismatched_document_reads_it_as_reindexing(db_conn, e
     owner = await _member(db_conn, "owner")
     await _old_index(db_conn, owner.user_id, store, model="other-model")
     shim_pool(monkeypatch, db_conn, orchestrator)
-    monkeypatch.setattr(doc_pipeline, "_schedule_rebuild", lambda doc_id: None)
     req = TurnRequest(user_id=owner.user_id, session_id="s", model_id="m", text="q", attachments=(),
                       settings=CallSettings(), doc_id=DOC, timezone="UTC")
     assert (await orchestrator._open_doc(req)).state == "reindexing"
@@ -213,7 +196,6 @@ async def test_a_turn_on_a_mismatched_document_reads_it_as_reindexing(db_conn, e
 
 async def test_the_search_route_says_reindexing_for_a_mismatched_document(db_conn, monkeypatch, store):
     _app, as_user = build_docs_app(db_conn, monkeypatch, storage_dir=store)
-    monkeypatch.setattr(doc_pipeline, "_schedule_rebuild", lambda doc_id: None)
     owner = await _member(db_conn, "owner")
     await _old_index(db_conn, owner.user_id, store, model="other-model")
     async with as_user(owner) as c:
@@ -252,27 +234,18 @@ async def test_identical_parts_are_kept_as_separate_chunks_on_their_own_pages(db
 async def test_a_failed_rebuild_is_not_retried_at_once(db_conn, monkeypatch, store):
     """Review I2: without a backoff, every turn on the document started another
     full re-embed that failed the same way."""
-    async def failing_embed(texts):
+    async def failing_embed(texts, e=None):
         return [None for _ in texts]
 
     build_docs_app(db_conn, monkeypatch, storage_dir=store, embed=failing_embed)
     owner = await _member(db_conn, "owner")
     await _old_index(db_conn, owner.user_id, store)
-    await doc_pipeline.run_rebuild(DOC)
-    started = []
-
-    async def recording_rebuild(doc_id):
-        started.append(doc_id)
-
-    monkeypatch.setattr(doc_pipeline, "run_rebuild", recording_rebuild)
-    doc_pipeline._schedule_rebuild(DOC)
-    await asyncio.sleep(0.01)
-    assert started == []
-    later = doc_pipeline._clock() + doc_pipeline.REBUILD_RETRY_S + 1
-    monkeypatch.setattr(doc_pipeline, "_clock", lambda: later)
-    doc_pipeline._schedule_rebuild(DOC)
-    await asyncio.sleep(0.01)
-    assert started == [DOC]
+    await doc_pipeline.ensure_current(db_conn, await readable_doc(db_conn, DOC, owner.user_id))   # queues it
+    assert await doc_pipeline.run_queue_once("w") == DOC                     # fails
+    assert await doc_pipeline.run_queue_once("w") is None                    # and waits (15 minutes)
+    cur = await db_conn.execute("SELECT state, error, retry_after > now() FROM doc_rebuilds")
+    assert await cur.fetchone() == ("failed", "the embedding service skipped some chunks", True)
+    assert [c[2] for c in await _chunks(db_conn)] == ["old"]
 
 
 def test_chunk_size_leaves_room_for_the_prefix_within_the_embedding_input():
@@ -302,8 +275,7 @@ async def test_a_rebuild_that_finds_no_text_backs_off_too(db_conn, embedded, sto
     owner = await _member(db_conn, "owner")
     await _old_index(db_conn, owner.user_id, None, extracted_by="client")
     await db_conn.execute("DELETE FROM doc_chunks WHERE doc_id = %s", (DOC,))
-    await doc_pipeline.run_rebuild(DOC)
-    assert DOC in doc_pipeline._failed
+    assert await doc_pipeline.run_rebuild(DOC) == "no text was found to rebuild from"   # a failure: the queue waits
 
 
 # ---- v2.4 Task G: deferred v2.3 minor ----
@@ -325,7 +297,7 @@ async def test_the_profile_is_recorded_only_when_every_chunk_embedded(db_conn, m
     await _unembedded(db_conn, owner.user_id, 2)
     vec = [1.0] + [0.0] * (embeddings.EMBEDDING_DIM - 1)
 
-    async def fake_embed_documents(texts):
+    async def fake_embed_documents(texts, e=None):
         return [vec, None] if fail_one else [vec for _ in texts]
 
     monkeypatch.setattr(doc_pipeline, "embed_documents", fake_embed_documents)
@@ -378,7 +350,7 @@ async def _guide_rows(db_conn):
 def _record_embeddings(monkeypatch):
     inputs: list[str] = []
 
-    async def record(texts):
+    async def record(texts, e=None):
         inputs.extend(texts)
         return [[1.0] + [0.0] * (embeddings.EMBEDDING_DIM - 1) for _ in texts]
 
@@ -471,10 +443,10 @@ async def test_reused_vectors_are_read_per_text_and_only_for_the_same_embedding(
         await db_conn.execute(
             "INSERT INTO doc_chunks (doc_id, ord, page, chunk_type, text, text_hash, embedding, embedding_model) "
             "VALUES (%s, %s, 1, 'page', %s, %s, %s::vector, %s)", (DOC, i, text, f"h{i}", v, model))
-    same = _profile_with("split1:1:1")
-    assert list(await doc_pipeline._reusable_vectors(db_conn, DOC, same)) == ["embedded"]
-    assert await doc_pipeline._reusable_vectors(db_conn, DOC, None) == {}
-    assert await doc_pipeline._reusable_vectors(db_conn, DOC, "other-model|''|''|split1:1:1") == {}
+    same, e = _profile_with("split1:1:1"), embeddings.env_embedder()
+    assert list(await doc_pipeline._reusable_vectors(db_conn, DOC, same, e)) == ["embedded"]
+    assert await doc_pipeline._reusable_vectors(db_conn, DOC, None, e) == {}
+    assert await doc_pipeline._reusable_vectors(db_conn, DOC, "other-model|''|''|split1:1:1", e) == {}
 
 
 async def test_a_vector_made_by_another_model_is_not_kept_even_under_the_documents_profile(db_conn, monkeypatch,
@@ -529,7 +501,7 @@ async def test_a_rebuild_dropped_because_the_document_changed_saves_no_outline(d
     owner = await _member(db_conn, "owner")
     await _index_guide_before_code_chunks(db_conn, owner.user_id, store, profile=_profile_with("split1:1200:200"))
 
-    async def embed_and_reset(texts):
+    async def embed_and_reset(texts, e=None):
         await db_conn.execute("UPDATE documents SET state = 'stored' WHERE doc_id = %s", (GUIDE_DOC,))
         return [[1.0] + [0.0] * (embeddings.EMBEDDING_DIM - 1) for _ in texts]
 
@@ -540,3 +512,27 @@ async def test_a_rebuild_dropped_because_the_document_changed_saves_no_outline(d
     cur = await db_conn.execute("SELECT count(*) FROM doc_outlines WHERE doc_id = %s", (GUIDE_DOC,))
     assert (await cur.fetchone())[0] == 0
     assert not any(r[0] == extract.CODE for r in await _guide_rows(db_conn))
+
+
+async def test_the_search_route_embeds_with_the_model_it_read_on_its_own_connection(db_conn, monkeypatch, store):
+    """Final review minor, fixed for the owner (2026-11-05): the route held a connection, read the document and
+    its profile on it, then the query's embedder was read again on another pooled connection."""
+    from server.routers import docs as docs_router
+    _app, as_user = build_docs_app(db_conn, monkeypatch, storage_dir=store)
+    owner = await _member(db_conn, "owner")
+    current = embeddings.env_embedder()
+    await _old_index(db_conn, owner.user_id, store, profile=embeddings.profile_of(current))
+    got = []
+
+    async def embed_query(text, e=None):
+        got.append(e)
+        return [1.0] + [0.0] * (embeddings.EMBEDDING_DIM - 1)
+
+    async def no_second_read():
+        raise AssertionError("the route already read the embedder")
+    monkeypatch.setattr(docs_router, "embed_query", embed_query)
+    monkeypatch.setattr(embeddings, "current_embedder", no_second_read)
+    async with as_user(owner) as c:
+        r = await c.post(f"/v1/docs/{DOC}/search", json={"query": "q", "k": 3})
+    assert r.status_code == 200, r.text
+    assert [e.model for e in got] == ["nomic-embed-text"]

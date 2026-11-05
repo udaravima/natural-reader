@@ -212,7 +212,7 @@ jump to the first and last.
 | **Overview** | Whether the deployment works right now ([below](#overview-does-it-work-right-now)) |
 | **People** | Every account, enrollment, roles, budgets, project limits |
 | **Projects** | Every project, ownerless ones, taking one over |
-| **Models** | The reader, context sizes, windows, which providers are local, which chat models are offered ([below](#models-the-reader-context-sizes-and-which-models-people-get)) |
+| **Models** | The reader, context sizes, windows, which providers are local, which chat models are offered, and the embedding model ([below](#models-the-reader-context-sizes-and-which-models-people-get)) |
 | **Documents** | Limits on Docling conversion ([below](#documents-what-a-conversion-may-use)) |
 | **Chat** | The assistant's profile, the web search mode and whether the microphone is on ([below](#speaking-a-message)) |
 | **Defaults for users** | What read-aloud, voice, speed, thinking and speech language show for someone who hasn't chosen them |
@@ -271,9 +271,10 @@ Notes:
   A tick here applies at once. A realm set up before a role existed has to be given
   it by hand once (**Realm roles → Create role**): `docling` from 2.5, `talk` from
   2.6. Until then the tick says which role to create.
-- **Tick from a fresh list.** A tick sends the person's whole set of capabilities as
-  this list shows them. If they logged in since you opened it and their roles changed,
-  reload first, or the tick puts back what the list showed.
+- **A tick changes only that capability.** It adds or removes the one you ticked,
+  on the person as they are now, so roles their login brought since you opened the
+  list stay. (Up to 2.10 a tick sent the whole set the list showed, and could take
+  those roles away.)
 - Each person's daily token budget is the **Budget** box on their row under
   **People** (empty = the deployment default, 0 = unlimited; press **Set**).
   **Usage** shows tokens by model, by person and by day.
@@ -373,7 +374,7 @@ changes it.
 | **Model providers** | Which providers answer, and how many models each lists |
 | **Reader** | The model that reads documents and web pages for the assistant, and where it comes from. The chat model itself is **OK**; a named model is checked: is it in the deployment's model list (`INFERENCE_MODELS` or the provider's own list; an **Error** if not, from wherever the reader is set), and is it pulled on its provider? When the reader is the chat model and some chat model is a cloud one, the line adds that reader calls count against that model's quota, and points to **Models** |
 | **Context windows** | Each chat model's window, where the number comes from, and whether a project-chat turn fits in it |
-| **Embeddings** | Whether the embedding model answers, and returns the width (768) the database holds; and how many documents are waiting to be rebuilt |
+| **Embeddings** | Whether the embedding model in use is there (pulled, and whether it's in memory now) and gives the width (768) the database holds; checking never loads it. A re-embed's progress ("1,234 of 5,000 passages (24%), about 7 minutes left") or why it paused; how many documents are waiting to be rebuilt, or failed and will be retried. **Open Models** goes to the picker |
 | **Docling** | Whether conversion is on |
 | **Web search** | Whether the search server answers |
 | **Voice input** | **Off** ("Off. Admin → Chat options turns it on."), **Warning** while the speech model downloads or loads ("Getting ready: downloading or loading small."), **OK** when it is ready ("local · small · runs on this server", the host a remote engine calls, or "google · long · runs on Google Cloud", with what Auto hears when the recognizer can't tell its languages apart), or **Problem** with the reason when it isn't working |
@@ -468,6 +469,13 @@ OpenAI-compatible provider) sends no size. Each
 reader batch is cut to fit its model's window: never above `READER_INPUT_CHARS`,
 and at most 16 passages.
 
+**What the reader is sent.** Each reader call carries the person's question, a goal
+of up to 500 characters that the chat model writes, and the pages being read. The
+chat model chooses what goes in that goal, so anything in the conversation can reach
+the reader, not just the document. With the reader on the chat model that changes
+nothing. With a reader at another provider, say a cloud reader behind a local chat
+model, treat the conversation as going to that provider too.
+
 **Providers: local or cloud.** This flag is about cost, not sizing: the
 Overview's quota hint, the **Where** column in **Usage**, and the **Auto** label. **Auto**
 guesses from the provider's address: `localhost`, a private or loopback
@@ -485,8 +493,41 @@ intersected with what the server allows, never widened. If you tick models and
 they later disappear from the providers, people are offered no model until you
 untick or choose others (the Overview warns).
 
-**Not here.** Adding or changing a provider is still a `.env` and restart task,
-and so is the embedding model.
+**Embeddings: the model search uses.** Every passage of every document is turned
+into a list of 768 numbers by one model, and a question is turned into one the same
+way; search finds the passages whose numbers point the same way as the question's.
+The box shows the model in use (**In use: nomic-embed-text on ollama**). To change it:
+
+1. Choose a provider and a model. The list is the provider's own, embedding models
+   first. **Type a name** takes one the list doesn't have (OpenRouter's list, for
+   one, shows only chat models); a provider that lists none always takes a typed name.
+2. Press **Check**. The server asks the model for one sentence and says what came
+   back: "gives 768 numbers, the size the library holds", "is trained to be shortened:
+   it will be asked for 768", or why it can't be used (a model giving 1024 numbers
+   that isn't trained to be shortened would search worse, with no error, so it is
+   refused).
+3. **Use this model** turns on only after a check of exactly what is picked passed.
+   The same model on another provider switches at once. Another model re-embeds the
+   library in the background: the box (and the Overview) shows "Re-embedding for
+   embeddinggemma-2:740m: 1,234 of 5,000 passages (24%), about 7 minutes left.", with
+   a bar under it. The time left appears after the first batch. Search and chat keep
+   working on the current model the whole time, then switch in one step when every
+   passage is done, and a message says so ("Re-embed done: search now uses …") if
+   the page is open.
+4. **Cancel the re-embed** before then keeps the current model. If the new model
+   stops answering, the line says the re-embed is paused, and why, and it retries;
+   a message says that too.
+
+If the box says the model in use gives the wrong number of numbers (a model set in
+`.env` that was never checked), documents can't be indexed or searched until another
+model is chosen here. Embedding models aren't offered as chat models.
+
+**Back to the server's setting** appears when the model was chosen here; it returns
+to `EMBEDDING_MODEL`. How long a re-embed takes depends on the machine: on a laptop
+CPU with no GPU, about 2.5 minutes per 1,000 passages with `nomic-embed-text` and
+about 4 to 6 with `embeddinggemma-2:740m`.
+
+**Not here.** Adding or changing a provider is still a `.env` and restart task.
 
 ### Usage: who spent tokens on which model
 

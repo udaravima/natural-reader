@@ -404,6 +404,68 @@ async def test_patch_capabilities_reconciles_kc_and_db(db_conn):
     assert kc.assigned == [("sub-1", ["chat"])] and kc.removed == []
 
 
+async def test_adding_a_capability_keeps_the_ones_the_list_didnt_know_about(db_conn):
+    # The People list was loaded before the person's login gave them reader and chat;
+    # ticking talk must add talk, not send the list's stale set and remove the others.
+    _, p = await _admin(db_conn)
+    from server.auth.users import enroll_linked_user, get_user
+    u = await enroll_linked_user(db_conn, iss="i", sub="sub-a", email="a2@x.io",
+                                 capabilities=["reader", "chat"], status="active")
+
+    class _KC(_FakeKC):
+        def __init__(self): super().__init__(); self.assigned=[]; self.removed=[]
+        async def assign_realm_roles(self, sub, names): self.assigned.append((sub, list(names)))
+        async def remove_realm_roles(self, sub, names): self.removed.append((sub, list(names)))
+    kc = _KC()
+    async with _client(_app_kc(db_conn, p, kc)) as c:
+        r = await c.patch(f"/v1/admin/users/{u['id']}", json={"add_capabilities": ["talk"]})
+    assert r.status_code == 200
+    assert set(r.json()["capabilities"]) == {"reader", "chat", "talk"}
+    assert set((await get_user(db_conn, u["id"]))["capabilities"]) == {"reader", "chat", "talk"}
+    assert kc.assigned == [("sub-a", ["talk"])] and kc.removed == []
+
+
+async def test_removing_a_capability_touches_only_that_one(db_conn):
+    _, p = await _admin(db_conn)
+    from server.auth.users import enroll_linked_user, get_user
+    u = await enroll_linked_user(db_conn, iss="i", sub="sub-r", email="r2@x.io",
+                                 capabilities=["reader", "chat", "talk"], status="active")
+
+    class _KC(_FakeKC):
+        def __init__(self): super().__init__(); self.assigned=[]; self.removed=[]
+        async def assign_realm_roles(self, sub, names): self.assigned.append((sub, list(names)))
+        async def remove_realm_roles(self, sub, names): self.removed.append((sub, list(names)))
+    kc = _KC()
+    async with _client(_app_kc(db_conn, p, kc)) as c:
+        r = await c.patch(f"/v1/admin/users/{u['id']}", json={"remove_capabilities": ["talk"]})
+        # Removing one they no longer hold changes nothing and asks Keycloak nothing.
+        again = await c.patch(f"/v1/admin/users/{u['id']}", json={"remove_capabilities": ["talk"]})
+    assert r.status_code == 200 and again.status_code == 200
+    assert set((await get_user(db_conn, u["id"]))["capabilities"]) == {"reader", "chat"}
+    assert kc.removed == [("sub-r", ["talk"])] and kc.assigned == []
+
+
+async def test_a_patch_names_the_whole_set_or_changes_not_both(db_conn):
+    _, p = await _admin(db_conn)
+    from server.auth.users import enroll_linked_user
+    u = await enroll_linked_user(db_conn, iss="i", sub="sub-b", email="b2@x.io",
+                                 capabilities=["reader"], status="active")
+    async with _client(_app_kc(db_conn, p, _FakeKC())) as c:
+        both = await c.patch(f"/v1/admin/users/{u['id']}",
+                             json={"capabilities": ["reader"], "add_capabilities": ["chat"]})
+        unknown = await c.patch(f"/v1/admin/users/{u['id']}", json={"add_capabilities": ["root"]})
+        clash = await c.patch(f"/v1/admin/users/{u['id']}",
+                              json={"add_capabilities": ["chat"], "remove_capabilities": ["chat"]})
+    assert both.status_code == 422 and unknown.status_code == 422 and clash.status_code == 422
+
+
+async def test_removing_the_last_admins_admin_by_change_is_refused(db_conn):
+    admin, p = await _admin(db_conn)
+    async with _client(_app_kc(db_conn, p, _FakeKC())) as c:
+        r = await c.patch(f"/v1/admin/users/{admin['id']}", json={"remove_capabilities": ["admin"]})
+    assert r.status_code == 409 and r.json()["detail"]["reason"] == "last_active_admin"
+
+
 async def test_patch_accepts_the_docling_capability(db_conn):
     _, p = await _admin(db_conn)
     from server.auth.users import enroll_linked_user, get_user

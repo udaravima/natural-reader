@@ -31,7 +31,7 @@ DOC = hashlib.sha256(TEXT).hexdigest()
 def as_user(db_conn, monkeypatch, tmp_path):
     app, as_user = build_docs_app(db_conn, monkeypatch, storage_dir=tmp_path)
 
-    async def embed_one(text):
+    async def embed_one(text, e=None):
         return (await fake_embed([text]))[0]
     monkeypatch.setattr(docs_router, "embed_query", embed_one)
 

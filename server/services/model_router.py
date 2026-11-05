@@ -14,6 +14,8 @@ import os
 from dataclasses import dataclass
 from typing import Mapping
 
+from . import embedding_models
+
 
 @dataclass(frozen=True)
 class InferenceConfig:
@@ -28,12 +30,15 @@ class InferenceConfig:
     embed_query_prefix: str = ""
 
 
-# Prefixes a model was trained with, by model-name prefix. Unlisted: none.
-_KNOWN_PREFIXES = {"nomic-embed-text": ("search_document: ", "search_query: ")}
+def prefixes(env: Mapping[str, str], model: str) -> tuple[str, str]:
+    """(document, query) prefixes for `model`: EMBEDDING_*_PREFIX when set, else its family's."""
+    return _prefixes(env, model)
 
 
 def _prefixes(env: Mapping[str, str], model: str) -> tuple[str, str]:
-    known = next((p for name, p in _KNOWN_PREFIXES.items() if model.startswith(name)), ("", ""))
+    # The prefixes the model's family was trained with (embedding_models.KNOWN); unlisted: none.
+    fam = embedding_models.family(model)
+    known = (fam.prefix_document, fam.prefix_query) if fam else ("", "")
     # Set (even to "") wins: an empty value turns a known model's prefix off.
     return (env.get("EMBEDDING_DOCUMENT_PREFIX", known[0]), env.get("EMBEDDING_QUERY_PREFIX", known[1]))
 
@@ -71,7 +76,14 @@ def _strip_latest(name: str) -> str:
 
 
 def offered_chat_models(models: list, embed_model: str) -> list:
-    """The models a person may chat with: everything the providers list except the Ollama embedding model
-    (`:latest` on either side doesn't matter), which can't answer a chat."""
+    """The models a person may chat with: everything the providers list except embedding models, which can't
+    answer a chat (Ollama answers HTTP 501). One is: a model Ollama says only embeds (`capabilities.embedding`),
+    one of a known embedding family on any provider (embedding_models.KNOWN), or the environment's
+    EMBEDDING_MODEL on Ollama (`:latest` on either side doesn't matter), for an Ollama too old to say."""
     embed = _strip_latest(embed_model)
-    return [m for m in models if not (m.kind == "ollama" and _strip_latest(m.name) == embed)]
+
+    def embeds(m) -> bool:
+        return (getattr(m.capabilities, "embedding", None) is True
+                or embedding_models.family(m.name) is not None
+                or (m.kind == "ollama" and _strip_latest(m.name) == embed))
+    return [m for m in models if not embeds(m)]

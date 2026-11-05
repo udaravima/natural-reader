@@ -4,6 +4,112 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-11-05
+
+**Choose the embedding model in the console, and change it without losing search**
+(admin console v2 phase 2b). Migration 025 (`doc_rebuilds`). Both halves rebuild.
+
+### Added
+
+- **Admin console → Models → Embeddings.** Pick a provider and a model, **Check** it,
+  then **Use this model**. Check admits a model that gives 768 numbers, or one trained
+  to be shortened to 768 (qwen3-embedding, embeddinggemma, nomic-embed-text,
+  text-embedding-3), and refuses any other with its size and why: Ollama cuts any
+  vector to the size asked for without an error, and a cut 1024-number model searches
+  worse.
+- **Changing the embedding model re-embeds the library in the background, then
+  switches in one step.** Search keeps using the current model until every passage
+  has a new vector; the console and the Overview show "Re-embedding for … : 1,234 of
+  5,000 passages", and **Cancel the re-embed** keeps the current model. A restart or a
+  crash resumes it. The same model on another provider switches at once. A changed
+  `EMBEDDING_MODEL` in `.env` starts the same re-embed at the next start.
+- **Embeddings through any provider.** `EMBEDDING_PROVIDER` names one of
+  `INFERENCE_PROVIDERS`; an `openai`-kind provider is called at `<url>/embeddings`.
+  Texts go 32 per request (Ollama's `/api/embed`) instead of one call each.
+- **embeddinggemma's prefixes** are known, as nomic's were.
+- **A re-embed shows how far it is and how long is left**: a bar and "1,234 of 5,000
+  passages (24%), about 7 minutes left" in Models → Embeddings and on the Overview,
+  counted from the table, with the time left from the filler's running rate. With
+  the box open, a message says when it is done, paused, or stopped from another tab.
+
+### Changed
+
+- **Rebuilds of one document are queued in the database** (`doc_rebuilds`), claimed
+  by one worker at a time: with several workers a document is rebuilt once, a restart
+  resumes the queue, and the Overview counts waiting and failed rebuilds.
+- **`EMBEDDING_TIMEOUT_S` defaults to 120 s** (was 30), since a request carries 32
+  passages.
+- A deployment whose `EMBEDDING_MODEL` is an embeddinggemma gains its trained
+  prefixes, so its documents are rebuilt on first use.
+
+### Fixed
+
+- **Opening the admin console loaded the embedding model.** The Overview checked it by
+  embedding a sentence, so Ollama kept `nomic-embed-text` in memory for five minutes,
+  which looked like the chat holding it. The Overview now never loads a model: it
+  reads whether the model is pulled and whether it's in memory, and its size, which is
+  checked once (when chosen, or once in the background after a start) and kept.
+  **Check** unloads a model it had to load. An OpenAI-compatible provider that lists
+  the model (Ollama's `/v1`, vLLM) is treated the same way.
+- **A fresh install with a shortenable `EMBEDDING_MODEL` couldn't index.** A model
+  such as `qwen3-embedding` was made current without the size to ask for, so every
+  request returned 1024 numbers and failed; the background check now records it.
+- **Embedding models were offered as chat models**, apart from the environment's own:
+  `embeddinggemma-2`, pulled to try it, failed every message with HTTP 501.
+- **A re-embed's line could say "switching now" while it still filled**, when passages
+  were indexed meanwhile.
+- **Changing the model again mid-re-embed** finished the first model, switched to it,
+  then re-embedded for the second; it now stops or starts over.
+- **A passage the new model refused** (too long for a small model on vLLM or OpenAI)
+  paused the re-embed for good; it is now halved until it fits.
+- **Workers judged the re-embed's claim by their own clocks**; they use the database's.
+- **A misconfigured provider logged its warning on every query**; once is enough. With
+  the database briefly unreadable, a query used the environment's model instead of
+  the one last read.
+- **The Overview's Embeddings line opened Deployment**; it opens Models, where the
+  picker is.
+
+**And fixes from the bucket list.**
+
+### Fixed
+
+- **`BOOTSTRAP_ADMIN_EMAIL` now reserves the admin account.** With it set, whoever
+  signed in first on a fresh database still became the admin, because the first-login
+  path claimed the seed row without looking at the pinned email. Now only that email,
+  verified, claims it; anyone else signing in first lands as a pending member.
+- **The founder named by `BOOTSTRAP_ADMIN_EMAIL` gets admin, reader and chat on their
+  first login**, as a founder who signs in first always did. Before, a Keycloak user
+  with no realm roles was left an admin with no access. Keycloak stays authoritative
+  from the second login (docs/DEPLOYMENT.md, Trap 4).
+- **A People tick changes only that capability.** It sent the whole set the list
+  showed, so a list opened before someone's login took away the roles that login
+  brought, in Keycloak too. `PATCH /v1/admin/users/{id}` takes `add_capabilities` and
+  `remove_capabilities`, applied to the person as they are now; `capabilities` (the
+  whole set) still works, and a request can't send both.
+- **Stepping through the speech model or engine list with the arrow keys no longer
+  switches at every step.** Each step loaded (or downloaded) that model. The choice is
+  made on Enter, on leaving the list, or with a click.
+- **A converted speech model no longer keeps its original.** A fine-tune's checkpoint
+  (about 925 MB for a `small`) was downloaded into the Hugging Face cache and kept,
+  though never read once converted. It now downloads into the conversion's scratch
+  folder and goes with it. Originals left by earlier versions stay until removed
+  (docs/DEPLOYMENT.md, "Originals left by 2.10 and earlier").
+- **One worker converts a model at a time.** Two workers asked for the same new model
+  each downloaded and converted it. A second one now waits for the first's result.
+- **A full database pool no longer stalls every signed-in request.** A request
+  stamped "last seen" on a second connection while holding its first; with every
+  connection held that way, all of them waited until the pool timed out. The stamp
+  now waits at most half a second and is otherwise skipped until the next request.
+- **The Speaking chip says "Auto (Sinhala)"** when Google's first ticked recognizer
+  hears only one language, as Talk says "Auto (English)".
+- The document eval counts "The documents do not list …" as declining to answer.
+
+### Changed
+
+- `filelock` is listed in `requirements.txt` (it already came with `huggingface_hub`).
+- **Docs:** what the reader model is sent (the question, a goal the chat model writes,
+  the pages), so a reader at another provider receives conversation content too.
+
 ## [2.10.0] - 2026-11-04
 
 **Google speech through a recognizer per language.** An admin ticks Google's recognizers

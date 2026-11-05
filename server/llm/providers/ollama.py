@@ -109,7 +109,8 @@ class OllamaProvider:
         if isinstance(listed, list):
             caps = Capabilities(tools="tools" in listed, thinking="thinking" in listed,
                                 vision="vision" in listed, audio="audio" in listed,
-                                context_window=window)
+                                context_window=window,
+                                embedding="embedding" in listed and "completion" not in listed)
         else:   # an Ollama too old to list capabilities
             caps = Capabilities(context_window=window)
         self._caps.put(model, caps)

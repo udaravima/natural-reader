@@ -48,7 +48,8 @@ from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
 from ..http_errors import BUSY_MESSAGE, refusal
 from ..services import (
-    doc_content, doc_pipeline, doc_storage, doc_versions, docling_convert, docling_limits, extract, people,
+    doc_content, doc_pipeline, doc_storage, doc_versions, docling_convert, docling_limits, embedding_state, extract,
+    people,
 )
 from ..services.doc_search import ReadableDoc, search_chunks
 from ..services.embeddings import embed_query
@@ -770,16 +771,19 @@ async def search_document(
         row = await cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Document not found")
-    # v2.3 Task E: first use under a new embedding profile starts a rebuild;
-    # vectors from another model can't be compared with this query's.
-    current = doc_pipeline.ensure_current(ReadableDoc(doc_id, "", row[0], None, row[1], row[2]))
+        # v2.3 Task E: first use under a new embedding profile starts a rebuild;
+        # vectors from another model can't be compared with this query's. One
+        # read of the embedder, on this connection, serves both.
+        embedder = await embedding_state.current(conn)
+        current = await doc_pipeline.ensure_current(conn, ReadableDoc(doc_id, "", row[0], None, row[1], row[2]),
+                                                    embedder)
     if current.state == "reindexing":
         raise HTTPException(status_code=409, detail={
             "error": "reindexing",
             "message": "This document is being re-indexed for the current search model. Try again shortly."})
 
     try:
-        qvec = await embed_query(req.query)
+        qvec = await embed_query(req.query, embedder)
     except Exception as e:
         logger.exception("Embedding failed for search query")
         raise HTTPException(status_code=502, detail=f"Embedding service error: {e}") from e

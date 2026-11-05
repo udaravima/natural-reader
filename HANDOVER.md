@@ -4,7 +4,79 @@
 
 ---
 
-## 2026-11-04 late night — v2.10.0 released: a recognizer for each language, and the time (START HERE)
+## 2026-11-05 — v2.11.0 released: choose the embedding model, and change it without losing search (START HERE)
+
+**State.** On the owner's "Merge" and then "please do the release": `fix/bucket-list` and `feat/embeddings-2b` fast-forwarded into `development` (`dbf346c`, 30 commits), the release commit on top (version 2.11.0, changelog dated, `docs/Release_notes/RELEASE_NOTES_v2.11.0.md`, TESTING rows), `development` merged into `master`, annotated tag `v2.11.0`, pushed, and a GitHub release from the notes. Gates on the merged tree: pytest 3099 passed / 16 skipped, vitest 1849 in 152 files, eslint 0 errors, build OK. The only review of phase 2b is my own (no fresh reviewer: agents only when the owner asks). The scratch test database container stopped by itself once this morning (clean exit around 10:02); `podman start nr-c21-testpg` brought it back, and every test erroring at once is that, not the code.
+
+**Not deployed.** The live backend still runs v2.9.0 code, so one deploy brings 2.10 and 2.11 together. Back up first (migration 025 runs at start), then `./startup.sh rebuild`, `npm run build`, `sudo ./deploy.sh`; then Admin → Chat options → Google Cloud and tick the recognizers, since the live `.env`'s `GOOGLE_SPEECH_RECOGNIZER` names the deleted `asr-si-ta`. The 2.8 GB of original checkpoints in the live `cache` volume can go after (DEPLOYMENT, "Originals left by 2.10 and earlier").
+
+**Next.** The owner's decision sheet (a private doc they're filling in) sets the order; the bucket list below is the inventory. My recommended start: deploy, then design notifications for each person, then figures.
+
+## 2026-11-05 morning — the phase 2b follow-ups, on `feat/embeddings-2b` (merged, released in v2.11.0)
+
+**State.** Same branch, nine more commits after `b00209f`, on the owner's "First fix the issues you found" and their question "why to check embedding available do load the model … loading unloading constantly will kill the ram right?". Not merged, not pushed. Gates: pytest 3099 passed / 16 skipped, vitest 1849 in 152 files, eslint 0 errors (the same 24 warnings).
+
+**What changed.** (1) Checking never loads a model: the Overview reads Ollama's `/api/tags` and `/api/ps` (or an OpenAI-compatible `/models`), and the size, checked once (when chosen, or once by the loop after a start, `_check_current`) and kept in `embedding_state` (`checked`, `current_error`). The probe unloads what it loaded unless a re-embed follows. A fresh install with `EMBEDDING_MODEL=qwen3-embedding` now gets its `dimensions` recorded (it never did). (2) Re-embed progress counted from the table, with a running rate: "(24%), about 7 minutes left", a bar, and notices when done, paused or stopped elsewhere. (3) The five deferred minors: a refused passage is halved until it fits; a target changed mid-re-embed stops or restarts the build; claims use the database clock; a provider warning once per process; a DB hiccup keeps the model last read (and the search route reads the embedder once). (4) Embedding models left out of the chat picker (`Capabilities.embedding` from `/api/show`, known families, the env model). (5) The Overview's Embeddings line opens Models.
+
+**Walked live (DB `nr_embed_walk2`, two backends :8100 and :8101 on it, app on :5174, providers `ollama` and `v1` = Ollama's own OpenAI-compatible `/v1`).** The Overview left nomic's Ollama expiry unchanged to the nanosecond, and with nothing loaded said "Not in memory now" and loaded nothing (both providers). The chat screen's Model picker lists no embedding model. Re-embed to embeddinggemma-2 with two workers: one filled (the claim never moved), one switch, 313 passages in 80 s; the line went 10% "about 2 minutes left", 30% "less than a minute left", then "Re-embed done: …". Over `v1`: Check, the same model switching at once, the Overview, a document question answered from the right page, and a 313-passage re-embed through `/v1/embeddings` (started on :8100, filled and switched by :8101).
+
+**Mistake owned.** `a2f7707` was committed with one test red (the gate read only the summary line); `fc3bcaa` fixed the test's stand-in, and commits since are gated on "passed" with no "failed".
+
+### Bucket list (current, 2026-11-05; replaces the 2026-11-03 one below)
+
+**Done since 2026-11-03.** Released in v2.11.0, from `fix/bucket-list`: `BOOTSTRAP_ADMIN_EMAIL` reserves the seed admin, a People tick changes only that capability, the speech lists settle instead of switching at each arrow, conversions use a scratch download under a lock, `touch.stamp` skips on a full pool, the eval scorer takes "do not list". From `feat/embeddings-2b`: phase 2b embeddings and its follow-ups. Earlier: a recognizer per language and the current time (v2.10.0); speech models offered to people, a model by language, a reply voice per person (v2.9.0).
+
+**Waiting on the owner.**
+- Deploy: the live backend runs v2.9.0 code, so v2.10.0 and v2.11.0 aren't live. The live `.env`'s `GOOGLE_SPEECH_RECOGNIZER` names the deleted `asr-si-ta`. About 2.8 GB of original checkpoints sit in the live `cache` volume (DEPLOYMENT, "Originals left by 2.10 and earlier").
+- Decisions: the CPU anti-goal (recommended: accept and reword); a file too large for the model (refuse or note); warn before a model switch hides replies; the auto-pusher; how SDD workspaces are kept (phase 2b's is kept until then).
+
+**Owed on real hardware (owner).** Talk with speakers and no headphones (echo), a real room, a phone, Safari; Kokoro `fp16` by ear; real Sinhala and Tamil voices through Google, and whether they're good enough; Chinese and Japanese voices; a phone keyboard over the popup; embeddings and re-embed speed on a GPU.
+
+**Owed checks (never run).** A person without chat access; the speech choices as a non-admin (throwaway Keycloak); a blocked microphone prompt; the 2-minute stop; a real OpenAI-compatible speech server; several workers swapping speech models; `compose.speech.yml` on a running stack; Docling Describe and Accurate; Auto turned Ask, the yes path; V1 reader error, Retry index, the freeze fix; two users on one browser; a share recipient; `startup.cmd` on Windows; indexed documents with a NULL `embedding_model`; embeddings on vLLM, OpenAI and OpenRouter themselves (Ollama's `/v1` was walked).
+
+**Next builds, in the owner's order.** (1) Figures: keep pictures, describe them with a vision model, let the chat show them; the DeepSeek-OCR preset (embeddinggemma-2 can embed pictures too). (2) The rest of this list. (3) Agent profiles. (4) The PBX.
+
+**Notifications for each person (new, the owner, 2026-11-05; not designed, not placed in the order).** An inbox per person, **not a popup**: a list they open, **Mark all as read**, and a **scheduled cleanup** of old ones. The owner's three points; the rest is to settle in its design. Likely first senders (my guesses): a re-embed done or paused, passages a model refused and that were shortened (today only in the server log), a conversion or indexing finished or failed, rebuilds that failed. Open questions: who gets an admin notice (every admin?), how long one is kept, where the unread count shows.
+
+**Other builds, unplaced.** Talk smoothness: a shorter silence (700 ms now), a turn detector (Smart Turn v3), streaming voice; speaker verification (the busy-room colleague); audio straight to a model; Sri Lankan Tamil; tool calls drawn inline where they happened.
+
+**Bugs and limits.** Two people talking at once queue. A model can pass real values to `READER_MODEL`. Vitest flakes under load. Project eval `features` fails every run; citations 87.9% against 90%. A passage shortened for an embedding model shows only in the server log. The `showHeaderControlsOnMobile` phone overflow (not rechecked since 2026-11-04).
+
+**Robustness.** Resumable streams, a tested backup restore, a lock around migrations, a pool-slot limit, backup guidance.
+
+**Providers.** A `/models` fallback, per-provider params, a native Anthropic adapter; vLLM, LiteLLM and Unsloth unrun; a GPU or NPU image.
+
+**Features (the owner's wish-list).** Bulk project upload; auto tags and descriptions; Markdown and PDF side by side; MCP; agents; knowledge-base refresh; chat search, export, edit and regenerate; saved roles; prices per model; Auto model routing; V2 compare and review-before-current; C2.2 digests.
+
+**Housekeeping.** The AppArmor pasta fix (sudo); disk 91% full (43 GB free, 2026-11-05); 26 branches merged into `development` that could go; stale memories.
+
+---
+
+## 2026-11-05 early morning — embeddings, admin console v2 phase 2b, on `feat/embeddings-2b`
+
+**State.** Branch `feat/embeddings-2b` from `fix/bucket-list` (`348823e`), so it carries those fixes too; neither is merged into `development`. Plan `docs/superpowers/plans/2026-11-05-admin-console-v2-phase2b-embeddings.md`, executed natively with the owner's "commit as you go" (commits `6f153f3..`, one per task). Gates: pytest 3066 passed / 16 skipped, vitest 1844 in 152 files, eslint 0 errors (the same 24 old warnings). Migration **025** (`doc_rebuilds`). The ledger with every ruling is `.superpowers/sdd/2026-11-05-admin-console-v2-phase2b-embeddings/progress.md` (git-ignored; kept until the owner decides how SDD workspaces are kept). Final review: a self-review (no subagents, the owner's rule), which found and fixed three issues in `a4b4c87`.
+
+**What a person can do now, and the control for each step.** Admin → **Models** → the **Embeddings** box: see the model in use; choose **Embedding provider** and **Embedding model** (the provider's own list, embedding models first; a typed name when it lists none); **Check**; **Use this model** (on only after an admitted check of what is picked); watch "Re-embedding for … : n of m passages" there and in **Overview**; **Cancel the re-embed**; **Back to the server's setting**. A changed `EMBEDDING_MODEL` re-embeds at the next start. Nothing is API-only.
+
+**Walked (scratch backend :8100, DB `nr_embed_walk`, Chromium 1366 and 360 px, the owner's Ollama, cloud chat `gemma4:31b-cloud`).** Three docs (313 passages) indexed with nomic through the new batched client. Overview with nomic unloaded: it probed and `ollama ps` was empty again after (the owner's "nomic always loaded" report: every `/api/embeddings` call in the Ollama log during chats matched a `GET /v1/admin/overview` on the live backend; the chat embeds nothing without documents). Check embeddinggemma-2:740m (1.3 s), Use, progress; a document question during the re-embed answered with a page citation; the switch came by itself (313 passages in 109 s); the same question after; every document current, nothing queued. Cancel a second re-embed: stayed on embeddinggemma. A third one killed with `kill -9` at 64 of 313: after a restart the dead claim held for its 3 minutes, then the new worker went on from 64 and switched once. **Not walked:** the chat question through the chat *UI* (asked through `POST /v1/chat/sessions/{id}/turns`, as the UI does; the chat UI didn't change); an `openai`-kind embeddings endpoint (none called); two workers at once (`WORKERS=2`), covered by the queue's two-connection test only.
+
+**Measured (laptop CPU, no GPU).** Re-embedding: nomic-embed-text 6.4 passages/s (about 2.5 min per 1,000), embeddinggemma-2:740m 2.7/s (about 6 min per 1,000). The document eval (`scripts/eval_doc_qa.py`, `ollama:gemma4:31b-cloud`): **9/9 with either model**, inline citations 4/4 each. The 30-passage fixture can't tell them apart; one real question in the walk went better with nomic (it found "127.0.0.1:8000" on page 1, embeddinggemma didn't). The default stays nomic-embed-text.
+
+**For the owner.** (1) Deploying this fixes the "nomic loaded while chatting" only once the live backend runs it. (2) Out of scope, found here: the chat model picker hides only the env's `EMBEDDING_MODEL`, so another embedding model pulled on Ollama (embeddinggemma-2 today) is offered as a chat model and fails with HTTP 501 if picked; a fix reads Ollama's `/api/show` capabilities (fixed in the follow-ups above). (3) Next: the figures phase, designed now that pictures can be embedded too (see memory `reference_multimodal_embeddings`).
+
+---
+
+## 2026-11-04 near midnight — bucket-list fixes on `fix/bucket-list` (committed, `388bf09..348823e`, not merged)
+
+**State.** Branch `fix/bucket-list` from `development` (`b25cf35`, v2.10.0), on the owner's "let's finish our long pending tasks". Committed 2026-11-04 on the owner's word, eight commits, not merged into `development`. Gates: pytest 3010 passed / 16 skipped, vitest 1830 in 151 files, eslint 0 errors (24 old warnings), build OK. CHANGELOG `[Unreleased]` lists each fix.
+
+**Fixed (each with a test that failed first).** `BOOTSTRAP_ADMIN_EMAIL` now reserves the seed admin (branch 3 claims it only while its email is the sentinel `admin@localhost`), and the founder's email claim gets the bootstrap capabilities (the founder-lockout trap on the first login). A People tick sends `add_capabilities` / `remove_capabilities`, applied to the row as it is now. A short native list marked `settle` (speech engine, speech model) chooses on Enter, blur, or 1 s after the last arrow step: on a Mac the arrows open the menu and its Enter never reaches the page, hence the pause. Conversion downloads the original into its scratch folder (no more ~925 MB kept per fine-tune) under a `filelock` per model in `HF_HOME/speech-converting`. `touch.stamp` waits at most 0.5 s for a pooled connection, else skips. The Speaking chip says "Auto (Sinhala)" when Google's first recognizer hears one language. The eval scorer takes "do not list". The reader's goal text documented as a path for conversation content to a reader at another provider (USER_GUIDE).
+
+**Walked in Chromium** (scratch backend :8100 with a dummy `SPEECH_URL`, DB `nr_bucket_walk`, dropped after): stepping the engine list down and back sent nothing, a step and a pause sent one PUT; a tick on a list loaded before Tess's roles changed kept them (`{chat,reader,talk}`).
+
+**Live volume, owner's call:** the three originals (~2.8 GB) are still in the live `cache` volume; DEPLOYMENT "Originals left by 2.10 and earlier" has the commands.
+
+## 2026-11-04 late night — v2.10.0 released: a recognizer for each language, and the time
 
 **State.** On the owner's "commit and do a release": the clock tool and docs committed on `feat/google-recognizers` (`de7ac05`, `4654670`), the branch fast-forwarded into `development`, the release commit on top (version 2.10.0, changelog dated, `docs/Release_notes/RELEASE_NOTES_v2.10.0.md`, TESTING rows), `development` merged into `master`, annotated tag `v2.10.0`. **Not deployed**: the live backend image is v2.9.0 code, and the live `.env`'s `GOOGLE_SPEECH_RECOGNIZER` names the deleted `asr-si-ta` (live speech has been Whisper since 19:01). To deploy: `./startup.sh rebuild`, `npm run build`, `sudo ./deploy.sh`; then Admin → Chat options → Google Cloud and tick `asr-si-en`, `asr-ta-en`, `asr-en`.
 
@@ -120,7 +192,7 @@ Every rule ends turns in that room, which gate-off never does. docs/DEPLOYMENT.m
 
 **Open levers, not built.** Streaming synthesis (gRPC) would cut Gemini-TTS's first sentence; a shared HTTP client would save a TLS handshake per sentence; Talk doesn't check a stored language against the recognizer's list.
 
-### Bucket list (current, replaces the v2.5.0 one below)
+### Bucket list (2026-11-03; replaced by the 2026-11-05 one at the top)
 
 Checked 2026-11-03 after the v2.7.0 docs pass. Done since the v2.5.0 list: the 375 px header, `AdminPanel.jsx`, `git config user.name`, Sinhala and Tamil (through Google).
 

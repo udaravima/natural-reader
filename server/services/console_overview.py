@@ -34,7 +34,8 @@ from ..chat.tools import ToolContext, available_tools, tool_spec
 from ..llm.providers.base import ProviderConfig
 from ..llm.router import ModelInfo, UnknownModel
 from .. import chat_voice, google_cloud
-from . import assistant_profile, chat_options, docling_convert, embeddings, model_router, model_settings, web_search
+from . import (assistant_profile, chat_options, docling_convert, embedding_console, embedding_state, embeddings, model_router,
+               model_settings, rebuild_queue, web_search)
 from ..speech import catalogue as speech_catalogue, service as speech_service
 from ..speech.languages import WHISPER_LANGUAGES
 from .deployment_info import NOT_A_URL, url_host
@@ -52,7 +53,7 @@ _TITLES = {   # id -> (title, section), in the order the Overview shows them
     "providers": ("Model providers", "models"),
     "reader": ("Reader", "models"),
     "context": ("Context windows", "models"),
-    "embeddings": ("Embeddings", "deployment"),
+    "embeddings": ("Embeddings", "models"),     # Models → Embeddings chooses the model
     "docling": ("Docling", "documents"),
     "web_search": ("Web search", "chat"),
     "voice_input": ("Voice input", "chat"),
@@ -154,40 +155,107 @@ async def _reader(llm, ms: model_settings.ModelsSettings, env: Mapping[str, str]
     return _check("reader", "ok", f"{name}, from {ms.reader_env or 'READER_MODEL'}.")
 
 
-async def _embeddings(http: httpx.AsyncClient, env: Mapping[str, str], stale: int) -> Check:
-    cfg = model_router.load_inference_config(env)
-    model, host = cfg.embed_model, url_host(cfg.ollama_url)
-    dim = embeddings.EMBEDDING_DIM
-    # The probe makes its own single request to the endpoint embed_one uses, with the same body, instead of
-    # calling embed_one: that one waits on the shared indexing semaphore, so right after an upload a healthy
-    # model would read as "didn't answer". No `dimensions` is asked for: the length that comes back is the
-    # model's own.
+_STAKE = "documents can't be indexed or searched."
+
+
+async def _ollama_embedder(http: httpx.AsyncClient, e: embeddings.Embedder, state: Mapping | None) -> Check | str:
+    """The model in use on Ollama, from two lists and nothing loaded: /api/tags (is it pulled?) and /api/ps (is
+    it in memory?). Its size comes from the state row: checked once, when it became the model in use or by the
+    background loop (embedding_migration.tick), never on a visit to this page (the owner, 2026-11-05). Returns the
+    line's opening sentence, or the error Check."""
+    host = url_host(e.provider.url)
     try:
-        resp = await http.post(f"{cfg.ollama_url}/api/embeddings",
-                               json={"model": model, "prompt": EMBEDDING_PROBE})
-        resp.raise_for_status()
-        vec = resp.json().get("embedding")
-    except httpx.HTTPStatusError as e:   # reachable, but refusing: a model that was never pulled is a 404
-        return _check("embeddings", "error", f"{model} at {host} answered HTTP {e.response.status_code}: "
-                                             "documents can't be indexed or searched.")
-    except (httpx.HTTPError, httpx.InvalidURL):
-        return _check("embeddings", "error", f"Can't reach the embedding model {model} at {host}: "
-                                             "documents can't be indexed or searched.")
-    except (ValueError, AttributeError):   # an answer that isn't JSON, or isn't an object
-        vec = None
-    if not isinstance(vec, list) or not vec:
-        return _check("embeddings", "error", f"{model} at {host} answered, but returned no embedding: "
-                                             "documents can't be indexed or searched.")
-    got = len(vec)
+        resp = await http.get(f"{e.provider.url}/api/tags")
+    except (httpx.HTTPError, httpx.InvalidURL) as err:
+        return _check("embeddings", "error", f"Can't reach {e.provider.name} at {host} for {e.model} "
+                                             f"({type(err).__name__}): {_STAKE}")
+    if resp.status_code != 200:
+        return _check("embeddings", "error", f"{e.provider.name} at {host} answered HTTP {resp.status_code}: {_STAKE}")
+    try:
+        names = [m.get("name") or "" for m in resp.json().get("models", [])]
+    except (ValueError, AttributeError, TypeError):
+        return _check("embeddings", "error", f"{e.provider.name} at {host} answered with something that isn't "
+                                             f"a model list: {_STAKE}")
+    if not any(n.removesuffix(":latest") == e.model.removesuffix(":latest") for n in names):
+        return _check("embeddings", "error", f"{e.model} isn't on {e.provider.name} at {host} (ollama pull "
+                                             f"{e.model}): {_STAKE}")
+    state = state or {}
+    if state.get("current_error"):
+        return _check("embeddings", "error", f"{state['current_error']}: {_STAKE}")
+    if state.get("checked") != embedding_state.vector_identity(e):
+        return f"{e.model} at {host}: pulled; its size hasn't been checked yet (the server checks it once, in the " \
+               "background)."
+    if await embeddings.is_loaded(e.provider, e.model, http):
+        return f"{e.model} at {host}: {embeddings.EMBEDDING_DIM} dimensions, in memory now."
+    return (f"{e.model} at {host}: {embeddings.EMBEDDING_DIM} dimensions. Not in memory now: it loads when a document "
+            "is indexed or searched.")
+
+
+async def _remote_embedder(http: httpx.AsyncClient, e: embeddings.Embedder, state: Mapping | None) -> Check | str:
+    """An OpenAI-compatible embedder. One its provider lists at /models, with its size checked when it became the
+    model in use, needs nothing more: a local server (Ollama's /v1, vLLM, LM Studio) lists its models, and
+    embedding there would load the model as the old Ollama check did. One it doesn't list is checked by
+    embedding one sentence, since a provider's /models can't be trusted to list embedding models (OpenRouter's
+    lists chat models).
+
+    That request is its own instead of going through embed_texts: that one waits on the shared indexing
+    semaphore, so right after an upload a healthy model would read as "didn't answer"."""
+    dim = embeddings.EMBEDDING_DIM
+    if (state or {}).get("current_error"):
+        return _check("embeddings", "error", f"{state['current_error']}: {_STAKE}")
+    if (state or {}).get("checked") == embedding_state.vector_identity(e):
+        listed = await embeddings.list_model_names(e.provider, timeout=CHECK_TIMEOUT_S / 2, client=http)
+        if any(n.removesuffix(":latest") == e.model.removesuffix(":latest") for n in listed):
+            return f"{e.model} at {url_host(e.provider.url)}: {dim} dimensions."
+    try:
+        vectors = await embeddings.request_vectors(e, [EMBEDDING_PROBE], client=http)
+    except embeddings.EmbeddingError as err:
+        return _check("embeddings", "error", f"{err}: {_STAKE}")
+    vec = vectors[0]
+    got = len(vec) if isinstance(vec, list) else 0
+    host = url_host(e.provider.url)
+    if not got:
+        return _check("embeddings", "error", f"{e.model} at {host} answered, but returned no embedding: {_STAKE}")
     if got != dim:
-        return _check("embeddings", "error", f"{model} returned {got} dimensions; the database holds {dim}.")
-    summary = f"{model} at {host}: {dim} dimensions."
+        return _check("embeddings", "error", f"{e.model} returned {got} dimensions; the database holds {dim}.")
+    return f"{e.model} at {host}: {dim} dimensions."
+
+
+async def _embeddings(http: httpx.AsyncClient, e: embeddings.Embedder, state: Mapping | None,
+                      counts: tuple[int, int] | None, stale: int, queue: Mapping[str, int]) -> Check:
+    """The model in use (what the stored vectors were made with) is there and gives 768 numbers; and how far a
+    re-embed and the rebuild queue are, read from the database."""
+    head = await (_ollama_embedder(http, e, state) if e.provider.kind == "ollama" else
+                  _remote_embedder(http, e, state))
+    if isinstance(head, Check):
+        return head
+    notes, warn = [], False
+    migration = embedding_console.migration_view(state, counts)
+    if migration["state"] == "building":
+        done = migration["filled"] * 100 // migration["total"] if migration["total"] else 100
+        left = embedding_console.time_left(migration["seconds_left"])
+        notes.append(f"Re-embedding for {migration['model']}: {migration['filled']:,} of {migration['total']:,} "
+                     f"passages ({done}%){', ' + left if left else ''}.")
+    elif migration["state"] == "switching":
+        notes.append(f"Re-embedding for {migration['model']}: every passage done, switching now.")
+    elif migration["state"] == "failed":
+        warn = True
+        notes.append(f"Re-embedding for {migration['model']} is paused: {migration['error']}" if migration["model"]
+                     else f"The chosen embedding model isn't used: {migration['error']}")
     if stale:
+        warn = True
         was = "was" if stale == 1 else "were"
         each = "it rebuilds" if stale == 1 else "each rebuilds"
-        return _check("embeddings", "warn", f"{summary} {_plural(stale, 'document')} {was} indexed under an older "
-                                            f"embedding setup; {each} the next time someone uses it.")
-    return _check("embeddings", "ok", summary)
+        notes.append(f"{_plural(stale, 'document')} {was} indexed under an older embedding setup; {each} the next "
+                     "time someone uses it.")
+    waiting = queue.get("queued", 0) + queue.get("running", 0)
+    if waiting:
+        notes.append(f"{_plural(waiting, 'document')} waiting to be rebuilt.")
+    if queue.get("failed"):
+        warn = True
+        notes.append(f"{_plural(queue['failed'], 'rebuild')} failed and will be retried.")
+    summary = " ".join([head, *notes])
+    return _check("embeddings", "warn" if warn else "ok", summary)
 
 
 async def _docling() -> Check:
@@ -349,13 +417,15 @@ async def run_checks(conn, llm, env: Mapping[str, str] = os.environ,
     options = await chat_options.load_chat_options(conn, env)
     web_mode = options.web_search
     try:
-        current = embeddings.current_profile()
+        embedder = await embedding_state.current(conn, env)
     except ValueError:   # a malformed INFERENCE_* value: the embeddings and context checks report it themselves
-        stale = 0
+        embedder, stale = None, 0
     else:
         cur = await conn.execute("SELECT count(*) FROM documents WHERE state = 'indexed' "
-                                 "AND embedding_profile IS DISTINCT FROM %s", (current,))
+                                 "AND embedding_profile IS DISTINCT FROM %s", (embeddings.profile_of(embedder),))
         stale = (await cur.fetchone())[0]
+    state, counts = await embedding_console.read_progress(conn)
+    queue = await rebuild_queue.queue_counts(conn)
     profile = (await assistant_profile.load_profile(conn)).text
     try:
         ms = await model_settings.load_models_settings(conn, env)
@@ -370,7 +440,8 @@ async def run_checks(conn, llm, env: Mapping[str, str] = os.environ,
             _bounded("providers", lambda: _providers(llm)),
             _bounded("reader", lambda: _reader(llm, ms, env)),
             _bounded("context", lambda: _context(llm, ms, env, web_mode, profile)),
-            _bounded("embeddings", lambda: _embeddings(client, env, stale)),
+            _bounded("embeddings", lambda: _embeddings(client, embedder or embedding_state.env_target(env), state,
+                                                       counts, stale, queue)),
             _bounded("docling", _docling),
             _bounded("web_search", lambda: _web_search(client, web_mode)),
             _bounded("voice_input", lambda: _voice_input(options, env)),

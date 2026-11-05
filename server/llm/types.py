@@ -64,6 +64,7 @@ class Capabilities:
     vision: bool | None = None
     audio: bool | None = None
     context_window: int | None = None   # tokens
+    embedding: bool | None = None       # makes embeddings and can't chat (Ollama: `embedding`, no `completion`)
 
     def to_json(self) -> dict[str, Any]:
         return {"tools": self.tools, "thinking": self.thinking, "vision": self.vision,

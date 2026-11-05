@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -72,6 +73,57 @@ def test_a_second_worker_finishing_first_is_not_an_error(tmp_path, monkeypatch):
     assert convert.ensure_converted(MODEL, 1, env) == final
     assert (final / "model.bin").read_bytes() == b"theirs"
     assert [p.name for p in final.parent.iterdir()] == [final.name]      # no scratch directory left behind
+
+
+def test_the_original_is_downloaded_beside_the_result_and_dropped_with_the_scratch(tmp_path, monkeypatch):
+    # A fine-tune's original checkpoint is ~925 MB for a `small` and is never read again once converted: it goes
+    # into the conversion's own scratch directory, not the shared Hugging Face cache.
+    import huggingface_hub
+    seen = {}
+
+    def snapshot_download(repo, *, revision, allow_patterns, cache_dir=None, **kw):
+        seen.setdefault("cache_dirs", []).append(cache_dir)
+        src = tmp_path / "scratch" / "download" / "snap"
+        src.mkdir(parents=True, exist_ok=True)
+        (src / "model.safetensors").write_bytes(b"w")
+        return str(src)
+
+    class Converter:
+        def __init__(self, source, **kw): seen["source"] = source
+        def convert(self, out, **kw): Path(out).mkdir(parents=True, exist_ok=True)
+
+    tokenizer = SimpleNamespace(backend_tokenizer=SimpleNamespace(save=lambda path: Path(path).write_text("{}")))
+    extractor = SimpleNamespace(to_json_file=lambda path: Path(path).write_text("{}"))
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot_download)
+    monkeypatch.setitem(sys.modules, "ctranslate2", SimpleNamespace(
+        converters=SimpleNamespace(TransformersConverter=Converter)))
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(
+        AutoTokenizer=SimpleNamespace(from_pretrained=lambda s: tokenizer),
+        WhisperFeatureExtractor=SimpleNamespace(from_pretrained=lambda s: extractor)))
+    out = tmp_path / "scratch" / "model"
+    convert._convert("owner/name", "abc123", str(out))
+    assert seen["cache_dirs"] == [str(tmp_path / "scratch" / "download")]
+    assert (out / "tokenizer.json").exists() and (out / "preprocessor_config.json").exists()
+
+
+def test_a_second_worker_waits_for_the_first_and_converts_nothing(tmp_path, monkeypatch):
+    import threading
+    env = {"HF_HOME": str(tmp_path)}
+    final = convert.converted_dir(MODEL, env)
+    monkeypatch.setattr(convert.subprocess, "run", lambda *a, **k: pytest.fail("the first worker converted it"))
+    first = convert._lock_for(final, env)
+    first.acquire()
+    got = {}
+    second = threading.Thread(target=lambda: got.setdefault("dir", convert.ensure_converted(MODEL, 1, env)))
+    second.start()
+    second.join(0.3)
+    assert second.is_alive()                     # waiting on the first worker's conversion
+    final.mkdir(parents=True)
+    (final / "model.bin").write_bytes(b"x")
+    first.release()
+    second.join(5)
+    assert got["dir"] == final
+    assert [p.name for p in final.parent.iterdir()] == [final.name]
 
 
 def test_a_failed_conversion_says_why_and_leaves_nothing(tmp_path, monkeypatch):

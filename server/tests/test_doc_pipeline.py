@@ -343,7 +343,7 @@ async def test_legacy_swap_replaces_client_chunks(db_conn, harness, store):
 
 
 async def test_legacy_swap_keeps_old_index_when_embedding_fails(db_conn, monkeypatch, store):
-    async def broken_embed(texts):
+    async def broken_embed(texts, e=None):
         raise RuntimeError("embedding service down")
 
     build_docs_app(db_conn, monkeypatch, storage_dir=store, embed=broken_embed)

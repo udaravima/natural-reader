@@ -43,6 +43,8 @@ faster-whisper>=1.2
 # relying on faster-whisper to bring them.
 av>=19.0
 numpy>=2.5
+# server/speech/convert.py: one worker converts a model at a time (huggingface_hub brings it too).
+filelock>=3.12
 
 # Audio processing
 soundfile

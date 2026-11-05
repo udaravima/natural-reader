@@ -42,6 +42,18 @@ def test_invalid_providers_are_skipped_with_a_warning(caplog):
     assert "badkind" in caplog.text and "nourl" in caplog.text
 
 
+def test_a_bad_provider_is_warned_about_once_not_on_every_read(caplog):
+    """Final review minor, fixed for the owner (2026-11-05): every query reads the embedder, which parses
+    INFERENCE_PROVIDERS, so one misconfigured provider logged its warning once per query."""
+    env = {"INFERENCE_PROVIDERS": "good,badkind", "INFERENCE_GOOD_KIND": "ollama",
+           "INFERENCE_GOOD_URL": "http://a.example.com", "INFERENCE_BADKIND_KIND": "anthropic",
+           "INFERENCE_BADKIND_URL": "http://b.example.com"}
+    with caplog.at_level(logging.WARNING):
+        for _ in range(3):
+            assert [c.name for c in load_provider_configs(env)] == ["good"]
+    assert caplog.text.count("badkind") == 1
+
+
 def _router():
     configs = load_provider_configs({
         "INFERENCE_PROVIDERS": "local,cloud",

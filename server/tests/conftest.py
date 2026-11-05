@@ -45,6 +45,15 @@ def _migrated():
     asyncio.run(apply_migrations(TEST_URL))
 
 
+@pytest.fixture(autouse=True)
+def _fresh_warnings():
+    """A misconfigured provider is warned about once per process (llm/router.py); each test starts unwarned, so a
+    test that looks for the warning sees it whatever ran before."""
+    from server.llm import router
+    router._warned.clear()
+    yield
+
+
 @pytest_asyncio.fixture
 async def db_conn():
     """A connection wrapped in a transaction that is always rolled back."""

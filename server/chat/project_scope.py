@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..auth.authz import visible_projects_params, visible_projects_where
-from ..services import doc_pipeline, doc_versions
+from ..services import doc_pipeline, doc_versions, embedding_state
 from ..services.doc_search import ReadableDoc
 from .prompt import NAME_CAP, display_name
 
@@ -90,11 +90,13 @@ async def load_project_scope(conn, user_id: str, project_id: str, *,
         "WHERE doc_id = ANY(%s)", ([d["doc_id"] for d in listed],))
     content = {r[0]: r for r in await cur.fetchall()}
     names = unique_names([display_name(d["name"]) for d in listed])
+    embedder = await embedding_state.current(conn)   # once for the scope, not per document
     docs = []
     for ref, (d, name) in enumerate(zip(listed, names), start=1):
         _, state, page_count, profile, model = content[d["doc_id"]]
-        # First use under a new embedding profile starts a background rebuild,
+        # First use under a new embedding profile queues a background rebuild,
         # as for the open document (orchestrator._open_doc).
-        doc = doc_pipeline.ensure_current(ReadableDoc(d["doc_id"], d["name"], state, page_count, profile, model))
+        doc = await doc_pipeline.ensure_current(
+            conn, ReadableDoc(d["doc_id"], d["name"], state, page_count, profile, model), embedder)
         docs.append(ScopeDoc(ref, doc, name, d["doc_id"] == open_doc_id))
     return ProjectScope(str(project_id), row[0], tuple(docs))
