@@ -214,22 +214,27 @@ async def embed_batch(texts: list[str], e: Embedder | None = None) -> list[list[
 LIST_TIMEOUT_S = 5.0
 
 
-async def list_model_names(provider: ProviderConfig, *, timeout: float = LIST_TIMEOUT_S) -> list[str]:
+async def list_model_names(provider: ProviderConfig, *, timeout: float = LIST_TIMEOUT_S,
+                           client: httpx.AsyncClient | None = None) -> list[str]:
     """Every model the provider lists (Ollama's /api/tags, an OpenAI-compatible /models), for the console's
-    picker; the chat allow-lists don't apply to an embedding model. [] when it doesn't answer: the picker then
-    takes a typed name."""
+    picker and the Overview; the chat allow-lists don't apply to an embedding model. [] when it doesn't answer:
+    the picker then takes a typed name."""
+    own = client is None
+    http = client or httpx.AsyncClient(timeout=timeout)
     try:
-        async with httpx.AsyncClient(timeout=timeout) as http:
-            if provider.kind == "ollama":
-                resp = await http.get(f"{provider.url}/api/tags")
-                resp.raise_for_status()
-                return [m["name"] for m in resp.json().get("models", []) if isinstance(m, dict) and m.get("name")]
-            resp = await http.get(f"{provider.url}/models", headers=auth_headers(provider))
+        if provider.kind == "ollama":
+            resp = await http.get(f"{provider.url}/api/tags", timeout=timeout)
             resp.raise_for_status()
-            return [m["id"] for m in resp.json().get("data", []) if isinstance(m, dict) and m.get("id")]
-    except (httpx.HTTPError, ValueError, AttributeError) as err:
+            return [m["name"] for m in resp.json().get("models", []) if isinstance(m, dict) and m.get("name")]
+        resp = await http.get(f"{provider.url}/models", headers=auth_headers(provider), timeout=timeout)
+        resp.raise_for_status()
+        return [m["id"] for m in resp.json().get("data", []) if isinstance(m, dict) and m.get("id")]
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, AttributeError, TypeError) as err:
         logger.info("Couldn't list %s's models: %s", provider.name, type(err).__name__)
         return []
+    finally:
+        if own:
+            await http.aclose()
 
 
 # ---------- the probe: may this model fill a 768-number column? (spec §4.2.4) ----------

@@ -86,7 +86,7 @@ def _embedding(width=768):
 PULLED = ("nomic-embed-text:latest", "gemma4:e4b")
 
 
-def _searxng(status=200, embed=None, loaded=(), tags=PULLED, seen=None):
+def _searxng(status=200, embed=None, loaded=(), tags=PULLED, seen=None, listed=()):
     """One client for every network check: /healthz answers SearXNG's; on Ollama /api/tags lists the models
     pulled (`tags`, or a handler) and /api/ps the ones in memory (`loaded`); /api/embed and an OpenAI-compatible
     /v1/embeddings answer an embedding (a healthy 768-wide one unless `embed` says otherwise). `seen` records
@@ -103,6 +103,8 @@ def _searxng(status=200, embed=None, loaded=(), tags=PULLED, seen=None):
             if callable(tags):
                 return tags(request)
             return httpx.Response(200, json={"models": [{"name": n, "model": n} for n in tags]})
+        if path == "/v1/models":     # an OpenAI-compatible provider's list (`listed`)
+            return httpx.Response(200, json={"data": [{"id": n} for n in listed]})
         assert path == "/healthz"
         return httpx.Response(status)
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -380,14 +382,35 @@ async def test_a_model_in_use_found_to_have_the_wrong_size_is_a_problem(db_conn)
                                              "documents can't be indexed or searched.")
 
 
-async def test_an_openai_compatible_embedder_is_checked_with_one_sentence(db_conn):
-    """Nothing is loaded on this machine for it, and a provider's /models can't be trusted to list embedding
-    models (OpenRouter's lists chat models), so the check embeds one sentence there."""
+async def _checked_cloud(db_conn):
+    await db_conn.execute("DELETE FROM app_settings WHERE key = 'embedding_state'")
+    await embedding_state.init(db_conn, CLOUD_ENV)
+    state = await embedding_state.read_state(db_conn)
+    current = embedding_state.from_json(state["current"], CLOUD_ENV)
+    await embedding_state.write_state(db_conn, {**state, "checked": embedding_state.vector_identity(current)})
+
+
+async def test_an_openai_compatible_embedder_that_its_provider_doesnt_list_is_checked_with_one_sentence(db_conn):
+    """A provider's /models can't be trusted to list embedding models (OpenRouter's lists chat models), so a model
+    it doesn't list is checked by embedding one sentence."""
+    await _checked_cloud(db_conn)
     seen = []
     c = (await _by_id(db_conn, _router(), env=CLOUD_ENV, http=_searxng(seen=seen, embed=lambda _r: httpx.Response(
         200, json={"data": [{"index": 0, "embedding": [0.1] * 768}]}))))["embeddings"]
     assert (c.state, c.summary) == ("ok", "text-embedding-3-small at cloud.example.com: 768 dimensions.")
-    assert [r.url.path for r in seen if r.url.path != "/healthz"] == ["/v1/embeddings"]
+    assert [r.url.path for r in seen if r.url.path != "/healthz"] == ["/v1/models", "/v1/embeddings"]
+
+
+async def test_an_openai_compatible_embedder_its_provider_lists_isnt_embedded_with(db_conn):
+    """The walk, 2026-11-05: through Ollama's own OpenAI-compatible /v1, the one-sentence check loaded the model
+    for five minutes on every visit, as the Ollama check used to. A local server (Ollama's /v1, vLLM, LM Studio)
+    lists its models: listed, and its size checked when it became the model in use, needs no embedding."""
+    await _checked_cloud(db_conn)
+    seen = []
+    c = (await _by_id(db_conn, _router(), env=CLOUD_ENV,
+                      http=_searxng(seen=seen, listed=("text-embedding-3-small",))))["embeddings"]
+    assert (c.state, c.summary) == ("ok", "text-embedding-3-small at cloud.example.com: 768 dimensions.")
+    assert [r.url.path for r in seen if r.url.path != "/healthz"] == ["/v1/models"]
 
     c = (await _by_id(db_conn, _router(), env=CLOUD_ENV, http=_with_embed(lambda _r: httpx.Response(
         200, json={"data": [{"index": 0, "embedding": [0.1] * 1024}]}))))["embeddings"]

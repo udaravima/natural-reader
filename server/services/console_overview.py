@@ -191,13 +191,22 @@ async def _ollama_embedder(http: httpx.AsyncClient, e: embeddings.Embedder, stat
             "is indexed or searched.")
 
 
-async def _remote_embedder(http: httpx.AsyncClient, e: embeddings.Embedder) -> Check | str:
-    """An OpenAI-compatible embedder: one sentence embedded. Nothing is loaded on this machine for it, and a
-    provider's /models can't be trusted to list embedding models (OpenRouter's lists chat models).
+async def _remote_embedder(http: httpx.AsyncClient, e: embeddings.Embedder, state: Mapping | None) -> Check | str:
+    """An OpenAI-compatible embedder. One its provider lists at /models, with its size checked when it became the
+    model in use, needs nothing more: a local server (Ollama's /v1, vLLM, LM Studio) lists its models, and
+    embedding there would load the model as the old Ollama check did. One it doesn't list is checked by
+    embedding one sentence, since a provider's /models can't be trusted to list embedding models (OpenRouter's
+    lists chat models).
 
-    The request is its own instead of going through embed_texts: that one waits on the shared indexing
+    That request is its own instead of going through embed_texts: that one waits on the shared indexing
     semaphore, so right after an upload a healthy model would read as "didn't answer"."""
     dim = embeddings.EMBEDDING_DIM
+    if (state or {}).get("current_error"):
+        return _check("embeddings", "error", f"{state['current_error']}: {_STAKE}")
+    if (state or {}).get("checked") == embedding_state.vector_identity(e):
+        listed = await embeddings.list_model_names(e.provider, timeout=CHECK_TIMEOUT_S / 2, client=http)
+        if any(n.removesuffix(":latest") == e.model.removesuffix(":latest") for n in listed):
+            return f"{e.model} at {url_host(e.provider.url)}: {dim} dimensions."
     try:
         vectors = await embeddings.request_vectors(e, [EMBEDDING_PROBE], client=http)
     except embeddings.EmbeddingError as err:
@@ -216,7 +225,8 @@ async def _embeddings(http: httpx.AsyncClient, e: embeddings.Embedder, state: Ma
                       counts: tuple[int, int] | None, stale: int, queue: Mapping[str, int]) -> Check:
     """The model in use (what the stored vectors were made with) is there and gives 768 numbers; and how far a
     re-embed and the rebuild queue are, read from the database."""
-    head = await (_ollama_embedder(http, e, state) if e.provider.kind == "ollama" else _remote_embedder(http, e))
+    head = await (_ollama_embedder(http, e, state) if e.provider.kind == "ollama" else
+                  _remote_embedder(http, e, state))
     if isinstance(head, Check):
         return head
     notes, warn = [], False
