@@ -86,7 +86,8 @@ async def choose(conn, provider_name: str | None, model: str | None, *, by: str,
     if same:   # nothing new to check: it is what the library already uses
         dimensions = current.dimensions
     else:
-        verdict = await embeddings.probe(candidate.provider, candidate.model)
+        # The re-embed starts within seconds: keep the model loaded for it rather than load it twice.
+        verdict = await embeddings.probe(candidate.provider, candidate.model, unload=False)
         if not verdict.ok:
             raise Refused("refused_model", verdict.reason)
         dimensions = verdict.dimensions

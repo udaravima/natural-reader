@@ -93,14 +93,12 @@ def _where(e: Embedder) -> str:
     return f"{e.model} on {_at(e)}"
 
 
-async def request_vectors(e: Embedder, texts: list[str], *, client: httpx.AsyncClient | None = None,
-                          extra: dict[str, Any] | None = None) -> list[list[float]]:
-    """One request for `texts`, checked for count only (the probe reads the native length from it).
-    `extra` adds fields to the body (the Overview's `keep_alive`)."""
+async def request_vectors(e: Embedder, texts: list[str], *,
+                          client: httpx.AsyncClient | None = None) -> list[list[float]]:
+    """One request for `texts`, checked for count only (the probe reads the native length from it)."""
     body: dict[str, Any] = {"model": e.model, "input": texts}
     if e.dimensions:
         body["dimensions"] = e.dimensions
-    body.update(extra or {})
     if e.provider.kind == "ollama":
         url, headers = f"{e.provider.url}/api/embed", {}
     else:
@@ -203,6 +201,33 @@ PROBE_SENTENCE = "The quick brown fox jumps over the lazy dog."
 PROBE_TIMEOUT_S = 60.0   # the first call may load the model
 
 
+def _bare(name: str) -> str:
+    return name.removesuffix(":latest")
+
+
+async def is_loaded(provider: ProviderConfig, model: str, client: httpx.AsyncClient) -> bool:
+    """Whether this Ollama has the model in memory now (GET /api/ps). Unknown counts as not; any other kind of
+    provider is never asked."""
+    if provider.kind != "ollama":
+        return False
+    try:
+        resp = await client.get(f"{provider.url}/api/ps")
+        resp.raise_for_status()
+        names = [m.get("name") or m.get("model") or "" for m in resp.json().get("models", [])]
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, AttributeError, TypeError):
+        return False
+    return any(_bare(n) == _bare(model) for n in names)
+
+
+async def unload_model(provider: ProviderConfig, model: str, client: httpx.AsyncClient) -> None:
+    """Ask Ollama to drop the model from memory now: an empty embed with keep_alive 0 (checked on Ollama 0.40:
+    /api/ps is empty right after). Best effort: a failure leaves it to Ollama's own timer."""
+    try:
+        await client.post(f"{provider.url}/api/embed", json={"model": model, "input": [], "keep_alive": 0})
+    except (httpx.HTTPError, httpx.InvalidURL):
+        logger.debug("Couldn't unload %s from %s", model, provider.name)
+
+
 @dataclass
 class ProbeResult:
     ok: bool
@@ -211,44 +236,59 @@ class ProbeResult:
     reason: str              # one plain sentence, shown in the console
 
 
-async def probe(provider: ProviderConfig, model: str, *, client: httpx.AsyncClient | None = None) -> ProbeResult:
+async def probe(provider: ProviderConfig, model: str, *, client: httpx.AsyncClient | None = None,
+                unload: bool = True) -> ProbeResult:
     """Two steps. First without `dimensions`, to learn the native size, since a returned length can't be
     trusted once `dimensions` is sent: Ollama cuts any vector to it and renormalizes, with no error. Then,
-    only for a family trained to be shortened, once more asking for 768."""
-    from .embedding_models import KNOWN, family
+    only for a family trained to be shortened, once more asking for 768.
+
+    A check doesn't leave a model in memory: on Ollama, a model that wasn't loaded before is unloaded when the
+    probe is done (`unload`). A caller about to use the model (a choice being saved, a re-embed starting)
+    passes unload=False, so it isn't loaded twice."""
     own = client is None
     http = client or httpx.AsyncClient(timeout=PROBE_TIMEOUT_S)
+    drop = unload and provider.kind == "ollama" and not await is_loaded(provider, model, http)
+    answered = False
     try:
         try:
             first = (await request_vectors(Embedder(provider, model, None, "", ""), [PROBE_SENTENCE],
                                            client=http))[0]
         except EmbeddingError as err:
             return ProbeResult(False, None, None, f"{err}.")
-        native = len(first) if isinstance(first, list) else 0
-        if native == EMBEDDING_DIM:
-            return ProbeResult(True, native, None, f"{model} gives {native} numbers, the size the library holds.")
-        fam = family(model)
-        if native < EMBEDDING_DIM or fam is None or not fam.shortenable:
-            why = ("it can't be lengthened" if native < EMBEDDING_DIM else
-                   "it isn't in a family trained to be shortened (" + ", ".join(KNOWN) + "), and cutting "
-                   "its vectors would make search worse with no error")
-            return ProbeResult(False, native, None,
-                               f"{model} gives {native} numbers and the library holds {EMBEDDING_DIM}: {why}.")
-        try:
-            short = (await request_vectors(Embedder(provider, model, EMBEDDING_DIM, "", ""), [PROBE_SENTENCE],
-                                           client=http))[0]
-        except EmbeddingError as err:
-            return ProbeResult(False, native, None, f"Asked for {EMBEDDING_DIM} numbers, {err}.")
-        got = len(short) if isinstance(short, list) else 0
-        if got != EMBEDDING_DIM:
-            return ProbeResult(False, native, None, f"{model} gives {native} numbers, and asked for {EMBEDDING_DIM} "
-                                                    f"it still gave {got}: this server doesn't shorten it.")
-        return ProbeResult(True, native, EMBEDDING_DIM,
-                           f"{model} gives {native} numbers and is trained to be shortened: it will be asked "
-                           f"for {EMBEDDING_DIM}.")
+        answered = True
+        return await _admit(provider, model, first, http)
     finally:
+        if drop and answered:
+            await unload_model(provider, model, http)
         if own:
             await http.aclose()
+
+
+async def _admit(provider: ProviderConfig, model: str, first: Any, http: httpx.AsyncClient) -> ProbeResult:
+    """The verdict on the probe's first answer (and, for a shortenable family, a second ask)."""
+    from .embedding_models import KNOWN, family
+    native = len(first) if isinstance(first, list) else 0
+    if native == EMBEDDING_DIM:
+        return ProbeResult(True, native, None, f"{model} gives {native} numbers, the size the library holds.")
+    fam = family(model)
+    if native < EMBEDDING_DIM or fam is None or not fam.shortenable:
+        why = ("it can't be lengthened" if native < EMBEDDING_DIM else
+               "it isn't in a family trained to be shortened (" + ", ".join(KNOWN) + "), and cutting "
+               "its vectors would make search worse with no error")
+        return ProbeResult(False, native, None,
+                           f"{model} gives {native} numbers and the library holds {EMBEDDING_DIM}: {why}.")
+    try:
+        short = (await request_vectors(Embedder(provider, model, EMBEDDING_DIM, "", ""), [PROBE_SENTENCE],
+                                       client=http))[0]
+    except EmbeddingError as err:
+        return ProbeResult(False, native, None, f"Asked for {EMBEDDING_DIM} numbers, {err}.")
+    got = len(short) if isinstance(short, list) else 0
+    if got != EMBEDDING_DIM:
+        return ProbeResult(False, native, None, f"{model} gives {native} numbers, and asked for {EMBEDDING_DIM} "
+                                                f"it still gave {got}: this server doesn't shorten it.")
+    return ProbeResult(True, native, EMBEDDING_DIM,
+                       f"{model} gives {native} numbers and is trained to be shortened: it will be asked "
+                       f"for {EMBEDDING_DIM}.")
 
 
 def env_embedder(env=None) -> Embedder:

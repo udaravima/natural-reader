@@ -192,8 +192,10 @@ async def switch(conn, *, env: Mapping[str, str] = os.environ) -> bool:
             "UPDATE documents SET embedding_model = %s, embedding_profile = CASE WHEN embedding_profile = %s "
             "THEN %s ELSE embedding_profile END, updated_at = now() WHERE state = 'indexed'",
             (new.model, profile_of(old), profile_of(new)))
+        # The new model was probed when it was chosen: no check is owed for it.
         await write_state(conn, _cleared(state, current=state["next"], filled=state.get("total", 0),
-                                         total=state.get("total", 0)))
+                                         total=state.get("total", 0), checked=vector_identity(new),
+                                         current_error=None, check_retry_at=None))
     logger.info("Switched the library to %s", new.model)
     return True
 
@@ -221,7 +223,7 @@ async def tick(worker: str, *, env: Mapping[str, str] = os.environ) -> str:
     """One step of the loop. With a migration running: fill, and switch when ready. Without: when the target
     differs from current (a console choice saved on another worker, or an env change at startup, ruling R3),
     probe it and start; a refusal is recorded once, not probed again until the target changes. Returns what it
-    did: "idle", "filled", "switched", "started", "refused", "claimed-elsewhere" or "error"."""
+    did: "idle", "filled", "switched", "started", "refused", "checked", "claimed-elsewhere" or "error"."""
     async with get_pool().connection() as conn:
         state = await read_state(conn)
         if state is None:
@@ -238,12 +240,12 @@ async def tick(worker: str, *, env: Mapping[str, str] = os.environ) -> str:
     key = vector_identity(target)
     if key == vector_identity(current):
         if target.provider.name == current.provider.name:
-            return "idle"
+            return await _check_current(state, current, env)
         async with get_pool().connection() as conn:
             return await start(conn, target, env=env)
     if state.get("error_for") == key and not _due(state.get("error_retry_at")):
         return "idle"
-    verdict = await probe(target.provider, target.model)
+    verdict = await probe(target.provider, target.model, unload=False)   # the filler uses it next
     async with get_pool().connection() as conn:
         if not verdict.ok:
             # A model that answered with the wrong size stays refused; one that didn't answer is tried again.
@@ -255,6 +257,37 @@ async def tick(worker: str, *, env: Mapping[str, str] = os.environ) -> str:
             logger.warning("Not re-embedding with %s: %s", target.model, verdict.reason)
             return "refused"
         return await start(conn, replace(target, dimensions=verdict.dimensions), env=env)
+
+
+async def _check_current(state: Mapping[str, Any], current: Embedder, env: Mapping[str, str]) -> str:
+    """The model in use is probed once, and the answer kept in the state row (`checked`, `current_error`), so the
+    Overview can say whether it gives 768 numbers without loading it (the owner, 2026-11-05). A model that became
+    current by a switch was probed when chosen; this is for one made current at startup from the environment.
+    A wrong size is final until another model is chosen; no answer is tried again after UNREACHABLE_RETRY_S. The
+    probe unloads the model when it's done. A model that must be shortened gets the size to ask for recorded.
+    Returns "checked" when it probed, else "idle"."""
+    key = vector_identity(current)
+    if state.get("checked") == key or state.get("current_error"):
+        return "idle"
+    if state.get("check_retry_at") and not _due(state["check_retry_at"]):
+        return "idle"
+    verdict = await probe(current.provider, current.model)
+    async with get_pool().connection() as conn:
+        async with conn.transaction():
+            state = await _locked(conn, env)
+            if vector_identity(from_json(state["current"], env)) != key:
+                return "idle"   # switched meanwhile: the new model was probed when chosen
+            if verdict.ok:
+                changes = {"checked": key, "current_error": None, "check_retry_at": None,
+                           "current": {**state["current"], "dimensions": verdict.dimensions}}
+            elif verdict.native is not None:
+                changes = {"current_error": verdict.reason, "check_retry_at": None}
+            else:
+                changes = {"check_retry_at": (_now() + timedelta(seconds=UNREACHABLE_RETRY_S)).isoformat()}
+            await write_state(conn, {**state, **changes})
+    if not verdict.ok:
+        logger.warning("The embedding model in use, %s: %s", current.model, verdict.reason)
+    return "checked"
 
 
 async def run_forever(worker: str) -> None:

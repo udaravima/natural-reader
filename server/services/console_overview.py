@@ -53,7 +53,7 @@ _TITLES = {   # id -> (title, section), in the order the Overview shows them
     "providers": ("Model providers", "models"),
     "reader": ("Reader", "models"),
     "context": ("Context windows", "models"),
-    "embeddings": ("Embeddings", "deployment"),
+    "embeddings": ("Embeddings", "models"),     # Models → Embeddings chooses the model
     "docling": ("Docling", "documents"),
     "web_search": ("Web search", "chat"),
     "voice_input": ("Voice input", "chat"),
@@ -155,40 +155,70 @@ async def _reader(llm, ms: model_settings.ModelsSettings, env: Mapping[str, str]
     return _check("reader", "ok", f"{name}, from {ms.reader_env or 'READER_MODEL'}.")
 
 
-async def _loaded(http: httpx.AsyncClient, e: embeddings.Embedder) -> bool:
-    """Whether this Ollama has the model in memory now (/api/ps). Unknown counts as not."""
+_STAKE = "documents can't be indexed or searched."
+
+
+async def _ollama_embedder(http: httpx.AsyncClient, e: embeddings.Embedder, state: Mapping | None) -> Check | str:
+    """The model in use on Ollama, from two lists and nothing loaded: /api/tags (is it pulled?) and /api/ps (is
+    it in memory?). Its size comes from the state row: checked once, when it became the model in use or by the
+    background loop (embedding_migration.tick), never on a visit to this page (the owner, 2026-11-05). Returns the
+    line's opening sentence, or the error Check."""
+    host = url_host(e.provider.url)
     try:
-        resp = await http.get(f"{e.provider.url}/api/ps")
-        resp.raise_for_status()
-        names = [m.get("name") or m.get("model") or "" for m in resp.json().get("models", [])]
-    except (httpx.HTTPError, httpx.InvalidURL, ValueError, AttributeError):
-        return False
-    return any(n.removesuffix(":latest") == e.model.removesuffix(":latest") for n in names)
+        resp = await http.get(f"{e.provider.url}/api/tags")
+    except (httpx.HTTPError, httpx.InvalidURL) as err:
+        return _check("embeddings", "error", f"Can't reach {e.provider.name} at {host} for {e.model} "
+                                             f"({type(err).__name__}): {_STAKE}")
+    if resp.status_code != 200:
+        return _check("embeddings", "error", f"{e.provider.name} at {host} answered HTTP {resp.status_code}: {_STAKE}")
+    try:
+        names = [m.get("name") or "" for m in resp.json().get("models", [])]
+    except (ValueError, AttributeError, TypeError):
+        return _check("embeddings", "error", f"{e.provider.name} at {host} answered with something that isn't "
+                                             f"a model list: {_STAKE}")
+    if not any(n.removesuffix(":latest") == e.model.removesuffix(":latest") for n in names):
+        return _check("embeddings", "error", f"{e.model} isn't on {e.provider.name} at {host} (ollama pull "
+                                             f"{e.model}): {_STAKE}")
+    state = state or {}
+    if state.get("current_error"):
+        return _check("embeddings", "error", f"{state['current_error']}: {_STAKE}")
+    if state.get("checked") != embedding_state.vector_identity(e):
+        return f"{e.model} at {host}: pulled; its size hasn't been checked yet (the server checks it once, in the " \
+               "background)."
+    if await embeddings.is_loaded(e.provider, e.model, http):
+        return f"{e.model} at {host}: {embeddings.EMBEDDING_DIM} dimensions, in memory now."
+    return (f"{e.model} at {host}: {embeddings.EMBEDDING_DIM} dimensions. Not in memory now: it loads when a document "
+            "is indexed or searched.")
 
 
-async def _embeddings(http: httpx.AsyncClient, e: embeddings.Embedder, state: Mapping | None, stale: int,
-                      queue: Mapping[str, int]) -> Check:
-    """The current embedder (what the stored vectors were made with) answers with 768 numbers; and how far a
-    re-embed and the rebuild queue are, read from the database.
+async def _remote_embedder(http: httpx.AsyncClient, e: embeddings.Embedder) -> Check | str:
+    """An OpenAI-compatible embedder: one sentence embedded. Nothing is loaded on this machine for it, and a
+    provider's /models can't be trusted to list embedding models (OpenRouter's lists chat models).
 
-    The probe makes its own request instead of going through embed_texts: that one waits on the shared indexing
-    semaphore, so right after an upload a healthy model would read as "didn't answer". On Ollama it first asks
-    /api/ps whether the model is loaded, and a model it had to load is unloaded right after (keep_alive 0):
-    opening the console must not keep a model in memory for five minutes (ledger ruling P6)."""
+    The request is its own instead of going through embed_texts: that one waits on the shared indexing
+    semaphore, so right after an upload a healthy model would read as "didn't answer"."""
     dim = embeddings.EMBEDDING_DIM
-    stake = "documents can't be indexed or searched."
-    extra = {"keep_alive": 0} if e.provider.kind == "ollama" and not await _loaded(http, e) else None
     try:
-        vectors = await embeddings.request_vectors(e, [EMBEDDING_PROBE], client=http, extra=extra)
+        vectors = await embeddings.request_vectors(e, [EMBEDDING_PROBE], client=http)
     except embeddings.EmbeddingError as err:
-        return _check("embeddings", "error", f"{err}: {stake}")
+        return _check("embeddings", "error", f"{err}: {_STAKE}")
     vec = vectors[0]
     got = len(vec) if isinstance(vec, list) else 0
     host = url_host(e.provider.url)
     if not got:
-        return _check("embeddings", "error", f"{e.model} at {host} answered, but returned no embedding: {stake}")
+        return _check("embeddings", "error", f"{e.model} at {host} answered, but returned no embedding: {_STAKE}")
     if got != dim:
         return _check("embeddings", "error", f"{e.model} returned {got} dimensions; the database holds {dim}.")
+    return f"{e.model} at {host}: {dim} dimensions."
+
+
+async def _embeddings(http: httpx.AsyncClient, e: embeddings.Embedder, state: Mapping | None, stale: int,
+                      queue: Mapping[str, int]) -> Check:
+    """The model in use (what the stored vectors were made with) is there and gives 768 numbers; and how far a
+    re-embed and the rebuild queue are, read from the database."""
+    head = await (_ollama_embedder(http, e, state) if e.provider.kind == "ollama" else _remote_embedder(http, e))
+    if isinstance(head, Check):
+        return head
     notes, warn = [], False
     migration = embedding_console.migration_view(state)
     if migration["state"] in ("building", "switching"):
@@ -210,7 +240,7 @@ async def _embeddings(http: httpx.AsyncClient, e: embeddings.Embedder, state: Ma
     if queue.get("failed"):
         warn = True
         notes.append(f"{_plural(queue['failed'], 'rebuild')} failed and will be retried.")
-    summary = " ".join([f"{e.model} at {host}: {dim} dimensions.", *notes])
+    summary = " ".join([head, *notes])
     return _check("embeddings", "warn" if warn else "ok", summary)
 
 

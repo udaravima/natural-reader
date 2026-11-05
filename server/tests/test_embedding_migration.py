@@ -212,11 +212,13 @@ async def test_an_env_model_change_starts_the_migration_and_a_refusal_isnt_retri
             return ProbeResult(False, 1024, None, "mxbai-embed-large gives 1024 numbers")
         return ProbeResult(True, 768, None, "fine")
     monkeypatch.setattr(mig, "probe", probe)
+    assert await mig.tick("w") == "checked"                                   # the model in use, once
     assert await mig.tick("w") == "idle"                                      # nothing to do
     monkeypatch.setenv("EMBEDDING_MODEL", "mxbai-embed-large")
     assert await mig.tick("w") == "refused"
     assert "1024" in (await embedding_state.read_state(db_conn))["error"]
-    assert await mig.tick("w") == "idle" and probes == ["mxbai-embed-large"]  # not probed on every tick
+    assert await mig.tick("w") == "idle"
+    assert probes == ["nomic-embed-text", "mxbai-embed-large"]                # not probed on every tick
     monkeypatch.setenv("EMBEDDING_MODEL", GEMMA.model)
     assert await mig.tick("w") == "started"
     assert (await embedding_state.read_state(db_conn))["error"] is None
@@ -292,3 +294,80 @@ async def test_a_rebuild_takes_the_state_row_before_its_document_row(db_conn, mo
                           "VALUES (%s, 0, 1, 'page', 'Some passage of text.', 'h0')", (DOC,))
     assert await doc_pipeline.run_rebuild(DOC) is None
     assert order[:2] == ["state", "document"]
+
+
+def _probes(answers=None):
+    """A probe that records (model, unload) and answers from `answers`, else 768 and fine."""
+    seen = []
+
+    async def probe(provider, model, *, unload=True, **_kw):
+        seen.append((model, unload))
+        return (answers or {}).get(model) or ProbeResult(True, 768, None, f"{model} gives 768 numbers")
+    return seen, probe
+
+
+async def test_the_model_in_use_is_checked_once_and_the_check_is_remembered(db_conn, lib, monkeypatch):
+    """The owner, 2026-11-05: the Overview no longer embeds to check the model (that loaded it on every visit), so
+    the model in use is checked once in the background, unloaded after, and the answer kept in the state row."""
+    seen, probe = _probes()
+    monkeypatch.setattr(mig, "probe", probe)
+    assert await mig.tick("w") == "checked"
+    assert seen == [("nomic-embed-text", True)]                     # a check leaves nothing loaded
+    state = await embedding_state.read_state(db_conn)
+    assert state["checked"] == embedding_state.vector_identity(await embedding_state.current(db_conn))
+    assert await mig.tick("w") == "idle" and len(seen) == 1         # remembered, across restarts too
+
+
+async def test_a_model_in_use_with_the_wrong_size_is_recorded_once(db_conn, lib, monkeypatch):
+    seen, probe = _probes({"nomic-embed-text": ProbeResult(False, 1024, None, "nomic-embed-text gives 1024 numbers")})
+    monkeypatch.setattr(mig, "probe", probe)
+    assert await mig.tick("w") == "checked"
+    state = await embedding_state.read_state(db_conn)
+    assert state["current_error"] == "nomic-embed-text gives 1024 numbers" and not state.get("checked")
+    assert await mig.tick("w") == "idle" and len(seen) == 1         # a size doesn't change with time
+
+
+async def test_a_model_in_use_that_didnt_answer_is_checked_again_later(db_conn, lib, monkeypatch):
+    answers = {"nomic-embed-text": ProbeResult(False, None, None, "Can't reach ollama")}
+    seen, probe = _probes(answers)
+    monkeypatch.setattr(mig, "probe", probe)
+    assert await mig.tick("w") == "checked"
+    state = await embedding_state.read_state(db_conn)
+    assert not state.get("checked") and not state.get("current_error") and state["check_retry_at"]
+    assert await mig.tick("w") == "idle" and len(seen) == 1
+    await embedding_state.write_state(db_conn, {**state, "check_retry_at": "2000-01-01T00:00:00+00:00"})
+    answers.clear()
+    assert await mig.tick("w") == "checked"
+    assert (await embedding_state.read_state(db_conn))["checked"]
+
+
+async def test_the_check_sets_the_size_to_ask_for_a_model_that_must_be_shortened(db_conn, lib, monkeypatch):
+    """A fresh install with EMBEDDING_MODEL=qwen3-embedding made it current with no `dimensions`: every request
+    got 1024 numbers back and failed. The check finds it must be asked for 768, and records that."""
+    monkeypatch.setenv("EMBEDDING_MODEL", "qwen3-embedding:0.6b")
+    await db_conn.execute("DELETE FROM app_settings WHERE key = 'embedding_state'")
+    await embedding_state.init(db_conn, {**ENV, "EMBEDDING_MODEL": "qwen3-embedding:0.6b"})
+    seen, probe = _probes({"qwen3-embedding:0.6b": ProbeResult(True, 1024, 768, "asked for 768")})
+    monkeypatch.setattr(mig, "probe", probe)
+    assert await mig.tick("w") == "checked"
+    assert (await embedding_state.current(db_conn)).dimensions == 768
+
+
+async def test_after_a_switch_the_new_model_needs_no_check(db_conn, lib, monkeypatch):
+    seen, probe = _probes()
+    monkeypatch.setattr(mig, "probe", probe)
+    await mig.start(db_conn, GEMMA, by=SEED_ADMIN)        # its probe was the choice's
+    await _fill()
+    assert await mig.switch(db_conn)
+    state = await embedding_state.read_state(db_conn)
+    assert state["checked"] == embedding_state.vector_identity(GEMMA) and state.get("current_error") is None
+    monkeypatch.setenv("EMBEDDING_MODEL", GEMMA.model)
+    assert await mig.tick("w") == "idle" and seen == []
+
+
+async def test_a_probe_before_a_re_embed_leaves_the_model_loaded_for_it(db_conn, lib, monkeypatch):
+    seen, probe = _probes()
+    monkeypatch.setattr(mig, "probe", probe)
+    monkeypatch.setenv("EMBEDDING_MODEL", GEMMA.model)
+    assert await mig.tick("w") == "started"
+    assert seen == [(GEMMA.model, False)]                 # the filler uses it seconds later

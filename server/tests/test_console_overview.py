@@ -83,15 +83,27 @@ def _embedding(width=768):
     return lambda request: httpx.Response(200, json={"embeddings": [[0.1] * width]})
 
 
-def _searxng(status=200, embed=None, loaded=()):
-    """One client for both network checks: /healthz answers SearXNG's, /api/embed the embedding probe's (a
-    healthy 768-wide model unless `embed` says otherwise), /api/ps the models Ollama has loaded (`loaded`)."""
+PULLED = ("nomic-embed-text:latest", "gemma4:e4b")
+
+
+def _searxng(status=200, embed=None, loaded=(), tags=PULLED, seen=None):
+    """One client for every network check: /healthz answers SearXNG's; on Ollama /api/tags lists the models
+    pulled (`tags`, or a handler) and /api/ps the ones in memory (`loaded`); /api/embed and an OpenAI-compatible
+    /v1/embeddings answer an embedding (a healthy 768-wide one unless `embed` says otherwise). `seen` records
+    every request."""
     def handler(request):
-        if request.url.path == "/api/embed":
+        if seen is not None:
+            seen.append(request)
+        path = request.url.path
+        if path in ("/api/embed", "/v1/embeddings"):
             return (embed or _embedding())(request)
-        if request.url.path == "/api/ps":
+        if path == "/api/ps":
             return httpx.Response(200, json={"models": [{"name": n, "model": n} for n in loaded]})
-        assert request.url.path == "/healthz"
+        if path == "/api/tags":
+            if callable(tags):
+                return tags(request)
+            return httpx.Response(200, json={"models": [{"name": n, "model": n} for n in tags]})
+        assert path == "/healthz"
         return httpx.Response(status)
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
@@ -102,6 +114,25 @@ def _searxng_ok():
 
 def _with_embed(embed):
     return _searxng(200, embed)
+
+
+def _with_tags(tags):
+    return _searxng(200, tags=tags)
+
+
+CLOUD_ENV = {"INFERENCE_PROVIDERS": "local,cloud", "INFERENCE_LOCAL_KIND": "ollama",
+             "INFERENCE_LOCAL_URL": "http://localhost:11434", "INFERENCE_CLOUD_KIND": "openai",
+             "INFERENCE_CLOUD_URL": "http://cloud.example.com/v1", "EMBEDDING_PROVIDER": "cloud",
+             "EMBEDDING_MODEL": "text-embedding-3-small"}
+
+
+async def _checked(db_conn, **extra):
+    """The state row as the background loop leaves it once it has checked the model in use."""
+    await db_conn.execute("DELETE FROM app_settings WHERE key = 'embedding_state'")
+    await embedding_state.init(db_conn, {})
+    state = await embedding_state.read_state(db_conn)
+    current = embedding_state.from_json(state["current"], {})
+    await embedding_state.write_state(db_conn, {**state, "checked": embedding_state.vector_identity(current), **extra})
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +153,7 @@ async def test_a_check_that_hangs_reports_itself_and_the_others_still_answer(db_
     async def never(_request):
         await asyncio.sleep(10)
     started = time.monotonic()
-    checks = {c.id: c for c in await run_checks(db_conn, _router(), {}, http=_with_embed(never))}
+    checks = {c.id: c for c in await run_checks(db_conn, _router(), {}, http=_with_tags(never))}
     assert time.monotonic() - started < 2
     assert checks["embeddings"].state == "error"
     assert checks["embeddings"].summary.startswith("Didn't answer within")
@@ -134,7 +165,7 @@ async def test_a_check_that_hangs_reports_itself_and_the_others_still_answer(db_
 async def test_a_check_that_raises_says_which_kind_of_failure(db_conn, monkeypatch):
     def boom(_request):
         raise KeyError("x")
-    c = (await _by_id(db_conn, _router(), http=_with_embed(boom)))["embeddings"]
+    c = (await _by_id(db_conn, _router(), http=_with_tags(boom)))["embeddings"]
     assert (c.state, c.summary) == ("error", "The check failed: KeyError.")
 
 
@@ -288,57 +319,95 @@ async def test_a_reader_that_cannot_be_checked(db_conn):
 
 
 async def test_embeddings_states(db_conn):
+    await _checked(db_conn)
     c = (await _by_id(db_conn, _router()))["embeddings"]
-    assert c.state == "ok"
-    assert c.summary == "nomic-embed-text at localhost:11434: 768 dimensions."
+    assert (c.state, c.section) == ("ok", "models")        # Open goes where the picker is
+    assert c.summary == ("nomic-embed-text at localhost:11434: 768 dimensions. Not in memory now: it loads when a "
+                         "document is indexed or searched.")
 
-    c = (await _by_id(db_conn, _router(), http=_with_embed(_embedding(1024))))["embeddings"]
-    assert (c.state, c.summary) == ("error", "nomic-embed-text returned 1024 dimensions; the database holds 768.")
+    c = (await _by_id(db_conn, _router(), http=_searxng(loaded=("nomic-embed-text:latest",))))["embeddings"]
+    assert c.summary == "nomic-embed-text at localhost:11434: 768 dimensions, in memory now."
 
     def refuses(_request):
         raise httpx.ConnectError("no")
-    c = (await _by_id(db_conn, _router(), http=_with_embed(refuses)))["embeddings"]
+    c = (await _by_id(db_conn, _router(), http=_with_tags(refuses)))["embeddings"]
     assert c.state == "error"
     assert c.summary == ("Can't reach ollama at localhost:11434 for nomic-embed-text (ConnectError): "
                          "documents can't be indexed or searched.")
 
     def slow(_request):
         raise httpx.ReadTimeout("slow")
-    c = (await _by_id(db_conn, _router(), http=_with_embed(slow)))["embeddings"]
+    c = (await _by_id(db_conn, _router(), http=_with_tags(slow)))["embeddings"]
     assert c.summary.startswith("Can't reach ollama at localhost:11434 for nomic-embed-text")
 
+    c = (await _by_id(db_conn, _router(), http=_with_tags(lambda _r: httpx.Response(500, text="boom"))))["embeddings"]
+    assert (c.state, c.summary) == ("error", "ollama at localhost:11434 answered HTTP 500: documents can't be "
+                                             "indexed or searched.")
 
-async def test_a_model_that_was_never_pulled_reads_as_an_http_error_not_as_unreachable(db_conn):
-    c = (await _by_id(db_conn, _router(), http=_with_embed(lambda _r: httpx.Response(404, json={"error": "model not found"}))))["embeddings"]
-    assert (c.state, c.summary) == ("error", "nomic-embed-text isn't on ollama at localhost:11434 (HTTP 404): documents can't be indexed or searched.")
+
+async def test_a_model_that_was_never_pulled_is_named_with_the_command_that_fixes_it(db_conn):
+    await _checked(db_conn)
+    c = (await _by_id(db_conn, _router(), http=_with_tags(("gemma4:e4b",))))["embeddings"]
+    assert (c.state, c.summary) == ("error", "nomic-embed-text isn't on ollama at localhost:11434 (ollama pull "
+                                             "nomic-embed-text): documents can't be indexed or searched.")
+
+
+async def test_the_check_never_embeds_or_loads_a_model_on_ollama(db_conn):
+    """The owner, 2026-11-05: checking that embeddings work loaded the model (and unloaded it, ruling P6) on every
+    visit to the Overview, which is churn. Whether it's pulled and whether it's in memory are two lists; its size
+    was checked once, when it became the model in use."""
+    seen = []
+    await _checked(db_conn)
+    for loaded in ((), ("nomic-embed-text:latest",)):
+        await _by_id(db_conn, _router(), http=_searxng(loaded=loaded, seen=seen))
+    assert {(r.method, r.url.path) for r in seen} == {("GET", "/api/tags"), ("GET", "/api/ps"), ("GET", "/healthz")}
+
+
+async def test_a_model_whose_size_wasnt_checked_yet_says_so(db_conn):
+    await db_conn.execute("DELETE FROM app_settings WHERE key = 'embedding_state'")
+    await embedding_state.init(db_conn, {})
+    c = (await _by_id(db_conn, _router()))["embeddings"]
+    assert c.state == "ok"
+    assert c.summary.startswith("nomic-embed-text at localhost:11434: pulled; its size hasn't been checked yet "
+                                "(the server checks it once, in the background).")
+
+
+async def test_a_model_in_use_found_to_have_the_wrong_size_is_a_problem(db_conn):
+    await _checked(db_conn, checked=None,
+                   current_error="mxbai-embed-large gives 1024 numbers and the library holds 768")
+    c = (await _by_id(db_conn, _router()))["embeddings"]
+    assert (c.state, c.summary) == ("error", "mxbai-embed-large gives 1024 numbers and the library holds 768: "
+                                             "documents can't be indexed or searched.")
+
+
+async def test_an_openai_compatible_embedder_is_checked_with_one_sentence(db_conn):
+    """Nothing is loaded on this machine for it, and a provider's /models can't be trusted to list embedding
+    models (OpenRouter's lists chat models), so the check embeds one sentence there."""
+    seen = []
+    c = (await _by_id(db_conn, _router(), env=CLOUD_ENV, http=_searxng(seen=seen, embed=lambda _r: httpx.Response(
+        200, json={"data": [{"index": 0, "embedding": [0.1] * 768}]}))))["embeddings"]
+    assert (c.state, c.summary) == ("ok", "text-embedding-3-small at cloud.example.com: 768 dimensions.")
+    assert [r.url.path for r in seen if r.url.path != "/healthz"] == ["/v1/embeddings"]
+
+    c = (await _by_id(db_conn, _router(), env=CLOUD_ENV, http=_with_embed(lambda _r: httpx.Response(
+        200, json={"data": [{"index": 0, "embedding": [0.1] * 1024}]}))))["embeddings"]
+    assert (c.state, c.summary) == ("error", "text-embedding-3-small returned 1024 dimensions; the database holds 768.")
+
+    c = (await _by_id(db_conn, _router(), env=CLOUD_ENV,
+                      http=_with_embed(lambda _r: httpx.Response(404, json={"error": "no"}))))["embeddings"]
+    assert c.summary == ("text-embedding-3-small isn't on cloud at cloud.example.com (HTTP 404): documents can't be "
+                         "indexed or searched.")
 
 
 async def test_an_answer_with_no_embedding_is_reported_as_such(db_conn):
-    for answer in (httpx.Response(200, json={}), httpx.Response(200, json={"embeddings": []}),
-                   httpx.Response(200, json={"embeddings": [[]]}),
+    for answer in (httpx.Response(200, json={}), httpx.Response(200, json={"data": []}),
+                   httpx.Response(200, json={"data": [{"index": 0, "embedding": []}]}),
                    httpx.Response(200, text="not json"), httpx.Response(200, json=[1, 2])):
-        c = (await _by_id(db_conn, _router(), http=_with_embed(lambda _r, a=answer: a)))["embeddings"]
+        c = (await _by_id(db_conn, _router(), env=CLOUD_ENV,
+                          http=_with_embed(lambda _r, a=answer: a)))["embeddings"]
         assert c.state == "error"
-        assert c.summary.startswith("nomic-embed-text") and "localhost:11434" in c.summary
+        assert c.summary.startswith("text-embedding-3-small") and "cloud.example.com" in c.summary
         assert c.summary.endswith(": documents can't be indexed or searched.")
-
-
-async def test_the_probe_unloads_a_model_it_had_to_load(db_conn):
-    """Ledger ruling P6: opening the Overview loaded the embedding model and kept it in memory for Ollama's five
-    minutes, which looked like the chat holding it. A model that wasn't loaded is unloaded right after."""
-    seen = []
-
-    def spy(request):
-        seen.append(request)
-        return httpx.Response(200, json={"embeddings": [[0.1] * 768]})
-    env = {"OLLAMA_URL": "http://embed.example.com:11434", "EMBEDDING_MODEL": "other-model"}
-    await _by_id(db_conn, _router(), env=env, http=_with_embed(spy))
-    assert len(seen) == 1
-    assert str(seen[0].url) == "http://embed.example.com:11434/api/embed"
-    assert json.loads(seen[0].content) == {"model": "other-model", "input": [console_overview.EMBEDDING_PROBE],
-                                           "keep_alive": 0}
-    await _by_id(db_conn, _router(), env=env, http=_searxng(200, spy, loaded=("other-model:latest",)))
-    assert json.loads(seen[1].content) == {"model": "other-model", "input": [console_overview.EMBEDDING_PROBE]}
 
 
 async def test_a_busy_indexing_queue_does_not_make_a_healthy_model_look_down(db_conn):   # T5
