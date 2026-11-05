@@ -374,7 +374,7 @@ changes it.
 | **Model providers** | Which providers answer, and how many models each lists |
 | **Reader** | The model that reads documents and web pages for the assistant, and where it comes from. The chat model itself is **OK**; a named model is checked: is it in the deployment's model list (`INFERENCE_MODELS` or the provider's own list; an **Error** if not, from wherever the reader is set), and is it pulled on its provider? When the reader is the chat model and some chat model is a cloud one, the line adds that reader calls count against that model's quota, and points to **Models** |
 | **Context windows** | Each chat model's window, where the number comes from, and whether a project-chat turn fits in it |
-| **Embeddings** | Whether the embedding model in use answers with the width (768) the database holds; a re-embed's progress ("1,234 of 5,000 passages") or why it paused; how many documents are waiting to be rebuilt, or failed and will be retried |
+| **Embeddings** | Whether the embedding model in use is there (pulled, and whether it's in memory now) and gives the width (768) the database holds; checking never loads it. A re-embed's progress ("1,234 of 5,000 passages (24%), about 7 minutes left") or why it paused; how many documents are waiting to be rebuilt, or failed and will be retried. **Open Models** goes to the picker |
 | **Docling** | Whether conversion is on |
 | **Web search** | Whether the search server answers |
 | **Voice input** | **Off** ("Off. Admin → Chat options turns it on."), **Warning** while the speech model downloads or loads ("Getting ready: downloading or loading small."), **OK** when it is ready ("local · small · runs on this server", the host a remote engine calls, or "google · long · runs on Google Cloud", with what Auto hears when the recognizer can't tell its languages apart), or **Problem** with the reason when it isn't working |
@@ -509,16 +509,23 @@ The box shows the model in use (**In use: nomic-embed-text on ollama**). To chan
 3. **Use this model** turns on only after a check of exactly what is picked passed.
    The same model on another provider switches at once. Another model re-embeds the
    library in the background: the box (and the Overview) shows "Re-embedding for
-   embeddinggemma-2:740m: 1,234 of 5,000 passages." Search and chat keep working on
-   the current model the whole time, then switch in one step when every passage is
-   done.
+   embeddinggemma-2:740m: 1,234 of 5,000 passages (24%), about 7 minutes left.", with
+   a bar under it. The time left appears after the first batch. Search and chat keep
+   working on the current model the whole time, then switch in one step when every
+   passage is done, and a message says so ("Re-embed done: search now uses …") if
+   the page is open.
 4. **Cancel the re-embed** before then keeps the current model. If the new model
-   stops answering, the line says the re-embed is paused, and why, and it retries.
+   stops answering, the line says the re-embed is paused, and why, and it retries;
+   a message says that too.
+
+If the box says the model in use gives the wrong number of numbers (a model set in
+`.env` that was never checked), documents can't be indexed or searched until another
+model is chosen here. Embedding models aren't offered as chat models.
 
 **Back to the server's setting** appears when the model was chosen here; it returns
 to `EMBEDDING_MODEL`. How long a re-embed takes depends on the machine: on a laptop
 CPU with no GPU, about 2.5 minutes per 1,000 passages with `nomic-embed-text` and
-about 6 with `embeddinggemma-2:740m`.
+about 4 to 6 with `embeddinggemma-2:740m`.
 
 **Not here.** Adding or changing a provider is still a `.env` and restart task.
 

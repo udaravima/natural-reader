@@ -25,6 +25,10 @@ All notable changes to this project will be documented in this file.
   `INFERENCE_PROVIDERS`; an `openai`-kind provider is called at `<url>/embeddings`.
   Texts go 32 per request (Ollama's `/api/embed`) instead of one call each.
 - **embeddinggemma's prefixes** are known, as nomic's were.
+- **A re-embed shows how far it is and how long is left**: a bar and "1,234 of 5,000
+  passages (24%), about 7 minutes left" in Models → Embeddings and on the Overview,
+  counted from the table, with the time left from the filler's running rate. With
+  the box open, a message says when it is done, paused, or stopped from another tab.
 
 ### Changed
 
@@ -38,10 +42,30 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- **Opening the admin console kept the embedding model loaded.** The Overview's check
-  loaded `nomic-embed-text` and Ollama kept it in memory for five minutes, which
-  looked like the chat holding it. A model the check had to load is now unloaded
-  right after.
+- **Opening the admin console loaded the embedding model.** The Overview checked it by
+  embedding a sentence, so Ollama kept `nomic-embed-text` in memory for five minutes,
+  which looked like the chat holding it. The Overview now never loads a model: it
+  reads whether the model is pulled and whether it's in memory, and its size, which is
+  checked once (when chosen, or once in the background after a start) and kept.
+  **Check** unloads a model it had to load. An OpenAI-compatible provider that lists
+  the model (Ollama's `/v1`, vLLM) is treated the same way.
+- **A fresh install with a shortenable `EMBEDDING_MODEL` couldn't index.** A model
+  such as `qwen3-embedding` was made current without the size to ask for, so every
+  request returned 1024 numbers and failed; the background check now records it.
+- **Embedding models were offered as chat models**, apart from the environment's own:
+  `embeddinggemma-2`, pulled to try it, failed every message with HTTP 501.
+- **A re-embed's line could say "switching now" while it still filled**, when passages
+  were indexed meanwhile.
+- **Changing the model again mid-re-embed** finished the first model, switched to it,
+  then re-embedded for the second; it now stops or starts over.
+- **A passage the new model refused** (too long for a small model on vLLM or OpenAI)
+  paused the re-embed for good; it is now halved until it fits.
+- **Workers judged the re-embed's claim by their own clocks**; they use the database's.
+- **A misconfigured provider logged its warning on every query**; once is enough. With
+  the database briefly unreadable, a query used the environment's model instead of
+  the one last read.
+- **The Overview's Embeddings line opened Deployment**; it opens Models, where the
+  picker is.
 
 **Fixes from the bucket list.** No migrations.
 

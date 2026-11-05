@@ -552,7 +552,9 @@ defaults to `nomic-embed-text`. **Admin console → Models → Embeddings** wins
 both: pick a provider and a model, press **Check**, then **Use this model**.
 **Back to the server's setting** removes the console's choice. An `ollama`
 provider is called at `/api/embed`, an `openai` one at `<its URL>/embeddings`,
-32 passages per request.
+32 passages per request. Embedding models are left out of the chat model list
+(Ollama says which models only embed, and a known embedding family is one on any
+provider), so a model pulled to try here isn't offered for chatting.
 
 **What Check admits.** The vectors column holds 768 numbers. A model is admitted
 when it gives 768 by itself, or when it belongs to a family trained to be
@@ -571,12 +573,21 @@ vectors don't change. Another model, or other prefixes, starts a **re-embed**:
 
 1. A second column, `doc_chunks.embedding_next`, is added with its own HNSW
    index and filled 32 passages at a time with the new model, by one worker at
-   a time (a claim another worker takes over after 3 minutes of silence, so a
-   restart or a crash resumes where it was).
+   a time (a claim another worker takes over after 3 minutes of silence, judged
+   by the database's clock, so a restart or a crash resumes where it was). A
+   passage the model refuses as too long (HTTP 400, 413 or 422: vLLM and OpenAI
+   refuse what Ollama would shorten) is sent again on its own and halved until
+   it fits, down to 256 characters; a model that refuses even a short sentence
+   pauses the re-embed with its error.
 2. Meanwhile questions are still embedded with the current model and search the
    current column, so **every document stays searchable**. Both models must stay
    reachable until the switch; if the new one stops answering, the re-embed
-   pauses, the Overview says why, and it retries every 30 seconds.
+   pauses, the Overview says why, and it retries every 30 seconds. Models →
+   Embeddings shows a bar, the share done and the time left ("1,234 of 5,000
+   passages (24%), about 7 minutes left"), counted from the table, so passages
+   indexed meanwhile count too; the time left is the passages left at the
+   filler's running rate. While the box is open it says when the re-embed is
+   done, paused, or stopped elsewhere.
 3. When every passage has a new vector, one transaction drops the old column,
    renames the new one into its place and makes the new model current. A
    passage indexed during the re-embed is caught before the switch.
@@ -588,15 +599,17 @@ the next start. A model Check would refuse is refused there too: the library
 stays on its model and the Overview says why. A model that didn't answer (not
 pulled yet, the provider down) is tried again every 5 minutes, so pulling it is
 enough; one that answered with the wrong size stays refused until the setting
-changes.
+changes. Changing it again before the switch stops the re-embed: back to the
+model in use stops it, another model starts over, and a refused one stops it
+and says why.
 
 **What it costs.** One more copy of the vectors and an index while it runs:
 768 four-byte numbers per passage, about 3 KB, plus the index, so roughly
 6 KB per passage in all. On a laptop CPU with no GPU (i9-13980HX), re-embedding
 took about **2.5 minutes per 1,000 passages with `nomic-embed-text`** (6.4
-passages a second, measured mid-run) and **about 6 with `embeddinggemma-2:740m`**
-(313 passages in 109 s, model load included). Expect a GPU to be much faster;
-that wasn't measured.
+passages a second, measured mid-run) and **about 4 to 6 with
+`embeddinggemma-2:740m`** (313 passages in 80 s and in 109 s on two runs, model
+load included). Expect a GPU to be much faster; that wasn't measured.
 
 **Rebuilds of one document** (after a chunker change, or for a document indexed
 before an upgrade) are queued in the `doc_rebuilds` table and claimed by one
@@ -604,10 +617,16 @@ worker at a time with `FOR UPDATE SKIP LOCKED`, so with `WORKERS > 1` a document
 is rebuilt once, a restart resumes the queue, and the Overview counts it. A
 rebuild that fails waits 15 minutes before it is tried again.
 
-**The Overview** checks the current model with one sentence. On Ollama it asks
-`/api/ps` first and, if the model wasn't loaded, unloads it right after: opening
-the console no longer keeps the embedding model in memory for Ollama's five
-minutes.
+**The Overview never loads a model.** On Ollama it reads two lists: `/api/tags`
+(is the model pulled?) and `/api/ps` (is it in memory now?). Whether it gives 768
+numbers was measured once, when it was chosen; a model made current from `.env`
+is checked once by the background loop after a start (loaded for that check and
+unloaded after, unless something had it loaded already), and the answer is kept
+in `embedding_state`, so a wrong size shows as a problem without anyone loading
+it again. An `openai` provider that lists the model at `/models` is treated the
+same way; one that doesn't (OpenRouter's list is chat models) is checked by
+embedding one sentence. **Check** in Models → Embeddings unloads a model it had
+to load, unless **Use** follows: the re-embed loads it seconds later anyway.
 
 **Upgrading to this release.** Migration 025 adds `doc_rebuilds`; the first
 start records the environment's model as current. Nothing is re-embedded,
@@ -617,8 +636,11 @@ use, as after any prefix change. `EMBEDDING_TIMEOUT_S` now defaults to 120 s,
 since one request carries 32 passages. **Downgrading:** cancel any re-embed first
 (the previous image doesn't know the second column), then run 025's Down block.
 
-**Not verified:** no `openai`-kind embeddings endpoint (vLLM, OpenAI,
-OpenRouter) was called in testing; the requests follow the OpenAI API.
+**Checked live** on Ollama 0.40.13's own OpenAI-compatible `/v1` as an `openai`
+provider: Check, the same model switching at once, the Overview, searching, and
+a 313-passage re-embed through `/v1/embeddings`; and two backends sharing one
+database, where one filled and the switch happened once. **Not called:** vLLM,
+OpenAI and OpenRouter themselves; their requests follow the same OpenAI API.
 
 ### Streaming through a proxy
 

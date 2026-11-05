@@ -4,7 +4,19 @@
 
 ---
 
-## 2026-11-05 early morning — embeddings, admin console v2 phase 2b, on `feat/embeddings-2b` (START HERE)
+## 2026-11-05 morning — the phase 2b follow-ups, on `feat/embeddings-2b` (START HERE)
+
+**State.** Same branch, nine more commits after `b00209f`, on the owner's "First fix the issues you found" and their question "why to check embedding available do load the model … loading unloading constantly will kill the ram right?". Not merged, not pushed. Gates: pytest 3099 passed / 16 skipped, vitest 1849 in 152 files, eslint 0 errors (the same 24 warnings).
+
+**What changed.** (1) Checking never loads a model: the Overview reads Ollama's `/api/tags` and `/api/ps` (or an OpenAI-compatible `/models`), and the size, checked once (when chosen, or once by the loop after a start, `_check_current`) and kept in `embedding_state` (`checked`, `current_error`). The probe unloads what it loaded unless a re-embed follows. A fresh install with `EMBEDDING_MODEL=qwen3-embedding` now gets its `dimensions` recorded (it never did). (2) Re-embed progress counted from the table, with a running rate: "(24%), about 7 minutes left", a bar, and notices when done, paused or stopped elsewhere. (3) The five deferred minors: a refused passage is halved until it fits; a target changed mid-re-embed stops or restarts the build; claims use the database clock; a provider warning once per process; a DB hiccup keeps the model last read (and the search route reads the embedder once). (4) Embedding models left out of the chat picker (`Capabilities.embedding` from `/api/show`, known families, the env model). (5) The Overview's Embeddings line opens Models.
+
+**Walked live (DB `nr_embed_walk2`, two backends :8100 and :8101 on it, app on :5174, providers `ollama` and `v1` = Ollama's own OpenAI-compatible `/v1`).** The Overview left nomic's Ollama expiry unchanged to the nanosecond, and with nothing loaded said "Not in memory now" and loaded nothing (both providers). The chat screen's Model picker lists no embedding model. Re-embed to embeddinggemma-2 with two workers: one filled (the claim never moved), one switch, 313 passages in 80 s; the line went 10% "about 2 minutes left", 30% "less than a minute left", then "Re-embed done: …". Over `v1`: Check, the same model switching at once, the Overview, a document question answered from the right page, and a 313-passage re-embed through `/v1/embeddings` (started on :8100, filled and switched by :8101).
+
+**Mistake owned.** `a2f7707` was committed with one test red (the gate read only the summary line); `fc3bcaa` fixed the test's stand-in, and commits since are gated on "passed" with no "failed".
+
+---
+
+## 2026-11-05 early morning — embeddings, admin console v2 phase 2b, on `feat/embeddings-2b`
 
 **State.** Branch `feat/embeddings-2b` from `fix/bucket-list` (`348823e`), so it carries those fixes too; neither is merged into `development`. Plan `docs/superpowers/plans/2026-11-05-admin-console-v2-phase2b-embeddings.md`, executed natively with the owner's "commit as you go" (commits `6f153f3..`, one per task). Gates: pytest 3066 passed / 16 skipped, vitest 1844 in 152 files, eslint 0 errors (the same 24 old warnings). Migration **025** (`doc_rebuilds`). The ledger with every ruling is `.superpowers/sdd/2026-11-05-admin-console-v2-phase2b-embeddings/progress.md` (git-ignored; kept until the owner decides how SDD workspaces are kept). Final review: a self-review (no subagents, the owner's rule), which found and fixed three issues in `a4b4c87`.
 
@@ -14,7 +26,7 @@
 
 **Measured (laptop CPU, no GPU).** Re-embedding: nomic-embed-text 6.4 passages/s (about 2.5 min per 1,000), embeddinggemma-2:740m 2.7/s (about 6 min per 1,000). The document eval (`scripts/eval_doc_qa.py`, `ollama:gemma4:31b-cloud`): **9/9 with either model**, inline citations 4/4 each. The 30-passage fixture can't tell them apart; one real question in the walk went better with nomic (it found "127.0.0.1:8000" on page 1, embeddinggemma didn't). The default stays nomic-embed-text.
 
-**For the owner.** (1) Deploying this fixes the "nomic loaded while chatting" only once the live backend runs it. (2) Out of scope, found here: the chat model picker hides only the env's `EMBEDDING_MODEL`, so another embedding model pulled on Ollama (embeddinggemma-2 today) is offered as a chat model and fails with HTTP 501 if picked; a fix reads Ollama's `/api/show` capabilities. (3) Next: the figures phase, designed now that pictures can be embedded too (see memory `reference_multimodal_embeddings`).
+**For the owner.** (1) Deploying this fixes the "nomic loaded while chatting" only once the live backend runs it. (2) Out of scope, found here: the chat model picker hides only the env's `EMBEDDING_MODEL`, so another embedding model pulled on Ollama (embeddinggemma-2 today) is offered as a chat model and fails with HTTP 501 if picked; a fix reads Ollama's `/api/show` capabilities (fixed in the follow-ups above). (3) Next: the figures phase, designed now that pictures can be embedded too (see memory `reference_multimodal_embeddings`).
 
 ---
 

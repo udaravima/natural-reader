@@ -66,10 +66,10 @@ spot a feature that shipped without coverage.
 # Backend — REQUIRES Postgres up (conftest migrates natural_reader_test on a
 # real connection; without the DB every test errors, not skips). Run it with
 # the two TEST_* variables above exported, or it uses 5433.
-.venv/bin/python -m pytest server/tests/ -q          # 3066 passed, 16 skipped, 2 deselected @ 2026-11-05 (embeddings, phase 2b)
+.venv/bin/python -m pytest server/tests/ -q          # 3099 passed, 16 skipped, 2 deselected @ 2026-11-05 (embeddings, phase 2b follow-ups)
 
 # Frontend (vitest, jsdom — no services needed)
-npx vitest run                                       # 1844 passed (152 files) @ 2026-11-05 (embeddings, phase 2b)
+npx vitest run                                       # 1849 passed (152 files) @ 2026-11-05 (embeddings, phase 2b follow-ups)
 
 # Lint
 npx eslint .                                         # 0 errors; 24 warnings, see eslint.config.js (the same as npm run lint)
