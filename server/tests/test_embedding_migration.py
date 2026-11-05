@@ -371,3 +371,15 @@ async def test_a_probe_before_a_re_embed_leaves_the_model_loaded_for_it(db_conn,
     monkeypatch.setenv("EMBEDDING_MODEL", GEMMA.model)
     assert await mig.tick("w") == "started"
     assert seen == [(GEMMA.model, False)]                 # the filler uses it seconds later
+
+
+async def test_each_fill_step_keeps_a_running_rate_for_the_time_left(db_conn, lib, monkeypatch):
+    monkeypatch.setattr(mig, "FILL_BATCH", 2)
+    await mig.start(db_conn, GEMMA, by=SEED_ADMIN)
+    assert (await embedding_state.read_state(db_conn)).get("rate") is None
+    assert await mig.fill_step("w") == "filled"
+    first = (await embedding_state.read_state(db_conn))["rate"]
+    assert first > 0                                                  # passages a second
+    assert await mig.fill_step("w") == "filled"
+    assert (await embedding_state.read_state(db_conn))["rate"] > 0
+    assert await mig.progress(db_conn) == (4, 6)

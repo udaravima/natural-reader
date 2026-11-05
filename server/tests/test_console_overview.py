@@ -437,12 +437,12 @@ async def test_embeddings_shows_a_re_embed_in_progress_and_the_rebuild_queue(db_
     await embedding_state.init(db_conn, {})
     state = await embedding_state.read_state(db_conn)
     await embedding_state.write_state(db_conn, {**state, "next": {"provider": "ollama", "model": "embeddinggemma-2:740m"},
-                                                "filled": 1234, "total": 5000})
+                                                "filled": 1234, "total": 5000, "rate": 10.0})
     for i, kind in enumerate(("queued", "running", "failed")):
         await seed.seed_doc(db_conn, f"q{i}", None, state="indexed")
         await db_conn.execute("INSERT INTO doc_rebuilds (doc_id, profile, state) VALUES (%s, 'p', %s)", (f"q{i}", kind))
     c = (await _by_id(db_conn, _router()))["embeddings"]
-    assert "Re-embedding for embeddinggemma-2:740m: 1,234 of 5,000 passages." in c.summary
+    assert "Re-embedding for embeddinggemma-2:740m: 1,234 of 5,000 passages (24%), about 7 minutes left." in c.summary
     assert "2 documents waiting to be rebuilt." in c.summary
     assert "1 rebuild failed and will be retried." in c.summary
     assert c.state == "warn"

@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
@@ -40,6 +41,9 @@ ERROR_S = 30.0           # after a failed step (the target unreachable), wait th
 # A target that didn't answer (not pulled yet, provider down) is probed again after this long; one that answered
 # with the wrong size is refused until the target changes.
 UNREACHABLE_RETRY_S = 300.0
+# The running rate (passages a second, for the time left) takes this share of each step's own rate: steady
+# within a few steps, and a single slow request doesn't swing it.
+RATE_WEIGHT = 0.3
 
 
 def _now() -> datetime:
@@ -68,7 +72,7 @@ def _due(at: str | None) -> bool:
 def _cleared(state: Mapping[str, Any], **changes: Any) -> dict[str, Any]:
     """The state with no migration running, and `changes` applied."""
     return {**state, "next": None, "filled": 0, "total": 0, "claimed_by": None, "claimed_at": None,
-            "error": None, "error_for": None, "error_retry_at": None, **changes}
+            "error": None, "error_for": None, "error_retry_at": None, "rate": None, **changes}
 
 
 async def _locked(conn, env: Mapping[str, str]) -> dict[str, Any]:
@@ -87,6 +91,17 @@ async def _has_next(conn) -> bool:
     cur = await conn.execute("SELECT 1 FROM information_schema.columns WHERE table_name = 'doc_chunks' "
                              "AND column_name = 'embedding_next'")
     return await cur.fetchone() is not None
+
+
+async def progress(conn) -> tuple[int, int] | None:
+    """(filled, total) now: the vectored chunks that have a new vector, and all vectored chunks. Counted from the
+    table, so a passage indexed during the re-embed counts too. None with no re-embed column. Call it with the
+    state row held (FOR SHARE), so a switch or cancel can't drop the column between the two reads."""
+    if not await _has_next(conn):
+        return None
+    cur = await conn.execute("SELECT count(embedding_next), count(*) FROM doc_chunks WHERE embedding IS NOT NULL")
+    filled, total = await cur.fetchone()
+    return filled, total
 
 
 async def start(conn, target: Embedder, *, by: str | None = None, env: Mapping[str, str] = os.environ) -> str:
@@ -143,6 +158,7 @@ async def fill_step(worker: str, *, env: Mapping[str, str] = os.environ) -> str:
     if not rows:
         return "ready"
     target = from_json(nxt, env)
+    began = time.monotonic()
     try:
         vectors = await embed_texts(target, [target.document_prefix + text for _, _, text in rows])
     except EmbeddingError as err:
@@ -165,8 +181,17 @@ async def fill_step(worker: str, *, env: Mapping[str, str] = os.environ) -> str:
                     "AND embedding IS NOT NULL AND embedding_next IS NULL", (vec, chunk_id, text_hash))
                 written += cur.rowcount
             await write_state(conn, {**state, "filled": state.get("filled", 0) + written,
-                                     "claimed_at": _now().isoformat(), "error": None})
+                                     "claimed_at": _now().isoformat(), "error": None,
+                                     "rate": _rate(state.get("rate"), written, time.monotonic() - began)})
     return "filled"
+
+
+def _rate(old: float | None, written: int, seconds: float) -> float | None:
+    """The running rate after a step that wrote `written` passages in `seconds`."""
+    if written <= 0 or seconds <= 0:
+        return old
+    step = written / seconds
+    return step if old is None else RATE_WEIGHT * step + (1 - RATE_WEIGHT) * old
 
 
 async def switch(conn, *, env: Mapping[str, str] = os.environ) -> bool:

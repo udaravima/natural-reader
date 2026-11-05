@@ -212,18 +212,22 @@ async def _remote_embedder(http: httpx.AsyncClient, e: embeddings.Embedder) -> C
     return f"{e.model} at {host}: {dim} dimensions."
 
 
-async def _embeddings(http: httpx.AsyncClient, e: embeddings.Embedder, state: Mapping | None, stale: int,
-                      queue: Mapping[str, int]) -> Check:
+async def _embeddings(http: httpx.AsyncClient, e: embeddings.Embedder, state: Mapping | None,
+                      counts: tuple[int, int] | None, stale: int, queue: Mapping[str, int]) -> Check:
     """The model in use (what the stored vectors were made with) is there and gives 768 numbers; and how far a
     re-embed and the rebuild queue are, read from the database."""
     head = await (_ollama_embedder(http, e, state) if e.provider.kind == "ollama" else _remote_embedder(http, e))
     if isinstance(head, Check):
         return head
     notes, warn = [], False
-    migration = embedding_console.migration_view(state)
-    if migration["state"] in ("building", "switching"):
+    migration = embedding_console.migration_view(state, counts)
+    if migration["state"] == "building":
+        done = migration["filled"] * 100 // migration["total"] if migration["total"] else 100
+        left = embedding_console.time_left(migration["seconds_left"])
         notes.append(f"Re-embedding for {migration['model']}: {migration['filled']:,} of {migration['total']:,} "
-                     "passages.")
+                     f"passages ({done}%){', ' + left if left else ''}.")
+    elif migration["state"] == "switching":
+        notes.append(f"Re-embedding for {migration['model']}: every passage done, switching now.")
     elif migration["state"] == "failed":
         warn = True
         notes.append(f"Re-embedding for {migration['model']} is paused: {migration['error']}" if migration["model"]
@@ -410,7 +414,7 @@ async def run_checks(conn, llm, env: Mapping[str, str] = os.environ,
         cur = await conn.execute("SELECT count(*) FROM documents WHERE state = 'indexed' "
                                  "AND embedding_profile IS DISTINCT FROM %s", (embeddings.profile_of(embedder),))
         stale = (await cur.fetchone())[0]
-    state = await embedding_state.read_state(conn)
+    state, counts = await embedding_console.read_progress(conn)
     queue = await rebuild_queue.queue_counts(conn)
     profile = (await assistant_profile.load_profile(conn)).text
     try:
@@ -427,7 +431,7 @@ async def run_checks(conn, llm, env: Mapping[str, str] = os.environ,
             _bounded("reader", lambda: _reader(llm, ms, env)),
             _bounded("context", lambda: _context(llm, ms, env, web_mode, profile)),
             _bounded("embeddings", lambda: _embeddings(client, embedder or embedding_state.env_target(env), state,
-                                                       stale, queue)),
+                                                       counts, stale, queue)),
             _bounded("docling", _docling),
             _bounded("web_search", lambda: _web_search(client, web_mode)),
             _bounded("voice_input", lambda: _voice_input(options, env)),

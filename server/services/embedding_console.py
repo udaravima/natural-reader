@@ -3,6 +3,7 @@ vectors were made with, the model chosen, where that choice comes from, and a re
 are thin (routers/admin.py); the rules are here and in embedding_state / embedding_migration."""
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import replace
 from typing import Any, Mapping
@@ -19,31 +20,58 @@ class Refused(ValueError):
         self.code = code
 
 
-def migration_view(state: Mapping[str, Any] | None) -> dict[str, Any]:
+def migration_view(state: Mapping[str, Any] | None, counts: tuple[int, int] | None = None) -> dict[str, Any]:
     """none | building | switching (every passage filled; the switch is next) | failed (paused on an error, or
-    a target the loop refused)."""
+    a target the loop refused). `counts` is (filled, total) from the table (embedding_migration.progress); without
+    them, the state row's own. `seconds_left` is the passages left at the filler's running rate; None until the
+    first batch is done, or with nothing left."""
     state = state or {}
     nxt = state.get("next")
     if nxt:
-        filled, total = state.get("filled", 0), state.get("total", 0)
-        kind = "failed" if state.get("error") else ("switching" if filled >= total else "building")
-        return {"state": kind, "model": nxt.get("model"), "filled": filled, "total": total, "error": state.get("error")}
+        filled, total = counts if counts is not None else (state.get("filled", 0), state.get("total", 0))
+        left, rate = max(total - filled, 0), state.get("rate")
+        kind = "failed" if state.get("error") else ("switching" if not left else "building")
+        return {"state": kind, "model": nxt.get("model"), "filled": filled, "total": total,
+                "seconds_left": round(left / rate, 1) if rate and left else None, "error": state.get("error")}
     if state.get("error"):
-        return {"state": "failed", "model": None, "filled": 0, "total": 0, "error": state["error"]}
-    return {"state": "none", "model": None, "filled": 0, "total": 0, "error": None}
+        return {"state": "failed", "model": None, "filled": 0, "total": 0, "seconds_left": None,
+                "error": state["error"]}
+    return {"state": "none", "model": None, "filled": 0, "total": 0, "seconds_left": None, "error": None}
+
+
+async def read_progress(conn) -> tuple[dict[str, Any] | None, tuple[int, int] | None]:
+    """The state row and, while a re-embed runs, its counts from the table, read together: the row is held FOR
+    SHARE, so a switch or cancel (which take it FOR UPDATE first) can't drop the column between the two."""
+    async with conn.transaction():
+        state = await embedding_state.read_state(conn, lock="share")
+        counts = await embedding_migration.progress(conn) if state and state.get("next") else None
+    return state, counts
+
+
+def time_left(seconds: float | None) -> str:
+    """"about 6 minutes left", for a progress line; "" when unknown."""
+    if seconds is None:
+        return ""
+    if seconds < 60:
+        return "less than a minute left"
+    if seconds < 3600:
+        minutes = math.ceil(seconds / 60)
+        return f"about {minutes} minute{'s' if minutes != 1 else ''} left"
+    return f"about {round(seconds / 3600, 1):g} hours left"
 
 
 async def view(conn, env: Mapping[str, str] = os.environ) -> dict[str, Any]:
     values = await console_settings.load(conn, embedding_state.SECTION, env)
     target = embedding_state.target(values, env)
-    state = await embedding_state.read_state(conn)
+    state, counts = await read_progress(conn)
     current = embedding_state.from_json(state["current"], env) if state else target
     return {
-        "current": {"provider": current.provider.name, "model": current.model, "dimensions": current.dimensions},
+        "current": {"provider": current.provider.name, "model": current.model, "dimensions": current.dimensions,
+                    "error": (state or {}).get("current_error")},   # its size, found wrong by the background check
         "target": {"provider": target.provider.name, "model": target.model},
         "source": {"provider": values["provider"].source, "model": values["model"].source},
         "env": {"provider": "EMBEDDING_PROVIDER", "model": "EMBEDDING_MODEL"},
-        "migration": migration_view(state),
+        "migration": migration_view(state, counts),
         "providers": [{"name": p.name, "kind": p.kind} for p in embedding_state.providers(env)],
     }
 

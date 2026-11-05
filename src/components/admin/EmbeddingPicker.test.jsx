@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, cleanup } from '@testing-library/react';
 import { EmbeddingPicker } from './EmbeddingPicker';
 
 vi.mock('../../utils/apiFetch', () => ({ apiFetch: vi.fn() }));
@@ -8,9 +8,12 @@ import { apiFetch } from '../../utils/apiFetch';
 const theme = { bg: '', bgSecondary: '', border: '', text: '', textSecondary: '', textMuted: '' };
 const json = (status, body) => ({ ok: status < 400, status, json: async () => body });
 
-const NONE = { state: 'none', model: null, filled: 0, total: 0, error: null };
+const NONE = { state: 'none', model: null, filled: 0, total: 0, seconds_left: null, error: null };
+const building = (filled, total = 5000, more = {}) => ({ state: 'building', model: 'embeddinggemma-2:740m', filled, total,
+  seconds_left: null, error: null, ...more });
+const GEMMA_IN_USE = { provider: 'ollama', model: 'embeddinggemma-2:740m', dimensions: null, error: null };
 const view = (over = {}) => ({
-  current: { provider: 'ollama', model: 'nomic-embed-text', dimensions: null },
+  current: { provider: 'ollama', model: 'nomic-embed-text', dimensions: null, error: null },
   target: { provider: 'ollama', model: 'nomic-embed-text' },
   source: { provider: 'default', model: 'env' },
   env: { provider: 'EMBEDDING_PROVIDER', model: 'EMBEDDING_MODEL' },
@@ -79,7 +82,7 @@ describe('EmbeddingPicker', () => {
   it('enables Use this model only after an admitted check of what is picked, and sends the PUT', async () => {
     const { showToast } = mount({ views: [view(), view({ target: { provider: 'ollama', model: 'embeddinggemma-2:740m' },
       source: { provider: 'admin', model: 'admin' },
-      migration: { state: 'building', model: 'embeddinggemma-2:740m', filled: 0, total: 40, error: null } })] });
+      migration: building(0, 40) })] });
     await pick('Embedding model', 'embeddinggemma-2:740m');
     const use = screen.getByRole('button', { name: 'Use this model' });
     expect(use.disabled).toBe(true);
@@ -89,7 +92,7 @@ describe('EmbeddingPicker', () => {
     fireEvent.click(use);
     await waitFor(() => expect(calls('/v1/admin/embeddings', 'PUT')).toHaveLength(1));
     expect(body(calls('/v1/admin/embeddings', 'PUT')[0])).toEqual({ provider: 'ollama', model: 'embeddinggemma-2:740m' });
-    expect(await screen.findByText('Re-embedding for embeddinggemma-2:740m: 0 of 40 passages.')).toBeTruthy();
+    expect(await screen.findByText('Re-embedding for embeddinggemma-2:740m: 0 of 40 passages (0%).')).toBeTruthy();
     expect(showToast).toHaveBeenCalled();
   });
 
@@ -145,9 +148,11 @@ describe('EmbeddingPicker', () => {
   });
 
   it('cancels a re-embed', async () => {
-    mount({ views: [view({ migration: { state: 'building', model: 'embeddinggemma-2:740m', filled: 3, total: 40, error: null } })] });
+    const { showToast } = mount({ views: [view({ migration: building(3, 40) })] });
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel the re-embed' }));
     await waitFor(() => expect(calls('/v1/admin/embeddings/migration', 'DELETE')).toHaveLength(1));
+    await waitFor(() => expect(showToast).toHaveBeenCalledTimes(1));
+    expect(showToast.mock.calls[0][0]).toMatch(/^Re-embed cancelled/);      // not "done"
   });
 
   it('goes back to the server’s setting', async () => {
@@ -158,8 +163,32 @@ describe('EmbeddingPicker', () => {
   });
 
   it('shows a paused re-embed and its reason', async () => {
-    mount({ views: [view({ migration: { state: 'failed', model: 'embeddinggemma-2:740m', filled: 3, total: 40, error: 'Can’t reach ollama' } })] });
+    mount({ views: [view({ migration: building(3, 40, { state: 'failed', error: 'Can’t reach ollama' }) })] });
     expect(await screen.findByText('Re-embedding for embeddinggemma-2:740m is paused: Can’t reach ollama')).toBeTruthy();
+  });
+
+  it('shows a bar, the share done and the time left', async () => {
+    mount({ views: [view({ migration: building(1234, 5000, { seconds_left: 400 }) })] });
+    expect(await screen.findByText('Re-embedding for embeddinggemma-2:740m: 1,234 of 5,000 passages (24%), about 7 minutes left.'))
+      .toBeTruthy();
+    const bar = screen.getByRole('progressbar', { name: 'Re-embed progress' });
+    expect([bar.getAttribute('aria-valuenow'), bar.getAttribute('aria-valuemax')]).toEqual(['1234', '5000']);
+  });
+
+  it('words the time left in seconds, minutes and hours', async () => {
+    for (const [seconds, words] of [[30, 'less than a minute left'], [61, 'about 2 minutes left'],
+      [60 * 60 * 1.5, 'about 1.5 hours left']]) {
+      mount({ views: [view({ migration: building(1, 10, { seconds_left: seconds }) })] });
+      expect(await screen.findByText(`Re-embedding for embeddinggemma-2:740m: 1 of 10 passages (10%), ${words}.`)).toBeTruthy();
+      cleanup();
+    }
+  });
+
+  it('says what is wrong with the model in use', async () => {
+    mount({ views: [view({ current: { provider: 'ollama', model: 'mxbai-embed-large', dimensions: null,
+      error: 'mxbai-embed-large gives 1024 numbers and the library holds 768' } })] });
+    expect((await screen.findByRole('alert')).textContent)
+      .toBe('mxbai-embed-large gives 1024 numbers and the library holds 768: documents can’t be indexed or searched until another model is chosen.');
   });
 });
 
@@ -169,16 +198,38 @@ describe('EmbeddingPicker while re-embedding', () => {
   const advance = (ms) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
 
   it('re-reads the progress every 5 s while one runs, then stops', async () => {
-    const building = (filled) => view({ migration: { state: 'building', model: 'embeddinggemma-2:740m', filled, total: 5000, error: null } });
-    mount({ views: [building(1234), building(2500), view({ current: { provider: 'ollama', model: 'embeddinggemma-2:740m', dimensions: null } })] });
+    const at = (filled) => view({ migration: building(filled) });
+    mount({ views: [at(1234), at(2500), view({ current: GEMMA_IN_USE })] });
     await advance(0);
-    expect(screen.getByText('Re-embedding for embeddinggemma-2:740m: 1,234 of 5,000 passages.')).toBeTruthy();
+    expect(screen.getByText('Re-embedding for embeddinggemma-2:740m: 1,234 of 5,000 passages (24%).')).toBeTruthy();
     await advance(5000);
-    expect(screen.getByText('Re-embedding for embeddinggemma-2:740m: 2,500 of 5,000 passages.')).toBeTruthy();
+    expect(screen.getByText('Re-embedding for embeddinggemma-2:740m: 2,500 of 5,000 passages (50%).')).toBeTruthy();
     await advance(5000);
     expect(screen.queryByText(/Re-embedding for/)).toBeNull();
     const reads = calls('/v1/admin/embeddings', 'GET').length;
     await advance(15000);
     expect(calls('/v1/admin/embeddings', 'GET')).toHaveLength(reads);   // done: no more polling
+  });
+
+  it('says so when the re-embed finishes', async () => {
+    const { showToast } = mount({ views: [view({ migration: building(4990) }),
+      view({ migration: building(5000, 5000, { state: 'switching' }) }), view({ current: GEMMA_IN_USE })] });
+    await advance(0);
+    expect(showToast).not.toHaveBeenCalled();
+    await advance(5000);
+    expect(screen.getByText('Re-embedding for embeddinggemma-2:740m: every passage done, switching now.')).toBeTruthy();
+    await advance(5000);
+    expect(showToast).toHaveBeenCalledWith('Re-embed done: search now uses embeddinggemma-2:740m.', 8000);
+    expect(screen.getByText(/In use/).textContent).toBe('In use: embeddinggemma-2:740m on ollama.');
+  });
+
+  it('says so when the re-embed pauses, and when it was stopped elsewhere', async () => {
+    const { showToast } = mount({ views: [view({ migration: building(10) }),
+      view({ migration: building(10, 5000, { state: 'failed', error: 'Can’t reach ollama' }) }), view()] });
+    await advance(0);
+    await advance(5000);
+    expect(showToast).toHaveBeenLastCalledWith('Re-embed paused: Can’t reach ollama', 8000);
+    await advance(5000);   // cancelled from another tab: the library stayed on nomic
+    expect(showToast).toHaveBeenLastCalledWith('Re-embed stopped: the library stays on nomic-embed-text.', 8000);
   });
 });

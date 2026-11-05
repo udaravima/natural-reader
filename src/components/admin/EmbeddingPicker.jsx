@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../../utils/apiFetch';
 import { SearchableSelect } from '../SearchableList';
 
@@ -31,12 +31,38 @@ const sendJson = (method, body) => ({
   method, headers: { 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 });
 
+// As the server words it (embedding_console.time_left): "" while unknown (before the first batch is done).
+function timeLeft(seconds) {
+  if (seconds === null || seconds === undefined) return '';
+  if (seconds < 60) return 'less than a minute left';
+  if (seconds < 3600) {
+    const minutes = Math.ceil(seconds / 60);
+    return `about ${minutes} minute${minutes === 1 ? '' : 's'} left`;
+  }
+  return `about ${Math.round(seconds / 360) / 10} hours left`;
+}
+
+const share = (m) => (m.total ? Math.floor((m.filled * 100) / m.total) : 100);
+
 function progressLine(m) {
   if (m.state === 'failed') {
     return m.model ? `Re-embedding for ${m.model} is paused: ${m.error}` : `The chosen model isn’t used: ${m.error}`;
   }
   if (m.state === 'switching') return `Re-embedding for ${m.model}: every passage done, switching now.`;
-  return `Re-embedding for ${m.model}: ${fmt(m.filled)} of ${fmt(m.total)} passages.`;
+  const left = timeLeft(m.seconds_left);
+  return `Re-embedding for ${m.model}: ${fmt(m.filled)} of ${fmt(m.total)} passages (${share(m)}%)${left ? `, ${left}` : ''}.`;
+}
+
+// What a poll found, against what was shown before it: the re-embed finished, paused, or was stopped elsewhere.
+function noticeOf(was, view) {
+  const now = view.migration;
+  if (!was || !ACTIVE.has(was.state) || was.state === now.state) return null;
+  if (now.state === 'failed') return `Re-embed paused: ${now.error}`;
+  if (now.state !== 'none' || !was.model) return null;   // no model: a refused choice, not a re-embed
+  // From paused too: a poll can miss the run between, so the model in use says how it ended.
+  return view.current.model === was.model
+    ? `Re-embed done: search now uses ${view.current.model}.`
+    : `Re-embed stopped: the library stays on ${view.current.model}.`;
 }
 
 export function EmbeddingPicker({ theme, apiHost, apiPort, showToast }) {
@@ -50,18 +76,25 @@ export function EmbeddingPicker({ theme, apiHost, apiPort, showToast }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
+  const lastSeen = useRef(null);   // the re-embed as last shown, so a poll can tell what changed
+
   const load = useCallback(async () => {
     try {
       const res = await apiFetch(apiHost, apiPort, '/v1/admin/embeddings');
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setData(await res.json());
+      const view = await res.json();
+      const notice = noticeOf(lastSeen.current, view);
+      lastSeen.current = view.migration;
+      setData(view);
       setFailed(false);
+      if (notice) showToast?.(notice, 8000);
     } catch {
       setFailed(true);
     }
-  }, [apiHost, apiPort]);
+  }, [apiHost, apiPort, showToast]);
 
   const adopt = (view) => {
+    lastSeen.current = view.migration;   // this tab's own action: its toast says what happened
     setData(view);
     setProvider(view.target.provider);
     setModel(view.target.model);
@@ -199,17 +232,31 @@ export function EmbeddingPicker({ theme, apiHost, apiPort, showToast }) {
         In use: <strong>{current.model}</strong> on {current.provider}
         {current.dimensions ? `, shortened to ${current.dimensions}` : ''}.
       </p>
+      {current.error && (
+        <p role="alert" className="text-xs text-red-500">
+          {current.error}: documents can’t be indexed or searched until another model is chosen.
+        </p>
+      )}
 
       {migration.state !== 'none' && (
-        <div className="flex flex-wrap items-center gap-3">
-          <p role="status" className={`text-xs ${migration.state === 'failed' ? 'text-amber-600' : theme.text}`}>
-            {progressLine(migration)}
-          </p>
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-3">
+            <p role="status" className={`text-xs ${migration.state === 'failed' ? 'text-amber-600' : theme.text}`}>
+              {progressLine(migration)}
+            </p>
+            {migration.model && (
+              <button type="button" onClick={cancel} disabled={busy}
+                className={`${button} border ${theme.border} ${theme.text}`}>
+                Cancel the re-embed
+              </button>
+            )}
+          </div>
           {migration.model && (
-            <button type="button" onClick={cancel} disabled={busy}
-              className={`${button} border ${theme.border} ${theme.text}`}>
-              Cancel the re-embed
-            </button>
+            <div role="progressbar" aria-label="Re-embed progress" aria-valuemin={0} aria-valuemax={migration.total}
+              aria-valuenow={migration.filled} className={`h-1.5 w-full max-w-md rounded-full overflow-hidden ${theme.bg} border ${theme.border}`}>
+              <div className={`h-full ${migration.state === 'failed' ? 'bg-amber-500' : 'bg-blue-500'} transition-[width]`}
+                style={{ width: `${share(migration)}%` }} />
+            </div>
           )}
         </div>
       )}
