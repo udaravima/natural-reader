@@ -585,7 +585,10 @@ vectors don't change. Another model, or other prefixes, starts a **re-embed**:
 
 Changing `EMBEDDING_MODEL` (or a prefix) in `.env` starts the same re-embed at
 the next start. A model Check would refuse is refused there too: the library
-stays on its model and the Overview says why.
+stays on its model and the Overview says why. A model that didn't answer (not
+pulled yet, the provider down) is tried again every 5 minutes, so pulling it is
+enough; one that answered with the wrong size stays refused until the setting
+changes.
 
 **What it costs.** One more copy of the vectors and an index while it runs:
 768 four-byte numbers per passage, about 3 KB, plus the index, so roughly

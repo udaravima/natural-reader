@@ -220,3 +220,75 @@ async def test_an_env_model_change_starts_the_migration_and_a_refusal_isnt_retri
     monkeypatch.setenv("EMBEDDING_MODEL", GEMMA.model)
     assert await mig.tick("w") == "started"
     assert (await embedding_state.read_state(db_conn))["error"] is None
+
+
+async def test_a_model_that_wasnt_reachable_is_tried_again_later_but_a_wrong_size_isnt(db_conn, lib, monkeypatch):
+    """Final review: a refusal was recorded for good, so an .env model changed before it was pulled ("isn't on
+    ollama") never started its re-embed, even after a restart. Only a wrong size is final."""
+    answers = {"embeddinggemma-2:740m": ProbeResult(False, None, None, "embeddinggemma-2:740m isn't on ollama (HTTP 404)")}
+
+    async def probe(provider, model, **_kw):
+        return answers.get(model) or ProbeResult(True, 768, None, "fine")
+    monkeypatch.setattr(mig, "probe", probe)
+    monkeypatch.setenv("EMBEDDING_MODEL", GEMMA.model)
+    assert await mig.tick("w") == "refused"
+    assert await mig.tick("w") == "idle"                          # not probed every 5 s
+    answers.clear()                                               # the owner pulled it
+    state = await embedding_state.read_state(db_conn)
+    await embedding_state.write_state(db_conn, {**state, "error_retry_at": "2000-01-01T00:00:00+00:00"})
+    assert await mig.tick("w") == "started"                       # tried again once its wait is over
+
+    await mig.cancel(db_conn)   # it pins the console's choice to current, which outranks .env: clear it
+    await console_settings.save(db_conn, embedding_state.SECTION, {"provider": None, "model": None},
+                                updated_by=SEED_ADMIN, env=ENV)
+    monkeypatch.setenv("EMBEDDING_MODEL", "mxbai-embed-large")
+    answers["mxbai-embed-large"] = ProbeResult(False, 1024, None, "mxbai-embed-large gives 1024 numbers")
+    assert await mig.tick("w") == "refused"
+    state = await embedding_state.read_state(db_conn)
+    assert state.get("error_retry_at") is None                    # a wrong size doesn't change with time
+    assert await mig.tick("w") == "idle"
+
+
+async def test_a_rebuild_takes_the_state_row_before_its_document_row(db_conn, monkeypatch, tmp_path):
+    """Final review: run_rebuild locked the document row, then the state row; the switch takes the state row,
+    then (in its UPDATE documents) the document rows. Opposite orders deadlock. The state row comes first."""
+    from contextlib import asynccontextmanager
+    from server.tests.docs_harness import build_docs_app
+    order = []
+
+    class Recording:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+        async def execute(self, sql, *args, **kwargs):
+            if "FROM documents WHERE doc_id = %s FOR UPDATE" in sql:
+                order.append("document")
+            return await self._conn.execute(sql, *args, **kwargs)
+
+    class Shim:
+        @asynccontextmanager
+        async def connection(self, timeout=None):
+            yield Recording(db_conn)
+
+    build_docs_app(db_conn, monkeypatch, storage_dir=tmp_path)
+    monkeypatch.setattr(doc_pipeline, "get_pool", lambda: Shim())
+    real = embedding_state.locked_current
+
+    async def recording_locked_current(conn, *a, **kw):
+        order.append("state")
+        return await real(conn, *a, **kw)
+    monkeypatch.setattr(embedding_state, "locked_current", recording_locked_current)
+    for k, v in ENV.items():
+        monkeypatch.setenv(k, v)
+    await db_conn.execute("DELETE FROM app_settings WHERE key IN ('embedding_state', 'embeddings')")
+    await embedding_state.init(db_conn, ENV)
+    await seed.seed_doc(db_conn, DOC, None, file_type="text", state="indexed", extracted_by="client")
+    await db_conn.execute("UPDATE documents SET embedding_profile = 'older', embedding_model = 'nomic-embed-text' "
+                          "WHERE doc_id = %s", (DOC,))
+    await db_conn.execute("INSERT INTO doc_chunks (doc_id, ord, page, chunk_type, text, text_hash) "
+                          "VALUES (%s, 0, 1, 'page', 'Some passage of text.', 'h0')", (DOC,))
+    assert await doc_pipeline.run_rebuild(DOC) is None
+    assert order[:2] == ["state", "document"]

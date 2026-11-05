@@ -46,6 +46,7 @@ export function EmbeddingPicker({ theme, apiHost, apiPort, showToast }) {
   const [model, setModel] = useState('');
   const [listing, setListing] = useState({ provider: null, names: [] });   // one provider's model names
   const [verdict, setVerdict] = useState(null);     // { for: "provider|model", ok, reason }
+  const [typing, setTyping] = useState(false);      // a typed name instead of the provider's list
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -225,7 +226,7 @@ export function EmbeddingPicker({ theme, apiHost, apiPort, showToast }) {
 
       <div className="flex flex-col gap-1">
         <label htmlFor="embeddings-model" className={`text-xs font-bold ${theme.text}`}>Embedding model</label>
-        {models !== null && listed.length === 0 ? (
+        {models !== null && (listed.length === 0 || typing) ? (
           <input id="embeddings-model" type="text" value={model} disabled={busy} spellCheck={false}
             placeholder="A model name, as the provider calls it"
             onChange={(e) => choose(provider, e.target.value)} className={`${control} w-64`} />
@@ -235,9 +236,17 @@ export function EmbeddingPicker({ theme, apiHost, apiPort, showToast }) {
             onChange={(name) => choose(provider, name)} className={control} options={modelOptions}
           />
         )}
-        <p className={`text-[10px] ${theme.textSecondary}`}>
-          {fromEnv ? <>From the server&apos;s <code>{env.model}</code>.</> : 'Chosen here.'}
-        </p>
+        <div className="flex flex-wrap items-center gap-3 text-[10px]">
+          <span className={theme.textSecondary}>
+            {fromEnv ? <>From the server&apos;s <code>{env.model}</code>.</> : 'Chosen here.'}
+          </span>
+          {listed.length > 0 && (
+            <button type="button" onClick={() => setTyping(!typing)} disabled={busy}
+              className="min-h-11 md:min-h-0 underline text-blue-500 disabled:opacity-40">
+              {typing ? 'Choose from the list' : 'Type a name'}
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">

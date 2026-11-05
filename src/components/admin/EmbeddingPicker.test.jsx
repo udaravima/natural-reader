@@ -130,6 +130,20 @@ describe('EmbeddingPicker', () => {
     expect(body(calls('/v1/admin/embeddings/probe', 'POST')[0])).toEqual({ provider: 'cloud', model: 'text-embedding-3-small' });
   });
 
+  it('takes a typed name when the provider lists other models', async () => {
+    mount();
+    await screen.findByRole('option', { name: 'gemma4:e4b' });
+    fireEvent.click(screen.getByRole('button', { name: 'Type a name' }));
+    const field = screen.getByLabelText('Embedding model');
+    expect(field.tagName).toBe('INPUT');
+    fireEvent.change(field, { target: { value: 'openai/text-embedding-3-small' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Check' }));
+    await waitFor(() => expect(calls('/v1/admin/embeddings/probe', 'POST')).toHaveLength(1));
+    expect(body(calls('/v1/admin/embeddings/probe', 'POST')[0]).model).toBe('openai/text-embedding-3-small');
+    fireEvent.click(screen.getByRole('button', { name: 'Choose from the list' }));
+    expect(screen.getByLabelText('Embedding model').tagName).toBe('SELECT');
+  });
+
   it('cancels a re-embed', async () => {
     mount({ views: [view({ migration: { state: 'building', model: 'embeddinggemma-2:740m', filled: 3, total: 40, error: null } })] });
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel the re-embed' }));

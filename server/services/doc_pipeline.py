@@ -535,6 +535,12 @@ async def run_rebuild(doc_id: str) -> str | None:
             vectors = [reusable[c.text] if c.text in reusable else embedded[c.text] for c in chunks]
             async with get_pool().connection() as conn:
                 async with conn.transaction():
+                    # The state row first, as the switch takes it, then the document row: one order, no deadlock.
+                    if embedding_state.vector_identity(await embedding_state.locked_current(conn)) != \
+                            embedding_state.vector_identity(e):   # switched models meanwhile (ruling P2)
+                        logger.info("The embedding model changed during the rebuild of %s; its next use queues "
+                                    "it again", doc_id)
+                        return None
                     # Routes that reset a document (POST /index, a conversion
                     # revert, a delete) don't take doc_lock: swap only if it is
                     # still the indexed document this rebuild started from.
@@ -543,11 +549,6 @@ async def run_rebuild(doc_id: str) -> str | None:
                     now = await cur.fetchone()
                     if not now or now[0] != "indexed" or now[1] != row[1]:
                         logger.info("Doc %s changed during its rebuild; dropped the rebuilt set", doc_id)
-                        return None
-                    if embedding_state.vector_identity(await embedding_state.locked_current(conn)) != \
-                            embedding_state.vector_identity(e):   # switched models meanwhile (ruling P2)
-                        logger.info("The embedding model changed during the rebuild of %s; its next use queues "
-                                    "it again", doc_id)
                         return None
                     await replace_chunks(conn, doc_id, chunks, embeddings=vectors, model=embed_model)
                     await save_outline(conn, doc_id, outline)

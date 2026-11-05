@@ -499,7 +499,8 @@ way; search finds the passages whose numbers point the same way as the question'
 The box shows the model in use (**In use: nomic-embed-text on ollama**). To change it:
 
 1. Choose a provider and a model. The list is the provider's own, embedding models
-   first; a provider that lists none takes a typed name.
+   first. **Type a name** takes one the list doesn't have (OpenRouter's list, for
+   one, shows only chat models); a provider that lists none always takes a typed name.
 2. Press **Check**. The server asks the model for one sentence and says what came
    back: "gives 768 numbers, the size the library holds", "is trained to be shortened:
    it will be asked for 768", or why it can't be used (a model giving 1024 numbers

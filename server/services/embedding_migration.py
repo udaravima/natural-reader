@@ -37,6 +37,9 @@ FILL_BATCH = 32          # chunks per fill step: one embedding request
 CLAIM_LAPSE_S = max(120.0, EMBEDDING_TIMEOUT_S + 60)
 IDLE_S = 5.0             # an idle loop looks again this often
 ERROR_S = 30.0           # after a failed step (the target unreachable), wait this long
+# A target that didn't answer (not pulled yet, provider down) is probed again after this long; one that answered
+# with the wrong size is refused until the target changes.
+UNREACHABLE_RETRY_S = 300.0
 
 
 def _now() -> datetime:
@@ -52,10 +55,20 @@ def _lapsed(claimed_at: str | None) -> bool:
         return True
 
 
+def _due(at: str | None) -> bool:
+    """Whether a recorded retry time has come. None: never (a final refusal)."""
+    if not at:
+        return False
+    try:
+        return _now() >= datetime.fromisoformat(at)
+    except ValueError:
+        return True
+
+
 def _cleared(state: Mapping[str, Any], **changes: Any) -> dict[str, Any]:
     """The state with no migration running, and `changes` applied."""
     return {**state, "next": None, "filled": 0, "total": 0, "claimed_by": None, "claimed_at": None,
-            "error": None, "error_for": None, **changes}
+            "error": None, "error_for": None, "error_retry_at": None, **changes}
 
 
 async def _locked(conn, env: Mapping[str, str]) -> dict[str, Any]:
@@ -95,7 +108,8 @@ async def start(conn, target: Embedder, *, by: str | None = None, env: Mapping[s
             return "switched"
         nxt = state.get("next")
         if nxt and vector_identity(from_json(nxt, env)) == key and await _has_next(conn):
-            await write_state(conn, {**state, "next": to_json(target), "error": None, "error_for": None}, by=by)
+            await write_state(conn, {**state, "next": to_json(target), "error": None, "error_for": None,
+                                     "error_retry_at": None}, by=by)
             return "started"
         await _drop_next(conn)
         await conn.execute(f"ALTER TABLE doc_chunks ADD COLUMN embedding_next vector({EMBEDDING_DIM})")
@@ -227,14 +241,17 @@ async def tick(worker: str, *, env: Mapping[str, str] = os.environ) -> str:
             return "idle"
         async with get_pool().connection() as conn:
             return await start(conn, target, env=env)
-    if state.get("error_for") == key:
+    if state.get("error_for") == key and not _due(state.get("error_retry_at")):
         return "idle"
     verdict = await probe(target.provider, target.model)
     async with get_pool().connection() as conn:
         if not verdict.ok:
+            # A model that answered with the wrong size stays refused; one that didn't answer is tried again.
+            retry = None if verdict.native is not None else \
+                (_now() + timedelta(seconds=UNREACHABLE_RETRY_S)).isoformat()
             async with conn.transaction():
                 state = await _locked(conn, env)
-                await write_state(conn, {**state, "error": verdict.reason, "error_for": key})
+                await write_state(conn, {**state, "error": verdict.reason, "error_for": key, "error_retry_at": retry})
             logger.warning("Not re-embedding with %s: %s", target.model, verdict.reason)
             return "refused"
         return await start(conn, replace(target, dimensions=verdict.dimensions), env=env)
