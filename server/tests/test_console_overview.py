@@ -670,9 +670,23 @@ def test_the_embedding_model_isnt_listed_as_a_chat_model():
     from server.services.model_router import offered_chat_models
     emb = ModelInfo("o:nomic-embed-text:latest", "o", "ollama", "nomic-embed-text:latest", Capabilities())
     chat = ModelInfo("o:m", "o", "ollama", "m", Capabilities())
-    other = ModelInfo("oa:nomic-embed-text", "oa", "openai", "nomic-embed-text", Capabilities())
-    assert offered_chat_models([emb, chat, other], "nomic-embed-text") == [chat, other]
+    mine = ModelInfo("o:my-embedder", "o", "ollama", "my-embedder", Capabilities())   # unknown family: named in env
+    assert offered_chat_models([emb, chat], "nomic-embed-text") == [chat]
     assert offered_chat_models([emb, chat], "nomic-embed-text:latest") == [chat]
+    assert offered_chat_models([mine, chat], "my-embedder") == [chat]
+
+
+def test_no_embedding_model_is_offered_as_a_chat_model():
+    """The owner's walk, 2026-11-05: only the environment's embedding model was left out, so embeddinggemma-2
+    (pulled to try it in Models → Embeddings) was offered as a chat model and every message to it failed with
+    HTTP 501. Ollama says which models can't chat; a known embedding family is one on any provider."""
+    from server.services.model_router import offered_chat_models
+    chat = ModelInfo("o:gemma4:e4b", "o", "ollama", "gemma4:e4b", Capabilities(embedding=False))
+    said = ModelInfo("o:embeddinggemma-2:740m", "o", "ollama", "embeddinggemma-2:740m", Capabilities(embedding=True))
+    unsaid = ModelInfo("o:qwen3-embedding:0.6b", "o", "ollama", "qwen3-embedding:0.6b", Capabilities())   # older Ollama
+    remote = ModelInfo("oa:openai/text-embedding-3-small", "oa", "openai", "openai/text-embedding-3-small",
+                       Capabilities())
+    assert offered_chat_models([chat, said, unsaid, remote], "nomic-embed-text") == [chat]
 
 
 async def test_a_malformed_env_value_costs_one_line_not_the_page(db_conn, monkeypatch):
