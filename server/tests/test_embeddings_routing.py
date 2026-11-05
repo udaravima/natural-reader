@@ -87,3 +87,35 @@ def test_the_profile_names_the_model_the_prefixes_and_the_chunker(monkeypatch):
     monkeypatch.setenv("EMBEDDING_MODEL", "other")
     assert embeddings.profile_model(embeddings.current_profile()) == "other"
     assert embeddings.profile_model(None) is None
+
+
+async def test_a_database_hiccup_keeps_the_model_last_read_not_the_environments(monkeypatch):
+    """Final review minor, fixed for the owner (2026-11-05): with the database briefly unreadable, a query was
+    embedded with the environment's model. After an admin has switched models that compares with nothing, and
+    search quietly finds the wrong passages. The model last read from the database is the better guess."""
+    from contextlib import asynccontextmanager
+
+    import psycopg
+    from server.llm.providers.base import ProviderConfig
+    from server.services import embedding_state
+    gemma = embeddings.Embedder(ProviderConfig(name="ollama", kind="ollama", url="http://ollama.test"),
+                                "embeddinggemma-2:740m", None, "", "")
+
+    class Pool:
+        down = False
+
+        @asynccontextmanager
+        async def connection(self, timeout=None):
+            if self.down:
+                raise psycopg.OperationalError("the database is restarting")
+            yield object()
+    pool = Pool()
+    monkeypatch.setattr(embeddings, "get_pool", lambda: pool)
+
+    async def current(conn, env=None):
+        return gemma
+    monkeypatch.setattr(embedding_state, "current", current)
+    monkeypatch.setenv("EMBEDDING_MODEL", "nomic-embed-text")
+    assert await embeddings.current_embedder() == gemma
+    pool.down = True
+    assert await embeddings.current_embedder() == gemma

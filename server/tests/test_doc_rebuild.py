@@ -512,3 +512,27 @@ async def test_a_rebuild_dropped_because_the_document_changed_saves_no_outline(d
     cur = await db_conn.execute("SELECT count(*) FROM doc_outlines WHERE doc_id = %s", (GUIDE_DOC,))
     assert (await cur.fetchone())[0] == 0
     assert not any(r[0] == extract.CODE for r in await _guide_rows(db_conn))
+
+
+async def test_the_search_route_embeds_with_the_model_it_read_on_its_own_connection(db_conn, monkeypatch, store):
+    """Final review minor, fixed for the owner (2026-11-05): the route held a connection, read the document and
+    its profile on it, then the query's embedder was read again on another pooled connection."""
+    from server.routers import docs as docs_router
+    _app, as_user = build_docs_app(db_conn, monkeypatch, storage_dir=store)
+    owner = await _member(db_conn, "owner")
+    current = embeddings.env_embedder()
+    await _old_index(db_conn, owner.user_id, store, profile=embeddings.profile_of(current))
+    got = []
+
+    async def embed_query(text, e=None):
+        got.append(e)
+        return [1.0] + [0.0] * (embeddings.EMBEDDING_DIM - 1)
+
+    async def no_second_read():
+        raise AssertionError("the route already read the embedder")
+    monkeypatch.setattr(docs_router, "embed_query", embed_query)
+    monkeypatch.setattr(embeddings, "current_embedder", no_second_read)
+    async with as_user(owner) as c:
+        r = await c.post(f"/v1/docs/{DOC}/search", json={"query": "q", "k": 3})
+    assert r.status_code == 200, r.text
+    assert [e.model for e in got] == ["nomic-embed-text"]

@@ -134,3 +134,44 @@ def test_known_families_and_their_prefixes():
     assert embedding_models.family("hf.co/someone/EmbeddingGemma-2-GGUF:Q8_0") is gemma
     assert embedding_models.family("mxbai-embed-large") is None
     assert all(f.source.startswith("https://") for f in embedding_models.KNOWN.values())
+
+
+def _too_long_over(limit):
+    """A vLLM-like server: HTTP 400 for a request holding any text longer than `limit` characters."""
+    def answer(request):
+        texts = json.loads(request.content)["input"]
+        if any(len(t) > limit for t in texts):
+            return httpx.Response(400, json={"error": {"message": "This model's maximum context length is 512 "
+                                                                  "tokens"}})
+        data = [{"index": i, "embedding": _vec(len(t))} for i, t in enumerate(texts)]
+        return httpx.Response(200, json={"data": data})
+    return answer
+
+
+@respx.mock
+async def test_a_passage_too_long_for_the_model_is_shortened_until_it_fits(client):
+    """Final review minor, fixed for the owner (2026-11-05): a passage the target model always refused (too long
+    for a small model on vLLM, which doesn't shorten input as Ollama does) paused the re-embed for good. The batch
+    goes again one text at a time, and a refused text is halved until it fits."""
+    route = respx.post("https://api.example.com/v1/embeddings").mock(side_effect=_too_long_over(600))
+    texts = ["short one", "x" * 2000, "short two"]
+    out = await embed_texts(Embedder(CLOUD, "bge-small", None, "", ""), texts)
+    assert [v[0] for v in out] == [9.0, 500.0, 9.0]          # 2000 -> 1000 -> 500 characters
+    assert len(out) == 3 and route.call_count == 1 + 1 + 1 + 3 + 1   # batch, short check, 3 singles, 2 halvings
+
+
+@respx.mock
+async def test_a_model_that_refuses_even_a_short_sentence_is_an_error_not_a_shortening(client):
+    route = respx.post("https://api.example.com/v1/embeddings").mock(
+        return_value=httpx.Response(400, json={"error": {"message": "model does not support embeddings"}}))
+    with pytest.raises(EmbeddingError) as err:
+        await embed_texts(Embedder(CLOUD, "gpt-4o", None, "", ""), ["a", "b" * 2000])
+    assert "400" in str(err.value)
+    assert route.call_count == 2                              # the batch, then one short sentence: no halving
+
+
+@respx.mock
+async def test_indexing_keeps_a_shortened_passage_too(client):
+    respx.post("https://api.example.com/v1/embeddings").mock(side_effect=_too_long_over(600))
+    out = await embeddings.embed_documents(["fine", "y" * 1500], Embedder(CLOUD, "bge-small", None, "", ""))
+    assert [v[0] for v in out] == [4.0, 375.0]               # 1500 -> 750 -> 375

@@ -45,7 +45,17 @@ _semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
 
 class EmbeddingError(Exception):
     """The provider refused, couldn't be reached, or answered with the wrong count or length. The message
-    names the provider and model, never a key."""
+    names the provider and model, never a key. `status` is the HTTP status of a refusal, else None."""
+
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+
+# A server refusing the input itself, not the request: vLLM and OpenAI answer 400 for a text longer than the
+# model takes (Ollama shortens long input on its own).
+REFUSED_INPUT = frozenset({400, 413, 422})
+MIN_RETRY_CHARS = 256   # a refused text is halved down to about this; shorter than this, it's not the length
 
 
 @dataclass(frozen=True)
@@ -110,10 +120,10 @@ async def request_vectors(e: Embedder, texts: list[str], *,
     except httpx.HTTPStatusError as err:   # reachable, but refusing
         code = err.response.status_code
         if code == 404:     # Ollama: never pulled; an OpenAI-compatible server: no such model
-            raise EmbeddingError(f"{e.model} isn't on {_at(e)} (HTTP 404)") from None
+            raise EmbeddingError(f"{e.model} isn't on {_at(e)} (HTTP 404)", code) from None
         if code == 501:     # Ollama: a chat model asked for embeddings
-            raise EmbeddingError(f"{_where(e)} doesn't make embeddings (HTTP 501)") from None
-        raise EmbeddingError(f"{_where(e)} answered HTTP {code}") from None
+            raise EmbeddingError(f"{_where(e)} doesn't make embeddings (HTTP 501)", code) from None
+        raise EmbeddingError(f"{_where(e)} answered HTTP {code}", code) from None
     except httpx.HTTPError as err:
         raise EmbeddingError(f"Can't reach {_at(e)} for {e.model} ({type(err).__name__})") from None
     except ValueError:
@@ -152,9 +162,36 @@ def _batches(texts: list[str]) -> list[list[str]]:
     return [texts[i:i + EMBED_BATCH_SIZE] for i in range(0, len(texts), EMBED_BATCH_SIZE)]
 
 
+async def _fitted(e: Embedder, batch: list[str]) -> list[list[float]]:
+    """One batch's vectors. A server that refuses the input (REFUSED_INPUT) gets the texts one at a time, and a
+    text it refuses is halved until it fits: the passage's opening is still found, where a gap would pause a
+    re-embed for good. A model that refuses even a short sentence is what's wrong, so that is raised."""
+    try:
+        return await _one_request(e, batch)
+    except EmbeddingError as err:
+        if err.status not in REFUSED_INPUT:
+            raise
+        try:
+            await _one_request(e, ["ok"])
+        except EmbeddingError:
+            raise err from None
+    return [await _fit_one(e, text) for text in batch]
+
+
+async def _fit_one(e: Embedder, text: str) -> list[float]:
+    while True:
+        try:
+            return (await _one_request(e, [text]))[0]
+        except EmbeddingError as err:
+            if err.status not in REFUSED_INPUT or len(text) <= MIN_RETRY_CHARS:
+                raise
+        logger.warning("%s refused a %d-character text: trying its first half", _where(e), len(text))
+        text = text[:len(text) // 2]
+
+
 async def embed_texts(e: Embedder, texts: list[str]) -> list[list[float]]:
     """Every text's vector, in order; raises EmbeddingError if any request fails. No prefix is added."""
-    out = await asyncio.gather(*(_one_request(e, b) for b in _batches(texts)))
+    out = await asyncio.gather(*(_fitted(e, b) for b in _batches(texts)))
     return [vec for batch in out for vec in batch]
 
 
@@ -165,7 +202,7 @@ async def embed_batch(texts: list[str], e: Embedder | None = None) -> list[list[
 
     async def safe(batch: list[str]) -> list[list[float] | None]:
         try:
-            return await _one_request(e, batch)
+            return await _fitted(e, batch)
         except EmbeddingError as err:
             logger.warning("Failed to embed %d text(s): %s", len(batch), err)
             return [None] * len(batch)
@@ -298,16 +335,25 @@ def env_embedder(env=None) -> Embedder:
     return env_target(env if env is not None else os.environ)
 
 
+_last_current: Embedder | None = None   # the last one read from the database, in this process
+
+
 async def current_embedder() -> Embedder:
-    """What the stored vectors were made with (embedding_state.current), read on a short pooled connection.
-    Without a database (a worker still starting, a unit test), the environment's embedder."""
-    from .embedding_state import current
+    """What the stored vectors were made with (embedding_state.current), read on a short pooled connection: the
+    embedding call that follows holds no connection while it waits on the provider. With the database briefly
+    unreadable, the one last read: the environment's would compare with nothing once an admin has switched
+    models. Without a database at all (a worker still starting, a unit test), the environment's."""
+    global _last_current
+    from . import embedding_state
     try:
         async with get_pool().connection() as conn:
-            return await current(conn)
-    except (RuntimeError, psycopg.Error, PoolTimeout) as err:
-        logger.debug("Embedding with the environment's model: the database can't be read (%s)", type(err).__name__)
+            _last_current = await embedding_state.current(conn)
+            return _last_current
+    except RuntimeError:
         return env_embedder()
+    except (psycopg.Error, PoolTimeout) as err:
+        logger.debug("The database can't be read (%s): embedding with the model last read", type(err).__name__)
+        return _last_current or env_embedder()
 
 
 # ---------- what is embedded, and how (v2.3 Task E) ----------
