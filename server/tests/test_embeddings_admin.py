@@ -200,3 +200,24 @@ async def test_the_view_says_when_the_model_in_use_was_found_to_have_the_wrong_s
     async with client as c:
         body = (await c.get("/v1/admin/embeddings")).json()
     assert body["current"]["error"] == "nomic-embed-text gives 1024 numbers"
+
+
+async def test_use_keeps_the_model_loaded_only_when_a_re_embed_follows(admin, db_conn, monkeypatch):
+    """The walk, 2026-11-05: the same model on another provider switches at once, with no re-embed to use the
+    loaded model, yet Use's probe left it in memory for five minutes."""
+    for k, v in TWO.items():
+        monkeypatch.setenv(k, v)
+    await db_conn.execute("DELETE FROM app_settings WHERE key = 'embedding_state'")
+    await embedding_state.init(db_conn)
+    client, _ = admin
+    unloads = []
+
+    async def probe(provider, model, *, unload=True, **_kw):
+        unloads.append((model, unload))
+        return ProbeResult(True, 768, None, "fine")
+    monkeypatch.setattr(embeddings, "probe", probe)
+    await _vectored_chunk(db_conn)
+    async with client as c:
+        await c.put("/v1/admin/embeddings", json={"provider": "other", "model": "nomic-embed-text"})
+        await c.put("/v1/admin/embeddings", json={"provider": "local", "model": "embeddinggemma-2:740m"})
+    assert unloads == [("nomic-embed-text", True), ("embeddinggemma-2:740m", False)]
