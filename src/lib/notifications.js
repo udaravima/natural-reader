@@ -30,11 +30,21 @@ export const fetchUnread = (host, port) => getJson(host, port, '/v1/notification
 export const fetchInbox = (host, port, { offset = 0, limit = 30 } = {}) =>
     getJson(host, port, `/v1/notifications?offset=${offset}&limit=${limit}`);
 
-/** Mark notices read: one, or every member of a group. */
-export const markRead = (host, port, ids) => post(host, port, '/v1/notifications/read', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids }),
-});
+/** The read route takes at most this many ids per request. */
+export const READ_BATCH = 1000;
+
+/** Mark notices read: one, or every member of a group, a big group in batches the server accepts. */
+export async function markRead(host, port, ids) {
+    let ok = true;
+    for (let i = 0; i < ids.length; i += READ_BATCH) {
+        const sent = await post(host, port, '/v1/notifications/read', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: ids.slice(i, i + READ_BATCH) }),
+        });
+        ok = ok && sent;
+    }
+    return ok;
+}
 
 export const markAllRead = (host, port) => post(host, port, '/v1/notifications/read-all');

@@ -31,6 +31,15 @@ describe('notifications client', () => {
         expect(opts.headers['Content-Type']).toBe('application/json');
     });
 
+    it('sends a group of more than 1000 ids in batches the server accepts (at most 1000 each)', async () => {
+        apiFetch.mockResolvedValue(ok({ changed: 1000 }));
+        const ids = Array.from({ length: 2500 }, (_, i) => i + 1);
+        expect(await markRead('', '', ids)).toBe(true);
+        const sent = apiFetch.mock.calls.map(([, , , opts]) => JSON.parse(opts.body).ids);
+        expect(sent.map((b) => b.length)).toEqual([1000, 1000, 500]);
+        expect(sent.flat()).toEqual(ids);
+    });
+
     it('marks everything read', async () => {
         apiFetch.mockResolvedValue(ok({ changed: 5 }));
         expect(await markAllRead('', '')).toBe(true);
