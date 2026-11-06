@@ -13,11 +13,16 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
-from typing import Literal, NamedTuple
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Any, Literal, NamedTuple
 
 from psycopg.types.json import Jsonb
 
 logger = logging.getLogger(__name__)
+
+GROUP_GAP = timedelta(minutes=30)   # a notice joins its kind's group when it came within this of the one before
+GROUP_DETAILS = 50                  # a group lists its newest 50 members; the rest are counted ("and N more")
 
 
 class Kind(NamedTuple):
@@ -89,6 +94,109 @@ async def send_admins(conn, kind: str, **kw) -> int:
         logger.warning("notification %s not sent: admins not read", kind, exc_info=True)
         return 0
     return await send(conn, ids, kind, **kw)
+
+
+@dataclass(frozen=True)
+class Notice:
+    id: int
+    kind: str
+    level: str
+    title: str
+    body: str | None
+    doc_id: str | None
+    target: dict | None
+    repeats: int
+    created_at: datetime
+    read_at: datetime | None
+    resolved_at: datetime | None
+
+    @property
+    def needs_action(self) -> bool:
+        return self.level == "action" and self.resolved_at is None
+
+
+_COLUMNS = "id, kind, level, title, body, doc_id, target, repeats, created_at, read_at, resolved_at"
+
+
+def _item(n: Notice) -> dict[str, Any]:
+    return {"id": n.id, "title": n.title, "body": n.body, "at": n.created_at, "unread": n.read_at is None,
+            "resolved": n.resolved_at is not None, "repeats": n.repeats, "target": n.target}
+
+
+def _row(members: list[Notice]) -> dict[str, Any]:
+    """One inbox row from a group's members (oldest first)."""
+    newest = members[-1]
+    count = len(members)
+    single = count == 1
+    ordered = list(reversed(members))
+    return {
+        "kind": newest.kind,
+        "level": newest.level,
+        "needs_action": any(m.needs_action for m in members),
+        "unread": newest.read_at is None,
+        "title": newest.title if single else KINDS[newest.kind].plural.format(n=count),
+        "body": newest.body if single else None,
+        "at": newest.created_at,
+        "count": count,
+        "resolved": sum(1 for m in members if m.resolved_at is not None),
+        "ids": [m.id for m in ordered],
+        "items": [_item(m) for m in ordered[:GROUP_DETAILS]],
+        "more": max(0, count - GROUP_DETAILS),
+        "target": newest.target if single else None,
+    }
+
+
+def group_rows(notices: list[Notice], *, gap: timedelta = GROUP_GAP) -> list[dict[str, Any]]:
+    """The inbox's rows, in inbox order. A group is one kind, all unread or all read, each member within `gap` of
+    the one before it; a kind fixes its level, so failures and finishes never share a group. Order: unread before
+    read; among unread, rows needing action first; newest first within each part. A read needs-action row gets no
+    priority: the top of the list means "new to you"."""
+    ordered = sorted(notices, key=lambda n: (n.kind, n.read_at is None, n.created_at, n.id))
+    groups: list[list[Notice]] = []
+    for n in ordered:
+        last = groups[-1][-1] if groups else None
+        if (last is not None and last.kind == n.kind and (last.read_at is None) == (n.read_at is None)
+                and n.created_at - last.created_at <= gap):
+            groups[-1].append(n)
+        else:
+            groups.append([n])
+    rows = [_row(g) for g in groups]
+    rows.sort(key=lambda r: (not r["unread"], not (r["unread"] and r["needs_action"]), -r["at"].timestamp()))
+    return rows
+
+
+async def _notices(conn, user_id, *, unread_only: bool = False) -> list[Notice]:
+    where = " AND read_at IS NULL" if unread_only else ""
+    cur = await conn.execute(f"SELECT {_COLUMNS} FROM notifications WHERE user_id = %s{where}", (user_id,))
+    return [Notice(*r) for r in await cur.fetchall()]
+
+
+async def inbox(conn, user_id, *, offset: int = 0, limit: int = 30) -> dict[str, Any]:
+    """A page of the person's rows (groups and single notices), in inbox order. Every notice of theirs is read:
+    retention bounds how many there are."""
+    rows = group_rows(await _notices(conn, user_id))
+    return {"rows": rows[offset:offset + limit], "total": len(rows)}
+
+
+async def unread_counts(conn, user_id) -> dict[str, int]:
+    """The bell: unread rows as the list shows them (a group counts once), and how many of those need action."""
+    rows = group_rows(await _notices(conn, user_id, unread_only=True))
+    return {"count": len(rows), "action": sum(1 for r in rows if r["needs_action"])}
+
+
+async def mark_read(conn, user_id, ids: list[int]) -> int:
+    """Mark the person's own unread notices among `ids` read. Anyone else's ids are ignored, never reported."""
+    if not ids:
+        return 0
+    cur = await conn.execute("UPDATE notifications SET read_at = now() WHERE user_id = %s AND id = ANY(%s) "
+                             "AND read_at IS NULL", (user_id, list(ids)))
+    return cur.rowcount
+
+
+async def mark_all_read(conn, user_id) -> int:
+    cur = await conn.execute("UPDATE notifications SET read_at = now() WHERE user_id = %s AND read_at IS NULL",
+                             (user_id,))
+    return cur.rowcount
 
 
 async def resolve(conn, key: str) -> int:
