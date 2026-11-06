@@ -11,13 +11,17 @@ needs-action notice whose problem went away by itself is `resolve`d by its key a
 Names may be in a notice's title (it's for the person reading it); never in a log line or the audit trail."""
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Iterable
+import os
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal, NamedTuple
 
 from psycopg.types.json import Jsonb
+
+from ..db import get_pool
 
 logger = logging.getLogger(__name__)
 
@@ -209,3 +213,76 @@ async def resolve(conn, key: str) -> int:
     except Exception:
         logger.warning("notifications not resolved", exc_info=True)
         return 0
+
+
+# ---- cleanup ----
+
+READ_DAYS_DEFAULT = 30
+UNREAD_DAYS_DEFAULT = 90
+PURGE_EVERY_S = 24 * 3600
+
+
+def _days(env: Mapping[str, str], name: str, default: int) -> int:
+    raw = env.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        days = int(raw)
+    except ValueError:
+        days = -1
+    if days < 0:
+        logger.warning("%s=%r is not a whole number of days >= 0; keeping %d", name, raw, default)
+        return default
+    return days
+
+
+def retention(env: Mapping[str, str] = os.environ) -> tuple[int, int]:
+    """(days a read notice is kept after it was read, days an unread one is kept after it arrived); 0 = forever."""
+    return (_days(env, "NOTIFICATIONS_READ_DAYS", READ_DAYS_DEFAULT),
+            _days(env, "NOTIFICATIONS_UNREAD_DAYS", UNREAD_DAYS_DEFAULT))
+
+
+async def purge(conn, read_days: int, unread_days: int) -> int:
+    """Delete what is past its time. Idempotent, so several workers purging at once is harmless."""
+    if read_days <= 0 and unread_days <= 0:
+        return 0
+    cur = await conn.execute(
+        "DELETE FROM notifications WHERE "
+        "(%(r)s > 0 AND read_at IS NOT NULL AND read_at < now() - make_interval(days => %(r)s)) OR "
+        "(%(u)s > 0 AND read_at IS NULL AND created_at < now() - make_interval(days => %(u)s))",
+        {"r": read_days, "u": unread_days})
+    return cur.rowcount
+
+
+_task: asyncio.Task | None = None
+
+
+async def _purge_loop(read_days: int, unread_days: int) -> None:
+    while True:
+        try:
+            async with get_pool().connection() as conn:
+                n = await purge(conn, read_days, unread_days)
+            if n:
+                logger.info("notifications: cleaned up %d", n)
+        except Exception:
+            logger.warning("notification cleanup failed", exc_info=True)
+        await asyncio.sleep(PURGE_EVERY_S)
+
+
+def start_retention() -> None:
+    """Called from the app's startup hook once the database is up: at once, then every 24 hours."""
+    global _task
+    read_days, unread_days = retention()
+    if (read_days > 0 or unread_days > 0) and _task is None:
+        _task = asyncio.create_task(_purge_loop(read_days, unread_days))
+
+
+async def stop_retention() -> None:
+    global _task
+    if _task is not None:
+        _task.cancel()
+        try:
+            await _task
+        except asyncio.CancelledError:
+            pass
+        _task = None
