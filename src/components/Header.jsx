@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import HeaderOverflowMenu from './HeaderOverflowMenu';
 import ProfileMenu from './ProfileMenu';
+import NotificationBell from './NotificationBell';
 import ViewSwitcher, { ViewMenu } from './ViewSwitcher';
 import NarrationMiniPlayer from './NarrationMiniPlayer';
 
@@ -50,6 +51,9 @@ export default function Header({
     // outside the reader (NarrationMiniPlayer).
     narration = null,
     onOpenSettings,
+    // The bell (useNotifications' {count, action, refresh}); null while nobody is signed in hides it.
+    notifications = null,
+    onOpenNotice,
     // Chat beside the page (reader, wide screens): null hides the toggle.
     chatPanelOpen = false,
     onToggleChatPanel = null,
@@ -158,7 +162,12 @@ export default function Header({
                 <ViewMenu theme={theme} viewMode={viewMode} setViewMode={setViewMode} isAdmin={isAdmin} canReader={canReader} canChat={canChat}
                     className={inReader ? 'xl:hidden' : 'sm:hidden'} />
 
-                {/* Settings gear + profile menu — persistent, all widths */}
+                {/* Notifications, Settings gear, profile menu — persistent, all widths */}
+                {notifications && (
+                    <NotificationBell theme={theme} apiHost={apiHost} apiPort={apiPort}
+                        count={notifications.count} action={notifications.action}
+                        onRefresh={notifications.refresh} onOpenTarget={onOpenNotice} />
+                )}
                 <button
                     onClick={() => onOpenSettings?.()}
                     className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}

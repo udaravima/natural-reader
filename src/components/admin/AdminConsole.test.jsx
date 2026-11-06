@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, act, cleanup } from '@testing-library/react';
 import { AdminConsole } from './AdminConsole';
 
 vi.mock('../../utils/apiFetch', () => ({ apiFetch: vi.fn() }));
@@ -795,5 +795,31 @@ describe('AdminConsole — searching people', () => {
     await waitFor(() => expect(usersCalls().at(-1).get('limit')).toBe('100'));
     expect(usersCalls().at(-1).get('offset')).toBe('0');
     expect(await screen.findByText('Showing 100 of 120')).toBeInTheDocument();
+  });
+});
+
+describe('AdminConsole — opened at a section from a notification', () => {
+  // mount() sets up the server's answers and renders a plain console; this swaps it for one with the props under test.
+  const cleanupAndRender = (el) => { cleanup(); return render(el); };
+  const console_ = (props) => (
+    <AdminConsole theme={theme} apiHost="" apiPort="" currentUserId="me" onBack={vi.fn()} showToast={vi.fn()} {...props} />
+  );
+
+  it('opens the asked-for section and says so', async () => {
+    mount({ users: [user()], section: null });
+    const onSectionOpened = vi.fn();
+    cleanupAndRender(console_({ openSection: { id: 'models', n: 1 }, onSectionOpened }));
+    expect(await screen.findByRole('tab', { name: 'Models' })).toHaveAttribute('aria-selected', 'true');
+    expect(onSectionOpened).toHaveBeenCalledTimes(1);
+  });
+
+  it('asking the console for a section with unsaved changes shows the prompt first', async () => {
+    mount({ users: [user()], section: null });
+    const view = cleanupAndRender(console_({}));
+    fireEvent.click(screen.getByRole('tab', { name: 'Deployment' }));
+    await chooseZone('Asia/Colombo');
+    view.rerender(console_({ openSection: { id: 'people', n: 1 }, onSectionOpened: vi.fn() }));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Deployment.');
+    expect(screen.getByRole('tab', { name: 'Deployment' })).toHaveAttribute('aria-selected', 'true');
   });
 });

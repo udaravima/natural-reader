@@ -22,6 +22,20 @@ const baseProps = (over = {}) => ({
   ...over,
 });
 
+describe('Header — notifications', () => {
+  it('shows the bell before the Settings gear for a signed-in person', () => {
+    render(<Header {...baseProps({ notifications: { count: 2, action: 0, refresh: vi.fn() }, onOpenNotice: vi.fn() })} />);
+    const bell = screen.getByRole('button', { name: 'Notifications, 2 unread' });
+    const gear = screen.getByRole('button', { name: /^settings$/i });
+    expect(bell.compareDocumentPosition(gear) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('shows no bell without notifications (nobody signed in)', () => {
+    render(<Header {...baseProps()} />);
+    expect(screen.queryByRole('button', { name: /^notifications/i })).toBeNull();
+  });
+});
+
 describe('Header — settings + profile', () => {
   it('the gear button opens the settings dialog and leaves the view alone', () => {
     const setViewMode = vi.fn();
