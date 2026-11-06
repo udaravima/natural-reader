@@ -1631,6 +1631,23 @@ role, or an API that's off, named with its project.
   sample in English, Sinhala and Tamil, fetched from Google once per voice per session
   (a few hundred characters of quota). Turning Google on or off stays the admin's.
 
+## Notifications
+
+The header's bell (v2.12) needs nothing set up: migration 026 runs at start, and the
+notices are in the app only (no email, no outside service). What an operator can change
+is how long they're kept:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `NOTIFICATIONS_READ_DAYS` | 30 | days a read notice is kept after it was read; `0` keeps it forever |
+| `NOTIFICATIONS_UNREAD_DAYS` | 90 | days an unread notice is kept after it arrived; `0` keeps it forever |
+
+The cleanup runs at startup and then every 24 hours in each worker; several workers
+deleting the same rows is harmless. A value that isn't a whole number of days, or is
+negative, logs one warning and keeps the default. Every active admin gets the admin
+notices (re-embed paused or done, rebuilds failing 3 times in a row, passages shortened);
+an admin added later doesn't get older ones.
+
 ## Bring-up checklist
 
 1. **DNS:** `chat.example.com` and `auth.example.com` both resolve to the host.

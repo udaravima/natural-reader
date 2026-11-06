@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-11-06 — Notifications for each person: built and walked on `feat/notifications` (START HERE)
+
+**State.** Branch `feat/notifications` from `development` (`999df85`, v2.11.0), on the owner's answers in the decision sheet (the Notifications table, all seven answered) and "Go ahead, as you prefer" (native execution, commit as I go). Spec `docs/superpowers/specs/2026-11-06-notifications-design.md` (approved, with grouping added at the owner's ask), plan `docs/superpowers/plans/2026-11-06-notifications.md`. 14 commits, **not merged, not pushed** (the owner syncs to GitHub themselves; there is no auto-pusher). Migration **026**. Gates: pytest 3159 passed / 16 skipped / **3 failed** (below), vitest 1886 in 155 files, eslint 0 errors (the same 24 warnings), build OK. Review: a self-review (no agents, the owner's rule) found one Important issue, fixed (a group over 1000 ids couldn't be marked read).
+
+**What a person can do now.** A **bell** in the header, every view: indexing finished or failed and conversion ready or failed reach the person who asked; re-embed paused or done, a rebuild failing 3 times in a row, and passages the model shortened reach every admin. Needs-action first, amber badge; same-kind notices within 30 minutes of each other are one row ("5 documents finished indexing"), clicked = all read and expanded; a problem that goes away is **Resolved**; Mark all as read; a click opens the document or Admin → Models / Overview. Read ones kept 30 days, unread 90 (`NOTIFICATIONS_READ_DAYS`, `NOTIFICATIONS_UNREAD_DAYS`).
+
+**Walked** (headless Chrome, scratch backend :8100 on `nr_notif_walk`, app :5174, a second Ollama provider through a TCP pass-through killed and restarted): every step above, numbers in TESTING (ledger item 4). The walk found the reader header 16 px too wide at 320 px with the bell: under 360 px the reader now drops the gear (Settings stays in the profile menu); 0 px over at 320–1366 in every view after. **Not walked:** a non-admin account, a Docling conversion, two workers.
+
+**Environment, found and fixed this session (no repo change).** `node_modules` was the October toolchain (vite 7, vitest 4, ESLint 9, PDF.js 5, no `@ricky0123/vad-web`) against the 2026-11-05 lockfile: `npm ci` fixed it (15 test files had failed to import). The venv lacked four declared packages (google-auth, faster-whisper, av, tzdata): `pip install -r requirements.txt`. The scratch DB container `nr-c21-testpg` was gone: recreated as before (pgvector:pg16, tmpfs, 127.0.0.1:5434). The Playwright browser cache is gone; `/usr/bin/google-chrome` works as `executablePath`.
+
+**For the owner — found, not caused here.** The 3 pytest failures are the same on `development` with today's venv: **python-multipart 0.0.29** makes a non-multipart body to `/v1/speech/transcriptions` raise `MultipartParseError` instead of the 400 the tests expect, and **pgvector 0.4.2** imports numpy at import. `requirements.txt` doesn't pin either, so **a fresh container build gets the same versions**. Worth pinning (or adapting) before the next deploy.
+
+**Next.** The owner reads it (spec, the walk) and says merge / release. Deferred minor: a re-embed stopped by `tick`'s refused-target path doesn't resolve its "paused" notice (reading it clears it). Then the decision sheet's order: figures next, which will add a "pictures described" sender (one kind + one call).
+
+---
+
 ## 2026-11-05 — v2.11.0 released: choose the embedding model, and change it without losing search (START HERE)
 
 **State.** On the owner's "Merge" and then "please do the release": `fix/bucket-list` and `feat/embeddings-2b` fast-forwarded into `development` (`dbf346c`, 30 commits), the release commit on top (version 2.11.0, changelog dated, `docs/Release_notes/RELEASE_NOTES_v2.11.0.md`, TESTING rows), `development` merged into `master`, annotated tag `v2.11.0`, pushed, and a GitHub release from the notes. Gates on the merged tree: pytest 3099 passed / 16 skipped, vitest 1849 in 152 files, eslint 0 errors, build OK. The only review of phase 2b is my own (no fresh reviewer: agents only when the owner asks). The scratch test database container stopped by itself once this morning (clean exit around 10:02); `podman start nr-c21-testpg` brought it back, and every test erroring at once is that, not the code.

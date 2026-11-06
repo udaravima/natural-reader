@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+**Notifications for each person.** Migration 026 (`notifications`). Both halves rebuild.
+
+### Added
+- **A bell in the header** with an inbox, never a popup: indexing finished or failed and a
+  conversion ready or failed reach the person who asked; a re-embed paused or done,
+  rebuilds failing 3 times in a row, and passages the embedding model shortened reach
+  every admin. Notices that need action come first and turn the badge amber; notices of
+  one kind arriving close together are one row ("5 documents finished indexing"); a
+  problem that goes away by itself is marked Resolved; Mark all as read. Read notices are
+  kept 30 days, unread 90 (`NOTIFICATIONS_READ_DAYS`, `NOTIFICATIONS_UNREAD_DAYS`).
+- `GET /v1/notifications/unread`, `GET /v1/notifications`, `POST /v1/notifications/read`,
+  `POST /v1/notifications/read-all`.
+
+### Changed
+- Under 360 px wide the reader's header shows the bell instead of the Settings gear;
+  Settings stays in the profile menu.
+- `docs/ARCHITECTURE.md` no longer says the time tool is gone (v2.10 brought it back).
+
 ## [2.11.0] - 2026-11-05
 
 **Choose the embedding model in the console, and change it without losing search**
