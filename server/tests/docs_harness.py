@@ -15,7 +15,7 @@ from httpx import ASGITransport
 
 from server.auth import deps
 from server.routers import docs as docs_router
-from server.services import doc_pipeline
+from server.services import doc_notices, doc_pipeline
 from server.services.embeddings import EMBEDDING_DIM
 
 
@@ -37,6 +37,7 @@ def build_docs_app(db_conn, monkeypatch, *, storage_dir, embed=None):
     for mod in (docs_router, doc_pipeline):
         monkeypatch.setattr(mod, "get_pool", lambda: shim)
         monkeypatch.setattr(mod, "is_ready", lambda: True)
+    monkeypatch.setattr(doc_notices, "get_pool", lambda: shim)
     monkeypatch.setattr(doc_pipeline, "embed_documents", embed or fake_embed)
     monkeypatch.setenv("DOC_STORAGE_DIR", str(storage_dir))
     current = {}
