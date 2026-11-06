@@ -168,9 +168,11 @@ export default function Header({
                         count={notifications.count} action={notifications.action}
                         onRefresh={notifications.refresh} onOpenTarget={onOpenNotice} />
                 )}
+                {/* Below 360 px the reader's row (menu, view, bell, gear, profile, more, upload) is 16 px too wide for
+                    a 320 px phone: the gear goes there, since the profile menu has Settings too. */}
                 <button
                     onClick={() => onOpenSettings?.()}
-                    className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500`}
+                    className={`p-2.5 ${theme.bgTertiary} rounded-xl ${theme.hover} transition-all ${theme.textSecondary} hover:text-blue-500 ${inReader ? 'max-[359px]:hidden' : ''}`}
                     title="Settings"
                 >
                     <SettingsIcon size={20} />

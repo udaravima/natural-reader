@@ -30,6 +30,14 @@ describe('Header — notifications', () => {
     expect(bell.compareDocumentPosition(gear) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('below 360 px the reader drops the Settings gear (the profile menu has Settings), so the bell fits a 320 px phone', () => {
+    const { unmount } = render(<Header {...baseProps({ viewMode: 'reader', notifications: { count: 0, action: 0, refresh: vi.fn() } })} />);
+    expect(screen.getByRole('button', { name: /^settings$/i }).className).toContain('max-[359px]:hidden');
+    unmount();
+    render(<Header {...baseProps({ viewMode: 'chat', notifications: { count: 0, action: 0, refresh: vi.fn() } })} />);
+    expect(screen.getByRole('button', { name: /^settings$/i }).className).not.toContain('max-[359px]:hidden');
+  });
+
   it('shows no bell without notifications (nobody signed in)', () => {
     render(<Header {...baseProps()} />);
     expect(screen.queryByRole('button', { name: /^notifications/i })).toBeNull();
