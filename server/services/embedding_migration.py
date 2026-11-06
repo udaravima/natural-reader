@@ -27,9 +27,10 @@ from datetime import datetime, timedelta
 from typing import Any, Mapping
 
 from ..db import get_pool, is_ready
-from . import console_settings, embedding_state
+from . import console_settings, embedding_state, notifications
 from .embedding_state import from_json, read_state, to_json, vector_identity, write_state
-from .embeddings import EMBEDDING_DIM, EMBEDDING_TIMEOUT_S, Embedder, EmbeddingError, embed_texts, probe, profile_of
+from .embeddings import (EMBEDDING_DIM, EMBEDDING_TIMEOUT_S, Embedder, EmbeddingError, counting_shortened,
+                         embed_texts, probe, profile_of)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ ERROR_S = 30.0           # after a failed step (the target unreachable), wait th
 UNREACHABLE_RETRY_S = 300.0
 # The running rate (passages a second, for the time left) takes this share of each step's own rate: steady
 # within a few steps, and a single slow request doesn't swing it.
+REEMBED_KEY = "reembed"   # the notices about a re-embed: one runs at a time (plan ruling P2)
 RATE_WEIGHT = 0.3
 
 
@@ -75,7 +77,7 @@ def _due(at: str | None, now: datetime) -> bool:
 def _cleared(state: Mapping[str, Any], **changes: Any) -> dict[str, Any]:
     """The state with no migration running, and `changes` applied."""
     return {**state, "next": None, "filled": 0, "total": 0, "claimed_by": None, "claimed_at": None,
-            "error": None, "error_for": None, "error_retry_at": None, "rate": None, **changes}
+            "error": None, "error_for": None, "error_retry_at": None, "rate": None, "shortened": 0, **changes}
 
 
 async def _locked(conn, env: Mapping[str, str]) -> dict[str, Any]:
@@ -116,6 +118,7 @@ async def start(conn, target: Embedder, *, by: str | None = None, env: Mapping[s
       nothing."""
     async with conn.transaction():
         state = await _locked(conn, env)
+        await notifications.resolve(conn, REEMBED_KEY)
         current = from_json(state["current"], env)
         key = vector_identity(target)
         if key == vector_identity(current):
@@ -164,13 +167,18 @@ async def fill_step(worker: str, *, env: Mapping[str, str] = os.environ) -> str:
     target = from_json(nxt, env)
     began = time.monotonic()
     try:
-        vectors = await embed_texts(target, [target.document_prefix + text for _, _, text in rows])
+        with counting_shortened() as tally:
+            vectors = await embed_texts(target, [target.document_prefix + text for _, _, text in rows])
     except EmbeddingError as err:
         async with get_pool().connection() as conn:
             async with conn.transaction():
                 state = await read_state(conn, lock="update")
                 if state and state.get("next") == nxt:
                     await write_state(conn, {**state, "error": str(err)})
+                    if not state.get("error"):   # it became paused now: once, not on every retry
+                        await notifications.send_admins(
+                            conn, "reembed.paused", title=f"Re-embedding paused: {target.model} stopped answering.",
+                            body=str(err)[:200], target=notifications.ADMIN_MODELS, key=REEMBED_KEY)
         logger.warning("Re-embedding paused: %s", err)
         return "error"
     async with get_pool().connection() as conn:
@@ -186,7 +194,10 @@ async def fill_step(worker: str, *, env: Mapping[str, str] = os.environ) -> str:
                 written += cur.rowcount
             await write_state(conn, {**state, "filled": state.get("filled", 0) + written,
                                      "claimed_at": (await _db_now(conn)).isoformat(), "error": None,
-                                     "rate": _rate(state.get("rate"), written, time.monotonic() - began)})
+                                     "rate": _rate(state.get("rate"), written, time.monotonic() - began),
+                                     "shortened": state.get("shortened", 0) + tally.texts})
+            if state.get("error"):
+                await notifications.resolve(conn, REEMBED_KEY)
     return "filled"
 
 
@@ -225,6 +236,15 @@ async def switch(conn, *, env: Mapping[str, str] = os.environ) -> bool:
         await write_state(conn, _cleared(state, current=state["next"], filled=state.get("total", 0),
                                          total=state.get("total", 0), checked=vector_identity(new),
                                          current_error=None, check_retry_at=None))
+        await notifications.resolve(conn, REEMBED_KEY)
+        await notifications.send_admins(conn, "reembed.done", title=f"The library now uses {new.model}.",
+                                        target=notifications.ADMIN_MODELS)
+        shortened = state.get("shortened", 0)
+        if shortened:
+            await notifications.send_admins(
+                conn, "embed.shortened",
+                title=f"{new.model} refused {shortened} passages during the re-embed; they were shortened to fit.",
+                target=notifications.ADMIN_MODELS)
     logger.info("Switched the library to %s", new.model)
     return True
 
@@ -239,6 +259,7 @@ async def cancel(conn, *, by: str | None = None, env: Mapping[str, str] = os.env
             return
         await _drop_next(conn)
         await write_state(conn, _cleared(state), by=by)
+        await notifications.resolve(conn, REEMBED_KEY)
         current = from_json(state["current"], env)
         env_target = embedding_state.env_target(env)
         if vector_identity(env_target) == vector_identity(current) and env_target.provider.name == current.provider.name:
