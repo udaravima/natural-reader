@@ -188,7 +188,7 @@ git clone https://github.com/udaravima/natural-reader.git && cd natural-reader
 ./startup.sh quickstart            # or: ./startup.sh quickstart --single-user
 ```
 
-It checks for a container engine (podman with podman-compose 1.1+, or Docker with the Compose plugin 2.24+) and Node 22.13+/24+. **No host Python is needed:** the backend runs in a container. It writes a local-dev `.env` (never touching an existing one), builds the backend image, starts Postgres, Keycloak, SearXNG and the backend, then the frontend dev server. Open <http://localhost:5173> and sign in as `admin-user` / `password`. `--single-user` turns sign-in off and skips Keycloak. Re-running it after a failure picks up where it stopped.
+It checks for a container engine (podman with podman-compose 1.1+, or Docker with the Compose plugin 2.24+) and Node 22.13+/24+. **No host Python is needed:** the backend runs in a container. It writes a local-dev `.env` (never touching an existing one), builds the backend image, starts Postgres, Keycloak, SearXNG and the backend, then the frontend dev server. Open <http://localhost:5173> and sign in as `admin-user` with the password the script prints (it generates one into `.env` as `KC_SEED_USER_PASSWORD`). `--single-user` turns sign-in off and skips Keycloak. Re-running it after a failure picks up where it stopped.
 
 | Command | What it does |
 |---|---|
@@ -281,7 +281,7 @@ Place both files in the project root directory.
 # first run with the local realm values + a generated SESSION_SECRET, waits for
 # the realm import, then runs the backend with auth on):
 ./startup.sh up-with-dev-auth
-# → sign in at http://localhost:5173 as Keycloak user admin-user / password
+# → sign in at http://localhost:5173 as Keycloak user admin-user, with the password it prints
 # Walkthrough (adding a second user, approval flow, PATs): deploy/README.md
 # End-user guide (signing in, personal access tokens, admin section,
 # chat budgets): docs/USER_GUIDE.md
@@ -633,7 +633,7 @@ The backend authenticates via **OpenID Connect** — it's an OIDC Relying Party,
 
 - **First-user-admin:** the first identity to log in becomes admin; everyone after is `pending` until an admin activates them (Admin → People). Set `BOOTSTRAP_ADMIN_EMAIL` to pre-designate the admin by email and inherit any pre-existing single-user data; then only that verified email can claim the admin row, and anyone signing in first lands as `pending`. **Caveat:** the founder's first login is given admin, reader and chat, but Keycloak stays authoritative: they must actually hold the `reader`/`chat`/`admin` realm roles in your IdP (or `KC_ADMIN_*` must be set for the app to write them there), or their second login lands on "active but no access". See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) Trap 4.
 - **The web app** uses a revocable, `HttpOnly` session cookie. **The read-aloud extension and scripts** use a **personal access token** sent as `Authorization: Bearer …`. Create it under **Settings → Access tokens** with only the access it needs (the extension needs only *Read aloud*), then paste it into the extension's Options → Access token.
-- **Local dev without an IdP:** `AUTH_ENABLED=false` treats every request as the admin — but the server **refuses to start** with this set on a non-loopback bind.
+- **Local dev without an IdP:** `AUTH_ENABLED=false` treats every request as the admin — but the server **refuses to start** with this set on a non-loopback bind. Behind a reverse proxy it refuses each request that came through the proxy or for another name, and `./startup.sh up` refuses a `.env` that describes a live deployment.
 
 `/api/*` (Ollama) is **never used by the SPA** — chat always runs server-side ([`server/chat/`, `server/llm/`](#model-providers-same-fastapi-server)), so the nginx `/api/` proxy block should be **deleted**: Ollama becomes backend-only (loopback bind, nothing proxied). There is no per-user "bring your own Ollama" option in the browser.
 
@@ -1022,8 +1022,8 @@ components fit together (the same-origin `/v1` rule, auth flow, TTS lock, chat
 engine, doc pipelines, and the invariants to keep intact). In short:
 `./startup.sh init && ./startup.sh up`, keep both test suites
 green (`npm run test:run`, and `.venv/bin/python -m pytest server/tests` with
-`TEST_DATABASE_URL` and `TEST_ADMIN_DATABASE_URL` set: a bare run connects to the
-app's own Postgres, see [docs/TESTING.md](docs/TESTING.md#how-to-run)), and open PRs against
+`TEST_DATABASE_URL` and `TEST_ADMIN_DATABASE_URL` set: a bare run would use the
+app's own Postgres and refuses to, see [docs/TESTING.md](docs/TESTING.md#how-to-run)), and open PRs against
 `master` using [Conventional Commits](https://www.conventionalcommits.org/).
 
 ## 📄 License

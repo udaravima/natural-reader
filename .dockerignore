@@ -6,6 +6,7 @@
 !run.py
 !requirements.txt
 !requirements-docling.txt
+!constraints.txt
 server/tests/
 **/__pycache__/
 **/*.pyc

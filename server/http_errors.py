@@ -29,5 +29,14 @@ async def _deadlock_busy(request: Request, _exc: pg_errors.DeadlockDetected) -> 
                         content={"detail": {"error": "busy", "message": BUSY_MESSAGE}})
 
 
+async def _db_unavailable(request: Request, _exc: Exception) -> JSONResponse:
+    """The pool isn't open (Postgres late or down): a 503 the client can retry, not a 500."""
+    return JSONResponse(status_code=503, headers={"Retry-After": "15"},
+                        content={"detail": {"error": "db_unavailable",
+                                            "message": "The database isn't reachable yet. Please try again shortly."}})
+
+
 def install_handlers(app: FastAPI) -> None:
+    from .db import DatabaseUnavailable
+    app.add_exception_handler(DatabaseUnavailable, _db_unavailable)
     app.add_exception_handler(pg_errors.DeadlockDetected, _deadlock_busy)

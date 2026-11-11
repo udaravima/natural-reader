@@ -78,10 +78,16 @@ curl -s http://localhost:18080/realms/natural-reader/.well-known/openid-configur
 ```
 
 Keycloak admin console (to add a second user later): <http://localhost:18080/admin>
-— fresh volumes bootstrap `admin` / `admin` (from `KC_BOOTSTRAP_ADMIN_*` in
-`docker-compose.yml`); **change the password on first visit** — the bootstrap
-value is not re-applied on later container starts, and your changed password
-persists in the `keycloak` schema like everything else.
+— user `admin`, with the password in `.env` as `KC_BOOTSTRAP_ADMIN_PASSWORD`
+(`./startup.sh` generates it). It is read once, when Keycloak first starts on an
+empty database, and not re-applied on later container starts.
+
+The realm file holds no secrets. The two client secrets and `admin-user`'s
+password are `${PLACEHOLDERS}` that Keycloak fills from `.env` when it first
+creates the realm (`OIDC_CLIENT_SECRET`, `KC_ADMIN_CLIENT_SECRET`,
+`KC_SEED_USER_PASSWORD`). Anything unset gets a random value nobody knows
+(`deploy/keycloak-entrypoint.sh`), so that login or client simply doesn't work
+until you set it and re-create the realm.
 
 ## 2. Start the backend with OIDC enabled
 
@@ -90,7 +96,7 @@ Set these (see `.env.example` for the full list), then run the backend:
 ```bash
 export OIDC_ISSUER=http://localhost:18080/realms/natural-reader
 export OIDC_CLIENT_ID=natural-reader
-export OIDC_CLIENT_SECRET=natural-reader-dev-secret
+export OIDC_CLIENT_SECRET=<OIDC_CLIENT_SECRET from .env>
 export OIDC_REDIRECT_URL=http://localhost:5173/v1/auth/callback   # matches vite dev
 export SESSION_SECRET=$(python -c "import secrets; print(secrets.token_urlsafe(48))")
 export COOKIE_SECURE=false                 # local http, no TLS
@@ -106,7 +112,7 @@ export HOST=127.0.0.1
 # Keycloak so the seed admin isn't demoted) is skipped — see
 # docs/IDENTITY_AND_ROLES.md and docs/DEPLOYMENT.md Trap 4.
 # export KC_ADMIN_CLIENT_ID=natural-reader-admin
-# export KC_ADMIN_CLIENT_SECRET=natural-reader-admin-dev-secret
+# export KC_ADMIN_CLIENT_SECRET=<KC_ADMIN_CLIENT_SECRET from .env>
 .venv/bin/python run.py
 ```
 
@@ -149,7 +155,7 @@ Every new user — including this second one, once activated — starts with
 yet" until an admin explicitly grants some.
 
 1. Open <http://localhost:5173>. You land on the **login screen** → **Sign in** →
-   Keycloak. Log in as `admin-user` / `password` (email `admin@example.com`,
+   Keycloak. Log in as `admin-user` with `KC_SEED_USER_PASSWORD` from `.env` (email `admin@example.com`,
    already verified). You come back **authenticated as admin**; the app renders.
 2. In the Keycloak admin console, add a second user (Users → Add user; set an
    email, mark **Email verified** on, and set a password under Credentials).

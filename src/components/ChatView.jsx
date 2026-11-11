@@ -1050,6 +1050,18 @@ function AssistantMarkdown({ content, darkMode, citeDoc = null, citeNames = NO_N
       p: ({ children }) => (
         <p className="my-1 text-sm leading-relaxed break-words">{children}</p>
       ),
+      // A picture in a reply is fetched the moment it renders, with no click, so its address is a way out for
+      // whatever a model was steered into putting there (a planted web page, a shared document). So a reply
+      // never loads one: it becomes a link the person may open. (react-markdown drops a data: address
+      // before it gets here, so that one shows as its description.)
+      img: ({ src, alt }) => {
+        if (!src) return <>{alt}</>;
+        return (
+          <a href={src} target="_blank" rel="noopener noreferrer" className="text-blue-500 underline break-all">
+            {alt ? `Picture: ${alt}` : "Picture"}
+          </a>
+        );
+      },
       a: ({ children, href, "data-cite-page": citePage, "data-cite-doc": citeDocAttr }) => {
         if (citePage == null) {
           return (

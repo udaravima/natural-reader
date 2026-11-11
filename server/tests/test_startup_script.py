@@ -33,6 +33,33 @@ def test_dev_env_file_has_the_rig_values_and_a_secret(proj):
     assert len(env["SESSION_SECRET"]) >= 48
 
 
+def test_dev_env_file_generates_every_keycloak_secret(proj):
+    # The realm file holds placeholders, filled from these when Keycloak first creates the realm. A value
+    # written into the script would be a secret anyone can read in the repository.
+    assert run(proj, "ensure_env_file dev", SYSTEM_PATH).returncode == 0
+    env = dict(l.split("=", 1) for l in (proj / ".env").read_text().splitlines() if l and not l.startswith("#"))
+    names = ["OIDC_CLIENT_SECRET", "KC_ADMIN_CLIENT_SECRET", "KC_BOOTSTRAP_ADMIN_PASSWORD", "KC_SEED_USER_PASSWORD"]
+    for name in names:
+        assert re.fullmatch(r"[0-9a-f]{20,64}", env[name]), name
+    assert len({env[n] for n in names}) == 4
+    assert "KC_ADMIN_CLIENT_ID" not in env        # managing Keycloak users from the app stays opt-in
+    script = (proj / "startup.sh").read_text()
+    assert "natural-reader-dev-secret" not in script and "admin/admin" not in script
+
+
+def test_the_sign_in_hint_is_the_generated_password(proj):
+    assert run(proj, "ensure_env_file dev", SYSTEM_PATH).returncode == 0
+    env = dict(l.split("=", 1) for l in (proj / ".env").read_text().splitlines() if l and not l.startswith("#"))
+    out = run(proj, "seed_login_hint", SYSTEM_PATH)
+    assert out.stdout.strip() == f"admin-user / {env['KC_SEED_USER_PASSWORD']}"
+
+
+def test_the_sign_in_hint_for_a_rig_made_before_passwords_were_generated(proj):
+    (proj / ".env").write_text("OIDC_ISSUER=http://localhost:18080/realms/natural-reader\n")
+    out = run(proj, "seed_login_hint", SYSTEM_PATH)
+    assert out.stdout.strip() == "admin-user / password"
+
+
 def test_single_user_env_file_turns_sign_in_off(proj):
     assert run(proj, "ensure_env_file single-user", SYSTEM_PATH).returncode == 0
     text = (proj / ".env").read_text()
@@ -231,6 +258,27 @@ def test_up_runs_the_working_tree_with_sign_in_off(proj, tmp_path):
     assert "up -d keycloak" not in log
 
 
+@pytest.mark.parametrize("line", ["OIDC_ISSUER=https://auth.example.com/realms/natural-reader",
+                                  "KC_HOSTNAME=https://auth.example.com", "COOKIE_SECURE=true"])
+def test_up_refuses_to_turn_sign_in_off_on_a_deployments_env(proj, tmp_path, line):
+    # `./startup.sh` with no arguments is `up`, which turns sign-in off. Typed on the production box, behind
+    # nginx, that used to make every visitor the admin.
+    calls, path = _stubbed(tmp_path)
+    (proj / ".env").write_text(line + "\n")
+    out = run(proj, "trap - EXIT; cmd_up ''", path, ENGINE)
+    assert out.returncode != 0
+    assert "sign-in off" in out.stderr and " start'" in out.stderr and "ALLOW_AUTH_OFF=1" in out.stderr
+    assert not calls.exists() or "up -d" not in calls.read_text()
+    again = run(proj, "trap - EXIT; cmd_up ''", path, {**ENGINE, "ALLOW_AUTH_OFF": "1"})
+    assert again.returncode == 0, again.stderr
+
+
+def test_up_with_the_local_rig_env_still_turns_sign_in_off(proj, tmp_path):
+    calls, path = _stubbed(tmp_path)
+    run(proj, "ensure_env_file dev", path)
+    assert run(proj, "trap - EXIT; cmd_up ''", path, ENGINE).returncode == 0
+
+
 def test_up_with_dev_auth_writes_the_rig_env_and_starts_keycloak(proj, tmp_path):
     calls, path = _stubbed(tmp_path)
     out = run(proj, "trap - EXIT; cmd_up dev-auth", path, ENGINE)
@@ -293,7 +341,8 @@ def test_quickstart_dev_end_to_end_with_stubs(proj, tmp_path):
     assert "up -d keycloak" in log and "up -d backend" in log
     assert log.rstrip().endswith("npm run dev")          # frontend last, in the foreground
     assert (proj / ".env").exists() and (proj / "searxng/settings.yml").exists()
-    assert "admin-user / password" in out.stdout
+    seeded = re.search(r"^KC_SEED_USER_PASSWORD=(.+)$", (proj / ".env").read_text(), re.M).group(1)
+    assert f"admin-user / {seeded}" in out.stdout
     assert ".env.example" in out.stdout                   # production pointer
     assert (proj / ".local/container-engine").read_text() == "podman"
 

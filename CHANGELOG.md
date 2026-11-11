@@ -4,6 +4,90 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+**Security: rotate the Keycloak secrets if your realm was created by v2.11.0 or
+earlier.** The realm file shipped working client secrets, a seeded admin user's
+password and a fixed master admin password. See DEPLOYMENT.md, "Rotating the
+Keycloak secrets".
+
+### Security
+
+- **The realm file holds no secrets.** `deploy/keycloak/realm-export.json` now has
+  `${PLACEHOLDERS}` that Keycloak fills from `.env` when it first creates the realm
+  (`OIDC_CLIENT_SECRET`, `KC_ADMIN_CLIENT_SECRET`, `KC_SEED_USER_PASSWORD`), and
+  compose takes the master admin's password from `KC_BOOTSTRAP_ADMIN_PASSWORD`.
+  `./startup.sh` and `startup.ps1` generate all four. Anything unset gets a random
+  value nobody knows (`deploy/keycloak-entrypoint.sh`). An existing realm is not
+  changed by any of this.
+- **A deployment still on a published secret is told.** The backend logs an error
+  at start naming the variable, and Admin → Deployment shows "set, but to a
+  published default: rotate it".
+- **Sign-in off (`AUTH_ENABLED=false`) is for the machine itself, even behind a
+  proxy.** The check was only that the backend listens on loopback, which it also
+  does behind nginx: `./startup.sh` typed with no arguments on a production box
+  made every visitor the admin. A request that came through a proxy, or for any
+  name but localhost, is now refused (403 `sign_in_off_local_only`), which also
+  stops a web page reaching a developer's backend by DNS rebinding. And
+  `./startup.sh up` refuses to turn sign-in off when `.env` describes a live
+  deployment (`ALLOW_AUTH_OFF=1` overrides).
+- **A chat reply never loads a picture.** A Markdown image was fetched as soon as
+  it rendered, so a model steered by a planted page or a shared document could
+  send text out in its address. It is shown as a link. The nginx sample adds
+  `Content-Security-Policy: img-src 'self' data: blob:`, and the Keycloak sample
+  shows how to keep `/admin` off the internet.
+
+### Changed
+
+- **A rebuild installs the versions the tests ran on.** Every line of
+  `requirements.txt` has a floor and a ceiling, and the image installs through the
+  new `constraints.txt` (exact versions of those packages and everything they bring
+  in). Starlette is held at 1.7 or later: 1.0 answered a malformed upload with a
+  500.
+- **`GET /v1/health` reports the database**: `"database": "ok"` or
+  `"unavailable"`. `status` still means the read-aloud model.
+- **The test suite refuses the app's own Postgres server.** A bare `pytest` used
+  to create and drop databases on port 5433; it now stops with what to set.
+  `TEST_DB_ALLOW_APP_SERVER=1` allows it.
+- The dev rig's sign-in is `admin-user` with a generated password, which
+  `./startup.sh` prints. A rig created earlier keeps `password`.
+
+### Fixed
+
+- **Read-aloud stopped silently, with the Pause button still showing**, in three
+  cases: after **Skip**; after a page turned by hand while a sentence was being
+  read; and at a page with nothing to read (blank, a figure, only a page number),
+  where a book hung at "Changing Page…". Skip now goes on to the next sentence, a
+  turned page is read from its top, and an empty page is passed over.
+- **"Using browser voice" never happened.** With the voice server unreachable,
+  Read retried three times and stopped. It now reads with the browser's voice,
+  from the start when the server wasn't found and mid-read when it stops
+  answering. A retry also repeats the same sentence; it used to move on one.
+- **A document could read "Indexed" with no passages, for good.** Deleting its
+  converted Markdown while it was being embedded let the old job mark the emptied
+  document indexed, and the queued re-index then did nothing. The job now marks
+  it indexed only if it is still indexing.
+- **One "prompt too long" error switched tools off for a model** for everyone on
+  the worker until a restart: the retry without tools fits, which was read as
+  "this model rejects tools". Such a reply still goes without tools, but it isn't
+  remembered, and any remembered rejection is tried again after an hour.
+- Two uploads at once, or an upload during a conversion, could crash the worker:
+  PDF reading wasn't locked across threads. It shares one lock with Docling.
+- One batch read-aloud request could hold the voice for hours (10 million
+  characters). A batch is capped at 200,000 (`TTS_MAX_BATCH_CHARS`).
+- **A Postgres that came up after the backend left it dead until a restart.** The
+  backend tried five times over about 30 seconds and gave up. It now keeps trying
+  in the background and finishes its start-up when Postgres answers; compose also
+  starts the backend and Keycloak only once Postgres is healthy. Routes that need
+  the database answer `503 db_unavailable` meanwhile, not 500.
+- **A failed migration still served traffic.** The pool was published before the
+  migrations ran, so routes ran on a half-migrated schema, and each retry leaked
+  a pool. It is published after they finish, and a failed attempt closes its pool.
+- **Workers starting together ran the same migration at once** and retried on
+  duplicate-key errors. They now take turns under an advisory lock.
+- **Pending migrations ran as one transaction**, not one each as documented, so a
+  late failure undid the earlier files. Each commits on its own.
+- A recording upload the multipart parser rejected could answer 500 on Starlette
+  1.0; it answers 400 on every version.
+
 ## [2.11.0] - 2026-11-05
 
 **Choose the embedding model in the console, and change it without losing search**

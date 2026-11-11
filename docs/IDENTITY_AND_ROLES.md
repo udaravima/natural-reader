@@ -255,8 +255,9 @@ logs a human in, only mints client-credentials tokens for
 `realm-management` client roles `manage-users`, `view-realm`, `query-users` —
 enough to create/enable/disable/delete users and manage realm-role
 assignments, nothing more. Wire it with `KC_ADMIN_CLIENT_ID` /
-`KC_ADMIN_CLIENT_SECRET` (`.env.example`); the realm-export dev value is
-`natural-reader-admin` / `natural-reader-admin-dev-secret`.
+`KC_ADMIN_CLIENT_SECRET` (`.env.example`). The compose Keycloak takes the
+secret from that variable when it first creates the realm; the realm file
+itself holds none.
 
 **Unset = app-only degraded mode**, and this is the trap to know about: enroll
 still pre-provisions an unlinked app row (branch 2 claims it on first login,

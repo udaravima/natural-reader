@@ -19,6 +19,7 @@ const VOICE_TOAST_GAP_MS = 10000;   // one refusal toast for a run of refused se
  */
 export function useTtsEngine({
     textItems,
+    textItemsPage,
     currentSentenceIndex, setCurrentSentenceIndex,
     playbackIndexRef,
     currentPage, setCurrentPage,
@@ -37,6 +38,9 @@ export function useTtsEngine({
     setStatus, showToast,
 }) {
     const [isPlaying, setIsPlaying] = useState(false);
+    const [loopNonce, setLoopNonce] = useState(0);        // bumped to restart the narration loop (Skip)
+    const kokoroDownRef = useRef(false);                  // the voice server stopped answering during this read
+    const utteranceRef = useRef(null);                    // the browser-voice sentence being spoken
     // True while the narration is paused because a chat reply is being read.
     const [pausedForChat, setPausedForChat] = useState(false);
     // True after the user paused the narration with Pause (not Stop): it
@@ -271,8 +275,12 @@ export function useTtsEngine({
         return fetchPromise;
     };
 
+    // The reader's voice: the server's (Kokoro) when it is chosen and answering, else the browser's own. The
+    // start-up check found it unreachable (backendAvailable false), or it failed three times mid-read.
+    const usesServerVoice = () => isLocalhost && backendAvailable !== false && !kokoroDownRef.current;
+
     const prefetchBuffer = useCallback(async (currentIndex) => {
-        if (!isLocalhost) return;
+        if (!usesServerVoice()) return;
         for (let i = 1; i <= 2; i++) {
             const target = currentIndex + i;
             if (target < textItems.length && !audioCache.current.has(target)) {
@@ -280,7 +288,7 @@ export function useTtsEngine({
             }
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [textItems, selectedVoice, playbackSpeed, isLocalhost]);
+    }, [textItems, selectedVoice, playbackSpeed, isLocalhost, backendAvailable]);
 
     // --- PLAYBACK CONTROLS ---
     const handlePlayPause = () => {
@@ -318,13 +326,46 @@ export function useTtsEngine({
         setStatus("Playback Stopped");
     };
 
+    // Skip stops the sentence being heard, and a stopped clip never fires "ended", which is what the loop
+    // continues from. So Skip restarts the loop itself (loopNonce); the loop reads the sentence after
+    // playbackIndexRef. If nothing was audible yet (the next sentence was still being generated), that one is
+    // passed over too, or Skip would only start it again.
     const skipToNextSentence = () => {
-        if (currentSentenceIndex < textItems.length - 1) {
-            audioRef.current.pause();
-            window.speechSynthesis.cancel();
-            setCurrentSentenceIndex(prev => prev + 1);
+        const heard = playbackIndexRef.current;
+        if (!isPlaying) {
+            if (currentSentenceIndex < textItems.length - 1) {
+                audioRef.current.pause();
+                window.speechSynthesis.cancel();
+                setCurrentSentenceIndex(prev => prev + 1);
+            }
+            return;
         }
+        const audible = !audioRef.current.paused || window.speechSynthesis.speaking;
+        const next = audible ? heard + 1 : heard + 2;
+        if (next > textItems.length - 1) return;
+        audioRef.current.pause();
+        window.speechSynthesis.cancel();
+        playbackIndexRef.current = next - 1;
+        setCurrentSentenceIndex(next - 1);
+        setLoopNonce(n => n + 1);
     };
+
+    // A page turned while reading (the arrows, a chapter, a citation): the old page's sentence stops now and
+    // the new page is read from its top. Without this the old clip played on over the new page, the loop saw
+    // audio still playing and didn't start, and when the clip ended nothing was listening.
+    const loopPageRef = useRef(currentPage);
+    const pageDirectionRef = useRef(1);   // which way the page last moved: an empty page is passed over that way
+    useEffect(() => {
+        if (loopPageRef.current === currentPage) return;
+        pageDirectionRef.current = currentPage < loopPageRef.current ? -1 : 1;
+        loopPageRef.current = currentPage;
+        if (!isPlaying) return;
+        audioRef.current.pause();
+        window.speechSynthesis.cancel();
+        playbackIndexRef.current = -1;
+        setCurrentSentenceIndex(-1);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [currentPage]);
 
     // --- MAIN PLAYBACK LOOP ---
     useEffect(() => {
@@ -336,7 +377,12 @@ export function useTtsEngine({
             const nextIdx = playbackIndexRef.current + 1;
 
             if (nextIdx >= textItems.length) {
-                if (currentPage < numPages) {
+                if (textItems.length === 0 && pageDirectionRef.current < 0 && currentPage > 1) {
+                    // Paging backwards by hand onto a page with nothing to read: keep going backwards, or
+                    // the reader could never get past it while reading.
+                    setStatus("Changing Page...");
+                    setCurrentPage(p => p - 1);
+                } else if (currentPage < numPages) {
                     setStatus("Changing Page...");
                     // Stop any ongoing audio so the guard condition passes
                     // when the effect re-runs with new textItems
@@ -357,7 +403,7 @@ export function useTtsEngine({
             const textToRead = textItems[nextIdx];
             prefetchBuffer(nextIdx);
 
-            if (isLocalhost) {
+            if (usesServerVoice()) {
                 setStatus("Generating Voice...");
                 const url = await fetchAudio(nextIdx);
                 if (!active) return;
@@ -383,14 +429,24 @@ export function useTtsEngine({
                 } else {
                     retryCountRef.current += 1;
                     if (retryCountRef.current >= 3) {
-                        stopPlayback();
-                        setStatus("Connection failed");
-                        showToast('Server unreachable after 3 attempts. Check your connection and try again.', 6000);
                         retryCountRef.current = 0;
+                        if (typeof window.speechSynthesis?.speak === 'function') {
+                            // Carry on with the browser's own voice, from this same sentence.
+                            kokoroDownRef.current = true;
+                            playbackIndexRef.current = nextIdx - 1;
+                            showToast('The voice server isn\'t answering. Reading with the browser\'s voice.', 6000);
+                            if (active) playLoop();
+                        } else {
+                            stopPlayback();
+                            setStatus("Connection failed");
+                            showToast('Server unreachable after 3 attempts. Check your connection and try again.', 6000);
+                        }
                     } else {
                         setStatus(`Connection Error — Retry ${retryCountRef.current}/3...`);
                         setTimeout(() => {
-                            if (active) playLoop();
+                            if (!active) return;
+                            playbackIndexRef.current = nextIdx - 1;   // the same sentence again, not the next
+                            playLoop();
                         }, 2000);
                     }
                 }
@@ -404,17 +460,40 @@ export function useTtsEngine({
                 ut.onend = () => {
                     if (active) playLoop();
                 };
+                utteranceRef.current = ut;
                 window.speechSynthesis.speak(ut);
             }
         };
 
-        if (textItems.length > 0 && audioRef.current.paused && !window.speechSynthesis.speaking) {
+        const audible = !audioRef.current.paused;
+        const speaking = window.speechSynthesis.speaking;
+        // A page that has loaded with no sentences (blank, a figure, only a page number) has nothing to wait
+        // for: playLoop passes it over. An empty list for a page still loading (textItemsPage isn't this page
+        // yet) waits for its text.
+        const nothingToRead = textItems.length === 0 && textItemsPage != null && textItemsPage === currentPage;
+        if ((textItems.length > 0 || nothingToRead) && !audible && !speaking) {
             playLoop();
+        } else if (audible) {
+            // This run replaced the one that started the clip being heard (the page's text was handed over
+            // again): the clip's "ended" must continue THIS loop, or the narration ends with it.
+            audioRef.current.onended = () => {
+                audioCache.current.delete(playbackIndexRef.current);
+                if (active) playLoop();
+            };
+        } else if (speaking && utteranceRef.current) {
+            utteranceRef.current.onend = () => {
+                if (active) playLoop();
+            };
         }
 
         return () => { active = false; };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isPlaying, textItems]);
+    }, [isPlaying, textItems, textItemsPage, loopNonce]);
+
+    // A server that failed mid-read is tried again on the next Play, and when it is found again.
+    useEffect(() => {
+        if (!isPlaying || backendAvailable) kokoroDownRef.current = false;
+    }, [isPlaying, backendAvailable]);
 
     // --- SELECTION READING ---
     const readSelection = async () => {
