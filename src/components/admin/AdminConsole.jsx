@@ -35,7 +35,7 @@ const SECTIONS = [
   { id: 'deployment', label: 'Deployment' },
 ];
 
-export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, leaveRef, showToast }) {
+export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, leaveRef, showToast, openSection = null, onSectionOpened }) {
   const [active, setActive] = useState('overview');
   // A section that edits reports unsaved changes through onDirtyChange;
   // every completed navigation starts clean.
@@ -64,6 +64,16 @@ export function AdminConsole({ theme, apiHost, apiPort, currentUserId, onBack, l
   const select = (id) => { setActive(id); setDirty(false); setProfileDirty(false); setDefaultsDirty(false); };
   const sectionLabel = (id) => SECTIONS.find((s) => s.id === id)?.label ?? id;
   const openRef = useRef(null);   // the shell's tab-click path, for Overview's Open links
+
+  // A notification asked for a section ({id, n}; n changes per ask). It goes the way a tab click goes, so unsaved
+  // changes still get their prompt; then the asker forgets the request, so a later visit opens on Overview.
+  const sectionOpenedRef = useRef(onSectionOpened);
+  useEffect(() => { sectionOpenedRef.current = onSectionOpened; });
+  useEffect(() => {
+    if (!openSection?.id || !openRef.current) return;
+    openRef.current(openSection.id);
+    sectionOpenedRef.current?.();
+  }, [openSection]);
 
   if (openProjectId) {
     return (

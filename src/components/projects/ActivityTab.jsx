@@ -1,15 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { roleLabel } from '../../lib/projectRoles';
 
+import { timeAgo } from '../../utils/timeAgo';
+
 // eslint-disable-next-line react-refresh/only-export-components
-export function timeAgo(at, now = Date.now()) {
-  const s = Math.max(0, Math.round((now - new Date(at).getTime()) / 1000));
-  if (s < 60) return 'just now';
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
-  if (s < 7 * 86400) return `${Math.floor(s / 86400)} d ago`;
-  return new Date(at).toLocaleDateString();
-}
+export { timeAgo };
 
 // One line per event (A0 §10). People appear by their current names; a
 // deleted person reads "a former member"; a removed document keeps its name.

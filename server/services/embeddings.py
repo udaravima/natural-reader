@@ -15,6 +15,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -178,7 +181,36 @@ async def _fitted(e: Embedder, batch: list[str]) -> list[list[float]]:
     return [await _fit_one(e, text) for text in batch]
 
 
+@dataclass
+class Tally:
+    texts: int = 0   # texts shortened to fit, each counted once however many halvings it took
+
+
+_shortened: ContextVar[Tally | None] = ContextVar("embedding_shortened", default=None)
+
+
+@contextmanager
+def counting_shortened() -> Iterator[Tally]:
+    """Count the texts shortened by the embedding calls made inside this block (one job: an indexing, a re-embed
+    step), so the job can tell the admins once. Outside such a block nothing is counted. asyncio.gather's tasks
+    copy the context, so they share the one Tally."""
+    tally = Tally()
+    token = _shortened.set(tally)
+    try:
+        yield tally
+    finally:
+        _shortened.reset(token)
+
+
+def note_shortened() -> None:
+    """One more text was shortened, in the counting block around this call, if any."""
+    tally = _shortened.get()
+    if tally is not None:
+        tally.texts += 1
+
+
 async def _fit_one(e: Embedder, text: str) -> list[float]:
+    counted = False
     while True:
         try:
             return (await _one_request(e, [text]))[0]
@@ -186,6 +218,9 @@ async def _fit_one(e: Embedder, text: str) -> list[float]:
             if err.status not in REFUSED_INPUT or len(text) <= MIN_RETRY_CHARS:
                 raise
         logger.warning("%s refused a %d-character text: trying its first half", _where(e), len(text))
+        if not counted:
+            note_shortened()
+            counted = True
         text = text[:len(text) // 2]
 
 

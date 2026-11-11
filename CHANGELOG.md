@@ -9,6 +9,8 @@ earlier.** The realm file shipped working client secrets, a seeded admin user's
 password and a fixed master admin password. See DEPLOYMENT.md, "Rotating the
 Keycloak secrets".
 
+**Notifications for each person.** Migration 026 (`notifications`). Both halves rebuild.
+
 ### Security
 
 - **The realm file holds no secrets.** `deploy/keycloak/realm-export.json` now has
@@ -35,8 +37,23 @@ Keycloak secrets".
   `Content-Security-Policy: img-src 'self' data: blob:`, and the Keycloak sample
   shows how to keep `/admin` off the internet.
 
+### Added
+
+- **A bell in the header** with an inbox, never a popup: indexing finished or failed and a
+  conversion ready or failed reach the person who asked; a re-embed paused or done,
+  rebuilds failing 3 times in a row, and passages the embedding model shortened reach
+  every admin. Notices that need action come first and turn the badge amber; notices of
+  one kind arriving close together are one row ("5 documents finished indexing"); a
+  problem that goes away by itself is marked Resolved; Mark all as read. Read notices are
+  kept 30 days, unread 90 (`NOTIFICATIONS_READ_DAYS`, `NOTIFICATIONS_UNREAD_DAYS`).
+- `GET /v1/notifications/unread`, `GET /v1/notifications`, `POST /v1/notifications/read`,
+  `POST /v1/notifications/read-all`.
+
 ### Changed
 
+- Under 360 px wide the reader's header shows the bell instead of the Settings gear;
+  Settings stays in the profile menu.
+- `docs/ARCHITECTURE.md` no longer says the time tool is gone (v2.10 brought it back).
 - **A rebuild installs the versions the tests ran on.** Every line of
   `requirements.txt` has a floor and a ceiling, and the image installs through the
   new `constraints.txt` (exact versions of those packages and everything they bring
@@ -52,6 +69,14 @@ Keycloak secrets".
 
 ### Fixed
 
+- A conversion that never ran (the job returned early, or failed and couldn't record
+  it) no longer sends "converted and ready" or resolves an earlier failure notice.
+- A re-embed stopped because the newly named model was refused now resolves its
+  "paused" notice.
+- **Show more** in the inbox no longer skips a row or shows one twice when the list
+  moved meanwhile (a row was read, a notice arrived). A list that answers after the
+  panel was closed and reopened is dropped.
+- A failure notice keeps at most 500 characters of the error.
 - **Read-aloud stopped silently, with the Pause button still showing**, in three
   cases: after **Skip**; after a page turned by hand while a sentence was being
   read; and at a page with nothing to read (blank, a figure, only a page number),

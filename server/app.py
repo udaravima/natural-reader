@@ -26,6 +26,7 @@ from .routers.chat_turns import router as chat_turns_router
 from .routers.chat_voice import router as chat_voice_router
 from .routers.docs import router as docs_router
 from .routers.inference import router as inference_router
+from .routers.notifications import router as notifications_router
 from .routers.project_documents import router as project_documents_router
 from .routers.projects import router as projects_router
 from .routers.people import router as people_router
@@ -34,7 +35,7 @@ from .routers.speech import router as speech_router
 from .routers.profile import router as profile_router
 from .routers.tools import router as tools_router
 from .services import (chat_options, doc_pipeline, doc_storage, docling_convert, embedding_migration,
-                       embedding_state, project_events, rebuild_queue)
+                       embedding_state, notifications, project_events, rebuild_queue)
 from .speech import catalogue as speech_catalogue, service as speech_service
 from .services.embeddings import start_client as start_embeddings, stop_client as stop_embeddings
 from .services.web_search import start_client as start_web_search, stop_client as stop_web_search
@@ -100,6 +101,7 @@ def create_app() -> FastAPI:
     app.include_router(profile_router)
     app.include_router(inference_router)
     app.include_router(speech_router)
+    app.include_router(notifications_router)
 
     @app.on_event("startup")
     async def _startup() -> None:
@@ -121,6 +123,7 @@ def create_app() -> FastAPI:
             except Exception:
                 logger.warning("Stale chat-turn recovery failed", exc_info=True)
             project_events.start_retention()
+            notifications.start_retention()
             # What the stored vectors were made with is a database fact (embedding_state): the first start
             # records the environment's model as current. Later starts leave it alone.
             try:
@@ -169,6 +172,7 @@ def create_app() -> FastAPI:
             task.cancel()
         _background.clear()
         await project_events.stop_retention()
+        await notifications.stop_retention()
         await stop_llm_router()
         await stop_embeddings()
         await stop_web_search()

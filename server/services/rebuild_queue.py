@@ -21,7 +21,10 @@ import os
 import secrets
 import socket
 
+from . import notifications
+
 CLAIM_LAPSE = "10 minutes"
+NOTIFY_AFTER = 3   # failures in a row before the admins hear (about 30 minutes of retries)
 RETRY_AFTER = "15 minutes"
 
 # This process, as a claimer: unique across hosts and restarts.
@@ -63,16 +66,29 @@ async def heartbeat(conn, doc_id: str, worker: str) -> None:
 
 
 async def finish(conn, doc_id: str, worker: str) -> None:
-    """The rebuild is done (or had nothing to do): the row goes, if `worker` still owns it."""
-    await conn.execute("DELETE FROM doc_rebuilds WHERE doc_id = %s AND claimed_by = %s AND state = 'running'",
-                       (doc_id, worker))
+    """The rebuild is done (or had nothing to do): the row goes, if `worker` still owns it, and a notice that it
+    kept failing is resolved."""
+    cur = await conn.execute("DELETE FROM doc_rebuilds WHERE doc_id = %s AND claimed_by = %s AND state = 'running' "
+                             "RETURNING doc_id", (doc_id, worker))
+    if await cur.fetchone():
+        await notifications.resolve(conn, f"rebuild:{doc_id}")
 
 
 async def fail(conn, doc_id: str, worker: str, error: str) -> None:
-    await conn.execute(
+    """The rebuild failed: it waits RETRY_AFTER. From the NOTIFY_AFTER-th failure in a row, the admins hear (once:
+    later failures merge into the same unread notice); before that, the retry usually fixes it by itself."""
+    cur = await conn.execute(
         "UPDATE doc_rebuilds SET state = 'failed', error = %s, claimed_by = NULL, claimed_at = NULL, "
         f"retry_after = now() + interval '{RETRY_AFTER}', updated_at = now() "
-        "WHERE doc_id = %s AND claimed_by = %s AND state = 'running'", (error[:500], doc_id, worker))
+        "WHERE doc_id = %s AND claimed_by = %s AND state = 'running' RETURNING attempts", (error[:500], doc_id, worker))
+    row = await cur.fetchone()
+    if row and row[0] >= NOTIFY_AFTER:
+        cur = await conn.execute("SELECT file_name FROM documents WHERE doc_id = %s", (doc_id,))
+        name = ((await cur.fetchone()) or ("A document",))[0]
+        await notifications.send_admins(
+            conn, "rebuild.failed", title=f"{name} has failed to rebuild {row[0]} times; its old index is still "
+            "answering.", body=error[:500], doc_id=doc_id, target=notifications.ADMIN_OVERVIEW,
+            key=f"rebuild:{doc_id}")
 
 
 async def queue_counts(conn) -> dict[str, int]:

@@ -48,8 +48,8 @@ from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
 from ..http_errors import BUSY_MESSAGE, refusal
 from ..services import (
-    doc_content, doc_pipeline, doc_storage, doc_versions, docling_convert, docling_limits, embedding_state, extract,
-    people,
+    doc_content, doc_notices, doc_pipeline, doc_storage, doc_versions, docling_convert, docling_limits, embedding_state,
+    extract, people,
 )
 from ..services.doc_search import ReadableDoc, search_chunks
 from ..services.embeddings import embed_query
@@ -359,7 +359,9 @@ async def register_document(
         job = await _after_upload(doc_id, staged, created, existing)
     finally:
         doc_storage.discard(staged)  # no-op once placed
-    if job is not None:
+    if job is doc_pipeline.run_pipeline:   # new work: the uploader hears how it ended (a legacy swap is no news)
+        background.add_task(doc_notices.run_and_notify, job, doc_id, requested_by=principal.user_id, via="index")
+    elif job is not None:
         background.add_task(job, doc_id)
     async with get_pool().connection() as conn:
         cur = await conn.execute("SELECT state FROM documents WHERE doc_id = %s", (doc_id,))
@@ -745,7 +747,8 @@ async def start_index_job(doc_id: DocId, background: BackgroundTasks,
             await conn.execute(
                 "UPDATE documents SET state = 'stored', error_message = NULL, updated_at = now() "
                 "WHERE doc_id = %s", (doc_id,))
-    background.add_task(doc_pipeline.run_pipeline, doc_id)
+    background.add_task(doc_notices.run_and_notify, doc_pipeline.run_pipeline, doc_id,
+                        requested_by=principal.user_id, via="index")
     return {"ok": True, "doc_id": doc_id, "state": "extracting"}
 
 
@@ -998,7 +1001,8 @@ async def start_convert_job(
             (Jsonb(options.model_dump()), doc_id),
         )
 
-    background.add_task(_run_convert_job, doc_id, options.model_dump())
+    background.add_task(doc_notices.run_and_notify, _run_convert_job, doc_id, options.model_dump(),
+                        requested_by=principal.user_id, via="convert")
     return {"ok": True, "doc_id": doc_id, "conversion_state": "converting"}
 
 
@@ -1043,7 +1047,7 @@ async def get_document_markdown(
 @router.delete("/{doc_id}/markdown")
 async def delete_document_markdown(
     doc_id: DocId, background: BackgroundTasks,
-    _principal: Principal = Depends(_require_content_op),
+    principal: Principal = Depends(_require_content_op),
 ) -> dict[str, Any]:
     """
     Wipe a document's converted markdown and the chunks/embeddings derived
@@ -1085,5 +1089,6 @@ async def delete_document_markdown(
                 (doc_id,),
             )
     await asyncio.to_thread(doc_storage.remove_figures, doc_id)
-    background.add_task(doc_pipeline.run_pipeline, doc_id)
+    background.add_task(doc_notices.run_and_notify, doc_pipeline.run_pipeline, doc_id,
+                        requested_by=principal.user_id, via="index")
     return {"ok": True, "doc_id": doc_id, "state": "extracting"}
