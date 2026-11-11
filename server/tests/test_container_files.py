@@ -19,7 +19,7 @@ def test_dockerignore_is_an_allow_list():
     lines = _lines(".dockerignore")
     assert lines[0] == "*"
     included = {l[1:] for l in lines if l.startswith("!")}
-    assert included == {"server/", "run.py", "requirements.txt", "requirements-docling.txt"}
+    assert included == {"server/", "run.py", "requirements.txt", "requirements-docling.txt", "constraints.txt"}
     # Re-excluded after the allow-list: never ship tests or bytecode.
     assert "server/tests/" in lines
     assert "**/__pycache__/" in lines
@@ -163,8 +163,58 @@ def test_shell_port_host_and_workers_reach_the_container(tmp_path):
 def test_keycloak_drops_an_empty_proxy_headers_setting(tmp_path):
     # Keycloak refuses KC_PROXY_HEADERS="" and restarts forever; a fresh
     # clone's .env doesn't set it. The entrypoint unsets it when empty.
+    # (deploy/keycloak-entrypoint.sh; test_the_keycloak_entrypoint_never_lets_a_placeholder_through_empty runs it.)
     kc = _render(tmp_path, env_lines=[])["keycloak"]
-    script = kc["entrypoint"][2]
-    assert kc["entrypoint"][:2] == ["/bin/bash", "-c"]
-    assert 'unset KC_PROXY_HEADERS' in script and 'exec /opt/keycloak/bin/kc.sh "$@"' in script
+    assert kc["entrypoint"] == ["/bin/bash", "/opt/keycloak/nr-entrypoint.sh"]
     assert kc["command"][0] == "start-dev"
+
+
+def test_the_backend_and_keycloak_start_after_postgres_answers(tmp_path):
+    # Without the condition they start alongside a Postgres that is still booting. (After a reboot the engine
+    # restarts containers on its own, in any order: the backend's background retry covers that, server/db.py.)
+    services = _render(tmp_path, env_lines=[])
+    for name in ("backend", "keycloak"):
+        assert services[name]["depends_on"]["postgres"]["condition"] == "service_healthy", name
+
+
+def test_keycloak_gets_its_secrets_from_env_and_none_is_written_in_the_file(tmp_path):
+    kc = _render(tmp_path, env_lines=["OIDC_CLIENT_SECRET=aaa", "KC_ADMIN_CLIENT_SECRET=bbb",
+                                      "KC_SEED_USER_PASSWORD=ccc", "KC_BOOTSTRAP_ADMIN_PASSWORD=ddd"])["keycloak"]
+    env = kc["environment"]
+    assert (env["OIDC_CLIENT_SECRET"], env["KC_ADMIN_CLIENT_SECRET"], env["KC_SEED_USER_PASSWORD"],
+            env["KC_BOOTSTRAP_ADMIN_PASSWORD"]) == ("aaa", "bbb", "ccc", "ddd")
+    assert any(str(v).endswith(":/opt/keycloak/nr-entrypoint.sh:ro") for v in kc["volumes"])
+    # Unset, they reach the entrypoint empty, and it replaces each with a random value.
+    (tmp_path / "bare").mkdir()
+    bare = _render(tmp_path / "bare", env_lines=[])["keycloak"]["environment"]
+    assert not bare["KC_BOOTSTRAP_ADMIN_PASSWORD"] and not bare["OIDC_CLIENT_SECRET"]
+
+
+def test_the_realm_file_holds_placeholders_not_secrets():
+    import json
+    realm = json.loads((REPO / "deploy/keycloak/realm-export.json").read_text())
+    secrets = {c["clientId"]: c["secret"] for c in realm["clients"] if "secret" in c}
+    assert secrets == {"natural-reader": "${OIDC_CLIENT_SECRET}", "natural-reader-admin": "${KC_ADMIN_CLIENT_SECRET}"}
+    values = [c["value"] for u in realm["users"] for c in u.get("credentials", [])]
+    assert values == ["${KC_SEED_USER_PASSWORD}"]
+
+
+def _entrypoint(tmp_path, env):
+    kc = tmp_path / "kc.sh"
+    kc.write_text('#!/bin/bash\nfor n in OIDC_CLIENT_SECRET KC_ADMIN_CLIENT_SECRET KC_SEED_USER_PASSWORD '
+                  'KC_BOOTSTRAP_ADMIN_PASSWORD; do echo "$n=${!n}"; done\n'
+                  'echo "PROXY=${KC_PROXY_HEADERS-unset}"; echo "ARGS=$*"\n')
+    kc.chmod(0o755)
+    out = subprocess.run(["bash", str(REPO / "deploy/keycloak-entrypoint.sh"), "start-dev", "--import-realm"],
+                         env={"PATH": os.environ["PATH"], "KC_BIN": str(kc), **env}, capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return dict(line.split("=", 1) for line in out.stdout.splitlines()), out.stderr
+
+
+def test_the_keycloak_entrypoint_never_lets_a_placeholder_through_empty(tmp_path):
+    got, warned = _entrypoint(tmp_path, {"OIDC_CLIENT_SECRET": "mine", "KC_PROXY_HEADERS": ""})
+    assert got["OIDC_CLIENT_SECRET"] == "mine" and "OIDC_CLIENT_SECRET" not in warned
+    randoms = [got[n] for n in ("KC_ADMIN_CLIENT_SECRET", "KC_SEED_USER_PASSWORD", "KC_BOOTSTRAP_ADMIN_PASSWORD")]
+    assert all(re.fullmatch(r"[0-9a-f]{64}", r) for r in randoms) and len(set(randoms)) == 3
+    assert "KC_SEED_USER_PASSWORD is not set" in warned and not any(r in warned for r in randoms)
+    assert got["PROXY"] == "unset" and got["ARGS"] == "start-dev --import-realm"

@@ -2,7 +2,9 @@
 stays cheap to import from tests and CI."""
 from __future__ import annotations
 
+import hashlib
 import ipaddress
+import logging
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -58,6 +60,37 @@ def kc_admin_available(cfg: "AuthConfig") -> bool:
     """True only when both service-account credentials are configured — the
     switch between full Keycloak provisioning and app-only degradation."""
     return bool(cfg.kc_admin_client_id and cfg.kc_admin_client_secret)
+
+
+# SHA-256 of the two client secrets this repository shipped in deploy/keycloak/realm-export.json up to
+# v2.11.0. They are public, so a realm created from that file has a sign-in client and, worse, a
+# user-management service account that anyone who can reach Keycloak can use. Hashes, so the values
+# themselves are no longer anywhere in the tree.
+PUBLISHED_SECRET_HASHES = frozenset({
+    "88675de7fe987e6dd4b86353af648998a136b33a0d0355a4e395f24a7db47693",
+    "53a4cf38a902cab917d1706c385576aedefe213e0d63a2060dc74e91ab369711",
+})
+
+
+def is_published_secret(value: str | None) -> bool:
+    return bool(value) and hashlib.sha256(value.encode()).hexdigest() in PUBLISHED_SECRET_HASHES
+
+
+def published_secrets(cfg: AuthConfig) -> list[str]:
+    """The environment variables still holding a published client secret."""
+    return [name for name, value in (("OIDC_CLIENT_SECRET", cfg.oidc_client_secret),
+                                     ("KC_ADMIN_CLIENT_SECRET", cfg.kc_admin_client_secret))
+            if is_published_secret(value)]
+
+
+def warn_published_secrets(cfg: AuthConfig) -> list[str]:
+    names = published_secrets(cfg)
+    for name in names:
+        logging.getLogger(__name__).error(
+            "%s is a default that was published in this project's repository. Anyone who can reach Keycloak "
+            "can use it. Rotate it: regenerate the client's secret in Keycloak, put the new value in .env, "
+            "restart (docs/DEPLOYMENT.md, \"Rotating the Keycloak secrets\").", name)
+    return names
 
 
 def _is_loopback(bind_host: str) -> bool:

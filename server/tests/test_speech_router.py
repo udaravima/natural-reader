@@ -945,3 +945,19 @@ async def test_auto_goes_to_the_first_recognizer(db_conn, google):
         r = await _post(c, body=_wav(), name="a.wav", ctype="audio/wav")
     assert r.status_code == 200, r.text
     assert google["recognize"] == [("asr-si", None)]       # no language sent: the recognizer's own apply
+
+
+async def test_a_parser_error_the_framework_does_not_translate_is_still_400(db_conn, engine, monkeypatch):
+    # Starlette 1.0 let python-multipart's own error through (a 500); later versions wrap it. Whichever version
+    # is installed, a body the parser rejects is the client's mistake.
+    from python_multipart.exceptions import MultipartParseError
+
+    async def parse(self):
+        async for _ in self.stream:
+            pass
+        raise MultipartParseError("Did not find boundary character")
+    monkeypatch.setattr(speech_router.MemoryMultipartParser, "parse", parse)
+    await _voice(db_conn)
+    async with _client(db_conn) as c:
+        r = await c.post(URL, content=b"garbage", headers=_multipart_headers())
+    assert r.status_code == 400 and _msg(r) == "That recording couldn't be read."

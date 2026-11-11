@@ -171,7 +171,8 @@ Commands:
                          Keycloak, creates .env on first run (local realm values
                          + generated SESSION_SECRET), waits for the realm
                          import, then runs the backend with auth ENABLED.
-                         Log in at http://localhost:5173 as admin-user/password.
+                         Log in at http://localhost:5173 as admin-user; the script
+                         prints its generated password.
                          Walkthrough: deploy/README.md.
   down                   Stop the TTS backend (if running) and all the
                          containers (Postgres, SearXNG, Keycloak).
@@ -349,11 +350,19 @@ function Initialize-EnvFile {
         "# One KEY=value per line, no inline comments.",
         "OIDC_ISSUER=http://localhost:18080/realms/natural-reader",
         "OIDC_CLIENT_ID=natural-reader",
-        "OIDC_CLIENT_SECRET=natural-reader-dev-secret",
+        "OIDC_CLIENT_SECRET=$(New-SessionSecret)",
         "OIDC_REDIRECT_URL=http://localhost:5173/v1/auth/callback",
         "SESSION_SECRET=$(New-SessionSecret)",
         "COOKIE_SECURE=false",
-        "BOOTSTRAP_ADMIN_EMAIL=admin@example.com"
+        "BOOTSTRAP_ADMIN_EMAIL=admin@example.com",
+        "# The compose Keycloak fills its realm from these when it first creates it",
+        "# (deploy/keycloak/realm-export.json); changing them later doesn't change that realm.",
+        "# KC_SEED_USER_PASSWORD is admin-user's password; KC_BOOTSTRAP_ADMIN_PASSWORD is for",
+        "# Keycloak's own admin UI (user admin). Add KC_ADMIN_CLIENT_ID=natural-reader-admin",
+        "# to manage Keycloak users from the app (.env.example).",
+        "KC_ADMIN_CLIENT_SECRET=$(New-SessionSecret)",
+        "KC_SEED_USER_PASSWORD=$((New-SessionSecret).Substring(0, 20))",
+        "KC_BOOTSTRAP_ADMIN_PASSWORD=$((New-SessionSecret).Substring(0, 20))"
     )
     Write-TextFile $EnvFile (($lines -join "`n") + "`n")
 }
@@ -545,8 +554,10 @@ function Invoke-Up([string] $Mode) {
             -NoNewWindow -PassThru
         Write-TextFile $RunnerPidFile "$($runner.Id)"
         if ($Mode -eq "dev-auth") {
-            Write-Step "Ready: sign in at http://localhost:5173 (Keycloak user: admin-user / password)"
-            Write-Step "Add a second user at http://localhost:18080/admin (admin/admin) to test the approval flow: see deploy/README.md"
+            $seedPassword = (Read-EnvFile $EnvFile | Where-Object { $_.Key -eq "KC_SEED_USER_PASSWORD" } | Select-Object -Last 1).Value
+            if (-not $seedPassword) { $seedPassword = "password" }   # a rig made before the password was generated
+            Write-Step "Ready: sign in at http://localhost:5173 (Keycloak user: admin-user / $seedPassword)"
+            Write-Step "Add a second user at http://localhost:18080/admin (user admin, password KC_BOOTSTRAP_ADMIN_PASSWORD in $EnvFile) to test the approval flow: see deploy/README.md"
         } else {
             Write-Step "Ready: frontend: npm run dev (then http://localhost:5173)"
         }

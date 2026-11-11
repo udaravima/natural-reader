@@ -145,7 +145,8 @@ Commands:
                          .env on first run (local realm values + generated
                          SESSION_SECRET), waits for the realm import, then runs
                          the backend with auth ENABLED.
-                         Log in at http://localhost:5173 as admin-user/password.
+                         Log in at http://localhost:5173 as admin-user; the script
+                         prints its generated password.
                          Walkthrough: deploy/README.md.
   help                   Show this message.
 
@@ -373,11 +374,19 @@ ensure_env_file() {
 				echo "# bash-sourced: one KEY=value per line, no inline comments."
 				echo "OIDC_ISSUER=http://localhost:18080/realms/natural-reader"
 				echo "OIDC_CLIENT_ID=natural-reader"
-				echo "OIDC_CLIENT_SECRET=natural-reader-dev-secret"
+				printf 'OIDC_CLIENT_SECRET=%s\n' "$(generate_secret)"
 				echo "OIDC_REDIRECT_URL=http://localhost:5173/v1/auth/callback"
 				printf 'SESSION_SECRET=%s\n' "$(generate_secret)"
 				echo "COOKIE_SECURE=false"
 				echo "BOOTSTRAP_ADMIN_EMAIL=admin@example.com"
+				echo "# The compose Keycloak fills its realm from these when it first creates it"
+				echo "# (deploy/keycloak/realm-export.json); changing them later doesn't change that realm."
+				echo "# KC_SEED_USER_PASSWORD is admin-user's password; KC_BOOTSTRAP_ADMIN_PASSWORD is for"
+				echo "# Keycloak's own admin UI (user admin). Add KC_ADMIN_CLIENT_ID=natural-reader-admin"
+				echo "# to manage Keycloak users from the app (.env.example)."
+				printf 'KC_ADMIN_CLIENT_SECRET=%s\n' "$(generate_secret)"
+				printf 'KC_SEED_USER_PASSWORD=%s\n' "$(generate_secret | cut -c1-20)"
+				printf 'KC_BOOTSTRAP_ADMIN_PASSWORD=%s\n' "$(generate_secret | cut -c1-20)"
 			} >"$ENV_FILE"
 			;;
 		single-user)
@@ -391,6 +400,14 @@ ensure_env_file() {
 			;;
 		*) die "Unknown .env profile '$profile' (dev or single-user)." ;;
 	esac
+}
+
+# How to sign in to the local rig: the seeded user and its password from .env. A rig made before the
+# password was generated has no such line, and its realm was imported with the old fixed one.
+seed_login_hint() {
+	local password
+	password="$(env_file_value KC_SEED_USER_PASSWORD)"
+	printf 'admin-user / %s\n' "${password:-password}"
 }
 
 # Export every KEY=value in .env into this shell (and thus into run.py's
@@ -742,7 +759,7 @@ quickstart_summary() {
 	if [[ "$profile" == "single-user" ]]; then
 		log "Sign-in is off (single-user, this machine only)."
 	else
-		log "Sign in at http://localhost:5173 as admin-user / password"
+		log "Sign in at http://localhost:5173 as $(seed_login_hint)"
 	fi
 	log "Next: '$0 stop' stops everything · '$0 logs' follows the backend · '$0 enable-autostart' brings it back after reboots"
 	log "Production? Start from .env.example and docs/DEPLOYMENT.md — quickstart only writes a local dev .env."
@@ -816,7 +833,7 @@ cmd_up() {
 	compose "$engine" up -d "$BACKEND_SERVICE"
 	wait_for_backend || true
 	if [[ "$mode" == "dev-auth" ]]; then
-		log "Ready — sign in at http://localhost:5173 (Keycloak user: admin-user / password)"
+		log "Ready — sign in at http://localhost:5173 (Keycloak user: $(seed_login_hint))"
 	else
 		log "Ready — frontend: npm run dev (then http://localhost:5173)"
 	fi
@@ -888,8 +905,8 @@ cmd_up_venv() {
 	# under `set -u` ("engine: unbound variable").
 	trap "trap - INT TERM EXIT; stop_runner; log 'Stopping containers ($engine)'; compose $engine down" INT TERM EXIT
 	if [[ "$mode" == "dev-auth" ]]; then
-		log "Ready — sign in at http://localhost:5173 (Keycloak user: admin-user / password)"
-		log "Add a second user at http://localhost:18080/admin (admin/admin) to test the approval flow — see deploy/README.md"
+		log "Ready — sign in at http://localhost:5173 (Keycloak user: $(seed_login_hint))"
+		log "Add a second user at http://localhost:18080/admin (user admin, password KC_BOOTSTRAP_ADMIN_PASSWORD in $ENV_FILE) to test the approval flow — see deploy/README.md"
 	else
 		log "Ready — frontend: npm run dev (then http://localhost:5173)"
 	fi

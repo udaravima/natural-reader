@@ -20,6 +20,46 @@ The backend ships as a container image (`Containerfile`, the `backend` service i
 can't move the interpreter under the app. Windows hosts keep the bare-metal flow
 (`startup.ps1`).
 
+### Pinned versions
+
+A rebuild installs the versions the tests ran on, not whatever is newest that
+day. Two files do it:
+
+- `requirements.txt` gives every package a floor and a ceiling.
+- `constraints.txt` lists the exact version of each of those packages and of
+  everything they bring in (about 80), as installed when the suite last passed.
+  The image installs with `-c constraints.txt`.
+
+To move to newer versions: upgrade the venv (`pip install -U -r requirements.txt`),
+run the tests, then regenerate the file from that venv and commit it with the
+change. `pip freeze` lists more than the image needs (Docling's packages, tools);
+keep only the lines for packages already in `constraints.txt`, plus any new
+dependency. A bare-metal install (`./startup.sh init`, Windows) uses
+`requirements.txt` alone, so it stays inside the ranges but isn't pinned.
+
+Not pinned yet: the Docling extra's own packages (`requirements-docling.txt`),
+the Kokoro model download (no checksum), and the SearXNG image (`:latest`).
+
+### When Postgres isn't there at start
+
+Compose starts the backend and Keycloak only after Postgres answers
+(`depends_on: service_healthy`). After a reboot the engine restarts containers on
+its own, in any order, so the backend also covers it itself: if Postgres doesn't
+answer at start it keeps trying every 15 seconds for as long as it runs, and
+finishes its start-up when it does. Until then every route that needs the
+database answers `503 db_unavailable`, and `GET /v1/health` says so:
+
+```json
+{"status": "ok", "model_loaded": true, "database": "unavailable"}
+```
+
+`status` is read-aloud's own state (the Kokoro model), so watch `database` in a
+monitor. With sign-in on, read-aloud needs the database too: the caller is looked
+up there.
+
+Workers that start together take turns migrating (an advisory lock), each
+migration commits on its own, and a worker only serves once they have all run.
+
 ### Live mode
 
 | Command | Effect |
@@ -203,7 +243,7 @@ for a *fresh* database.
   `https://chat.example.com/v1/auth/callback`; **Web origins**: add
   `https://chat.example.com` → Save.
 - **`kcadm` (scriptable):** run inside the container (needs the *master* admin
-  password — see the admin-password note below; the `admin/admin` in compose is
+  password — see the admin-password note below; `KC_BOOTSTRAP_ADMIN_PASSWORD` is
   only applied on a **first-ever** boot with an empty DB):
 
   ```bash
@@ -235,13 +275,46 @@ delimited by **`##`**, not spaces or commas (`+` is the special token meaning
 "reuse the Valid Redirect URIs"). A space-delimited value is silently parsed as
 one bogus URI and matches nothing.
 
-> **Master admin password:** `KC_BOOTSTRAP_ADMIN_USERNAME/PASSWORD` in compose
-> create the master admin **only on the first boot against an empty database**.
+> **Master admin password:** `KC_BOOTSTRAP_ADMIN_PASSWORD` in `.env` (user
+> `admin`) creates the master admin **only on the first boot against an empty
+> database**. Unset, that admin gets a random password nobody knows.
 > Because the realm persists in Postgres, later container recreations ignore
 > those vars — the real password is whatever it was first set to. If it's lost,
 > reset it with `bin/kc.sh bootstrap-admin` (Keycloak 26) or by seeding a fresh
 > admin against the DB; the compose values are not authoritative on a persisted
 > volume.
+
+### Rotating the Keycloak secrets
+
+**Do this if your realm was created by v2.11.0 or earlier.** Until then
+`deploy/keycloak/realm-export.json` contained working values: the secret of the
+sign-in client, the secret of `natural-reader-admin` (a service account that can
+create users and reset anyone's password), the password of the seeded
+`admin-user` (an app admin), and compose set Keycloak's master admin to
+`admin`/`admin`. They are public. Keycloak's token endpoint has to be reachable
+for sign-in to work, so anyone who can reach it can use them.
+
+The backend tells you: at start it logs an error naming each variable that
+still holds a published value, and Admin → Deployment shows "set, but to a
+published default: rotate it".
+
+1. **The two client secrets.** In the Keycloak admin console: realm
+   `natural-reader` → Clients → `natural-reader` → Credentials → **Regenerate**;
+   the same for `natural-reader-admin`. Put the new values in `.env` as
+   `OIDC_CLIENT_SECRET` and `KC_ADMIN_CLIENT_SECRET`, then `./startup.sh rebuild`
+   (or restart the backend). Sign-in fails between the two steps, so do them
+   together.
+2. **`admin-user`.** Once your own account is an admin, delete it (Users →
+   `admin-user` → Delete), or give it a new password under Credentials.
+3. **The master admin.** Sign in to the admin console as `admin`, then change the
+   password (top right → Manage account), or create a new admin in the `master`
+   realm and delete `admin`.
+4. Check: restart the backend and look for the error line; it should be gone.
+
+A fresh install needs none of this: `./startup.sh` generates all four values into
+`.env`, and the realm file only holds `${PLACEHOLDERS}` that Keycloak fills from
+them when it first creates the realm. They are read once. Changing them in `.env`
+later does not change an existing realm; use the steps above.
 
 ### Trap 3 — the session cookie silently vanishes (COOKIE_SECURE / same origin)
 
@@ -305,7 +378,7 @@ to disarm all three at once:
 
   ```ini
   KC_ADMIN_CLIENT_ID=natural-reader-admin
-  KC_ADMIN_CLIENT_SECRET=<the natural-reader-admin client secret>   # dev: natural-reader-admin-dev-secret
+  KC_ADMIN_CLIENT_SECRET=<the natural-reader-admin client secret>
   ```
 
 - **Fresh install shortcut:** because the corrected export assigns the founder the
@@ -1642,7 +1715,10 @@ role, or an API that's off, named with its project.
 4. **Build the SPA:** `npm run build`; point the chat vhost's `root` at `dist/`.
 5. **`.env`:** the six production values from the table above — the five
    scheme+host ones **and** `KC_ADMIN_CLIENT_ID`/`KC_ADMIN_CLIENT_SECRET` (start
-   from [`../.env.example`](../.env.example)).
+   from [`../.env.example`](../.env.example)). **Before the first start**, set
+   your own `OIDC_CLIENT_SECRET`, `KC_ADMIN_CLIENT_SECRET`,
+   `KC_BOOTSTRAP_ADMIN_PASSWORD` and `KC_SEED_USER_PASSWORD` (`openssl rand -hex 32`
+   each): Keycloak reads them once, when it creates the realm.
 6. **Bring up services:** `./startup.sh start` (Postgres, Keycloak, SearXNG and
    the backend container, which stays bound to the loopback nginx proxies to),
    then `./startup.sh enable-autostart` so it survives reboots.

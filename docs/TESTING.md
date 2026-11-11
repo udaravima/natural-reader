@@ -39,14 +39,14 @@ spot a feature that shipped without coverage.
 
 ## How to run
 
-> **Warning: a bare `pytest` connects to port 5433.** With `TEST_DATABASE_URL`
-> and `TEST_ADMIN_DATABASE_URL` unset, the suite uses the defaults
-> `postgresql://natural_reader:natural_reader@127.0.0.1:5433/...`, which is the
-> port the app's own compose Postgres uses. On a machine that also runs the app,
-> that is the live server: the suite creates `natural_reader_test` on it, applies
-> migrations there, and its migration tests create and drop scratch databases
-> beside your real one. Point both
-> variables at a scratch Postgres first, in the same shell as the run:
+> **A scratch database.** The suite creates `natural_reader_test`, applies
+> migrations there, and its migration tests create and drop scratch databases.
+> So it refuses to run on the Postgres server the app itself uses
+> (`DATABASE_URL`, by default `127.0.0.1:5433`, the compose Postgres): a bare
+> `pytest`, whose defaults are that server, stops with a message saying so. Point
+> both variables at a scratch Postgres first, in the same shell as the run. On a
+> machine whose only Postgres is a development one with nothing to lose,
+> `TEST_DB_ALLOW_APP_SERVER=1` lets it through.
 >
 > ```bash
 > # a scratch container on another port (any Postgres with pgvector works)
@@ -65,7 +65,7 @@ spot a feature that shipped without coverage.
 ```bash
 # Backend — REQUIRES Postgres up (conftest migrates natural_reader_test on a
 # real connection; without the DB every test errors, not skips). Run it with
-# the two TEST_* variables above exported, or it uses 5433.
+# the two TEST_* variables above exported, or it stops before the first test.
 .venv/bin/python -m pytest server/tests/ -q          # 3099 passed, 16 skipped, 2 deselected @ 2026-11-05 (embeddings, phase 2b follow-ups)
 
 # Frontend (vitest, jsdom — no services needed)

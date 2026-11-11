@@ -22,7 +22,10 @@ import pytest
 import pytest_asyncio
 from psycopg import AsyncConnection
 
-from server.tests.dbutil import ADMIN_URL as _ADMIN_URL, TEST_DB, TEST_URL, apply_migrations
+import os
+
+from server.tests.dbutil import (ADMIN_URL as _ADMIN_URL, TEST_DB, TEST_URL, apply_migrations,
+                                 refuse_app_server)
 
 
 async def _ensure_test_db() -> None:
@@ -41,6 +44,10 @@ async def _ensure_test_db() -> None:
 @pytest.fixture(scope="session", autouse=True)
 def _migrated():
     """Ensure the test DB exists and all migrations are applied, once."""
+    try:
+        refuse_app_server(os.environ)
+    except RuntimeError as e:
+        pytest.exit(str(e), returncode=4)
     asyncio.run(_ensure_test_db())
     asyncio.run(apply_migrations(TEST_URL))
 

@@ -33,6 +33,33 @@ def test_dev_env_file_has_the_rig_values_and_a_secret(proj):
     assert len(env["SESSION_SECRET"]) >= 48
 
 
+def test_dev_env_file_generates_every_keycloak_secret(proj):
+    # The realm file holds placeholders, filled from these when Keycloak first creates the realm. A value
+    # written into the script would be a secret anyone can read in the repository.
+    assert run(proj, "ensure_env_file dev", SYSTEM_PATH).returncode == 0
+    env = dict(l.split("=", 1) for l in (proj / ".env").read_text().splitlines() if l and not l.startswith("#"))
+    names = ["OIDC_CLIENT_SECRET", "KC_ADMIN_CLIENT_SECRET", "KC_BOOTSTRAP_ADMIN_PASSWORD", "KC_SEED_USER_PASSWORD"]
+    for name in names:
+        assert re.fullmatch(r"[0-9a-f]{20,64}", env[name]), name
+    assert len({env[n] for n in names}) == 4
+    assert "KC_ADMIN_CLIENT_ID" not in env        # managing Keycloak users from the app stays opt-in
+    script = (proj / "startup.sh").read_text()
+    assert "natural-reader-dev-secret" not in script and "admin/admin" not in script
+
+
+def test_the_sign_in_hint_is_the_generated_password(proj):
+    assert run(proj, "ensure_env_file dev", SYSTEM_PATH).returncode == 0
+    env = dict(l.split("=", 1) for l in (proj / ".env").read_text().splitlines() if l and not l.startswith("#"))
+    out = run(proj, "seed_login_hint", SYSTEM_PATH)
+    assert out.stdout.strip() == f"admin-user / {env['KC_SEED_USER_PASSWORD']}"
+
+
+def test_the_sign_in_hint_for_a_rig_made_before_passwords_were_generated(proj):
+    (proj / ".env").write_text("OIDC_ISSUER=http://localhost:18080/realms/natural-reader\n")
+    out = run(proj, "seed_login_hint", SYSTEM_PATH)
+    assert out.stdout.strip() == "admin-user / password"
+
+
 def test_single_user_env_file_turns_sign_in_off(proj):
     assert run(proj, "ensure_env_file single-user", SYSTEM_PATH).returncode == 0
     text = (proj / ".env").read_text()
@@ -293,7 +320,8 @@ def test_quickstart_dev_end_to_end_with_stubs(proj, tmp_path):
     assert "up -d keycloak" in log and "up -d backend" in log
     assert log.rstrip().endswith("npm run dev")          # frontend last, in the foreground
     assert (proj / ".env").exists() and (proj / "searxng/settings.yml").exists()
-    assert "admin-user / password" in out.stdout
+    seeded = re.search(r"^KC_SEED_USER_PASSWORD=(.+)$", (proj / ".env").read_text(), re.M).group(1)
+    assert f"admin-user / {seeded}" in out.stdout
     assert ".env.example" in out.stdout                   # production pointer
     assert (proj / ".local/container-engine").read_text() == "podman"
 

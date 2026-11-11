@@ -188,7 +188,7 @@ git clone https://github.com/udaravima/natural-reader.git && cd natural-reader
 ./startup.sh quickstart            # or: ./startup.sh quickstart --single-user
 ```
 
-It checks for a container engine (podman with podman-compose 1.1+, or Docker with the Compose plugin 2.24+) and Node 22.13+/24+. **No host Python is needed:** the backend runs in a container. It writes a local-dev `.env` (never touching an existing one), builds the backend image, starts Postgres, Keycloak, SearXNG and the backend, then the frontend dev server. Open <http://localhost:5173> and sign in as `admin-user` / `password`. `--single-user` turns sign-in off and skips Keycloak. Re-running it after a failure picks up where it stopped.
+It checks for a container engine (podman with podman-compose 1.1+, or Docker with the Compose plugin 2.24+) and Node 22.13+/24+. **No host Python is needed:** the backend runs in a container. It writes a local-dev `.env` (never touching an existing one), builds the backend image, starts Postgres, Keycloak, SearXNG and the backend, then the frontend dev server. Open <http://localhost:5173> and sign in as `admin-user` with the password the script prints (it generates one into `.env` as `KC_SEED_USER_PASSWORD`). `--single-user` turns sign-in off and skips Keycloak. Re-running it after a failure picks up where it stopped.
 
 | Command | What it does |
 |---|---|
@@ -281,7 +281,7 @@ Place both files in the project root directory.
 # first run with the local realm values + a generated SESSION_SECRET, waits for
 # the realm import, then runs the backend with auth on):
 ./startup.sh up-with-dev-auth
-# → sign in at http://localhost:5173 as Keycloak user admin-user / password
+# → sign in at http://localhost:5173 as Keycloak user admin-user, with the password it prints
 # Walkthrough (adding a second user, approval flow, PATs): deploy/README.md
 # End-user guide (signing in, personal access tokens, admin section,
 # chat budgets): docs/USER_GUIDE.md
@@ -1022,8 +1022,8 @@ components fit together (the same-origin `/v1` rule, auth flow, TTS lock, chat
 engine, doc pipelines, and the invariants to keep intact). In short:
 `./startup.sh init && ./startup.sh up`, keep both test suites
 green (`npm run test:run`, and `.venv/bin/python -m pytest server/tests` with
-`TEST_DATABASE_URL` and `TEST_ADMIN_DATABASE_URL` set: a bare run connects to the
-app's own Postgres, see [docs/TESTING.md](docs/TESTING.md#how-to-run)), and open PRs against
+`TEST_DATABASE_URL` and `TEST_ADMIN_DATABASE_URL` set: a bare run would use the
+app's own Postgres and refuses to, see [docs/TESTING.md](docs/TESTING.md#how-to-run)), and open PRs against
 `master` using [Conventional Commits](https://www.conventionalcommits.org/).
 
 ## 📄 License

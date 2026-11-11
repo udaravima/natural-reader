@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from fastapi import APIRouter, Depends, Request
+from python_multipart.exceptions import FormParserError
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.requests import ClientDisconnect
@@ -217,7 +218,7 @@ async def _read_upload(request: Request) -> tuple[str | None, UploadFile | None]
                                    max_part_size=4096)
     try:
         form = await parser.parse()
-    except MultiPartException:
+    except (MultiPartException, FormParserError):   # Starlette 1.0 let the parser's own error through
         raise refusal(400, "bad_audio", _BAD_AUDIO) from None
     except ClientDisconnect:
         # A closed tab mid-upload is a normal event, not a crash: one debug line, no traceback. The client has

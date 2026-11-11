@@ -11,8 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from .appconfig import cors_allow_credentials, parse_cors_origins
-from .auth.config import load_auth_config, startup_guard
-from .db import close_db, get_pool, init_db
+from .auth.config import load_auth_config, startup_guard, warn_published_secrets
+from .db import close_db, get_pool, init_db, init_db_until_ready
 from .http_errors import install_handlers
 from .logging_config import configure_logging
 from .chat import orchestrator as chat_orchestrator
@@ -109,14 +109,11 @@ def create_app() -> FastAPI:
             bind_host=os.environ.get("HOST", "127.0.0.1"),
             session_secret=_auth_cfg.session_secret,
         )
+        warn_published_secrets(_auth_cfg)
         docling_convert.check_available()
-        # init_db retries on its own and never raises — the app comes up even
-        # when Postgres is down so TTS keeps serving. Chat routes will return
-        # 503 until the DB is reachable.
-        ok = await init_db()
-        if not ok:
-            logger.warning("Postgres is offline; chat persistence is disabled")
-        else:
+        async def _db_ready() -> None:
+            """The start-up steps that need the database. They run at start, or later, when a database that
+            wasn't reachable at start comes up."""
             # A crashed worker leaves its turn 'streaming'. Only claims whose
             # heartbeat stopped are touched, so other live workers are safe.
             try:
@@ -146,6 +143,15 @@ def create_app() -> FastAPI:
                     speech_service.get_transcriber(wanted=speech_catalogue.wanted(options)).warm()
             except Exception:
                 logger.warning("Voice input warm-up skipped", exc_info=True)
+
+        # One attempt, which never raises: the app comes up even when Postgres is down (within one connect
+        # timeout), and keeps trying in the background, so a Postgres that boots after the app is picked up
+        # without a restart. Until then the routes that need it answer 503.
+        if await init_db(attempts=1):
+            await _db_ready()
+        else:
+            logger.warning("Postgres is offline; still trying in the background")
+            _background.append(asyncio.get_running_loop().create_task(init_db_until_ready(_db_ready)))
         await start_embeddings()
         await start_web_search()
         await start_llm_router()

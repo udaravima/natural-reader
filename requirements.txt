@@ -1,56 +1,63 @@
-# Kokoro TTS Server Dependencies
-# For running server.py
+# Backend dependencies.
+#
+# Every line has a floor and a ceiling (the next major, or the next minor for a 0.x package whose minors
+# break). The image installs through constraints.txt as well: the exact versions the tests ran on, for these
+# and everything they bring in. After changing a line here, or to move to newer versions, upgrade the venv,
+# run the tests, then regenerate constraints.txt (docs/DEPLOYMENT.md, "Pinned versions").
 
 # Core server
-fastapi
-uvicorn
+fastapi>=0.142,<1
+uvicorn>=0.54,<1
+# FastAPI brings Starlette, but its range is ours to hold: 1.0 answered a malformed upload with a 500
+# where 1.7 answers 400 (server/routers/speech.py).
+starlette>=1.7,<2
 
 # Postgres + pgvector for chat sessions and (later) doc embeddings
-psycopg[binary,pool]>=3.2
-pgvector>=0.3
-httpx>=0.27
+psycopg[binary,pool]>=3.2,<4
+pgvector>=0.5.0,<0.6
+httpx>=0.27,<1
 
 # Multi-user auth: OIDC Relying Party (Authlib) + signed session cookie for the
 # transient OIDC flow state (itsdangerous, via Starlette SessionMiddleware).
-authlib>=1.3
-itsdangerous>=2.1
+authlib>=1.3,<2
+itsdangerous>=2.1,<3
 
 # Google Cloud speech, when a deployer configures it (server/google_cloud.py): service-account tokens only;
 # the calls are plain httpx.
-google-auth[requests]>=2.30
+google-auth[requests]>=2.30,<3
 
 # Required by FastAPI to parse multipart/form-data PDF uploads.
-python-multipart
+python-multipart>=0.0.32,<0.1
 
 # Server-side text extraction (A1): PDF text per page, and a CommonMark+GFM
 # parser whose top-level blocks match the reader's mdast. All MIT-compatible;
 # never PyMuPDF (AGPL). The markdown parsers are capped at the next major:
 # block boundaries decide chunk pages, pinned by the parity fixtures.
-pypdfium2>=4.0
+pypdfium2>=4.0,<6
 markdown-it-py>=3.0,<5
 mdit-py-plugins>=0.4,<1
 
 # HTML → clean text extraction for the web_search tool (strips nav/ads/boilerplate).
-trafilatura
+trafilatura>=2.3,<3
 
 # Kokoro TTS (ONNX version for CPU efficiency)
-kokoro-onnx>=0.3.9
+kokoro-onnx>=0.3.9,<1
 
 # Speech-to-text for the chat microphone (local engine): faster-whisper runs Whisper on CPU
 # and decodes the browser's webm/opus itself (PyAV), so no ffmpeg is needed.
-faster-whisper>=1.2
+faster-whisper>=1.2,<2
 # server/speech/audio.py imports these directly (decoding and resampling), so they are listed rather than
 # relying on faster-whisper to bring them.
-av>=19.0
-numpy>=2.5
+av>=19.0,<20
+numpy>=2.5,<3
 # server/speech/convert.py: one worker converts a model at a time (huggingface_hub brings it too).
-filelock>=3.12
+filelock>=3.12,<4
 
 # Audio processing
-soundfile
+soundfile>=0.14,<1
 
 # Data validation (used by FastAPI)
-pydantic
+pydantic>=2.13,<3
 
 # Optional: torch is imported but may not be needed with ONNX model
 # Uncomment if required by your setup
@@ -64,12 +71,12 @@ pydantic
 #   NVIDIA:            pip uninstall -y onnxruntime && pip install onnxruntime-gpu
 #   Intel GPU/NPU/CPU: pip uninstall -y onnxruntime && pip install onnxruntime-openvino openvino
 # then check the startup line "Available ONNX Runtime providers".
-onnxruntime
+onnxruntime>=1.30,<2
 
 # The zone database for the deployment timezone (Windows has no system copy; Linux and macOS use theirs first).
 tzdata
 
 # Backend test harness (dev). respx mocks httpx; pytest-asyncio runs async tests.
-pytest
-pytest-asyncio
-respx
+pytest>=9,<10
+pytest-asyncio>=1.4,<2
+respx>=0.23,<1
