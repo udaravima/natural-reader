@@ -243,7 +243,7 @@ export default function App() {
 
   const {
     pdfDoc, pdfFileName, docLoadId, docInLibrary, docBytes, fileType, currentPage, setCurrentPage, numPages,
-    textItems, isLibLoaded, pdfOutline, recentBooks,
+    textItems, textItemsPage, isLibLoaded, pdfOutline, recentBooks,
     currentSentenceIndex, setCurrentSentenceIndex,
     canvasRef, textLayerRef, fileInputRef, sentenceRefs, playbackIndexRef,
     processFile, openFromLibrary, removeFromLibrary, refreshLibrary, handleFileUpload,
@@ -366,7 +366,7 @@ export default function App() {
   }, [auth.state, apiHost, apiPort, projectsVersion]);
 
   const ttsEngine = useTtsEngine({
-    textItems, currentSentenceIndex, setCurrentSentenceIndex,
+    textItems, textItemsPage, currentSentenceIndex, setCurrentSentenceIndex,
     playbackIndexRef, currentPage, setCurrentPage, numPages,
     selectedVoice, playbackSpeed, googleVoice, isLocalhost, volume,
     apiHost, apiPort, requestTimeout, unlimitedBatchTimeout,

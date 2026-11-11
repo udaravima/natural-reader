@@ -258,6 +258,27 @@ def test_up_runs_the_working_tree_with_sign_in_off(proj, tmp_path):
     assert "up -d keycloak" not in log
 
 
+@pytest.mark.parametrize("line", ["OIDC_ISSUER=https://auth.example.com/realms/natural-reader",
+                                  "KC_HOSTNAME=https://auth.example.com", "COOKIE_SECURE=true"])
+def test_up_refuses_to_turn_sign_in_off_on_a_deployments_env(proj, tmp_path, line):
+    # `./startup.sh` with no arguments is `up`, which turns sign-in off. Typed on the production box, behind
+    # nginx, that used to make every visitor the admin.
+    calls, path = _stubbed(tmp_path)
+    (proj / ".env").write_text(line + "\n")
+    out = run(proj, "trap - EXIT; cmd_up ''", path, ENGINE)
+    assert out.returncode != 0
+    assert "sign-in off" in out.stderr and " start'" in out.stderr and "ALLOW_AUTH_OFF=1" in out.stderr
+    assert not calls.exists() or "up -d" not in calls.read_text()
+    again = run(proj, "trap - EXIT; cmd_up ''", path, {**ENGINE, "ALLOW_AUTH_OFF": "1"})
+    assert again.returncode == 0, again.stderr
+
+
+def test_up_with_the_local_rig_env_still_turns_sign_in_off(proj, tmp_path):
+    calls, path = _stubbed(tmp_path)
+    run(proj, "ensure_env_file dev", path)
+    assert run(proj, "trap - EXIT; cmd_up ''", path, ENGINE).returncode == 0
+
+
 def test_up_with_dev_auth_writes_the_rig_env_and_starts_keycloak(proj, tmp_path):
     calls, path = _stubbed(tmp_path)
     out = run(proj, "trap - EXIT; cmd_up dev-auth", path, ENGINE)

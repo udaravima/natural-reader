@@ -10,7 +10,7 @@ from fastapi import Depends, HTTPException, Request
 from ..db import get_pool
 from . import scopes as token_scopes
 from . import sessions, tokens, users
-from .config import dev_bypass_allowed, load_auth_config
+from .config import bypass_request_is_local, dev_bypass_allowed, load_auth_config
 
 COOKIE_NAME = "nr_session"
 
@@ -70,6 +70,12 @@ async def resolve_principal(request: Request, conn) -> Principal:
     cfg = load_auth_config(os.environ)
     host = os.environ.get("HOST", "127.0.0.1")
     if dev_bypass_allowed(cfg, host):
+        if not bypass_request_is_local(request.headers):
+            # Sign-in is off, and this request came through a proxy or for another name: never the seed admin.
+            raise HTTPException(status_code=403, detail={
+                "error": "sign_in_off_local_only",
+                "message": "Sign-in is turned off on this server, which only works from the machine it runs on. "
+                           "The person who runs it needs to turn sign-in on (AUTH_ENABLED)."})
         row = await users.get_user(conn, users.SEED_ADMIN_ID)
         return _principal(row)
 

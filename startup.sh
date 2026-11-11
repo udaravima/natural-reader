@@ -410,6 +410,20 @@ seed_login_hint() {
 	printf 'admin-user / %s\n' "${password:-password}"
 }
 
+# 'up' turns sign-in off, which is for a developer's own machine. A .env that describes a real deployment
+# (an https issuer, a public Keycloak hostname, secure cookies) means this is that deployment's box, where a
+# reverse proxy would hand the open backend to everyone. The backend refuses proxied requests in that mode
+# too (server/auth/config.py); this stops the mistake before anything starts. Call after load_env_file.
+refuse_auth_off_on_a_deployment() {
+	[[ "${ALLOW_AUTH_OFF:-}" == "1" ]] && return 0
+	local why=""
+	case "${OIDC_ISSUER:-}" in https://*) why="OIDC_ISSUER is an https address" ;; esac
+	[[ -n "${KC_HOSTNAME:-}" ]] && why="KC_HOSTNAME is set"
+	case "${COOKIE_SECURE:-}" in true|TRUE|True|1|yes) why="COOKIE_SECURE is on" ;; esac
+	[[ -z "$why" ]] && return 0
+	die "$ENV_FILE describes a live deployment ($why), and '$0 up' would turn sign-in off for it. To run the deployment: '$0 start'. To develop here with sign-in on: '$0 up-with-dev-auth'. To turn sign-in off anyway: ALLOW_AUTH_OFF=1 $0 up."
+}
+
 # Export every KEY=value in .env into this shell (and thus into run.py's
 # environment — the backend has no dotenv loader of its own). docker-compose
 # also reads .env natively for its \${VAR:-default} interpolations.
@@ -814,6 +828,7 @@ cmd_up() {
 		log "Auth ENABLED (OIDC issuer: ${OIDC_ISSUER:-<unset>})"
 	else
 		load_env_file
+		refuse_auth_off_on_a_deployment
 		AUTH_ENABLED=false
 		export AUTH_ENABLED
 		log "Auth DISABLED (single-user dev bypass; loopback bind only)"
@@ -862,8 +877,9 @@ cmd_up_venv() {
 	else
 		load_env_file
 		# Quick single-user dev: explicit bypass of the OIDC flow. The backend's
-		# startup guard refuses this on a non-loopback bind (server/app.py), so
-		# it can never leak onto an exposed server.
+		# startup guard refuses this on a non-loopback bind (server/app.py), and
+		# refuses requests that came through a proxy (server/auth/config.py).
+		refuse_auth_off_on_a_deployment
 		AUTH_ENABLED=false
 		export AUTH_ENABLED
 		log "Auth DISABLED (single-user dev bypass; loopback bind only)"

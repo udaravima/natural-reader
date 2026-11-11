@@ -525,6 +525,17 @@ function Invoke-Up([string] $Mode) {
         Import-EnvFile
         # Quick single-user dev: explicit bypass of the OIDC flow. The
         # backend's startup guard refuses this on a non-loopback bind.
+        # 'up' turns sign-in off, which is for a developer's own machine: refuse on a .env that describes a
+        # live deployment (the same rule as startup.sh's refuse_auth_off_on_a_deployment).
+        if ($env:ALLOW_AUTH_OFF -ne "1") {
+            $why = ""
+            if ("$($env:OIDC_ISSUER)".StartsWith("https://")) { $why = "OIDC_ISSUER is an https address" }
+            if ($env:KC_HOSTNAME) { $why = "KC_HOSTNAME is set" }
+            if (@("true", "1", "yes") -contains "$($env:COOKIE_SECURE)".ToLower()) { $why = "COOKIE_SECURE is on" }
+            if ($why) {
+                throw "$EnvFile describes a live deployment ($why), and 'up' would turn sign-in off for it. To develop here with sign-in on: up-with-dev-auth. To turn sign-in off anyway, set ALLOW_AUTH_OFF=1."
+            }
+        }
         $env:AUTH_ENABLED = "false"
         Write-Step "Auth DISABLED (single-user dev bypass; loopback bind only)"
     }

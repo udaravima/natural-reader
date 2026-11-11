@@ -54,8 +54,7 @@ database answers `503 db_unavailable`, and `GET /v1/health` says so:
 ```
 
 `status` is read-aloud's own state (the Kokoro model), so watch `database` in a
-monitor. With sign-in on, read-aloud needs the database too: the caller is looked
-up there.
+monitor. Read-aloud needs the database too: the caller is looked up there.
 
 Workers that start together take turns migrating (an advisory lock), each
 migration commits on its own, and a worker only serves once they have all run.
@@ -283,6 +282,25 @@ one bogus URI and matches nothing.
 > reset it with `bin/kc.sh bootstrap-admin` (Keycloak 26) or by seeding a fresh
 > admin against the DB; the compose values are not authoritative on a persisted
 > volume.
+
+### Sign-in off is for one machine
+
+`AUTH_ENABLED=false` makes every request the seed admin. It exists for a
+developer's own machine and for single-user use, and two checks keep it there:
+
+- The backend refuses to start with it on a non-loopback bind.
+- Behind a reverse proxy the bind is still loopback, so each request is checked
+  too: one that carries a proxy's headers (`X-Forwarded-For`, `X-Real-IP`,
+  `Forwarded`, `X-Forwarded-Host`) or is addressed to any name but `localhost`,
+  `127.0.0.1` or `::1` gets `403 sign_in_off_local_only`. That is also what stops a
+  web page from reaching a developer's backend through DNS rebinding.
+
+`./startup.sh up` (also what a bare `./startup.sh` runs) turns sign-in off, so it
+refuses when `.env` has an `https://` issuer, `KC_HOSTNAME` or `COOKIE_SECURE=true`.
+Use `./startup.sh start` on a deployment. `ALLOW_AUTH_OFF=1` overrides.
+
+One consequence: with sign-in off the app can't be used from another device on
+your network (a phone at `192.168.x.x:5173`). Turn sign-in on for that.
 
 ### Rotating the Keycloak secrets
 

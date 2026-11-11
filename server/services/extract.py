@@ -14,6 +14,7 @@ PDF bookmarks, with pages) and the document's opening line.
 """
 from __future__ import annotations
 
+import threading
 import logging
 import os
 import re
@@ -278,23 +279,38 @@ def outline_from_markdown_pages(pages: list[tuple[int, str]]) -> tuple[OutlineEn
 
 # ---------- PDF (one chunk per non-empty page, like pdf.js in the reader) ----------
 
+_PDFIUM_LOCK = threading.Lock()
+
+
+def pdfium_lock() -> threading.Lock:
+    """The one lock every PDFium call is made under. PDFium isn't thread-safe, and these run on worker threads:
+    two uploads at once, or an upload during a conversion, could crash the process. Docling calls PDFium too,
+    under its own lock, so when Docling is installed that lock is the one to share."""
+    try:
+        from docling.utils.locks import pypdfium2_lock
+        return pypdfium2_lock
+    except Exception:
+        return _PDFIUM_LOCK
+
+
 def _pdf_page_texts(path: Path) -> tuple[list[str], int]:
     import pypdfium2 as pdfium  # imported lazily: only PDF jobs pay for it
 
-    pdf = pdfium.PdfDocument(str(path))
-    try:
-        texts = []
-        for i in range(len(pdf)):
-            page = pdf[i]
-            textpage = page.get_textpage()
-            try:
-                texts.append(textpage.get_text_range())
-            finally:
-                textpage.close()
-                page.close()
-        return texts, len(pdf)
-    finally:
-        pdf.close()
+    with pdfium_lock():
+        pdf = pdfium.PdfDocument(str(path))
+        try:
+            texts = []
+            for i in range(len(pdf)):
+                page = pdf[i]
+                textpage = page.get_textpage()
+                try:
+                    texts.append(textpage.get_text_range())
+                finally:
+                    textpage.close()
+                    page.close()
+            return texts, len(pdf)
+        finally:
+            pdf.close()
 
 
 def pdf_page_count(path: Path) -> int:
@@ -302,11 +318,12 @@ def pdf_page_count(path: Path) -> int:
     recorded one). Raises if the file isn't a readable PDF."""
     import pypdfium2 as pdfium
 
-    pdf = pdfium.PdfDocument(str(path))
-    try:
-        return len(pdf)
-    finally:
-        pdf.close()
+    with pdfium_lock():
+        pdf = pdfium.PdfDocument(str(path))
+        try:
+            return len(pdf)
+        finally:
+            pdf.close()
 
 
 class _TocItem(NamedTuple):
@@ -321,18 +338,19 @@ def _pdf_toc_items(path: Path) -> list[_TocItem]:
     4.x yielded ready tuples with .level/.title/.page_index. Both are read."""
     import pypdfium2 as pdfium
 
-    pdf = pdfium.PdfDocument(str(path))
-    try:
-        items: list[_TocItem] = []
-        for item in pdf.get_toc():
-            if hasattr(item, "get_title"):
-                dest = item.get_dest()
-                items.append(_TocItem(item.level, item.get_title(), dest.get_index() if dest else None))
-            else:
-                items.append(_TocItem(item.level, item.title, item.page_index))
-        return items
-    finally:
-        pdf.close()
+    with pdfium_lock():
+        pdf = pdfium.PdfDocument(str(path))
+        try:
+            items: list[_TocItem] = []
+            for item in pdf.get_toc():
+                if hasattr(item, "get_title"):
+                    dest = item.get_dest()
+                    items.append(_TocItem(item.level, item.get_title(), dest.get_index() if dest else None))
+                else:
+                    items.append(_TocItem(item.level, item.title, item.page_index))
+            return items
+        finally:
+            pdf.close()
 
 
 def toc_entries(items) -> tuple[OutlineEntry, ...]:

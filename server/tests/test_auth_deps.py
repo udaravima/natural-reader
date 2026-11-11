@@ -111,3 +111,54 @@ async def test_an_idle_session_cookie_is_401(db_conn, monkeypatch):
     await db_conn.execute("UPDATE sessions SET last_seen_at = now() - interval '2 hours'")
     r = await _get(_app(db_conn), "/whoami", {"Cookie": f"{deps.COOKIE_NAME}={tok}"})
     assert r.status_code == 401
+
+
+# ---- The sign-in bypass is for this machine only, whatever sits in front of the backend ----
+
+import pytest
+
+from server.auth.config import bypass_request_is_local
+
+
+@pytest.mark.parametrize("headers", [
+    {"host": "localhost:5173"}, {"host": "127.0.0.1:8000"}, {"host": "[::1]:8000"}, {"host": "LOCALHOST"},
+])
+def test_a_request_addressed_to_this_machine_may_use_the_bypass(headers):
+    assert bypass_request_is_local(headers) is True
+
+
+@pytest.mark.parametrize("headers", [
+    {"host": "chat.example.com"},                                  # a reverse proxy passing the public name
+    {"host": "attacker.example:8000"},                             # DNS rebinding from a page in the browser
+    {"host": "192.168.1.20:5173"},                                 # another machine on the network
+    {"host": "localhost.evil.example"}, {"host": "127.0.0.1.evil.example"},
+    {"host": "localhost", "x-forwarded-for": "203.0.113.9"},       # a proxy that rewrote Host
+    {"host": "127.0.0.1:8000", "x-real-ip": "203.0.113.9"},
+    {"host": "127.0.0.1:8000", "forwarded": "for=203.0.113.9"},
+    {"host": "127.0.0.1:8000", "x-forwarded-host": "chat.example.com"},
+    {},
+])
+def test_a_request_that_came_through_a_proxy_or_for_another_name_may_not(headers):
+    assert bypass_request_is_local(headers) is False
+
+
+async def _bypass_get(app, headers):
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost:8000") as c:
+        return await c.get("/whoami", headers=headers)
+
+
+async def test_with_sign_in_off_a_local_request_is_the_seed_admin(db_conn, monkeypatch):
+    monkeypatch.setenv("AUTH_ENABLED", "false")
+    monkeypatch.setenv("HOST", "127.0.0.1")
+    r = await _bypass_get(_app(db_conn), {})
+    assert r.status_code == 200 and r.json()["role"] == "admin"
+
+
+async def test_with_sign_in_off_a_proxied_request_is_refused_not_made_admin(db_conn, monkeypatch):
+    # `./startup.sh` with no arguments turns sign-in off. Behind nginx the bind is still loopback, so the bind
+    # check alone made every visitor the seed admin.
+    monkeypatch.setenv("AUTH_ENABLED", "false")
+    monkeypatch.setenv("HOST", "127.0.0.1")
+    for headers in ({"host": "chat.example.com", "x-forwarded-for": "203.0.113.9"}, {"host": "attacker.example"}):
+        r = await _bypass_get(_app(db_conn), headers)
+        assert r.status_code == 403 and r.json()["detail"]["error"] == "sign_in_off_local_only", headers

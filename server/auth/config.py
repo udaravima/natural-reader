@@ -121,6 +121,30 @@ def dev_bypass_allowed(cfg: AuthConfig, bind_host: str) -> bool:
     return (not cfg.enabled) and _is_loopback(bind_host)
 
 
+# Headers a reverse proxy adds. One of them on a request means it didn't start on this machine.
+_PROXY_HEADERS = ("x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded")
+
+
+def bypass_request_is_local(headers: Mapping[str, str]) -> bool:
+    """With sign-in off, may this request be the seed admin? Only one addressed to this machine by a loopback
+    name, with no sign of a proxy in front.
+
+    The bind address alone doesn't say that: behind nginx the backend still listens on 127.0.0.1 while serving
+    the internet, and a page on any website can reach a loopback server through DNS rebinding. Both show in the
+    request: the proxy passes the public name as Host (or adds its headers), and a rebinding page's Host is the
+    attacker's name. Host is client-supplied, so this is never the only check (dev_bypass_allowed is the
+    other); it can only take the bypass away."""
+    lowered = {k.lower(): v for k, v in headers.items()}
+    if any(lowered.get(h) for h in _PROXY_HEADERS):
+        return False
+    host = (lowered.get("host") or "").strip().lower()
+    if host.startswith("["):                      # [::1]:8000
+        name = host[1:].split("]", 1)[0]
+    else:
+        name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    return bool(name) and _is_loopback(name)
+
+
 def _weak_session_secret(secret: str | None) -> bool:
     """A missing or too-short secret can't safely sign the session cookie."""
     return not secret or len(secret) < MIN_SESSION_SECRET_LEN

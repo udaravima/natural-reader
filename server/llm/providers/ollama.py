@@ -11,7 +11,7 @@ import httpx
 from ..types import (Capabilities, CallSettings, Chunk, Finish, Message,
                      ProviderError, ProviderUnavailable, ReasoningDelta, TextDelta, ToolCall,
                      ToolCallReady, ToolSpec, Usage)
-from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_feature_rejection,
+from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_feature_rejection, is_overflow,
                    iter_lines, json_object, open_stream, parse_arguments, provider_error,
                    safe_error_message, settle_dropped)
 
@@ -122,6 +122,7 @@ class OllamaProvider:
         think = self._think_value(model, settings, caps)
         use_tools = bool(tools) and caps.tools is not False and not self._features.rejected(model, "tools")
         dropped: list[str] = []
+        overflowed = False
         while True:
             body = self._body(model, messages, tools if use_tools else [], settings, think)
             request = self._client.build_request("POST", f"{self.config.url}/api/chat", json=body,
@@ -132,6 +133,7 @@ class OllamaProvider:
             except ProviderError as err:
                 if not is_feature_rejection(err):
                     raise
+                overflowed = overflowed or is_overflow(err)
                 # Today's order (the browser's retry chain): a think LEVEL first,
                 # keeping tools, then tools.
                 if isinstance(think, str):
@@ -141,7 +143,8 @@ class OllamaProvider:
                 else:
                     raise
                 dropped.append(feature)
-        for chunk in settle_dropped(self._features, model, self.config.name, dropped):
+        for chunk in settle_dropped(self._features, model, self.config.name, dropped,
+                                    remember=not overflowed):
             yield chunk
         async for chunk in self._read(resp):
             yield chunk
