@@ -21,6 +21,8 @@ from .embeddings import counting_shortened
 
 logger = logging.getLogger(__name__)
 
+MAX_ERROR_CHARS = 500   # as the rebuild queue caps its own; an error can be a whole traceback
+
 
 async def run_and_notify(job: Callable[..., Awaitable[None]], doc_id: str, *job_args,
                          requested_by: str, via: Literal["index", "convert"]) -> None:
@@ -51,10 +53,14 @@ async def _notify(conn, doc_id: str, requested_by: str, via: str, shortened: int
     common = {"doc_id": doc_id, "target": target}
     if via == "convert" and conversion_state == "conversion_failed":
         await notifications.send(conn, [requested_by], "doc.convert_failed", title=f"Couldn't convert {name}.",
-                                 body=conversion_error, key=f"convert:{doc_id}", **common)
+                                 body=(conversion_error or "")[:MAX_ERROR_CHARS] or None, key=f"convert:{doc_id}", **common)
     elif state == "failed":
         await notifications.send(conn, [requested_by], "doc.index_failed", title=f"Couldn't index {name}.",
-                                 body=error, key=f"index:{doc_id}", **common)
+                                 body=(error or "")[:MAX_ERROR_CHARS] or None, key=f"index:{doc_id}", **common)
+    elif state == "indexed" and via == "convert" and conversion_state != "converted":
+        # The conversion never ran (the job returned early, or failed and couldn't record that): the document is
+        # still indexed from before. Nothing happened, so nothing is said, and no earlier failure is resolved.
+        logger.warning("Conversion of %s ended without converting it; no notice sent", doc_id)
     elif state == "indexed" and via == "convert":
         await notifications.resolve(conn, f"convert:{doc_id}")
         await notifications.resolve(conn, f"index:{doc_id}")

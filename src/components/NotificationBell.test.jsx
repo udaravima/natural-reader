@@ -45,6 +45,7 @@ const openPanel = async () => {
 describe('NotificationBell', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        fetchInbox.mockReset();     // a test's own implementation or unused answers must not reach the next
         markRead.mockResolvedValue(true);
         markAllRead.mockResolvedValue(true);
     });
@@ -156,14 +157,66 @@ describe('NotificationBell', () => {
         expect(await within(panel).findByText('and 10 more')).toBeInTheDocument();
     });
 
-    it('Show more loads the next page', async () => {
+    const older = (id, title) => single({ title, ids: [id], unread: false, items: [{ ...single().items[0], id, title, unread: false }] });
+
+    it('Show more adds the rows not shown yet', async () => {
         fetchInbox.mockResolvedValueOnce({ rows: [single()], total: 31 })
-            .mockResolvedValueOnce({ rows: [single({ title: 'Older one', ids: [9], items: [{ ...single().items[0], id: 9, title: 'Older one' }] })], total: 31 });
+            .mockResolvedValueOnce({ rows: [single(), older(9, 'Older one')], total: 2 });
         render(<NotificationBell theme={theme} apiHost="" apiPort="" count={1} action={0} onRefresh={vi.fn()} onOpenTarget={vi.fn()} />);
         const panel = await openPanel();
         fireEvent.click(await within(panel).findByRole('button', { name: 'Show more' }));
         expect(await within(panel).findByText('Older one')).toBeInTheDocument();
-        expect(fetchInbox).toHaveBeenLastCalledWith('', '', { offset: 1, limit: 30 });
+        // It asks from the top again: the list moves under it (a read row sinks, a new one arrives), so an
+        // offset into it would skip a row or show one twice.
+        expect(fetchInbox).toHaveBeenLastCalledWith('', '', { offset: 0, limit: 100 });
+        expect(within(panel).getAllByText('Q3.pdf finished indexing.')).toHaveLength(1);
+        expect(within(panel).queryByRole('button', { name: 'Show more' })).toBeNull();
+    });
+
+    it('Show more neither skips a row nor repeats one when the list moved', async () => {
+        // Shown: A (unread). The person reads A, so the server now sorts it after B; a new N has arrived on top.
+        const A = single({ title: 'A', ids: [1] });
+        const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+        fetchInbox.mockResolvedValueOnce({ rows: [A], total: 2 })
+            .mockResolvedValueOnce({ rows: [older(3, 'N'), older(2, 'B'), { ...A, unread: false }], total: 3 });
+        render(<NotificationBell theme={theme} apiHost="" apiPort="" count={1} action={0} onRefresh={vi.fn()} onOpenTarget={vi.fn()} />);
+        const panel = await openPanel();
+        fireEvent.click(await within(panel).findByRole('button', { name: 'Show more' }));
+        await within(panel).findByText('B');
+        const titles = within(panel).getAllByRole('listitem').map((li) => li.querySelector('span.block').textContent);
+        expect(titles).toEqual(['A', 'N', 'B']);
+        expect(errors.mock.calls.filter((c) => String(c[0]).includes('same key'))).toEqual([]);
+        errors.mockRestore();
+    });
+
+    it('Show more reaches every row of a long list exactly once', async () => {
+        const all = Array.from({ length: 131 }, (_, i) => older(1000 + i, `Row ${i}`));
+        fetchInbox.mockImplementation(async (_h, _p, { offset, limit }) => ({ rows: all.slice(offset, offset + limit), total: all.length }));
+        render(<NotificationBell theme={theme} apiHost="" apiPort="" count={0} action={0} onRefresh={vi.fn()} onOpenTarget={vi.fn()} />);
+        const panel = await openPanel();
+        for (const shown of [60, 90, 120, 131]) {
+            fireEvent.click(await within(panel).findByRole('button', { name: 'Show more' }));
+            await waitFor(() => expect(within(panel).getAllByRole('listitem')).toHaveLength(shown));
+        }
+        // By the fourth click the first page of the walk held only rows already shown, so it read a second one.
+        expect(fetchInbox).toHaveBeenLastCalledWith('', '', { offset: 100, limit: 100 });
+        const titles = within(panel).getAllByRole('listitem').map((li) => li.querySelector('span.block').textContent);
+        expect(titles).toEqual(all.map((r) => r.title));
+        expect(within(panel).queryByRole('button', { name: 'Show more' })).toBeNull();
+    });
+
+    it('a list that answers after the panel was closed and reopened is dropped', async () => {
+        let answerFirst;
+        fetchInbox.mockReturnValueOnce(new Promise((resolve) => { answerFirst = resolve; }))
+            .mockResolvedValueOnce({ rows: [single({ title: 'Fresh' })], total: 1 });
+        render(<NotificationBell theme={theme} apiHost="" apiPort="" count={1} action={0} onRefresh={vi.fn()} onOpenTarget={vi.fn()} />);
+        fireEvent.click(bell());      // open: the first request hangs
+        fireEvent.click(bell());      // close
+        const panel = await openPanel();
+        await within(panel).findByText('Fresh');
+        answerFirst({ rows: [single({ title: 'Stale' })], total: 1 });
+        await waitFor(() => expect(within(panel).queryByText('Stale')).toBeNull());
+        expect(within(panel).getByText('Fresh')).toBeInTheDocument();
     });
 
     it('Escape closes the panel and returns focus to the bell', async () => {

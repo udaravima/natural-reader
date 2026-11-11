@@ -5,6 +5,7 @@ import { fetchInbox, markAllRead, markRead } from '../lib/notifications';
 import { timeAgo } from '../utils/timeAgo';
 
 const PAGE = 30;
+const WALK = 100;   // the route's largest page, for Show more's walk from the top
 
 /**
  * The header's bell and its inbox (spec docs/superpowers/specs/2026-11-06-notifications-design.md). An inbox, never
@@ -19,32 +20,60 @@ const PAGE = 30;
 export default function NotificationBell({ theme, apiHost, apiPort, count = 0, action = 0, onRefresh, onOpenTarget }) {
     const [open, setOpen] = useState(false);
     const [rows, setRows] = useState(null);      // null while loading
-    const [total, setTotal] = useState(0);
+    const [hasMore, setHasMore] = useState(false);
     const [expanded, setExpanded] = useState(() => new Set());
     const wrapRef = useRef(null);
     const openerRef = useRef(null);
     const close = () => setOpen(false);
     useMenuDismiss({ open, onClose: close, wrapRef, openerRef });
 
-    const load = async (offset = 0) => {
-        const page = await fetchInbox(apiHost, apiPort, { offset, limit: PAGE });
-        if (!page) {
-            if (offset === 0) setRows([]);
-            return;
+    // Each opening of the panel is a generation: an answer for an earlier one is dropped.
+    const generation = useRef(0);
+
+    const load = async () => {
+        const mine = generation.current;
+        const page = await fetchInbox(apiHost, apiPort, { offset: 0, limit: PAGE });
+        if (mine !== generation.current) return;
+        setRows(page ? page.rows : []);
+        setHasMore(!!page && page.rows.length < page.total);
+    };
+
+    // The server's list moves while it is open: a row that was read sinks below the unread ones, and a new
+    // notice arrives on top. An offset into it would skip a row or show one twice. So Show more reads from the
+    // top again and adds the rows that share no notice with one already shown, in the server's order.
+    const showMore = async () => {
+        const mine = generation.current;
+        const seen = new Set((rows || []).flatMap((r) => r.ids));
+        const fresh = [];
+        let offset = 0;
+        let total;
+        for (;;) {
+            const page = await fetchInbox(apiHost, apiPort, { offset, limit: WALK });
+            if (mine !== generation.current || !page) return;
+            total = page.total;
+            for (const row of page.rows) {
+                if (row.ids.some((id) => seen.has(id))) continue;
+                row.ids.forEach((id) => seen.add(id));
+                fresh.push(row);
+            }
+            offset += page.rows.length;
+            if (fresh.length > PAGE || offset >= total || page.rows.length === 0) break;
         }
-        setTotal(page.total);
-        setRows((prev) => (offset === 0 ? page.rows : [...(prev || []), ...page.rows]));
+        setRows((prev) => [...(prev || []), ...fresh.slice(0, PAGE)]);
+        setHasMore(fresh.length > PAGE || offset < total);
     };
 
     const toggle = () => {
+        generation.current += 1;
         if (open) {
             close();
             return;
         }
         setRows(null);
+        setHasMore(false);
         setExpanded(new Set());
         setOpen(true);
-        load(0);
+        load();
     };
 
     // Mark a row's members read here at once, so the list doesn't wait for the server to look right.
@@ -86,7 +115,7 @@ export default function NotificationBell({ theme, apiHost, apiPort, count = 0, a
     const readAll = async () => {
         await markAllRead(apiHost, apiPort);
         onRefresh?.();
-        await load(0);
+        await load();
     };
 
     const anyUnread = count > 0 || (rows || []).some((r) => r.unread);
@@ -151,9 +180,9 @@ export default function NotificationBell({ theme, apiHost, apiPort, count = 0, a
                             ))}
                         </ul>
                     )}
-                    {rows !== null && rows.length < total && (
+                    {rows !== null && hasMore && (
                         <button
-                            onClick={() => load(rows.length)}
+                            onClick={showMore}
                             className={`w-full px-4 min-h-[44px] md:min-h-0 md:py-2 text-sm font-semibold text-blue-500 ${theme.hover} border-t ${theme.border}`}
                         >
                             Show more

@@ -181,3 +181,28 @@ async def test_an_upload_tells_the_uploader_when_it_is_indexed(db_conn, monkeypa
         r = await c.post("/v1/docs", files={"file": ("mine.txt", TEXT, "text/plain")})
         assert r.status_code == 200 and r.json()["doc_id"] == doc_id
     assert await _notices(db_conn, ben) == []
+
+
+async def test_a_conversion_that_never_ran_says_nothing_and_resolves_nothing(db_conn, pool, ann_and_ben):
+    # The convert job returned early (database not ready), or failed and couldn't even record that: the document
+    # is still "indexed" from before, and nothing was converted.
+    ann, _ = ann_and_ben
+    await db_conn.execute("UPDATE documents SET state = 'indexed' WHERE doc_id = %s", (D,))
+    await notifications.send(db_conn, [ann], "doc.convert_failed", title="old", key=f"convert:{D}")
+
+    async def job(doc_id, *args):
+        return None
+    await doc_notices.run_and_notify(job, D, {}, requested_by=ann, via="convert")
+    [(_, kind, _title, _b, _k, _t, resolved)] = await _notices(db_conn, ann)
+    assert kind == "doc.convert_failed" and resolved is None
+
+
+async def test_a_long_error_is_cut_to_500_characters(db_conn, pool, ann_and_ben):
+    ann, _ = ann_and_ben
+    await doc_notices.run_and_notify(_ends(db_conn, state="failed", error_message="e" * 5000), D,
+                                     requested_by=ann, via="index")
+    await doc_notices.run_and_notify(
+        _ends(db_conn, state="indexed", conversion_state="conversion_failed", conversion_error="c" * 5000),
+        D, {}, requested_by=ann, via="convert")
+    bodies = {r[1]: r[3] for r in await _notices(db_conn, ann)}
+    assert bodies == {"doc.index_failed": "e" * 500, "doc.convert_failed": "c" * 500}

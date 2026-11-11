@@ -107,3 +107,20 @@ async def test_a_switch_with_nothing_shortened_sends_only_done(db_conn, lib, mon
     assert await mig.switch(db_conn)
     assert await _notices(db_conn, "embed.shortened") == []
     assert await _notices(db_conn, "reembed.done") != []
+
+
+async def test_a_refused_new_model_resolves_the_pause_of_the_re_embed_it_stops(db_conn, lib, monkeypatch):
+    # The env names another model while the re-embed is paused, and that model is refused: the paused re-embed is
+    # dropped, so its notice no longer needs anyone.
+    from server.services.embeddings import ProbeResult
+    from server.tests.test_embedding_migration import MXBAI, _probes
+    _seen, probe = _probes({MXBAI.model: ProbeResult(False, 1024, None, "mxbai-embed-large gives 1024 numbers")})
+    monkeypatch.setattr(mig, "probe", probe)
+    monkeypatch.setenv("EMBEDDING_MODEL", GEMMA.model)
+    assert await mig.tick("w") == "started"
+    _failing(monkeypatch)
+    assert await mig.fill_step("w") == "error"
+    assert [r[8] for r in await _notices(db_conn, "reembed.paused")] != []
+    monkeypatch.setenv("EMBEDDING_MODEL", MXBAI.model)
+    assert await mig.tick("w") == "refused"
+    assert all(r[8] is not None for r in await _notices(db_conn, "reembed.paused"))

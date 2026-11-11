@@ -22,6 +22,16 @@ All notable changes to this project will be documented in this file.
   Settings stays in the profile menu.
 - `docs/ARCHITECTURE.md` no longer says the time tool is gone (v2.10 brought it back).
 
+### Fixed
+- A conversion that never ran (the job returned early, or failed and couldn't record
+  it) no longer sends "converted and ready" or resolves an earlier failure notice.
+- A re-embed stopped because the newly named model was refused now resolves its
+  "paused" notice.
+- **Show more** in the inbox no longer skips a row or shows one twice when the list
+  moved meanwhile (a row was read, a notice arrived). A list that answers after the
+  panel was closed and reopened is dropped.
+- A failure notice keeps at most 500 characters of the error.
+
 ## [2.11.0] - 2026-11-05
 
 **Choose the embedding model in the console, and change it without losing search**

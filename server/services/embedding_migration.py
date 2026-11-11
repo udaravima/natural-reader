@@ -316,6 +316,7 @@ async def tick(worker: str, *, env: Mapping[str, str] = os.environ) -> str:
                 if state.get("next"):           # a re-embed for a model no longer wanted: stop it
                     await _drop_next(conn)
                     state = _cleared(state)
+                    await notifications.resolve(conn, REEMBED_KEY)   # and its "paused" notice, if it had one
                 await write_state(conn, {**state, "error": verdict.reason, "error_for": key, "error_retry_at": retry})
             logger.warning("Not re-embedding with %s: %s", target.model, verdict.reason)
             return "refused"
