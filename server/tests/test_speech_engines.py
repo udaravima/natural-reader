@@ -588,6 +588,7 @@ class _Pipe:
 
 
 def test_the_unconverted_engine_passes_speech_and_language(monkeypatch):
+    pytest.importorskip("torch")   # the Transformers engine: only the Docling build has torch
     pipe = _Pipe()
     monkeypatch.setattr(hf_whisper, "speech_only", lambda samples: samples[:8000])
     eng = hf_whisper.TransformersWhisper(SpeechModel("m", "M", "transformers-whisper", "a/b", "r", ("si",)), 2)
@@ -607,6 +608,7 @@ def test_both_paths_share_one_vad_threshold(monkeypatch):
 
 def test_vad_silence_never_reaches_the_unconverted_model():
     """The real Silero VAD on real silence: Whisper would invent text from it."""
+    pytest.importorskip("torch")   # the Transformers engine: only the Docling build has torch
     pipe = _Pipe()
     eng = hf_whisper.TransformersWhisper(SpeechModel("m", "M", "transformers-whisper", "a/b", "r", ("si",)), 2)
     got = eng._run(np.zeros(16000 * 3, dtype=np.float32), "si", pipe)

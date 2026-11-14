@@ -214,6 +214,14 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         }
     };
 
+    // Release a PDF when another document replaces it or the reader goes away. pdf.js keeps a parsed
+    // document in its worker until destroy() is called, so without this every PDF opened in a session
+    // stayed in memory. Work still running on the old document then rejects, as a cancelled render does.
+    useEffect(() => {
+        if (!pdfDoc) return undefined;
+        return () => { Promise.resolve(pdfDoc.destroy?.()).catch(() => {}); };
+    }, [pdfDoc]);
+
     // Visual render on any of: doc, page, or scale change (PDF only — txt has no canvas).
     // `canvasMountNonce` in deps re-fires this whenever the <canvas> DOM node
     // is replaced (Reader ↔ Chat toggle, MD ↔ PDF view swap, etc.) so the

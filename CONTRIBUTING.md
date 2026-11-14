@@ -67,7 +67,9 @@ Every behavior change should come with tests, and both suites must pass:
 # Frontend (Vitest + Testing Library)
 npm run test:run
 
-# Backend (pytest). Needs a scratch Postgres with pgvector: without these two
+# Backend (pytest). The test harness is its own list, which the image never installs:
+.venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+# It needs a scratch Postgres with pgvector: without these two
 # variables it would use the app's own Postgres on 5433, and refuses to. See docs/TESTING.md.
 export TEST_ADMIN_DATABASE_URL=postgresql://natural_reader:<scratch-password>@127.0.0.1:5434/postgres
 export TEST_DATABASE_URL=postgresql://natural_reader:<scratch-password>@127.0.0.1:5434/natural_reader_test

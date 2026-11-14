@@ -76,7 +76,4 @@ onnxruntime>=1.30,<2
 # The zone database for the deployment timezone (Windows has no system copy; Linux and macOS use theirs first).
 tzdata
 
-# Backend test harness (dev). respx mocks httpx; pytest-asyncio runs async tests.
-pytest>=9,<10
-pytest-asyncio>=1.4,<2
-respx>=0.23,<1
+# The test harness is in requirements-dev.txt: the image never installs it.

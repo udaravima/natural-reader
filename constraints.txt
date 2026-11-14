@@ -1,4 +1,5 @@
-# The exact versions the test suite ran on: requirements.txt's packages and everything they bring in, as
+# The exact versions the test suite ran on: requirements.txt's and requirements-dev.txt's packages and
+# everything they bring in, as
 # installed on Python 3.13 on Linux. The image installs with `-c constraints.txt`, so a rebuild gets these
 # and not whatever is newest that day. A package only another platform needs is not listed and stays free.
 # Regenerate after upgrading the venv and running the tests (docs/DEPLOYMENT.md, "Pinned versions").
@@ -39,8 +40,8 @@ joblib==1.6.0
 joserfc==1.7.5
 justext==3.0.2
 kokoro-onnx==0.6.1
-lxml==6.1.3
 lxml-html-clean==0.4.5
+lxml==6.1.3
 markdown-it-py==4.2.0
 mdit-py-plugins==0.6.1
 mdurl==0.1.2
@@ -52,19 +53,20 @@ pgvector==0.5.0
 phonemizer==3.4.0
 pluggy==1.6.0
 protobuf==7.36.2
-psycopg==3.3.6
 psycopg-binary==3.3.6
 psycopg-pool==3.3.3
-pyasn1==0.6.5
+psycopg==3.3.6
 pyasn1-modules==0.4.2
+pyasn1==0.6.5
 pycparser==3.0
-pydantic==2.13.5
 pydantic-core==2.46.5
+pydantic==2.13.5
 pygments==2.21.0
 pypdfium2==5.14.0
-pytest==9.1.1
 pytest-asyncio==1.4.0
+pytest==9.1.1
 python-dateutil==2.9.0.post0
+python-dotenv==1.2.4
 python-multipart==0.0.32
 pytz==2026.5
 pyyaml==6.0.3

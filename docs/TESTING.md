@@ -39,6 +39,30 @@ spot a feature that shipped without coverage.
 
 ## How to run
 
+**CI runs all of this** on every pull request and on pushes to `master` and
+`development` (`.github/workflows/ci.yml`): the backend suite on the versions in
+`constraints.txt` with a scratch Postgres, then lint, the frontend suite and the
+build. It has no Docling or torch, so the few tests that need them skip there.
+
+> **The test packages are their own list.** `requirements-dev.txt` holds pytest,
+> pytest-asyncio, respx and python-dotenv; the image installs `requirements.txt`
+> only, and so does `./startup.sh init`. Install both before a first run:
+> `.venv/bin/python -m pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt`.
+
+> **Waits are allowed 5 seconds, a test 15.** `src/test/setup.js` raises Testing
+> Library's `findBy*`/`waitFor` limit from 1 s, and `vitest.config.js` a test's
+> limit from 5 s: long lists rendered in jsdom on a busy or 4-core machine passed
+> the old limits with nothing wrong. A passing wait ends as soon as it holds, so
+> only a failure is slower. The masking speed guards in `textAttachment.test.js`
+> judge the fastest of three runs. The flakes these answer were never reproduced
+> here (all 1906 passed with every core busy, and confined to 4 loaded cores):
+> if one comes back, keep its full output.
+
+> **Keep the virtualenv's path short.** espeak-ng, which makes the phonemes for
+> read-aloud, keeps its data folder's path in a fixed 160-character buffer. In a
+> venv whose `site-packages/espeakng_loader/espeak-ng-data` path is longer, it
+> can't find its files and ends the process ("Error processing file … phontab").
+
 > **A scratch database.** The suite creates `natural_reader_test`, applies
 > migrations there, and its migration tests create and drop scratch databases.
 > So it refuses to run on the Postgres server the app itself uses
@@ -66,10 +90,10 @@ spot a feature that shipped without coverage.
 # Backend — REQUIRES Postgres up (conftest migrates natural_reader_test on a
 # real connection; without the DB every test errors, not skips). Run it with
 # the two TEST_* variables above exported, or it stops before the first test.
-.venv/bin/python -m pytest server/tests/ -q          # 3229 passed, 16 skipped, 2 deselected @ 2026-11-11 (review fixes + notifications)
+.venv/bin/python -m pytest server/tests/ -q          # 3275 passed, 16 skipped, 2 deselected @ 2026-11-14 (+ Gemini adapter, review leftovers; the CI-like venv without Docling/torch was last run 2026-11-11: 3217 passed, 19 skipped)
 
 # Frontend (vitest, jsdom — no services needed)
-npx vitest run                                       # 1904 passed (157 files) @ 2026-11-11 (review fixes + notifications)
+npx vitest run                                       # 1906 passed (157 files) @ 2026-11-14
 
 # Lint
 npx eslint .                                         # 0 errors; 24 warnings, see eslint.config.js (the same as npm run lint)

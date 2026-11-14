@@ -36,9 +36,25 @@ Keycloak secrets".
   send text out in its address. It is shown as a link. The nginx sample adds
   `Content-Security-Policy: img-src 'self' data: blob:`, and the Keycloak sample
   shows how to keep `/admin` off the internet.
+- **A web page the chat reads is fetched from the address that was checked.** The
+  check looked the site's name up, and the connection looked it up again, so a
+  name that answered "public" and then "this machine" (DNS rebinding) got
+  through. The fetch now connects to the checked address, with the site's own
+  name in the request and for its TLS certificate. The check also refuses the
+  shared address space 100.64.0.0/10, where Tailscale hosts and carrier NAT live,
+  and IPv4 addresses written as IPv6 (`::ffff:127.0.0.1`).
+- The name lookup and the page's text extraction no longer run on the event loop,
+  where a slow resolver or a 2 MB page froze read-aloud and every open chat stream
+  on that worker for seconds.
 
 ### Added
 
+- **Google Gemini as a model provider** (`INFERENCE_<NAME>_KIND=gemini`, with a Gemini API
+  key). Its chat models join the picker beside Ollama's and any OpenAI-compatible
+  server's: streaming, thinking with its summary, tools, pictures and audio. Requests
+  say `store: false`, so Google keeps no copy of a conversation. Chat only (not
+  embeddings). Written from Google's API reference and walked against a stand-in
+  server; **not yet run against Google itself**. DEPLOYMENT.md, "Google Gemini".
 - **A bell in the header** with an inbox, never a popup: indexing finished or failed and a
   conversion ready or failed reach the person who asked; a re-embed paused or done,
   rebuilds failing 3 times in a row, and passages the embedding model shortened reach
@@ -48,9 +64,23 @@ Keycloak secrets".
   kept 30 days, unread 90 (`NOTIFICATIONS_READ_DAYS`, `NOTIFICATIONS_UNREAD_DAYS`).
 - `GET /v1/notifications/unread`, `GET /v1/notifications`, `POST /v1/notifications/read`,
   `POST /v1/notifications/read-all`.
+- **Backup and restore**, written down and tried on a scratch database:
+  DEPLOYMENT.md, "Backup and restore". The realm lives in the app's database, so
+  one dump holds both; the uploaded files go with it.
 
 ### Changed
 
+- **The image no longer installs the test harness.** pytest, pytest-asyncio, respx and
+  python-dotenv moved to `requirements-dev.txt`. To run the tests:
+  `pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt`.
+  `./startup.sh init` installs the app's list only, so a venv it makes needs that
+  line once before the first test run.
+
+- **CI.** `.github/workflows/ci.yml` runs the backend tests (on the pinned
+  versions, against a scratch pgvector Postgres), the frontend lint, tests and
+  build on every pull request and on every push to `master` and `development`.
+  Three tests no longer depend on packages only the Docling build has, and
+  `python-dotenv` is listed for the eval scripts' tests.
 - Under 360 px wide the reader's header shows the bell instead of the Settings gear;
   Settings stays in the profile menu.
 - `docs/ARCHITECTURE.md` no longer says the time tool is gone (v2.10 brought it back).
@@ -112,6 +142,20 @@ Keycloak secrets".
   late failure undid the earlier files. Each commits on its own.
 - A recording upload the multipart parser rejected could answer 500 on Starlette
   1.0; it answers 400 on every version.
+- **A refused call sent the whole app back to the loading screen.** Any
+  `missing_capability` 403 re-read who you are with the loading gate up, which
+  unmounted everything: a chat-only person's reply read aloud flashed the screen
+  and lost a recording in progress. The re-read now happens quietly, once per burst
+  of refusals, and the new set of permissions lands in place.
+- **Every PDF opened stayed in memory for the rest of the session.** pdf.js keeps
+  a parsed document in its worker until it is destroyed, and nothing destroyed
+  them. A PDF is released when another document replaces it.
+- **Ten slow signed-in requests could take every database connection.** Signing a
+  request in held its connection until the route returned, so a route that took a
+  second one and waited (a document search waits on the embedding model, up to two
+  minutes cold) held two. Signing in now gives its connection back before the
+  route runs.
+
 
 ## [2.11.0] - 2026-11-05
 

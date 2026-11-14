@@ -23,13 +23,15 @@ import httpx
 
 from ..services import model_router
 from .providers.base import Provider, ProviderConfig
+from .providers.gemini import DEFAULT_URL as GEMINI_URL, GeminiProvider
 from .providers.ollama import OllamaProvider
 from .providers.openai_compat import OpenAICompatProvider
 from .types import Capabilities, CallSettings, Chunk, Message, ReasoningDelta, TextDelta, ToolSpec, Usage
 
 logger = logging.getLogger(__name__)
 
-KINDS = {"ollama": OllamaProvider, "openai": OpenAICompatProvider}
+KINDS = {"ollama": OllamaProvider, "openai": OpenAICompatProvider, "gemini": GeminiProvider}
+_DEFAULT_URL = {"gemini": GEMINI_URL}   # a hosted API with one address; the others have none to guess
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 # Seconds one provider gets to list its models (and their capabilities) before
 # it is reported failed. Under the SPA's 8 s abort, so a provider that connects
@@ -54,10 +56,10 @@ def load_provider_configs(env: Mapping[str, str]) -> list[ProviderConfig]:
             continue
         key = name.upper().replace("-", "_")
         kind = (env.get(f"INFERENCE_{key}_KIND") or "").strip().lower()
-        url = (env.get(f"INFERENCE_{key}_URL") or "").strip().rstrip("/")
+        url = (env.get(f"INFERENCE_{key}_URL") or _DEFAULT_URL.get(kind, "")).strip().rstrip("/")
         if kind not in KINDS or not url:
-            _warn_once(f"Skipping inference provider {name!r}: INFERENCE_{key}_KIND must be ollama or "
-                       f"openai, and INFERENCE_{key}_URL is required")
+            _warn_once(f"Skipping inference provider {name!r}: INFERENCE_{key}_KIND must be ollama, "
+                       f"openai or gemini, and INFERENCE_{key}_URL is required (gemini has a default)")
             continue
         models_raw = (env.get(f"INFERENCE_{key}_MODELS") or "").strip()
         models = tuple(m.strip() for m in models_raw.split(",") if m.strip()) if models_raw else None
@@ -131,7 +133,7 @@ class Router:
         return provider.config.models is None or name in provider.config.models
 
     def provider_kind(self, model_id: str) -> str | None:
-        """`ollama` | `openai` for the provider serving this id; None if none does."""
+        """`ollama` | `openai` | `gemini` for the provider serving this id; None if none does."""
         try:
             return self.resolve(model_id)[0].config.kind
         except UnknownModel:

@@ -1,5 +1,6 @@
 """A rebuild installs the versions the tests ran on: every requirement has a ceiling, and the image installs
-through constraints.txt, the exact versions of everything requirements.txt brings in."""
+through constraints.txt, the exact versions of everything requirements.txt (and requirements-dev.txt, the
+test harness) brings in. The image installs requirements.txt only: no test package ships."""
 from pathlib import Path
 
 from packaging.requirements import Requirement
@@ -23,8 +24,12 @@ def _pins() -> dict[str, str]:
     return pins
 
 
+LISTS = ("requirements.txt", "requirements-dev.txt")
+TEST_PACKAGES = {"pytest", "pytest-asyncio", "respx", "python-dotenv"}
+
+
 def test_every_requirement_has_a_floor_and_a_ceiling():
-    loose = [str(r) for r in _requirements("requirements.txt")
+    loose = [str(r) for name in LISTS for r in _requirements(name)
              if canonicalize_name(r.name) not in NO_CEILING
              and not ({s.operator for s in r.specifier} >= {">=", "<"})]
     assert loose == []
@@ -32,7 +37,7 @@ def test_every_requirement_has_a_floor_and_a_ceiling():
 
 def test_the_constraints_pin_every_requirement_inside_its_range():
     pins = _pins()
-    for req in _requirements("requirements.txt"):
+    for req in (r for name in LISTS for r in _requirements(name)):
         name = canonicalize_name(req.name)
         if name in NO_CEILING:
             continue
@@ -53,3 +58,13 @@ def test_the_image_installs_through_the_constraints():
     installs = [line for line in text.splitlines() if "pip install" in line and "-r requirements" in line]
     assert len(installs) == 2 and all("-c constraints.txt" in line for line in installs)
     assert "!constraints.txt" in (ROOT / ".dockerignore").read_text()
+
+
+def test_the_test_harness_is_not_in_the_list_the_image_installs():
+    runtime = {canonicalize_name(r.name) for r in _requirements("requirements.txt")}
+    dev = {canonicalize_name(r.name) for r in _requirements("requirements-dev.txt")}
+    assert runtime & TEST_PACKAGES == set()
+    assert dev >= TEST_PACKAGES
+    text = (ROOT / "Containerfile").read_text()
+    assert "requirements-dev" not in text and "pytest" not in text
+    assert "!requirements-dev.txt" not in (ROOT / ".dockerignore").read_text()

@@ -244,7 +244,10 @@ def test_a_language_is_heard_by_the_first_offered_model_on_disk_made_for_it():
     assert catalogue.for_language(opts, "ta", {}, on_disk=lambda m: True).id == "whisper-small-ta"
 
 
-def test_a_model_not_on_disk_yet_leaves_its_language_to_the_next_or_the_default():
+def test_a_model_not_on_disk_yet_leaves_its_language_to_the_next_or_the_default(monkeypatch):
+    # run15 runs through Transformers, which only the Docling build has: say it is installed, so the test
+    # is about what is on disk whichever build runs it.
+    monkeypatch.setattr(catalogue, "_installed", lambda name: True)
     opts = options(offered_speech_models=("whisper-small-si", "whisper-small-si-run15"))
     later = catalogue.for_language(opts, "si", {}, on_disk=lambda m: m.id == "whisper-small-si-run15")
     assert later.id == "whisper-small-si-run15"

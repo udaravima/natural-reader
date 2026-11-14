@@ -1,0 +1,9 @@
+# The backend test harness: what running the tests needs on top of requirements.txt. Never installed in the
+# image (Containerfile installs requirements.txt only). Install both, through the same pins:
+#   pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+# respx mocks httpx; pytest-asyncio runs the async tests.
+pytest>=9,<10
+pytest-asyncio>=1.4,<2
+respx>=0.23,<1
+# scripts/eval_*.py read .env through it when it is there; their tests need it.
+python-dotenv>=1.0,<2

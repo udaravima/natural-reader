@@ -30,7 +30,11 @@ day. Two files do it:
   everything they bring in (about 80), as installed when the suite last passed.
   The image installs with `-c constraints.txt`.
 
-To move to newer versions: upgrade the venv (`pip install -U -r requirements.txt`),
+The test harness (pytest, respx and two more) is in `requirements-dev.txt`,
+pinned in the same file, and is not installed in the image or by
+`./startup.sh init`.
+
+To move to newer versions: upgrade the venv (`pip install -U -r requirements.txt -r requirements-dev.txt`),
 run the tests, then regenerate the file from that venv and commit it with the
 change. `pip freeze` lists more than the image needs (Docling's packages, tools);
 keep only the lines for packages already in `constraints.txt`, plus any new
@@ -466,9 +470,9 @@ INFERENCE_OPENROUTER_MODELS=vendor/model-a,vendor/model-b
 Model ids in the chat UI carry the provider name (`local:qwen2.5:7b`,
 `openrouter:vendor/model-a`); a saved selection from before C1
 (`qwen2.5:7b`) is read as `ollama:qwen2.5:7b` automatically. `KIND` is
-`ollama` for Ollama's native API, or `openai` for anything that speaks the
-OpenAI chat-completions shape (vLLM, OpenRouter, LiteLLM, or Ollama's own
-`/v1`); for `kind=openai`, `URL` is the API base **including** the version
+`ollama` for Ollama's native API, `gemini` for Google's Gemini API (below), or
+`openai` for anything that speaks the OpenAI chat-completions shape (vLLM,
+OpenRouter, LiteLLM, or Ollama's own `/v1`); for `kind=openai`, `URL` is the API base **including** the version
 path — the adapter appends `/chat/completions` and `/models` itself. API
 keys stay on the server: never sent to the browser, never logged, never
 shown in the admin console's Deployment section (a key reads only *set* or *not set*).
@@ -481,6 +485,59 @@ follow-up question, provider-reported token usage, a rate-limited free
 model and a rejected key, with no key in the logs. Before that (v2.1.0),
 the same adapter was run against Ollama's own `/v1`. vLLM and LiteLLM speak
 the same protocol but haven't been run.
+
+### Google Gemini (`KIND=gemini`)
+
+```bash
+INFERENCE_PROVIDERS=local,google
+INFERENCE_GOOGLE_KIND=gemini
+INFERENCE_GOOGLE_API_KEY=your-gemini-api-key
+# INFERENCE_GOOGLE_URL=https://generativelanguage.googleapis.com/v1beta   # the default
+# INFERENCE_GOOGLE_MODELS=gemini-flash-latest,gemini-pro-latest           # allow-list
+```
+
+The key is a Gemini API key from Google AI Studio (not a Google Cloud service
+account, and not the key file the Google speech engine uses). The models then
+show in the chat's picker as `google:<model>` like any other provider's, and an
+admin chooses which are offered in Admin → Models.
+
+This adapter speaks Google's Interactions API, which Google now recommends over
+`generateContent`. What that means here:
+
+- **Nothing is stored at Google.** The API's default keeps every interaction,
+  the conversation included, for 1 day (free tier) to 55 days (paid). Every
+  request from this app says `store: false`; the app keeps the history itself
+  and sends it each time, as it does for every provider.
+- **There is no "thinking off".** Off asks for the `minimal` level and no
+  thought summaries. A model that has no `minimal` level refuses it; the reply
+  is then made at the model's own default level, with a notice in the chat,
+  and that level isn't asked of that model again for an hour.
+- **Context size and keep-alive don't apply** (they are Ollama's). The model
+  list gives each model's context window, so nothing has to be declared.
+- **Chat only.** A `gemini` provider isn't offered in Models → Embeddings and
+  `EMBEDDING_PROVIDER` can't name one.
+- **The model list is filtered.** Google lists speech, image, embedding and
+  live models beside the chat ones; names that say so (`tts`, `image`,
+  `embedding`, `live`, ...) are left out. `INFERENCE_<NAME>_MODELS` switches the
+  filter off and offers exactly what it names.
+- The list says nothing about tools, pictures or audio, so the picker shows no
+  badge for them. They are still sent; a model that rejects tools is retried
+  without them, as on the other adapters.
+
+**Not run against Google.** No Gemini key was available when this was built
+(2026-11-11). It was written from Google's API reference and walked end to end
+against a stand-in server that follows the documented stream and refuses a tool
+call returned without its thought signature, as Google does. Two things only a
+real key can confirm: that a tool call this app makes itself (the document
+prefetch, the web-search consent) is accepted with the documented skip
+signature, and what a safety block looks like on this API.
+
+Google also serves an OpenAI-compatible endpoint, which the `openai` adapter can
+call instead (`KIND=openai`,
+`URL=https://generativelanguage.googleapis.com/v1beta/openai`). That adapter has
+been run against OpenRouter, not against Google, and Google's own notes say a
+tool call there needs its thought signature passed back too, which the `openai`
+adapter doesn't do.
 
 ### Examples: vLLM, Unsloth, OpenAI and Claude
 
@@ -1738,6 +1795,72 @@ deleting the same rows is harmless. A value that isn't a whole number of days, o
 negative, logs one warning and keeps the default. Every active admin gets the admin
 notices (re-embed paused or done, rebuilds failing 3 times in a row, passages shortened);
 an admin added later doesn't get older ones.
+
+## Backup and restore
+
+**The trap: Keycloak lives in the app's database.** Its realm (accounts,
+passwords, clients) is the `keycloak` schema of the `natural_reader` database,
+so one dump holds both, and restoring an older dump rolls Keycloak back too.
+Losing that schema without a backup is worse than it looks: a new realm gives
+every person a new identity id, and the app then refuses each existing person
+at sign-in with HTTP 409 "email already linked to another identity" until
+their old link is cleared by hand.
+
+What to keep, and what losing it costs:
+
+| What | Where | Without it |
+|---|---|---|
+| The database `natural_reader` | volume `pgdata`, container `natural-reader-postgres` | Everything: people, chats, projects, settings, documents' text and passages, and Keycloak's realm |
+| Uploaded files and their pictures | `DOC_STORAGE_DIR` on the host (default `./data/pdfs`; pictures in `figures/`) | A document can't be opened in the reader, re-indexed or converted ("Upload the file again first"); its passages still answer chat questions |
+| `.env` | the checkout | The secrets. A new `SESSION_SECRET` only signs everyone out; a new `OIDC_CLIENT_SECRET` must then match the one the restored realm holds, or sign-in fails |
+| `CHAT_ASSISTANT_PROFILE_FILE`, `SPEECH_MODELS_FILE` | wherever `.env` points, if set | Those settings |
+| Volume `cache` | models (Hugging Face, converted speech models) | Nothing: downloaded again, slowly |
+
+The database and the files belong together: a document uploaded or deleted
+between the dump and the copy leaves a row without its file, or a file nothing
+points to. Stopping the backend for the minute it takes gives a matching pair.
+The dump alone is consistent either way (`pg_dump` reads one snapshot).
+
+**Backing up** (with docker, write `docker` for `podman`):
+
+```bash
+B=~/nr-backup/$(date +%F); mkdir -p "$B"
+podman stop natural-reader-backend          # a quiet minute: files and rows match
+podman exec natural-reader-postgres pg_dump -U natural_reader -Fc natural_reader > "$B/natural_reader.dump"
+rsync -a data/pdfs/ "$B/pdfs/"              # your DOC_STORAGE_DIR
+install -m 600 .env "$B/env"                # secrets: keep this copy private
+podman start natural-reader-backend
+```
+
+Keep a copy off the machine; a backup on the same disk goes with it.
+
+**Restoring** (the containers exist and Postgres is running; on a new machine,
+start the stack once first so they do):
+
+```bash
+podman stop natural-reader-backend natural-reader-keycloak
+podman exec natural-reader-postgres dropdb -U natural_reader --force natural_reader
+podman exec natural-reader-postgres createdb -U natural_reader natural_reader
+podman exec -i natural-reader-postgres pg_restore -U natural_reader -d natural_reader --no-owner < "$B/natural_reader.dump"
+rsync -a --delete "$B/pdfs/" data/pdfs/
+podman start natural-reader-keycloak natural-reader-backend
+```
+
+- **`-i` on the `pg_restore` line is not optional.** Without it podman passes no
+  input, and `pg_restore` stops with "input file is too short".
+- `dropdb` deletes the current database. Make a fresh dump of it first if there
+  is any chance you want it back.
+- A dump from an older version restores fine: the backend applies the newer
+  migrations when it starts. A dump from a **newer** version doesn't belong
+  under older code; going back a version is the migrations' Down blocks.
+
+**What has been checked** (2026-11-14, on a scratch `pgvector/pgvector:pg16`
+container): a fully migrated database with a `keycloak` schema, dumped and
+restored with these commands, came back with the same tables in both schemas,
+all 26 migrations recorded, the `vector` extension and its 56 indexes, and
+vector ordering unchanged; the backend's database layer then started on it
+without applying a migration. **Not checked:** a restore on a real deployment,
+in particular Keycloak signing people in against a restored realm.
 
 ## Bring-up checklist
 

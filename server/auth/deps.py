@@ -3,7 +3,9 @@ and hand out DB connections. Deny-by-default — no valid credential is a 401.""
 from __future__ import annotations
 
 import os
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
+from typing import Callable
 
 from fastapi import Depends, HTTPException, Request
 
@@ -58,8 +60,23 @@ def _principal(row: dict) -> Principal:
                      scopes=scopes, account_capabilities=account)
 
 
-async def get_current_user(request: Request, conn=Depends(get_conn, scope="function")) -> Principal:
-    return await resolve_principal(request, conn)
+def auth_conn(request: Request) -> Callable[[], AbstractAsyncContextManager]:
+    """How signing a request in gets its connection: a callable that opens a short one. Not `get_conn`
+    itself, because a dependency's connection is given back only when the route function returns.
+    Where a test has replaced `get_conn` with its own connection, signing in uses that one too."""
+    replaced = request.app.dependency_overrides.get(get_conn)
+    if replaced is not None:
+        return asynccontextmanager(replaced)
+    return lambda: get_pool().connection()
+
+
+async def get_current_user(request: Request, open_conn=Depends(auth_conn)) -> Principal:
+    """Who is calling, read on a connection that is back in the pool BEFORE the route runs. Held for the
+    whole route instead, it was one of two connections for any route that opened its own and then waited
+    (document search waits on the embedding model): ten of those at once emptied a pool of ten, and all of
+    them waited for a connection none could release. tests/test_auth_releases_connection.py."""
+    async with open_conn() as conn:
+        return await resolve_principal(request, conn)
 
 
 async def resolve_principal(request: Request, conn) -> Principal:

@@ -60,11 +60,14 @@ SECTION = Section("embeddings", (
 def providers(env: Mapping[str, str] = os.environ) -> list[ProviderConfig]:
     """The configured providers, plus the Ollama at OLLAMA_URL when none of them is it: that one is where
     embeddings went before this phase, and stays the default (spec §4.2.3)."""
-    configured = load_provider_configs(env)
+    everyone = load_provider_configs(env)
+    # A Gemini provider is for chat only: the embedding client speaks Ollama's /api/embed and OpenAI's
+    # /embeddings, and Gemini has neither at its address.
+    configured = [p for p in everyone if p.kind != "gemini"]
     url = model_router.load_inference_config(env).ollama_url
     if any(p.kind == "ollama" and p.url == url for p in configured):
         return configured
-    taken = {p.name for p in configured}
+    taken = {p.name for p in everyone}
     name = "ollama" if "ollama" not in taken else "ollama-url"
     return [*configured, ProviderConfig(name=name, kind="ollama", url=url)]
 

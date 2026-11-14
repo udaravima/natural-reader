@@ -22,7 +22,7 @@ CAPABILITY_TTL_S = 300.0   # re-probe a model's capabilities after 5 minutes
 @dataclass(frozen=True)
 class ProviderConfig:
     name: str                               # lower-case; the model-id prefix
-    kind: str                               # "ollama" | "openai"
+    kind: str                               # "ollama" | "openai" | "gemini"
     url: str                                # base URL, no trailing slash
     api_key: str = ""
     models: tuple[str, ...] | None = None   # allow-list; None = everything it lists
@@ -50,6 +50,8 @@ def auth_headers(cfg: ProviderConfig) -> dict[str, str]:
 _SECRET_PATTERNS = [
     # OpenAI/Anthropic-style API keys (sk-..., sk-ant-..., sk-proj-...).
     (re.compile(r"sk-[A-Za-z0-9_-]{8,}"), "sk-[REDACTED]"),
+    # Google API keys (AIza...), wherever they appear, a ?key= query among them.
+    (re.compile(r"AIza[0-9A-Za-z_-]{16,}"), "AIza[REDACTED]"),
     # An Authorization header value, if a provider ever echoes the request it received.
     (re.compile(r"Bearer\s+\S+"), "Bearer [REDACTED]"),
     # URL userinfo (scheme://user:pass@host) — a base URL that embeds credentials.
