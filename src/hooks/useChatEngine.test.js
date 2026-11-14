@@ -741,7 +741,7 @@ describe('useChatEngine — text attachments', () => {
         expect(json).not.toContain('<masked');
         expect(json).not.toContain('base64');
         expect(result.current.messages[0].attachments[0]).toEqual({
-            id: 't1', kind: 'text', name: '.env', mimeType: 'text/plain', size: 20, masked: true,
+            id: 't1', kind: 'text', name: '.env', mimeType: 'text/plain', size: 20, masked: true, real_values: false,
         });
     });
 

@@ -46,6 +46,7 @@ import {
   sentTextOf,
   utf8Bytes,
 } from "../utils/attachment";
+import { heldBySwitch } from "../utils/heldBySwitch";
 import {
   TEXT_FILE_MAX_BYTES,
   TEXT_MESSAGE_MAX_BYTES,
@@ -447,6 +448,9 @@ export default function ChatView({
   const viewing =
     pendingAttachments.find((a) => a.id === viewingId && a.kind === "text") || null;
   const modelEntry = availableModels.find((m) => m.id === selectedModel);
+  // Before the person sends: what this model won't be given, because real values were agreed for another one.
+  const held = useMemo(() => heldBySwitch(messages, selectedModel), [messages, selectedModel]);
+  const modelLabel = (id) => availableModels.find((m) => m.id === id)?.name || id;
 
   const handleSend = () => {
     if (!canSend) return;
@@ -625,6 +629,16 @@ export default function ChatView({
               } : null} />
           ) : (
             <>
+              {held.names.length > 0 && (
+                <p role="status" className="text-xs leading-relaxed text-amber-600 dark:text-amber-400">
+                  {held.names.join(", ")} {held.names.length === 1 ? "was" : "were"} sent with{" "}
+                  {held.names.length === 1 ? "its" : "their"} real values
+                  {held.agreedFor.length > 0 && <> to {held.agreedFor.map(modelLabel).join(" and ")}</>}.{" "}
+                  {modelLabel(selectedModel)} won't be sent {held.names.length === 1 ? "it" : "them"}
+                  {held.replies > 0 && <>, or the {held.replies === 1 ? "reply" : `${held.replies} replies`} that read {held.names.length === 1 ? "it" : "them"}</>}.
+                  {held.agreedFor.length > 0 && <> Switch back to {held.agreedFor.map(modelLabel).join(" or ")} to keep {held.replies > 0 || held.names.length > 1 ? "them" : "it"} in the conversation.</>}
+                </p>
+              )}
               {viewing && (
                 <TextFileViewer
                   attachment={viewing}

@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **A warning before a model switch hides replies.** A text file sent with its
+  real values stays with the model it was agreed for, and so do that model's
+  replies. Until now you learned that only after sending, from a note under the
+  new model's reply. Picking another model now shows a line above the message
+  box that names the file, the model it was agreed for, and how many replies
+  the new model won't be sent, and says to switch back to keep them. Nothing
+  about what is held back has changed.
+
 ### Fixed
 
 - **`./startup.sh start` after a code change ran the old code.** On podman it

@@ -495,8 +495,8 @@ export function useChatEngine({
         let assistantId = `a-local-${now}`;
         setMessages((prev) => [
             ...(heard ? prev.map((m) => (m.id === heard.messageId ? { ...m, content: m.content.slice(0, heard.chars) } : m)) : prev),
-            { role: 'user', content: trimmed, attachments: cleanAttachments.map((a) => (a.kind === 'text' ? textAttachmentWire(a).meta : a)), id: userId, timestamp: now },
-            { role: 'assistant', content: '', thinking: '', id: assistantId, timestamp: now + 1, status: 'streaming' }]);
+            { role: 'user', content: trimmed, attachments: cleanAttachments.map((a) => (a.kind === 'text' ? textAttachmentWire(a).meta : a)), id: userId, timestamp: now, model: selectedModel },
+            { role: 'assistant', content: '', thinking: '', id: assistantId, timestamp: now + 1, status: 'streaming', model: selectedModel }]);
         sentenceBufferRef.current = '';
         sendingRef.current = true;
         setIsStreaming(true);

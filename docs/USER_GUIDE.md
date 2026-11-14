@@ -948,7 +948,11 @@ The agreement also stays with that model after you send, and so do its replies.
 If you pick another model later in the same chat and ask a follow-up, the real
 values are **not** sent to it, and neither is any reply from the model you agreed
 for (it may have quoted them): the assistant sees only a short note in their place.
-Under its reply you read "*name* wasn't sent to this model: its real values were
+**You are told before you send.** As soon as you pick the other model, a line above
+the message box says, for example, ".env was sent with its real values to
+*model A*. *model B* won't be sent it, or the 2 replies that read it. Switch back to
+*model A* to keep them in the conversation." It goes away when you switch back.
+After you send, under the reply you read "*name* wasn't sent to this model: its real values were
 agreed for another one. Earlier replies that read it weren't sent either." The note
 is saved with the reply, so it is still there after a reload. Switch back to the
 model you agreed for and the file and its replies are sent again. To use the file
