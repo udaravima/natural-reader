@@ -67,8 +67,8 @@ migration commits on its own, and a worker only serves once they have all run.
 
 | Command | Effect |
 | --- | --- |
-| `./startup.sh start` | builds the image if needed, then runs Postgres, SearXNG, Keycloak (see below) and the backend, all detached |
-| `./startup.sh rebuild` | ship new code: rebuild the image, recreate only the backend; Postgres and Keycloak keep running |
+| `./startup.sh start` | builds the image if needed, then runs Postgres, SearXNG, Keycloak (see below) and the backend, all detached; a backend still on an older image is recreated on the new one |
+| `./startup.sh rebuild` | ship new code: rebuild the image, recreate only the backend; Postgres and Keycloak keep running (after a `stop`, they are started first) |
 | `./startup.sh logs` | follow the backend's output (the rotating `server.log` is still written under `LOG_DIR`) |
 | `./startup.sh stop` | stop and remove the containers; volumes and `data/` stay |
 

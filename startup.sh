@@ -42,6 +42,8 @@ readonly MODEL_BASE_URL="https://github.com/nazdridoy/kokoro-tts/releases/downlo
 readonly MODEL_FILES=("kokoro-v1.0.onnx" "voices-v1.0.bin")
 readonly BACKEND_SERVICE="backend"
 readonly BACKEND_CONTAINER="natural-reader-backend"  # container_name in docker-compose.yml
+readonly BACKEND_IMAGE="natural-reader-backend:latest"  # image in docker-compose.yml
+readonly POSTGRES_CONTAINER="natural-reader-postgres"  # container_name in docker-compose.yml
 # 1 → layer compose.dev.yml (working tree mounted) on top; set by `up`.
 COMPOSE_DEV=0
 
@@ -128,12 +130,14 @@ Commands:
   start                  Live mode: Postgres + SearXNG (+ Keycloak when it is
                          this deployment's IdP, see LOCAL_KEYCLOAK) and the
                          backend container running the code baked into its
-                         image, all detached. Builds the image when needed.
+                         image, all detached. Builds the image when needed, and
+                         recreates a backend still running an older image.
   stop                   Stop and remove the containers (and a venv backend
                          started by 'up'). 'down' is the same command.
   rebuild                Rebuild the backend image and recreate only the
                          backend (after pulling code, or changing
-                         DOCLING_ENABLED). Postgres and Keycloak keep running.
+                         DOCLING_ENABLED). Postgres and Keycloak keep running;
+                         after a 'stop' they are started first.
   logs                   Follow the backend container's output.
   enable-autostart       Podman: enable lingering + podman-restart.service so a
                          started stack comes back after a reboot. Docker: a
@@ -621,6 +625,32 @@ backend_container_mode() {
 	return 0
 }
 
+# The engine itself (not compose), with podman's XDG_DATA_HOME guard.
+engine_run() {
+	local engine="$1"; shift
+	if [[ "$engine" == "podman" ]]; then
+		env -u XDG_DATA_HOME "$engine" "$@"
+	else
+		"$engine" "$@"
+	fi
+}
+
+# True when the backend container exists and runs an older image than the one
+# its tag names now. podman-compose recreates a container only when the compose
+# file changes, never because its image did: without asking, `start` after a
+# code change builds the new image and restarts the old container on the old one.
+backend_is_stale() {
+	local engine="$1" runs built
+	runs="$(engine_run "$engine" container inspect -f '{{.Image}}' "$BACKEND_CONTAINER" 2>/dev/null || true)"
+	built="$(engine_run "$engine" image inspect -f '{{.Id}}' "$BACKEND_IMAGE" 2>/dev/null || true)"
+	[[ -n "$runs" && -n "$built" && "$runs" != "$built" ]]
+}
+
+postgres_running() {
+	local engine="$1"
+	[[ "$(engine_run "$engine" container inspect -f '{{.State.Running}}' "$POSTGRES_CONTAINER" 2>/dev/null || true)" == "true" ]]
+}
+
 # Postgres + SearXNG, then (when this deployment's IdP is the compose one)
 # the keycloak schema and Keycloak. Shared by `start` and the container `up`.
 start_services() {
@@ -654,13 +684,19 @@ cmd_start() {
 	start_services "$engine" "$kc"
 	log "Building the backend image (Docling: $NR_WITH_DOCLING)"
 	compose "$engine" build "$BACKEND_SERVICE"
-	compose "$engine" up -d "$BACKEND_SERVICE"
+	if backend_is_stale "$engine"; then
+		log "The backend runs an older image: recreating it on the new one"
+		compose "$engine" up -d --force-recreate --no-deps "$BACKEND_SERVICE"
+	else
+		compose "$engine" up -d "$BACKEND_SERVICE"
+	fi
 	wait_for_backend
 	log "Running (live mode). Logs: '$0 logs' · stop: '$0 stop' · after code changes: '$0 rebuild' · survive reboots: '$0 enable-autostart'"
 }
 
 # Rebuild the image and recreate only the backend; Postgres, SearXNG and
-# Keycloak keep running untouched.
+# Keycloak keep running untouched. After a `stop` removed them, they are
+# started first: the backend alone would wait for a Postgres nothing starts.
 cmd_rebuild() {
 	local engine
 	engine="$(resolve_engine)"
@@ -668,6 +704,12 @@ cmd_rebuild() {
 	export_backend_env
 	[[ "$(backend_container_mode "$engine")" == "dev" ]] \
 		&& die "A dev backend ('$0 up') is running — Ctrl-C it in its terminal first; it already runs your working tree."
+	if ! postgres_running "$engine"; then
+		log "Postgres isn't running (after '$0 stop'?): starting the services first"
+		local kc=0
+		local_keycloak_wanted && kc=1
+		start_services "$engine" "$kc"
+	fi
 	log "Rebuilding the backend image (Docling: $NR_WITH_DOCLING)"
 	compose "$engine" build "$BACKEND_SERVICE"
 	compose "$engine" up -d --force-recreate --no-deps "$BACKEND_SERVICE"

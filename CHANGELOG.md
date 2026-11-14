@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`./startup.sh start` after a code change ran the old code.** On podman it
+  built the new image, then restarted the old backend container on the old one:
+  podman-compose recreates a container when the compose file changes, not when
+  its image does. `start` now compares the two and recreates a stale backend.
+- **`./startup.sh rebuild` after a `stop` hung.** `stop` removes every
+  container; `rebuild` recreated the backend alone, which waited for a Postgres
+  nothing started. It now starts Postgres, SearXNG and Keycloak first when
+  Postgres isn't running.
+- **CI failed six speech tests** that assumed torch was installed. The tests now
+  say so themselves; no product change.
+
 ## [2.12.0] - 2026-11-14
 
 **Security: rotate the Keycloak secrets if your realm was created by v2.11.0 or
