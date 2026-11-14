@@ -38,7 +38,7 @@ A modern, feature-rich document reader with **neural text-to-speech** powered by
 ### 💬 Local AI Chat (Ollama)
 - **Reader ↔ Chat Toggle** — Switch the main view between document reader and chat mode from the header
 - **Streaming Replies** — Every chat turn runs on the server (`server/chat/`) and streams token-by-token over `POST /v1/chat/sessions/{id}/turns` (server-sent events); the browser never talks to a model provider directly
-- **Model Picker** — Grouped by provider (native Ollama, plus any OpenAI-compatible server an admin has configured — vLLM, OpenRouter, LiteLLM), with capability badges per model. Adding or changing providers is an operator `.env` task (`INFERENCE_PROVIDERS`, see [.env.example](.env.example)); there's no in-app provider screen yet
+- **Model Picker** — Grouped by provider (native Ollama, plus any OpenAI-compatible server an admin has configured — vLLM, OpenRouter, LiteLLM — and Google Gemini), with capability badges per model. Adding or changing providers is an operator `.env` task (`INFERENCE_PROVIDERS`, see [.env.example](.env.example)); there's no in-app provider screen yet
 - **Image Attachments** — Paperclip button, drag & drop onto the chat view, and `Ctrl + V` paste images from the clipboard. Thumbnails preview above the prompt and persist in user bubbles. Sent to vision-capable models via the per-message `images: [base64]` field. An audio file dropped onto the chat is still refused: speaking a message is the microphone button below.
 - **Text files in a message** — The same paperclip (also drag & drop, and pasting a file) takes small text files: `.env`, `.txt`, `.md`, `.json`, `.yaml`, `.toml`, `.csv`, `.log`, source files and similar, up to 64 KB each and 128 KB per message. The browser masks secret values **before anything is uploaded**: in an env file every value except ones like `true`, a port or a short number; in other files, only what looks like a secret (private keys, well-known tokens, JWTs, `password:` lines, a password in a URL). Click the file's chip to see exactly what will be sent, and **Send real values** to send the original instead (it asks first and names the model, and says when it runs on a cloud service). It is a safety net, not a guarantee: read the chip view. The model gets each file as an `<attached_file>` block in the message, so every model and provider can read it.
 - **Voice input** — A microphone button beside the paperclip records up to 2 minutes, the server turns it into text (faster-whisper on the CPU by default, any OpenAI-compatible transcription server, or Google Cloud), and the text lands in the message box for you to edit and send. Nothing is sent for you, and the app never writes a recording to disk, the database or a log (a reverse proxy may buffer an upload: see DEPLOYMENT). **Off by default**: an admin turns it on under **Admin → Chat options → Voice input** (or `CHAT_VOICE_INPUT=on`), and the first time it downloads a ~464 MB model. Needs https (or localhost) for the microphone. **Settings → Chat → Speech language** picks a language, or **Auto**. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#voice-input) for the setup and its costs. Admins choose the speech model under **Admin → Chat options → Speech model**, and can add Whisper models from Hugging Face there: fine-tunes for Sinhala and Tamil are in the list, converted on first use.
@@ -90,7 +90,7 @@ Natural Reader is now a **multi-user, authenticated application**. End-user walk
 - **Sign in (OIDC / Keycloak)** — Every API route requires an authenticated principal. First login becomes admin; others wait for activation. **Personal access tokens** (`nrp_…`) let the Chrome extension and scripts authenticate outside the browser, each limited to what it's for (read aloud, documents, chat, admin) and optionally expiring. Set `AUTH_ENABLED=false` for a loopback-only single-user box.
 - **Capabilities (reader / chat / admin)** — Feature access is governed by Keycloak realm roles enforced on the server and reflected in the UI: you only see the views you're entitled to, and an activated user with no capabilities gets a clear "access not yet granted" screen.
 - **Admin console** — A dedicated Admin view (shield icon in the top switcher, admins only): enroll users (invite or one-time temp password), edit capabilities, disable/delete — propagated to Keycloak, with a last-active-admin guard so you can't lock the org out. **People** has a search and status/capability filters; **Models** sets the reader, the context size of self-hosted Ollama models, declared context windows and which chat models people are offered (see [docs/USER_GUIDE.md](docs/USER_GUIDE.md#models-the-reader-context-sizes-and-which-models-people-get)).
-- **Model providers & daily budgets** — Chat always runs on the server, never in the browser. An admin configures one or more model providers in `.env` (native Ollama by default, plus any OpenAI-compatible server — see [.env.example](.env.example)); there's a deployment **model allowlist** per provider and an optional **per-user daily token budget** (a "N tokens left today" meter; send disables at zero; a reply you stop or that fails still counts, from the provider's own count or an estimate).
+- **Model providers & daily budgets** — Chat always runs on the server, never in the browser. An admin configures one or more model providers in `.env` (native Ollama by default, plus any OpenAI-compatible server or Google Gemini — see [.env.example](.env.example)); there's a deployment **model allowlist** per provider and an optional **per-user daily token budget** (a "N tokens left today" meter; send disables at zero; a reply you stop or that fails still counts, from the provider's own count or an estimate).
 - **Document Library** — Documents are private by default. The server verifies every upload, and a file someone already indexed is added to your library instantly. In the app you can create a project (Library → New project), add people to it with a role (Reader, Contributor, Maintainer, Owner; **Members → + Add people**), file your uploads into it, keep every version of a document (upload a new version, restore or merge; the Library shows only the current one), and share a single document with one person (**Share** in the Library). A **Library** view lists, searches and filters your documents by project and tags, and shows what was shared with you and by whom. Removing a document only removes your copy. Non-readers get a 404, never a hint that the document exists.
 - **Consolidated Settings + profile menu** — Voice, chat/inference (per-model), connection, appearance, and account (tokens) settings live in one **Settings** window that opens over whatever you have open, so changing a setting never stops the narration or a reply. It's reached from a header gear and a profile menu (identity, Settings, dark mode, log out). The reader and chat sidebars are trimmed to navigation and model/sessions. The chat composer draft survives switching tabs.
 
@@ -188,7 +188,7 @@ git clone https://github.com/udaravima/natural-reader.git && cd natural-reader
 ./startup.sh quickstart            # or: ./startup.sh quickstart --single-user
 ```
 
-It checks for a container engine (podman with podman-compose 1.1+, or Docker with the Compose plugin 2.24+) and Node 22.13+/24+. **No host Python is needed:** the backend runs in a container. It writes a local-dev `.env` (never touching an existing one), builds the backend image, starts Postgres, Keycloak, SearXNG and the backend, then the frontend dev server. Open <http://localhost:5173> and sign in as `admin-user` / `password`. `--single-user` turns sign-in off and skips Keycloak. Re-running it after a failure picks up where it stopped.
+It checks for a container engine (podman with podman-compose 1.1+, or Docker with the Compose plugin 2.24+) and Node 22.13+/24+. **No host Python is needed:** the backend runs in a container. It writes a local-dev `.env` (never touching an existing one), builds the backend image, starts Postgres, Keycloak, SearXNG and the backend, then the frontend dev server. Open <http://localhost:5173> and sign in as `admin-user` with the password the script prints (it generates one into `.env` as `KC_SEED_USER_PASSWORD`). `--single-user` turns sign-in off and skips Keycloak. Re-running it after a failure picks up where it stopped.
 
 | Command | What it does |
 |---|---|
@@ -281,7 +281,7 @@ Place both files in the project root directory.
 # first run with the local realm values + a generated SESSION_SECRET, waits for
 # the realm import, then runs the backend with auth on):
 ./startup.sh up-with-dev-auth
-# → sign in at http://localhost:5173 as Keycloak user admin-user / password
+# → sign in at http://localhost:5173 as Keycloak user admin-user, with the password it prints
 # Walkthrough (adding a second user, approval flow, PATs): deploy/README.md
 # End-user guide (signing in, personal access tokens, admin section,
 # chat budgets): docs/USER_GUIDE.md
@@ -489,7 +489,7 @@ Who reads the chat's replies and Talk: Kokoro on the server, or Google Gemini-TT
 
 #### Model providers (same FastAPI server)
 
-Chat always runs on the server (`server/chat/`, `server/llm/`) against one or more configured **model providers** — native Ollama by default, plus any OpenAI-compatible server (vLLM, OpenRouter, LiteLLM) an admin adds in `.env`. OpenRouter has been run end to end (paid Gemma 4 and Mistral Small 3.2: chat, pins, tools, images, usage); vLLM and LiteLLM speak the same protocol but haven't been run. A refused request says what happened (rate-limited, key rejected, out of credit) — see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#configuring-providers). The browser never talks to a provider directly; there is no "local mode" and no in-app screen for adding providers (`.env` + restart, see [.env.example](.env.example) and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
+Chat always runs on the server (`server/chat/`, `server/llm/`) against one or more configured **model providers** — native Ollama by default, plus any OpenAI-compatible server (vLLM, OpenRouter, LiteLLM) or Google Gemini (its own adapter, written from Google's API reference and not yet run against Google) an admin adds in `.env`. OpenRouter has been run end to end (paid Gemma 4 and Mistral Small 3.2: chat, pins, tools, images, usage); vLLM and LiteLLM speak the same protocol but haven't been run. A refused request says what happened (rate-limited, key rejected, out of credit) — see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#configuring-providers). The browser never talks to a provider directly; there is no "local mode" and no in-app screen for adding providers (`.env` + restart, see [.env.example](.env.example) and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)).
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -633,7 +633,7 @@ The backend authenticates via **OpenID Connect** — it's an OIDC Relying Party,
 
 - **First-user-admin:** the first identity to log in becomes admin; everyone after is `pending` until an admin activates them (Admin → People). Set `BOOTSTRAP_ADMIN_EMAIL` to pre-designate the admin by email and inherit any pre-existing single-user data; then only that verified email can claim the admin row, and anyone signing in first lands as `pending`. **Caveat:** the founder's first login is given admin, reader and chat, but Keycloak stays authoritative: they must actually hold the `reader`/`chat`/`admin` realm roles in your IdP (or `KC_ADMIN_*` must be set for the app to write them there), or their second login lands on "active but no access". See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) Trap 4.
 - **The web app** uses a revocable, `HttpOnly` session cookie. **The read-aloud extension and scripts** use a **personal access token** sent as `Authorization: Bearer …`. Create it under **Settings → Access tokens** with only the access it needs (the extension needs only *Read aloud*), then paste it into the extension's Options → Access token.
-- **Local dev without an IdP:** `AUTH_ENABLED=false` treats every request as the admin — but the server **refuses to start** with this set on a non-loopback bind.
+- **Local dev without an IdP:** `AUTH_ENABLED=false` treats every request as the admin — but the server **refuses to start** with this set on a non-loopback bind. Behind a reverse proxy it refuses each request that came through the proxy or for another name, and `./startup.sh up` refuses a `.env` that describes a live deployment.
 
 `/api/*` (Ollama) is **never used by the SPA** — chat always runs server-side ([`server/chat/`, `server/llm/`](#model-providers-same-fastapi-server)), so the nginx `/api/` proxy block should be **deleted**: Ollama becomes backend-only (loopback bind, nothing proxied). There is no per-user "bring your own Ollama" option in the browser.
 
@@ -910,7 +910,7 @@ natural-reader/
 │   ├── llm/                   # Model provider layer (C1)
 │   │   ├── router.py          # Loads INFERENCE_PROVIDERS config, resolves "<provider>:<model>" ids
 │   │   ├── types.py           # Internal message/event types every adapter maps to/from
-│   │   └── providers/         # ollama.py, openai_compat.py adapters + shared base.py helpers
+│   │   └── providers/         # ollama.py, openai_compat.py, gemini.py adapters + shared base.py helpers
 │   ├── speech/                # Voice input and Talk: a Transcriber interface, the local (faster-whisper), openai and google engines, the model catalogue, a bounded audio decoder, Talk's window settings
 │   └── services/
 │       ├── embeddings.py      # httpx client → Ollama /api/embeddings via model_router, Semaphore(4), dim assertion
@@ -939,7 +939,8 @@ natural-reader/
 │   ├── Release_notes/         # Tag-page notes per release
 │   └── sample_configs/        # nginx vhosts (SPA + /v1, Keycloak) and a deploy script sample
 ├── run.py                     # Server entry point (uvicorn) — honours WORKERS / HOST / PORT env vars
-├── requirements.txt           # Python dependencies
+├── requirements.txt           # Python dependencies (what the app needs)
+├── requirements-dev.txt       # the test harness (pytest, respx, ...); not in the image
 ├── vite.config.js             # Vite + Rolldown config with chunk splitting
 ├── tailwind.config.js
 ├── package.json
@@ -1022,8 +1023,8 @@ components fit together (the same-origin `/v1` rule, auth flow, TTS lock, chat
 engine, doc pipelines, and the invariants to keep intact). In short:
 `./startup.sh init && ./startup.sh up`, keep both test suites
 green (`npm run test:run`, and `.venv/bin/python -m pytest server/tests` with
-`TEST_DATABASE_URL` and `TEST_ADMIN_DATABASE_URL` set: a bare run connects to the
-app's own Postgres, see [docs/TESTING.md](docs/TESTING.md#how-to-run)), and open PRs against
+`TEST_DATABASE_URL` and `TEST_ADMIN_DATABASE_URL` set: a bare run would use the
+app's own Postgres and refuses to, see [docs/TESTING.md](docs/TESTING.md#how-to-run)), and open PRs against
 `master` using [Conventional Commits](https://www.conventionalcommits.org/).
 
 ## 📄 License

@@ -4,6 +4,74 @@
 
 ---
 
+## 2026-11-14 — v2.12.0: the review's fixes, notifications, a Gemini adapter (START HERE)
+
+**State.** Released as **v2.12.0** on the owner's "merge branch and do the release": `feat/gemini-adapter` (`ccb22fc`) fast-forwarded into `development`, the release commit on top, `development` merged into `master`, annotated tag `v2.12.0`, GitHub release. **Not deployed.** Gates on the release tree: pytest 3275 passed / 16 skipped, vitest 1906 in 157 files, eslint 0 errors, build OK. The push is CI's first run.
+
+- **Google Gemini as a provider** (`INFERENCE_<NAME>_KIND=gemini`, `server/llm/providers/gemini.py`). Google's Interactions API, stateless, `store: false` on every request (Google's default keeps each conversation 1 to 55 days). Thinking "off" asks for `minimal`; a refused level is retried at the model's default and remembered per level. The thought steps Gemini wants back with its own tool call ride on `ToolCall.extra` (never compared, printed or stored); a call the app made itself carries Google's documented skip signature. A wrong key (Google answers 400) reads as a key problem and isn't retried. Chat only: kept out of the embedding providers. `AIza…` keys are redacted from error text. **Never run against Google** (no key here): walked end to end through a throwaway backend against a stand-in server that refuses a tool call returned without its thought, as Google does.
+- **Review leftovers** (each code change with a test that failed first; the docs and the wait limits have none): a stale-capability 403 re-reads `/me` quietly, once per burst (no loading screen, no lost recording); a PDF is destroyed when replaced; signing in gives its connection back before the route runs (`auth_conn`), so no request holds two; the web fetch connects to the address it checked (Host and TLS name kept, `Connection: close` so a pooled connection never crosses sites), tries each checked address in turn, refuses 100.64.0.0/10 and IPv4-mapped IPv6, and runs the lookup and trafilatura in threads; the test harness moved to `requirements-dev.txt` (not in the image, not installed by `./startup.sh init`); DEPLOYMENT.md "Backup and restore"; Testing Library waits 5 s, tests 15 s, the masking speed guards judge the fastest of three.
+
+**Checked live.** Real pages through the pinned fetch (example.com, an http→https redirect on github.com, an 80 KB Wikipedia page); a name the checked address has no certificate for is refused. Backup and restore on a scratch pgvector:pg16 copy of the migrated database plus a `keycloak` schema: identical tables, 26 migrations, extension, 56 indexes; the backend's database layer started on it without migrating.
+
+**Not done or not proven.** Gemini against Google itself (the skip signature and a safety block are the two things to watch). The vitest flakes never reproduced, even with every core busy or on 4 loaded cores; the wait limits answer the likely cause, not a seen one. A restore on a real deployment. The `./startup.sh init` venv no longer gets pytest: `pip install -r requirements-dev.txt -c constraints.txt` once.
+
+**For the owner.** Deploy (backup first: DEPLOYMENT.md "Backup and restore"; migration 026; both halves rebuild; Keycloak's container is recreated). Before or with it: rotate the two Keycloak client secrets in the live `.env` (still the published ones on 11 November). Open: refuse to start on a published secret, or only log? A Gemini key, to run the adapter against Google once.
+
+---
+
+## 2026-11-11 — The 8 November review's fixes, and notifications merged into `development`
+
+**State.** `development` at `459e651` holds everything below. Nothing is pushed, released or deployed. Gates on the merged tree: pytest 3229 passed / 16 skipped (3232 with the CI commit's tests), vitest 1904 in 157 files, eslint 0 errors, build OK.
+
+- `fix/deps-boot` (`feb8d13`): the realm file's secrets became `${PLACEHOLDERS}` filled from `.env` (`deploy/keycloak-entrypoint.sh` randomises anything unset; the startup scripts generate all four); a published client secret is an error at start and a line in Admin → Deployment; every requirement has a ceiling and the image installs through `constraints.txt`; one database attempt at start, then background retries (`init_db_until_ready`), `/v1/health` has `database`, no pool is a 503; migrations under an advisory lock, one transaction each, pool published after them; compose waits for a healthy Postgres; the tests refuse the app's own Postgres server.
+- `fix/reader-and-guards` (`b005468`): the narration loop (Skip, a page turned by hand, an empty page, the browser-voice fallback, a retry that repeats its sentence); the sign-in-off request guard and `startup.sh up` refusing a live `.env`; chat pictures as links and the nginx `img-src` policy; `AND state = 'indexing'`; "prompt too long" not remembered as "rejects tools", with an hour's expiry; the PDFium lock; the 200,000-character batch cap.
+- `feat/notifications` (`fd626e8`): no false "converted" notice, the refused-target path resolves "paused", Show more re-reads from the top, errors cut to 500 characters.
+
+**Corrections to the entry below.** Its "For the owner" paragraph is wrong: the 3 failures came from **Starlette 1.0.0**, not python-multipart, and a fresh image got newer untested versions, not the venv's. Both are fixed by the pins. Its "not pushed" is also stale: `feat/notifications` was pushed on 6 November.
+
+**Walked.** A backend on :8011 with its database stopped, then started (served in 11 s, picked the database up 2 s after it appeared). A throwaway Keycloak on :18081 importing the realm file (the env secret works; the old published one and the literal placeholder are refused). The narration cases in headless Chromium, before and after: the old code went silent on Skip. The Playwright MCP's Chrome aborts here on a GLib schema error; the walk used `node` with the npx-cached `playwright` and `executablePath` set to `~/.cache/ms-playwright/chromium-1217/chrome-linux64/chrome`.
+
+**Not run.** An image rebuild with the constraints; the compose changes on a real engine; `startup.ps1` on Windows. The blank-page and hand-turned-page cases were seen failing only in the hook tests (in the browser the old code stalled at Skip first).
+
+**For the owner.**
+- The live `.env`'s two Keycloak client secrets were still the published ones on the morning of 11 November (compared by hash). DEPLOYMENT.md, "Rotating the Keycloak secrets". Open question: should the backend refuse to start on one? It logs an error now.
+- With sign-in off, the app no longer answers another device on the network.
+- The compose change recreates the Keycloak container on the next `start` (its data is in Postgres).
+
+**CI.** `.github/workflows/ci.yml` is written (backend on the pinned versions with a pgvector service; lint, vitest, build). It has never run on GitHub: the first push is its first run. Checked here instead: a clean venv built from `requirements.txt -c constraints.txt` passes the suite (3217 passed, 19 skipped), after three tests stopped depending on torch and `python-dotenv` was listed. Watch the vitest timing flakes on a slow runner. Trap met on the way: a venv in a very long path ends the process at the first read-aloud (espeak-ng's 160-character path buffer; docs/TESTING.md).
+
+**Next.** A release (migration 026 and the security note make it at least 2.12.0) and a deploy. Left from the review, not done: the pool hold-and-wait under load, the web fetch blocking the event loop, the SSRF re-resolve, `missing_capability` 403s sending the app to the loading screen, PDFs never destroyed, test packages in the image, backup and restore docs.
+
+---
+
+## 2026-11-06 — Notifications for each person: built and walked on `feat/notifications`
+
+**State.** Branch `feat/notifications` from `development` (`999df85`, v2.11.0), on the owner's answers in the decision sheet (the Notifications table, all seven answered) and "Go ahead, as you prefer" (native execution, commit as I go). Spec `docs/superpowers/specs/2026-11-06-notifications-design.md` (approved, with grouping added at the owner's ask), plan `docs/superpowers/plans/2026-11-06-notifications.md`. 14 commits, **not merged, not pushed** (the owner syncs to GitHub themselves; there is no auto-pusher). Migration **026**. Gates: pytest 3159 passed / 16 skipped / **3 failed** (below), vitest 1886 in 155 files, eslint 0 errors (the same 24 warnings), build OK. Review: a self-review (no agents, the owner's rule) found one Important issue, fixed (a group over 1000 ids couldn't be marked read). **The owner said not to merge** (2026-11-06, "Don't merge just update the handover"): the branch stays as it is, unmerged and unpushed, until they say otherwise.
+
+**What a person can do now.** A **bell** in the header, every view: indexing finished or failed and conversion ready or failed reach the person who asked; re-embed paused or done, a rebuild failing 3 times in a row, and passages the model shortened reach every admin. Needs-action first, amber badge; same-kind notices within 30 minutes of each other are one row ("5 documents finished indexing"), clicked = all read and expanded; a problem that goes away is **Resolved**; Mark all as read; a click opens the document or Admin → Models / Overview. Read ones kept 30 days, unread 90 (`NOTIFICATIONS_READ_DAYS`, `NOTIFICATIONS_UNREAD_DAYS`).
+
+**Walked** (headless Chrome, scratch backend :8100 on `nr_notif_walk`, app :5174, a second Ollama provider through a TCP pass-through killed and restarted): every step above, numbers in TESTING (ledger item 4). The walk found the reader header 16 px too wide at 320 px with the bell: under 360 px the reader now drops the gear (Settings stays in the profile menu); 0 px over at 320–1366 in every view after. **Not walked:** a non-admin account, a Docling conversion, two workers.
+
+**Environment, found and fixed this session (no repo change).** `node_modules` was the October toolchain (vite 7, vitest 4, ESLint 9, PDF.js 5, no `@ricky0123/vad-web`) against the 2026-11-05 lockfile: `npm ci` fixed it (15 test files had failed to import). The venv lacked four declared packages (google-auth, faster-whisper, av, tzdata): `pip install -r requirements.txt`. The scratch DB container `nr-c21-testpg` was gone: recreated as before (pgvector:pg16, tmpfs, 127.0.0.1:5434). The Playwright browser cache is gone; `/usr/bin/google-chrome` works as `executablePath`.
+
+**For the owner — found, not caused here.** The 3 pytest failures are the same on `development` with today's venv: **python-multipart 0.0.29** makes a non-multipart body to `/v1/speech/transcriptions` raise `MultipartParseError` instead of the 400 the tests expect, and **pgvector 0.4.2** imports numpy at import. `requirements.txt` doesn't pin either, so **a fresh container build gets the same versions**. Worth pinning (or adapting) before the next deploy.
+
+**Rulings made on the owner's behalf** (each with its cost if wrong; the full ledger is `.superpowers/sdd/2026-11-06-notifications/progress.md`): under 360 px the reader hides the gear, not the bell (one more tap to Settings); the bell asks again 1.5 s after the page's own Index / Convert settles (else the next 60 s poll); re-indexing after deleting a conversion notifies too (one extra notice); a read failure keeps its warning icon, a resolved one shows a green check; the list loads 30 rows with **Show more**; admins' "shortened" notices use the content's own name; a personal access token can read its owner's notices; the two-workers test is a takeover, not truly concurrent (a duplicate would merge by key anyway); a legacy re-upload is scheduled without notices and has no test of its own.
+
+**The decision sheet, as the owner filled it in** (doc "Natural Reader — decisions and next steps", read 2026-11-06; it replaces the matching lines of the 2026-11-05 bucket list below):
+
+- Release v2.11.0: **Done**. Deploy v2.11.0: **Done** (so live now runs 2.11; not checked from here). Live Google recognizer: **Done**. Clear the old speech checkpoints: **Yes** (not confirmed done). A fresh reviewer before tags: **Later**.
+- Decisions: accept the CPU slowdown and reword the design, keep the "file too big" note, warn at a model switch that hides replies, keep only each plan's `progress.md`, delete merged local branches: all **Yes** (the CPU rewording and the warning aren't built yet; 6 merged branches are left, `feat/c2-multi-document` among them). **The auto-pusher is the owner**, syncing by hand: not a mystery any more.
+- Notifications: all seven design answers given (built here). The 15 never-run checks, the on-hardware list and the backlog priorities: still blank.
+
+**Next.**
+
+1. **The owner decides** about the 3 failing tests: my recommendation is a small separate fix pinning (or adapting to) python-multipart and pgvector before any rebuild, since a fresh container gets those versions. Then merge / release `feat/notifications` when they say.
+2. Deferred minor: a re-embed stopped by `tick`'s refused-target path doesn't resolve its "paused" notice (reading it clears it).
+3. The sheet's order after notifications: figures, which will add a "pictures described" sender (one kind + one call). Decided on the sheet but not built yet: the model-switch warning and the CPU rewording.
+
+---
+
 ## 2026-11-05 — v2.11.0 released: choose the embedding model, and change it without losing search (START HERE)
 
 **State.** On the owner's "Merge" and then "please do the release": `fix/bucket-list` and `feat/embeddings-2b` fast-forwarded into `development` (`dbf346c`, 30 commits), the release commit on top (version 2.11.0, changelog dated, `docs/Release_notes/RELEASE_NOTES_v2.11.0.md`, TESTING rows), `development` merged into `master`, annotated tag `v2.11.0`, pushed, and a GitHub release from the notes. Gates on the merged tree: pytest 3099 passed / 16 skipped, vitest 1849 in 152 files, eslint 0 errors, build OK. The only review of phase 2b is my own (no fresh reviewer: agents only when the owner asks). The scratch test database container stopped by itself once this morning (clean exit around 10:02); `podman start nr-c21-testpg` brought it back, and every test erroring at once is that, not the code.

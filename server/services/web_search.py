@@ -78,36 +78,61 @@ _UA = "Mozilla/5.0 (compatible; NaturalReaderBot/1.0)"
 
 
 def _is_ip_public(ip_str: str) -> bool:
+    """Whether an address is on the public internet. `is_global` is the test, not "not private": it also
+    refuses the shared address space 100.64.0.0/10, which is where Tailscale hosts and carrier NAT live and
+    which `is_private` calls public. An IPv4 address written as IPv6 (::ffff:127.0.0.1) is judged as IPv4."""
     ip = ipaddress.ip_address(ip_str)
-    return not (
-        ip.is_private or ip.is_loopback or ip.is_link_local
-        or ip.is_reserved or ip.is_multicast or ip.is_unspecified
-    )
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_global and not ip.is_multicast
+
+
+def public_addresses(url: str) -> list[str]:
+    """The addresses an http(s) URL's host resolves to, when EVERY one of them is public; else []. One name
+    with a public and a private address is refused whole. Blocking (getaddrinfo): call it off the event loop."""
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+    except ValueError:
+        return []
+    if parsed.scheme not in ("http", "https") or not host:
+        return []
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError):
+        return []
+    found: list[str] = []
+    for info in infos:
+        ip_str = str(info[4][0]).split("%", 1)[0]   # an IPv6 scope id is not part of the address
+        try:
+            if not _is_ip_public(ip_str):
+                return []
+        except ValueError:
+            return []
+        if ip_str not in found:
+            found.append(ip_str)
+    return found
 
 
 def is_url_fetchable(url: str) -> bool:
     """SSRF guard: True only for http/https whose host resolves entirely to
-    public IPs. Rejects loopback/private/link-local/reserved/multicast and any
+    public IPs. Rejects loopback/private/link-local/shared/reserved/multicast and any
     non-http(s) scheme. DNS is resolved so a public hostname pointing at a
-    private IP is still blocked."""
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return False
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        return False
-    try:
-        infos = socket.getaddrinfo(parsed.hostname, None)
-    except socket.gaierror:
-        return False
-    for info in infos:
-        ip_str = info[4][0]
-        try:
-            if not _is_ip_public(ip_str):
-                return False
-        except ValueError:
-            return False
-    return True
+    private IP is still blocked. The fetch itself uses `public_addresses` and connects to what it
+    returned, so the name is never looked up a second time."""
+    return bool(public_addresses(url))
+
+
+def _pinned(url: str, ip: str) -> tuple[httpx.URL, dict[str, str], dict[str, str]]:
+    """The request for `url` sent to `ip`: (url with the address as host, headers, extensions). The site
+    still gets its own name in Host, and over TLS the name is what is asked for (SNI) and what the
+    certificate is checked against (checked live: a name the address has no certificate for is refused)."""
+    target = httpx.URL(url)
+    # Connection: close, because the client pools connections by ADDRESS now: a kept-alive connection
+    # made (and verified) for one site would be reused for another site on the same address.
+    headers = {"Host": target.netloc.decode("ascii"), "Connection": "close"}
+    extensions = {"sni_hostname": target.host} if target.scheme == "https" else {}
+    return target.copy_with(host=ip), headers, extensions
 
 
 _client: httpx.AsyncClient | None = None
@@ -166,26 +191,40 @@ def _looks_like_text(content_type: str) -> bool:
 
 
 async def _fetch_capped(url: str) -> tuple[bytes, str] | None:
-    """Walk redirects (SSRF-checked at every hop, same as before) and stream
+    """Walk redirects (SSRF-checked at every hop, and called at the address that was checked) and stream
     the final hop, stopping as soon as MAX_RESPONSE_BYTES is reached instead
     of buffering the whole body first. A non-text Content-Type on the final
     hop returns None before any of the body is read."""
-    client = _get_client()
     current = url
     for _ in range(4):  # cap redirect hops
-        if not is_url_fetchable(current):
+        # One lookup per hop, in a thread (it blocks), and the connection goes to its answer: looked up
+        # again for the connect, a name could answer "public" for the check and "this machine" after it.
+        addresses = await asyncio.to_thread(public_addresses, current)
+        if not addresses:
             logger.warning("Blocked non-public URL: %s", current)
             return None
+        outcome = await _hop(current, addresses)
+        if not isinstance(outcome, str):
+            return outcome
+        current = outcome   # a redirect: the next hop is checked again
+    return None
+
+
+async def _hop(current: str, addresses: list[str]) -> tuple[bytes, str] | str | None:
+    """One request for `current`: the page (bytes, encoding), the URL a redirect points to, or None. Each
+    checked address in turn until one connects, as the HTTP library itself does with a name (an IPv6 address
+    on a machine with no IPv6 route, then the IPv4 one)."""
+    client = _get_client()
+    for n, ip in enumerate(addresses, start=1):
+        target, headers, extensions = _pinned(current, ip)
         try:
             async with client.stream(
-                "GET", current, timeout=FETCH_TIMEOUT_S, follow_redirects=False,
+                "GET", target, headers=headers, extensions=extensions,
+                timeout=FETCH_TIMEOUT_S, follow_redirects=False,
             ) as resp:
                 if resp.is_redirect:
                     loc = resp.headers.get("location")
-                    if not loc:
-                        return None
-                    current = str(httpx.URL(current).join(loc))
-                    continue
+                    return str(httpx.URL(current).join(loc)) if loc else None
                 if not resp.is_success:
                     logger.warning("Non-2xx for %s: %s", current, resp.status_code)
                     return None
@@ -197,6 +236,11 @@ async def _fetch_capped(url: str) -> tuple[bytes, str] | None:
                     if len(content) >= MAX_RESPONSE_BYTES:
                         break
                 return bytes(content[:MAX_RESPONSE_BYTES]), resp.encoding
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            if n < len(addresses):
+                continue
+            logger.warning("Fetch failed for %s: %s", current, e)
+            return None
         except httpx.HTTPError as e:
             logger.warning("Fetch failed for %s: %s", current, e)
             return None
@@ -227,7 +271,10 @@ async def fetch_page_text(url: str) -> str | None:
     import trafilatura
     # favor_recall keeps short pages from being dropped by trafilatura's
     # precision heuristic — we'd rather read a thin page than lose it.
-    return (trafilatura.extract(html, favor_recall=True) or "").strip() or None
+    # In a thread: on a page near the size cap this takes seconds, and on the event loop it stopped
+    # read-aloud and every open chat stream on the worker for that long.
+    text = await asyncio.to_thread(trafilatura.extract, html, favor_recall=True)
+    return (text or "").strip() or None
 
 
 # ---- the part of a page worth reading --------------------------------------------------------------------

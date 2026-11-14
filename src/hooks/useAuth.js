@@ -65,8 +65,7 @@ export function useAuth(apiHost, apiPort) {
     });
   }, [apiHost, apiPort]);
 
-  // Re-probe from an event (Retry, a stale-capability 403): show the loading
-  // gate again while it runs.
+  // Re-probe from the gate's Retry: show the loading gate again while it runs.
   const refresh = useCallback(() => {
     setState('loading');
     return probe();
@@ -79,12 +78,19 @@ export function useAuth(apiHost, apiPort) {
   }, []);
 
   // A 403 missing_capability from any call site means our capability set is
-  // stale (e.g. an admin revoked a capability mid-session) — re-probe /me
-  // rather than booting to the login gate, since the session itself is fine.
+  // stale (e.g. an admin revoked a capability mid-session): read /me again,
+  // since the session itself is fine. Quietly: the app stays on screen while
+  // it runs (a loading gate here unmounted everything, and a recording with
+  // it, every time a call was refused), and the new set lands in place. One
+  // at a time: a burst of refused calls is one probe.
+  const quietProbe = useRef(null);
   useEffect(() => {
-    setForbiddenHandler(() => { refresh(); });
+    setForbiddenHandler(() => {
+      if (quietProbe.current) return;
+      quietProbe.current = probe().finally(() => { quietProbe.current = null; });
+    });
     return () => setForbiddenHandler(null);
-  }, [refresh]);
+  }, [probe]);
 
   // The first probe, and a new one when apiHost/apiPort change. State starts
   // as 'loading'; on a host change the previous state stays until the new

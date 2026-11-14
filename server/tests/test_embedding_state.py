@@ -100,3 +100,14 @@ def test_the_profile_of_an_embedder_matches_the_old_format(monkeypatch):
         monkeypatch.setenv(k, v)
     e = embeddings.env_embedder()
     assert embeddings.profile_of(e) == embeddings.current_profile()   # existing documents keep their profile
+
+
+def test_a_gemini_provider_is_not_offered_for_embeddings():
+    """The embedding client speaks Ollama and OpenAI; a Gemini provider would be called at an address it
+    doesn't have. Its name stays taken, and naming it falls back like any unknown name."""
+    env = {"INFERENCE_PROVIDERS": "ollama,google", "INFERENCE_OLLAMA_KIND": "ollama",
+           "INFERENCE_OLLAMA_URL": "http://elsewhere:11434", "INFERENCE_GOOGLE_KIND": "gemini",
+           "OLLAMA_URL": "http://localhost:11434"}
+    assert [(p.name, p.kind) for p in embedding_state.providers(env)] == [
+        ("ollama", "ollama"), ("ollama-url", "ollama")]
+    assert embedding_state.provider_named("google", env) is None

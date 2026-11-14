@@ -20,6 +20,49 @@ The backend ships as a container image (`Containerfile`, the `backend` service i
 can't move the interpreter under the app. Windows hosts keep the bare-metal flow
 (`startup.ps1`).
 
+### Pinned versions
+
+A rebuild installs the versions the tests ran on, not whatever is newest that
+day. Two files do it:
+
+- `requirements.txt` gives every package a floor and a ceiling.
+- `constraints.txt` lists the exact version of each of those packages and of
+  everything they bring in (about 80), as installed when the suite last passed.
+  The image installs with `-c constraints.txt`.
+
+The test harness (pytest, respx and two more) is in `requirements-dev.txt`,
+pinned in the same file, and is not installed in the image or by
+`./startup.sh init`.
+
+To move to newer versions: upgrade the venv (`pip install -U -r requirements.txt -r requirements-dev.txt`),
+run the tests, then regenerate the file from that venv and commit it with the
+change. `pip freeze` lists more than the image needs (Docling's packages, tools);
+keep only the lines for packages already in `constraints.txt`, plus any new
+dependency. A bare-metal install (`./startup.sh init`, Windows) uses
+`requirements.txt` alone, so it stays inside the ranges but isn't pinned.
+
+Not pinned yet: the Docling extra's own packages (`requirements-docling.txt`),
+the Kokoro model download (no checksum), and the SearXNG image (`:latest`).
+
+### When Postgres isn't there at start
+
+Compose starts the backend and Keycloak only after Postgres answers
+(`depends_on: service_healthy`). After a reboot the engine restarts containers on
+its own, in any order, so the backend also covers it itself: if Postgres doesn't
+answer at start it keeps trying every 15 seconds for as long as it runs, and
+finishes its start-up when it does. Until then every route that needs the
+database answers `503 db_unavailable`, and `GET /v1/health` says so:
+
+```json
+{"status": "ok", "model_loaded": true, "database": "unavailable"}
+```
+
+`status` is read-aloud's own state (the Kokoro model), so watch `database` in a
+monitor. Read-aloud needs the database too: the caller is looked up there.
+
+Workers that start together take turns migrating (an advisory lock), each
+migration commits on its own, and a worker only serves once they have all run.
+
 ### Live mode
 
 | Command | Effect |
@@ -203,7 +246,7 @@ for a *fresh* database.
   `https://chat.example.com/v1/auth/callback`; **Web origins**: add
   `https://chat.example.com` → Save.
 - **`kcadm` (scriptable):** run inside the container (needs the *master* admin
-  password — see the admin-password note below; the `admin/admin` in compose is
+  password — see the admin-password note below; `KC_BOOTSTRAP_ADMIN_PASSWORD` is
   only applied on a **first-ever** boot with an empty DB):
 
   ```bash
@@ -235,13 +278,65 @@ delimited by **`##`**, not spaces or commas (`+` is the special token meaning
 "reuse the Valid Redirect URIs"). A space-delimited value is silently parsed as
 one bogus URI and matches nothing.
 
-> **Master admin password:** `KC_BOOTSTRAP_ADMIN_USERNAME/PASSWORD` in compose
-> create the master admin **only on the first boot against an empty database**.
+> **Master admin password:** `KC_BOOTSTRAP_ADMIN_PASSWORD` in `.env` (user
+> `admin`) creates the master admin **only on the first boot against an empty
+> database**. Unset, that admin gets a random password nobody knows.
 > Because the realm persists in Postgres, later container recreations ignore
 > those vars — the real password is whatever it was first set to. If it's lost,
 > reset it with `bin/kc.sh bootstrap-admin` (Keycloak 26) or by seeding a fresh
 > admin against the DB; the compose values are not authoritative on a persisted
 > volume.
+
+### Sign-in off is for one machine
+
+`AUTH_ENABLED=false` makes every request the seed admin. It exists for a
+developer's own machine and for single-user use, and two checks keep it there:
+
+- The backend refuses to start with it on a non-loopback bind.
+- Behind a reverse proxy the bind is still loopback, so each request is checked
+  too: one that carries a proxy's headers (`X-Forwarded-For`, `X-Real-IP`,
+  `Forwarded`, `X-Forwarded-Host`) or is addressed to any name but `localhost`,
+  `127.0.0.1` or `::1` gets `403 sign_in_off_local_only`. That is also what stops a
+  web page from reaching a developer's backend through DNS rebinding.
+
+`./startup.sh up` (also what a bare `./startup.sh` runs) turns sign-in off, so it
+refuses when `.env` has an `https://` issuer, `KC_HOSTNAME` or `COOKIE_SECURE=true`.
+Use `./startup.sh start` on a deployment. `ALLOW_AUTH_OFF=1` overrides.
+
+One consequence: with sign-in off the app can't be used from another device on
+your network (a phone at `192.168.x.x:5173`). Turn sign-in on for that.
+
+### Rotating the Keycloak secrets
+
+**Do this if your realm was created by v2.11.0 or earlier.** Until then
+`deploy/keycloak/realm-export.json` contained working values: the secret of the
+sign-in client, the secret of `natural-reader-admin` (a service account that can
+create users and reset anyone's password), the password of the seeded
+`admin-user` (an app admin), and compose set Keycloak's master admin to
+`admin`/`admin`. They are public. Keycloak's token endpoint has to be reachable
+for sign-in to work, so anyone who can reach it can use them.
+
+The backend tells you: at start it logs an error naming each variable that
+still holds a published value, and Admin → Deployment shows "set, but to a
+published default: rotate it".
+
+1. **The two client secrets.** In the Keycloak admin console: realm
+   `natural-reader` → Clients → `natural-reader` → Credentials → **Regenerate**;
+   the same for `natural-reader-admin`. Put the new values in `.env` as
+   `OIDC_CLIENT_SECRET` and `KC_ADMIN_CLIENT_SECRET`, then `./startup.sh rebuild`
+   (or restart the backend). Sign-in fails between the two steps, so do them
+   together.
+2. **`admin-user`.** Once your own account is an admin, delete it (Users →
+   `admin-user` → Delete), or give it a new password under Credentials.
+3. **The master admin.** Sign in to the admin console as `admin`, then change the
+   password (top right → Manage account), or create a new admin in the `master`
+   realm and delete `admin`.
+4. Check: restart the backend and look for the error line; it should be gone.
+
+A fresh install needs none of this: `./startup.sh` generates all four values into
+`.env`, and the realm file only holds `${PLACEHOLDERS}` that Keycloak fills from
+them when it first creates the realm. They are read once. Changing them in `.env`
+later does not change an existing realm; use the steps above.
 
 ### Trap 3 — the session cookie silently vanishes (COOKIE_SECURE / same origin)
 
@@ -305,7 +400,7 @@ to disarm all three at once:
 
   ```ini
   KC_ADMIN_CLIENT_ID=natural-reader-admin
-  KC_ADMIN_CLIENT_SECRET=<the natural-reader-admin client secret>   # dev: natural-reader-admin-dev-secret
+  KC_ADMIN_CLIENT_SECRET=<the natural-reader-admin client secret>
   ```
 
 - **Fresh install shortcut:** because the corrected export assigns the founder the
@@ -375,9 +470,9 @@ INFERENCE_OPENROUTER_MODELS=vendor/model-a,vendor/model-b
 Model ids in the chat UI carry the provider name (`local:qwen2.5:7b`,
 `openrouter:vendor/model-a`); a saved selection from before C1
 (`qwen2.5:7b`) is read as `ollama:qwen2.5:7b` automatically. `KIND` is
-`ollama` for Ollama's native API, or `openai` for anything that speaks the
-OpenAI chat-completions shape (vLLM, OpenRouter, LiteLLM, or Ollama's own
-`/v1`); for `kind=openai`, `URL` is the API base **including** the version
+`ollama` for Ollama's native API, `gemini` for Google's Gemini API (below), or
+`openai` for anything that speaks the OpenAI chat-completions shape (vLLM,
+OpenRouter, LiteLLM, or Ollama's own `/v1`); for `kind=openai`, `URL` is the API base **including** the version
 path — the adapter appends `/chat/completions` and `/models` itself. API
 keys stay on the server: never sent to the browser, never logged, never
 shown in the admin console's Deployment section (a key reads only *set* or *not set*).
@@ -390,6 +485,59 @@ follow-up question, provider-reported token usage, a rate-limited free
 model and a rejected key, with no key in the logs. Before that (v2.1.0),
 the same adapter was run against Ollama's own `/v1`. vLLM and LiteLLM speak
 the same protocol but haven't been run.
+
+### Google Gemini (`KIND=gemini`)
+
+```bash
+INFERENCE_PROVIDERS=local,google
+INFERENCE_GOOGLE_KIND=gemini
+INFERENCE_GOOGLE_API_KEY=your-gemini-api-key
+# INFERENCE_GOOGLE_URL=https://generativelanguage.googleapis.com/v1beta   # the default
+# INFERENCE_GOOGLE_MODELS=gemini-flash-latest,gemini-pro-latest           # allow-list
+```
+
+The key is a Gemini API key from Google AI Studio (not a Google Cloud service
+account, and not the key file the Google speech engine uses). The models then
+show in the chat's picker as `google:<model>` like any other provider's, and an
+admin chooses which are offered in Admin → Models.
+
+This adapter speaks Google's Interactions API, which Google now recommends over
+`generateContent`. What that means here:
+
+- **Nothing is stored at Google.** The API's default keeps every interaction,
+  the conversation included, for 1 day (free tier) to 55 days (paid). Every
+  request from this app says `store: false`; the app keeps the history itself
+  and sends it each time, as it does for every provider.
+- **There is no "thinking off".** Off asks for the `minimal` level and no
+  thought summaries. A model that has no `minimal` level refuses it; the reply
+  is then made at the model's own default level, with a notice in the chat,
+  and that level isn't asked of that model again for an hour.
+- **Context size and keep-alive don't apply** (they are Ollama's). The model
+  list gives each model's context window, so nothing has to be declared.
+- **Chat only.** A `gemini` provider isn't offered in Models → Embeddings and
+  `EMBEDDING_PROVIDER` can't name one.
+- **The model list is filtered.** Google lists speech, image, embedding and
+  live models beside the chat ones; names that say so (`tts`, `image`,
+  `embedding`, `live`, ...) are left out. `INFERENCE_<NAME>_MODELS` switches the
+  filter off and offers exactly what it names.
+- The list says nothing about tools, pictures or audio, so the picker shows no
+  badge for them. They are still sent; a model that rejects tools is retried
+  without them, as on the other adapters.
+
+**Not run against Google.** No Gemini key was available when this was built
+(2026-11-11). It was written from Google's API reference and walked end to end
+against a stand-in server that follows the documented stream and refuses a tool
+call returned without its thought signature, as Google does. Two things only a
+real key can confirm: that a tool call this app makes itself (the document
+prefetch, the web-search consent) is accepted with the documented skip
+signature, and what a safety block looks like on this API.
+
+Google also serves an OpenAI-compatible endpoint, which the `openai` adapter can
+call instead (`KIND=openai`,
+`URL=https://generativelanguage.googleapis.com/v1beta/openai`). That adapter has
+been run against OpenRouter, not against Google, and Google's own notes say a
+tool call there needs its thought signature passed back too, which the `openai`
+adapter doesn't do.
 
 ### Examples: vLLM, Unsloth, OpenAI and Claude
 
@@ -1631,6 +1779,89 @@ role, or an API that's off, named with its project.
   sample in English, Sinhala and Tamil, fetched from Google once per voice per session
   (a few hundred characters of quota). Turning Google on or off stays the admin's.
 
+## Notifications
+
+The header's bell (v2.12) needs nothing set up: migration 026 runs at start, and the
+notices are in the app only (no email, no outside service). What an operator can change
+is how long they're kept:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `NOTIFICATIONS_READ_DAYS` | 30 | days a read notice is kept after it was read; `0` keeps it forever |
+| `NOTIFICATIONS_UNREAD_DAYS` | 90 | days an unread notice is kept after it arrived; `0` keeps it forever |
+
+The cleanup runs at startup and then every 24 hours in each worker; several workers
+deleting the same rows is harmless. A value that isn't a whole number of days, or is
+negative, logs one warning and keeps the default. Every active admin gets the admin
+notices (re-embed paused or done, rebuilds failing 3 times in a row, passages shortened);
+an admin added later doesn't get older ones.
+
+## Backup and restore
+
+**The trap: Keycloak lives in the app's database.** Its realm (accounts,
+passwords, clients) is the `keycloak` schema of the `natural_reader` database,
+so one dump holds both, and restoring an older dump rolls Keycloak back too.
+Losing that schema without a backup is worse than it looks: a new realm gives
+every person a new identity id, and the app then refuses each existing person
+at sign-in with HTTP 409 "email already linked to another identity" until
+their old link is cleared by hand.
+
+What to keep, and what losing it costs:
+
+| What | Where | Without it |
+|---|---|---|
+| The database `natural_reader` | volume `pgdata`, container `natural-reader-postgres` | Everything: people, chats, projects, settings, documents' text and passages, and Keycloak's realm |
+| Uploaded files and their pictures | `DOC_STORAGE_DIR` on the host (default `./data/pdfs`; pictures in `figures/`) | A document can't be opened in the reader, re-indexed or converted ("Upload the file again first"); its passages still answer chat questions |
+| `.env` | the checkout | The secrets. A new `SESSION_SECRET` only signs everyone out; a new `OIDC_CLIENT_SECRET` must then match the one the restored realm holds, or sign-in fails |
+| `CHAT_ASSISTANT_PROFILE_FILE`, `SPEECH_MODELS_FILE` | wherever `.env` points, if set | Those settings |
+| Volume `cache` | models (Hugging Face, converted speech models) | Nothing: downloaded again, slowly |
+
+The database and the files belong together: a document uploaded or deleted
+between the dump and the copy leaves a row without its file, or a file nothing
+points to. Stopping the backend for the minute it takes gives a matching pair.
+The dump alone is consistent either way (`pg_dump` reads one snapshot).
+
+**Backing up** (with docker, write `docker` for `podman`):
+
+```bash
+B=~/nr-backup/$(date +%F); mkdir -p "$B"
+podman stop natural-reader-backend          # a quiet minute: files and rows match
+podman exec natural-reader-postgres pg_dump -U natural_reader -Fc natural_reader > "$B/natural_reader.dump"
+rsync -a data/pdfs/ "$B/pdfs/"              # your DOC_STORAGE_DIR
+install -m 600 .env "$B/env"                # secrets: keep this copy private
+podman start natural-reader-backend
+```
+
+Keep a copy off the machine; a backup on the same disk goes with it.
+
+**Restoring** (the containers exist and Postgres is running; on a new machine,
+start the stack once first so they do):
+
+```bash
+podman stop natural-reader-backend natural-reader-keycloak
+podman exec natural-reader-postgres dropdb -U natural_reader --force natural_reader
+podman exec natural-reader-postgres createdb -U natural_reader natural_reader
+podman exec -i natural-reader-postgres pg_restore -U natural_reader -d natural_reader --no-owner < "$B/natural_reader.dump"
+rsync -a --delete "$B/pdfs/" data/pdfs/
+podman start natural-reader-keycloak natural-reader-backend
+```
+
+- **`-i` on the `pg_restore` line is not optional.** Without it podman passes no
+  input, and `pg_restore` stops with "input file is too short".
+- `dropdb` deletes the current database. Make a fresh dump of it first if there
+  is any chance you want it back.
+- A dump from an older version restores fine: the backend applies the newer
+  migrations when it starts. A dump from a **newer** version doesn't belong
+  under older code; going back a version is the migrations' Down blocks.
+
+**What has been checked** (2026-11-14, on a scratch `pgvector/pgvector:pg16`
+container): a fully migrated database with a `keycloak` schema, dumped and
+restored with these commands, came back with the same tables in both schemas,
+all 26 migrations recorded, the `vector` extension and its 56 indexes, and
+vector ordering unchanged; the backend's database layer then started on it
+without applying a migration. **Not checked:** a restore on a real deployment,
+in particular Keycloak signing people in against a restored realm.
+
 ## Bring-up checklist
 
 1. **DNS:** `chat.example.com` and `auth.example.com` both resolve to the host.
@@ -1642,7 +1873,10 @@ role, or an API that's off, named with its project.
 4. **Build the SPA:** `npm run build`; point the chat vhost's `root` at `dist/`.
 5. **`.env`:** the six production values from the table above — the five
    scheme+host ones **and** `KC_ADMIN_CLIENT_ID`/`KC_ADMIN_CLIENT_SECRET` (start
-   from [`../.env.example`](../.env.example)).
+   from [`../.env.example`](../.env.example)). **Before the first start**, set
+   your own `OIDC_CLIENT_SECRET`, `KC_ADMIN_CLIENT_SECRET`,
+   `KC_BOOTSTRAP_ADMIN_PASSWORD` and `KC_SEED_USER_PASSWORD` (`openssl rand -hex 32`
+   each): Keycloak reads them once, when it creates the realm.
 6. **Bring up services:** `./startup.sh start` (Postgres, Keycloak, SearXNG and
    the backend container, which stays bound to the loopback nginx proxies to),
    then `./startup.sh enable-autostart` so it survives reboots.

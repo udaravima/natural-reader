@@ -22,11 +22,12 @@ RUN apt-get update \
  && if [ "$WITH_DOCLING" = "true" ]; then apt-get install -y --no-install-recommends libgl1 libglib2.0-0; fi \
  && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt requirements-docling.txt ./
-RUN pip install -r requirements.txt
+# constraints.txt holds the exact versions the tests ran on, so a rebuild can't pull untested ones.
+COPY requirements.txt requirements-docling.txt constraints.txt ./
+RUN pip install -r requirements.txt -c constraints.txt
 # CPU-only torch keeps the Docling variant gigabytes smaller than the CUDA default.
 RUN if [ "$WITH_DOCLING" = "true" ]; then \
-      pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-docling.txt; \
+      pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-docling.txt -c constraints.txt; \
     fi
 
 # Kokoro voice model, in its own cached layer. server/model.py opens these

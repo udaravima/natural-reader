@@ -2,7 +2,9 @@
 stays cheap to import from tests and CI."""
 from __future__ import annotations
 
+import hashlib
 import ipaddress
+import logging
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -60,6 +62,37 @@ def kc_admin_available(cfg: "AuthConfig") -> bool:
     return bool(cfg.kc_admin_client_id and cfg.kc_admin_client_secret)
 
 
+# SHA-256 of the two client secrets this repository shipped in deploy/keycloak/realm-export.json up to
+# v2.11.0. They are public, so a realm created from that file has a sign-in client and, worse, a
+# user-management service account that anyone who can reach Keycloak can use. Hashes, so the values
+# themselves are no longer anywhere in the tree.
+PUBLISHED_SECRET_HASHES = frozenset({
+    "88675de7fe987e6dd4b86353af648998a136b33a0d0355a4e395f24a7db47693",
+    "53a4cf38a902cab917d1706c385576aedefe213e0d63a2060dc74e91ab369711",
+})
+
+
+def is_published_secret(value: str | None) -> bool:
+    return bool(value) and hashlib.sha256(value.encode()).hexdigest() in PUBLISHED_SECRET_HASHES
+
+
+def published_secrets(cfg: AuthConfig) -> list[str]:
+    """The environment variables still holding a published client secret."""
+    return [name for name, value in (("OIDC_CLIENT_SECRET", cfg.oidc_client_secret),
+                                     ("KC_ADMIN_CLIENT_SECRET", cfg.kc_admin_client_secret))
+            if is_published_secret(value)]
+
+
+def warn_published_secrets(cfg: AuthConfig) -> list[str]:
+    names = published_secrets(cfg)
+    for name in names:
+        logging.getLogger(__name__).error(
+            "%s is a default that was published in this project's repository. Anyone who can reach Keycloak "
+            "can use it. Rotate it: regenerate the client's secret in Keycloak, put the new value in .env, "
+            "restart (docs/DEPLOYMENT.md, \"Rotating the Keycloak secrets\").", name)
+    return names
+
+
 def _is_loopback(bind_host: str) -> bool:
     """True only for a genuine loopback bind address.
 
@@ -86,6 +119,30 @@ def _is_loopback(bind_host: str) -> bool:
 def dev_bypass_allowed(cfg: AuthConfig, bind_host: str) -> bool:
     """The AUTH_ENABLED=false bypass is valid ONLY on a loopback bind."""
     return (not cfg.enabled) and _is_loopback(bind_host)
+
+
+# Headers a reverse proxy adds. One of them on a request means it didn't start on this machine.
+_PROXY_HEADERS = ("x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded")
+
+
+def bypass_request_is_local(headers: Mapping[str, str]) -> bool:
+    """With sign-in off, may this request be the seed admin? Only one addressed to this machine by a loopback
+    name, with no sign of a proxy in front.
+
+    The bind address alone doesn't say that: behind nginx the backend still listens on 127.0.0.1 while serving
+    the internet, and a page on any website can reach a loopback server through DNS rebinding. Both show in the
+    request: the proxy passes the public name as Host (or adds its headers), and a rebinding page's Host is the
+    attacker's name. Host is client-supplied, so this is never the only check (dev_bypass_allowed is the
+    other); it can only take the bypass away."""
+    lowered = {k.lower(): v for k, v in headers.items()}
+    if any(lowered.get(h) for h in _PROXY_HEADERS):
+        return False
+    host = (lowered.get("host") or "").strip().lower()
+    if host.startswith("["):                      # [::1]:8000
+        name = host[1:].split("]", 1)[0]
+    else:
+        name = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    return bool(name) and _is_loopback(name)
 
 
 def _weak_session_secret(secret: str | None) -> bool:

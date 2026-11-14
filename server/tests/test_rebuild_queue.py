@@ -131,3 +131,68 @@ async def test_a_restart_resumes_the_queue(db_conn, monkeypatch):
     assert [(r[0], r[2]) for r in await _rows(db_conn)] == [(B, "failed")]
     cur = await db_conn.execute("SELECT error FROM doc_rebuilds")
     assert (await cur.fetchone())[0] == "it broke"
+
+
+# ---- notifications (spec 2026-11-06): the admins hear once a rebuild keeps failing ----
+
+async def _rebuild_notices(conn):
+    cur = await conn.execute("SELECT kind, level, title, body, key, repeats, target, resolved_at, doc_id "
+                             "FROM notifications WHERE kind = 'rebuild.failed' ORDER BY id")
+    return await cur.fetchall()
+
+
+async def _fail_again(conn, worker, error="the embedding service skipped some chunks"):
+    await conn.execute("UPDATE doc_rebuilds SET retry_after = now() - interval '1 second'")
+    assert await rebuild_queue.claim_next(conn, worker) == A
+    await rebuild_queue.fail(conn, A, worker, error)
+
+
+async def test_the_third_failure_in_a_row_tells_the_admins(db_conn):
+    from server.services import notifications
+    admins = await notifications.admin_ids(db_conn)
+    await seed.seed_doc(db_conn, A, None, state="indexed", file_name="Annual report.pdf")
+    await rebuild_queue.enqueue(db_conn, A, "p1")
+    await _fail_again(db_conn, "w")
+    await _fail_again(db_conn, "w")
+    assert await _rebuild_notices(db_conn) == []
+    await _fail_again(db_conn, "w", "no text found")
+    rows = await _rebuild_notices(db_conn)
+    assert len(rows) == len(admins) >= 1
+    assert rows[0][:7] == ("rebuild.failed", "action",
+                           "Annual report.pdf has failed to rebuild 3 times; its old index is still answering.",
+                           "no text found", f"rebuild:{A}", 1, {"admin": "overview"})
+    assert rows[0][7] is None and rows[0][8] == A
+
+
+async def test_more_failures_merge_into_it(db_conn):
+    from server.services import notifications
+    admins = await notifications.admin_ids(db_conn)
+    await seed.seed_doc(db_conn, A, None, state="indexed")
+    await rebuild_queue.enqueue(db_conn, A, "p1")
+    for _ in range(4):
+        await _fail_again(db_conn, "w")
+    rows = await _rebuild_notices(db_conn)
+    assert len(rows) == len(admins) and {r[5] for r in rows} == {2}
+    assert "4 times" in rows[0][2]
+
+
+async def test_a_finished_rebuild_resolves_it(db_conn):
+    await seed.seed_doc(db_conn, A, None, state="indexed")
+    await rebuild_queue.enqueue(db_conn, A, "p1")
+    for _ in range(3):
+        await _fail_again(db_conn, "w")
+    await db_conn.execute("UPDATE doc_rebuilds SET retry_after = now() - interval '1 second'")
+    assert await rebuild_queue.claim_next(db_conn, "w") == A
+    await rebuild_queue.finish(db_conn, A, "w")
+    rows = await _rebuild_notices(db_conn)
+    assert rows and all(r[7] is not None for r in rows)
+
+
+async def test_a_late_fail_from_a_lapsed_worker_sends_nothing(db_conn):
+    await seed.seed_doc(db_conn, A, None, state="indexed")
+    await rebuild_queue.enqueue(db_conn, A, "p1")
+    await db_conn.execute("UPDATE doc_rebuilds SET attempts = 5")
+    assert await rebuild_queue.claim_next(db_conn, "w1") == A
+    await db_conn.execute("UPDATE doc_rebuilds SET claimed_by = 'w2'")   # w1's claim was taken over
+    await rebuild_queue.fail(db_conn, A, "w1", "late")
+    assert await _rebuild_notices(db_conn) == []

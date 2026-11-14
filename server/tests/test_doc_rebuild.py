@@ -307,6 +307,36 @@ async def test_the_profile_is_recorded_only_when_every_chunk_embedded(db_conn, m
     assert profile == (None if fail_one else embeddings.current_profile())
 
 
+async def test_an_embed_overtaken_by_a_markdown_delete_does_not_mark_the_document_indexed(db_conn, monkeypatch, store):
+    # Delete-markdown wipes the chunks and puts the document back to 'stored' for a fresh extraction. An embed
+    # job that was already running must not then stamp it 'indexed' with a current profile: the queued job would
+    # see "indexed" and do nothing, leaving a document that reads Indexed with no passages, for good.
+    build_docs_app(db_conn, monkeypatch, storage_dir=store)
+    owner = await _member(db_conn, "owner")
+    await _unembedded(db_conn, owner.user_id, 2)
+    await db_conn.execute("UPDATE documents SET state = 'indexing' WHERE doc_id = %s", (DOC,))
+    vec = [1.0] + [0.0] * (embeddings.EMBEDDING_DIM - 1)
+
+    async def overtaken(texts, e=None):
+        await db_conn.execute("DELETE FROM doc_chunks WHERE doc_id = %s", (DOC,))
+        await db_conn.execute("UPDATE documents SET state = 'stored', embedding_profile = NULL WHERE doc_id = %s", (DOC,))
+        return [vec for _ in texts]
+    monkeypatch.setattr(doc_pipeline, "embed_documents", overtaken)
+    await doc_pipeline.run_embed(DOC)
+    state, profile, _ = await _state(db_conn)
+    assert (state, profile) == ("stored", None)
+
+
+async def test_an_embed_with_nothing_left_leaves_a_document_that_is_not_indexing_alone(db_conn, monkeypatch, store):
+    build_docs_app(db_conn, monkeypatch, storage_dir=store)
+    owner = await _member(db_conn, "owner")
+    await _unembedded(db_conn, owner.user_id, 2)
+    await db_conn.execute("DELETE FROM doc_chunks WHERE doc_id = %s", (DOC,))
+    await db_conn.execute("UPDATE documents SET state = 'stored' WHERE doc_id = %s", (DOC,))
+    await doc_pipeline.run_embed(DOC)
+    assert (await _state(db_conn))[0] == "stored"
+
+
 # ---- C2.1 Task 6: code chunks for existing documents, reusing embeddings ----
 
 GUIDE = (b"# Guide\n\nRun the server with the command below. It listens on port 8000 by default.\n\n"

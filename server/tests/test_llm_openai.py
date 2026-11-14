@@ -166,6 +166,38 @@ async def test_a_remembered_tools_rejection_makes_capabilities_say_no_tools():
     assert sum(r.url.path == "/api/v1/models" for r in up.requests) == 1   # served from the cache
 
 
+@pytest.mark.parametrize("message", [
+    "This model's maximum context length is 8192 tokens. However, your messages resulted in 9001 tokens.",
+    "the request exceeds the available context size, try increasing it",
+    "prompt is too long: 210000 tokens > 200000 maximum",
+])
+async def test_a_prompt_too_long_error_is_not_remembered_as_the_model_rejecting_tools(message):
+    # Without the tool specs the prompt fits, so the retry succeeds, and that used to be read as "this model
+    # can't take tools" and remembered for everyone on the worker until a restart.
+    up = _up(lambda: httpx.Response(400, json={"error": {"message": message}}),
+             lambda: sse(_finish("stop")), lambda: sse(_finish("stop")))
+    provider = OpenAICompatProvider(CFG, up.client())
+    chunks = await _collect(provider.stream_chat("vendor/model", HI, [TOOL], CallSettings()))
+    assert FeatureDropped("tools") in chunks                       # this reply did go without tools, and says so
+    await _collect(provider.stream_chat("vendor/model", HI, [TOOL], CallSettings()))
+    assert ["tools" in b for b in up.bodies("/api/v1/chat/completions")] == [True, False, True]
+    assert (await provider.capabilities("vendor/model")).tools is True
+
+
+def test_a_remembered_rejection_is_forgotten_after_an_hour(monkeypatch):
+    from server.llm.providers import base
+    now = [1000.0]
+    monkeypatch.setattr(base.time, "monotonic", lambda: now[0])
+    memory = base.FeatureMemory()
+    memory.remember("m", "tools")
+    memory.remember("m", "system")
+    now[0] += base.FEATURE_MEMORY_TTL_S - 1
+    assert memory.rejected("m", "tools")
+    now[0] += 2
+    assert not memory.rejected("m", "tools")       # a guess from one failed request: tried again
+    assert memory.rejected("m", "system")          # certain (the error named the system role): kept
+
+
 async def test_list_models():
     provider = OpenAICompatProvider(CFG, _up(lambda: sse(_finish("stop"))).client())
     assert await provider.list_models() == ["vendor/model"]

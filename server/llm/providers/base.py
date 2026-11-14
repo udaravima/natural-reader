@@ -22,7 +22,7 @@ CAPABILITY_TTL_S = 300.0   # re-probe a model's capabilities after 5 minutes
 @dataclass(frozen=True)
 class ProviderConfig:
     name: str                               # lower-case; the model-id prefix
-    kind: str                               # "ollama" | "openai"
+    kind: str                               # "ollama" | "openai" | "gemini"
     url: str                                # base URL, no trailing slash
     api_key: str = ""
     models: tuple[str, ...] | None = None   # allow-list; None = everything it lists
@@ -50,6 +50,8 @@ def auth_headers(cfg: ProviderConfig) -> dict[str, str]:
 _SECRET_PATTERNS = [
     # OpenAI/Anthropic-style API keys (sk-..., sk-ant-..., sk-proj-...).
     (re.compile(r"sk-[A-Za-z0-9_-]{8,}"), "sk-[REDACTED]"),
+    # Google API keys (AIza...), wherever they appear, a ?key= query among them.
+    (re.compile(r"AIza[0-9A-Za-z_-]{16,}"), "AIza[REDACTED]"),
     # An Authorization header value, if a provider ever echoes the request it received.
     (re.compile(r"Bearer\s+\S+"), "Bearer [REDACTED]"),
     # URL userinfo (scheme://user:pass@host) — a base URL that embeds credentials.
@@ -173,18 +175,31 @@ def parse_arguments(raw: Any) -> dict[str, Any]:
     return {}
 
 
+# How long "this model rejected <feature>" is believed. It is a guess from one request that failed with the
+# feature and passed without it, and a wrong guess (a prompt that was only too long) would otherwise switch
+# tools off for everyone on the worker until a restart.
+FEATURE_MEMORY_TTL_S = 3600.0
+_CERTAIN = frozenset({"system"})   # the provider's error named the cause: kept for the process lifetime
+
+
 class FeatureMemory:
-    """Features a provider rejected for a model, for the process lifetime.
-    Recorded only after the retry WITHOUT the feature succeeded (ruling R12)."""
+    """Features a provider rejected for a model. Recorded only after the retry WITHOUT the feature succeeded
+    (ruling R12), and forgotten after FEATURE_MEMORY_TTL_S unless the rejection was certain."""
 
     def __init__(self) -> None:
-        self._rejected: dict[str, set[str]] = {}
+        self._rejected: dict[str, dict[str, float]] = {}
 
     def rejected(self, model: str, feature: str) -> bool:
-        return feature in self._rejected.get(model, set())
+        at = self._rejected.get(model, {}).get(feature)
+        if at is None:
+            return False
+        if feature in _CERTAIN or time.monotonic() - at < FEATURE_MEMORY_TTL_S:
+            return True
+        del self._rejected[model][feature]
+        return False
 
     def remember(self, model: str, feature: str) -> None:
-        self._rejected.setdefault(model, set()).add(feature)
+        self._rejected.setdefault(model, {})[feature] = time.monotonic()
 
     def apply(self, model: str, caps: Capabilities) -> Capabilities:
         """`caps` as the model's requests will actually see them: once tools
@@ -272,10 +287,24 @@ def is_feature_rejection(err: ProviderError) -> bool:
     return 400 <= err.status < 500 and err.status not in (401, 402, 403, 404, 408, 429)
 
 
-def settle_dropped(features: FeatureMemory, model: str, provider: str, dropped: list[str]) -> list[FeatureDropped]:
+_OVERFLOW = re.compile(
+    r"context (length|window|size)|maximum context|too long|too many tokens|token limit|reduce the length", re.I)
+
+
+def is_overflow(err: ProviderError) -> bool:
+    """The provider said the prompt doesn't fit. Dropping tools shortens the prompt (their specs go), so the
+    retry may well succeed, which says nothing about whether the model can take tools."""
+    return bool(_OVERFLOW.search(err.safe_message or ""))
+
+
+def settle_dropped(features: FeatureMemory, model: str, provider: str, dropped: list[str], *,
+                   remember: bool = True) -> list[FeatureDropped]:
     """After a successful retry: every dropped feature is reported, but only the last one
     — the one whose removal made the request succeed — is remembered (ruling R12), plus a
     folded system role, whose rejection names its cause.
+
+    `remember=False` when one of the errors was a prompt that didn't fit (is_overflow): this reply went
+    without the feature and says so, but the next request tries it again.
 
     Returns the FeatureDropped chunks to yield; also records memory and logs."""
     chunks = [FeatureDropped(feature) for feature in dropped]
@@ -284,7 +313,8 @@ def settle_dropped(features: FeatureMemory, model: str, provider: str, dropped: 
         features.remember(model, "system")
     if dropped:
         last_feature = dropped[-1]
-        features.remember(model, last_feature)
+        if remember or last_feature in _CERTAIN:
+            features.remember(model, last_feature)
         logger.debug("Model %s on %s rejected %s; retried without it",
                      model, provider, last_feature)
     return chunks

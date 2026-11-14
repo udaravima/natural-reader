@@ -27,6 +27,10 @@ class ToolCall:
     id: str
     name: str
     arguments: dict[str, Any]
+    # What the provider needs back with this call on the next request (Gemini: the thought steps before
+    # it, signatures included). Opaque to everything but the adapter that set it; never compared, never
+    # printed, never stored: it lives for one turn's tool loop.
+    extra: dict[str, Any] | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)

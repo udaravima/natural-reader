@@ -16,7 +16,9 @@ import numpy as np
 import soundfile as sf
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from . import db
 from .auth.deps import Principal, require_read_aloud
+from .health import health_payload
 from .model import kokoro
 from .schemas import TTSRequest, BatchTTSRequest
 from .tts_language import phonemes
@@ -52,14 +54,7 @@ async def health_check():
     Lightweight health check — verifies the model is loaded without running
     inference or holding the inference lock. Safe to call during playback.
     """
-    try:
-        model_loaded = kokoro is not None
-        return {
-            "status": "ok" if model_loaded else "error",
-            "model_loaded": model_loaded,
-        }
-    except Exception as e:
-        return {"status": "error", "detail": str(e)}
+    return health_payload(model_loaded=kokoro is not None, db_ready=db.is_ready())
 
 
 @router.post("/v1/synthesize")

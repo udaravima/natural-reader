@@ -55,6 +55,22 @@ server {
     # Admin/account consoles can post large forms.
     client_max_body_size 10m;
 
+    # OPTIONAL, recommended: keep Keycloak's own admin console and admin API off the internet. Sign-in needs
+    # only /realms/ and /resources/. Uncomment, and list the addresses you administer from (or none, and
+    # reach it through an SSH tunnel to 127.0.0.1:18080). The app's own user management doesn't pass here:
+    # the backend calls Keycloak on the loopback.
+    #
+    # location /admin {
+    #     allow 203.0.113.42;      # your address
+    #     deny  all;
+    #     proxy_pass http://127.0.0.1:18080;
+    #     proxy_set_header Host              $host;
+    #     proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+    #     proxy_set_header X-Forwarded-Proto $scheme;
+    #     proxy_set_header X-Forwarded-Host  $host;
+    #     proxy_set_header X-Forwarded-Port  443;
+    # }
+
     location / {
         proxy_pass http://127.0.0.1:18080;
 

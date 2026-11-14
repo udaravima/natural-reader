@@ -54,22 +54,24 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.8.0
     container_name: natural-reader-keycloak
-    # Keycloak refuses an empty KC_PROXY_HEADERS ("Expected values are:
-    # forwarded, xforwarded") and restarts forever, and ${KC_PROXY_HEADERS:-}
-    # below is empty unless .env sets it (a fresh clone doesn't). Drop it when
-    # empty, then run kc.sh with `command` exactly as the image would.
-    entrypoint:
-      - /bin/bash
-      - -c
-      - '[ -n "$${KC_PROXY_HEADERS}" ] || unset KC_PROXY_HEADERS; exec /opt/keycloak/bin/kc.sh "$$@"'
-      - kc.sh
+    # deploy/keycloak-entrypoint.sh: drops an empty KC_PROXY_HEADERS (Keycloak refuses it and restarts
+    # forever), gives any unset secret below a random value, then runs kc.sh with `command`.
+    entrypoint: ["/bin/bash", "/opt/keycloak/nr-entrypoint.sh"]
     command: ["start-dev", "--import-realm", "--http-port=8080"]
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     environment:
-      # Console bootstrap admin (Keycloak's own admin UI at :18080/admin).
+      # Keycloak's own master admin (its admin UI at :18080/admin). Used once, when Keycloak has no admin
+      # yet; changing it later changes nothing. Set it in .env (./startup.sh generates one).
       KC_BOOTSTRAP_ADMIN_USERNAME: admin
-      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:-}
+      # deploy/keycloak/realm-export.json holds no secrets: its ${PLACEHOLDERS} are filled from these three
+      # when the realm is first created. The backend reads the two client secrets from the same .env, so
+      # they always match. Changing them later doesn't change a realm that already exists.
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      KC_ADMIN_CLIENT_SECRET: ${KC_ADMIN_CLIENT_SECRET:-}
+      KC_SEED_USER_PASSWORD: ${KC_SEED_USER_PASSWORD:-}
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/natural_reader
       KC_DB_USERNAME: natural_reader
@@ -92,6 +94,7 @@ services:
       - "127.0.0.1:18080:8080"
     volumes:
       - ./deploy/keycloak:/opt/keycloak/data/import:ro
+      - ./deploy/keycloak-entrypoint.sh:/opt/keycloak/nr-entrypoint.sh:ro
     restart: always
 
   # The FastAPI backend (TTS, chat, documents). Host networking: it is a client
@@ -110,6 +113,11 @@ services:
         APP_UID: ${NR_APP_UID:-1000}
     image: natural-reader-backend:latest
     container_name: natural-reader-backend
+    # Postgres must answer before the backend starts. If it still isn't there (a reboot restarts containers in
+    # any order), the backend keeps trying in the background and /v1/health says "database": "unavailable".
+    depends_on:
+      postgres:
+        condition: service_healthy
     network_mode: host
     env_file:
       - path: .env

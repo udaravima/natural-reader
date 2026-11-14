@@ -80,7 +80,7 @@ async def test_fetch_page_text_returns_clean_text(resolve_pub_test):
         "Researchers concluded the effect is stable and reproducible.</p>"
         "</article></body></html>"
     )
-    respx.get("http://pub.test/a").mock(return_value=httpx.Response(200, html=html))
+    respx.get("http://93.184.216.34/a").mock(return_value=httpx.Response(200, html=html))
     await ws.start_client()
     try:
         text = await ws.fetch_page_text("http://pub.test/a")
@@ -98,7 +98,7 @@ async def test_fetch_page_text_returns_the_whole_page_with_no_character_cut(reso
                     for i in range(40))
     tail = "<p>The very last paragraph says the answer is forty-two.</p>"
     html = f"<html><body><article><h1>Doc</h1>{paras * 3}{tail}</article></body></html>"
-    respx.get("http://pub.test/big").mock(return_value=httpx.Response(200, html=html))
+    respx.get("http://93.184.216.34/big").mock(return_value=httpx.Response(200, html=html))
     await ws.start_client()
     try:
         text = await ws.fetch_page_text("http://pub.test/big")
@@ -112,7 +112,7 @@ async def test_fetch_page_text_returns_the_whole_page_with_no_character_cut(reso
 
 @respx.mock
 async def test_fetch_page_text_blocks_redirect_to_private(resolve_pub_test):
-    respx.get("http://pub.test/redir").mock(
+    respx.get("http://93.184.216.34/redir").mock(
         return_value=httpx.Response(302, headers={"location": "http://169.254.169.254/"})
     )
     await ws.start_client()
@@ -596,3 +596,117 @@ def test_the_server_still_starts_with_a_typo_in_a_web_search_setting():
     assert out.returncode == 0, out.stderr
     assert out.stdout.split() == ["5", "8.0", "2000000", "4", "15.0"]
     assert "WEB_SEARCH_RESULT_COUNT" in out.stderr and "WEB_SEARCH_FETCH_TIMEOUT_S" in out.stderr
+
+
+# ---- the address that was checked is the address that is called -------------------------------------------
+
+@pytest.mark.parametrize("url", [
+    "http://100.64.0.1/x",            # shared address space (CGNAT): where Tailscale hosts live
+    "http://100.100.100.100/",        # Tailscale's own resolver
+    "http://[::ffff:127.0.0.1]/x",    # loopback written as an IPv4-mapped IPv6 address
+    "http://[::ffff:10.0.0.5]/x",
+    "http://0.0.0.0/x",
+])
+def test_ssrf_guard_blocks_shared_and_mapped_addresses(url):
+    assert ws.is_url_fetchable(url) is False
+
+
+async def test_the_request_goes_to_the_checked_address_under_the_sites_own_name(monkeypatch, resolve_pub_test):
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, html="<html><body><article><p>" + "Readable words. " * 30 + "</p></article></body></html>")
+
+    monkeypatch.setattr(ws, "_client", _mock_transport_client(handler))
+    assert await ws.fetch_page_text("https://pub.test:8443/a?b=1")
+    (request,) = seen
+    assert request.url.host == "93.184.216.34" and request.url.port == 8443
+    assert request.url.raw_path == b"/a?b=1"
+    assert request.headers["host"] == "pub.test:8443"            # the site still sees its own name
+    assert request.headers["connection"] == "close"              # never pooled for another site on this address
+    assert request.extensions["sni_hostname"] == "pub.test"      # and its certificate is checked against it
+
+
+async def test_a_name_that_changes_its_answer_is_still_called_where_it_was_checked(monkeypatch):
+    """DNS rebinding: the first lookup says a public address, the next says this machine. One lookup per hop,
+    and the connection goes to its answer, so the second answer is never asked for."""
+    answers = iter(["93.184.216.34", "127.0.0.1", "127.0.0.1"])
+    lookups = []
+
+    def fake(host, *args, **kwargs):
+        lookups.append(host)
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (next(answers), 0))]
+
+    monkeypatch.setattr(ws.socket, "getaddrinfo", fake)
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.host)
+        return httpx.Response(200, html="<html><body><p>" + "Some text here. " * 30 + "</p></body></html>")
+
+    monkeypatch.setattr(ws, "_client", _mock_transport_client(handler))
+    await ws.fetch_page_text("http://rebind.test/x")
+    assert lookups == ["rebind.test"]
+    assert seen == ["93.184.216.34"]
+
+
+async def test_a_name_with_one_private_address_among_public_ones_is_refused(monkeypatch):
+    def fake(host, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0)) for ip in ("93.184.216.34", "10.0.0.5")]
+
+    monkeypatch.setattr(ws.socket, "getaddrinfo", fake)
+
+    def handler(request):
+        raise AssertionError("no request may be made")
+
+    monkeypatch.setattr(ws, "_client", _mock_transport_client(handler))
+    assert await ws.fetch_page_text("http://mixed.test/x") is None
+
+
+async def test_the_lookup_and_the_page_parsing_run_off_the_event_loop(monkeypatch):
+    """Both block: a slow resolver, or trafilatura on 2 MB of HTML, froze read-aloud and every open chat
+    stream on the worker for seconds."""
+    import threading
+
+    import trafilatura
+    loop_thread = threading.current_thread()
+    ran_on = {}
+
+    def fake(host, *args, **kwargs):
+        ran_on["lookup"] = threading.current_thread()
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    real_extract = trafilatura.extract
+
+    def extract(*args, **kwargs):
+        ran_on["parse"] = threading.current_thread()
+        return real_extract(*args, **kwargs)
+
+    monkeypatch.setattr(ws.socket, "getaddrinfo", fake)
+    monkeypatch.setattr(trafilatura, "extract", extract)
+    monkeypatch.setattr(ws, "_client", _mock_transport_client(
+        lambda request: httpx.Response(200, html="<html><body><p>" + "Words to read. " * 30 + "</p></body></html>")))
+    assert await ws.fetch_page_text("http://pub.test/x")
+    assert ran_on["lookup"] is not loop_thread and ran_on["parse"] is not loop_thread
+
+
+async def test_an_address_that_refuses_the_connection_falls_back_to_the_next_checked_one(monkeypatch):
+    """A name with an IPv6 and an IPv4 address on a machine with no IPv6 route: the library used to try each
+    in turn, and pinning to the first alone would lose that."""
+    def fake(host, *args, **kwargs):
+        return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2606:2800:220:1::1", 0, 0, 0)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(ws.socket, "getaddrinfo", fake)
+    tried = []
+
+    def handler(request):
+        tried.append(request.url.host)
+        if ":" in request.url.host:
+            raise httpx.ConnectError("Network is unreachable", request=request)
+        return httpx.Response(200, html="<html><body><p>" + "Plenty of text. " * 30 + "</p></body></html>")
+
+    monkeypatch.setattr(ws, "_client", _mock_transport_client(handler))
+    assert await ws.fetch_page_text("http://dual.test/x")
+    assert tried == ["2606:2800:220:1::1", "93.184.216.34"]

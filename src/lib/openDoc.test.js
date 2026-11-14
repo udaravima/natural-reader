@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { openServerDoc, openCitation } from './openDoc';
+import { openServerDoc, openCitation, openNoticeTarget } from './openDoc';
 
 const DOC = 'a'.repeat(64);
 
@@ -85,5 +85,37 @@ describe('openCitation', () => {
         const d = deps();
         await openCitation(d, { docId: DOC, page: 2, docName: undefined, openDocId: null, numPages: 0 });
         expect(d.fetchDocFile).toHaveBeenCalledWith(DOC, 'Cited document');
+    });
+});
+
+describe('openNoticeTarget', () => {
+    it('a document notice opens the document through openServerDoc', async () => {
+        const d = deps({ openAdmin: vi.fn() });
+        expect(await openNoticeTarget(d, { doc: DOC, name: 'Q3.pdf' })).toEqual({ numPages: 10 });
+        expect(d.fetchDocFile).toHaveBeenCalledWith(DOC, 'Q3.pdf');
+        expect(d.showReader).toHaveBeenCalled();
+        expect(d.openAdmin).not.toHaveBeenCalled();
+    });
+
+    it('opening a notice for a document you no longer hold shows the not-found toast', async () => {
+        const d = deps({ openAdmin: vi.fn(), fetchDocFile: vi.fn(async () => { throw new Error("This document doesn't exist or you don't have access."); }) });
+        expect(await openNoticeTarget(d, { doc: DOC, name: 'Q3.pdf' })).toBeNull();
+        expect(d.showToast).toHaveBeenCalledWith(
+            `Could not open "Q3.pdf": This document doesn't exist or you don't have access.`, 5000);
+        expect(d.showReader).not.toHaveBeenCalled();
+    });
+
+    it('an admin notice opens that console section', async () => {
+        const d = deps({ openAdmin: vi.fn() });
+        await openNoticeTarget(d, { admin: 'models' });
+        expect(d.openAdmin).toHaveBeenCalledWith('models');
+        expect(d.fetchDocFile).not.toHaveBeenCalled();
+    });
+
+    it('a notice with nowhere to go does nothing', async () => {
+        const d = deps({ openAdmin: vi.fn() });
+        expect(await openNoticeTarget(d, null)).toBeNull();
+        expect(d.openAdmin).not.toHaveBeenCalled();
+        expect(d.fetchDocFile).not.toHaveBeenCalled();
     });
 });

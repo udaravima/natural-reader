@@ -32,6 +32,14 @@ server {
     root /var/www/chat.example.com/dist;
     index index.html;
 
+    # The page may load pictures only from this site or from data it already holds. A chat reply never loads
+    # a remote picture (the app shows a link), and this makes the browser refuse one even if a future change
+    # let it through: a picture's address is a way to send text out without a click. It restricts pictures
+    # only; scripts, styles and connections are untouched. "always" covers error pages too.
+    # (nginx drops a server-level add_header inside a location that has its own, which is fine here: the
+    # policy that counts is the one on the page itself, served by `location /`.)
+    add_header Content-Security-Policy "img-src 'self' data: blob:" always;
+
     # Serve ES modules with a JS MIME type so Firefox accepts them
     location ~ \.mjs$ {
        types { } default_type text/javascript;

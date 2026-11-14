@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Mapping
 from urllib.parse import urlsplit
 
+from ..auth.config import is_published_secret
 from ..llm.router import load_provider_configs
 
 _DEFAULT_OLLAMA_URL = "http://localhost:11434"
@@ -62,6 +63,8 @@ def _row(id: str, label: str, value: str, var: str | None, is_set: bool) -> dict
 
 def _secret(env: Mapping[str, str], id: str, label: str, var: str) -> dict:
     is_set = _set(env, var)
+    if is_set and is_published_secret((env.get(var) or "").strip()):
+        return _row(id, label, "set, but to a published default: rotate it", var, is_set)
     return _row(id, label, "set" if is_set else "not set", var, is_set)
 
 

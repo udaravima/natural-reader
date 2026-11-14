@@ -69,6 +69,29 @@ describe('opening a server document', () => {
         expect(saveBook).toHaveBeenCalledWith(file, { page: 1, sentenceIndex: -1 });
     });
 
+    it('a PDF is released when another document replaces it, and when the reader goes away', async () => {
+        const pdf = () => new Response('%PDF-1.4', { status: 200, headers: { 'Content-Type': 'application/pdf' } });
+        const first = { numPages: 2, getOutline: vi.fn(async () => []), destroy: vi.fn(async () => {}) };
+        const second = { numPages: 3, getOutline: vi.fn(async () => []), destroy: vi.fn(async () => {}) };
+        getDocument.mockReturnValueOnce({ promise: Promise.resolve(first) })
+            .mockReturnValueOnce({ promise: Promise.resolve(second) });
+        const { result, unmount } = renderHook(() => usePdfEngine({ scale: 1, setStatus: vi.fn(), setToastMessage: vi.fn() }));
+
+        apiFetch.mockResolvedValueOnce(pdf());
+        const a = await fetchDocFile('', '', 'a'.repeat(64), 'One');
+        await act(async () => { await result.current.processFile(a); });
+        expect(first.destroy).not.toHaveBeenCalled();
+
+        apiFetch.mockResolvedValueOnce(pdf());
+        const b = await fetchDocFile('', '', 'b'.repeat(64), 'Two');
+        await act(async () => { await result.current.processFile(b); });
+        expect(first.destroy).toHaveBeenCalledTimes(1);   // without this every PDF opened stays parsed in the worker
+        expect(second.destroy).not.toHaveBeenCalled();
+
+        unmount();
+        expect(second.destroy).toHaveBeenCalledTimes(1);
+    });
+
     it('a PDF pdf.js cannot load resolves null', async () => {
         // A fresh rejected promise per call: one made up front would be an
         // unhandled rejection until the FileReader tick attaches a handler.

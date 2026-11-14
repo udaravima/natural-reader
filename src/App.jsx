@@ -47,7 +47,8 @@ import ChatSidebar from './components/ChatSidebar';
 import { AdminConsole } from './components/admin/AdminConsole';
 import LibraryPage from './components/library/LibraryPage';
 import { fetchDocFile } from './lib/serverDocFile';
-import { openServerDoc, openCitation } from './lib/openDoc';
+import { openServerDoc, openCitation, openNoticeTarget } from './lib/openDoc';
+import { useNotifications } from './hooks/useNotifications';
 import SettingsDialog from './components/settings/SettingsDialog';
 import ChatSidePanel from './components/chat/ChatSidePanel';
 import { ProfilePanel } from './components/account/ProfilePanel';
@@ -98,6 +99,15 @@ export default function App() {
   const [apiPort, setApiPort] = usePersistedState('apiPort', '8000');
   const auth = useAuth(apiHost, apiPort);
   const signedInUserId = auth.state === 'active' ? auth.user?.id : null;
+  // The header's bell (spec 2026-11-06): counts polled while someone is signed in and the tab is visible.
+  const notifications = useNotifications(apiHost, apiPort, auth.state === 'active');
+  // After this page's own Index / Convert / Retry settles, ask the bell again. The server writes the notice just
+  // after the job ends, so wait a moment; the 60 s poll catches anything later.
+  const refreshNoticesRef = useRef(null);
+  useEffect(() => { refreshNoticesRef.current = notifications.refresh; });
+  const refreshNoticesSoon = useCallback(() => { setTimeout(() => refreshNoticesRef.current?.(), 1500); }, []);
+  // A notice asked the admin console for a section: {id, n}; cleared once the console has opened it.
+  const [adminOpenRequest, setAdminOpenRequest] = useState(null);
   // Per-model Ollama inference settings (context window, keep-alive, thinking
   // level, max reply tokens). Keyed by model name because a 9.7B and a 3B want
   // different context sizes on the same machine.
@@ -243,7 +253,7 @@ export default function App() {
 
   const {
     pdfDoc, pdfFileName, docLoadId, docInLibrary, docBytes, fileType, currentPage, setCurrentPage, numPages,
-    textItems, isLibLoaded, pdfOutline, recentBooks,
+    textItems, textItemsPage, isLibLoaded, pdfOutline, recentBooks,
     currentSentenceIndex, setCurrentSentenceIndex,
     canvasRef, textLayerRef, fileInputRef, sentenceRefs, playbackIndexRef,
     processFile, openFromLibrary, removeFromLibrary, refreshLibrary, handleFileUpload,
@@ -366,7 +376,7 @@ export default function App() {
   }, [auth.state, apiHost, apiPort, projectsVersion]);
 
   const ttsEngine = useTtsEngine({
-    textItems, currentSentenceIndex, setCurrentSentenceIndex,
+    textItems, textItemsPage, currentSentenceIndex, setCurrentSentenceIndex,
     playbackIndexRef, currentPage, setCurrentPage, numPages,
     selectedVoice, playbackSpeed, googleVoice, isLocalhost, volume,
     apiHost, apiPort, requestTimeout, unlimitedBatchTimeout,
@@ -578,6 +588,17 @@ export default function App() {
   const handleOpenCitation = (docId, page, docName) => openCitation(openDocDeps, {
     docId, page, docName, openDocId: pdfFileName ? currentDocId : null, numPages,
   });
+  // A notification was clicked: a document opens as from the Library, an admin notice opens its console section.
+  // Leaving the console goes through its unsaved-changes prompt, as the view switcher does.
+  const openAdminSection = (section) => {
+    setAdminOpenRequest((prev) => ({ id: section, n: (prev?.n ?? 0) + 1 }));
+    setViewMode('admin');
+  };
+  const handleOpenNotice = (target) => {
+    const go = () => openNoticeTarget({ ...openDocDeps, openAdmin: openAdminSection }, target);
+    if (target?.admin) go();
+    else leaveAdmin(go);
+  };
 
   const handleMobileSentenceClick = (index) => {
     setCurrentSentenceIndex(index - 1);
@@ -882,6 +903,7 @@ export default function App() {
       if (out.started) {
         setIndex(docId, { state: 'extracting' });
         await pollIndexUntilSettled({ apiDocId: docId, stateKey: docId, apiHost, apiPort, setDocIndexByDocId, showToast });
+        refreshNoticesSoon();
         return;
       }
       reuploadForReindex = true;
@@ -916,7 +938,8 @@ export default function App() {
       return;
     }
     await pollIndexUntilSettled({ apiDocId: serverId, stateKey: docId, apiHost, apiPort, setDocIndexByDocId, showToast });
-  }, [pdfFileName, docSource, ensureDocHash, docIndexByDocId, showToast, apiHost, apiPort, docProjectId, docTagsText, askAboutFiling]);
+    refreshNoticesSoon();
+  }, [refreshNoticesSoon, pdfFileName, docSource, ensureDocHash, docIndexByDocId, showToast, apiHost, apiPort, docProjectId, docTagsText, askAboutFiling]);
 
   // ---------- DOCLING CONVERSION ----------
   // Mirror of handleIndexDocument: uploads (registers) the PDF bytes →
@@ -999,7 +1022,8 @@ export default function App() {
       apiDocId: convertDocId, stateKey: docId, apiHost, apiPort,
       setDocConvertByDocId, setDocIndexByDocId, setDocViewByDocId, showToast,
     });
-  }, [pdfFileName, fileType, docSource, ensureDocHash, showToast, apiHost, apiPort, docProjectId, docTagsText, askAboutFiling]);
+    refreshNoticesSoon();
+  }, [refreshNoticesSoon, pdfFileName, fileType, docSource, ensureDocHash, showToast, apiHost, apiPort, docProjectId, docTagsText, askAboutFiling]);
 
   const openConvertDialog = useCallback(() => setConvertDialogOpen(true), []);
   const closeConvertDialog = useCallback(() => setConvertDialogOpen(false), []);
@@ -1079,7 +1103,8 @@ export default function App() {
     await pollIndexUntilSettled({
       apiDocId: currentDocId, stateKey: currentDocId, apiHost, apiPort, setDocIndexByDocId, showToast,
     });
-  }, [currentDocId, apiHost, apiPort, showToast]);
+    refreshNoticesSoon();
+  }, [currentDocId, apiHost, apiPort, showToast, refreshNoticesSoon]);
 
   const currentConvertEntry = currentDocId ? docConvertByDocId[currentDocId] : null;
   const currentDocView = currentDocId ? docViewByDocId[currentDocId] || 'pdf' : 'pdf';
@@ -1250,6 +1275,8 @@ export default function App() {
           apiHost={apiHost} apiPort={apiPort}
           onLogout={() => leaveAdmin(auth.logout)}
           narration={{ held: narrationHeld, docName: pdfFileName, currentPage, numPages, pausedForChat }}
+          notifications={auth.state === 'active' ? notifications : null}
+          onOpenNotice={handleOpenNotice}
           onOpenSettings={openSettings}
           chatPanelOpen={showChatPanel}
           onToggleChatPanel={chatPanelAvailable && canReader ? () => setChatPanelOpen((v) => !v) : null}
@@ -1346,6 +1373,8 @@ export default function App() {
               onBack={() => setViewMode('reader')}
               leaveRef={adminLeaveRef}
               showToast={showToast}
+              openSection={adminOpenRequest}
+              onSectionOpened={() => setAdminOpenRequest(null)}
             />
           )
         ) : inLibrary ? (

@@ -45,3 +45,14 @@ export async function openCitation(deps, { docId, page, docName, openDocId, numP
     const opened = await openServerDoc(deps, docId, docName || 'Cited document');
     if (opened) deps.goToPage(clampPage(page, opened.numPages));
 }
+
+/**
+ * A notification was clicked (spec 2026-11-06): `{doc, name}` opens that document as the Library does (a refusal,
+ * such as a document the person no longer holds, is the usual toast); `{admin: section}` opens that section of the
+ * admin console through `deps.openAdmin`. Anything else does nothing. Resolves what openServerDoc does, or null.
+ */
+export async function openNoticeTarget(deps, target) {
+    if (target?.doc) return openServerDoc(deps, target.doc, target.name || 'Document');
+    if (target?.admin) deps.openAdmin(target.admin);
+    return null;
+}

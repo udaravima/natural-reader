@@ -49,6 +49,8 @@ Accounts, tokens, and settings are **not in the sidebar** — the sidebars hold
 navigation (reader) and the model picker + sessions (chat). Everything about
 *you* lives at the top of the window:
 
+- **Notifications** — the **bell** beside the gear: what finished or went wrong
+  while you were elsewhere. See [Notifications](#notifications-the-bell).
 - **Profile menu** — your picture (or a person icon) at the top-right of the
   header. Your name, **Profile**, **Settings**, the dark-mode toggle, and
   **Log out**.
@@ -75,6 +77,51 @@ navigation (reader) and the model picker + sessions (chat). Everything about
   row of views doesn't fit (a phone, or the reader on a screen under 1280 px wide), one
   button shows the open view's icon: tap it for the others.
   **No token creation happens here.**
+
+## Notifications: the bell
+
+Indexing a long document, a Docling conversion, or (for admins) re-embedding the
+library can take minutes. You don't have to watch: when it ends, a notice waits for you
+under the **bell** in the header, in every view. Nothing pops up over the page; the bell
+only counts.
+
+**What arrives, and to whom**
+
+| Notice | Goes to | Needs action? |
+| --- | --- | --- |
+| A document finished indexing, or is converted and ready | the person who uploaded it, or asked for the Index, Retry or Convert | no |
+| A document couldn't be indexed, or a conversion failed (with the reason) | that same person | **yes** |
+| Re-embedding paused: the new embedding model stopped answering | every admin | **yes** |
+| The library now uses the new embedding model | every admin | no |
+| A document has failed to rebuild 3 times in a row (its old index still answers) | every admin | **yes** |
+| The embedding model refused some passages, and they were shortened to fit | every admin | no |
+
+**Reading the bell.** The number counts unread rows. It turns **amber** when one of
+them needs action; otherwise it's blue. Open the list: notices that need action come
+first, then the other unread ones, then the ones you've read, newest first in each
+part. Opening the list marks nothing read.
+
+**Groups.** Notices of one kind that arrive close together (each within 30 minutes of
+the last) are one row: "5 documents finished indexing". Clicking a group marks all of
+it read and opens it in place, one line per document; click a line to open that
+document. Failures and finishes are never in the same group.
+
+**Clicking a notice** marks it read and opens what it is about: the document in the
+reader, or for an admin notice the console's **Models** or **Overview** section. A
+document you no longer have says so, as the Library does.
+
+**Resolved.** When the problem behind a needs-action notice goes away by itself (the
+re-embed carried on, the document indexed on a later try), the notice says
+**Resolved** and stops counting as needing action. It stays in the list until you read it.
+
+**Mark all as read** at the top of the list clears the count.
+
+**Cleanup.** Read notices are kept 30 days, unread ones 90; older ones are removed once
+a day. Your administrator can change both (`NOTIFICATIONS_READ_DAYS`,
+`NOTIFICATIONS_UNREAD_DAYS`). Notices are in the app only: no email.
+
+On the smallest phones (under 360 px wide), the reader's header has no room for both
+the bell and the gear: Settings is then in the profile menu.
 
 ## Listening while you do something else
 

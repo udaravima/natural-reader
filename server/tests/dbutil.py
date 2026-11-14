@@ -4,24 +4,45 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Mapping
 
 from psycopg import AsyncConnection
+from psycopg.conninfo import conninfo_to_dict
 
 TEST_DB = "natural_reader_test"
-ADMIN_URL = os.environ.get(
-    "TEST_ADMIN_DATABASE_URL",
-    "postgresql://natural_reader:natural_reader@127.0.0.1:5433/postgres",
-)
-TEST_URL = os.environ.get(
-    "TEST_DATABASE_URL",
-    f"postgresql://natural_reader:natural_reader@127.0.0.1:5433/{TEST_DB}",
-)
+DEFAULT_ADMIN_URL = "postgresql://natural_reader:natural_reader@127.0.0.1:5433/postgres"
+DEFAULT_TEST_URL = f"postgresql://natural_reader:natural_reader@127.0.0.1:5433/{TEST_DB}"
+ADMIN_URL = os.environ.get("TEST_ADMIN_DATABASE_URL", DEFAULT_ADMIN_URL)
+TEST_URL = os.environ.get("TEST_DATABASE_URL", DEFAULT_TEST_URL)
 SQL_DIR = Path(__file__).resolve().parents[1] / "sql"
 
 
 def url_for(db_name: str) -> str:
     """Same server and credentials as ADMIN_URL, different database."""
     return ADMIN_URL.rsplit("/", 1)[0] + "/" + db_name
+
+
+def _server(url: str) -> tuple[str, str]:
+    info = conninfo_to_dict(url)
+    host = str(info.get("host") or "127.0.0.1").lower()
+    return ("127.0.0.1" if host in {"localhost", "::1"} else host, str(info.get("port") or 5432))
+
+
+def refuse_app_server(env: Mapping[str, str], *, test_url: str = TEST_URL, admin_url: str = ADMIN_URL) -> None:
+    """The suite creates and drops databases, so it must not run on the Postgres server the app uses: on a
+    deployment that server holds the real library and Keycloak. The defaults above ARE that server, so a bare
+    `pytest` stops here. Raises with what to set."""
+    if env.get("TEST_DB_ALLOW_APP_SERVER") == "1":
+        return
+    from server.db import DEFAULT_DATABASE_URL
+    app = _server(env.get("DATABASE_URL") or DEFAULT_DATABASE_URL)
+    for name, url in (("TEST_DATABASE_URL", test_url), ("TEST_ADMIN_DATABASE_URL", admin_url)):
+        if _server(url) == app:
+            raise RuntimeError(
+                f"{name} points at the app's own Postgres ({app[0]}:{app[1]}). The tests create and drop "
+                "databases, so run them on a separate server: set TEST_DATABASE_URL and TEST_ADMIN_DATABASE_URL "
+                "(docs/TESTING.md, \"A scratch database\"). If this machine has only a development Postgres "
+                "with nothing to lose, set TEST_DB_ALLOW_APP_SERVER=1.")
 
 
 async def apply_migrations(url: str, max_version: int | None = None) -> None:

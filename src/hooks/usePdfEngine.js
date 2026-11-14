@@ -37,6 +37,9 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
     const [currentPage, setCurrentPage] = useState(1);
     const [numPages, setNumPages] = useState(0);
     const [textItems, setTextItems] = useState([]);
+    // The page `textItems` belongs to; null while a page's text is still loading. The narration needs it to
+    // tell a page with nothing to read (pass it over) from one that hasn't arrived (wait).
+    const [textItemsPage, setTextItemsPage] = useState(null);
     const [isLibLoaded, setIsLibLoaded] = useState(false);
     const [pdfOutline, setPdfOutline] = useState([]);
     const [recentBooks, setRecentBooks] = useState([]);
@@ -105,6 +108,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         if (prevPageRef.current !== currentPage) {
             prevPageRef.current = currentPage;
             setTextItems([]);
+            setTextItemsPage(null);
         }
     }, [currentPage]);
 
@@ -198,11 +202,25 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
             const rawText = textContent.items.map(item => item.str).join(' ');
             const sentences = segmentSentences(rawText);
             setTextItems(sentences);
+            setTextItemsPage(pageNum);
             sentenceRefs.current = sentences.map(() => null);
         } catch (err) {
             console.error('Text extraction error:', err);
+            // A page whose text can't be read has nothing to narrate: say so, so reading moves past it.
+            if (seq === extractSeqRef.current) {
+                setTextItems([]);
+                setTextItemsPage(pageNum);
+            }
         }
     };
+
+    // Release a PDF when another document replaces it or the reader goes away. pdf.js keeps a parsed
+    // document in its worker until destroy() is called, so without this every PDF opened in a session
+    // stayed in memory. Work still running on the old document then rejects, as a cancelled render does.
+    useEffect(() => {
+        if (!pdfDoc) return undefined;
+        return () => { Promise.resolve(pdfDoc.destroy?.()).catch(() => {}); };
+    }, [pdfDoc]);
 
     // Visual render on any of: doc, page, or scale change (PDF only — txt has no canvas).
     // `canvasMountNonce` in deps re-fires this whenever the <canvas> DOM node
@@ -226,6 +244,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         if (fileType === 'text' && textPages.length > 0) {
             const sentences = textPages[currentPage - 1] || [];
             setTextItems(sentences);
+            setTextItemsPage(currentPage);
             sentenceRefs.current = sentences.map(() => null);
             setStatus(`Page ${currentPage} Ready`);
             return;
@@ -234,6 +253,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
             const page = markdownPages[currentPage - 1];
             const sentences = page?.sentences || [];
             setTextItems(sentences);
+            setTextItemsPage(currentPage);
             sentenceRefs.current = sentences.map(() => null);
             setStatus(`Page ${currentPage} Ready`);
         }
@@ -568,6 +588,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         setNumPages(0);
         setCurrentPage(1);
         setTextItems([]);
+        setTextItemsPage(null);
         setTextPages([]);
         setMarkdownPages([]);
         setPdfOutline([]);
@@ -590,7 +611,7 @@ export function usePdfEngine({ scale, setStatus, setToastMessage }) {
         fileType,
         currentPage, setCurrentPage,
         numPages,
-        textItems,
+        textItems, textItemsPage,
         isLibLoaded,
         pdfOutline,
         recentBooks,

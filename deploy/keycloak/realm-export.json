@@ -21,7 +21,7 @@
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
-      "secret": "natural-reader-dev-secret",
+      "secret": "${OIDC_CLIENT_SECRET}",
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
       "redirectUris": [
@@ -57,7 +57,7 @@
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
-      "secret": "natural-reader-admin-dev-secret",
+      "secret": "${KC_ADMIN_CLIENT_SECRET}",
       "serviceAccountsEnabled": true,
       "standardFlowEnabled": false,
       "implicitFlowEnabled": false,
@@ -76,7 +76,7 @@
       "requiredActions": [],
       "realmRoles": ["admin", "reader", "chat"],
       "credentials": [
-        { "type": "password", "value": "password", "temporary": false }
+        { "type": "password", "value": "${KC_SEED_USER_PASSWORD}", "temporary": false }
       ]
     },
     {

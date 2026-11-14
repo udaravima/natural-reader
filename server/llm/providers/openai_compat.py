@@ -12,7 +12,7 @@ import httpx
 from ..types import (Capabilities, CallSettings, Chunk, Finish, Message,
                      ProviderError, ProviderUnavailable, ReasoningDelta, TextDelta, ToolCall,
                      ToolCallReady, ToolSpec, Usage)
-from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_feature_rejection,
+from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_feature_rejection, is_overflow,
                    fold_system, iter_lines, json_object, open_stream, parse_arguments, provider_error,
                    rejects_system_role, safe_error_message, settle_dropped)
 
@@ -124,6 +124,7 @@ class OpenAICompatProvider:
         use_tools = bool(tools) and caps.tools is not False and not self._features.rejected(model, "tools")
         fold = self._features.rejected(model, "system")
         dropped: list[str] = []
+        overflowed = False
         while True:
             body = self._body(model, fold_system(messages) if fold else messages,
                               tools if use_tools else [], settings, effort, as_object)
@@ -139,6 +140,7 @@ class OpenAICompatProvider:
                     continue
                 if not is_feature_rejection(err):
                     raise
+                overflowed = overflowed or is_overflow(err)
                 if effort is not None:
                     effort, feature = None, "thinking"
                 elif use_tools:
@@ -146,7 +148,8 @@ class OpenAICompatProvider:
                 else:
                     raise
                 dropped.append(feature)
-        for chunk in settle_dropped(self._features, model, self.config.name, dropped):
+        for chunk in settle_dropped(self._features, model, self.config.name, dropped,
+                                    remember=not overflowed):
             yield chunk
         async for chunk in self._read(resp):
             yield chunk

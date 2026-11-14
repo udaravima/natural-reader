@@ -77,6 +77,11 @@ async def run_embed(doc_id: str) -> None:
 
     Held under a per-doc lock so concurrent /index calls coalesce instead of
     duplicating work.
+
+    It marks the document indexed only if it is still 'indexing': a content
+    op that ran meanwhile (delete-markdown wipes the chunks and sets 'stored'
+    for a fresh extraction) has put it somewhere else, and stamping 'indexed'
+    over that would leave it reading Indexed with no passages.
     """
     lock = doc_lock(doc_id)
     async with lock:
@@ -108,7 +113,7 @@ async def run_embed(doc_id: str) -> None:
                         UPDATE documents
                         SET state = 'indexed', embedding_model = %s, embedding_dim = %s,
                             embedding_profile = %s, error_message = NULL, updated_at = now()
-                        WHERE doc_id = %s
+                        WHERE doc_id = %s AND state = 'indexing'
                         """,
                         (embed_model, EMBEDDING_DIM, profile, doc_id),
                     )
@@ -159,7 +164,7 @@ async def run_embed(doc_id: str) -> None:
                     SET state = 'indexed', embedding_model = %s, embedding_dim = %s,
                         embedding_profile = COALESCE(%s, embedding_profile), error_message = NULL,
                         updated_at = now()
-                    WHERE doc_id = %s
+                    WHERE doc_id = %s AND state = 'indexing'
                     """,
                     (embed_model, EMBEDDING_DIM, None if skipped_count else profile, doc_id),
                 )

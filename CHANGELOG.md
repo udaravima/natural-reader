@@ -4,6 +4,160 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.12.0] - 2026-11-14
+
+**Security: rotate the Keycloak secrets if your realm was created by v2.11.0 or
+earlier.** The realm file shipped working client secrets, a seeded admin user's
+password and a fixed master admin password. See DEPLOYMENT.md, "Rotating the
+Keycloak secrets".
+
+**Notifications for each person.** Migration 026 (`notifications`). Both halves rebuild.
+
+### Security
+
+- **The realm file holds no secrets.** `deploy/keycloak/realm-export.json` now has
+  `${PLACEHOLDERS}` that Keycloak fills from `.env` when it first creates the realm
+  (`OIDC_CLIENT_SECRET`, `KC_ADMIN_CLIENT_SECRET`, `KC_SEED_USER_PASSWORD`), and
+  compose takes the master admin's password from `KC_BOOTSTRAP_ADMIN_PASSWORD`.
+  `./startup.sh` and `startup.ps1` generate all four. Anything unset gets a random
+  value nobody knows (`deploy/keycloak-entrypoint.sh`). An existing realm is not
+  changed by any of this.
+- **A deployment still on a published secret is told.** The backend logs an error
+  at start naming the variable, and Admin → Deployment shows "set, but to a
+  published default: rotate it".
+- **Sign-in off (`AUTH_ENABLED=false`) is for the machine itself, even behind a
+  proxy.** The check was only that the backend listens on loopback, which it also
+  does behind nginx: `./startup.sh` typed with no arguments on a production box
+  made every visitor the admin. A request that came through a proxy, or for any
+  name but localhost, is now refused (403 `sign_in_off_local_only`), which also
+  stops a web page reaching a developer's backend by DNS rebinding. And
+  `./startup.sh up` refuses to turn sign-in off when `.env` describes a live
+  deployment (`ALLOW_AUTH_OFF=1` overrides).
+- **A chat reply never loads a picture.** A Markdown image was fetched as soon as
+  it rendered, so a model steered by a planted page or a shared document could
+  send text out in its address. It is shown as a link. The nginx sample adds
+  `Content-Security-Policy: img-src 'self' data: blob:`, and the Keycloak sample
+  shows how to keep `/admin` off the internet.
+- **A web page the chat reads is fetched from the address that was checked.** The
+  check looked the site's name up, and the connection looked it up again, so a
+  name that answered "public" and then "this machine" (DNS rebinding) got
+  through. The fetch now connects to the checked address, with the site's own
+  name in the request and for its TLS certificate. The check also refuses the
+  shared address space 100.64.0.0/10, where Tailscale hosts and carrier NAT live,
+  and IPv4 addresses written as IPv6 (`::ffff:127.0.0.1`).
+- The name lookup and the page's text extraction no longer run on the event loop,
+  where a slow resolver or a 2 MB page froze read-aloud and every open chat stream
+  on that worker for seconds.
+
+### Added
+
+- **Google Gemini as a model provider** (`INFERENCE_<NAME>_KIND=gemini`, with a Gemini API
+  key). Its chat models join the picker beside Ollama's and any OpenAI-compatible
+  server's: streaming, thinking with its summary, tools, pictures and audio. Requests
+  say `store: false`, so Google keeps no copy of a conversation. Chat only (not
+  embeddings). Written from Google's API reference and walked against a stand-in
+  server; **not yet run against Google itself**. DEPLOYMENT.md, "Google Gemini".
+- **A bell in the header** with an inbox, never a popup: indexing finished or failed and a
+  conversion ready or failed reach the person who asked; a re-embed paused or done,
+  rebuilds failing 3 times in a row, and passages the embedding model shortened reach
+  every admin. Notices that need action come first and turn the badge amber; notices of
+  one kind arriving close together are one row ("5 documents finished indexing"); a
+  problem that goes away by itself is marked Resolved; Mark all as read. Read notices are
+  kept 30 days, unread 90 (`NOTIFICATIONS_READ_DAYS`, `NOTIFICATIONS_UNREAD_DAYS`).
+- `GET /v1/notifications/unread`, `GET /v1/notifications`, `POST /v1/notifications/read`,
+  `POST /v1/notifications/read-all`.
+- **Backup and restore**, written down and tried on a scratch database:
+  DEPLOYMENT.md, "Backup and restore". The realm lives in the app's database, so
+  one dump holds both; the uploaded files go with it.
+
+### Changed
+
+- **The image no longer installs the test harness.** pytest, pytest-asyncio, respx and
+  python-dotenv moved to `requirements-dev.txt`. To run the tests:
+  `pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt`.
+  `./startup.sh init` installs the app's list only, so a venv it makes needs that
+  line once before the first test run.
+- **CI.** `.github/workflows/ci.yml` runs the backend tests (on the pinned
+  versions, against a scratch pgvector Postgres), the frontend lint, tests and
+  build on every pull request and on every push to `master` and `development`.
+  Three tests no longer depend on packages only the Docling build has, and
+  `python-dotenv` (now in `requirements-dev.txt`) is listed for the eval scripts' tests.
+- Under 360 px wide the reader's header shows the bell instead of the Settings gear;
+  Settings stays in the profile menu.
+- `docs/ARCHITECTURE.md` no longer says the time tool is gone (v2.10 brought it back).
+- **A rebuild installs the versions the tests ran on.** Every line of
+  `requirements.txt` has a floor and a ceiling, and the image installs through the
+  new `constraints.txt` (exact versions of those packages and everything they bring
+  in). Starlette is held at 1.7 or later: 1.0 answered a malformed upload with a
+  500.
+- **`GET /v1/health` reports the database**: `"database": "ok"` or
+  `"unavailable"`. `status` still means the read-aloud model.
+- **The test suite refuses the app's own Postgres server.** A bare `pytest` used
+  to create and drop databases on port 5433; it now stops with what to set.
+  `TEST_DB_ALLOW_APP_SERVER=1` allows it.
+- The dev rig's sign-in is `admin-user` with a generated password, which
+  `./startup.sh` prints. A rig created earlier keeps `password`.
+
+### Fixed
+
+- A conversion that never ran (the job returned early, or failed and couldn't record
+  it) no longer sends "converted and ready" or resolves an earlier failure notice.
+- A re-embed stopped because the newly named model was refused now resolves its
+  "paused" notice.
+- **Show more** in the inbox no longer skips a row or shows one twice when the list
+  moved meanwhile (a row was read, a notice arrived). A list that answers after the
+  panel was closed and reopened is dropped.
+- A failure notice keeps at most 500 characters of the error.
+- **Read-aloud stopped silently, with the Pause button still showing**, in three
+  cases: after **Skip**; after a page turned by hand while a sentence was being
+  read; and at a page with nothing to read (blank, a figure, only a page number),
+  where a book hung at "Changing Page…". Skip now goes on to the next sentence, a
+  turned page is read from its top, and an empty page is passed over.
+- **"Using browser voice" never happened.** With the voice server unreachable,
+  Read retried three times and stopped. It now reads with the browser's voice,
+  from the start when the server wasn't found and mid-read when it stops
+  answering. A retry also repeats the same sentence; it used to move on one.
+- **A document could read "Indexed" with no passages, for good.** Deleting its
+  converted Markdown while it was being embedded let the old job mark the emptied
+  document indexed, and the queued re-index then did nothing. The job now marks
+  it indexed only if it is still indexing.
+- **One "prompt too long" error switched tools off for a model** for everyone on
+  the worker until a restart: the retry without tools fits, which was read as
+  "this model rejects tools". Such a reply still goes without tools, but it isn't
+  remembered, and any remembered rejection is tried again after an hour.
+- Two uploads at once, or an upload during a conversion, could crash the worker:
+  PDF reading wasn't locked across threads. It shares one lock with Docling.
+- One batch read-aloud request could hold the voice for hours (10 million
+  characters). A batch is capped at 200,000 (`TTS_MAX_BATCH_CHARS`).
+- **A Postgres that came up after the backend left it dead until a restart.** The
+  backend tried five times over about 30 seconds and gave up. It now keeps trying
+  in the background and finishes its start-up when Postgres answers; compose also
+  starts the backend and Keycloak only once Postgres is healthy. Routes that need
+  the database answer `503 db_unavailable` meanwhile, not 500.
+- **A failed migration still served traffic.** The pool was published before the
+  migrations ran, so routes ran on a half-migrated schema, and each retry leaked
+  a pool. It is published after they finish, and a failed attempt closes its pool.
+- **Workers starting together ran the same migration at once** and retried on
+  duplicate-key errors. They now take turns under an advisory lock.
+- **Pending migrations ran as one transaction**, not one each as documented, so a
+  late failure undid the earlier files. Each commits on its own.
+- A recording upload the multipart parser rejected could answer 500 on Starlette
+  1.0; it answers 400 on every version.
+- **A refused call sent the whole app back to the loading screen.** Any
+  `missing_capability` 403 re-read who you are with the loading gate up, which
+  unmounted everything: a chat-only person's reply read aloud flashed the screen
+  and lost a recording in progress. The re-read now happens quietly, once per burst
+  of refusals, and the new set of permissions lands in place.
+- **Every PDF opened stayed in memory for the rest of the session.** pdf.js keeps
+  a parsed document in its worker until it is destroyed, and nothing destroyed
+  them. A PDF is released when another document replaces it.
+- **Ten slow signed-in requests could take every database connection.** Signing a
+  request in held its connection until the route returned, so a route that took a
+  second one and waited (a document search waits on the embedding model, up to two
+  minutes cold) held two. Signing in now gives its connection back before the
+  route runs.
+
+
 ## [2.11.0] - 2026-11-05
 
 **Choose the embedding model in the console, and change it without losing search**

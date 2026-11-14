@@ -161,6 +161,19 @@ async def test_a_passage_too_long_for_the_model_is_shortened_until_it_fits(clien
 
 
 @respx.mock
+async def test_shortened_texts_are_counted_once_each(client):
+    """Notifications (2026-11-06): a job counts how many of its texts were shortened, however many halvings each
+    took; outside a counting block nothing is counted."""
+    respx.post("https://api.example.com/v1/embeddings").mock(side_effect=_too_long_over(300))
+    e = Embedder(CLOUD, "bge-small", None, "", "")
+    with embeddings.counting_shortened() as tally:
+        await embed_texts(e, ["x" * 1200, "short", "y" * 1200])   # 1200 -> 600 -> 300: two halvings each
+    assert tally.texts == 2
+    await embed_texts(e, ["z" * 1200])                             # not counted, and no error
+    assert tally.texts == 2
+
+
+@respx.mock
 async def test_a_model_that_refuses_even_a_short_sentence_is_an_error_not_a_shortening(client):
     route = respx.post("https://api.example.com/v1/embeddings").mock(
         return_value=httpx.Response(400, json={"error": {"message": "model does not support embeddings"}}))

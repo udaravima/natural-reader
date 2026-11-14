@@ -257,15 +257,26 @@ describe('fix round 1: no re-masking, whole values', () => {
     });
 });
 
+// These guard against a pattern that backtracks catastrophically on long input: such a pattern takes seconds on
+// every run, where the real code takes 1-3 ms on these inputs (measured 2026-11-14). One slow run is the machine
+// pausing the test (garbage collection, a busy core), so the fastest of three is judged, against 500 ms.
+const fastestMs = (fn, runs = 3) => {
+    let best = Infinity;
+    for (let i = 0; i < runs; i++) {
+        const t0 = performance.now();
+        fn();
+        best = Math.min(best, performance.now() - t0);
+    }
+    return best;
+};
+
 describe('fix round 1: robustness', () => {
     it('stays fast on 64 KB unbroken runs', () => {
         const runs = ['a'.repeat(65536), 'ab12'.repeat(16384), 'a.'.repeat(32768), 'a-'.repeat(32768),
             'a'.repeat(32768) + '://' + 'b'.repeat(32768), ' '.repeat(65536)];
         for (const name of ['x.txt', '.env']) {
             for (const run of runs) {
-                const t0 = performance.now();
-                maskText(name, run);
-                expect(performance.now() - t0).toBeLessThan(500);
+                expect(fastestMs(() => maskText(name, run))).toBeLessThan(500);
             }
         }
     });
@@ -381,25 +392,17 @@ describe('fix round 2: timing', () => {
     it('stays fast on 64 KB runs of key words and JWT starts', () => {
         for (const w of ['token', 'token.', 'secret', 'api_key', 'password', 'eyJ-']) {
             const run = w.repeat(Math.ceil(65536 / w.length));
-            const t0 = performance.now();
-            maskText('x.txt', run);
-            expect(performance.now() - t0).toBeLessThan(500);
+            expect(fastestMs(() => maskText('x.txt', run))).toBeLessThan(500);
         }
     });
     it('stays fast on many keywords on one line', () => {
         const run = 'a token b '.repeat(6000);
-        const t0 = performance.now();
-        maskText('x.txt', run);
-        expect(performance.now() - t0).toBeLessThan(500);
+        expect(fastestMs(() => maskText('x.txt', run))).toBeLessThan(500);
     });
 });
 
 describe('fix round 3: the URL skip stays linear', () => {
-    const timeIt = (name, text) => {
-        const t0 = performance.now();
-        maskText(name, text);
-        return performance.now() - t0;
-    };
+    const timeIt = (name, text) => fastestMs(() => maskText(name, text));
     it('handles 64 KB runs that contain URL userinfo', () => {
         for (const unit of ['a://token:b@', 'https://token:p@h,', 'https://x-access-token:abcd1234@github.com/o/r.git,']) {
             const run = unit.repeat(Math.ceil(65536 / unit.length));
@@ -470,9 +473,7 @@ describe('fix round 3: bracketed values run to their close', () => {
     it('stays fast on 64 KB runs of opening brackets', () => {
         for (const unit of ['token=[', '"token":{']) {
             const run = unit.repeat(Math.ceil(65536 / unit.length));
-            const t0 = performance.now();
-            x(run);
-            expect(performance.now() - t0).toBeLessThan(500);
+            expect(fastestMs(() => x(run))).toBeLessThan(500);
         }
     });
 });
@@ -638,17 +639,13 @@ describe('fix round 4: a masked file reads back as masked', () => {
 describe('fix round 4: timing', () => {
     it('stays fast on 64 KB of short lines in an .env', () => {
         for (const unit of ['a\n', '"\n', '#\n', '# a=b\n', 'K="\n', 'K="a\nb"\n', 'a b\r\n']) {
-            const t0 = performance.now();
-            env(unit.repeat(Math.ceil(65536 / unit.length)));
-            expect(performance.now() - t0).toBeLessThan(500);
+            expect(fastestMs(() => env(unit.repeat(Math.ceil(65536 / unit.length))))).toBeLessThan(500);
         }
     });
     it('stays fast on a 64 KB run of placeholders', () => {
         const run = '<masked, 1 chars>'.repeat(Math.ceil(65536 / 17));
         for (const name of ['x.txt', '.env']) {
-            const t0 = performance.now();
-            maskText(name, run);
-            expect(performance.now() - t0).toBeLessThan(500);
+            expect(fastestMs(() => maskText(name, run))).toBeLessThan(500);
         }
     });
 });

@@ -1,0 +1,91 @@
+# The four gates, on every push to the two long-lived branches and on every pull request:
+# backend tests, frontend lint, frontend tests, and the frontend build.
+#
+# The backend job installs through constraints.txt, like the image, so it tests the versions a rebuild
+# would run. It has no Docling and no torch: the tests that need them skip.
+name: CI
+
+on:
+  push:
+    branches: [master, development]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      # A scratch Postgres with pgvector. Port 5434, not the app's 5433: the suite refuses the app's own
+      # server (server/tests/dbutil.py), and this keeps CI the same as a developer's setup in docs/TESTING.md.
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: natural_reader
+          POSTGRES_PASSWORD: natural_reader
+          POSTGRES_DB: postgres
+        ports:
+          - 5434:5432
+        options: >-
+          --health-cmd "pg_isready -U natural_reader"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      TEST_ADMIN_DATABASE_URL: postgresql://natural_reader:natural_reader@127.0.0.1:5434/postgres
+      TEST_DATABASE_URL: postgresql://natural_reader:natural_reader@127.0.0.1:5434/natural_reader_test
+      MODEL_BASE_URL: https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            constraints.txt
+      # server/model.py loads the voice model when it is imported, and some tests import it. About 350 MB,
+      # so it is cached; the key changes only if the release it comes from does.
+      - name: Voice model (cached)
+        id: kokoro
+        uses: actions/cache@v4
+        with:
+          path: |
+            kokoro-v1.0.onnx
+            voices-v1.0.bin
+          key: kokoro-v1.0.0
+      - name: Download the voice model
+        if: steps.kokoro.outputs.cache-hit != 'true'
+        run: |
+          curl -fL --retry 3 -o kokoro-v1.0.onnx "$MODEL_BASE_URL/kokoro-v1.0.onnx"
+          curl -fL --retry 3 -o voices-v1.0.bin "$MODEL_BASE_URL/voices-v1.0.bin"
+      - name: Install the pinned dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt
+      - name: Backend tests
+        run: python -m pytest -q
+
+  frontend:
+    name: Frontend lint, tests and build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Frontend tests
+        run: npx vitest run
+      - name: Build
+        run: npm run build

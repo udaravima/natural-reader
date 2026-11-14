@@ -73,4 +73,31 @@ describe('useAuth', () => {
       expect(meCallsAfter).toBeGreaterThan(meCallsBefore);
     });
   });
+
+  it('stays active while that re-probe runs: the app is not sent back to the loading screen', async () => {
+    let releaseMe;
+    const states = [];
+    const meBody = { id: 'u', email: 'e@x.io', role: 'member', capabilities: ['chat'] };
+    globalThis.fetch.mockImplementation((url) => {
+      if (url !== '/v1/auth/me') {
+        return Promise.resolve(jsonResponse(403, { detail: { error: 'missing_capability', capability: 'reader' } }));
+      }
+      if (!releaseMe) { releaseMe = () => {}; return Promise.resolve(jsonResponse(200, meBody)); }
+      return new Promise((resolve) => { releaseMe = () => resolve(jsonResponse(200, { ...meBody, capabilities: [] })); });
+    });
+    const { result } = renderHook(() => { const a = useAuth('', ''); states.push(a.state); return a; });
+    await waitFor(() => expect(result.current.state).toBe('active'));
+    states.length = 0;
+
+    // Three refused calls in a row (a chat-only person's reply being read aloud): one probe, no flash.
+    await apiFetch('', '', '/v1/tts');
+    await apiFetch('', '', '/v1/tts');
+    await apiFetch('', '', '/v1/tts');
+    expect(globalThis.fetch.mock.calls.filter(([url]) => url === '/v1/auth/me')).toHaveLength(2);
+    expect(result.current.state).toBe('active');
+
+    releaseMe();
+    await waitFor(() => expect(result.current.user.capabilities).toEqual([]));   // the new set arrives in place
+    expect(states).not.toContain('loading');
+  });
 });
