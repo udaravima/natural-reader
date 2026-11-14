@@ -25,6 +25,13 @@ def options(**over):
     return ChatOptions("ask", "default", **over)
 
 
+@pytest.fixture
+def runs_here(monkeypatch):
+    """The fine-tunes need torch to convert, which only the Docling build has: say this build has it, so a test of
+    which model is chosen chooses the same on every build (CI has no torch, a developer's venv may)."""
+    monkeypatch.setattr(catalogue, "_installed", lambda name: True)
+
+
 def test_the_list_keeps_the_stock_sizes_and_adds_the_fine_tunes():
     models = catalogue.all_models({})
     assert {"tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"} <= set(models)
@@ -226,7 +233,7 @@ def test_view_says_what_the_console_shows(monkeypatch):
 
 # ---------- which model hears a language (spec 2026-11-04-speech-choices-per-person) ----------
 
-def test_offered_keeps_the_admins_order_and_leaves_out_unknown_and_all_language_models():
+def test_offered_keeps_the_admins_order_and_leaves_out_unknown_and_all_language_models(runs_here):
     opts = options(offered_speech_models=("whisper-small-ta", "nope", "small", "whisper-small-si"))
     # "small" hears every language: offering it changes nothing, the default already does
     assert [m.id for m in catalogue.offered(opts, {})] == ["whisper-small-ta", "whisper-small-si"]
@@ -238,7 +245,7 @@ def test_a_model_that_cant_run_here_is_not_offered(monkeypatch):
     assert [m.id for m in catalogue.offered(opts, {})] == ["whisper-small-ta"]
 
 
-def test_a_language_is_heard_by_the_first_offered_model_on_disk_made_for_it():
+def test_a_language_is_heard_by_the_first_offered_model_on_disk_made_for_it(runs_here):
     opts = options(offered_speech_models=("whisper-small-si", "whisper-small-si-run15", "whisper-small-ta"))
     assert catalogue.for_language(opts, "si", {}, on_disk=lambda m: True).id == "whisper-small-si"
     assert catalogue.for_language(opts, "ta", {}, on_disk=lambda m: True).id == "whisper-small-ta"
@@ -260,7 +267,7 @@ def test_auto_and_an_unoffered_language_are_heard_by_the_default():
         assert catalogue.for_language(opts, code, {}, on_disk=lambda m: True).id == "base.en"
 
 
-def test_hears_lists_each_offered_language_once_with_its_model():
+def test_hears_lists_each_offered_language_once_with_its_model(runs_here):
     opts = options(offered_speech_models=("whisper-small-si", "whisper-small-si-run15", "whisper-small-ta"))
     assert catalogue.hears(opts, {}, on_disk=lambda m: True) == [
         {"code": "si", "name": "Sinhala", "model": "whisper-small-si", "label": "Whisper small, Sinhala (run12)"},
