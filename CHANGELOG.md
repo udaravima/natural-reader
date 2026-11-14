@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.12.0] - 2026-11-14
+
 **Security: rotate the Keycloak secrets if your realm was created by v2.11.0 or
 earlier.** The realm file shipped working client secrets, a seeded admin user's
 password and a fixed master admin password. See DEPLOYMENT.md, "Rotating the
@@ -75,12 +77,11 @@ Keycloak secrets".
   `pip install -r requirements.txt -r requirements-dev.txt -c constraints.txt`.
   `./startup.sh init` installs the app's list only, so a venv it makes needs that
   line once before the first test run.
-
 - **CI.** `.github/workflows/ci.yml` runs the backend tests (on the pinned
   versions, against a scratch pgvector Postgres), the frontend lint, tests and
   build on every pull request and on every push to `master` and `development`.
   Three tests no longer depend on packages only the Docling build has, and
-  `python-dotenv` is listed for the eval scripts' tests.
+  `python-dotenv` (now in `requirements-dev.txt`) is listed for the eval scripts' tests.
 - Under 360 px wide the reader's header shows the bell instead of the Settings gear;
   Settings stays in the profile menu.
 - `docs/ARCHITECTURE.md` no longer says the time tool is gone (v2.10 brought it back).

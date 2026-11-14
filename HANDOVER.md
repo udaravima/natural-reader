@@ -4,9 +4,9 @@
 
 ---
 
-## 2026-11-14 — A Gemini adapter, and the review's leftovers (START HERE)
+## 2026-11-14 — v2.12.0: the review's fixes, notifications, a Gemini adapter (START HERE)
 
-**State.** All of it is UNCOMMITTED in the working tree on `feat/gemini-adapter` (branched from `development` at `459e651`), together with the 11 November CI work that was never committed. Nothing pushed. Gates on this tree: pytest 3275 passed / 16 skipped, vitest 1906 in 157 files, eslint 0 errors, build OK.
+**State.** Released as **v2.12.0** on the owner's "merge branch and do the release": `feat/gemini-adapter` (`ccb22fc`) fast-forwarded into `development`, the release commit on top, `development` merged into `master`, annotated tag `v2.12.0`, GitHub release. **Not deployed.** Gates on the release tree: pytest 3275 passed / 16 skipped, vitest 1906 in 157 files, eslint 0 errors, build OK. The push is CI's first run.
 
 - **Google Gemini as a provider** (`INFERENCE_<NAME>_KIND=gemini`, `server/llm/providers/gemini.py`). Google's Interactions API, stateless, `store: false` on every request (Google's default keeps each conversation 1 to 55 days). Thinking "off" asks for `minimal`; a refused level is retried at the model's default and remembered per level. The thought steps Gemini wants back with its own tool call ride on `ToolCall.extra` (never compared, printed or stored); a call the app made itself carries Google's documented skip signature. A wrong key (Google answers 400) reads as a key problem and isn't retried. Chat only: kept out of the embedding providers. `AIza…` keys are redacted from error text. **Never run against Google** (no key here): walked end to end through a throwaway backend against a stand-in server that refuses a tool call returned without its thought, as Google does.
 - **Review leftovers** (each code change with a test that failed first; the docs and the wait limits have none): a stale-capability 403 re-reads `/me` quietly, once per burst (no loading screen, no lost recording); a PDF is destroyed when replaced; signing in gives its connection back before the route runs (`auth_conn`), so no request holds two; the web fetch connects to the address it checked (Host and TLS name kept, `Connection: close` so a pooled connection never crosses sites), tries each checked address in turn, refuses 100.64.0.0/10 and IPv4-mapped IPv6, and runs the lookup and trafilatura in threads; the test harness moved to `requirements-dev.txt` (not in the image, not installed by `./startup.sh init`); DEPLOYMENT.md "Backup and restore"; Testing Library waits 5 s, tests 15 s, the masking speed guards judge the fastest of three.
@@ -15,7 +15,7 @@
 
 **Not done or not proven.** Gemini against Google itself (the skip signature and a safety block are the two things to watch). The vitest flakes never reproduced, even with every core busy or on 4 loaded cores; the wait limits answer the likely cause, not a seen one. A restore on a real deployment. The `./startup.sh init` venv no longer gets pytest: `pip install -r requirements-dev.txt -c constraints.txt` once.
 
-**For the owner.** Commit (suggested: the CI work on `development` first, then this branch as three commits: Gemini, review leftovers, docs), push (first CI run), then the 2.12.0 release. Still open from 11 November: rotate the two Keycloak client secrets; refuse to start on a published secret, or only log?
+**For the owner.** Deploy (backup first: DEPLOYMENT.md "Backup and restore"; migration 026; both halves rebuild; Keycloak's container is recreated). Before or with it: rotate the two Keycloak client secrets in the live `.env` (still the published ones on 11 November). Open: refuse to start on a published secret, or only log? A Gemini key, to run the adapter against Google once.
 
 ---
 
