@@ -122,3 +122,20 @@ def test_vocabulary_capped_at_50_and_fenced():
     assert user.content.count("</document_sample>") == 1
     _, none = dd.messages("a.pdf", [], "text", [])
     assert none.content.split("\n")[1:3] == ["Headings: none", "Tags in use: none"]
+
+
+def test_headings_take_at_most_a_quarter_of_the_allowance():
+    heads = [f"Heading number {i} " + "h" * 80 for i in range(40)]
+    kept = dd.fit_headings(heads, 6000)
+    assert 0 < len(kept) < 40 and kept == heads[:len(kept)]
+    assert len(" · ".join(kept)) <= 1500
+    assert dd.fit_headings(["Short"], 6000) == ["Short"]
+    assert dd.fit_headings([], 6000) == []
+
+
+def test_headings_and_sample_together_stay_within_the_allowance():
+    heads = [f"Heading number {i} " + "h" * 80 for i in range(40)]
+    passages = [f"P{i:02d} " + "x" * 996 for i in range(30)]
+    text, kept = dd.document_text(heads, passages, 6000)
+    assert len(" · ".join(kept)) + len(text) <= 6000
+    assert len(text) >= 4000                                        # the sample keeps most of it

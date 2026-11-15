@@ -102,6 +102,33 @@ def sample(passages: list[str], limit: int) -> str:
     return out
 
 
+HEADINGS_SHARE = 4    # the headings take at most a quarter of the allowance; the sample gets the rest
+
+
+def fit_headings(headings: list[str], limit: int) -> list[str]:
+    """The first headings (at most HEADINGS_MAX) whose shown line fits in a quarter of `limit` characters."""
+    out: list[str] = []
+    used = 0
+    for h in headings[:HEADINGS_MAX]:
+        shown = display_name(h)
+        if not shown:
+            continue
+        add = len(shown) + (3 if out else 0)       # " · "
+        if used + add > limit // HEADINGS_SHARE:
+            break
+        out.append(h)
+        used += add
+    return out
+
+
+def document_text(headings: list[str], passages: list[str], limit: int) -> tuple[str, list[str]]:
+    """What the model reads of a document, at most `limit` characters in all (helper spec §5.2): the headings that fit
+    their share, and a sample of the passages in what is left."""
+    kept = fit_headings(headings, limit)
+    shown = len(" · ".join(display_name(h) for h in kept))
+    return sample(passages, limit - shown), kept
+
+
 def _one_line(text: str) -> str:
     return " ".join(_CONTROL.sub(" ", text).split())
 
@@ -223,10 +250,10 @@ async def describe(doc_id: str, *, requested_by: str | None, project_id: str | N
         passages = [r[0] for r in await cur.fetchall()]
         outline = (await load_outlines(conn, [doc_id])).get(doc_id)
         vocab = await vocabulary(conn, project_id, requested_by, doc_id)
-    text = sample(passages, cfg.input_chars)
+    text, headings = document_text([e.text for e in outline.entries] if outline else [], passages, cfg.input_chars)
     if not text:
         return SKIPPED
-    system, user = messages(file_name, [e.text for e in outline.entries] if outline else [], text, vocab)
+    system, user = messages(file_name, headings, text, vocab)
     try:
         reply = await helper.ask(cfg, system.content, user.content, max_output_chars=OUTPUT_CHARS,
                                  user_id=requested_by)
