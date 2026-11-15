@@ -94,7 +94,7 @@ def test_brief_is_exact():
         "fits, reuse it exactly as written.\n"
         "- description: one sentence of at most 200 characters saying what the document is and what it covers. "
         "Don't begin with \"This document\".\n"
-        "- Write the tags and the description in the document's own language.\n"
+        "- Write the tags and the description in the same language as the text inside <document_sample>.\n"
         "Reply with JSON only: {\"tags\": [\"...\"], \"description\": \"...\"}"
     )
 

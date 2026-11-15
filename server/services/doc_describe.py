@@ -50,7 +50,9 @@ BRIEF = (
     "fits, reuse it exactly as written.\n"
     "- description: one sentence of at most 200 characters saying what the document is and what it covers. "
     "Don't begin with \"This document\".\n"
-    "- Write the tags and the description in the document's own language.\n"
+    # Not "the document's own language": gemma4:e4b read that as "some other language" and wrote English documents'
+    # descriptions in Spanish or Portuguese, 3 times out of 3 (walk 2026-11-16); naming the sample fixed it.
+    "- Write the tags and the description in the same language as the text inside <document_sample>.\n"
     "Reply with JSON only: {\"tags\": [\"...\"], \"description\": \"...\"}"
 )
 
