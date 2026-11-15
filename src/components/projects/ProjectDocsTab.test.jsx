@@ -413,4 +413,90 @@ describe('ProjectDocsTab: bulk upload', () => {
     await waitFor(() => expect(a.documents.mock.calls.length).toBeGreaterThan(before));
     expect(props.onChanged).toHaveBeenCalled();
   });
+
+  describe('tags and descriptions (helper spec §5.4, §5.6)', () => {
+    const tagged = { ...report, tags: ['finance', 'risk'], description: 'Yearly results.', generated: true, edited: false, describing: false };
+    const plain = { ...final, tags: ['legal'], description: 'The signed contract.', generated: true, edited: false, describing: false };
+    const untagged = { id: 'z', name: 'notes.md', version: 1, versions_count: 1, doc_id: 'h4', state: 'indexed', tags: [],
+      description: null, generated: false, edited: false, describing: false };
+
+    it('a tag chip filters the list to it, and again shows all', async () => {
+      mount(project(), api({ documents: vi.fn(async () => [tagged, plain]) }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Show documents tagged finance' }));
+      expect(screen.queryByText('report-final.pdf')).toBeNull();
+      expect(screen.getByText('report.pdf')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Show documents tagged finance' }));
+      expect(screen.getByText('report-final.pdf')).toBeTruthy();
+    });
+
+    it('the filter box matches names, tags and descriptions', async () => {
+      mount(project(), api({ documents: vi.fn(async () => [tagged, plain]) }));
+      const box = await screen.findByLabelText('Filter documents');
+      fireEvent.change(box, { target: { value: 'contract' } });
+      expect(screen.queryByText('report.pdf')).toBeNull();
+      expect(screen.getByText('report-final.pdf')).toBeTruthy();
+      fireEvent.change(box, { target: { value: 'RISK' } });
+      expect(screen.getByText('report.pdf')).toBeTruthy();
+      expect(screen.queryByText('report-final.pdf')).toBeNull();
+      fireEvent.change(box, { target: { value: 'final' } });
+      expect(screen.getByText('report-final.pdf')).toBeTruthy();
+      fireEvent.change(box, { target: { value: 'nothing like it' } });
+      expect(screen.getByText('No documents match.')).toBeTruthy();
+    });
+
+    it('"Write tags for N documents" shows only with the helper on and untagged indexed documents', async () => {
+      const a = api({ documents: vi.fn(async () => [tagged, untagged]), helperOn: vi.fn(async () => true),
+        describeMissing: vi.fn(async () => ({ queued: 1 })) });
+      const props = mount(project(), a);
+      fireEvent.click(await screen.findByRole('button', { name: 'Write tags for 1 document' }));
+      await waitFor(() => expect(a.describeMissing).toHaveBeenCalledWith('p1'));
+      await waitFor(() => expect(props.showToast).toHaveBeenCalledWith('Writing tags for 1 document.', 3000));
+    });
+
+    it('offers no "Write tags" when the helper is off, or to a Reader', async () => {
+      mount(project(), api({ documents: vi.fn(async () => [untagged]), helperOn: vi.fn(async () => false) }));
+      await screen.findByText('notes.md');
+      expect(screen.queryByRole('button', { name: /Write tags for/ })).toBeNull();
+      cleanup();
+      mount(project({ my_role: 'reader', can: can() }), api({ documents: vi.fn(async () => [untagged]), helperOn: vi.fn(async () => true) }));
+      await screen.findByText('notes.md');
+      expect(screen.queryByRole('button', { name: /Write tags for/ })).toBeNull();
+    });
+
+    it("a Contributor's edit is saved for the project and the list read again", async () => {
+      const a = api({ documents: vi.fn(async () => [tagged]), setDescribed: vi.fn(async () => tagged) });
+      mount(project(), a);
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit tags and description of report.pdf' }));
+      fireEvent.change(screen.getByLabelText('Tags for report.pdf'), { target: { value: 'audit' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(a.setDescribed).toHaveBeenCalledWith('p1', 'x', { tags: ['audit'], description: 'Yearly results.' }));
+      await waitFor(() => expect(a.documents).toHaveBeenCalledTimes(2));
+    });
+
+    it('Generate asks the helper for that document', async () => {
+      const a = api({ documents: vi.fn(async () => [tagged]), helperOn: vi.fn(async () => true),
+        describe: vi.fn(async () => ({ ...tagged, describing: true })) });
+      mount(project(), a);
+      fireEvent.click(await screen.findByRole('button', { name: 'Generate tags for report.pdf' }));
+      await waitFor(() => expect(a.describe).toHaveBeenCalledWith('p1', 'x'));
+    });
+
+    it('keeps reading the list while a row is being described, and stops once it is done', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const documents = vi.fn()
+          .mockResolvedValueOnce([{ ...untagged, describing: true }])
+          .mockResolvedValue([{ ...untagged, describing: false, generated: true, tags: ['notes'] }]);
+        mount(project(), api({ documents }));
+        expect(await screen.findByText('Writing tags…')).toBeTruthy();
+        await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
+        expect(await screen.findByRole('button', { name: 'Show documents tagged notes' })).toBeTruthy();
+        const reads = documents.mock.calls.length;
+        await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+        expect(documents.mock.calls.length).toBe(reads);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });

@@ -4,7 +4,8 @@ import { choicesFor, summarize } from '../../lib/uploadBatch';
 /**
  * A bulk upload on a project's Documents tab (bulk upload spec, phase 2, "What the person does and sees"): the plan
  * with one menu per row that has a real choice, then the sending list, then one summary line. `batch` is what
- * useBulkUpload returns; this component only shows it.
+ * useBulkUpload returns; this component only shows it. `helperOn`: a helper model is set up, so the plan offers
+ * "Write tags and descriptions" (helper spec §5.3).
  */
 const SENT_STATES = new Set(['waiting', 'sending', 'done', 'failed', 'stopped']);
 
@@ -109,7 +110,7 @@ function SentRows({ theme, rows, retry }) {
   );
 }
 
-export default function BulkUploadPanel({ theme, project, batch }) {
+export default function BulkUploadPanel({ theme, project, batch, helperOn = false }) {
   const { phase, rows, error } = batch;
   const [details, setDetails] = useState(null); // null: open when something failed
   const alert = error && <div role="alert" className="text-red-500">{error}</div>;
@@ -157,6 +158,13 @@ export default function BulkUploadPanel({ theme, project, batch }) {
           </p>
         )}
         {rows.length > 0 && <p>{countsLine(counts)}</p>}
+        {helperOn && counts.toSend > 0 && (
+          // helper spec §5.3: the helper reads a sample of each file once it is indexed, behind the indexing.
+          <label className="flex items-center gap-1.5 self-start">
+            <input type="checkbox" checked={batch.describe} onChange={(e) => batch.setDescribe(e.target.checked)} />
+            Write tags and descriptions
+          </label>
+        )}
         <div className="flex justify-end gap-2">
           <button onClick={batch.reset} className="underline">Cancel</button>
           <button onClick={batch.start} disabled={counts.toSend === 0}

@@ -60,6 +60,8 @@ export function projectsApi(host, port) {
     for (const key of ['on_match', 'on_older', 'document_id']) {
       if (fields?.[key]) form.append(key, fields[key]);
     }
+    // The panel's "Write tags and descriptions" tick (helper spec §5.3): the server's default is on.
+    if (fields?.describe === false) form.append('describe', 'false');
     const res = await apiUpload(host, port, `${project(projectId)}/uploads`, form, opts);
     if (res.ok) return res.body;
     const detail = res.body?.detail ?? null;
@@ -94,6 +96,20 @@ export function projectsApi(host, port) {
     uploadPlan: (id, files) => call(`${project(id)}/uploads/plan`, { method: 'POST', body: { files } }),
     uploadFile,
     myDocs: () => call('/v1/docs'),
+    // Tags and descriptions (helper spec §5.8).
+    setDescribed: (id, docId, body) => call(document(id, docId), { method: 'PATCH', body }),
+    describe: (id, docId) => call(`${document(id, docId)}/describe`, { method: 'POST' }),
+    describeMissing: (id) => call(`${documents(id)}/describe-missing`, { method: 'POST' }),
+    describeMine: (docId) => call(`/v1/docs/${enc(docId)}/describe`, { method: 'POST' }),
+    /** Whether a helper model is set up; any failure reads as off, so nothing is offered that would be refused. */
+    helperOn: async () => {
+      try {
+        const res = await apiFetch(host, port, '/v1/settings/helper');
+        return res.ok ? (await res.json()).on === true : false;
+      } catch {
+        return false;
+      }
+    },
     reindex: (docId) => call(`/v1/docs/${enc(docId)}/index`, { method: 'POST' }),
     lookup: (q) => call(`/v1/users/lookup?q=${enc(q)}`),
     shares: (docId) => call(`/v1/docs/${enc(docId)}/shares`),

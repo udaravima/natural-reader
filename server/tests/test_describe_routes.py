@@ -240,3 +240,25 @@ async def test_library_describe_for_a_holder_never_described(db_conn, world):
     async with as_user(rita) as c:                                       # holds no entry for B
         assert (await c.post(f"/v1/docs/{B}/describe")).status_code == 404
     assert await _jobs(db_conn) == [(B, alice.user_id, None)]
+
+
+async def test_settings_helper_says_whether_it_is_on_and_nothing_more(db_conn, helper_cfg):
+    """Every signed-in screen asks this to decide whether to offer Generate and the upload tick (helper spec §5.4)."""
+    import httpx
+    from fastapi import FastAPI
+    from httpx import ASGITransport
+
+    from server.auth import deps
+    from server.routers import settings as settings_router
+    plain = await member(db_conn, "dr-plain", caps=("reader",))
+    app = FastAPI()
+
+    async def _conn():
+        yield db_conn
+    app.dependency_overrides[deps.get_conn] = _conn
+    app.dependency_overrides[deps.get_current_user] = lambda: plain
+    app.include_router(settings_router.router)
+    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        assert (await c.get("/v1/settings/helper")).json() == {"on": True}
+        helper_cfg["cfg"] = OFF
+        assert (await c.get("/v1/settings/helper")).json() == {"on": False}

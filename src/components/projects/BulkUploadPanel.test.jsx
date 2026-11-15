@@ -9,7 +9,8 @@ const MB = 1024 * 1024;
 
 function batch(over = {}) {
   return { phase: 'planned', rows: [], leftOut: 0, hashed: true, progress: null, summary: null, error: null,
-    pick: vi.fn(), choose: vi.fn(), start: vi.fn(), stop: vi.fn(), retry: vi.fn(), reset: vi.fn(), ...over };
+    describe: true, pick: vi.fn(), choose: vi.fn(), setDescribe: vi.fn(), start: vi.fn(), stop: vi.fn(), retry: vi.fn(),
+    reset: vi.fn(), ...over };
 }
 const row = (path, action, over = {}) => ({ path, name: path.split('/').pop(), size: MB, action, document: null,
   version: null, candidates: [], code: null, message: null, choice: null, status: null, ...over });
@@ -27,6 +28,25 @@ const plan = [
 ];
 
 describe('BulkUploadPanel', () => {
+  it('offers "Write tags and descriptions" ticked when a helper is set up, and passes a change on', () => {
+    const b = batch({ rows: [row('intro.md', 'new')] });
+    render(<BulkUploadPanel theme={theme} project={project} batch={b} helperOn />);
+    const tick = screen.getByRole('checkbox', { name: 'Write tags and descriptions' });
+    expect(tick.checked).toBe(true);
+    fireEvent.click(tick);
+    expect(b.setDescribe).toHaveBeenCalledWith(false);
+  });
+
+  it('shows the tick as the batch holds it', () => {
+    render(<BulkUploadPanel theme={theme} project={project} batch={batch({ rows: [row('a.md', 'new')], describe: false })} helperOn />);
+    expect(screen.getByRole('checkbox', { name: 'Write tags and descriptions' }).checked).toBe(false);
+  });
+
+  it('has no tick when no helper is set up', () => {
+    render(<BulkUploadPanel theme={theme} project={project} batch={batch({ rows: [row('intro.md', 'new')] })} />);
+    expect(screen.queryByRole('checkbox', { name: 'Write tags and descriptions' })).toBeNull();
+  });
+
   it('shows each row in plain words, its menu, and the counts', () => {
     const b = batch({ rows: plan });
     render(<BulkUploadPanel theme={theme} project={project} batch={b} />);

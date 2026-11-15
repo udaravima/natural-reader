@@ -15,8 +15,9 @@ const LANDED_EVERY_MS = 1000;
 export const SIGNED_OUT = 'You were signed out. Sign in, then drop the files again: what was sent is safe.';
 export const ACCESS_LOST = 'You can no longer add documents to this project.';
 
+// `describe`: the panel's "Write tags and descriptions" tick (helper spec §5.3), on for every new batch.
 const IDLE = Object.freeze({ phase: 'idle', rows: [], leftOut: 0, hashed: true, progress: null, summary: null,
-  error: null });
+  error: null, describe: true });
 
 // The person can no longer upload here: signed out, their role lowered, removed from the project (a 404 on a row
 // that named no document; one that named a document may just have lost that document), or the capability revoked.
@@ -89,7 +90,8 @@ function createBatch(projectId) {
     const fields = requestFor(row, row.choice);
     setRow(i, { status: 'sending', percent: 0, error: null });
     try {
-      const answer = await api.uploadFile(projectId, row.file, fields, {
+      // A cleared tick goes with every file; a ticked one adds nothing (the server's default is on).
+      const answer = await api.uploadFile(projectId, row.file, state.describe ? fields : { ...fields, describe: false }, {
         onProgress: (percent) => { if (state.rows[i].percent !== percent) setRow(i, { percent }); },
       });
       setRow(i, { status: 'done', percent: 100, answer });
@@ -156,6 +158,11 @@ function createBatch(projectId) {
 
     choose(i, choice) {
       if (state.phase === 'planned') setRow(i, { choice });
+    },
+
+    /** The "Write tags and descriptions" tick, for the files of this batch. */
+    setDescribe(on) {
+      if (state.phase === 'planned') set({ describe: !!on });
     },
 
     start() {
