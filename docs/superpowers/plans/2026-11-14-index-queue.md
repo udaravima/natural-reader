@@ -12,6 +12,17 @@
 
 **Revised 2026-11-15** after a review checked against the code: an attempts cap, conversion on the queue, recovery that respects live claims, a backfill, a bound on rebuild priority, and the uploader recorded on every job.
 
+**Built 2026-11-15** (all eight tasks, walked). Where the build departs from this plan, and why:
+
+- **Rebuild cap (Task 5):** counts the times a rebuild's worker died (`doc_rebuilds.stops`, added in migration 027), parked at 3, not "5 claims": claims also count ordinary failures, which retry by themselves (an embedding server down for an hour would have parked every rebuild).
+- **A full pool on upload (Review Focus 5):** the upload answers as usual with `queued: false` instead of a 503. The file is already stored, so asking for it again would only re-send it; the screen offers Retry index and the next start queues it.
+- **New uploads are inserted `stored`, not `extracting`:** truthful while they wait; one job per document now does what the early `extracting` guarded.
+- **Re-extract is refused while a job runs** (409 `busy_document`), the same guard as Convert: it would race the running job's writes.
+- **A project Contributor may resume indexing** (Retry index on the project tab; bulk-uploaded files are in nobody's library). A project Reader still may not.
+- **The Library list shows plain-word states too:** the walk found it printing the raw state.
+- **The test client drains the queue after each response** (`docs_harness`, `run_queue=True`) instead of adding `drain()` to 30 tests: it stands in for the worker's runner, which is woken at once.
+- **Shutdown waits up to 5 s for the runners** so a running job is handed back before the pool closes.
+
 ## Global Constraints
 
 - Branch `feat/index-queue` from `development`.

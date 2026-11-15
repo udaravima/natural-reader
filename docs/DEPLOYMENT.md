@@ -763,7 +763,36 @@ load included). Expect a GPU to be much faster; that wasn't measured.
 before an upgrade) are queued in the `doc_rebuilds` table and claimed by one
 worker at a time with `FOR UPDATE SKIP LOCKED`, so with `WORKERS > 1` a document
 is rebuilt once, a restart resumes the queue, and the Overview counts it. A
-rebuild that fails waits 15 minutes before it is tried again.
+rebuild that fails waits 15 minutes before it is tried again. A rebuild whose
+worker died while running it **3 times** is parked (not tried again until the
+embedding settings change) and the admins are told: its old index keeps answering.
+
+**Indexing and conversion run from a queue too** (`doc_index_jobs`, migration
+027). An upload, **Index**, **Retry index**, re-extracting, a new version and
+**Convert** each add a job; nothing runs inside the request. Each worker runs
+**one document's indexing at a time**, and **one Docling conversion at a time**
+beside it, so `WORKERS` is how many documents index at once. Rebuilds go first
+(someone is waiting on them in a chat), but after three in a row a waiting upload
+goes next.
+
+- **A restart loses nothing.** A clean stop hands the running job back, and the
+  next start takes it at once. After a crash, the dead worker's job is taken over
+  once its claim has been silent for 10 minutes. Every start also queues any
+  document left part-way with no job (from before this queue, for example).
+- **A file that kills its worker is given up after 3 tries.** The document is
+  marked failed ("The server stopped while reading this file, 3 times. The file
+  may be damaged.") and whoever asked is told, instead of the server crashing
+  every 10 minutes.
+- **What a person sees:** "Waiting to index (3 ahead)", "Reading", "Indexing",
+  "Indexed", "Failed" with the reason, and **Retry index** on a document nothing
+  is working on.
+
+Measured on the walk (CPU only, `nomic-embed-text`, `WORKERS=1`): six Markdown
+files of 31 to 117 KB queued at once were indexed one after another in **65 s**;
+an upload answered in 80 ms and the runner had taken it within a second. With
+`WORKERS=2`, two ran at a time. **A search answered in about 2 s while two
+documents were indexing**, against 0.02 to 0.05 s when idle: on a CPU-only Ollama
+a query's embedding waits behind indexing's.
 
 **The Overview never loads a model.** On Ollama it reads two lists: `/api/tags`
 (is the model pulled?) and `/api/ps` (is it in memory now?). Whether it gives 768
@@ -1400,6 +1429,15 @@ connection". With the production topology above that is already true; it bites o
 LAN address over http.
 
 ### Upgrading
+
+**Migration 027** (the indexing queue) runs at startup: a new table
+`doc_index_jobs`, and a column `stops` on `doc_rebuilds`. Back up the database
+first, as for any migration. It has a Down in its header; jobs still queued when
+you roll back are lost, and their documents wait for someone to press **Index**,
+as before. The first start after the upgrade queues every document left part-way
+(state `stored` with a file, `extracting`, `extracted` or `indexing`), so
+documents that were stuck before the upgrade are indexed by themselves; the log
+says how many ("Queued N documents that were left unindexed").
 
 **Migration 024** runs at startup. It only widens a check on `chat_attachments` so
 a message can carry a text file; it has a Down (in the file's header) for a

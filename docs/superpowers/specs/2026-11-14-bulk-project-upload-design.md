@@ -1,7 +1,8 @@
 # Uploading many files to a project: design
 
 Date: 2026-11-14, revised 2026-11-15. Status: revision 3, approved by the owner ("go ahead", then "check and
-continue" on a review of revision 2).
+continue" on a review of revision 2). Phase 1 (the queue) built and walked
+2026-11-15 on `feat/index-queue`; phase 2 not started.
 
 Revision 1 kept the server almost unchanged and listed what that left out.
 The owner asked for the design that is right for everyone who uses the app:
@@ -193,9 +194,12 @@ the state `stored` until someone presses **Retry index** in the reader.
   backend restarts each time. So a claim that would be a job's 4th is not
   run: the document is marked failed ("The server stopped while reading this
   file, 3 times. The file may be damaged."), whoever asked is told, and the
-  job is removed. The rebuild queue gets the same cap: after 5 claims a
-  rebuild stops being retried until a newer profile asks for it, and the
-  admins are told; the old index keeps answering.
+  job is removed. The rebuild queue gets the same cap, counted the same way:
+  a rebuild whose worker died while running it 3 times stops being retried
+  until a newer profile asks for it, and the admins are told; the old index
+  keeps answering. (Built so, 2026-11-15: an earlier draft said "after 5
+  claims", which would also have parked a rebuild that merely failed 5 times
+  while the embedding server was down, and those retry by themselves.)
 - **A job ends once.** Success removes it. A failure records the reason on the
   document (`state = 'failed'`, as today), tells the person who asked (as
   today), and removes the job: no automatic retry, because most failures are

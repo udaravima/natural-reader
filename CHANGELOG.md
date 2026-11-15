@@ -6,6 +6,20 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Indexing and conversion wait in a queue, and survive a restart.** Each
+  server worker indexes one document at a time and runs one Docling conversion
+  at a time, from a queue in the database. Before, every upload, Index, Convert
+  and new version started its own job at once in the worker that took the
+  request: thirty uploads meant thirty extractions together, a restart forgot
+  whatever was waiting, and with several workers two could work on one
+  document. A clean stop hands the running job back; after a crash, the job is
+  taken over after 10 minutes; a file that stops the server 3 times is marked
+  failed and its uploader told; every start queues documents left part-way.
+- **"Waiting to index (3 ahead)"** in the reader, the Library and a project's
+  Documents tab, with the other states in plain words, the reason on a failed
+  one, and **Retry index** on a project's document that nothing is working on.
+  The project tab keeps following the queue past 10 minutes.
+
 - **A warning before a model switch hides replies.** A text file sent with its
   real values stays with the model it was agreed for, and so do that model's
   replies. Until now you learned that only after sending, from a note under the
@@ -15,6 +29,13 @@ All notable changes to this project will be documented in this file.
   about what is held back has changed.
 
 ### Fixed
+
+- **A project Contributor couldn't resume a document's indexing** unless the
+  file was in their own library: Retry index answered "not found". Resuming
+  changes no content, so a Contributor or above of a project holding the
+  document may now. Re-indexing an indexed document is still its owner's.
+- **A new version's failed indexing told nobody.** Its uploader now gets the
+  notice, as for any upload.
 
 - **`./startup.sh start` after a code change ran the old code.** On podman it
   built the new image, then restarted the old backend container on the old one:
