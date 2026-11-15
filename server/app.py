@@ -28,6 +28,7 @@ from .routers.docs import router as docs_router
 from .routers.inference import router as inference_router
 from .routers.notifications import router as notifications_router
 from .routers.project_documents import router as project_documents_router
+from .routers.project_uploads import router as project_uploads_router
 from .routers.projects import router as projects_router
 from .routers.people import router as people_router
 from .routers.settings import router as settings_router
@@ -96,6 +97,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_router)
     app.include_router(projects_router)
     app.include_router(project_documents_router)
+    app.include_router(project_uploads_router)
     app.include_router(people_router)
     app.include_router(settings_router)
     app.include_router(profile_router)

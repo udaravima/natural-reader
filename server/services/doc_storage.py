@@ -83,7 +83,8 @@ def resolve_stored(raw: str | os.PathLike | None) -> Path | None:
     return storage_dir() / stored.name
 
 
-def _cap_mb(file_type: str) -> int:
+def cap_mb(file_type: str) -> int:
+    """The size cap for a file type, in MB (PDF_UPLOAD_MAX_MB, TEXT_UPLOAD_MAX_MB)."""
     if file_type == "pdf":
         return int(os.environ.get("PDF_UPLOAD_MAX_MB", "50"))
     return int(os.environ.get("TEXT_UPLOAD_MAX_MB", "10"))
@@ -126,7 +127,7 @@ def _check_type(path: Path, file_type: str, head: bytes) -> None:
 
 async def stage_upload(upload: UploadFile, file_name: str) -> Staged:
     file_type = type_from_name(file_name)
-    cap_mb = _cap_mb(file_type)
+    cap = cap_mb(file_type)
     staging = storage_dir() / ".staging"
     staging.mkdir(parents=True, exist_ok=True)
     tmp = staging / f"{uuid.uuid4().hex}.part"
@@ -137,9 +138,9 @@ async def stage_upload(upload: UploadFile, file_name: str) -> Staged:
         with open(tmp, "wb") as out:
             while chunk := await upload.read(MIB):
                 size += len(chunk)
-                if size > cap_mb * MIB:
-                    raise refusal(413, "too_large", f"File exceeds the {cap_mb} MB limit.",
-                                  limit_mb=cap_mb)
+                if size > cap * MIB:
+                    raise refusal(413, "too_large", f"File exceeds the {cap} MB limit.",
+                                  limit_mb=cap)
                 if len(head) < 5:
                     head += chunk[: 5 - len(head)]
                 digest.update(chunk)
