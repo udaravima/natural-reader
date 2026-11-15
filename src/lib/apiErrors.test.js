@@ -70,4 +70,10 @@ describe('refusalMessage', () => {
         expect(await refusalMessage({ json: async () => ({ detail: { error: 'x' } }) })).toBeNull();
         expect(await refusalMessage({ json: async () => { throw new Error('not json'); } })).toBeNull();
     });
+
+    it('lets a bulk upload refusal speak for itself', () => {
+        expect(noticeFor(413, { error: 'too_many_files', message: 'At most 2 files.' })).toBe('At most 2 files.');
+        expect(noticeFor(507, { error: 'not_enough_space', message: 'Needs 3 MB.' })).toBe('Needs 3 MB.');
+        expect(noticeFor(413, { error: 'too_large', limit_mb: 50 })).toBe('File too large (limit 50 MB).');
+    });
 });

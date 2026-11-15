@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { apiFetch, setUnauthorizedHandler, setForbiddenHandler } from './apiFetch';
+import { apiFetch, apiUpload, setUnauthorizedHandler, setForbiddenHandler } from './apiFetch';
 
 describe('apiFetch', () => {
   beforeEach(() => {
@@ -80,5 +80,48 @@ describe('apiFetch', () => {
     const res = await apiFetch('', '', '/v1/docs');
     expect(onForbidden).not.toHaveBeenCalled();
     expect(res.status).toBe(403);
+  });
+});
+
+describe('apiUpload', () => {
+  let sent;
+  class FakeXHR {
+    constructor() { this.upload = {}; this.headers = {}; sent = this; }
+    open(method, url) { this.method = method; this.url = url; }
+    send(body) { this.body = body; }
+    abort() { this.onabort?.(); }
+  }
+  beforeEach(() => { vi.stubGlobal('XMLHttpRequest', FakeXHR); });
+  afterEach(() => { vi.unstubAllGlobals(); setUnauthorizedHandler(null); setForbiddenHandler(null); });
+
+  it('posts the form with credentials, reports progress and resolves with the parsed body', async () => {
+    const onProgress = vi.fn();
+    const form = new FormData();
+    const p = apiUpload('', '', '/v1/projects/p1/uploads', form, { onProgress });
+    expect([sent.method, sent.url, sent.withCredentials, sent.body]).toEqual(['POST', '/v1/projects/p1/uploads', true, form]);
+    sent.upload.onprogress({ lengthComputable: true, loaded: 32, total: 50 });
+    expect(onProgress).toHaveBeenCalledWith(64);
+    sent.status = 201; sent.responseText = '{"result":"created"}'; sent.onload();
+    expect(await p).toEqual({ ok: true, status: 201, body: { result: 'created' } });
+  });
+
+  it('calls the unauthorized handler on 401 and the forbidden one on missing_capability', async () => {
+    const onUnauthorized = vi.fn();
+    const onForbidden = vi.fn();
+    setUnauthorizedHandler(onUnauthorized);
+    setForbiddenHandler(onForbidden);
+    let p = apiUpload('', '', '/x', new FormData());
+    sent.status = 401; sent.responseText = ''; sent.onload();
+    expect(await p).toEqual({ ok: false, status: 401, body: null });
+    p = apiUpload('', '', '/x', new FormData());
+    sent.status = 403; sent.responseText = '{"detail":{"error":"missing_capability"}}'; sent.onload();
+    await p;
+    expect([onUnauthorized.mock.calls.length, onForbidden.mock.calls.length]).toEqual([1, 1]);
+  });
+
+  it('resolves with status 0 when the connection fails', async () => {
+    const p = apiUpload('', '', '/x', new FormData());
+    sent.onerror();
+    expect(await p).toEqual({ ok: false, status: 0, body: null });
   });
 });

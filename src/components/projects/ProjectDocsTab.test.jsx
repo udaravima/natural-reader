@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within, act, cleanup } from '@testing-library/react';
 import ProjectDocsTab from './ProjectDocsTab';
+import { forgetBatches } from '../../lib/bulkUploadStore';
 
 const theme = { bg: '', bgSecondary: '', bgTertiary: '', border: '', text: '', textSecondary: '', textMuted: '' };
 const can = (over = {}) => ({ edit: false, manage_members: false, manage_owners: false, file_docs: false,
@@ -348,5 +349,68 @@ describe('ProjectDocsTab: a document that is not indexing', () => {
     mount(project({ my_role: 'reader', can: can() }), api({ documents: vi.fn(async () => [failed]) }));
     await screen.findByText('Failed');
     expect(screen.queryByRole('button', { name: /Retry indexing/ })).toBeNull();
+  });
+
+});
+
+describe('ProjectDocsTab: bulk upload', () => {
+  beforeEach(() => forgetBatches());
+  const drop = (files) => ({ dataTransfer: { files, items: [], types: ['Files'] } });
+  const bulkApi = (over = {}) => api({
+    uploadPlan: vi.fn(async (_p, files) => ({ files: files.map((f) => ({ name: f.name, action: 'new', document: null,
+      version: null, candidates: [], code: null, message: null })) })),
+    uploadFile: vi.fn(async () => ({ result: 'created', document: { id: 'n', name: 'a.md', version: 1 } })),
+    ...over,
+  });
+
+  it('shows Upload files, Upload folder and a drop target only to someone who can file', async () => {
+    const a = bulkApi();
+    mount(project({ my_role: 'reader', can: can() }), a);
+    await screen.findByText('report.pdf');
+    expect(screen.queryByRole('button', { name: 'Upload files' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Upload folder' })).toBeNull();
+    fireEvent.drop(screen.getByRole('region', { name: 'Documents in Q3' }), drop([new File(['x'], 'a.md')]));
+    await act(async () => {});
+    expect(a.uploadPlan).not.toHaveBeenCalled();
+  });
+
+  it('offers both pickers to a Contributor; the folder one picks folders', async () => {
+    mount(project(), bulkApi());
+    expect(await screen.findByRole('button', { name: 'Upload files' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Upload folder' })).toBeTruthy();
+    expect(screen.getByLabelText('Folder to upload').hasAttribute('webkitdirectory')).toBe(true);
+    expect(screen.getByLabelText('Files to upload').multiple).toBe(true);
+  });
+
+  it('dropping files shows the plan, and Upload with nothing touched sends the defaults', async () => {
+    const a = bulkApi();
+    mount(project(), a);
+    await screen.findByText('report.pdf');
+    fireEvent.drop(screen.getByRole('region', { name: 'Documents in Q3' }), drop([new File(['# A'], 'a.md')]));
+    expect(await screen.findByText('Upload to "Q3"')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Upload 1' }));
+    await waitFor(() => expect(a.uploadFile).toHaveBeenCalled());
+    expect(a.uploadFile.mock.calls[0][2]).toEqual({ on_match: 'version', on_older: 'leave' });
+    expect(await screen.findByText('1 sent: 1 new.')).toBeTruthy();
+  });
+
+  it('picking files with the button plans them too', async () => {
+    const a = bulkApi();
+    mount(project(), a);
+    await screen.findByText('report.pdf');
+    fireEvent.change(screen.getByLabelText('Files to upload'), { target: { files: [new File(['# A'], 'a.md')] } });
+    expect(await screen.findByText('Upload to "Q3"')).toBeTruthy();
+    expect(a.uploadPlan.mock.calls[0][1][0].name).toBe('a.md');
+  });
+
+  it('re-reads the documents as files land', async () => {
+    const a = bulkApi();
+    const props = mount(project(), a);
+    await screen.findByText('report.pdf');
+    const before = a.documents.mock.calls.length;
+    fireEvent.drop(screen.getByRole('region', { name: 'Documents in Q3' }), drop([new File(['# A'], 'a.md')]));
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload 1' }));
+    await waitFor(() => expect(a.documents.mock.calls.length).toBeGreaterThan(before));
+    expect(props.onChanged).toHaveBeenCalled();
   });
 });

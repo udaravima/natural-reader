@@ -42,3 +42,39 @@ export async function apiFetch(host, port, path, opts = {}) {
   }
   return res;
 }
+
+/**
+ * POST a multipart form to a backend `/v1` endpoint with upload progress, which `fetch` can't report. Sends the
+ * session cookie and calls the same 401 and missing-capability 403 handlers as apiFetch. Never rejects: a
+ * connection that fails or is aborted resolves with status 0.
+ *
+ * @param {(percent: number) => void} [opts.onProgress]  0–100, as the bytes leave
+ * @param {AbortSignal} [opts.signal]
+ * @returns {Promise<{ ok: boolean, status: number, body: any }>}  body: the parsed JSON, or null
+ */
+export function apiUpload(host, port, path, formData, { onProgress, signal } = {}) {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', buildApiUrl(host, port, path));
+    xhr.withCredentials = true;
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100)); };
+    }
+    const failed = () => resolve({ ok: false, status: 0, body: null });
+    xhr.onerror = failed;
+    xhr.onabort = failed;
+    xhr.onload = () => {
+      let body = null;
+      try {
+        body = xhr.responseText ? JSON.parse(xhr.responseText) : null;
+      } catch {
+        // a proxy's HTML error page: the status speaks for it
+      }
+      if (xhr.status === 401 && _onUnauthorized) _onUnauthorized();
+      if (xhr.status === 403 && _onForbidden && body?.detail?.error === 'missing_capability') _onForbidden();
+      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, body });
+    };
+    signal?.addEventListener('abort', () => xhr.abort(), { once: true });
+    xhr.send(formData);
+  });
+}
