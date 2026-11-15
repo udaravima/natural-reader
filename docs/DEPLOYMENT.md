@@ -815,6 +815,32 @@ and indexed in about 95 s**, a backend crash in the middle included (the dead
 worker's one document was taken over 10 minutes later, as above). Searches made
 while they indexed answered in 0.02 to 0.8 s.
 
+**Tags and descriptions (the helper model).** Off until you name a model:
+**Admin console → Models → Helper model**, or in `.env`:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `HELPER_MODEL` | unset (off) | The model that writes each indexed document's tags and description: `provider:name`, or a bare name for the first Ollama provider. `chat` isn't a value here (the helper works with no conversation). The console's choice wins, **Off** included; it can only name a model the allow-lists let the chat use. Unset: nothing is written and no Generate button shows. |
+| `HELPER_TIMEOUT_S` | `120` | Seconds (5–900) one call may take before it counts as failed. A failed document is tried once more, then left without tags. |
+| `HELPER_INPUT_CHARS` | `6000` | Characters of document text (500–50000) the helper reads per document, whatever its size: the headings (at most a quarter), then the opening and passages at even steps through the rest. About 1,500 tokens at the default. |
+
+The helper works one document at a time across all workers, and only while no
+indexing or conversion job waits, so indexing is never slowed by it. Its calls
+are charged to the uploader (or whoever pressed Generate) against the daily
+budget, under a **Helper** column on the Usage page; someone over budget gets no
+tags until the next day. **A cloud model sends document text to its provider**
+(the sample above, the file name, headings and the project's tags); the Models
+page says so beside the setting. A local small model keeps it on your hardware.
+
+Measured on the helper walk (CPU only, `gemma4:e4b` on Ollama, context 16,384):
+**28 to 33 s per document**, the same for a 31 KB and a 121 KB Markdown file,
+since the model reads at most 6,000 characters of each. Five documents were
+indexed first (about 70 s), then described in about 2.5 minutes.
+
+**Upgrading to this release.** Migration 028 adds the columns and the queue;
+nothing is backfilled. Existing documents get tags when a project Contributor
+presses **Write tags for N documents** on the project's Documents tab.
+
 **The Overview never loads a model.** On Ollama it reads two lists: `/api/tags`
 (is the model pulled?) and `/api/ps` (is it in memory now?). Whether it gives 768
 numbers was measured once, when it was chosen; a model made current from `.env`

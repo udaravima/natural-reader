@@ -795,6 +795,42 @@ plain `http://`, the browser can't fingerprint files, so it can't tell an
 unchanged file before sending it: every matching file is sent, and the server
 answers "Unchanged" and stores nothing.
 
+**Tags and descriptions.** When an admin has set up a helper model (**Admin →
+Models → Helper model**), each document gets up to five tags and a one-line
+description of what it is, written by that model once the document is indexed.
+They show under the document's name on the **Documents** tab:
+
+- A tag filters the list to the documents carrying it; press it again, or the
+  tag beside the filter box, to show all. The filter box above the list matches
+  names, tags and descriptions.
+- Contributors and above have the pencil, to type the project's own tags and
+  description in place (at most ten tags, a description of at most 300
+  characters). The project's own words replace the helper's, stay across new
+  versions, and show only in this project; **Use the helper's** brings the
+  generated ones back. The pencil works without a helper model too.
+- **Generate** asks the helper again for the current version. If the project
+  has its own words, you're asked first, since they are replaced.
+- **Write tags for N documents** asks for every indexed document here that has
+  none, such as documents uploaded before the helper was set up.
+- An upload's plan has a **Write tags and descriptions** tick, on by default.
+  Clear it and that batch is indexed without tags; you can still write them
+  later.
+
+The helper writes after indexing, one document at a time, and only while
+nothing is waiting to be indexed, so it never slows indexing down. A row says
+"Writing tags…" until its tags arrive (about half a minute per document on a
+machine without a GPU). It reads the file name, the headings and a sample of
+the text of at most 6,000 characters, whatever the document's size, and is
+shown the tags already used in the project so it reuses them. The project
+chat's list of documents carries the descriptions too, which helps the
+assistant pick where to look.
+
+In **Library → Documents**, a document shows the helper's description, and the
+helper's tags you don't have yet as dashed chips: **+** keeps one as your own
+tag. Search and the tag filter match the helper's tags and description as
+well. **Generate tags** on a document of yours asks for them once, if it never
+had any.
+
 **Versions.** Each document keeps its history. **v3 · 3 versions** opens it:
 every version can be opened; Contributors can **Restore** an old one (it comes
 back as a new version on top, nothing is lost) and use **⋯ → Upload new

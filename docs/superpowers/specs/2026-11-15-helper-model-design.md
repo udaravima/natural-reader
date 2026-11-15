@@ -132,8 +132,8 @@ same file sees the same generated tags and can replace them with its own.
 - A worker claims a describe job only when no indexing or conversion job is queued or running, one at a time.
 - Two attempts. A failure leaves the document without tags and logs the kind; it is not a document error and
   shows no red state.
-- Speed on this CPU-only machine is not measured yet. The plan's first task measures one call with the owner's
-  chosen model and records it in the spec.
+- Measured on the build walk (2026-11-15, CPU-only Ollama, `gemma4:e4b`, context 16,384): 28 to 33 s per document,
+  the same for a 31 KB and a 121 KB file, since the model reads a fixed-size sample.
 
 ### 5.4 What people see
 

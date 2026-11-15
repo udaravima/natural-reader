@@ -6,6 +6,21 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Tags and descriptions written by a helper model.** An admin names one
+  small model in **Admin → Models → Helper model** (or `HELPER_MODEL`; off by
+  default). Each indexed document then gets up to five tags and a one-line
+  description, written after indexing, one document at a time and only while
+  nothing waits to be indexed. The model reads a sample of at most 6,000
+  characters, whatever the document's size, and is shown the tags already used
+  in the project. On a project's Documents tab they show under each name: a tag
+  filters the list, a filter box matches names, tags and descriptions,
+  Contributors type the project's own words with the pencil, and **Generate** /
+  **Write tags for N documents** ask the helper. The bulk upload plan has a
+  **Write tags and descriptions** tick, on by default. The Library shows the
+  description and the helper's other tags as suggestions to keep. The project
+  chat's document list carries the descriptions. Helper calls are counted on the
+  Usage page under **Helper**. Measured on a CPU: about 30 s per document with
+  `gemma4:e4b`.
 - **Upload many files into a project at once.** A project's Documents tab has
   **Upload files** and **Upload folder**, and takes files or a whole folder
   dropped anywhere on it. Before anything is sent, you see what each file will
