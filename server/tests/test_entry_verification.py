@@ -185,7 +185,7 @@ async def test_leftover_claims_dont_block_the_uploaders_content_ops(db_conn, as_
         db_conn, DOC, author.user_id, is_admin=False) is None
     async with as_user(author) as c:  # re-index from the author's verified bytes
         r = await c.post(f"/v1/docs/{DOC}/index")
-    assert r.status_code == 202 and r.json()["state"] == "extracting"
+    assert r.status_code == 202 and r.json()["state"] == "stored"
     assert await doc_content.content_ops_refusal(
         db_conn, DOC, squatter.user_id, is_admin=False) == "other_holders"
 

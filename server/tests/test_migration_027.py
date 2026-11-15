@@ -23,8 +23,8 @@ async def test_the_job_and_state_checks_refuse_other_values(db_conn):
 
 async def test_the_down_in_the_header_runs_and_the_file_puts_it_back(db_conn):
     text = SQL.read_text()
-    down = [line.removeprefix("--").strip() for line in text.splitlines() if re.match(r"--\s+(DROP|DELETE) ", line)]
-    assert len(down) == 2
+    down = [line.removeprefix("--").strip() for line in text.splitlines() if re.match(r"--\s+(DROP|DELETE|ALTER) ", line)]
+    assert len(down) == 3
     async with db_conn.transaction():
         for statement in down:
             await db_conn.execute(statement)
@@ -34,3 +34,9 @@ async def test_the_down_in_the_header_runs_and_the_file_puts_it_back(db_conn):
     cur = await db_conn.execute("SELECT to_regclass('doc_index_jobs')::text, "
                                 "(SELECT count(*) FROM schema_migrations WHERE version = 27)")
     assert await cur.fetchone() == ("doc_index_jobs", 1)
+
+
+async def test_doc_rebuilds_counts_its_workers_stopping(db_conn):
+    cur = await db_conn.execute("SELECT column_default FROM information_schema.columns "
+                                "WHERE table_name = 'doc_rebuilds' AND column_name = 'stops'")
+    assert (await cur.fetchone())[0] == "0"

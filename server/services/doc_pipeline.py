@@ -8,14 +8,16 @@ data (spec §4)."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import hashlib
 import logging
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 from ..db import get_pool, is_ready
-from . import doc_storage, docling_convert, extract, rebuild_queue
+from . import doc_notices, doc_storage, docling_convert, extract, index_queue, rebuild_queue
 from .doc_outlines import BOOKMARKS, HEADINGS, NO_OUTLINE, Outline, save_outline
 from .doc_search import ReadableDoc
 from . import embedding_state
@@ -413,25 +415,57 @@ async def _enqueue_soon(doc_id: str, profile: str) -> None:
         _wake.set()
 
 
-async def run_queue_once(worker: str = rebuild_queue.WORKER_ID) -> str | None:
-    """Claim one queued rebuild, run it, record how it went. Returns the doc_id, or None when nothing was
-    claimable."""
+# ---------- the runners: rebuilds, indexing and conversion (bulk upload spec 2026-11-14, phase 1) ----------
+
+REBUILDS_IN_A_ROW = 3       # then a waiting indexing job goes next, so a long re-embed can't starve uploads
+GAVE_UP = (f"The server stopped while reading this file, {index_queue.MAX_ATTEMPTS} times. "
+           "The file may be damaged.")
+_rebuilds_in_a_row: dict[str, int] = {}   # per runner (worker id)
+_convert_wake = asyncio.Event()
+
+
+def wake() -> None:
+    """Something was queued in this process: both runners look now, not after QUEUE_POLL_S."""
+    _wake.set()
+    _convert_wake.set()
+
+
+async def enqueue_index(doc_id: str, *, job: str = "pipeline", requested_by: str | None = None) -> bool:
+    """Queue indexing on a connection of its own, committed at once. Unlike a rebuild's enqueue, it raises when no
+    connection can be had: the caller promised indexing and must say it couldn't. True when it wrote a job (False:
+    the document already has one)."""
+    async with get_pool().connection() as conn:
+        wrote = await index_queue.enqueue(conn, doc_id, job=job, requested_by=requested_by)
+    wake()
+    return wrote
+
+
+@contextlib.asynccontextmanager
+async def _claim_kept(beat: Callable[..., Awaitable[None]], doc_id: str, worker: str):
+    """Refresh the claim every HEARTBEAT_S while the work runs, so no other worker takes it over."""
+    async def loop():
+        while True:
+            await asyncio.sleep(HEARTBEAT_S)
+            try:
+                async with get_pool().connection() as conn:
+                    await beat(conn, doc_id, worker)
+            except Exception:  # noqa: BLE001 — a missed beat only risks a takeover after CLAIM_LAPSE
+                logger.warning("Could not refresh the claim on %s", doc_id, exc_info=True)
+
+    task = asyncio.create_task(loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
+async def _run_one_rebuild(worker: str) -> str | None:
     async with get_pool().connection() as conn:
         doc_id = await rebuild_queue.claim_next(conn, worker)
     if doc_id is None:
         return None
-
-    async def beat():
-        while True:
-            await asyncio.sleep(HEARTBEAT_S)
-            async with get_pool().connection() as conn:
-                await rebuild_queue.heartbeat(conn, doc_id, worker)
-
-    beating = asyncio.create_task(beat())
-    try:
+    async with _claim_kept(rebuild_queue.heartbeat, doc_id, worker):
         error = await run_rebuild(doc_id)
-    finally:
-        beating.cancel()
     async with get_pool().connection() as conn:
         if error:
             await rebuild_queue.fail(conn, doc_id, worker, error)
@@ -440,22 +474,143 @@ async def run_queue_once(worker: str = rebuild_queue.WORKER_ID) -> str | None:
     return doc_id
 
 
-async def run_queue_forever(worker: str = rebuild_queue.WORKER_ID) -> None:
-    """One per worker process, started with the app: drain the queue one document at a time (the embedding
-    model is shared), then wait for an enqueue here or QUEUE_POLL_S for one elsewhere."""
+async def run_index_job(claim: index_queue.Claim) -> None:
+    """Run a claimed indexing job to its end. A document a dead worker left `indexing` has its passages already and
+    only lacks vectors: run_pipeline would see it as busy and return, so it goes straight to run_embed."""
+    if claim.job == "legacy_swap":
+        await run_legacy_swap(claim.doc_id)   # nobody is told: a swap is no news
+        return
+    async with get_pool().connection() as conn:
+        cur = await conn.execute("SELECT state FROM documents WHERE doc_id = %s", (claim.doc_id,))
+        row = await cur.fetchone()
+    if row is None:
+        return
+    job = run_embed if row[0] == "indexing" else run_pipeline
+    if claim.requested_by:
+        await doc_notices.run_and_notify(job, claim.doc_id, requested_by=claim.requested_by, via="index")
+    else:
+        await job(claim.doc_id)
+
+
+async def run_convert_claim(claim: index_queue.Claim) -> None:
+    from . import doc_convert_job   # it imports this module
+    options = claim.options or {}
+    if claim.requested_by:
+        await doc_notices.run_and_notify(doc_convert_job.run_convert_job, claim.doc_id, options,
+                                         requested_by=claim.requested_by, via="convert")
+    else:
+        await doc_convert_job.run_convert_job(claim.doc_id, options)
+
+
+async def give_up(claim: index_queue.Claim) -> None:
+    """The job's worker stopped MAX_ATTEMPTS times while running it (a file that crashes the PDF library, a scan
+    that runs the machine out of memory). Running it again would stop another worker: mark it failed and say so."""
+    logger.warning("Gave up %s for %s: its worker stopped %d times while running it", claim.job, claim.doc_id,
+                   claim.attempts - 1)
+    if claim.job == "legacy_swap":
+        return   # the old index keeps answering, and nobody asked
+
+    async def mark(doc_id: str) -> None:
+        async with get_pool().connection() as conn:
+            if claim.job == "convert":
+                await conn.execute(
+                    "UPDATE documents SET conversion_state = 'conversion_failed', conversion_error = %s, "
+                    "conversion_progress = NULL, "
+                    "state = CASE WHEN state = 'indexing' THEN 'failed' ELSE state END, "
+                    "error_message = CASE WHEN state = 'indexing' THEN %s ELSE error_message END, "
+                    "updated_at = now() WHERE doc_id = %s", (GAVE_UP, GAVE_UP, doc_id))
+            else:
+                await conn.execute("UPDATE documents SET state = 'failed', error_message = %s, updated_at = now() "
+                                   "WHERE doc_id = %s AND state <> 'indexed'", (GAVE_UP, doc_id))
+
+    if claim.requested_by:
+        await doc_notices.run_and_notify(mark, claim.doc_id, requested_by=claim.requested_by,
+                                         via="convert" if claim.job == "convert" else "index")
+    else:
+        await mark(claim.doc_id)
+
+
+async def _release(doc_id: str, worker: str) -> None:
+    async with get_pool().connection() as conn:
+        await index_queue.release(conn, doc_id, worker)
+
+
+async def _run_one_job(worker: str, jobs: tuple[str, ...],
+                       run: Callable[[index_queue.Claim], Awaitable[None]]) -> str | None:
+    """Claim one job among `jobs`, run it (or give it up), and end it. A job ends once, however it went; only a
+    shutdown hands it back, uncounted, for the next start."""
+    async with get_pool().connection() as conn:
+        claim = await index_queue.claim_next(conn, worker, jobs)
+    if claim is None:
+        return None
+    try:
+        if claim.attempts > index_queue.MAX_ATTEMPTS:
+            await give_up(claim)
+        else:
+            async with _claim_kept(index_queue.heartbeat, claim.doc_id, worker):
+                await run(claim)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.shield(_release(claim.doc_id, worker))
+        except Exception:  # noqa: BLE001 — the pool may be closing; the claim then lapses as a crash would
+            logger.info("Could not hand %s back at shutdown", claim.doc_id)
+        raise
+    except Exception:  # noqa: BLE001 — a bug in a job must not leave its row running until it lapses
+        logger.exception("%s job for %s failed", claim.job, claim.doc_id)
+    async with get_pool().connection() as conn:
+        await index_queue.finish(conn, claim.doc_id, worker)
+    return claim.doc_id
+
+
+async def run_queue_once(worker: str = rebuild_queue.WORKER_ID) -> str | None:
+    """The index lane's one step: a rebuild first (someone is waiting on that document in a chat), else an indexing
+    job; after REBUILDS_IN_A_ROW rebuilds, a waiting indexing job goes next. Returns the doc_id, or None when
+    nothing was claimable."""
+    ran = _rebuilds_in_a_row.get(worker, 0)
+    if ran < REBUILDS_IN_A_ROW and (doc_id := await _run_one_rebuild(worker)):
+        _rebuilds_in_a_row[worker] = ran + 1
+        return doc_id
+    if doc_id := await _run_one_job(worker, index_queue.INDEX_JOBS, run_index_job):
+        _rebuilds_in_a_row[worker] = 0
+        return doc_id
+    if ran >= REBUILDS_IN_A_ROW and (doc_id := await _run_one_rebuild(worker)):
+        return doc_id   # no upload waits: rebuilds go on, and the next step looks for one first again
+    _rebuilds_in_a_row[worker] = 0
+    return None
+
+
+async def run_convert_once(worker: str = rebuild_queue.WORKER_ID) -> str | None:
+    """The convert lane's one step: one Docling conversion at a time per worker, beside the index lane, so a long
+    conversion doesn't hold up every upload behind it."""
+    return await _run_one_job(worker, index_queue.CONVERT_JOBS, run_convert_claim)
+
+
+async def _drain_forever(step: Callable[[str], Awaitable[str | None]], woken: asyncio.Event, worker: str,
+                         what: str) -> None:
     while True:
         try:
-            if is_ready() and await run_queue_once(worker):
+            if is_ready() and await step(worker):
                 continue
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 — a background loop: log and keep going
-            logger.warning("Rebuild queue step failed", exc_info=True)
-        _wake.clear()
+            logger.warning("%s step failed", what, exc_info=True)
+        woken.clear()
         try:
-            await asyncio.wait_for(_wake.wait(), QUEUE_POLL_S)
+            await asyncio.wait_for(woken.wait(), QUEUE_POLL_S)
         except TimeoutError:
             pass
+
+
+async def run_queue_forever(worker: str = rebuild_queue.WORKER_ID) -> None:
+    """One per worker process, started with the app: the index lane (rebuilds and indexing, one document at a time:
+    the embedding model is shared). Waits for an enqueue here, or QUEUE_POLL_S for one elsewhere."""
+    await _drain_forever(run_queue_once, _wake, worker, "Index queue")
+
+
+async def run_convert_forever(worker: str = rebuild_queue.WORKER_ID) -> None:
+    """One per worker process, started with the app: the convert lane."""
+    await _drain_forever(run_convert_once, _convert_wake, worker, "Conversion queue")
 
 
 def _embedding_part(profile: str | None) -> str | None:

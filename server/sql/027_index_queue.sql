@@ -11,6 +11,7 @@
 -- table, and their documents stay 'stored' until someone presses Index, as before this migration:
 --   BEGIN;
 --   DROP TABLE IF EXISTS doc_index_jobs;
+--   ALTER TABLE doc_rebuilds DROP COLUMN IF EXISTS stops;
 --   DELETE FROM schema_migrations WHERE version = 27;
 --   COMMIT;
 
@@ -27,5 +28,9 @@ CREATE TABLE IF NOT EXISTS doc_index_jobs (
 );
 
 CREATE INDEX IF NOT EXISTS doc_index_jobs_order_idx ON doc_index_jobs (queued_at, doc_id);
+
+-- The rebuild queue counts the times a rebuild's worker died while running it (its claim lapsed and was taken over),
+-- apart from ordinary failures, which retry by themselves: a rebuild that stops the server is given up after 3.
+ALTER TABLE doc_rebuilds ADD COLUMN IF NOT EXISTS stops INT NOT NULL DEFAULT 0;
 
 INSERT INTO schema_migrations(version) VALUES (27) ON CONFLICT DO NOTHING;

@@ -102,6 +102,15 @@ async def holds_entry(conn, user_id, doc_id) -> bool:
     return await cur.fetchone() is not None
 
 
+async def contributes_to_a_project_with(conn, user_id, doc_id) -> bool:
+    """A Contributor or above of a project where this content is a verified version: may resume its indexing."""
+    cur = await conn.execute(
+        "SELECT 1 FROM project_documents v JOIN project_members m ON m.project_id = v.project_id "
+        "WHERE v.doc_id = %s AND v.verified AND m.user_id = %s "
+        "AND m.role IN ('contributor', 'maintainer', 'owner') LIMIT 1", (doc_id, user_id))
+    return await cur.fetchone() is not None
+
+
 async def holds_upload(conn, user_id, doc_id) -> bool:
     """A VERIFIED upload entry: the user sent this server the bytes."""
     cur = await conn.execute(
@@ -186,8 +195,28 @@ async def sweep_orphans(conn) -> int:
 
 
 async def recover_states(conn) -> None:
-    """A crash mid-job leaves docs mid-state; make them resumable (spec §4)."""
+    """A crash mid-job leaves docs mid-state; make them resumable (spec §4). Every worker runs this when it starts,
+    and a dead worker is restarted while its siblings work on, so a document a live worker is on (its claim is
+    fresh) is left alone."""
+    from .index_queue import LIVE   # server/db.py imports this module while it loads; the queue imports db
+    live_job = f"doc_id IN (SELECT doc_id FROM doc_index_jobs WHERE {LIVE})"
     await conn.execute(
-        "UPDATE documents SET state = 'stored', updated_at = now() WHERE state = 'extracting'")
+        f"UPDATE documents SET state = 'stored', updated_at = now() WHERE state = 'extracting' AND NOT {live_job}")
     await conn.execute(
-        "UPDATE documents SET state = 'extracted', updated_at = now() WHERE state = 'indexing'")
+        f"UPDATE documents SET state = 'extracted', updated_at = now() WHERE state = 'indexing' AND NOT {live_job}")
+
+
+async def enqueue_stuck(conn) -> int:
+    """Queue every document left mid-way with no job: from before the queue existed (migration 027), or a job lost
+    some other way. Only what can be indexed: a stored file, or passages already extracted (a 'stored' document with
+    no file is left for Retry index, which says why it can't). Idempotent. Returns how many it queued."""
+    cur = await conn.execute(
+        "INSERT INTO doc_index_jobs (doc_id) SELECT d.doc_id FROM documents d "
+        "WHERE d.state IN ('stored', 'extracting', 'extracted', 'indexing') "
+        "  AND (d.bytes_path IS NOT NULL OR d.state IN ('extracted', 'indexing') OR d.conversion_state = 'converted') "
+        "  AND NOT EXISTS (SELECT 1 FROM doc_index_jobs j WHERE j.doc_id = d.doc_id) "
+        "ON CONFLICT (doc_id) DO NOTHING RETURNING doc_id")
+    queued = len(await cur.fetchall())
+    if queued:
+        logger.warning("Queued %d documents that were left unindexed", queued)
+    return queued

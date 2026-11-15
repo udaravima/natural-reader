@@ -12,7 +12,7 @@ import pytest
 from server.auth import deps
 from server.auth.users import resolve_or_provision_user, set_status
 from server.routers import docs as docs_router
-from server.services import doc_content, docling_convert
+from server.services import doc_content, doc_pipeline, docling_convert
 from server.tests import seed
 from server.tests.docs_harness import build_docs_app
 from server.tests.pdfgen import make_pdf
@@ -106,12 +106,12 @@ async def test_converted_never_shows_next_to_the_old_indexed_state(
     await seed.seed_doc(db_conn, HEX, owner.user_id, file_type="pdf", bytes_path=path,
                         state="indexed")
     seen = []
-    real_seed = docs_router._chunks_from_pages
+    real_seed = doc_pipeline.chunks_from_pages
 
     async def spy(doc_id):
         seen.append(await _doc(db_conn, doc_id))
         return await real_seed(doc_id)
-    monkeypatch.setattr(docs_router, "_chunks_from_pages", spy)
+    monkeypatch.setattr(doc_pipeline, "chunks_from_pages", spy)
 
     async with as_user(owner) as client:
         assert (await client.post(f"/v1/docs/{HEX}/convert", json={})).status_code == 202
@@ -129,7 +129,7 @@ async def test_convert_failing_after_converted_does_not_strand_indexing(
 
     async def boom(_doc_id):
         raise RuntimeError("db hiccup")
-    monkeypatch.setattr(docs_router, "_chunks_from_pages", boom)
+    monkeypatch.setattr(doc_pipeline, "chunks_from_pages", boom)
 
     async with as_user(owner) as client:
         assert (await client.post(f"/v1/docs/{HEX}/convert", json={})).status_code == 202
@@ -220,7 +220,7 @@ async def test_sole_holder_deletes_markdown_and_native_reextracts(db_conn, harne
         r = await client.delete(f"/v1/docs/{doc_id}/markdown")
 
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "doc_id": doc_id, "state": "extracting"}
+    assert r.json() == {"ok": True, "doc_id": doc_id, "state": "stored", "queued": True}
     assert await _page_count(db_conn, doc_id) == 0
     doc = await _doc(db_conn, doc_id)
     assert doc["conversion_state"] is None

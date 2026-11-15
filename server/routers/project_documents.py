@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..auth import deps
 from ..auth.authz import assert_holds_upload, require_project_role
-from ..services import doc_storage, doc_versions, people
+from ..services import doc_storage, doc_versions, index_queue, people
 from . import docs as docs_router
 from .docs import DOC_ID_PATTERN
 
@@ -45,27 +45,29 @@ async def _state(conn, doc_id: str) -> str:
 async def list_documents(project_id: uuid.UUID, principal: deps.Principal = Depends(_reader),
                          conn=Depends(deps.get_conn, scope="function")):
     await require_project_role(conn, principal, project_id, None, admin_ok=False)
-    return await doc_versions.list_project_documents(conn, project_id, show_email=_show_email())
+    return await index_queue.mark_queued(
+        conn, await doc_versions.list_project_documents(conn, project_id, show_email=_show_email()))
 
 
 @router.get("/{document_id}/versions")
 async def list_versions(project_id: uuid.UUID, document_id: uuid.UUID,
                         principal: deps.Principal = Depends(_reader), conn=Depends(deps.get_conn, scope="function")):
     await require_project_role(conn, principal, project_id, None, admin_ok=False)
-    return await doc_versions.list_versions(conn, project_id, document_id,
-                                            show_email=_show_email())
+    return await index_queue.mark_queued(
+        conn, await doc_versions.list_versions(conn, project_id, document_id, show_email=_show_email()))
 
 
 @router.post("/{document_id}/versions", status_code=201)
 async def upload_version(project_id: uuid.UUID, document_id: uuid.UUID,
-                         background: BackgroundTasks, file: UploadFile = File(...),
+                         file: UploadFile = File(...),
                          file_name: str | None = Form(None), note: str | None = Form(None),
                          principal: deps.Principal = Depends(_reader)):
     """A revised file's bytes become the document's new version (spec §4.4).
     The role and the note are checked before any bytes are stored; A1's
     pipeline stores or dedupes the content and inserts the version as its
     holding, the document locked first; no library entry is added. New
-    content is extracted and embedded in the background, as for any upload."""
+    content is queued for extraction and embedding, as for any upload, and the
+    uploader hears how it ended."""
     docs_router._ensure_ready()
     async with docs_router.get_pool().connection() as conn:
         await require_project_role(conn, principal, project_id, "contributor", admin_ok=False)
@@ -86,10 +88,9 @@ async def upload_version(project_id: uuid.UUID, document_id: uuid.UUID,
         job = await docs_router._after_upload(staged.sha256, staged, created, existing)
     finally:
         doc_storage.discard(staged)  # no-op once placed
-    if job is not None:
-        background.add_task(job, staged.sha256)
-    async with docs_router.get_pool().connection() as conn:
-        return {**out, "state": await _state(conn, staged.sha256)}
+    await docs_router._queue_after_upload(staged.sha256, job, principal.user_id)
+    state, queued = await docs_router._state_and_queued(staged.sha256)
+    return {**out, "state": state, "queued": queued}
 
 
 @router.post("/{document_id}/versions/from-library", status_code=201)

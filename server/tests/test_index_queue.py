@@ -205,3 +205,13 @@ async def test_two_connections_never_claim_one_job(scratch):
     finally:
         await first.close()
         await second.close()
+
+
+async def test_release_hands_a_running_job_back_without_counting_the_claim(db_conn):
+    await _docs(db_conn, A)
+    await index_queue.enqueue(db_conn, A)
+    await index_queue.claim_next(db_conn, "w1", INDEX)
+    assert await index_queue.release(db_conn, A, "w2") is False   # not w2's to hand back
+    assert await index_queue.release(db_conn, A, "w1") is True
+    assert await _rows(db_conn) == [(A, "pipeline", None, "queued", 0)]
+    assert (await index_queue.claim_next(db_conn, "w3", INDEX)).attempts == 1

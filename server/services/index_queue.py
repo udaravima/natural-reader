@@ -94,6 +94,16 @@ async def finish(conn, doc_id: str, worker: str) -> bool:
     return await cur.fetchone() is not None
 
 
+async def release(conn, doc_id: str, worker: str) -> bool:
+    """Hand a running job back to the queue without counting the claim: the worker is shutting down, not dying, so
+    the next start takes it at once instead of after CLAIM_LAPSE. False when `worker` doesn't own it."""
+    cur = await conn.execute(
+        "UPDATE doc_index_jobs SET state = 'queued', claimed_by = NULL, claimed_at = NULL, "
+        "attempts = greatest(attempts - 1, 0) WHERE doc_id = %s AND claimed_by = %s AND state = 'running' "
+        "RETURNING doc_id", (doc_id, worker))
+    return await cur.fetchone() is not None
+
+
 LIVE = f"state = 'running' AND claimed_at >= now() - interval '{CLAIM_LAPSE}'"   # a worker is on it now
 
 
@@ -112,6 +122,17 @@ async def positions(conn) -> dict[str, int]:
         "FROM doc_index_jobs", (list(INDEX_JOBS), list(INDEX_JOBS)))
     return {doc_id: 0 if running else ahead + (rebuilds if indexing else 0)
             for doc_id, indexing, running, ahead, rebuilds in await cur.fetchall()}
+
+
+async def mark_queued(conn, records: list[dict]) -> list[dict]:
+    """Add `queued` to each record (a dict with `doc_id`), and `queue_ahead` to a queued one: one query for the
+    whole list. Returns the same list."""
+    ahead = await positions(conn) if records else {}
+    for rec in records:
+        rec["queued"] = rec["doc_id"] in ahead
+        if rec["queued"]:
+            rec["queue_ahead"] = ahead[rec["doc_id"]]
+    return records
 
 
 async def queue_counts(conn) -> dict[str, int]:
