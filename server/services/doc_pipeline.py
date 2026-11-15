@@ -432,12 +432,14 @@ def wake() -> None:
     _describe_wake.set()
 
 
-async def enqueue_index(doc_id: str, *, job: str = "pipeline", requested_by: str | None = None) -> bool:
+async def enqueue_index(doc_id: str, *, job: str = "pipeline", requested_by: str | None = None,
+                       options: dict | None = None) -> bool:
     """Queue indexing on a connection of its own, committed at once. Unlike a rebuild's enqueue, it raises when no
     connection can be had: the caller promised indexing and must say it couldn't. True when it wrote a job (False:
-    the document already has one)."""
+    the document already has one). `options`: what the helper is told once it is indexed (`describe`, `project_id`:
+    _queue_describe)."""
     async with get_pool().connection() as conn:
-        wrote = await index_queue.enqueue(conn, doc_id, job=job, requested_by=requested_by)
+        wrote = await index_queue.enqueue(conn, doc_id, job=job, requested_by=requested_by, options=options)
     wake()
     return wrote
 

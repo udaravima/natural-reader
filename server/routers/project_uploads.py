@@ -99,9 +99,10 @@ async def upload(project_id: uuid.UUID, response: Response, file: UploadFile = F
                  on_match: Literal["version", "separate", "skip"] = Form("version"),
                  on_older: Literal["leave", "restore"] = Form("leave"),
                  document_id: uuid.UUID | None = Form(None), note: str | None = Form(None),
+                 describe: bool = Form(True),
                  principal: deps.Principal = Depends(_reader)):
     """Store one file and file it here, in one step: the steps of Upload new version, deciding after the bytes are
-    hashed and before content is written. 201 when something was filed (created, version, restored); 200 when
+    hashed and before content is written. `describe=false` indexes it without asking the helper for tags. 201 when something was filed (created, version, restored); 200 when
     nothing was (unchanged, skipped, left_older, ambiguous), and then nothing is stored. No library entry is added.
     New content is queued for indexing, and the uploader hears how it ended."""
     docs_router._ensure_ready()
@@ -138,7 +139,10 @@ async def upload(project_id: uuid.UUID, response: Response, file: UploadFile = F
     answer = {"result": outcome.result, "document": d.document, "doc_id": staged.sha256, "state": None,
               "queued": False, "candidates": list(d.candidates)}
     if outcome.stores:
-        await docs_router._queue_after_upload(staged.sha256, job, principal.user_id)
+        # `describe`: the panel's "Write tags and descriptions" tick (helper spec §5.3); the project gives the tags
+        # the helper is shown to reuse.
+        await docs_router._queue_after_upload(staged.sha256, job, principal.user_id,
+                                              options={"describe": describe, "project_id": str(project_id)})
         answer["document"] = document
     else:
         response.status_code = 200

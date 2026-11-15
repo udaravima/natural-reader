@@ -94,7 +94,8 @@ async def test_list_returns_own_and_shared_not_stranger(db_conn, docs_app):
         by_id = {row["doc_id"]: row for row in body}
         own, shared = by_id[DOC_C], by_id[DOC_G]
         assert set(own) == {"doc_id", "state", "file_name", "tags", "added_via",
-                            "shared_by", "in_library", "projects", "newer_in", "queued"}  # no owner fields
+                            "shared_by", "in_library", "projects", "newer_in", "queued",
+                            "description", "generated", "suggested_tags", "describing"}  # no owner fields
         assert own["in_library"] is True
         assert own["added_via"] == "upload"
         assert own["shared_by"] is None

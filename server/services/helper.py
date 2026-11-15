@@ -97,9 +97,14 @@ def _deployment_budget() -> int | None:
     return model_router.get_config().daily_token_budget
 
 
+async def over_budget(conn, user_id: str) -> bool:
+    """Whether `user_id` has used today's tokens: a route refuses a Generate with 429 before queueing it."""
+    return await inference_budget.over_budget(conn, user_id, _deployment_budget())
+
+
 async def _over_budget(user_id: str) -> bool:
     async with get_pool().connection() as conn:
-        return await inference_budget.over_budget(conn, user_id, _deployment_budget())
+        return await over_budget(conn, user_id)
 
 
 async def _charge(user_id: str, model: str, messages: list[Message], received: Received) -> None:

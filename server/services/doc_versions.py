@@ -104,12 +104,21 @@ def old_version_of(items: list[dict[str, Any]]) -> dict[str, Any] | None:
     return items[0]
 
 
+# What a project shows for one of its documents (helper spec §5.4, §5.7): its own words when a Contributor set them,
+# else what the helper wrote for the current version. `pd` is project_docs, `d` the current version's documents row.
+# An empty array is a choice ("no tags"); only NULL follows the generated ones. Chat's project map uses the same.
+SHOWN_TAGS = "COALESCE(pd.tags, d.gen_tags)"
+SHOWN_DESCRIPTION = "COALESCE(pd.description, d.gen_description)"
+
 _DOCUMENT_SELECT = (
     "SELECT v.project_doc_id, v.file_name, v.version, v.doc_id, d.state, v.added_at, "
     f"{people.person_cols('u')}, "
     "(SELECT count(*) FROM project_documents _c "  # HISTORY: how many versions it has
-    "WHERE _c.project_doc_id = v.project_doc_id AND _c.verified), d.error_message "
+    "WHERE _c.project_doc_id = v.project_doc_id AND _c.verified), d.error_message, "
+    f"{SHOWN_TAGS}, {SHOWN_DESCRIPTION}, d.gen_at IS NOT NULL, "
+    "(pd.tags IS NOT NULL OR pd.description IS NOT NULL) "
     "FROM project_documents v JOIN documents d ON d.doc_id = v.doc_id "
+    "JOIN project_docs pd ON pd.id = v.project_doc_id "
     "LEFT JOIN users u ON u.id = v.added_by "
     "WHERE v.project_id = %s AND v.is_current AND v.verified "  # CURRENT
 )
@@ -118,7 +127,10 @@ _DOCUMENT_SELECT = (
 def _document(r, show_email: bool) -> dict[str, Any]:
     return {"id": str(r[0]), "name": r[1], "version": r[2], "doc_id": r[3], "state": r[4],
             "updated_at": r[5], "updated_by": people.person_from(r[6:12], show_email),
-            "versions_count": r[12], "error_message": r[13]}
+            "versions_count": r[12], "error_message": r[13],
+            # helper spec §5.8: what the project shows; `generated`: the helper has written for this version;
+            # `edited`: the project's own words replace some of it
+            "tags": list(r[14] or []), "description": r[15], "generated": r[16], "edited": r[17]}
 
 
 async def list_project_documents(conn, project_id, *, show_email: bool) -> list[dict[str, Any]]:

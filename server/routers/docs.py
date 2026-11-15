@@ -49,7 +49,7 @@ from ..db import get_pool, is_ready
 from ..http_errors import BUSY_MESSAGE, refusal
 from ..services import (
     doc_content, doc_pipeline, doc_storage, doc_versions, docling_convert, docling_limits,
-    embedding_state, extract, index_queue, people,
+    describe_queue, embedding_state, extract, helper, index_queue, people,
 )
 from ..services.doc_search import ReadableDoc, search_chunks
 from ..services.embeddings import embed_query
@@ -152,6 +152,15 @@ _ENTRY_COLS = (
     f"{_DISPLAY_NAME} AS file_name, "
     "COALESCE(_me.tags, '{}') AS tags, _me.added_via AS added_via, "
     "_me.shared_by AS shared_by_id, COALESCE(_sb.display_name, _sb.email) AS shared_by_name"
+)
+
+
+# What the helper wrote for the content (helper spec §5.4): its description, and the tags it suggests that aren't
+# among MY own (in the helper's order). Needs `_ENTRY_JOIN`.
+_GENERATED_COLS = (
+    "d.gen_description AS description, d.gen_at IS NOT NULL AS generated, "
+    "ARRAY(SELECT _g.t FROM unnest(COALESCE(d.gen_tags, '{}')) WITH ORDINALITY AS _g(t, n) "
+    "      WHERE NOT (_g.t = ANY(COALESCE(_me.tags, '{}'))) ORDER BY _g.n) AS suggested_tags"
 )
 
 
@@ -276,8 +285,10 @@ async def list_documents(
     where_params: list[Any] = listed_docs_params(uid)
     if q:
         # Match the name the caller is shown, never a name they can't see.
-        where.append(f"({_DISPLAY_NAME} ILIKE %s OR %s = ANY(_me.tags))")
-        where_params += [*_display_name_params(uid), f"%{q}%", q]
+        # ...and the helper's words for the content (helper spec §5.4: search matches both).
+        where.append(f"({_DISPLAY_NAME} ILIKE %s OR %s = ANY(_me.tags) "
+                     "OR d.gen_description ILIKE %s OR %s = ANY(d.gen_tags))")
+        where_params += [*_display_name_params(uid), f"%{q}%", q, f"%{q}%", q.lower()]
     if project_id:
         # Only a project the caller can see: filtering a shared doc by a
         # guessed project id must not reveal whether someone placed it there.
@@ -289,10 +300,10 @@ async def list_documents(
         )
         where_params += [project_id, *visible_projects_params(uid)]
     if tag:
-        where.append("%s = ANY(_me.tags)")
-        where_params.append(tag)
+        where.append("(%s = ANY(_me.tags) OR %s = ANY(d.gen_tags))")
+        where_params += [tag, tag]
     sql = (
-        f"SELECT d.doc_id, d.state, {_ENTRY_COLS}, {_doc_projects_sql('d')} AS projects, "
+        f"SELECT d.doc_id, d.state, {_ENTRY_COLS}, {_GENERATED_COLS}, {_doc_projects_sql('d')} AS projects, "
         f"{doc_versions.versions_in_sql('d', only_old=True)} AS newer_in "
         f"FROM documents d {_ENTRY_JOIN} "
         f"WHERE {' AND '.join(where)} ORDER BY d.updated_at DESC"
@@ -306,6 +317,9 @@ async def list_documents(
         cols = [c.name for c in cur.description]
         rows = [dict(zip(cols, r)) for r in await cur.fetchall()]
         await index_queue.mark_queued(conn, rows)
+        busy = await describe_queue.waiting(conn, [r["doc_id"] for r in rows])
+    for r in rows:
+        r["describing"] = r["doc_id"] in busy
     return [_entry_fields(r) for r in rows]
 
 
@@ -411,14 +425,15 @@ async def _add_upload_entry(user_id: str, staged, name: str, tags: list[str]):
     return created, existing
 
 
-async def _queue_after_upload(doc_id: str, job: str | None, user_id: str) -> None:
+async def _queue_after_upload(doc_id: str, job: str | None, user_id: str, *, options: dict | None = None) -> None:
     """Queue what _after_upload decided. The uploader hears how a new document's indexing ended; a legacy swap is no
     news. A full pool doesn't fail an upload whose file is already safe: the answer says `queued: false`, the screen
     offers Retry index, and the next start queues every stuck document anyway."""
     if job is None:
         return
     try:
-        await doc_pipeline.enqueue_index(doc_id, job=job, requested_by=user_id if job == "pipeline" else None)
+        await doc_pipeline.enqueue_index(doc_id, job=job, requested_by=user_id if job == "pipeline" else None,
+                                         options=options if job == "pipeline" else None)
     except Exception:  # noqa: BLE001 — see above
         logger.warning("Indexing of %s not queued: no database connection free", doc_id, exc_info=True)
 
@@ -769,6 +784,33 @@ async def start_index_job(doc_id: DocId,
             await index_queue.enqueue(conn, doc_id, requested_by=principal.user_id)
     doc_pipeline.wake()
     return {"ok": True, "doc_id": doc_id, "state": state, "queued": True}
+
+
+@router.post("/{doc_id}/describe", status_code=202)
+async def describe_document(
+    doc_id: DocId,
+    principal: Principal = Depends(require_capability("reader")),
+) -> dict[str, Any]:
+    """Library Generate (helper spec §5.4): ask the helper for tags and a description of a document I hold that has
+    never had any. One that has is left alone here (409): its words show in every project holding the file, and a
+    project's Generate is where a Contributor re-runs them."""
+    _ensure_ready()
+    async with get_pool().connection() as conn:
+        if not await doc_content.holds_entry(conn, principal.user_id, doc_id):
+            raise refusal(404, "not_found", "Document not found")
+        cur = await conn.execute("SELECT state, gen_at FROM documents WHERE doc_id = %s", (doc_id,))
+        state, gen_at = await cur.fetchone()
+        if state != "indexed":
+            raise refusal(409, "not_indexed", "Tags can be written once the document is indexed.")
+        if gen_at is not None:
+            raise refusal(409, "already_described", "This document already has tags and a description.")
+        if not (await helper.load_config(conn)).on:
+            raise refusal(409, "helper_off", "No helper model is set up. An admin can choose one in Models.")
+        if await helper.over_budget(conn, principal.user_id):
+            raise refusal(429, "budget_exhausted", "Daily inference budget exhausted.")
+        await describe_queue.enqueue(conn, doc_id, requested_by=principal.user_id, project_id=None)
+    doc_pipeline.wake()
+    return {"doc_id": doc_id, "describing": True}
 
 
 @router.post("/{doc_id}/search")

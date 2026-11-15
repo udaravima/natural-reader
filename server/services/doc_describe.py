@@ -22,6 +22,7 @@ from ..db import get_pool
 from ..llm.types import Message
 from . import describe_queue, helper
 from .doc_outlines import load_outlines
+from .doc_versions import SHOWN_TAGS
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,31 @@ def clean_description(raw: Any) -> str | None:
     return _cut(text, DESCRIPTION_MAX_CHARS) if text else None
 
 
+PERSON_TAGS_MAX = 10   # tags a Contributor may set on a project document (helper spec §5.4)
+
+
+def clean_person_tags(raw: list[str]) -> list[str]:
+    """Tags a person typed, cleaned by the model's rules (lower case, one line, 1-32 characters, no control
+    characters, no duplicates); a tag that fails them is dropped. ValueError over PERSON_TAGS_MAX: a person's list
+    is refused, never cut."""
+    out: list[str] = []
+    for item in raw:
+        tag = clean_tags([item])
+        if tag and tag[0] not in out:
+            out.append(tag[0])
+    if len(out) > PERSON_TAGS_MAX:
+        raise ValueError(f"At most {PERSON_TAGS_MAX} tags.")
+    return out
+
+
+def clean_person_description(raw: str) -> str:
+    """A description a person typed, as one line. ValueError over DESCRIPTION_MAX_CHARS: refused, never cut."""
+    text = _one_line(raw)
+    if len(text) > DESCRIPTION_MAX_CHARS:
+        raise ValueError(f"At most {DESCRIPTION_MAX_CHARS} characters.")
+    return text
+
+
 def messages(file_name: str, headings: list[str], text: str, vocabulary: list[str]) -> tuple[Message, Message]:
     """The call: the fixed brief, then the document's name, headings, the tags in use and the fenced sample. Names,
     headings and tags are someone's text too, so each is one inert line (display_name)."""
@@ -159,11 +185,6 @@ def parse_reply(reply: str) -> tuple[list[str], str | None] | None:
 
 DONE, FAILED, SKIPPED = "done", "failed", "skipped"   # skipped: nothing to do, and nothing a retry would change
 
-# What a project shows for one of its documents (spec §5.4, §5.7): its own words when a Contributor set them, else
-# what the helper wrote for the current version. `pd` is project_docs, `d` the current version's documents row.
-# An empty array is a choice ("no tags"), not "unset": only NULL follows the generated ones.
-SHOWN_TAGS = "COALESCE(pd.tags, d.gen_tags)"
-SHOWN_DESCRIPTION = "COALESCE(pd.description, d.gen_description)"
 
 
 async def vocabulary(conn, project_id: str | None, user_id: str | None, exclude_doc: str) -> list[str]:
