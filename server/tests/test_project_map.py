@@ -530,15 +530,40 @@ def test_a_long_description_is_capped_on_one_line():
     assert len(about) <= 300 and about.endswith("…")
 
 
-def test_descriptions_dropped_first_when_over_budget():
-    scope = _scope(_described(1, "report.pdf", "A description that is long enough to matter here.", pages=4))
-    outline = {_id(1): _outline((1, "Intro", 1), (2, "Results", 2))}
-    full = build_map(scope, outline, 10_000).text
-    plain = full.replace(' About: "A description that is long enough to matter here.".', "")
-    assert plain != full
+DEEP = [f"A long level three heading about part {n} of the results" for n in range(4)]
+SECTIONS = [f"A level two section on the {n} quarter of the year" for n in ("first", "second", "third")]
+
+
+def _three_levels():
+    """Headings long enough that cutting them saves more than the "Outlines are shortened" note costs."""
+    scope = _scope(_described(1, "report.pdf", "Yearly results.", pages=4))
+    entries = [(1, "Intro", 1)] + [(2, t, 2) for t in SECTIONS] + [(3, t, 3) for t in DEEP]
+    return scope, {_id(1): _outline(*entries)}
+
+
+def test_descriptions_outlast_deep_headings():
+    # A walk with eight real documents: "descriptions first" left the outlines whole and every description out, the
+    # case they were meant for. One line on what a document is about routes better than its sub-sub-headings.
+    scope, outline = _three_levels()
+    kept = _map('1. "report.pdf" — 4 pages. About: "Yearly results.". Outline: Intro p1 · '
+                + " · ".join(f"{t} p2" for t in SECTIONS), shortened=True)
+    out = build_map(scope, outline, len(kept))
+    assert (out.text, out.shortened) == (kept, True)
+
+
+def test_descriptions_go_just_before_names_only():
+    scope, outline = _three_levels()
+    plain = _map('1. "report.pdf" — 4 pages. Outline: Intro p1', shortened=True)
     out = build_map(scope, outline, len(plain))
-    assert out.text == plain                                         # the outline kept whole
-    assert out.shortened is False                                    # nothing a document_outline call would give back
+    assert (out.text, out.shortened) == (plain, True)
+    names = _map('1. "report.pdf" — 4 pages', shortened=True)
+    assert build_map(scope, outline, len(names)).text == names
+
+
+def test_a_map_cut_only_of_nothing_is_not_shortened():
+    scope, outline = _three_levels()
+    full = build_map(scope, outline, 10_000)
+    assert full.shortened is False and 'About: "Yearly results."' in full.text and f"{DEEP[3]} p3" in full.text
 
 
 def test_map_bytes_stable_for_same_input():

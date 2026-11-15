@@ -68,13 +68,14 @@ DESCRIPTION_CAP = 299   # characters before the "…": at most 300, the helper's
 # while level 2 is still kept; drop level 2 as well (the cap still applies); then names and pages only.
 # The cap comes BEFORE level 2 goes because a Markdown outline has ONE level-1 heading (the title) and its
 # sections at level 2: dropping level 2 first would leave titles only, and the cap nothing to cut.
-# Descriptions go first of all (helper spec §5.7): the outline is what the model routes by, and it can't get a
-# description back from a tool, so dropping one is not "shortened".
+# Descriptions (helper spec §5.7) stay while the outlines are cut, and go just before names and pages only: one line
+# on what a document is about routes better than its deeper headings, and no tool gives a description back. (A walk
+# with eight real documents and "descriptions first" kept every outline whole and no description at all.)
 STEPS = (
     _Step(3, None, True, True),
-    _Step(3, None, True),
-    _Step(2, None, True),
-    _Step(2, FIRST_ENTRIES, True),
+    _Step(2, None, True, True),
+    _Step(2, FIRST_ENTRIES, True, True),
+    _Step(1, FIRST_ENTRIES, True, True),
     _Step(1, FIRST_ENTRIES, True),
     _Step(0, 0, False),
 )
@@ -139,10 +140,11 @@ def build_map(scope: ProjectScope, outlines: dict[str, Outline], budget_chars: i
     note = SHORTENED_LINE if tool_offered else SHORTENED_LINE_NO_TOOL
     head = f'<{PROJECT_TAG} project="{display_name(scope.name)}">'
     tail = f"</{PROJECT_TAG}>"
-    whole = _body(scope, outlines, STEPS[1])   # every outline whole, no descriptions
+    # Shortened = an outline or an opening was cut (what document_outline gives back); a description is not.
+    whole = _body(scope, outlines, STEPS[0]._replace(describe=False))
     for step in STEPS:
         body = _body(scope, outlines, step)
-        shortened = step is not STEPS[0] and body != whole
+        shortened = _body(scope, outlines, step._replace(describe=False)) != whole
         text = "\n".join([head, *body, *([note] if shortened else []), tail])
         if len(text) <= budget_chars:
             break

@@ -169,7 +169,11 @@ have none. It queues them all. Nothing is queued by the upgrade itself.
 ### 5.7 The project chat
 
 The project map (`chat/project_map.py`) adds a document's description to its line, through `display_name` like
-every other document-derived string. When the map is over budget, descriptions are the first thing dropped.
+every other document-derived string. When the map is over budget, descriptions stay while the outlines are cut
+(level 3, then each outline's first 8 entries, then level 2) and go just before the last step, names and pages
+only. (Changed during the build: the first rule, "descriptions are dropped first", was walked with eight real
+documents on the default 6,000-character budget, and it kept every outline whole and no description at all, the
+very case descriptions are for.)
 Only generated or Contributor-typed text reaches it, and the map's data rule already tells the model that the
 block is data.
 
