@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **PDF and Markdown side by side.** A converted PDF's toolbar switch is now
+  **PDF | Both | MD**. **Both** shows the PDF page on the left and its Markdown
+  on the right, each scrolling on its own, and keeps them on the same page:
+  turning the PDF page scrolls the Markdown to that page, and scrolling the
+  Markdown turns the PDF page. A phone has no room for two columns, so it keeps
+  **PDF** and **MD**.
 - **Upload many files into a project at once.** A project's Documents tab has
   **Upload files** and **Upload folder**, and takes files or a whole folder
   dropped anywhere on it. Before anything is sent, you see what each file will
@@ -44,6 +50,8 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Scrolling long Markdown pages turns the page.** In **MD** view, scrolling through a converted page taller
+  than the window never updated the page number. It does now.
 - **A project Contributor couldn't resume a document's indexing** unless the
   file was in their own library: Retry index answered "not found". Resuming
   changes no content, so a Contributor or above of a project holding the
