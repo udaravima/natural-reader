@@ -11,13 +11,19 @@ What it keeps: the model's reply is data, never trusted. The app enforces at mos
 """
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 from typing import Any
 
 from ..chat.prompt import display_name
 from ..chat.reader import _first_object
+from ..db import get_pool
 from ..llm.types import Message
+from . import describe_queue, helper
+from .doc_outlines import load_outlines
+
+logger = logging.getLogger(__name__)
 
 MAX_TAGS = 5
 TAG_MAX_CHARS = 32
@@ -147,3 +153,94 @@ def parse_reply(reply: str) -> tuple[list[str], str | None] | None:
     if not tags and description is None:
         return None
     return tags, description
+
+
+# ---------- the job (helper spec §5.3) ----------
+
+DONE, FAILED, SKIPPED = "done", "failed", "skipped"   # skipped: nothing to do, and nothing a retry would change
+
+# What a project shows for one of its documents (spec §5.4, §5.7): its own words when a Contributor set them, else
+# what the helper wrote for the current version. `pd` is project_docs, `d` the current version's documents row.
+# An empty array is a choice ("no tags"), not "unset": only NULL follows the generated ones.
+SHOWN_TAGS = "COALESCE(pd.tags, d.gen_tags)"
+SHOWN_DESCRIPTION = "COALESCE(pd.description, d.gen_description)"
+
+
+async def vocabulary(conn, project_id: str | None, user_id: str | None, exclude_doc: str) -> list[str]:
+    """The tags already in use where the request came from, most used first (ties by name), at most VOCABULARY_MAX:
+    the project's as it shows them; with no project, the person's own library tags. The document itself is left out."""
+    if project_id:
+        cur = await conn.execute(
+            "SELECT t FROM (SELECT unnest(" + SHOWN_TAGS + ") AS t FROM project_docs pd "
+            "  JOIN project_documents v ON v.project_doc_id = pd.id AND v.is_current "
+            "  JOIN documents d ON d.doc_id = v.doc_id "
+            "  WHERE pd.project_id = %s AND v.doc_id <> %s) x "
+            "GROUP BY t ORDER BY count(*) DESC, t LIMIT %s", (project_id, exclude_doc, VOCABULARY_MAX))
+    elif user_id:
+        cur = await conn.execute(
+            "SELECT t FROM (SELECT unnest(tags) AS t FROM library_entries WHERE user_id = %s AND doc_id <> %s) x "
+            "GROUP BY t ORDER BY count(*) DESC, t LIMIT %s", (user_id, exclude_doc, VOCABULARY_MAX))
+    else:
+        return []
+    return [r[0] for r in await cur.fetchall()]
+
+
+async def describe(doc_id: str, *, requested_by: str | None, project_id: str | None) -> str:
+    """Write `doc_id`'s generated tags and description. DONE; FAILED (the model failed or its reply held nothing
+    usable: worth one more try); SKIPPED (the helper is off, the requester is over budget, the document is gone, no
+    longer indexed or has no text). Never touches the document's state or error."""
+    async with get_pool().connection() as conn:
+        cfg = await helper.load_config(conn)
+        if not cfg.on:
+            return SKIPPED
+        cur = await conn.execute("SELECT file_name, state FROM documents WHERE doc_id = %s", (doc_id,))
+        row = await cur.fetchone()
+        if row is None or row[1] != "indexed":
+            return SKIPPED
+        file_name = row[0] or ""
+        cur = await conn.execute("SELECT text FROM doc_chunks WHERE doc_id = %s ORDER BY ord, id", (doc_id,))
+        passages = [r[0] for r in await cur.fetchall()]
+        outline = (await load_outlines(conn, [doc_id])).get(doc_id)
+        vocab = await vocabulary(conn, project_id, requested_by, doc_id)
+    text = sample(passages, cfg.input_chars)
+    if not text:
+        return SKIPPED
+    system, user = messages(file_name, [e.text for e in outline.entries] if outline else [], text, vocab)
+    try:
+        reply = await helper.ask(cfg, system.content, user.content, max_output_chars=OUTPUT_CHARS,
+                                 user_id=requested_by)
+    except helper.HelperError as e:
+        logger.info("describe %s: helper %s", doc_id[:12], e.kind)
+        return SKIPPED if e.kind in ("off", "over_budget") else FAILED
+    parsed = parse_reply(reply)
+    if parsed is None:
+        logger.info("describe %s: the reply held nothing usable (%d characters)", doc_id[:12], len(reply))
+        return FAILED
+    tags, description = parsed
+    async with get_pool().connection() as conn:
+        await conn.execute("UPDATE documents SET gen_tags = %s, gen_description = %s, gen_model = %s, gen_at = now() "
+                           "WHERE doc_id = %s", (tags, description, cfg.model, doc_id))
+    logger.info("described %s: %d tags, a %d-character description, from %d of %d characters",
+                doc_id[:12], len(tags), len(description or ""), len(text), sum(len(p) for p in passages))
+    return DONE
+
+
+async def queue_after_index(conn, doc_id: str, *, requested_by: str | None, project_id: str | None,
+                            describe: bool = True) -> bool:
+    """After an indexing job: queue the helper for a document that is now indexed and has never been described,
+    when the helper is on and the upload didn't opt out (`describe`). With no project named, the document's latest
+    placement gives the tags to reuse. True when it queued."""
+    if not describe:
+        return False
+    if not (await helper.load_config(conn)).on:
+        return False
+    cur = await conn.execute("SELECT state, gen_at FROM documents WHERE doc_id = %s", (doc_id,))
+    row = await cur.fetchone()
+    if row is None or row[0] != "indexed" or row[1] is not None:
+        return False
+    if project_id is None:
+        cur = await conn.execute("SELECT project_id::text FROM project_documents WHERE doc_id = %s "
+                                 "ORDER BY added_at DESC LIMIT 1", (doc_id,))
+        placed = await cur.fetchone()
+        project_id = placed[0] if placed else None
+    return await describe_queue.enqueue(conn, doc_id, requested_by=requested_by, project_id=project_id)
