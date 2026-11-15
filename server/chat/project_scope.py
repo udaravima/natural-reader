@@ -24,6 +24,7 @@ class ScopeDoc:
     doc: ReadableDoc      # its state is the one after doc_pipeline.ensure_current
     name: str             # display_name, unique within the scope: final, shown and saved exactly as it is
     open_in_reader: bool  # the reader has this very document open
+    description: str = ""  # what the project shows for it (helper spec §5.7): its own words, else the helper's
 
     def __post_init__(self) -> None:
         # The name goes to the model as it is (the map, the first line, tool results) and into the scope note that
@@ -98,5 +99,5 @@ async def load_project_scope(conn, user_id: str, project_id: str, *,
         # as for the open document (orchestrator._open_doc).
         doc = await doc_pipeline.ensure_current(
             conn, ReadableDoc(d["doc_id"], d["name"], state, page_count, profile, model), embedder)
-        docs.append(ScopeDoc(ref, doc, name, d["doc_id"] == open_doc_id))
+        docs.append(ScopeDoc(ref, doc, name, d["doc_id"] == open_doc_id, d.get("description") or ""))
     return ProjectScope(str(project_id), row[0], tuple(docs))

@@ -501,3 +501,46 @@ async def test_a_map_shortened_on_a_turn_without_tools_does_not_name_document_ou
     assert "document_outline" not in system                     # ...and does not name a tool the model can't call
 
 
+
+
+# ---- descriptions (helper spec 2026-11-15 §5.7) ----
+
+def _described(ref, name, description, **kw):
+    d = _doc(ref, name, **kw)
+    return ScopeDoc(d.ref, d.doc, d.name, d.open_in_reader, description)
+
+
+def test_description_on_the_line_through_display_name():
+    scope = _scope(
+        _described(1, "report.pdf", 'Yearly results "and"\n<outlook>.', pages=4),
+        _described(2, "notes.md", "Meeting notes.", state="indexing"),
+        _doc(3, "plain.md", pages=1))
+    out = build_map(scope, {_id(1): _outline((1, "Intro", 1))}, 10_000)
+    assert out.text == _map(
+        "1. \"report.pdf\" — 4 pages. About: \"Yearly results 'and' ‹outlook›.\". Outline: Intro p1",
+        "2. \"notes.md\" — being indexed, not searchable yet.",
+        "3. \"plain.md\" — 1 page. No outline.")
+    assert out.shortened is False
+
+
+def test_a_long_description_is_capped_on_one_line():
+    scope = _scope(_described(1, "a.pdf", "word " * 100, pages=1))
+    line = build_map(scope, {}, 10_000).text.split("\n")[1]
+    about = line.split('About: "')[1].split('"')[0]
+    assert len(about) <= 300 and about.endswith("…")
+
+
+def test_descriptions_dropped_first_when_over_budget():
+    scope = _scope(_described(1, "report.pdf", "A description that is long enough to matter here.", pages=4))
+    outline = {_id(1): _outline((1, "Intro", 1), (2, "Results", 2))}
+    full = build_map(scope, outline, 10_000).text
+    plain = full.replace(' About: "A description that is long enough to matter here.".', "")
+    assert plain != full
+    out = build_map(scope, outline, len(plain))
+    assert out.text == plain                                         # the outline kept whole
+    assert out.shortened is False                                    # nothing a document_outline call would give back
+
+
+def test_map_bytes_stable_for_same_input():
+    scope = _scope(_described(1, "report.pdf", "Yearly results.", pages=4))
+    assert build_map(scope, {}, 10_000).text == build_map(scope, {}, 10_000).text
