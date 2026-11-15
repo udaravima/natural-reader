@@ -13,6 +13,7 @@ const row = (env, value, fallback = value, over = {}) => ({
 });
 const settings = (over = {}) => ({
   reader: row('READER_MODEL', 'chat'),
+  helper: row('HELPER_MODEL', ''),
   context_size: row('INFERENCE_LOCAL_NUM_CTX', null),
   context_sizes: row(null, {}),
   context_windows: row(null, {}),
@@ -104,6 +105,49 @@ describe('ModelsSection', () => {
     fireEvent.click(save());
     await waitFor(() => expect(puts()).toHaveLength(1));
     expect(body()).toEqual({ changes: { reader: 'ollama:gemma4:e4b' } });
+  });
+
+  describe('Helper model (helper spec §4.1, §4.3)', () => {
+    const helper = () => screen.findByLabelText('Helper model');
+
+    it('shows Off by default, then the catalog models', async () => {
+      mount();
+      const select = await helper();
+      expect(select.value).toBe('');
+      expect([...select.options].map((o) => o.textContent)).toEqual([
+        'Off', 'ollama:gemma4:e4b', 'ollama:qwen3:8b', 'ollama:gpt-oss:120b-cloud', 'openrouter:some/model',
+      ]);
+      expect(text('models-helper-help')).toBe(
+        'A small model that writes tags and a description for each indexed document. Off: nothing is written.',
+      );
+      expect(document.getElementById('models-helper-where')).toBeNull();
+    });
+
+    it('saves a picked model, and says a local one keeps text on this deployment', async () => {
+      mount({ put: () => json(200, view({ helper: row('HELPER_MODEL', 'ollama:gemma4:e4b', '', { source: 'admin' }) })) });
+      fireEvent.change(await helper(), { target: { value: 'ollama:gemma4:e4b' } });
+      expect(text('models-helper-where')).toBe("Local: document text stays on this deployment's own hardware.");
+      fireEvent.click(save());
+      await waitFor(() => expect(puts()).toHaveLength(1));
+      expect(body()).toEqual({ changes: { helper: 'ollama:gemma4:e4b' } });
+    });
+
+    it('warns for a cloud model: a cloud provider, or an Ollama cloud name', async () => {
+      mount();
+      const select = await helper();
+      const warning = 'Cloud: document text, chat messages and profile descriptions are sent to this provider.';
+      fireEvent.change(select, { target: { value: 'openrouter:some/model' } });
+      expect(text('models-helper-where')).toBe(warning);
+      fireEvent.change(select, { target: { value: 'ollama:gpt-oss:120b-cloud' } });
+      expect(text('models-helper-where')).toBe(warning);
+    });
+
+    it("follows the admin's Local or Cloud mark for the provider", async () => {
+      mount({ initial: view({ helper: row('HELPER_MODEL', 'openrouter:some/model', '', { source: 'admin' }),
+        provider_locality: row(null, { openrouter: 'local' }, {}, { source: 'admin' }) }) });
+      await helper();
+      expect(text('models-helper-where')).toBe("Local: document text stays on this deployment's own hardware.");
+    });
   });
 
   it('toasts that a save applies from the next message', async () => {

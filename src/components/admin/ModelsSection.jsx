@@ -51,6 +51,18 @@ function sizesContext(model, provider) {
   return !(host === 'ollama.com' || host.endsWith('.ollama.com'));
 }
 
+/**
+ * Whether a catalog model runs on the deployer's own hardware: the server's model_settings.is_local, in the same
+ * order. An Ollama cloud name is cloud anywhere; then the admin's mark for the provider; then what the host rule
+ * detected.
+ */
+function isLocalModel(model, provider, locality) {
+  if (model.cloud_name) return false;
+  const mark = locality[model.provider];
+  if (mark === 'local' || mark === 'cloud') return mark === 'local';
+  return provider?.detected === 'local';
+}
+
 export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChange }) {
   const s = useSectionSettings(apiHost, apiPort, 'models');
   // The catalog is its own request: { status: 'loading' | 'ready' | 'failed', providers, models, limits }.
@@ -88,6 +100,7 @@ export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChang
   const windowMap = s.value('context_windows') ?? {};
   const chatModels = s.value('chat_models') ?? [];
   const reader = s.value('reader') ?? 'chat';
+  const helper = s.value('helper') ?? '';
   const providerByName = Object.fromEntries(providers.map((p) => [p.name, p]));
   const sizedModels = models.filter((m) => sizesContext(m, providerByName[m.provider]));
   const unreportedModels = models.filter((m) => m.reported_window == null);
@@ -95,6 +108,14 @@ export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChang
     { value: 'chat', label: CHAT_READER },
     ...[...new Set([...models.map((m) => m.id), reader].filter((id) => id !== 'chat'))].map((id) => ({ value: id, label: id })),
   ], [models, reader]);
+
+  const helperOptions = useMemo(() => [
+    { value: '', label: 'Off' },
+    ...[...new Set([...models.map((m) => m.id), helper].filter(Boolean))].map((id) => ({ value: id, label: id })),
+  ], [models, helper]);
+  // Where the helper's text goes (helper spec §4.3): the same rule as the server's is_local, from the catalog.
+  const helperModel = models.find((m) => m.id === helper);
+  const helperLocal = helperModel && isLocalModel(helperModel, providerByName[helperModel.provider], locality);
 
   const typedKey = (name, id = '') => `${name}\n${id}`;
   const typedFor = (name, id) => typed[typedKey(name, id)];
@@ -205,6 +226,25 @@ export function ModelsSection({ theme, apiHost, apiPort, showToast, onDirtyChang
                 aria-describedby={describedBy('models-reader')} className={selectClass}
                 options={readerOptions}
               />
+            </SettingRow>
+
+            <SettingRow {...row('helper', 'models-helper', 'Helper model', {
+              help: 'A small model that writes tags and a description for each indexed document. Off: nothing is written.',
+            })}>
+              <SearchableSelect
+                theme={theme} findLabel="Find a helper model"
+                id="models-helper" value={helper} disabled={s.saving}
+                onChange={(id) => s.set('helper', id)}
+                aria-describedby={describedBy('models-helper', helperModel && 'models-helper-where')} className={selectClass}
+                options={helperOptions}
+              />
+              {helperModel && (
+                <p id="models-helper-where" className={`text-[10px] ${helperLocal ? theme.textMuted : 'text-amber-600'}`}>
+                  {helperLocal
+                    ? "Local: document text stays on this deployment's own hardware."
+                    : 'Cloud: document text, chat messages and profile descriptions are sent to this provider.'}
+                </p>
+              )}
             </SettingRow>
 
             <SettingRow {...row('context_size', 'models-context-size', 'Context size for local Ollama models', {

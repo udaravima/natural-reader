@@ -75,7 +75,7 @@ async def test_models_section_round_trips(db_conn, monkeypatch):
     monkeypatch.setenv("SUMMARIZE_MODEL", "ollama:small")
     async with _client(_app(db_conn, await _admin(db_conn))) as c:
         body = (await c.get("/v1/admin/settings/models")).json()
-        assert set(body["settings"]) == {"reader", "context_size", "context_sizes", "context_windows",
+        assert set(body["settings"]) == {"reader", "helper", "context_size", "context_sizes", "context_windows",
                                          "provider_locality", "chat_models"}
         assert {row["id"] for row in body["info"]} == {"num_ctx_max", "keep_alive_max"}
         assert body["settings"]["reader"]["value"] == "ollama:small"
@@ -129,3 +129,20 @@ async def test_with_no_allow_list_any_model_of_a_provider_may_be_the_reader(db_c
     async with _client(_app(db_conn, await _admin(db_conn))) as c:
         r = await c.put("/v1/admin/settings/models", json={"changes": {"reader": "ollama:anything"}})
     assert r.status_code == 200 and r.json()["settings"]["reader"]["value"] == "ollama:anything"
+
+
+async def test_a_helper_outside_the_deployments_model_list_is_refused(db_conn, monkeypatch):   # helper spec §4.1
+    _allow_list_router(monkeypatch, {
+        "INFERENCE_PROVIDERS": "ollama",
+        "INFERENCE_OLLAMA_KIND": "ollama", "INFERENCE_OLLAMA_URL": "http://localhost:11434",
+        "INFERENCE_OLLAMA_MODELS": "gemma4:e4b"})
+    async with _client(_app(db_conn, await _admin(db_conn))) as c:
+        r = await c.put("/v1/admin/settings/models", json={"changes": {"helper": "ollama:qwen3:8b"}})
+        assert r.status_code == 422
+        assert r.json()["detail"]["setting"] == "helper"
+        r = await c.put("/v1/admin/settings/models", json={"changes": {"helper": "chat"}})
+        assert r.status_code == 422 and r.json()["detail"]["setting"] == "helper"
+        r = await c.put("/v1/admin/settings/models", json={"changes": {"helper": "ollama:gemma4:e4b"}})
+        assert r.status_code == 200 and r.json()["settings"]["helper"]["value"] == "ollama:gemma4:e4b"
+        r = await c.put("/v1/admin/settings/models", json={"changes": {"helper": ""}})     # Off is never refused
+        assert r.status_code == 200 and r.json()["settings"]["helper"]["value"] == ""

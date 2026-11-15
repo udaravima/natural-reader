@@ -1005,6 +1005,17 @@ def _refuse_a_reader_the_deployment_disallows(value: Any) -> None:
         raise refusal(422, "invalid_setting", "That model isn't in this deployment's model list.", setting="reader")
 
 
+def _refuse_a_helper_the_deployment_disallows(value: Any) -> None:
+    """The helper (helper spec §4.1) is held to the same allow-lists as the reader. Off ("") is never refused; a value
+    of the wrong shape, "chat" included, is left to the section's own parser."""
+    try:
+        name = model_settings.parse_helper(value)
+    except ValueError:
+        return
+    if name and not get_router().is_allowed(name):
+        raise refusal(422, "invalid_setting", "That model isn't in this deployment's model list.", setting="helper")
+
+
 @router.put("/settings/{section}")
 async def put_settings_section(
     section: str,
@@ -1016,6 +1027,7 @@ async def put_settings_section(
     spec, _info = _section(section)
     if section == "models":
         _refuse_a_reader_the_deployment_disallows(body.changes.get("reader"))
+        _refuse_a_helper_the_deployment_disallows(body.changes.get("helper"))
     try:
         await console_settings.save(conn, spec, body.changes, updated_by=str(principal.user_id),
                                     env=_section_env(section))
