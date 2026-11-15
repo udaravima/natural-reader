@@ -2,7 +2,10 @@
 
 Date: 2026-11-14, revised 2026-11-15. Status: revision 3, approved by the owner ("go ahead", then "check and
 continue" on a review of revision 2). Phase 1 (the queue) built and walked
-2026-11-15 on `feat/index-queue`; phase 2 not started.
+2026-11-15 on `feat/index-queue`, merged into `development`. Phase 2 built and
+walked 2026-11-15 on `feat/bulk-upload`; its plan
+(`docs/superpowers/plans/2026-11-15-bulk-upload.md`) lists where the build
+departs from this text.
 
 Revision 1 kept the server almost unchanged and listed what that left out.
 The owner asked for the design that is right for everyone who uses the app:

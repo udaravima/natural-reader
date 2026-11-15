@@ -238,6 +238,17 @@ async def verify_legacy_current(conn, project_id, doc_id: str, user_id: str) -> 
     return str(row[0]) if row else None
 
 
+async def prove_legacy_current(conn, project_id, doc_id: str, user_id: str) -> str | None:
+    """verify_legacy_current, recorded: a document it made visible is "added" to the project as far as its
+    activity and the audit log go. Returns that document, or None."""
+    proved = await verify_legacy_current(conn, project_id, doc_id, user_id)
+    if proved:
+        audit("placement.added", project=project_id, doc=doc_id, document=proved, by=user_id)
+        await project_events.record(conn, project_id, user_id, "document.added", doc_id=doc_id,
+                                    details={"name": (await document_ref(conn, proved))["name"]})
+    return proved
+
+
 async def _same_bytes(conn, project_id, document_id, doc_id: str) -> tuple[str | None, Any]:
     """Spec §4.3, in its order: ('already_current', None), ('current_elsewhere',
     other document id), ('older', highest version k), or (None, None)."""
@@ -510,15 +521,11 @@ async def file_from_library(conn, user_id: str, project_id, doc_id: str, *, file
     that document under §4.3; 2 an old version of D → 409 older_version;
     3 a current document with this name → 409 name_exists; 4 a new document.
     `keep_both` skips 2 and 3. The name match is advisory, not a constraint."""
-    proved = await verify_legacy_current(conn, project_id, doc_id, user_id)
-    current = await _current_holder(conn, project_id, doc_id)
+    current = await _current_holder(conn, project_id, doc_id)  # verified or not: step 0 may prove it
     if current is not None and as_version_of is not None and str(as_version_of) != current:
         raise _conflict("current_elsewhere", CURRENT_ELSEWHERE,
                         await document_ref(conn, current))
-    if proved:  # only after step 1 can no longer refuse: a refusal rolls step 0 back
-        audit("placement.added", project=project_id, doc=doc_id, document=proved, by=user_id)
-        await project_events.record(conn, project_id, user_id, "document.added", doc_id=doc_id,
-                                    details={"name": (await document_ref(conn, proved))["name"]})
+    await prove_legacy_current(conn, project_id, doc_id, user_id)  # after step 1 can no longer refuse
     if current is not None:
         ref = await document_ref(conn, current)
         return 200, {"document_id": current, "version": ref["version"]}

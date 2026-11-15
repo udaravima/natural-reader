@@ -354,6 +354,10 @@ async def register_document(
     return {"doc_id": doc_id, "dedup": not created, "state": state, "queued": queued}
 
 
+# What a `prelock` returns when it decided nothing is to be stored (bulk upload: unchanged, skipped, left alone).
+STORE_NOTHING = object()
+
+
 async def _store_and_hold(staged, name: str, hold, *, prelock=None):
     """Create-or-find the content and insert ONE holding for it, in one
     transaction (A1 spec §3, races): the content row is inserted, or locked
@@ -363,12 +367,13 @@ async def _store_and_hold(staged, name: str, hold, *, prelock=None):
     same transaction: a version upload locks its document there, so the lock
     order is project_docs → documents everywhere (V1 spec §4.4). Retries ONCE
     if a GC removed the row between our conflicting INSERT and our lock — the
-    caller never sees a 5xx. Returns (created, existing, outcome)."""
+    caller never sees a 5xx. Returns (created, existing, outcome). A `prelock` that returns STORE_NOTHING ends
+    there: its own writes commit, no content is written, and the answer is (False, None, STORE_NOTHING)."""
     for attempt in (1, 2):
         async with get_pool().connection() as conn:
             async with conn.transaction():
-                if prelock is not None:
-                    await prelock(conn)
+                if prelock is not None and await prelock(conn) is STORE_NOTHING:
+                    return False, None, STORE_NOTHING
                 cur = await conn.execute(
                     # 'stored' until a runner takes its job: a second upload of the same bytes meanwhile
                     # queues nothing more, because a document has one job at most (doc_index_jobs).

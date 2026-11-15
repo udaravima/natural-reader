@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from server.auth import deps
 from server.routers import project_documents as pd_router
+from server.routers import project_uploads as uploads_router
 from server.routers import projects as projects_router
 from server.tests.docs_harness import build_docs_app
 
@@ -17,4 +18,5 @@ def build_versions_app(db_conn, monkeypatch, *, storage_dir, embed=None, run_que
     app.dependency_overrides[deps.get_conn] = _conn
     app.include_router(projects_router.router)
     app.include_router(pd_router.router)
+    app.include_router(uploads_router.router)
     return app, as_user

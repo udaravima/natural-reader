@@ -5,7 +5,7 @@
  * JSON (null for a 204) or throws an Error whose message is the notice to
  * show (apiErrors.js) — never a raw "HTTP nnn".
  */
-import { apiFetch } from '../utils/apiFetch';
+import { apiFetch, apiUpload } from '../utils/apiFetch';
 import { describeRefusal, noticeFor, PROJECT_NOT_FOUND } from './apiErrors';
 
 const enc = encodeURIComponent;
@@ -51,6 +51,24 @@ export function projectsApi(host, port) {
     }
     return { filed: res.status === 204 ? null : await res.json() };
   };
+  // Bulk upload: one file stored and filed (the server decides again from the project as it is). A refusal
+  // throws an Error carrying the server's sentence, its status and its code, so the batch can tell "you lost
+  // access" from "this file was refused".
+  const uploadFile = async (projectId, file, fields, opts) => {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    for (const key of ['on_match', 'on_older', 'document_id']) {
+      if (fields?.[key]) form.append(key, fields[key]);
+    }
+    const res = await apiUpload(host, port, `${project(projectId)}/uploads`, form, opts);
+    if (res.ok) return res.body;
+    const detail = res.body?.detail ?? null;
+    const err = new Error(res.status === 0 ? 'The upload was cut off. Check the connection and try again.'
+      : noticeFor(res.status, detail, notice));
+    err.status = res.status;
+    err.code = detail && typeof detail === 'object' ? detail.error : undefined;
+    throw err;
+  };
   const documents = (id) => `${project(id)}/documents`;
   const document = (id, docId) => `${documents(id)}/${enc(docId)}`;
   return {
@@ -73,6 +91,8 @@ export function projectsApi(host, port) {
     deleteVersion: (id, docId, n) => call(`${document(id, docId)}/versions/${n}`, { method: 'DELETE' }),
     mergeDocuments: (id, intoId, fromId) => call(`${document(id, intoId)}/merge`, { method: 'POST', body: { from: fromId } }),
     removeDocument: (id, docId) => call(document(id, docId), { method: 'DELETE' }),
+    uploadPlan: (id, files) => call(`${project(id)}/uploads/plan`, { method: 'POST', body: { files } }),
+    uploadFile,
     myDocs: () => call('/v1/docs'),
     reindex: (docId) => call(`/v1/docs/${enc(docId)}/index`, { method: 'POST' }),
     lookup: (q) => call(`/v1/users/lookup?q=${enc(q)}`),

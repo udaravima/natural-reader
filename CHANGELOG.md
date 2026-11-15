@@ -6,6 +6,20 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Upload many files into a project at once.** A project's Documents tab has
+  **Upload files** and **Upload folder**, and takes files or a whole folder
+  dropped anywhere on it. Before anything is sent, you see what each file will
+  become: a new document, the next version of the document with its name,
+  unchanged (not sent), the same as an older version (left alone, or restored if
+  you choose), or why it can't be sent. **Upload** with nothing touched does the
+  usual thing; a name two documents share is never guessed. Uploading the same
+  folder again sends only what changed. Files go into the project only, two at a
+  time, with progress, **Stop** and **Try again**, and the upload carries on
+  while you look at another tab. Scripts get the same rules from one route,
+  `POST /v1/projects/{id}/uploads`, one request per file, safe to run again; a
+  plan route says what would happen first. New settings: `BULK_UPLOAD_MAX_FILES`
+  (200) and `UPLOAD_MIN_FREE_MB` (1024). Before, each file took two screens: open
+  it in the reader, then file it from the project.
 - **Indexing and conversion wait in a queue, and survive a restart.** Each
   server worker indexes one document at a time and runs one Docling conversion
   at a time, from a queue in the database. Before, every upload, Index, Convert

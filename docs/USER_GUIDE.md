@@ -759,6 +759,42 @@ project already has a document with that name (letter case and spaces ignored),
 or the exact same file as an older version, you're asked: **Add as new version**
 (or **Restore vN as current**), **Keep both**, or **Cancel**.
 
+**Uploading many files.** On the **Documents** tab, Contributors and above have
+**Upload files** and **Upload folder**, or can drop files or a whole folder
+anywhere on the tab. Before anything is sent you see what each file will
+become, and pressing **Upload** without touching anything does the usual thing:
+
+| The file | Becomes | Its other choices |
+|---|---|---|
+| A name the project doesn't have | a new document | |
+| The name of one document here | its next version: "New version (v3) of setup.pdf" | Separate document, Skip |
+| Exactly the current version of a document | "Unchanged: not sent" | |
+| Exactly an older version | "Same as v2 of setup.pdf: left alone" | Restore as current |
+| A name two documents here share | skipped, since the app won't guess which one | each of the two, by version and who added it; Separate document |
+| A second file with the same name in what you picked | skipped | Separate document |
+| Empty, too large (by default 50 MB for a PDF, 10 MB for text and Markdown), or not really a PDF | "can't be sent", with the reason | |
+
+Only PDF, Markdown (`.md`, `.markdown`) and text (`.txt`) files take part;
+anything else is counted in one line ("3 files aren't PDF, Markdown or text:
+left out"). Files inside hidden folders such as `.git`, and `node_modules`, are
+skipped silently. Folders only help you pick: a project stays one flat list,
+named by file name.
+
+Files are sent two at a time, each with its progress. **Stop** finishes the two
+in flight and sends no more; a file that fails keeps the server's reason and a
+**Try again**. Afterwards one line sums it up ("12 sent: 9 new, 3 new
+versions. 1 failed.") until you **Dismiss** it. You can switch tabs or open a
+document meanwhile: the upload carries on, and the tab shows it when you come
+back. Closing or reloading the page stops it (the browser asks first); what was
+sent is safe, and picking the same folder again sends only the rest.
+
+Uploading the same folder again is how you bring a project up to date: only
+changed files are sent, and they become new versions. Files you upload here
+go into the project only, not into your own library. On a server reached over
+plain `http://`, the browser can't fingerprint files, so it can't tell an
+unchanged file before sending it: every matching file is sent, and the server
+answers "Unchanged" and stores nothing.
+
 **Versions.** Each document keeps its history. **v3 · 3 versions** opens it:
 every version can be opened; Contributors can **Restore** an old one (it comes
 back as a new version on top, nothing is lost) and use **⋯ → Upload new

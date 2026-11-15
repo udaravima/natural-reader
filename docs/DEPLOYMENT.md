@@ -794,6 +794,27 @@ an upload answered in 80 ms and the runner had taken it within a second. With
 documents were indexing**, against 0.02 to 0.05 s when idle: on a CPU-only Ollama
 a query's embedding waits behind indexing's.
 
+**Uploading many files into a project** (the Documents tab's **Upload files** /
+**Upload folder** / drop, or a script looping over `POST
+/v1/projects/{id}/uploads`; see [LIBRARY.md](LIBRARY.md)) uses the same queue,
+so a batch never runs more than `WORKERS` indexing jobs at once. Two settings:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `BULK_UPLOAD_MAX_FILES` | `200` | The most files one plan may name. More is refused whole (`413 too_many_files`), with the number in the message. |
+| `UPLOAD_MIN_FREE_MB` | `1024` | Free space, in MB, the storage folder (`DOC_STORAGE_DIR`) keeps. A plan that would send more than the free space minus this is refused whole (`507 not_enough_space`, naming both numbers), and the upload route refuses a file once the folder is down to it, so a script that skips the plan can't fill the disk either. |
+
+An unreadable value (not a whole number, or below 1 for the first, below 0 for
+the second) falls back to the default with one warning in the log. There are no
+quotas or rate limits: the reserve stops one batch from filling the disk, not
+many.
+
+Measured on the bulk upload walk (CPU only, `nomic-embed-text`, `WORKERS=1`):
+**50 documents (25 Markdown, 25 PDF; 815 KB, 1,150 passages) were sent in 1 s
+and indexed in about 95 s**, a backend crash in the middle included (the dead
+worker's one document was taken over 10 minutes later, as above). Searches made
+while they indexed answered in 0.02 to 0.8 s.
+
 **The Overview never loads a model.** On Ollama it reads two lists: `/api/tags`
 (is the model pulled?) and `/api/ps` (is it in memory now?). Whether it gives 768
 numbers was measured once, when it was chosen; a model made current from `.env`
