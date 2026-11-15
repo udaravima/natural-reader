@@ -74,6 +74,7 @@ export function projectsApi(host, port) {
     mergeDocuments: (id, intoId, fromId) => call(`${document(id, intoId)}/merge`, { method: 'POST', body: { from: fromId } }),
     removeDocument: (id, docId) => call(document(id, docId), { method: 'DELETE' }),
     myDocs: () => call('/v1/docs'),
+    reindex: (docId) => call(`/v1/docs/${enc(docId)}/index`, { method: 'POST' }),
     lookup: (q) => call(`/v1/users/lookup?q=${enc(q)}`),
     shares: (docId) => call(`/v1/docs/${enc(docId)}/shares`),
     share: (docId, userId) => call(`/v1/docs/${enc(docId)}/shares/${enc(userId)}`, { method: 'PUT' }),

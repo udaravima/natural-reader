@@ -28,9 +28,23 @@ describe('pollIndexUntilSettled', () => {
         // The UI state IndexButton actually reads lands under the *local*
         // id the flow started with, not the server's id.
         const next = setDocIndexByDocId.mock.calls[0][0]({});
-        expect(next).toEqual({ 'local-hash': { state: 'indexed', chunkCount: 9, embeddedCount: 9 } });
+        expect(next).toEqual({ 'local-hash': { state: 'indexed', chunkCount: 9, embeddedCount: 9, queued: false, queueAhead: undefined } });
         expect(next['server-hash']).toBeUndefined();
         expect(showToast).toHaveBeenCalledWith('Indexed 9 chunks.', 3000);
+    });
+
+    it('keeps waiting while the document waits its turn, without calling it unusually long', async () => {
+        const waiting = json(200, { state: 'stored', queued: true, queue_ahead: 4 });
+        apiFetch.mockResolvedValueOnce(waiting).mockResolvedValueOnce(waiting).mockResolvedValueOnce(waiting)
+            .mockResolvedValue(json(200, { state: 'indexed', chunk_count: 2, embedded_count: 2 }));
+        const setDocIndexByDocId = vi.fn();
+        const showToast = vi.fn();
+        await pollIndexUntilSettled({
+            apiDocId: 'h', stateKey: 'h', apiHost: '', apiPort: '', setDocIndexByDocId, showToast, pollMs: 0, maxPolls: 2,
+        });
+        expect(setDocIndexByDocId.mock.calls[0][0]({}).h).toMatchObject({ state: 'stored', queued: true, queueAhead: 4 });
+        expect(showToast).toHaveBeenCalledWith('Indexed 2 chunks.', 3000);
+        expect(showToast).not.toHaveBeenCalledWith(expect.stringMatching(/unusually long/), 6000);
     });
 
     it('stops and toasts on a failed state', async () => {

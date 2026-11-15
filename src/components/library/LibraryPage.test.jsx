@@ -94,6 +94,12 @@ describe('LibraryPage', () => {
     expect(docsCalls().length).toBeGreaterThan(0);
   });
 
+  it('says each document\'s indexing state in plain words', async () => {
+    mount();
+    const row = await screen.findByTestId('doc-row-d1');
+    expect(within(row).getByText('Indexed')).toBeTruthy();
+  });
+
   it('issues a q= search request after typing in the search box', async () => {
     mount();
     await screen.findByText('Owned.pdf');

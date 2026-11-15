@@ -41,11 +41,17 @@ export async function pollIndexUntilSettled({
             const sData = await sRes.json();
             setDocIndexByDocId((prev) => ({
                 ...prev,
-                [stateKey]: { state: sData.state, chunkCount: sData.chunk_count, embeddedCount: sData.embedded_count },
+                [stateKey]: {
+                    state: sData.state, chunkCount: sData.chunk_count, embeddedCount: sData.embedded_count,
+                    queued: !!sData.queued, queueAhead: sData.queue_ahead,
+                },
             }));
             if (sData.state === 'indexed') { showToast(`Indexed ${sData.embedded_count} chunks.`, 3000); return; }
             if (sData.state === 'failed') { showToast(`Indexing failed: ${sData.error_message || 'unknown error'}`, 6000); return; }
             if (!PROCESSING_STATES.has(sData.state)) return;
+            // Waiting its turn behind other documents isn't "taking unusually long": only count the polls
+            // while it runs or is next.
+            if (sData.queued && sData.queue_ahead > 0) i -= 1;
         } catch {
             // transient backend hiccup — keep polling
         }

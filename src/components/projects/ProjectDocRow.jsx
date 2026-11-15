@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { BookOpen, ChevronDown, ChevronRight, MoreHorizontal, X } from 'lucide-react';
 import VersionHistory from './VersionHistory';
 import { useMenuDismiss } from '../../hooks/useMenuDismiss';
+import { docStateLabel } from '../../lib/docStateLabel';
 
 const count = (n) => (n === 1 ? '1 version' : `${n} versions`);
 
@@ -31,6 +32,10 @@ export default function ProjectDocRow({ theme, api, project, doc, others, mine, 
   const after = (ok) => { if (ok) close(); };
   const choose = (p) => { setMenu(false); setPanel(p); };
   const libraryChoices = mine.filter((m) => m.doc_id !== doc.doc_id);
+  // A document with no job that isn't indexed: nothing will index it by itself (an upload interrupted before the
+  // queue existed, or a failure). Queuing it again changes no content.
+  const canRetry = can.file_docs && !doc.queued && doc.state !== 'indexed';
+  const retry = () => run(() => api.reindex(doc.doc_id), `${doc.name} is queued for indexing.`);
   const target = others.find((o) => o.id === mergeInto);
 
   const upload = async () => {
@@ -48,13 +53,20 @@ export default function ProjectDocRow({ theme, api, project, doc, others, mine, 
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-2 min-w-0">
           <span className="text-xs font-bold truncate">{doc.name}</span>
-          <span className={`text-[10px] px-1.5 py-0.5 rounded ${theme.bgTertiary} ${theme.textSecondary}`}>{doc.state}</span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded ${theme.bgTertiary} ${doc.state === 'failed' ? 'text-red-500' : theme.textSecondary}`}
+            title={doc.state === 'failed' && doc.error_message ? doc.error_message : undefined}>{docStateLabel(doc)}</span>
           <button onClick={() => setOpen(!open)} aria-label={`History of ${doc.name}`} aria-expanded={open}
             className={`flex items-center text-[10px] ${theme.textSecondary} hover:text-blue-500`}>
             {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}v{doc.version} · {count(doc.versions_count)}
           </button>
         </span>
         <span className="flex items-center gap-2 shrink-0">
+          {canRetry && (
+            <button onClick={retry} disabled={busy} aria-label={`Retry indexing ${doc.name}`}
+              className={`px-2 py-0.5 text-[10px] rounded border ${theme.border} hover:text-blue-500`}>
+              Retry index
+            </button>
+          )}
           {onOpenDoc && (
             <button onClick={() => onOpenDoc({ doc_id: doc.doc_id, file_name: doc.name })} aria-label={`Open ${doc.name}`}
               className="flex items-center gap-1 px-2 py-0.5 text-[10px] rounded bg-blue-500 text-white hover:bg-blue-600">
