@@ -42,12 +42,19 @@ Anti-goals (a failure even if it works)
 
 **Where generated tags and descriptions live**
 
-1. On the content (`documents`), generated once per unique file; people's edits stored where they have the
-   right to edit: the project document, or their own library entry (chosen).
-2. Only on the content, editable there. Rejected: content is shared by every project and library that holds the
-   same file, so an edit in one project would show in another. That is a leak between projects.
-3. Copied into each holder's personal tags. Rejected: project documents have no holder entry, so the bulk-upload
+1. On each holding: a project's version of a document, or a person's library entry; generated for that holding
+   with that holding's tags in use as the vocabulary; people's edits on the project document (chosen, after the
+   build: see below).
+2. On the content (`documents`), generated once per unique file; people's edits where they have the right to edit
+   (the first design, built and then replaced). Rejected after the build's review: the model is shown one
+   project's tags in use, hand-typed ones included, and copies some into its answer; stored on the content, that
+   answer shows in every other project and library holding the same file. A project's confidential code name
+   could reach another project's members. That is the second anti-goal.
+3. Only on the content, editable there. Rejected: an edit in one project would show in another.
+4. Copied into each holder's personal tags. Rejected: project documents have no holder entry, so the bulk-upload
    journey ends with no tags.
+
+The cost of 1: a file held by two projects is described twice, one call each. Usually a file is held once.
 
 **When generation runs**
 
@@ -97,13 +104,17 @@ brief says to treat it as text to describe, never as instructions.
 
 ### 5.1 Data (migration 028)
 
-- `documents.gen_tags TEXT[]`, `documents.gen_description TEXT`, `documents.gen_model TEXT`,
-  `documents.gen_at TIMESTAMPTZ`. Written only by the helper. NULL `gen_at` = never generated.
+- `gen_tags TEXT[]`, `gen_description TEXT`, `gen_model TEXT`, `gen_at TIMESTAMPTZ` on `project_documents` (one
+  project's version of a document) and on `library_entries` (one person's library entry). Written only by the
+  helper, for that holding alone. NULL `gen_at` = never generated. Nothing is stored on the content: what the
+  helper wrote for one holding never shows in another.
 - `project_docs.tags TEXT[]`, `project_docs.description TEXT`. NULL = "show the generated ones of the current
   version". Set by project Contributors and above.
 - Personal library tags stay as they are. No personal description.
-- `doc_describe_jobs`: one row per document waiting (`doc_id` primary key, `requested_by`, `project_id` for
-  the vocabulary, `attempts`, claim columns like `doc_index_jobs`).
+- `doc_describe_jobs`: one row per holding waiting: the content to read (`doc_id`), and either the project
+  document (`project_doc_id`; the version holding that content) or the person (`user_id`; their entry for it).
+  Also `requested_by`, `attempts`, claim columns like `doc_index_jobs`. A job goes with its project document or
+  library entry.
 
 ### 5.2 What the model is given and returns
 
@@ -119,13 +130,18 @@ Returns JSON: `{"tags": [...], "description": "..."}`. The app, not the model, e
 lower-cased, trimmed, 1-32 characters, no control characters, no duplicates; the description one line, at most
 300 characters. A reply that doesn't parse counts as a failed attempt.
 
-The result is generated once per content. Its vocabulary is the first requester's; a second project holding the
-same file sees the same generated tags and can replace them with its own.
+The result belongs to the holding it was written for, as does its vocabulary: a project's tags in use for a
+project document, the person's own library tags for their entry. A second project holding the same file gets its
+own call, with its own tags in use.
 
 ### 5.3 When it runs
 
-- When an indexing job finishes with the document indexed, the helper on, and `gen_at` NULL, a describe job is
-  queued.
+- When a file is placed and the helper is on, a describe job is queued for the new holding: a new project
+  document or version (upload, bulk upload, filing from the Library, a new version from the Library), or a Library
+  upload. The job waits until the content is indexed, so it is queued whether or not indexing has finished (an
+  already-indexed file is described without indexing again). Restoring an older version in the same project
+  reuses what the helper wrote for that version there, with no call. A Library entry that came by sharing gets its
+  tags from its row's **Generate**.
 - The bulk upload panel has a tick, **Write tags and descriptions**, shown when the helper is on and ticked by
   default. Unticked, the files of that batch are indexed without a describe job (the upload route takes
   `describe=false`); they can still get tags later from the row's **Generate** or the project's button (5.6).
@@ -151,15 +167,17 @@ Project → Documents, each row, under the name:
 
 Library → Documents, each row:
 
-- The generated description under the name.
+- The description written for the person's entry under the name; else, for a document they see through a project,
+  that project's (the first by name when several hold it). Only projects the person is a member of are read.
 - The person's own tags as today. Generated tags the person doesn't have show as lighter chips; one tap keeps
-  one as their own tag. Search matches both.
-- **Generate** for a row the person holds, when it has never been generated.
+  one as their own tag. Search matches both, and the description shown.
+- **Generate** for a row the person holds, when it has never been generated for their entry.
 
 ### 5.5 Versions
 
-A new version is new content with its own generated values. A project document with no hand-typed values
-follows its current version. Hand-typed values stay across versions.
+Each version of a project document gets its own generated values. A project document with no hand-typed values
+follows its current version. Hand-typed values stay across versions. A merge moves versions with their values,
+and a waiting job with them.
 
 ### 5.6 Existing documents
 
@@ -229,7 +247,11 @@ polling; screen markup. The plan lists every departure from this document at its
 ## 10. Calls made by the author, for the owner to check
 
 - No fixed vocabulary; reuse is by showing the model the tags in use (2).
-- Generated values live on the content; edits live on the project document (3).
+- Generated values live on each holding (a project's version, a person's library entry); edits live on the project
+  document (3). Changed after the build's review, by the owner's choice: they first lived on the content, which let
+  one project's vocabulary reach another holding the same file.
+- A project-only Library row shows the description of the first project (by name) the person is a member of that
+  holds the file; a Library entry that came by sharing gets tags only from its row's Generate (5.3, 5.4).
 - A cloud helper never titles a chat that runs on a local model (4.3).
 - Two attempts, then silence, for a failed generation (5.3).
 - A bulk upload writes tags unless its tick is cleared; the model reads a fixed-size sample, never the whole

@@ -411,11 +411,13 @@ The whole file runs in one transaction. No data is dropped.
 
 ### Migration 028 (the helper model)
 
-Adds `documents.gen_tags`, `gen_description` (≤ 300 characters), `gen_model`,
-`gen_at`; `project_docs.tags`, `description` (≤ 300 characters); the
-`doc_describe_jobs` queue; and `helper` to `inference_usage.kind`. Nothing is
-backfilled: existing documents get tags when a Contributor presses **Write tags
-for N documents**. The Down steps are in the migration's header.
+Adds `gen_tags`, `gen_description` (≤ 300 characters), `gen_model`, `gen_at`
+to `project_documents` and to `library_entries` (never to `documents`: see
+"Where they live" below); `project_docs.tags`, `description` (≤ 300
+characters); the `doc_describe_jobs` queue; and `helper` to
+`inference_usage.kind`. Nothing is backfilled: existing documents get tags when
+a Contributor presses **Write tags for N documents**. The Down steps are in the
+migration's header.
 
 ## API surface
 
@@ -542,25 +544,34 @@ Spec: `docs/superpowers/specs/2026-11-15-helper-model-design.md`. With a helper
 model set (**Admin → Models → Helper model**, else `HELPER_MODEL`; unset = off),
 each indexed document gets up to 5 tags and a one-line description.
 
-- **Where they live.** The helper's words are the content's
-  (`documents.gen_tags`, `gen_description`, `gen_model`, `gen_at`), written once
-  per unique file from that file alone, so every project and library holding the
-  file sees the same ones. A project's own words for one of its documents live on
+- **Where they live.** On each holding, never on the content: a project's
+  version of a document (`project_documents.gen_*`) or a person's library entry
+  (`library_entries.gen_*`). The model is shown the holding's tags in use, typed
+  ones included, and may copy some into its answer; stored on the content, that
+  answer would show in every other project and library holding the same file.
+  So a file in two projects is described twice, once for each, and neither sees
+  the other's. A project's own words for one of its documents live on
   `project_docs.tags` / `description` (Contributors and above): they replace the
   helper's in that project only, and stay across versions. NULL means "show the
   helper's words for the current version"; an empty tag list is a choice ("no
   tags"). People's personal library tags (`library_entries.tags`) are unchanged.
-- **When.** After an indexing or conversion job leaves a document indexed (and
-  the upload didn't send `describe=false`), it waits in `doc_describe_jobs`. A
-  third lane per worker (`doc_pipeline.run_describe_forever`) claims a job only
-  while `doc_index_jobs` is empty, and only one at a time across all workers. A
-  failed try goes back to the queue once; a skip (helper off, the requester over
-  their daily budget, the document gone or no longer indexed) drops the job.
-  A failure never touches the document's own state.
-- **What the model reads** (`services/doc_describe.py`): the file name, the
-  headings (at most a quarter of the allowance), the tags already in use in the
-  project (else the person's own library tags), and a sample of the indexed
-  passages: the opening, then whole passages at even steps through the rest.
+- **When.** When a file is filed into a project (upload, bulk upload unless it
+  sent `describe=false`, filing from the Library, a new version) or uploaded to
+  the Library, and the helper is on, the new holding waits in
+  `doc_describe_jobs` (`doc_describe.queue_version` / `queue_entry`). Restoring
+  an older version brings back what was written for that content in the same
+  document, with no call. A third lane per worker
+  (`doc_pipeline.run_describe_forever`) claims a job only once its content is
+  indexed, only while `doc_index_jobs` is empty, and only one at a time across
+  all workers. A project job whose version is no longer current is dropped; a
+  merge moves a waiting job with its version. A failed try goes back to the
+  queue once; a skip (helper off, the requester over their daily budget, the
+  holding gone) drops the job. A failure never touches the document's own state.
+- **What the model reads** (`services/doc_describe.py`): the file name as the
+  holding shows it (never the content's own name, which is its first uploader's),
+  the headings (at most a quarter of the allowance), the tags already in use in
+  the project (for a library entry, the person's own library tags), and a
+  sample of the indexed passages: the opening, then whole passages at even steps through the rest.
   At most `HELPER_INPUT_CHARS` (default 6000) characters of document text in
   all, whatever the document's size. The reply is data: the app keeps at most 5
   tags (lower case, 1–32 characters, no control characters) and one line of at
@@ -571,12 +582,13 @@ each indexed document gets up to 5 tags and a one-line description.
 
 | Route | Notes |
 |-------|-------|
-| `GET /v1/projects/{id}/documents` | Rows gain `tags`, `description` (the project's own, else the helper's for the current version), `generated` (the helper has written for this version), `edited` (the project's own words replace some of it), `describing` (a job waits or runs). |
+| `GET /v1/projects/{id}/documents` | Rows gain `tags`, `description` (the project's own, else the helper's for the current version here), `generated` (the helper has written for this version here), `edited` (the project's own words replace some of it), `describing` (a job for the current version waits or runs, its content indexed). |
 | `PATCH /v1/projects/{id}/documents/{document_id}` | JSON `{tags?, description?}`; a field left out stays, `null` goes back to the helper's. Contributor. Tags are cleaned like the helper's; more than 10 → `422 too_many_tags`; a description over 300 characters → `422 description_too_long` (never cut). Returns the row. |
 | `POST /v1/projects/{id}/documents/{document_id}/describe` | Generate: clears the project's own words and queues the helper for the current version → `202` with the row. Contributor. `409 not_indexed`, `409 helper_off`, `429 budget_exhausted`. |
 | `POST /v1/projects/{id}/documents/describe-missing` | Queues every current, indexed document here never described → `202 {"queued": n}`. Contributor. `409 helper_off`, `429 budget_exhausted`. |
-| `GET /v1/docs` | Rows gain `description`, `generated`, `suggested_tags` (the helper's tags that aren't among your own, in its order) and `describing`. `q` and `tag` also match the helper's description and tags. |
-| `POST /v1/docs/{doc_id}/describe` | Library Generate, for a document you hold that was never described → `202 {"doc_id", "describing": true}`. `404` unless you hold it; `409 already_described` (a project's Generate re-runs it), `409 not_indexed`, `409 helper_off`, `429 budget_exhausted`. |
+| `GET /v1/docs` | Rows gain `description` (written for your entry, else what a project you're a member of shows for the file, the first by name), `generated` (written for your entry), `suggested_tags` (the tags written for your entry that aren't among your own, in the helper's order) and `describing`. `q` matches the description shown and the suggested tags too; `tag` matches the suggested tags. |
+| `POST /v1/docs/{doc_id}/describe` | Library Generate, for your entry when nothing was written for it → `202 {"doc_id", "describing": true}`. `404` unless you hold it; `409 already_described`, `409 not_indexed`, `409 helper_off`, `429 budget_exhausted`. |
+| `POST /v1/docs` (upload) | Also queues the helper for your entry (it waits for indexing) when the helper is on. |
 | `GET /v1/settings/helper` | `{"on": bool}` for any signed-in person; the model's name is not given. |
 
 ## Frontend

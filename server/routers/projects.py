@@ -28,6 +28,7 @@ from ..auth.authz import (
 from ..http_errors import refusal
 from ..services import (
     doc_content,
+    doc_pipeline,
     doc_versions,
     people,
     project_events,
@@ -35,6 +36,7 @@ from ..services import (
     project_policy,
 )
 from .docs import DocId
+from .project_documents import queue_helper
 
 router = APIRouter(prefix="/v1/projects", tags=["projects"])
 _reader = deps.require_capability("reader")
@@ -220,6 +222,8 @@ async def link_doc(project_id: uuid.UUID, doc_id: DocId, response: Response,
         conn, principal.user_id, project_id, doc_id,
         file_name=await doc_versions.filed_name(conn, doc_id, principal.user_id),
         as_version_of=as_version_of, keep_both=keep_both)
+    if status == 201 and await queue_helper(conn, body["document_id"], principal.user_id):   # helper spec §5.3
+        doc_pipeline.wake()
     response.status_code = status
     return body
 

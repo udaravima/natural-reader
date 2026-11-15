@@ -12,7 +12,9 @@ All notable changes to this project will be documented in this file.
   description, written after indexing, one document at a time and only while
   nothing waits to be indexed. The model reads a sample of at most 6,000
   characters, whatever the document's size, and is shown the tags already used
-  in the project. On a project's Documents tab they show under each name: a tag
+  in the project. What it writes belongs to that project (or to that person's
+  library copy): a file held by two projects is described for each, and
+  neither project's tags reach the other. On a project's Documents tab they show under each name: a tag
   filters the list, a filter box matches names, tags and descriptions,
   Contributors type the project's own words with the pencil, and **Generate** /
   **Write tags for N documents** ask the helper. The bulk upload plan has a

@@ -1,7 +1,11 @@
 """A document's tags and description, written by the helper model (docs/superpowers/specs/2026-11-15-helper-model-design.md
 §5.2). This module decides what the model reads and what the app keeps of its reply.
 
-What it reads: the file name, the outline's headings, the tags already in use where the request came from, and a
+Whose they are: one holding's, a project's version of a document or a person's library entry (§5.1). The file name
+and the tags in use the model is shown are that holding's own, and what it writes is stored there alone, so nothing
+one project or person typed can reach another holding the same file.
+
+What it reads: the file name, the outline's headings, the tags already in use where the holding is, and a
 sample of the indexed text of at most HELPER_INPUT_CHARS characters, whatever the document's size: the opening
 (half the allowance), then whole passages at even steps through the rest. A 5-page and a 500-page document cost the
 same one call, and nothing is extracted or embedded again: the passages are the ones indexing stored.
@@ -214,81 +218,122 @@ DONE, FAILED, SKIPPED = "done", "failed", "skipped"   # skipped: nothing to do, 
 
 
 
-async def vocabulary(conn, project_id: str | None, user_id: str | None, exclude_doc: str) -> list[str]:
-    """The tags already in use where the request came from, most used first (ties by name), at most VOCABULARY_MAX:
-    the project's as it shows them; with no project, the person's own library tags. The document itself is left out."""
-    if project_id:
+async def vocabulary(conn, job: describe_queue.Claim) -> list[str]:
+    """The tags already in use where the job's holding is, most used first (ties by name), at most VOCABULARY_MAX:
+    for a project document, its project's as the project shows them; for a library entry, the person's own library
+    tags. The holding itself is left out. Only that project's or that person's words, never another holder's."""
+    if job.project_doc_id:
         cur = await conn.execute(
             "SELECT t FROM (SELECT unnest(" + SHOWN_TAGS + ") AS t FROM project_docs pd "
-            "  JOIN project_documents v ON v.project_doc_id = pd.id AND v.is_current "
-            "  JOIN documents d ON d.doc_id = v.doc_id "
-            "  WHERE pd.project_id = %s AND v.doc_id <> %s) x "
-            "GROUP BY t ORDER BY count(*) DESC, t LIMIT %s", (project_id, exclude_doc, VOCABULARY_MAX))
-    elif user_id:
+            "  JOIN project_documents v ON v.project_doc_id = pd.id AND v.is_current AND v.verified "
+            "  WHERE pd.project_id = (SELECT project_id FROM project_docs WHERE id = %s) AND pd.id <> %s) x "
+            "GROUP BY t ORDER BY count(*) DESC, t LIMIT %s", (job.project_doc_id, job.project_doc_id, VOCABULARY_MAX))
+    else:
         cur = await conn.execute(
             "SELECT t FROM (SELECT unnest(tags) AS t FROM library_entries WHERE user_id = %s AND doc_id <> %s) x "
-            "GROUP BY t ORDER BY count(*) DESC, t LIMIT %s", (user_id, exclude_doc, VOCABULARY_MAX))
-    else:
-        return []
+            "GROUP BY t ORDER BY count(*) DESC, t LIMIT %s", (job.user_id, job.doc_id, VOCABULARY_MAX))
     return [r[0] for r in await cur.fetchall()]
 
 
-async def describe(doc_id: str, *, requested_by: str | None, project_id: str | None) -> str:
-    """Write `doc_id`'s generated tags and description. DONE; FAILED (the model failed or its reply held nothing
-    usable: worth one more try); SKIPPED (the helper is off, the requester is over budget, the document is gone, no
-    longer indexed or has no text). Never touches the document's state or error."""
+async def _file_name(conn, job: describe_queue.Claim) -> str | None:
+    """The name the job's holding shows for the file, never the content's own name (its first uploader's, perhaps
+    in another project). None when the holding is gone or, for a project document, the version is no longer
+    current."""
+    if job.project_doc_id:
+        cur = await conn.execute(
+            "SELECT file_name FROM project_documents WHERE project_doc_id = %s AND doc_id = %s "
+            "AND is_current AND verified", (job.project_doc_id, job.doc_id))
+    else:
+        cur = await conn.execute(
+            "SELECT COALESCE(e.file_name, d.file_name) FROM library_entries e "
+            "JOIN documents d ON d.doc_id = e.doc_id WHERE e.user_id = %s AND e.doc_id = %s", (job.user_id, job.doc_id))
+    row = await cur.fetchone()
+    return None if row is None else (row[0] or "")
+
+
+async def describe(job: describe_queue.Claim) -> str:
+    """Write the tags and description of the job's holding: a project document's version, or a person's library
+    entry. DONE; FAILED (the model failed or its reply held nothing usable: worth one more try); SKIPPED (the helper
+    is off, the requester is over budget, the holding or its content is gone, no longer indexed or has no text, or
+    the version is no longer current). Never touches the document's state or error."""
     async with get_pool().connection() as conn:
         cfg = await helper.load_config(conn)
         if not cfg.on:
             return SKIPPED
-        cur = await conn.execute("SELECT file_name, state FROM documents WHERE doc_id = %s", (doc_id,))
+        cur = await conn.execute("SELECT state FROM documents WHERE doc_id = %s", (job.doc_id,))
         row = await cur.fetchone()
-        if row is None or row[1] != "indexed":
+        if row is None or row[0] != "indexed":
             return SKIPPED
-        file_name = row[0] or ""
-        cur = await conn.execute("SELECT text FROM doc_chunks WHERE doc_id = %s ORDER BY ord, id", (doc_id,))
+        file_name = await _file_name(conn, job)
+        if file_name is None:
+            return SKIPPED
+        vocab = await vocabulary(conn, job)
+        cur = await conn.execute("SELECT text FROM doc_chunks WHERE doc_id = %s ORDER BY ord, id", (job.doc_id,))
         passages = [r[0] for r in await cur.fetchall()]
-        outline = (await load_outlines(conn, [doc_id])).get(doc_id)
-        vocab = await vocabulary(conn, project_id, requested_by, doc_id)
+        outline = (await load_outlines(conn, [job.doc_id])).get(job.doc_id)
     text, headings = document_text([e.text for e in outline.entries] if outline else [], passages, cfg.input_chars)
     if not text:
         return SKIPPED
     system, user = messages(file_name, headings, text, vocab)
     try:
         reply = await helper.ask(cfg, system.content, user.content, max_output_chars=OUTPUT_CHARS,
-                                 user_id=requested_by)
+                                 user_id=job.requested_by)
     except helper.HelperError as e:
-        logger.info("describe %s: helper %s", doc_id[:12], e.kind)
+        logger.info("describe %s: helper %s", job.doc_id[:12], e.kind)
         return SKIPPED if e.kind in ("off", "over_budget") else FAILED
     parsed = parse_reply(reply)
     if parsed is None:
-        logger.info("describe %s: the reply held nothing usable (%d characters)", doc_id[:12], len(reply))
+        logger.info("describe %s: the reply held nothing usable (%d characters)", job.doc_id[:12], len(reply))
         return FAILED
     tags, description = parsed
     async with get_pool().connection() as conn:
-        await conn.execute("UPDATE documents SET gen_tags = %s, gen_description = %s, gen_model = %s, gen_at = now() "
-                           "WHERE doc_id = %s", (tags, description, cfg.model, doc_id))
-    logger.info("described %s: %d tags, a %d-character description, from %d of %d characters",
-                doc_id[:12], len(tags), len(description or ""), len(text), sum(len(p) for p in passages))
+        if job.project_doc_id:
+            await conn.execute(
+                "UPDATE project_documents SET gen_tags = %s, gen_description = %s, gen_model = %s, gen_at = now() "
+                "WHERE project_doc_id = %s AND doc_id = %s", (tags, description, cfg.model, job.project_doc_id,
+                                                              job.doc_id))
+        else:
+            await conn.execute(
+                "UPDATE library_entries SET gen_tags = %s, gen_description = %s, gen_model = %s, gen_at = now() "
+                "WHERE user_id = %s AND doc_id = %s", (tags, description, cfg.model, job.user_id, job.doc_id))
+    logger.info("described %s for a %s: %d tags, a %d-character description, from %d of %d characters",
+                job.doc_id[:12], "project" if job.project_doc_id else "library", len(tags), len(description or ""),
+                len(text), sum(len(p) for p in passages))
     return DONE
 
 
-async def queue_after_index(conn, doc_id: str, *, requested_by: str | None, project_id: str | None,
-                            describe: bool = True) -> bool:
-    """After an indexing job: queue the helper for a document that is now indexed and has never been described,
-    when the helper is on and the upload didn't opt out (`describe`). With no project named, the document's latest
-    placement gives the tags to reuse. True when it queued."""
-    if not describe:
+async def queue_version(conn, project_doc_id, *, requested_by: str | None) -> bool:
+    """A project document's current version was just filed (spec §5.3): restoring content this document held before
+    brings back what the helper wrote for it here, with no call; otherwise, with the helper on and nothing written
+    yet, it is queued (the job waits for indexing). Never reads another project's values. True when it queued."""
+    cur = await conn.execute(
+        "SELECT doc_id, gen_at IS NOT NULL FROM project_documents WHERE project_doc_id = %s AND is_current "
+        "AND verified", (project_doc_id,))
+    row = await cur.fetchone()
+    if row is None or row[1]:
+        return False
+    doc_id = row[0]
+    cur = await conn.execute(
+        "UPDATE project_documents v SET gen_tags = o.gen_tags, gen_description = o.gen_description, "
+        "gen_model = o.gen_model, gen_at = o.gen_at "
+        "FROM (SELECT gen_tags, gen_description, gen_model, gen_at FROM project_documents "
+        "      WHERE project_doc_id = %s AND doc_id = %s AND gen_at IS NOT NULL ORDER BY gen_at DESC LIMIT 1) o "
+        "WHERE v.project_doc_id = %s AND v.is_current RETURNING v.version", (project_doc_id, doc_id, project_doc_id))
+    if await cur.fetchone() is not None:
         return False
     if not (await helper.load_config(conn)).on:
         return False
-    cur = await conn.execute("SELECT state, gen_at FROM documents WHERE doc_id = %s", (doc_id,))
+    return await describe_queue.enqueue(conn, doc_id, project_doc_id=str(project_doc_id), requested_by=requested_by)
+
+
+async def queue_entry(conn, user_id: str, doc_id: str) -> bool:
+    """A person's library entry was just uploaded (spec §5.3): with the helper on and nothing written for it yet, it
+    is queued, charged to them. True when it queued."""
+    cur = await conn.execute("SELECT gen_at IS NOT NULL FROM library_entries WHERE user_id = %s AND doc_id = %s",
+                             (user_id, doc_id))
     row = await cur.fetchone()
-    if row is None or row[0] != "indexed" or row[1] is not None:
+    if row is None or row[0]:
         return False
-    if project_id is None:
-        cur = await conn.execute("SELECT project_id::text FROM project_documents WHERE doc_id = %s "
-                                 "ORDER BY added_at DESC LIMIT 1", (doc_id,))
-        placed = await cur.fetchone()
-        project_id = placed[0] if placed else None
-    return await describe_queue.enqueue(conn, doc_id, requested_by=requested_by, project_id=project_id)
+    if not (await helper.load_config(conn)).on:
+        return False
+    return await describe_queue.enqueue(conn, doc_id, user_id=user_id, requested_by=user_id)

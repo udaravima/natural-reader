@@ -825,7 +825,9 @@ while they indexed answered in 0.02 to 0.8 s.
 | `HELPER_INPUT_CHARS` | `6000` | Characters of document text (500–50000) the helper reads per document, whatever its size: the headings (at most a quarter), then the opening and passages at even steps through the rest. About 1,500 tokens at the default. |
 
 The helper works one document at a time across all workers, and only while no
-indexing or conversion job waits, so indexing is never slowed by it. Its calls
+indexing or conversion job waits, so indexing is never slowed by it. What it
+writes is kept per project (and per person's library copy), so a file held by
+two projects costs two calls. Its calls
 are charged to the uploader (or whoever pressed Generate) against the daily
 budget, under a **Helper** column on the Usage page; someone over budget gets no
 tags until the next day. **A cloud model sends document text to its provider**

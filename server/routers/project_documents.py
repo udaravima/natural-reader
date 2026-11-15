@@ -6,6 +6,7 @@ admins act only through a member role. The rules live in
 services/doc_versions.py."""
 from __future__ import annotations
 
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
@@ -18,6 +19,7 @@ from ..services import describe_queue, doc_describe, doc_pipeline, doc_storage, 
 from . import docs as docs_router
 from .docs import DOC_ID_PATTERN
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/projects/{project_id}/documents", tags=["projects"])
 _reader = deps.require_capability("reader")
 
@@ -52,10 +54,22 @@ async def _state(conn, doc_id: str) -> str:
 
 async def _mark_describing(conn, rows: list[dict]) -> list[dict]:
     """Add `describing` (the helper has the row's current version waiting or running) to each row: one query."""
-    busy = await describe_queue.waiting(conn, [r["doc_id"] for r in rows])
+    busy = await describe_queue.waiting_versions(conn, [r["id"] for r in rows])
     for r in rows:
-        r["describing"] = r["doc_id"] in busy
+        r["describing"] = r["id"] in busy
     return rows
+
+
+async def queue_helper(conn, document_id, user_id: str) -> bool:
+    """After a filing (helper spec §5.3): queue the helper for the document's new current version, or bring back what
+    it wrote for that content in this document before. Never fails the filing: a failure is logged, and the row's
+    Generate or "Write tags for N documents" still works. True when a job was queued; the caller wakes the lane."""
+    try:
+        async with conn.transaction():
+            return await doc_describe.queue_version(conn, document_id, requested_by=user_id)
+    except Exception:  # noqa: BLE001 — see above
+        logger.warning("Could not queue the helper for project document %s", document_id, exc_info=True)
+        return False
 
 
 async def _row(conn, project_id, document_id) -> dict:
@@ -90,13 +104,13 @@ async def describe_missing(project_id: uuid.UUID, principal: deps.Principal = De
     await require_project_role(conn, principal, project_id, "contributor", admin_ok=False)
     await _helper_ready(conn, principal)
     cur = await conn.execute(
-        "SELECT v.doc_id FROM project_documents v JOIN documents d ON d.doc_id = v.doc_id "
-        "WHERE v.project_id = %s AND v.is_current AND v.verified AND d.state = 'indexed' AND d.gen_at IS NULL "
-        "ORDER BY lower(v.file_name), v.doc_id", (project_id,))
+        "SELECT v.doc_id, v.project_doc_id::text FROM project_documents v JOIN documents d ON d.doc_id = v.doc_id "
+        "WHERE v.project_id = %s AND v.is_current AND v.verified AND d.state = 'indexed' AND v.gen_at IS NULL "
+        "ORDER BY lower(v.file_name), v.project_doc_id", (project_id,))
     queued = 0
-    for (doc_id,) in await cur.fetchall():
-        queued += await describe_queue.enqueue(conn, doc_id, requested_by=principal.user_id,
-                                               project_id=str(project_id))
+    for doc_id, document_id in await cur.fetchall():
+        queued += await describe_queue.enqueue(conn, doc_id, project_doc_id=document_id,
+                                               requested_by=principal.user_id)
     doc_pipeline.wake()
     return {"queued": queued}
 
@@ -144,7 +158,7 @@ async def describe_document(project_id: uuid.UUID, document_id: uuid.UUID,
         raise refusal(409, "not_indexed", "Tags can be written once the document is indexed.")
     await _helper_ready(conn, principal)
     await conn.execute("UPDATE project_docs SET tags = NULL, description = NULL WHERE id = %s", (document_id,))
-    await describe_queue.enqueue(conn, row["doc_id"], requested_by=principal.user_id, project_id=str(project_id))
+    await describe_queue.enqueue(conn, row["doc_id"], project_doc_id=str(document_id), requested_by=principal.user_id)
     doc_pipeline.wake()
     return await _row(conn, project_id, document_id)
 
@@ -178,9 +192,13 @@ async def upload_version(project_id: uuid.UUID, document_id: uuid.UUID,
     async def prelock(conn):
         await doc_versions.lock_document(conn, project_id, document_id)
 
+    queued = {}
+
     async def hold(conn, _created):
-        return await doc_versions.add_version(conn, principal.user_id, project_id, document_id,
-                                              doc_id=staged.sha256, file_name=name, note=note)
+        out = await doc_versions.add_version(conn, principal.user_id, project_id, document_id,
+                                             doc_id=staged.sha256, file_name=name, note=note)
+        queued["helper"] = await queue_helper(conn, document_id, principal.user_id)
+        return out
 
     try:
         created, existing, out = await docs_router._store_and_hold(staged, name, hold,
@@ -188,10 +206,11 @@ async def upload_version(project_id: uuid.UUID, document_id: uuid.UUID,
         job = await docs_router._after_upload(staged.sha256, staged, created, existing)
     finally:
         doc_storage.discard(staged)  # no-op once placed
-    await docs_router._queue_after_upload(staged.sha256, job, principal.user_id,
-                                          options={"project_id": str(project_id)})
-    state, queued = await docs_router._state_and_queued(staged.sha256)
-    return {**out, "state": state, "queued": queued}
+    await docs_router._queue_after_upload(staged.sha256, job, principal.user_id)
+    if queued.get("helper"):
+        doc_pipeline.wake()
+    state, index_queued = await docs_router._state_and_queued(staged.sha256)
+    return {**out, "state": state, "queued": index_queued}
 
 
 @router.post("/{document_id}/versions/from-library", status_code=201)
@@ -206,6 +225,8 @@ async def version_from_library(project_id: uuid.UUID, document_id: uuid.UUID,
         conn, principal.user_id, project_id, document_id, doc_id=body.doc_id,
         file_name=await doc_versions.filed_name(conn, body.doc_id, principal.user_id),
         note=body.note)
+    if await queue_helper(conn, document_id, principal.user_id):
+        doc_pipeline.wake()
     return {**out, "state": await _state(conn, out["doc_id"])}
 
 
@@ -216,6 +237,8 @@ async def restore_version(project_id: uuid.UUID, document_id: uuid.UUID, version
     await require_project_role(conn, principal, project_id, "contributor", admin_ok=False)
     out = await doc_versions.restore_version(conn, principal.user_id, project_id, document_id,
                                              version)
+    if await queue_helper(conn, document_id, principal.user_id):   # usually brings back that version's values
+        doc_pipeline.wake()
     return {**out, "state": await _state(conn, out["doc_id"])}
 
 

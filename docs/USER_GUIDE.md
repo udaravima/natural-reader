@@ -825,11 +825,18 @@ shown the tags already used in the project so it reuses them. The project
 chat's list of documents carries the descriptions too, which helps the
 assistant pick where to look.
 
-In **Library → Documents**, a document shows the helper's description, and the
-helper's tags you don't have yet as dashed chips: **+** keeps one as your own
-tag. Search and the tag filter match the helper's tags and description as
-well. **Generate tags** on a document of yours asks for them once, if it never
-had any.
+What the helper writes belongs to this project. If another project holds the
+same file, it gets its own tags, written with its own tags in use, and never
+sees yours: a code name you typed here can't turn up there. Filing a file from
+your library into a project, or adding a version, asks the helper too.
+Restoring an old version brings back the tags it had here.
+
+In **Library → Documents**, a file you uploaded shows the description written
+for your copy, and its tags you don't have yet as dashed chips: **+** keeps
+one as your own tag. A file you see through a project shows that project's
+description. Search matches those tags and descriptions as well, and the tag
+filter the suggested tags. **Generate tags** asks once for a file in your
+library that has none, such as one shared with you.
 
 **Versions.** Each document keeps its history. **v3 · 3 versions** opens it:
 every version can be opened; Contributors can **Restore** an old one (it comes

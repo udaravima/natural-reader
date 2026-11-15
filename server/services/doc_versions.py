@@ -29,7 +29,7 @@ from psycopg import errors as pg_errors
 from ..audit import audit
 from ..auth.authz import visible_projects_params, visible_projects_where
 from ..http_errors import refusal
-from . import doc_content, people, project_events
+from . import describe_queue, doc_content, people, project_events
 
 DOCUMENT_NOT_FOUND = "This document isn't in the project, or it was removed."
 
@@ -104,18 +104,36 @@ def old_version_of(items: list[dict[str, Any]]) -> dict[str, Any] | None:
     return items[0]
 
 
-# What a project shows for one of its documents (helper spec §5.4, §5.7): its own words when a Contributor set them,
-# else what the helper wrote for the current version. `pd` is project_docs, `d` the current version's documents row.
-# An empty array is a choice ("no tags"); only NULL follows the generated ones. Chat's project map uses the same.
-SHOWN_TAGS = "COALESCE(pd.tags, d.gen_tags)"
-SHOWN_DESCRIPTION = "COALESCE(pd.description, d.gen_description)"
+# What a project shows for one of its documents (helper spec §5.1, §5.4, §5.7): its own words when a Contributor set
+# them, else what the helper wrote for its current version in this project. `pd` is project_docs, `v` the current
+# version's project_documents row. An empty array is a choice ("no tags"); only NULL follows the generated ones.
+# Chat's project map uses the same.
+SHOWN_TAGS = "COALESCE(pd.tags, v.gen_tags)"
+SHOWN_DESCRIPTION = "COALESCE(pd.description, v.gen_description)"
+
+
+def project_description_sql(doc_alias: str) -> str:
+    """What a project the caller is a member of shows as the description of `<doc_alias>`'s content where it is the
+    current version (helper spec §5.4: a Library row with none of its own), the first such project by name; NULL when
+    none shows one. CURRENT. Bind `project_description_params(user_id)`."""
+    return (
+        "(SELECT COALESCE(_sd.description, _sv.gen_description) FROM project_documents _sv "  # CURRENT
+        "JOIN project_docs _sd ON _sd.id = _sv.project_doc_id JOIN projects _sp ON _sp.id = _sv.project_id "
+        f"WHERE _sv.doc_id = {doc_alias}.doc_id AND _sv.is_current AND _sv.verified "
+        "AND COALESCE(_sd.description, _sv.gen_description) IS NOT NULL "
+        f"AND {visible_projects_where('_sp')} ORDER BY _sp.name, _sp.id LIMIT 1)"
+    )
+
+
+def project_description_params(user_id: str) -> list[str]:
+    return visible_projects_params(user_id)
 
 _DOCUMENT_SELECT = (
     "SELECT v.project_doc_id, v.file_name, v.version, v.doc_id, d.state, v.added_at, "
     f"{people.person_cols('u')}, "
     "(SELECT count(*) FROM project_documents _c "  # HISTORY: how many versions it has
     "WHERE _c.project_doc_id = v.project_doc_id AND _c.verified), d.error_message, "
-    f"{SHOWN_TAGS}, {SHOWN_DESCRIPTION}, d.gen_at IS NOT NULL, "
+    f"{SHOWN_TAGS}, {SHOWN_DESCRIPTION}, v.gen_at IS NOT NULL, "
     "(pd.tags IS NOT NULL OR pd.description IS NOT NULL) "
     "FROM project_documents v JOIN documents d ON d.doc_id = v.doc_id "
     "JOIN project_docs pd ON pd.id = v.project_doc_id "
@@ -128,7 +146,7 @@ def _document(r, show_email: bool) -> dict[str, Any]:
     return {"id": str(r[0]), "name": r[1], "version": r[2], "doc_id": r[3], "state": r[4],
             "updated_at": r[5], "updated_by": people.person_from(r[6:12], show_email),
             "versions_count": r[12], "error_message": r[13],
-            # helper spec §5.8: what the project shows; `generated`: the helper has written for this version;
+            # helper spec §5.8: what the project shows; `generated`: the helper has written for this version here;
             # `edited`: the project's own words replace some of it
             "tags": list(r[14] or []), "description": r[15], "generated": r[16], "edited": r[17]}
 
@@ -466,6 +484,7 @@ async def merge_documents(conn, user_id: str, project_id, into_id, from_id) -> N
                 (into_id, start + i, old, from_id, old))
         await conn.execute("UPDATE project_docs SET last_version = %s WHERE id = %s",
                            (start + len(moving), into_id))
+        await describe_queue.move(conn, str(from_id), str(into_id))   # before the cascade drops its jobs
         await conn.execute("DELETE FROM project_docs WHERE id = %s", (from_id,))
     cur = await conn.execute("SELECT doc_id FROM project_documents "  # CURRENT
                              "WHERE project_doc_id = %s AND is_current", (into_id,))
