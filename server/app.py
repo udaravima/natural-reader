@@ -131,8 +131,10 @@ def create_app() -> FastAPI:
                     await embedding_state.init(conn)
             except Exception:
                 logger.warning("Embedding state not recorded; queries use the environment's model", exc_info=True)
-            # One rebuild runner per worker process: it drains the database's queue (doc_rebuilds).
+            # Two runners per worker process, draining the database's queues: one for rebuilds and indexing
+            # (doc_rebuilds, doc_index_jobs), one document at a time; one for Docling conversions.
             _background.append(asyncio.get_running_loop().create_task(doc_pipeline.run_queue_forever()))
+            _background.append(asyncio.get_running_loop().create_task(doc_pipeline.run_convert_forever()))
             # And one migration loop: it re-embeds the library when the embedding model changes, then switches.
             _background.append(asyncio.get_running_loop().create_task(
                 embedding_migration.run_forever(rebuild_queue.WORKER_ID)))
@@ -168,9 +170,13 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:
-        for task in _background:
+        stopping = list(_background)
+        for task in stopping:
             task.cancel()
         _background.clear()
+        if stopping:
+            # A runner hands its claimed job back to the queue as it stops: let it, before the pool closes.
+            await asyncio.wait(stopping, timeout=5)
         await project_events.stop_retention()
         await notifications.stop_retention()
         await stop_llm_router()

@@ -132,7 +132,7 @@ async def test_same_bytes_from_second_user_is_200_dedupe_without_rework(db_conn,
     async with as_user(bob) as c:
         r = await _upload(c, "mine.txt", TEXT)
     assert r.status_code == 200
-    assert r.json() == {"doc_id": doc_id, "dedup": True, "state": "indexed"}
+    assert r.json() == {"doc_id": doc_id, "dedup": True, "state": "indexed", "queued": False}
     assert embed.calls == calls  # nothing re-embedded
     assert await _chunks(db_conn, doc_id) == chunks
     # Order-free: both rows are written in this test's one transaction, where
@@ -286,7 +286,7 @@ async def test_legacy_indexed_is_200_and_reextracted_once(db_conn, as_user, embe
     async with as_user(alice) as c:
         r = await _upload(c, "a.txt", TEXT)
     assert r.status_code == 200
-    assert r.json() == {"doc_id": doc_id, "dedup": True, "state": "indexed"}
+    assert r.json() == {"doc_id": doc_id, "dedup": True, "state": "indexed", "queued": True}   # the legacy swap
     doc = await _doc(db_conn, doc_id)
     assert doc["extracted_by"] == "server" and doc["state"] == "indexed"
     texts = [t for *_x, t in await _chunks(db_conn, doc_id)]
@@ -327,7 +327,7 @@ async def test_legacy_converted_with_verified_bytes_flips_without_rework(
     async with as_user(alice) as c:
         r = await _upload(c, "c.pdf", data)
     assert r.status_code == 200
-    assert r.json() == {"doc_id": doc_id, "dedup": True, "state": "indexed"}
+    assert r.json() == {"doc_id": doc_id, "dedup": True, "state": "indexed", "queued": False}
     doc = await _doc(db_conn, doc_id)
     assert doc["extracted_by"] == "server"
     assert doc["conversion_state"] == "converted"

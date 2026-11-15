@@ -108,7 +108,7 @@ _DOCUMENT_SELECT = (
     "SELECT v.project_doc_id, v.file_name, v.version, v.doc_id, d.state, v.added_at, "
     f"{people.person_cols('u')}, "
     "(SELECT count(*) FROM project_documents _c "  # HISTORY: how many versions it has
-    "WHERE _c.project_doc_id = v.project_doc_id AND _c.verified) "
+    "WHERE _c.project_doc_id = v.project_doc_id AND _c.verified), d.error_message "
     "FROM project_documents v JOIN documents d ON d.doc_id = v.doc_id "
     "LEFT JOIN users u ON u.id = v.added_by "
     "WHERE v.project_id = %s AND v.is_current AND v.verified "  # CURRENT
@@ -118,7 +118,7 @@ _DOCUMENT_SELECT = (
 def _document(r, show_email: bool) -> dict[str, Any]:
     return {"id": str(r[0]), "name": r[1], "version": r[2], "doc_id": r[3], "state": r[4],
             "updated_at": r[5], "updated_by": people.person_from(r[6:12], show_email),
-            "versions_count": r[12]}
+            "versions_count": r[12], "error_message": r[13]}
 
 
 async def list_project_documents(conn, project_id, *, show_email: bool) -> list[dict[str, Any]]:

@@ -932,7 +932,7 @@ export default function App() {
     const serverId = result.docId;
     if (serverId !== docId) console.warn('Server doc id differs from local hash', { docId, serverId });
     if (result.link?.conflict) askAboutFiling(docProjectId, serverId, pdfFileName, result.link.conflict);
-    setIndex(docId, { state: result.state });
+    setIndex(docId, { state: result.state, queued: result.queued });
     if (result.dedup && result.state === 'indexed' && !reuploadForReindex) {
       showToast('Already indexed — added to your library.', 4000);
       return;

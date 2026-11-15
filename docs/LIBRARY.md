@@ -71,9 +71,12 @@ else already has — pick it, and the server takes it from there.
   get an entry **instantly**. Nothing is re-extracted, re-embedded, or
   re-indexed — you have the file open, and searching and chatting with it
   work at once because it's already indexed.
-- **New bytes**: the server stores them, then extracts and indexes the text
-  in the background (the same "Extracting…" → "Indexing n/m" → "Indexed"
-  progression as before). Extraction happens **on the server**, from the
+- **New bytes**: the server stores them and queues their indexing, then
+  extracts and indexes the text in turn ("Waiting to index (n ahead)" →
+  "Reading" → "Indexing" → "Indexed"). Each server worker indexes one document
+  at a time, from a queue in the database, so many uploads at once wait in line
+  instead of all running together, and a restart picks up where it was
+  ([DEPLOYMENT.md](DEPLOYMENT.md), "Indexing and conversion run from a queue"). Extraction happens **on the server**, from the
   verified bytes, replicating the reader's own page/section rules exactly —
   so the page numbers in chat citations match the reader's pages. Clicking a
   "(page N)" citation in a reply about a document opens that document at

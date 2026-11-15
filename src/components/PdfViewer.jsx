@@ -217,6 +217,8 @@ export default function PdfViewer({
                                 state={indexEntry?.state || 'idle'}
                                 chunkCount={indexEntry?.chunkCount}
                                 embeddedCount={indexEntry?.embeddedCount}
+                                queued={indexEntry?.queued}
+                                queueAhead={indexEntry?.queueAhead}
                                 onIndex={onIndexDocument}
                             />
                         )}

@@ -7,6 +7,7 @@ import ProjectPage from '../projects/ProjectPage';
 import NameMatchDialog from '../projects/NameMatchDialog';
 import ShareDialog from './ShareDialog';
 import { projectsApi } from '../../lib/projectsApi';
+import { docStateLabel } from '../../lib/docStateLabel';
 import { useProjectFiling } from '../../hooks/useProjectFiling';
 
 // Typing pauses this long before a search-as-you-type request fires. Keeps
@@ -475,7 +476,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="text-xs font-bold truncate">{doc.file_name}</span>
                       <span className={`text-[10px] px-1.5 py-0.5 rounded ${theme.bgTertiary} ${theme.textSecondary}`}>
-                        {doc.state}
+                        {docStateLabel(doc)}
                       </span>
                       {doc.added_via === 'shared' && (
                         <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-500">

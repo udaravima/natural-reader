@@ -53,7 +53,14 @@ in many languages, from more providers than Ollama. This design does not build t
 - a secret value leaves the browser without the person having chosen to send it;
 - the transcript is sent without the person seeing it first;
 - a recording is stored or written to a log;
-- turning voice input on makes chat, narration or indexing noticeably slower for everyone else on a CPU-only box;
+- voice input that is switched on but idle slows chat, narration or indexing for anyone, or a transcription takes
+  more than its share of the processor (`SPEECH_CPU_THREADS`, by default half the cores across all workers);
+  - *Reworded 2026-11-14, the owner's decision.* The first wording was "turning voice input on makes chat,
+    narration or indexing noticeably slower for everyone else on a CPU-only box". As measured, that can't be met
+    while a transcription runs on a machine with no GPU: a local model's reply took about 1.5 to 2 times as long
+    during a 101 s transcription, and narration about 1.6 to 2.4 times; a cloud model's reply wasn't slowed
+    (`docs/DEPLOYMENT.md`, voice input timings). The owner accepted that slowdown: it lasts only while a
+    recording is being transcribed, and the thread limit bounds it.
 - an `.env` with a `</attached_file>` (or any of our tags) inside can end the block and speak as the app.
 
 ## 3. A text file in the message

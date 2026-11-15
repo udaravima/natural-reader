@@ -458,7 +458,7 @@ async def test_index_by_project_only_reader_is_404(db_conn, harness, store):
     owner = await _member(db_conn, "pr-owner")
     member = await _member(db_conn, "pr-member")
     pid = await seed.make_project(db_conn, owner.user_id, "P")
-    await seed.add_member(db_conn, pid, member.user_id)
+    await seed.add_member(db_conn, pid, member.user_id, role="reader")
     path = _write(store, DOC, "txt", TEXT)
     await seed.seed_doc(db_conn, DOC, owner.user_id, file_type="text", state="failed",
                         bytes_path=path, project_ids=[pid])
@@ -469,6 +469,25 @@ async def test_index_by_project_only_reader_is_404(db_conn, harness, store):
     assert r.status_code == 404  # ...but no entry, so nothing to resume
     assert r.json()["detail"]["error"] == "not_found"  # structured, not a plain string
     assert (await _doc(db_conn))["state"] == "failed"
+
+
+async def test_index_by_a_project_contributor_without_an_entry_resumes(db_conn, harness, store):
+    """A Contributor files and versions a project's documents; a file uploaded straight into the project is in
+    nobody's library. Resuming changes no content, so they may: the Documents tab's Retry index (bulk upload spec,
+    phase 1). Re-indexing an indexed document stays the content owner's."""
+    _, as_user = harness
+    owner = await _member(db_conn, "pc-owner")
+    member = await _member(db_conn, "pc-member")
+    pid = await seed.make_project(db_conn, owner.user_id, "P")
+    await seed.add_member(db_conn, pid, member.user_id, role="contributor")
+    doc_id = _sha256(TEXT)
+    path = _write(store, doc_id, "txt", TEXT)
+    await seed.seed_doc(db_conn, doc_id, owner.user_id, file_type="text", state="failed",
+                        bytes_path=path, project_ids=[pid])
+    async with as_user(member) as client:
+        r = await client.post(f"/v1/docs/{doc_id}/index")
+    assert r.status_code == 202, r.text
+    assert (await _doc(db_conn, doc_id))["state"] == "indexed"
 
 
 # ---------- controller-ruled follow-ups ----------

@@ -776,6 +776,14 @@ Library row says so and offers **Open current**.
 A Maintainer removes a document with × (with all its versions; a file nobody
 else has in their library is deleted with it, so you're asked first).
 
+**Indexing.** Each document shows where its indexing is: **Waiting to index (3
+ahead)** while other documents go first (the server indexes one at a time per
+worker), **Reading**, **Indexing**, **Indexed**, or **Failed**: point at it to
+see why. The list follows along by itself while anything is moving. A document
+that failed, or that nothing is working on (**Not indexed**), has **Retry index**
+for Contributors and above. A file the server stopped on 3 times says "The file
+may be damaged": try **Convert**, or upload a fresh copy.
+
 **Activity** lists who changed what, newest first. If the history can't be loaded, the tab says so instead of showing an empty list.
 
 **Sharing one document with one person.** In the Library, press **Share** on a

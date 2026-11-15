@@ -27,6 +27,7 @@ function api(over = {}) {
     deleteVersion: vi.fn(async () => null),
     mergeDocuments: vi.fn(async () => report),
     removeDocument: vi.fn(async () => null),
+    reindex: vi.fn(async () => ({ ok: true, queued: true })),
     ...over,
   };
 }
@@ -248,20 +249,20 @@ describe('ProjectDocsTab while content is indexing', () => {
 
   it('re-reads the list every 3 s until every row has settled, then stops', async () => {
     const documents = vi.fn()
-      .mockResolvedValueOnce([{ ...report, state: 'stored' }, final])
-      .mockResolvedValueOnce([{ ...report, state: 'indexing' }, final])
+      .mockResolvedValueOnce([{ ...report, state: 'stored', queued: true, queue_ahead: 1 }, final])
+      .mockResolvedValueOnce([{ ...report, state: 'indexing', queued: true, queue_ahead: 0 }, final])
       .mockResolvedValue([report, final]);
     mount(project(), api({ documents }));
     await flush();
-    expect(badge()).toBe('stored');
+    expect(badge()).toBe('Waiting to index (1 ahead)');
     await advance(2999);
     expect(documents).toHaveBeenCalledTimes(1);
     await advance(1);
     expect(documents).toHaveBeenCalledTimes(2);
-    expect(badge()).toBe('indexing');
+    expect(badge()).toBe('Indexing');
     await advance(3000);
     expect(documents).toHaveBeenCalledTimes(3);
-    expect(badge()).toBe('indexed');
+    expect(badge()).toBe('Indexed');
     await advance(30000);
     expect(documents).toHaveBeenCalledTimes(3);
   });
@@ -281,7 +282,34 @@ describe('ProjectDocsTab while content is indexing', () => {
     await act(async () => finish([{ ...report, state: 'indexing' }]));
     await advance(3000);
     expect(documents).toHaveBeenCalledTimes(3);
-    expect(badge()).toBe('indexed');
+    expect(badge()).toBe('Indexed');
+  });
+
+  it('keeps watching past ten minutes while documents still wait, every 15 s after the first 200 reads', async () => {
+    let settled = false;
+    const documents = vi.fn(async () => [settled ? report : { ...report, state: 'stored', queued: true, queue_ahead: 9 }]);
+    mount(project(), api({ documents }));
+    await flush();
+    for (let i = 0; i < 200; i++) await advance(3000);
+    expect(documents).toHaveBeenCalledTimes(201);
+    await advance(14999);
+    expect(documents).toHaveBeenCalledTimes(201);
+    await advance(1);
+    expect(documents).toHaveBeenCalledTimes(202);
+    settled = true;
+    await advance(15000);
+    expect(documents).toHaveBeenCalledTimes(203);
+    await advance(60000);
+    expect(documents).toHaveBeenCalledTimes(203);
+  });
+
+  it('does not watch a document nothing will index', async () => {
+    const documents = vi.fn(async () => [{ ...report, state: 'stored', queued: false }]);
+    mount(project(), api({ documents }));
+    await flush();
+    await advance(30000);
+    expect(documents).toHaveBeenCalledTimes(1);
+    expect(badge()).toBe('Not indexed');
   });
 
   it('stops when the tab unmounts', async () => {
@@ -293,5 +321,32 @@ describe('ProjectDocsTab while content is indexing', () => {
     cleanup();
     await advance(30000);
     expect(documents).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('ProjectDocsTab: a document that is not indexing', () => {
+  beforeEach(() => vi.clearAllMocks());
+  const failed = { ...report, state: 'failed', error_message: 'No text found — try Convert (OCR).' };
+
+  it('says Failed with the reason, and Retry index queues it again and re-reads the list', async () => {
+    const a = api({ documents: vi.fn().mockResolvedValueOnce([failed]).mockResolvedValue([{ ...report, state: 'stored', queued: true }]) });
+    const props = mount(project(), a);
+    const label = await screen.findByText('Failed');
+    expect(label.title).toBe('No text found — try Convert (OCR).');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry indexing report.pdf' }));
+    await waitFor(() => expect(a.reindex).toHaveBeenCalledWith('h2'));
+    await waitFor(() => expect(props.showToast).toHaveBeenCalledWith('report.pdf is queued for indexing.', 3000));
+    expect(await screen.findByText('Waiting to index')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Retry indexing report.pdf' })).toBeNull();
+  });
+
+  it('offers Retry index for a document with no job, and none to a Reader or for a queued one', async () => {
+    mount(project(), api({ documents: vi.fn(async () => [{ ...report, state: 'stored', queued: false }, { ...final, state: 'stored', queued: true }]) }));
+    expect(await screen.findByRole('button', { name: 'Retry indexing report.pdf' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Retry indexing report-final.pdf' })).toBeNull();
+    cleanup();
+    mount(project({ my_role: 'reader', can: can() }), api({ documents: vi.fn(async () => [failed]) }));
+    await screen.findByText('Failed');
+    expect(screen.queryByRole('button', { name: /Retry indexing/ })).toBeNull();
   });
 });

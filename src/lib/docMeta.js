@@ -51,7 +51,7 @@ export async function registerDocument({
     const res = await apiFetch(apiHost, apiPort, '/v1/docs', { method: 'POST', body: form });
     if (!res.ok) throw new Error(await describeRefusal(res));
     const body = await res.json();
-    const result = { docId: body.doc_id, dedup: !!body.dedup, state: body.state };
+    const result = { docId: body.doc_id, dedup: !!body.dedup, state: body.state, queued: !!body.queued };
     if (projectId && linkProject) {
         result.link = await linkDocToProject({ apiHost, apiPort, projectId, docId: result.docId });
     }

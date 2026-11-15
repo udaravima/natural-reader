@@ -9,8 +9,8 @@ from server.routers import projects as projects_router
 from server.tests.docs_harness import build_docs_app
 
 
-def build_versions_app(db_conn, monkeypatch, *, storage_dir, embed=None):
-    app, as_user = build_docs_app(db_conn, monkeypatch, storage_dir=storage_dir, embed=embed)
+def build_versions_app(db_conn, monkeypatch, *, storage_dir, embed=None, run_queue=True):
+    app, as_user = build_docs_app(db_conn, monkeypatch, storage_dir=storage_dir, embed=embed, run_queue=run_queue)
 
     async def _conn():
         yield db_conn
