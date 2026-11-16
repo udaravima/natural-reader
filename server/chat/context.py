@@ -242,7 +242,7 @@ class _Item:
     reply_held: bool = False   # a reply from a model that was given real values, in a turn for another model
 
 
-def _held_replies(history: list[StoredMessage], model: str) -> set[str]:
+def held_replies(history: list[StoredMessage], model: str) -> set[str]:
     """Ids of the assistant replies this model must not see: replies from a model that was given real values.
     Walk in order: a user message with a real-values text file exposes that message's model; an assistant message
     after that, from another model that was exposed (or with no model recorded), is held. Replies from before the
@@ -264,10 +264,10 @@ def _fit_history(history: list[StoredMessage], fixed_chars: int, fixed_attachmen
     part of a long chat), then the oldest turns. Pins, the volatile block and
     the new message are never trimmed."""
     items = []
-    held_replies = _held_replies(history, model)
+    held_ids = held_replies(history, model)
     for m in history:
         held = [a for a in m.attachments if _is_held(m, a, model)]
-        items.append(_Item(m, [a for a in m.attachments if a not in held], held=held, reply_held=m.id in held_replies))
+        items.append(_Item(m, [a for a in m.attachments if a not in held], held=held, reply_held=m.id in held_ids))
     if window is None:
         return items, 0, 0
     budget = window - cfg.reply_reserve_tokens

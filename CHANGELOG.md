@@ -6,6 +6,19 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Chats named from their first exchange.** With a helper model set up, a new
+  chat gets a short title a few seconds after its first reply. It replaces the
+  first message cut to 60 characters, and the sidebar updates without a reload.
+  - A title you typed is never replaced, nor are chats named before this
+    version.
+  - **✦ Generate title**, beside Rename, asks again from the conversation so
+    far.
+  - A cloud helper never reads a chat that runs on a local model.
+  - A reply that saw a file's real values is never sent to the helper.
+  - A chat that starts with a file and no words is titled from the file's
+    name and the reply.
+  - Migration 029 records who wrote each title.
+
 - **PDF and Markdown side by side.** A converted PDF's toolbar switch is now
   **PDF | Both | MD**. **Both** shows the PDF page on the left and its Markdown
   on the right, each scrolling on its own, and keeps them on the same page:
@@ -67,6 +80,10 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Chat buttons on touch screens.** A chat's **Rename** and **Delete**
+  buttons in the sidebar only ever showed on mouse hover, so on a phone or
+  tablet they were invisible but still took taps. They now always show on a
+  screen with no hover, at a size a finger can hit, and on keyboard focus.
 - **Scrolling long Markdown pages turns the page.** In **MD** view, scrolling through a converted page taller
   than the window never updated the page number. It does now.
 - **A project Contributor couldn't resume a document's indexing** unless the

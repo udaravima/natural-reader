@@ -19,6 +19,9 @@ const MIN_TTS_LENGTH = 5;
 const SAVE_WAIT_MS = 250;
 const SAVE_WAIT_TRIES = 12;
 const POLL_MS = 3000;   // how often a reloaded "still generating…" chat re-reads the server
+// How often the chat list is re-read while a chat says a title is being written (helper spec §6). The server gives
+// a pending title up after 3 minutes, so this stops by itself.
+export const TITLE_POLL_MS = 4000;
 const CHAT_NOT_FOUND = "This chat doesn't exist or you don't have access.";
 
 const newSessionId = () => `s-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -240,6 +243,48 @@ export function useChatEngine({
         const list = await sessionStore.getRecentSessions();
         setSessions(list);
     }, [sessionStore]);
+
+    // Chat titles (helper spec §6): whether a helper model is set up (it offers Generate title), and a re-read of the
+    // list while any chat says a title is being written, so the new title shows without a reload. An admin can turn
+    // the helper on or off at any time, so the answer is read again when the chat sidebar opens (ChatSidebar), when
+    // the window is looked at again, and when Generate title is refused. No answer: what was known stays.
+    const [helperOn, setHelperOn] = useState(false);
+    const helperRead = useRef(null);
+    const refreshHelper = useCallback(() => {
+        helperRead.current ??= (async () => {
+            try {
+                const res = await apiFetch(apiHost, apiPort, '/v1/settings/helper');
+                if (res?.ok) setHelperOn(Boolean((await res.json())?.on));
+            } catch {
+                // Generate title stays as it was; automatic titles don't depend on it
+            } finally {
+                helperRead.current = null;
+            }
+        })();
+        return helperRead.current;
+    }, [apiHost, apiPort]);
+    useEffect(() => {
+        refreshHelper();
+        window.addEventListener('focus', refreshHelper);
+        return () => window.removeEventListener('focus', refreshHelper);
+    }, [refreshHelper]);
+
+    useEffect(() => {
+        if (!sessions.some((s) => s.titlePending)) return undefined;
+        const t = setTimeout(() => { refreshSessions(); }, TITLE_POLL_MS);
+        return () => clearTimeout(t);
+    }, [sessions, refreshSessions]);
+
+    const generateTitle = useCallback(async (id) => {
+        const out = await sessionStore.generateTitle(id);
+        if (!out?.ok) {
+            if (out?.message) showToast?.(out.message, 5000);
+            refreshHelper();   // refused: the helper may have been turned off since this page read it
+            return false;
+        }
+        await refreshSessions();
+        return true;
+    }, [sessionStore, refreshSessions, refreshHelper, showToast]);
 
     // The server writes the chat's log (sent, tool calls, errors…). Re-read it
     // after a turn so the sidebar's Log is current.
@@ -702,6 +747,10 @@ export function useChatEngine({
         switchToSession,
         deleteSession,
         renameSession,
+        // Chat titles (helper spec §6)
+        helperOn,
+        refreshHelper,
+        generateTitle,
         // "Use this document" for the active chat (v2.4 Task E)
         docUse,
         // What the chat is about: {kind: 'none'|'document'|'project', project?}

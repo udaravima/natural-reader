@@ -67,3 +67,34 @@ describe('importLegacy', () => {
         expect(sent.messages[0].attachments).toEqual([{ id: 'a', kind: 'image', name: 'x.png', mimeType: 'image/png', size: 3 }]);
     });
 });
+
+describe('generateTitle (helper spec §6)', () => {
+    let fetchMock;
+    beforeEach(() => {
+        fetchMock = vi.fn();
+        vi.stubGlobal('fetch', fetchMock);
+    });
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('asks the server for a title', async () => {
+        fetchMock.mockResolvedValue({ ok: true, status: 202, json: async () => ({ titlePending: true }) });
+        const store = makeSessionStore({ apiHost: '', apiPort: '', onBackendOffline: () => {} });
+        expect(await store.generateTitle('s-1')).toEqual({ ok: true });
+        const [url, init] = fetchMock.mock.calls[0];
+        expect(url).toContain('/v1/chat/sessions/s-1/title');
+        expect(init.method).toBe('POST');
+    });
+
+    it("reports the server's refusal sentence", async () => {
+        const message = 'No helper model is set up. An admin can choose one in Models.';
+        fetchMock.mockResolvedValue({ ok: false, status: 409, json: async () => ({ detail: { error: 'helper_off', message } }) });
+        const store = makeSessionStore({ apiHost: '', apiPort: '', onBackendOffline: () => {} });
+        expect(await store.generateTitle('s-1')).toEqual({ ok: false, message });
+    });
+
+    it('sends nothing without an id', async () => {
+        const store = makeSessionStore({ apiHost: '', apiPort: '', onBackendOffline: () => {} });
+        expect(await store.generateTitle('')).toEqual({ ok: false });
+        expect(fetchMock).not.toHaveBeenCalled();
+    });
+});

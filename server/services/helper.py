@@ -93,6 +93,20 @@ async def load_config(conn, env: Mapping[str, str] = os.environ) -> HelperConfig
     return HelperConfig(key, timeout_s, input_chars, num_ctx, local)
 
 
+async def chat_model_is_local(conn, model_id: str | None) -> bool:
+    """Whether a chat's model runs on hardware the deployer controls (the same judgement as the helper's own `local`).
+    A model the router can't place, or none, counts as local: the careful answer for §4.3's rule that a cloud helper
+    never reads a local chat."""
+    if not model_id:
+        return True
+    try:
+        provider, name = get_router().resolve(model_id)
+    except UnknownModel:
+        return True
+    ms = await model_settings.load_models_settings(conn)
+    return model_settings.is_local(provider.config, name, ms.provider_locality)
+
+
 def _deployment_budget() -> int | None:
     return model_router.get_config().daily_token_budget
 

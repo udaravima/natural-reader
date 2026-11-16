@@ -13,6 +13,7 @@
  */
 import * as idb from '../db';
 import { apiFetch } from '../utils/apiFetch';
+import { refusalMessage } from './apiErrors';
 import { stripAttachmentData } from '../utils/attachment';
 
 const LOCAL_IDS = new Set();
@@ -191,6 +192,25 @@ export function makeSessionStore({ apiHost, apiPort, onBackendOffline }) {
             } catch (e) {
                 if (e.status !== 404) notifyOffline(e);
                 return false;
+            }
+        },
+
+        /**
+         * Generate title (helper spec §6): the server's helper model writes this chat's title in the background; the
+         * chat then says `titlePending` until it lands. Resolves {ok: true}, or {ok: false, message} with the
+         * server's refusal sentence. Browser-only chats have no server to ask.
+         */
+        generateTitle: async (id) => {
+            if (!id || LOCAL_IDS.has(id)) return { ok: false };
+            try {
+                const res = await apiFetch(apiHost, apiPort, `/v1/chat/sessions/${encodeURIComponent(id)}/title`,
+                    { method: 'POST' });
+                notifyOnline();
+                if (res.ok) return { ok: true };
+                return { ok: false, message: (await refusalMessage(res)) || `Could not write a title (HTTP ${res.status}).` };
+            } catch (e) {
+                notifyOffline(e);
+                return { ok: false, message: 'The server could not be reached.' };
             }
         },
 

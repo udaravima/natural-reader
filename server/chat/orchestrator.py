@@ -38,7 +38,7 @@ from ..services import doc_pipeline
 from ..services.doc_outlines import Outline, load_outlines
 from ..services.doc_search import ReadableDoc, readable_doc
 from ..services.inference_limits import get_limits
-from . import store
+from . import store, titles
 from .config import ChatConfig
 from .context import TurnInput, build_context, history_real_values
 from .project_map import ProjectMap, build_map
@@ -624,6 +624,10 @@ async def _finalize(claim: TurnClaim, state: _State, outcome: str, req: TurnRequ
         await store.finish_turn(claim, status=outcome, finish_reason=finish_reason, content=state.content,
                                 thinking=state.thinking, tool_calls=state.tool_calls or None,
                                 doc_context=state.doc_context, stats=state.stats(req.model_id, started))
+        if outcome == "complete":
+            # The chat's first complete reply: the helper may title it (helper spec §6). The pending mark is written
+            # here, before the stream's [DONE], so the browser's refresh after the reply already sees it.
+            await titles.after_reply(claim.session_id, req.user_id, claim.assistant_message_id, req.model_id)
 
     def _on_done(t: asyncio.Task) -> None:
         # Once this coroutine stops awaiting `task` below (a second
