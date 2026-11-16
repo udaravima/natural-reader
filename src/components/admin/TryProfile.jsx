@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { apiFetch } from '../../utils/apiFetch';
-import { modelLabel } from './useChatModels';
+import { firstLocal, modelLabel } from './useChatModels';
 
 const QUESTION_MAX = 500;   // characters
 
@@ -17,7 +17,7 @@ export function TryProfile({ theme, apiHost, apiPort, showToast, models, name, b
   const remembered = (() => {
     try { return JSON.parse(localStorage.getItem('neural-pdf-selectedModel') || 'null'); } catch { return null; }
   })();
-  const chosen = model ?? (models.some((m) => m.id === remembered) ? remembered : models[0]?.id ?? '');
+  const chosen = model ?? (models.some((m) => m.id === remembered) ? remembered : firstLocal(models));
   const link = 'min-h-11 md:min-h-0 underline text-blue-500 disabled:opacity-40 disabled:no-underline';
   const box = `text-xs p-2 rounded border ${theme.border} ${theme.bg} ${theme.text}`;
 

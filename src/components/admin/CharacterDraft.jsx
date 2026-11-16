@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { apiFetch } from '../../utils/apiFetch';
-import { modelLabel } from './useChatModels';
+import { firstLocal, modelLabel } from './useChatModels';
 
 const DESCRIBE_MAX = 6000;   // characters of notes
 
@@ -13,7 +13,7 @@ export function CharacterDraft({ theme, apiHost, apiPort, showToast, models, hel
   const [notes, setNotes] = useState('');
   const [model, setModel] = useState(null);         // null: the default (the helper, else the first model)
   const [generating, setGenerating] = useState(false);
-  const chosen = model ?? (helperOn ? '' : models[0]?.id ?? '');
+  const chosen = model ?? (helperOn ? '' : firstLocal(models));
   const field = `min-h-11 md:min-h-0 w-full text-xs p-2 rounded border ${theme.border} ${theme.bg} ${theme.text}`;
   const link = 'min-h-11 md:min-h-0 underline text-blue-500 disabled:opacity-40 disabled:no-underline';
 

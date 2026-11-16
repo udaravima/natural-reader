@@ -472,4 +472,14 @@ describe('AssistantProfileSection: a character', () => {
     expect(screen.queryByRole('button', { name: 'Try it' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Write the description' })).toBeNull();
   });
+
+  // From the final review: with no helper, the first model wrote the draft even when it was a cloud one, so notes could
+  // leave the machine without anyone choosing that. Both pickers start on a local model when there is one.
+  it('starts both pickers on a local model, so nothing leaves the machine unless chosen', async () => {
+    fakeServer({ profiles: TWO, helper: false, models: [MODELS[1], MODELS[0]] });   // the cloud one listed first
+    mount();
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Plain' }));
+    await waitFor(() => expect(screen.getByLabelText('Written by').value).toBe('ollama:big'));
+    expect(screen.getByLabelText('Answered by').value).toBe('ollama:big');
+  });
 });

@@ -25,5 +25,8 @@ export function useChatModels(apiHost, apiPort) {
   return models;
 }
 
+/** The picker's starting model: a local one when there is one, so nothing leaves the machine unless chosen. */
+export const firstLocal = (models) => (models.find((m) => m.local) ?? models[0])?.id ?? '';
+
 /** A model's label in a picker: a cloud one says that what is sent leaves the machine. */
 export const modelLabel = (m) => (m.local ? m.name : `${m.name} (cloud: your notes leave this machine)`);
