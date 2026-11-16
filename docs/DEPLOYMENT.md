@@ -885,6 +885,15 @@ most 2,000 characters. One call per press, charged to that admin; nothing is
 saved until they press Save. With a cloud helper, the description is sent to
 that provider. On the same CPU a draft took about 5 s.
 
+**The profile library.** **Admin → Chat → Assistant** holds house rules
+(one text for every chat) and named profiles; people pick a profile per chat.
+Migration 030 adds the `assistant_profiles` table and two columns to
+`chat_sessions` (`profile_id`, `profile_name`). A profile saved in the console
+before the upgrade becomes one profile named "Assistant", the default, with the
+same text, so no chat changes. `CHAT_ASSISTANT_PROFILE_FILE` is now used only
+while the library is empty; once an admin adds a profile, the file is ignored.
+Its Down is in the file's header.
+
 Migration 029 adds two columns to `chat_sessions` (`title_source`,
 `title_pending_at`). Chats already named at the upgrade are marked as named
 by a person. Its Down is in the file's header.

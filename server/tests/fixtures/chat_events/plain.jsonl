@@ -1,4 +1,4 @@
-{"messageId": "<message-id>", "runId": "<message-id>", "seq": 1, "sessionId": "<session-id>", "type": "start", "userMessageId": "<user-message-id>"}
+{"messageId": "<message-id>", "profileId": null, "profileName": "", "runId": "<message-id>", "seq": 1, "sessionId": "<session-id>", "type": "start", "userMessageId": "<user-message-id>"}
 {"seq": 2, "step": 1, "type": "start-step"}
 {"id": "t1", "seq": 3, "type": "text-start"}
 {"delta": "Hello ", "id": "t1", "seq": 4, "type": "text-delta"}

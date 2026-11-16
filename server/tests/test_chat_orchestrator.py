@@ -1108,8 +1108,9 @@ def test_chat_search_min_score_is_read_from_the_environment():
 
 async def test_the_deployment_profile_leads_the_system_message(conn):
     """v2.4 Task A2: an admin-saved profile reaches the model first, every turn."""
-    from server.services.assistant_profile import save_profile
-    await save_profile(conn, "You are Ada, the reading-room assistant.", updated_by=None)
+    from server.services import profile_library
+    await profile_library.create_profile(conn, name="Ada", description="", updated_by=None,
+                                         text="You are Ada, the reading-room assistant.")
     router = FakeRouter(steps=[reply("Hello!")])
     await _run(conn, router)
     system = router.calls[0]["messages"][0]

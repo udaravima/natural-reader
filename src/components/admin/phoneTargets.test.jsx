@@ -34,7 +34,17 @@ const USAGE_ROW = (over) => ({
 const ROUTES = {
   '/v1/admin/users': [person({ id: 'u1' }), person({ id: 'u2', email: 'b@x.io', status: 'active' })],
   '/v1/admin/projects': [project()],
-  '/v1/admin/assistant': { text: 'Be brief.', source: 'admin', maxChars: 8000, preview: 'Preview', warnings: [] },
+  '/v1/admin/assistant/profiles': {
+    houseRules: { text: 'Be kind.', maxChars: 2000, warnings: [] },
+    profiles: [
+      { id: 'p1', name: 'Plain', description: 'Short answers', text: 'Be brief.', enabled: true, isDefault: true, chats: 2, warnings: [], combinedChars: 19 },
+      { id: 'p2', name: 'Tutor', description: '', text: 'Explain.', enabled: true, isDefault: false, chats: 0, warnings: [], combinedChars: 18 },
+    ],
+    file: { configured: false, inUse: false, text: '' }, maxChars: 8000, nameMaxChars: 60, descriptionMaxChars: 200,
+    placeholders: ['date', 'app', 'profile'],
+  },
+  '/v1/admin/assistant/preview': { preview: 'Preview', warnings: [], combinedChars: 19 },
+  '/v1/settings/helper': { on: true },
   '/v1/admin/chat-options': { web_search: 'ask', source: 'admin', searxng: true, voice_input: true, voice_source: 'admin' },
   '/v1/speech/status': { enabled: true, languages: [{ code: 'de', name: 'German' }] },
   '/v1/admin/defaults': {
@@ -69,7 +79,7 @@ const ROUTES = {
 const SECTIONS = {
   People: { ui: <PeopleSection {...props} currentUserId="me" />, ready: 'Enroll email' },
   Projects: { ui: <AdminProjectsSection {...props} currentUserId="me" onOpenProject={vi.fn()} />, ready: 'Open Orphan' },
-  Assistant: { ui: <AssistantProfileSection {...props} />, ready: 'Assistant profile' },
+  Assistant: { ui: <AssistantProfileSection {...props} />, ready: 'House rules' },
   Chat: { ui: <ChatOptionsSection {...props} />, ready: 'Ask first' },
   'Defaults for users': { ui: <DefaultsSection {...props} />, ready: 'Voice' },
   Models: { ui: <ModelsSection {...props} />, ready: 'Reader' },
@@ -130,6 +140,17 @@ describe('Admin console: 44 px tap targets below md', () => {
     expect(desktopChanged(container)).toEqual([]);
     fireEvent.click(screen.getByRole('button', { name: 'By day' }));
     await screen.findByText('2026-10-25');
+    expect(unsized(container)).toEqual([]);
+    expect(desktopChanged(container)).toEqual([]);
+  });
+
+  it('Assistant: the profile editor too (name, description, Generate, preview)', async () => {
+    const { container } = render(SECTIONS.Assistant.ui);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Tutor' }));
+    await screen.findByLabelText('Describe the assistant');
+    fireEvent.click(screen.getByText('What the model receives'));
+    await screen.findByText('Preview');
+    expect(screen.getByLabelText('Profile name')).toBeTruthy();
     expect(unsized(container)).toEqual([]);
     expect(desktopChanged(container)).toEqual([]);
   });

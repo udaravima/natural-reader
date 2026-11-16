@@ -435,6 +435,11 @@ export default function App() {
     helperOn: chatHelperOn,
     refreshHelper: chatRefreshHelper,
     generateTitle: chatGenerateTitle,
+    profiles: chatProfiles,
+    profileId: chatProfileId,
+    setProfile: chatSetProfile,
+    currentProfile: chatCurrentProfile,
+    removedProfile: chatRemovedProfile,
     pins: chatPins,
     addPin: chatAddPin,
     removePin: chatRemovePin,
@@ -1344,6 +1349,11 @@ export default function App() {
             helperOn={chatHelperOn}
             refreshHelper={chatRefreshHelper}
             generateTitle={chatGenerateTitle}
+            profiles={chatProfiles}
+            profileId={chatProfileId}
+            setProfile={chatSetProfile}
+            currentProfile={chatCurrentProfile}
+            removedProfile={chatRemovedProfile}
           />
         ) : inAdmin || inLibrary ? null : (
         canReader && <Sidebar

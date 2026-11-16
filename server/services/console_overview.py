@@ -29,12 +29,13 @@ import httpx
 from ..chat import context as chat_context
 from ..chat.config import ChatConfig, get_chat_config
 from ..chat.project_scope import ProjectScope, ScopeDoc
+from ..chat import profile_text
 from ..chat.prompt import system_rules
 from ..chat.tools import ToolContext, available_tools, tool_spec
 from ..llm.providers.base import ProviderConfig
 from ..llm.router import ModelInfo, UnknownModel
 from .. import chat_voice, google_cloud
-from . import (assistant_profile, chat_options, docling_convert, embedding_console, embedding_state, embeddings, model_router,
+from . import (chat_options, docling_convert, embedding_console, embedding_state, embeddings, model_router,
                model_settings, rebuild_queue, web_search)
 from ..speech import catalogue as speech_catalogue, service as speech_service
 from ..speech.languages import WHISPER_LANGUAGES
@@ -426,7 +427,7 @@ async def run_checks(conn, llm, env: Mapping[str, str] = os.environ,
         stale = (await cur.fetchone())[0]
     state, counts = await embedding_console.read_progress(conn)
     queue = await rebuild_queue.queue_counts(conn)
-    profile = (await assistant_profile.load_profile(conn)).text
+    profile = await profile_text.largest(conn)
     try:
         ms = await model_settings.load_models_settings(conn, env)
     except Exception:   # fail open: the environment's answer is better than no Overview

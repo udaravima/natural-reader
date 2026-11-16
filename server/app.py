@@ -28,6 +28,7 @@ from .routers.docs import router as docs_router
 from .routers.inference import router as inference_router
 from .routers.notifications import router as notifications_router
 from .routers.app_info import router as app_info_router
+from .routers.chat_profiles import router as chat_profiles_router
 from .routers.project_documents import router as project_documents_router
 from .routers.project_uploads import router as project_uploads_router
 from .routers.projects import router as projects_router
@@ -106,6 +107,7 @@ def create_app() -> FastAPI:
     app.include_router(speech_router)
     app.include_router(notifications_router)
     app.include_router(app_info_router)
+    app.include_router(chat_profiles_router)
 
     @app.on_event("startup")
     async def _startup() -> None:

@@ -6,6 +6,19 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Several assistant profiles, picked per chat.** In **Admin → Chat →
+  Assistant**, admins write house rules that apply to every chat and named
+  profiles on top, one of them the default. People pick a profile in the chat
+  sidebar, under Model; each chat keeps the profile it used. Profiles can be
+  turned off, reordered and deleted; a deleted profile's chats move to the
+  default and say so.
+  - Profile text may use `{{date}}`, `{{app}}` and `{{profile}}`.
+  - Migration 030 turns a profile saved before into one named "Assistant", the
+    default, so every chat reads what it read before.
+  - `CHAT_ASSISTANT_PROFILE_FILE` now applies only while there are no profiles.
+  - `GET/PUT /v1/admin/assistant` are replaced by `/v1/admin/assistant/profiles`,
+    `/house-rules` and `/preview`; people read `/v1/chat/profiles` (names and
+    descriptions only).
 - **Name the app.** `APP_NAME`, `APP_TAGLINE` and `APP_COPYRIGHT` in `.env` set
   what the app is called in chat, on the sign-in screen and on the browser
   tab. The sign-in screen and Settings now end with one line: the name, the

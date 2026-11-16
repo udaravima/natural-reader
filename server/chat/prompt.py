@@ -318,7 +318,8 @@ SPOKEN_RULE = (
 
 def system_rules(doc: ReadableDoc | None, tools: Iterable[_Offered], *, has_pins: bool,
                  prefetch: bool = False, today: str = "", profile: str = "", has_map: bool = False,
-                 project: ProjectScope | None = None, spoken: bool = False) -> str:
+                 project: ProjectScope | None = None, spoken: bool = False,
+                 placed: frozenset[str] = frozenset(), persona: bool = True) -> str:
     """The rules for this turn. `tools` are the ones offered on its first
     step; the orchestrator's last-round note covers the final tools-off step.
     `today`: "Today is …" to the day (context.today_line), or "" for none.
@@ -330,10 +331,12 @@ def system_rules(doc: ReadableDoc | None, tools: Iterable[_Offered], *, has_pins
     names the project and the open document, and the steps send the model to the project's documents."""
     tools = list(tools)
     offered = {t.name for t in tools}
-    first = first_line(bool(profile), app_identity.current())
-    if today:
-        first = f"{first} {today}"
-    parts = [profile, first] if profile else [first]
+    # The app's own line leaves out what the profile already placed with {{app}} or {{date}} (chat/profile_text.py).
+    # `persona`: False when `profile` is house rules alone, which give the assistant no identity of its own.
+    first = " ".join(p for p in (
+        "" if "app" in placed else first_line(bool(profile) and persona, app_identity.current()),
+        "" if "date" in placed else today) if p)
+    parts = [p for p in (profile, first) if p]
     line = _project_line(project) if project is not None else _document_line(doc)
     if line:
         parts.append(line)

@@ -27,9 +27,10 @@ from ..http_errors import refusal
 from ..speech import catalogue as speech_catalogue, convert as speech_convert, disk as speech_disk, service as speech_service
 from ..speech import google_names
 from ..speech.languages import WHISPER_LANGUAGES
-from ..services import (assistant_profile, chat_options, console_overview, console_settings, deployment_info, deployment_settings,
+from ..chat import profile_text
+from ..services import (app_identity, assistant_profile, chat_options, console_overview, console_settings, deployment_info, deployment_settings,
                         doc_content, docling_limits, embedding_console, embedding_migration, helper,
-                        inference_budget, inference_limits, model_router, model_settings, people, profile_draft,
+                        inference_budget, inference_limits, model_router, model_settings, people, profile_draft, profile_library,
                         user_defaults,
                         web_search as web_search_service)
 from ..services.console_settings import Section, SettingError
@@ -520,57 +521,193 @@ async def apply_user_default_to_everyone(
     return await user_defaults.admin_view(conn)
 
 
-# ---------- the assistant profile (v2.4 Task A2) ----------
+# ---------- the assistant: house rules and the profile library (profile library spec, 2026-11-16) ----------
 
-class AssistantProfileIn(BaseModel):
+_LIBRARY_STATUS = {"not_found": 404, "name_taken": 409, "default_required": 409, "invalid": 422}
+
+
+def _library_refusal(e: profile_library.LibraryError):
+    return refusal(_LIBRARY_STATUS.get(e.code, 422), e.code, e.message)
+
+
+class ProfileNewIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    text: str = Field(max_length=assistant_profile.PROFILE_MAX_CHARS)
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=1000)
+    text: str = Field(min_length=1, max_length=assistant_profile.PROFILE_MAX_CHARS)
 
 
-async def _assistant_view(conn) -> dict:
-    """What the admin console shows: the profile, where it comes from, and
-    the full system message a sample turn would get (an indexed 10-page
-    document, no pins, the tools that turn is offered under the deployment's
-    web search mode), so an admin sees the profile next to the app's rules
-    before users do."""
-    from ..chat.context import today_line
+class ProfileChangeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=1000)
+    text: str | None = Field(default=None, min_length=1, max_length=assistant_profile.PROFILE_MAX_CHARS)
+    enabled: bool | None = None
+    isDefault: bool | None = None
+
+
+class ProfileOrderIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ids: list[str] = Field(max_length=500)
+
+
+class HouseRulesIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(max_length=profile_library.HOUSE_RULES_MAX_CHARS)
+
+
+class ProfilePreviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(default="", max_length=200)
+    text: str = Field(default="", max_length=assistant_profile.PROFILE_MAX_CHARS)
+
+
+def _text_warnings(text: str) -> list[str]:
+    """What the editor warns about: a tool named in the text, and double braces that aren't a placeholder."""
+    warnings = assistant_profile.profile_warnings(text)
+    odd = profile_text.unknown(text)
+    if odd:
+        known = ", ".join("{{" + p + "}}" for p in profile_text.PLACEHOLDERS)
+        warnings.append(f"{', '.join(odd)} is not a placeholder and is sent as written. The placeholders are {known}.")
+    return warnings
+
+
+def _combined(house: str, text: str) -> str:
+    return "\n\n".join(t for t in (house, text) if t)
+
+
+async def _library_view(conn) -> dict:
+    """What the admin console shows: the house rules, every profile with its text, and the file while it is the
+    profile. The text is the deployer's own instruction: it goes to admins only, and is never logged."""
+    house = await profile_library.house_rules(conn)
+    rows = await profile_library.list_profiles(conn)
+    cur = await conn.execute("SELECT profile_id::text, count(*) FROM chat_sessions WHERE profile_id IS NOT NULL "
+                             "GROUP BY profile_id")
+    chats = dict(await cur.fetchall())
+    file_on = assistant_profile.file_path() is not None
+    file_text = assistant_profile._from_file() if file_on and not rows else ""
+    return {
+        "houseRules": {"text": house, "maxChars": profile_library.HOUSE_RULES_MAX_CHARS, "warnings": _text_warnings(house)},
+        "profiles": [{"id": r.id, "name": r.name, "description": r.description, "text": r.text, "enabled": r.enabled,
+                      "isDefault": r.is_default, "chats": chats.get(r.id, 0), "warnings": _text_warnings(r.text),
+                      "combinedChars": len(_combined(house, r.text))} for r in rows],
+        # While the library is empty the file at CHAT_ASSISTANT_PROFILE_FILE is the profile; its text is offered so
+        # an admin can start the first profile from it.
+        "file": {"configured": file_on, "inUse": bool(file_text), "text": file_text},
+        "maxChars": assistant_profile.PROFILE_MAX_CHARS,
+        "nameMaxChars": profile_library.NAME_MAX_CHARS, "descriptionMaxChars": profile_library.DESCRIPTION_MAX_CHARS,
+        "placeholders": list(profile_text.PLACEHOLDERS),
+    }
+
+
+@router.get("/assistant/profiles")
+async def get_assistant_library(
+    _: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    return await _library_view(conn)
+
+
+@router.post("/assistant/profiles")
+async def add_assistant_profile(
+    body: ProfileNewIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Add a profile; the first one becomes the default. 409 name_taken, 422 invalid."""
+    try:
+        await profile_library.create_profile(conn, name=body.name, description=body.description, text=body.text,
+                                             updated_by=str(principal.user_id))
+    except profile_library.LibraryError as e:
+        raise _library_refusal(e) from None
+    return await _library_view(conn)
+
+
+# Before /assistant/profiles/{profile_id}: "order" is not a profile.
+@router.put("/assistant/profiles/order")
+async def order_assistant_profiles(
+    body: ProfileOrderIn,
+    _: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    await profile_library.reorder(conn, body.ids)
+    return await _library_view(conn)
+
+
+@router.put("/assistant/profiles/{profile_id}")
+async def change_assistant_profile(
+    profile_id: str,
+    body: ProfileChangeIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Change what is sent. 404 not_found, 409 name_taken, 409 default_required (turning the default off)."""
+    try:
+        await profile_library.update_profile(
+            conn, profile_id, name=body.name, description=body.description, text=body.text, enabled=body.enabled,
+            is_default=body.isDefault, updated_by=str(principal.user_id))
+    except profile_library.LibraryError as e:
+        raise _library_refusal(e) from None
+    return await _library_view(conn)
+
+
+@router.delete("/assistant/profiles/{profile_id}")
+async def delete_assistant_profile(
+    profile_id: str,
+    _: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Delete a profile. The chats that used it use the default from their next message; `chats` is how many."""
+    try:
+        used = await profile_library.delete_profile(conn, profile_id)
+    except profile_library.LibraryError as e:
+        raise _library_refusal(e) from None
+    return {**await _library_view(conn), "chats": used}
+
+
+@router.put("/assistant/house-rules")
+async def put_house_rules(
+    body: HouseRulesIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Save the house rules; empty text removes them."""
+    try:
+        await profile_library.save_house_rules(conn, body.text, updated_by=str(principal.user_id))
+    except profile_library.LibraryError as e:
+        raise _library_refusal(e) from None
+    return await _library_view(conn)
+
+
+@router.post("/assistant/preview")
+async def preview_assistant_profile(
+    body: ProfilePreviewIn,
+    _: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """The full system message a sample turn would get with this text as its profile, after the saved house rules:
+    an indexed 10-page document, no pins, the tools that turn is offered under the deployment's web search mode,
+    placeholders filled. So an admin sees the text being edited next to the app's rules before anyone chats with
+    it. Saves nothing."""
+    from ..chat.context import today_line, today_text
     from ..chat.prompt import system_rules
     from ..chat.tools import ToolContext, available_tools
     from ..services.doc_search import ReadableDoc
 
-    profile = await assistant_profile.load_profile(conn)
+    house = await profile_library.house_rules(conn)
+    text = assistant_profile.clean_profile(body.text).strip()
+    combined = _combined(house, text)
+    now = datetime.now(timezone.utc)
+    lead = profile_text.fill(combined, date=today_text(now, "UTC"), app=app_identity.current().name,
+                             profile=" ".join(body.name.split()))
     sample = ReadableDoc("0" * 64, "Example.pdf", "indexed", 10)
     # The same call a real document chat makes (chat/orchestrator.py), so the preview can't show a combination
     # no turn has (web_search beside the offer sentence); a project chat's document_outline isn't offered.
     options = await chat_options.load_chat_options(conn)
     offered = available_tools(ToolContext("", sample, web_mode=options.web_search))
-    preview = system_rules(sample, offered, has_pins=False, profile=profile.text,
-                           today=today_line(datetime.now(timezone.utc), "UTC"))
-    # `text` is the effective profile, from the file too: the editor starts
-    # from it, and saving it unchanged is the console's job to skip.
-    return {"text": profile.text, "source": profile.source,
-            "fileConfigured": assistant_profile.file_path() is not None,
-            "maxChars": assistant_profile.PROFILE_MAX_CHARS, "preview": preview,
-            "warnings": assistant_profile.profile_warnings(profile.text)}
-
-
-@router.get("/assistant")
-async def get_assistant_profile(
-    _: deps.Principal = Depends(deps.require_admin),
-    conn=Depends(deps.get_conn, scope="function"),
-):
-    return await _assistant_view(conn)
-
-
-@router.put("/assistant")
-async def put_assistant_profile(
-    body: AssistantProfileIn,
-    principal: deps.Principal = Depends(deps.require_admin),
-    conn=Depends(deps.get_conn, scope="function"),
-):
-    """Save the profile; empty text clears it (the file, or none, applies)."""
-    await assistant_profile.save_profile(conn, body.text, updated_by=str(principal.user_id))
-    return await _assistant_view(conn)
+    preview = system_rules(sample, offered, has_pins=False, profile=lead.text, placed=lead.used, persona=bool(text),
+                           today=today_line(now, "UTC"))
+    return {"preview": preview, "warnings": _text_warnings(text), "combinedChars": len(combined)}
 
 
 class ProfileDraftIn(BaseModel):
@@ -603,7 +740,7 @@ async def draft_assistant_profile(
         text = None
     if text is None:
         raise refusal(502, "draft_failed", "The helper model couldn't write a draft. Try again.")
-    return {"text": text, "warnings": assistant_profile.profile_warnings(text)}
+    return {"text": text, "warnings": _text_warnings(text)}
 
 
 # ---------- chat options (C2.1 Task 13) ----------

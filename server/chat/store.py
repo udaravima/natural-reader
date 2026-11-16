@@ -157,6 +157,18 @@ async def set_session_scope(session_id: str, user_id: str, project_id: str | Non
                            (project_id, session_id, user_id))
 
 
+async def set_session_profile(session_id: str, profile_id: str | None, profile_name: str) -> None:
+    """Record the profile the chat's turn used (chat/profile_text.py), so the chat keeps it when the default moves.
+    A turn with no library profile (none, or the file's) leaves the chat as it was."""
+    if profile_id is None:
+        return
+    async with get_pool().connection() as conn:
+        await conn.execute(
+            "UPDATE chat_sessions SET profile_id = %s, profile_name = %s "
+            "WHERE id = %s AND (profile_id IS DISTINCT FROM %s OR profile_name IS DISTINCT FROM %s)",
+            (profile_id, profile_name, session_id, profile_id, profile_name))
+
+
 @dataclass(frozen=True)
 class Heard:
     """How much of a reply the person heard before cutting in: its first `chars` characters."""

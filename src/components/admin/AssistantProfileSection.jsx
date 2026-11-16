@@ -1,38 +1,32 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { apiFetch } from '../../utils/apiFetch';
+import { HouseRulesEditor } from './HouseRulesEditor';
+import { ProfileEditor } from './ProfileEditor';
 
 /**
- * Admin console: the assistant profile (v2.4 Task A2) — the assistant's
- * name, personality, tone and house rules. It leads every chat's system
- * message; the app's own rules about documents and tools follow it and win
- * where they conflict. The server cleans, caps and warns; this only edits.
- *
- * Generate (helper spec §7): with a helper model set up, the admin describes the assistant and the helper writes a
- * draft into the editor. Nothing is saved until Save, and unsaved text is replaced only after a confirm.
+ * Admin console: the assistant (profile library spec, 2026-11-16). House rules lead every chat; then the profile
+ * the chat uses, one of the named profiles here; the app's own rules about documents and tools come last and win
+ * where they conflict. People pick a profile per chat from the ones that are on, by name and description; the
+ * default is what a chat gets until someone picks. The server cleans, caps and warns; this only edits.
  */
 
-const SOURCE_LABEL = { admin: 'Set here', file: 'From the deployment file', none: 'None' };
-
-const fmt = (n) => n.toLocaleString('en-US');
-const DESCRIPTION_MAX = 2000;
+const BASE = '/v1/admin/assistant';
+const plural = (n, one, many) => (n === 1 ? one : many);
 
 export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, refreshKey = 0, onDirtyChange }) {
-  const [data, setData] = useState(null);       // the server's view; null while loading
-  const [draft, setDraft] = useState('');
+  const [data, setData] = useState(null);         // the server's view; null while loading
   const [failed, setFailed] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [helperOn, setHelperOn] = useState(null);   // null until the server says
-  const [description, setDescription] = useState('');
-  const [generating, setGenerating] = useState(false);
-  const [draftWarnings, setDraftWarnings] = useState([]);   // about a generated draft, until it is saved or reloaded
-
-  const apply = (view) => { setData(view); setDraft(view.text || ''); setDraftWarnings([]); };
+  const [busy, setBusy] = useState(false);
+  const [helperOn, setHelperOn] = useState(null);  // null until the server says
+  const [editing, setEditing] = useState(null);    // the profile in the editor ({ id: null } for a new one), or null
+  const [houseDirty, setHouseDirty] = useState(false);
+  const [editorDirty, setEditorDirty] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const res = await apiFetch(apiHost, apiPort, '/v1/admin/assistant');
+      const res = await apiFetch(apiHost, apiPort, `${BASE}/profiles`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      apply(await res.json());
+      setData(await res.json());
       setFailed(false);
     } catch {
       setFailed(true);
@@ -55,168 +49,181 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
     return () => { cancelled = true; };
   }, [apiHost, apiPort, refreshKey]);
 
-  // `refreshKey` is bumped when something the preview depends on changed elsewhere in the console (the web
-  // search mode, chat options): fetch again, take only the preview, so what is being typed stays. A failed
-  // refresh leaves the old preview as it was.
-  useEffect(() => {
-    if (!refreshKey) return undefined;
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await apiFetch(apiHost, apiPort, '/v1/admin/assistant');
-        if (!res.ok || cancelled) return;
-        const view = await res.json();
-        if (!cancelled) setData((d) => (d ? { ...d, preview: view.preview } : d));
-      } catch { /* the preview stays as it was */ }
-    })();
-    return () => { cancelled = true; };
-  }, [refreshKey, apiHost, apiPort]);
+  const dirty = houseDirty || (editing !== null && editorDirty);
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
 
-  const save = async (text) => {
-    setSaving(true);
+  /** Send one change; take the view it returns. Resolves to the body, or null after saying why it failed. */
+  const send = async (method, path, body, failure) => {
+    setBusy(true);
     try {
-      const res = await apiFetch(apiHost, apiPort, '/v1/admin/assistant', {
-        method: 'PUT',
+      const res = await apiFetch(apiHost, apiPort, path, {
+        method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      apply(await res.json());
-      showToast?.(text ? 'Assistant profile saved: it applies from the next message.' : 'Assistant profile reset.', 4000);
-    } catch (e) {
-      showToast?.(`Saving the profile failed: ${e.message}`, 5000);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  // The console asks before a tab switch drops an unsaved draft.
-  const dirty = data !== null && draft !== (data.text || '');
-
-  const generate = async () => {
-    if (generating || !description.trim()) return;
-    setGenerating(true);
-    try {
-      const res = await apiFetch(apiHost, apiPort, '/v1/admin/assistant/draft', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ description }),
-      });
-      const body = await res.json().catch(() => ({}));
+      const out = await res.json().catch(() => ({}));
       if (!res.ok) {
-        showToast?.(body?.detail?.message || `Writing a draft failed (HTTP ${res.status}).`, 5000);
-        return;
+        showToast?.(out?.detail?.message || `${failure} (HTTP ${res.status}).`, 5000);
+        return null;
       }
-      // The editor may have changed while the model wrote: judge "unsaved" now, not when Generate was pressed.
-      if (editorRef.current.dirty && !window.confirm('Replace the unsaved text in the editor with the draft?')) return;
-      setDraft(body.text || '');
-      setDraftWarnings(body.warnings || []);
-      showToast?.('Draft placed in the editor. Nothing is saved until you press Save.', 5000);
+      setData(out);
+      return out;
     } catch {
       showToast?.('The server could not be reached.', 5000);
+      return null;
     } finally {
-      setGenerating(false);
+      setBusy(false);
     }
   };
-  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
-  const editorRef = useRef({ dirty });
-  useEffect(() => { editorRef.current = { dirty }; }, [dirty]);
+
+  const saveHouse = async (text) => {
+    if (await send('PUT', `${BASE}/house-rules`, { text }, 'Saving the house rules failed')) {
+      showToast?.(text.trim() ? 'House rules saved: they apply from the next message.' : 'House rules removed.', 4000);
+    }
+  };
+
+  const openEditor = (target) => {
+    if (editing && editorDirty && !window.confirm('Discard the unsaved changes to this profile?')) return;
+    setEditorDirty(false);
+    setEditing(target);
+  };
+
+  const closeEditor = () => { setEditorDirty(false); setEditing(null); };
+
+  const saveProfile = async (values) => {
+    const ok = editing.id
+      ? await send('PUT', `${BASE}/profiles/${editing.id}`, values, 'Saving the profile failed')
+      : await send('POST', `${BASE}/profiles`, values, 'Saving the profile failed');
+    if (ok) {
+      closeEditor();
+      showToast?.('Profile saved: it applies from the next message.', 4000);
+    }
+  };
+
+  const change = (p, body) => send('PUT', `${BASE}/profiles/${p.id}`, body, 'Changing the profile failed');
+
+  const move = (i, by) => {
+    const ids = data.profiles.map((p) => p.id);
+    [ids[i], ids[i + by]] = [ids[i + by], ids[i]];
+    send('PUT', `${BASE}/profiles/order`, { ids }, 'Moving the profile failed');
+  };
+
+  const remove = async (p) => {
+    const uses = p.chats
+      ? ` ${p.chats} ${plural(p.chats, 'chat uses it; it', 'chats use it; they')} will use the default from ${plural(p.chats, 'its', 'their')} next message.`
+      : '';
+    if (!window.confirm(`Delete the profile "${p.name}"?${uses}`)) return;
+    const out = await send('DELETE', `${BASE}/profiles/${p.id}`, undefined, 'Deleting the profile failed');
+    if (!out) return;
+    if (editing?.id === p.id) closeEditor();
+    showToast?.(out.chats
+      ? `Profile deleted. ${out.chats} ${plural(out.chats, 'chat', 'chats')} will use the default from their next message.`
+      : 'Profile deleted.', 5000);
+  };
 
   const sectionTitle = 'text-xs font-bold uppercase tracking-wider text-blue-500';
-  const max = data?.maxChars ?? 8000;
+  const link = 'min-h-11 md:min-h-0 underline text-blue-500 disabled:opacity-40 disabled:no-underline';
+  const badge = `text-[10px] px-1.5 py-0.5 rounded border ${theme.border} ${theme.textMuted}`;
+  const profiles = data?.profiles ?? [];
+  const house = data?.houseRules?.text ?? '';
 
   return (
-    <section className="flex flex-col gap-3" aria-label="Assistant">
-      <div className="flex items-center gap-2">
-        <h2 className={sectionTitle}>Assistant</h2>
-        {data && (
-          <span className={`text-[10px] px-1.5 py-0.5 rounded border ${theme.border} ${theme.textMuted}`}>
-            {SOURCE_LABEL[data.source] ?? data.source}
-          </span>
-        )}
-      </div>
+    <section className="flex flex-col gap-4" aria-label="Assistant">
+      <h2 className={sectionTitle}>Assistant</h2>
       {failed ? (
-        <p className="text-xs text-red-500">Couldn&apos;t load the assistant profile.</p>
+        <p className="text-xs text-red-500">Couldn&apos;t load the assistant profiles.</p>
       ) : data === null ? (
         <p className={`text-xs ${theme.textMuted}`}>Loading…</p>
       ) : (
-        <div className="flex flex-col gap-2">
+        <>
           <p className={`text-xs ${theme.textSecondary}`}>
-            The assistant&apos;s name, personality, tone and house rules. It comes first in every chat;
-            the app&apos;s own rules about documents and tools follow it and take precedence. Every
-            character is read before every reply, so shorter is faster.
+            Every chat starts with the house rules, then the profile it uses. The app&apos;s own rules about documents
+            and tools follow and take precedence. People pick a profile for each chat from the ones that are on; a chat
+            nobody picked for gets the default, and keeps its profile when the default changes.
           </p>
-          {helperOn === false && (
-            <p className={`text-xs ${theme.textMuted}`}>Choose a helper model in Models to generate this.</p>
-          )}
-          {helperOn && (
-            <div className={`flex flex-col gap-2 p-2 rounded border ${theme.border}`}>
-              <label htmlFor="assistant-describe" className={`text-xs font-bold ${theme.textSecondary}`}>
-                Describe the assistant
-              </label>
-              <textarea
-                id="assistant-describe"
-                rows={3}
-                maxLength={DESCRIPTION_MAX}
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="A calm tutor called Ada who explains in plain words and says when she isn't sure."
-                className={`min-h-11 md:min-h-0 w-full text-xs p-2 rounded border ${theme.border} ${theme.bg} ${theme.text}`}
-              />
-              <div className="flex items-center justify-between gap-3 text-xs">
-                <span className={theme.textMuted}>
-                  The helper model writes a draft into the editor below. Nothing is saved until you press Save.
-                </span>
-                <button
-                  onClick={generate}
-                  disabled={generating || !description.trim()}
-                  className="min-h-11 md:min-h-0 shrink-0 underline text-blue-500 font-bold disabled:opacity-40 disabled:no-underline"
-                >
-                  {generating ? 'Writing a draft…' : 'Generate'}
-                </button>
-              </div>
-            </div>
-          )}
-          <textarea
-            aria-label="Assistant profile"
-            rows={12}
-            maxLength={max}
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder="You are Ada, the reading-room assistant. Answer warmly and briefly."
-            className={`min-h-11 md:min-h-0 w-full font-mono text-xs p-2 rounded border ${theme.border} ${theme.bg} ${theme.text}`}
-          />
-          <div className="flex items-center justify-between gap-3 text-xs">
-            <span className={theme.textMuted}>
-              {fmt(draft.length)} / {fmt(max)} characters · ≈ {fmt(Math.ceil(draft.length / 4))} tokens
-            </span>
-            <div className="flex gap-3">
-              <button
-                onClick={() => save('')}
-                disabled={saving || data.source !== 'admin'}
-                className="min-h-11 md:min-h-0 underline text-blue-500 disabled:opacity-40 disabled:no-underline"
-              >
-                Reset to deployment default
-              </button>
-              <button
-                onClick={() => save(draft)}
-                disabled={saving || !dirty}
-                className="min-h-11 md:min-h-0 underline text-blue-500 font-bold disabled:opacity-40 disabled:no-underline"
-              >
-                Save
+          <HouseRulesEditor key={house} theme={theme} saved={house} maxChars={data.houseRules.maxChars} busy={busy}
+            onSave={saveHouse} onDirtyChange={setHouseDirty} />
+
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-xs font-bold">Profiles</h3>
+              <button onClick={() => openEditor({ id: null, name: '', description: '', warnings: [],
+                text: !profiles.length && data.file.inUse ? data.file.text : '' })}
+                disabled={busy} className={`text-xs font-bold ${link}`}>
+                Add profile
               </button>
             </div>
+            {!profiles.length && (
+              <p className={`text-xs ${theme.textMuted}`}>
+                {data.file.inUse
+                  ? 'The deployment file is the profile until you add one. Add profile starts from its text.'
+                  : "No profiles yet: chats get the house rules and the app's own rules. Add one to give the assistant a name, a voice and its own rules."}
+              </p>
+            )}
+            {profiles.length > 1 && !house.trim() && (
+              <p className="text-xs text-amber-600">
+                House rules are empty, and each profile is sent on its own: rules every profile needs belong in House
+                rules.
+              </p>
+            )}
+            {profiles.length > 0 && (
+              <ul className="flex flex-col gap-2" aria-label="Profiles">
+                {profiles.map((p, i) => (
+                  <li key={p.id} aria-label={p.name} className={`flex flex-col gap-1 p-2 rounded border ${theme.border}`}>
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="font-bold">{p.name}</span>
+                      {p.isDefault && <span className={badge}>Default</span>}
+                      {!p.enabled && <span className={badge}>Off</span>}
+                      {p.chats > 0 && (
+                        <span className={theme.textMuted}>Used in {p.chats} {plural(p.chats, 'chat', 'chats')}</span>
+                      )}
+                    </div>
+                    {p.description && <p className={`text-xs ${theme.textSecondary}`}>{p.description}</p>}
+                    {(p.warnings || []).map((w) => <p key={w} className="text-xs text-amber-600">{w}</p>)}
+                    <div className="flex flex-wrap items-center gap-x-3 text-xs">
+                      <button onClick={() => openEditor(p)} disabled={busy} aria-label={`Edit ${p.name}`} className={link}>
+                        Edit
+                      </button>
+                      {!p.isDefault && p.enabled && (
+                        <button onClick={() => change(p, { isDefault: true })} disabled={busy}
+                          aria-label={`Make ${p.name} the default`} className={link}>
+                          Make default
+                        </button>
+                      )}
+                      {!p.isDefault && (
+                        <button onClick={() => change(p, { enabled: !p.enabled })} disabled={busy}
+                          aria-label={`${p.enabled ? 'Turn off' : 'Turn on'} ${p.name}`} className={link}>
+                          {p.enabled ? 'Turn off' : 'Turn on'}
+                        </button>
+                      )}
+                      <button onClick={() => move(i, -1)} disabled={busy || i === 0}
+                        aria-label={`Move ${p.name} up`} className={link}>
+                        Up
+                      </button>
+                      <button onClick={() => move(i, 1)} disabled={busy || i === profiles.length - 1}
+                        aria-label={`Move ${p.name} down`} className={link}>
+                        Down
+                      </button>
+                      {(!p.isDefault || profiles.length === 1) && (
+                        <button onClick={() => remove(p)} disabled={busy} aria-label={`Delete ${p.name}`}
+                          className={`${link} text-red-500`}>
+                          Delete
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
-          {[...new Set([...draftWarnings, ...(dirty ? [] : data.warnings || [])])].map((w) => (
-            <p key={w} className="text-xs text-amber-600">{w}</p>
-          ))}
-          <details className="text-xs">
-            <summary className={`min-h-11 md:min-h-0 cursor-pointer ${theme.textMuted}`}>What the model receives</summary>
-            <pre className={`mt-2 whitespace-pre-wrap p-2 rounded border ${theme.border} ${theme.bgSecondary}`}>
-              {data.preview}
-            </pre>
-          </details>
-        </div>
+
+          {editing && (
+            <ProfileEditor key={editing.id ?? 'new'} theme={theme} apiHost={apiHost} apiPort={apiPort}
+              showToast={showToast} initial={editing} houseText={house} helperOn={helperOn} busy={busy}
+              refreshKey={refreshKey} onSave={saveProfile} onCancel={closeEditor} onDirtyChange={setEditorDirty}
+              limits={{ name: data.nameMaxChars, description: data.descriptionMaxChars, text: data.maxChars }} />
+          )}
+        </>
       )}
     </section>
   );

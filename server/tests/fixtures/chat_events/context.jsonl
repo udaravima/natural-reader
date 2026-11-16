@@ -1,4 +1,4 @@
-{"messageId": "<message-id>", "runId": "<message-id>", "seq": 1, "sessionId": "<session-id>", "type": "start", "userMessageId": "<user-message-id>"}
+{"messageId": "<message-id>", "profileId": null, "profileName": "", "runId": "<message-id>", "seq": 1, "sessionId": "<session-id>", "type": "start", "userMessageId": "<user-message-id>"}
 {"items": [{"count": 1, "docId": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "docName": "Thesis.pdf", "kind": "prefetch", "pages": [3], "topScore": 0.9}], "seq": 2, "type": "data-context"}
 {"seq": 3, "step": 1, "type": "start-step"}
 {"id": "t1", "seq": 4, "type": "text-start"}
