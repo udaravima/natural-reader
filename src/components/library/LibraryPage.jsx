@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Search, FolderOpen, FolderPlus, Share2, X, Check, Trash2, Loader2, BookOpen } from 'lucide-react';
+import { Search, FolderOpen, FolderPlus, Share2, X, Check, Trash2, Loader2, BookOpen, Plus, Sparkles } from 'lucide-react';
 import { apiFetch } from '../../utils/apiFetch';
 import { describeRefusal } from '../../lib/apiErrors';
 import ProjectsTab from './ProjectsTab';
@@ -7,6 +7,7 @@ import ProjectPage from '../projects/ProjectPage';
 import NameMatchDialog from '../projects/NameMatchDialog';
 import ShareDialog from './ShareDialog';
 import { projectsApi } from '../../lib/projectsApi';
+import { docStateLabel } from '../../lib/docStateLabel';
 import { useProjectFiling } from '../../hooks/useProjectFiling';
 
 // Typing pauses this long before a search-as-you-type request fires. Keeps
@@ -21,6 +22,8 @@ function buildDocsPath({ q, projectId }) {
   const qs = params.toString();
   return qs ? `/v1/docs?${qs}` : '/v1/docs';
 }
+
+const DESCRIBE_POLL_MS = 5000; // how often the list is read again while the helper writes a row's tags
 
 // Inline tag editor for a row the caller has in their library (uploaded or
 // shared with them — both are their own entry). Adding or removing a chip
@@ -66,6 +69,25 @@ function TagEditor({ doc, theme, onSave }) {
       >
         <Check size={10} />
       </button>
+    </div>
+  );
+}
+
+// The tags the helper model wrote for this content that aren't among the caller's own (helper spec §5.4): lighter
+// chips; on a row in my library one tap keeps a tag as my own. `onKeep` is absent for a row I can't retag.
+function SuggestedTags({ doc, theme, onKeep }) {
+  const tags = doc.suggested_tags || [];
+  if (!tags.length) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {tags.map((t) => (onKeep ? (
+        <button key={t} onClick={() => onKeep(t)} aria-label={`Keep the suggested tag ${t}`} title="Keep as my tag"
+          className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] border border-dashed ${theme.border} ${theme.textMuted} hover:text-blue-500`}>
+          <Plus size={9} /> {t}
+        </button>
+      ) : (
+        <span key={t} className={`px-1.5 py-0.5 rounded text-[10px] border border-dashed ${theme.border} ${theme.textMuted}`}>{t}</span>
+      )))}
     </div>
   );
 }
@@ -271,6 +293,14 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
 
   useEffect(() => { loadProjects(); }, [loadProjects]);
 
+  // Whether a helper model is set up: Generate is offered only then (helper spec §5.4).
+  const [helperOn, setHelperOn] = useState(false);
+  useEffect(() => {
+    let live = true;
+    api.helperOn().then((on) => { if (live) setHelperOn(on); });
+    return () => { live = false; };
+  }, [api]);
+
   // Debounced search-as-you-type: an empty query fires immediately (initial
   // load, or clearing the box); a non-empty one waits out the debounce.
   useEffect(() => {
@@ -278,6 +308,24 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
     const t = setTimeout(() => loadDocs(search, projectFilter), delay);
     return () => clearTimeout(t);
   }, [search, projectFilter, loadDocs]);
+
+  // While the helper writes a row's tags, the list is read again now and then so they show when they land.
+  const describing = (docs || []).some((d) => d.describing);
+  useEffect(() => {
+    if (!describing) return undefined;
+    const t = setTimeout(() => loadDocs(search, projectFilter), DESCRIBE_POLL_MS);
+    return () => clearTimeout(t);
+  }, [describing, docs, search, projectFilter, loadDocs]);
+
+  const describeDoc = async (doc) => {
+    try {
+      await api.describeMine(doc.doc_id);
+      showToast(`Writing tags for ${doc.file_name}.`, 3000);
+      await loadDocs(search, projectFilter);
+    } catch (e) {
+      showToast(e.message, 5000);
+    }
+  };
 
   const patchDoc = async (doc, body) => {
     try {
@@ -475,7 +523,7 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
                     <div className="flex items-center gap-2 min-w-0">
                       <span className="text-xs font-bold truncate">{doc.file_name}</span>
                       <span className={`text-[10px] px-1.5 py-0.5 rounded ${theme.bgTertiary} ${theme.textSecondary}`}>
-                        {doc.state}
+                        {docStateLabel(doc)}
                       </span>
                       {doc.added_via === 'shared' && (
                         <span className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-500">
@@ -548,6 +596,8 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
                     </div>
                   </div>
 
+                  {doc.description && <p className={`text-[10px] break-words ${theme.textSecondary}`}>{doc.description}</p>}
+
                   <div className="text-[10px]">
                     <ProjectChips
                       doc={doc}
@@ -575,6 +625,20 @@ export default function LibraryPage({ theme, apiHost, apiPort, showToast, onProj
                     <ShareDialog theme={theme} api={api} doc={doc} showToast={showToast} isAdmin={isAdmin} onClose={() => setShareDocId(null)} />
                   )}
 
+                  <SuggestedTags doc={doc} theme={theme}
+                    onKeep={doc.in_library ? (t) => patchDoc(doc, { tags: [...(doc.tags || []), t] }) : undefined} />
+                  {(doc.describing || (doc.in_library && helperOn && doc.state === 'indexed' && !doc.generated)) && (
+                    <div className="flex items-center gap-2 text-[10px]">
+                      {doc.describing ? (
+                        <span className={theme.textMuted}>Writing tags…</span>
+                      ) : (
+                        <button onClick={() => describeDoc(doc)} aria-label={`Generate tags for ${doc.file_name}`}
+                          className={`flex items-center gap-1 hover:text-blue-500 ${theme.textSecondary}`}>
+                          <Sparkles size={10} /> Generate tags
+                        </button>
+                      )}
+                    </div>
+                  )}
                   {doc.in_library ? (
                     <TagEditor doc={doc} theme={theme} onSave={(tags) => patchDoc(doc, { tags })} />
                   ) : (

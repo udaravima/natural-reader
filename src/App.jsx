@@ -40,6 +40,7 @@ import { createFsaWorkspace, createSnapshotWorkspace, pickEntryFile, isMarkdownP
 import Header from './components/Header';
 import Sidebar from './components/Sidebar';
 import { AuthGate } from './components/auth/AuthGate';
+import { useAppIdentity } from './lib/appIdentity';
 import { hasAccess } from './lib/access';
 import PdfViewer from './components/PdfViewer';
 import ChatView from './components/ChatView';
@@ -98,6 +99,7 @@ export default function App() {
   const [apiHost, setApiHost] = usePersistedState('apiHost', '');
   const [apiPort, setApiPort] = usePersistedState('apiPort', '8000');
   const auth = useAuth(apiHost, apiPort);
+  const appIdentity = useAppIdentity(apiHost, apiPort);
   const signedInUserId = auth.state === 'active' ? auth.user?.id : null;
   // The header's bell (spec 2026-11-06): counts polled while someone is signed in and the tab is visible.
   const notifications = useNotifications(apiHost, apiPort, auth.state === 'active');
@@ -430,6 +432,14 @@ export default function App() {
     switchToSession: chatSwitchToSession,
     deleteSession: chatDeleteSession,
     renameSession: chatRenameSession,
+    helperOn: chatHelperOn,
+    refreshHelper: chatRefreshHelper,
+    generateTitle: chatGenerateTitle,
+    profiles: chatProfiles,
+    profileId: chatProfileId,
+    setProfile: chatSetProfile,
+    currentProfile: chatCurrentProfile,
+    removedProfile: chatRemovedProfile,
     pins: chatPins,
     addPin: chatAddPin,
     removePin: chatRemovePin,
@@ -932,7 +942,7 @@ export default function App() {
     const serverId = result.docId;
     if (serverId !== docId) console.warn('Server doc id differs from local hash', { docId, serverId });
     if (result.link?.conflict) askAboutFiling(docProjectId, serverId, pdfFileName, result.link.conflict);
-    setIndex(docId, { state: result.state });
+    setIndex(docId, { state: result.state, queued: result.queued });
     if (result.dedup && result.state === 'indexed' && !reuploadForReindex) {
       showToast('Already indexed — added to your library.', 4000);
       return;
@@ -1127,6 +1137,7 @@ export default function App() {
         onLogin={auth.login}
         onLogout={auth.logout}
         onRetry={auth.refresh}
+        identity={appIdentity}
       />
     );
   }
@@ -1287,6 +1298,7 @@ export default function App() {
 
       <SettingsDialog
         theme={theme}
+        appIdentity={appIdentity}
         tab={settingsOpen ? settingsTab : null}
         onTab={setSettingsTab}
         onClose={() => setSettingsOpen(false)}
@@ -1334,6 +1346,14 @@ export default function App() {
             switchToSession={chatSwitchToSession}
             deleteSession={chatDeleteSession}
             renameSession={chatRenameSession}
+            helperOn={chatHelperOn}
+            refreshHelper={chatRefreshHelper}
+            generateTitle={chatGenerateTitle}
+            profiles={chatProfiles}
+            profileId={chatProfileId}
+            setProfile={chatSetProfile}
+            currentProfile={chatCurrentProfile}
+            removedProfile={chatRemovedProfile}
           />
         ) : inAdmin || inLibrary ? null : (
         canReader && <Sidebar

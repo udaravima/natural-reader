@@ -539,21 +539,23 @@ describe('AdminConsole — assistant profile', () => {
 describe('AdminConsole — unsaved drafts in Chat and Defaults', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  const assistant = { text: '', source: 'none', fileConfigured: false, maxChars: 8000, preview: '', warnings: [] };
+  const assistant = { houseRules: { text: '', maxChars: 2000, warnings: [] }, profiles: [],
+    file: { configured: false, inUse: false, text: '' }, maxChars: 8000, nameMaxChars: 60, descriptionMaxChars: 200,
+    placeholders: ['date', 'app', 'profile'] };
   const BUILT_IN = { chatAutoTts: false, chatTtsMode: 'after-complete', think: 'off', selectedVoice: 'af_heart', playbackSpeed: 1 };
   const defaultsView = { values: { ...BUILT_IN }, builtIn: BUILT_IN, overridden: [], epochs: {},
     choices: { chatTtsMode: ['streaming', 'after-complete'], think: ['off', 'on', 'low', 'medium', 'high'] } };
   const routes = (path) => {
-    if (path === '/v1/admin/assistant') return json(200, assistant);
+    if (path === '/v1/admin/assistant/profiles') return json(200, assistant);
     if (path === '/v1/admin/chat-options') return json(200, { web_search: 'ask', source: 'default', searxng: true });
     if (path === '/v1/admin/defaults') return json(200, defaultsView);
     return undefined;
   };
 
-  it('asks before a tab switch drops an unsaved assistant profile', async () => {
+  it('asks before a tab switch drops unsaved house rules', async () => {
     mount({ users: [user()], section: null, extra: routes });
     openSection('Chat');
-    fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'You are Sam.' } });
+    fireEvent.change(await screen.findByLabelText('House rules'), { target: { value: 'Be kind.' } });
     openSection('Overview');
     expect(screen.getByRole('alertdialog')).toHaveTextContent('You have unsaved changes in Chat.');
     expect(screen.getByRole('tab', { name: 'Chat' })).toHaveAttribute('aria-selected', 'true');
@@ -561,10 +563,10 @@ describe('AdminConsole — unsaved drafts in Chat and Defaults', () => {
     expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
   });
 
-  it('does not ask when the assistant profile is untouched or back to what is saved', async () => {
+  it('does not ask when the house rules are untouched or back to what is saved', async () => {
     mount({ users: [user()], section: null, extra: routes });
     openSection('Chat');
-    const box = await screen.findByRole('textbox');
+    const box = await screen.findByLabelText('House rules');
     fireEvent.change(box, { target: { value: 'x' } });
     fireEvent.change(box, { target: { value: '' } });
     await act(async () => {});
@@ -638,7 +640,11 @@ describe('AdminConsole — leaving through the app header', () => {
 describe('AdminConsole — chat options', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  const assistantView = (preview) => ({ text: '', source: 'none', fileConfigured: false, maxChars: 8000, preview, warnings: [] });
+  const library = { houseRules: { text: '', maxChars: 2000, warnings: [] },
+    profiles: [{ id: 'p1', name: 'Plain', description: '', text: 'Be brief.', enabled: true, isDefault: true, chats: 0,
+      warnings: [], combinedChars: 9 }],
+    file: { configured: false, inUse: false, text: '' }, maxChars: 8000, nameMaxChars: 60, descriptionMaxChars: 200,
+    placeholders: ['date', 'app', 'profile'] };
 
   it('has a Chat options section after the Assistant section', async () => {
     mount({ users: [user()] });
@@ -658,13 +664,16 @@ describe('AdminConsole — chat options', () => {
           return json(200, mode);
         }
         if (path === '/v1/admin/chat-options') return json(200, mode);
-        if (path === '/v1/admin/assistant') {
-          return json(200, assistantView(mode.web_search === 'auto' ? 'Rules: web_search, read_web_pages.' : 'Rules: offer_web_search.'));
+        if (path === '/v1/admin/assistant/profiles') return json(200, library);
+        if (path === '/v1/admin/assistant/preview') {
+          return json(200, { preview: mode.web_search === 'auto' ? 'Rules: web_search, read_web_pages.' : 'Rules: offer_web_search.',
+            warnings: [], combinedChars: 9 });
         }
         return undefined;
       },
     });
     openSection('Chat');
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit Plain' }));
     fireEvent.click(await screen.findByText('What the model receives'));
     expect(await screen.findByText('Rules: offer_web_search.')).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('radio', { name: 'Search without asking' }));

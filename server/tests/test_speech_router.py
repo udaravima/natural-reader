@@ -755,9 +755,11 @@ async def test_a_model_for_every_language_names_none(db_conn, engine):
 
 @pytest.fixture
 def pooled(monkeypatch):
-    """Local engines built on demand, every model on disk, nothing really loaded."""
+    """Local engines built on demand, every model on disk and able to run here (the fine-tunes need torch, which CI
+    hasn't), nothing really loaded."""
     from server.speech import disk
     service.reset_for_tests()
+    monkeypatch.setattr(catalogue, "_installed", lambda name: True)
     built = {}
 
     def build(spec, env):

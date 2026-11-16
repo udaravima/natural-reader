@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, ValidationError
 from ..auth.authz import assert_owns_session, visible_projects_params, visible_projects_where
 from ..auth.deps import Principal, require_capability
 from ..chat import store as chat_store
+from ..chat import titles
 from ..chat.config import get_chat_config
 from ..db import get_pool, is_ready
 from ..http_body import read_capped_body
@@ -68,7 +69,10 @@ def _row_to_session_meta(row: dict[str, Any]) -> dict[str, Any]:
         "createdAt": _epoch_ms(row["created_at"]),
         "updatedAt": _epoch_ms(row["updated_at"]),
         "messageCount": row["message_count"],
+        "titleSource": row["title_source"],     # who wrote the title (helper spec §6)
+        "titlePending": row["title_pending"],   # a title is being written: the list is re-read until it lands
         "scopeProject": _scope_project(row["scope_project_id"], row["scope_project_name"]),
+        **_profile(row["profile_id"], row["profile_name"]),
         "source": "pg",
     }
 
@@ -78,6 +82,13 @@ def _row_to_session_meta(row: dict[str, Any]) -> dict[str, Any]:
 # projects sp ON sp.id = s.scope_project_id`; bind visible_projects_params first.
 _SCOPE_COLS = (f"s.scope_project_id, CASE WHEN {visible_projects_where('sp')} THEN sp.name END "
                "AS scope_project_name")
+
+
+def _profile(profile_id, name) -> dict[str, Any]:
+    """The profile the chat's last turn used (profile library spec). `profileRemoved`: it was deleted since, so the
+    next turn uses the default."""
+    return {"profileId": str(profile_id) if profile_id is not None else None, "profileName": name,
+            "profileRemoved": profile_id is None and bool(name)}
 
 
 def _scope_project(project_id, name) -> dict[str, Any] | None:
@@ -125,7 +136,9 @@ async def list_sessions(
         await cur.execute(
             f"""
             SELECT s.id, s.title, s.model, s.created_at, s.updated_at,
-                   COALESCE(m.cnt, 0) AS message_count, {_SCOPE_COLS}
+                   COALESCE(m.cnt, 0) AS message_count, s.title_source, {titles.PENDING_SQL} AS title_pending,
+                   s.profile_id, s.profile_name,
+                   {_SCOPE_COLS}
             FROM chat_sessions s
             LEFT JOIN (
                 SELECT session_id, COUNT(*) AS cnt FROM chat_messages GROUP BY session_id
@@ -175,10 +188,11 @@ async def import_session(
     async with pool.connection() as conn:
         async with conn.transaction():
             await conn.execute(
-                "INSERT INTO chat_sessions (id, title, model, created_at, updated_at, pins, user_id) "
-                "VALUES (%s, %s, %s, COALESCE(to_timestamp(%s::double precision / 1000.0), now()), now(), %s, %s)",
-                (session_id, payload.title, payload.model, payload.createdAt, Jsonb(payload.pins),
-                 principal.user_id))
+                # A legacy chat is past its first exchange: a title it carries counts as a person's (§6).
+                "INSERT INTO chat_sessions (id, title, title_source, model, created_at, updated_at, pins, user_id) "
+                "VALUES (%s, %s, %s, %s, COALESCE(to_timestamp(%s::double precision / 1000.0), now()), now(), %s, %s)",
+                (session_id, payload.title, "default" if payload.title == "New chat" else "person", payload.model,
+                 payload.createdAt, Jsonb(payload.pins), principal.user_id))
             for m in payload.messages:
                 meta = [{k: a[k] for k in _META_KEYS if k in a}
                         for a in m.attachments if isinstance(a, dict)]
@@ -209,7 +223,8 @@ async def get_session(
     pool = get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            f"SELECT s.id, s.title, s.model, s.created_at, s.updated_at, s.pins, {_SCOPE_COLS} "
+            f"SELECT s.id, s.title, s.model, s.created_at, s.updated_at, s.pins, {_SCOPE_COLS}, "
+            f"s.title_source, {titles.PENDING_SQL}, s.profile_id, s.profile_name "
             "FROM chat_sessions s LEFT JOIN projects sp ON sp.id = s.scope_project_id WHERE s.id = %s",
             [*visible_projects_params(owner.user_id), session_id],
         )
@@ -287,6 +302,9 @@ async def get_session(
         "events": events,
         "pins": srow[5] or [],
         "scopeProject": _scope_project(srow[6], srow[7]),
+        "titleSource": srow[8],
+        "titlePending": srow[9],
+        **_profile(srow[10], srow[11]),
         "source": "pg",
     }
 
@@ -315,18 +333,41 @@ async def patch_session(
             """
             UPDATE chat_sessions
             SET title = COALESCE(%s, title),
+                title_source = CASE WHEN %s THEN 'person' ELSE title_source END,
                 model = COALESCE(%s, model),
                 pins  = COALESCE(%s, pins),
                 updated_at = now()
             WHERE id = %s
             RETURNING id
             """,
-            (title, model, Jsonb(pins) if pins is not None else None, session_id),
+            (title, title is not None, model, Jsonb(pins) if pins is not None else None, session_id),
         )
         row = await cur.fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"ok": True, "id": session_id}
+
+
+@router.post("/{session_id}/title", status_code=202)
+async def generate_title(
+    session_id: str, owner: Principal = Depends(_require_session_owner)
+) -> dict[str, Any]:
+    """Generate title (helper spec §6): the helper writes this chat's title from the conversation so far, whoever
+    wrote the current one, marked 'model'. It runs in the background: the chat says `titlePending` until it lands.
+    409 helper_off / helper_is_cloud / nothing_to_title, 429 budget_exhausted."""
+    _ensure_ready()
+    async with get_pool().connection() as conn:
+        cur = await conn.execute("SELECT model FROM chat_sessions WHERE id = %s", (session_id,))
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        why = await titles.refusal(conn, owner.user_id, row[0])
+        if why is None and not await titles.anything_to_title(conn, session_id):
+            why = "nothing_to_title"
+    if why is not None:
+        raise refusal(429 if why == "budget_exhausted" else 409, why, titles.REFUSALS[why])
+    await titles.start(session_id, owner.user_id, on_request=True)
+    return {"titlePending": True}
 
 
 @router.delete("/{session_id}")

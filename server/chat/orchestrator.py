@@ -33,14 +33,14 @@ from ..llm.router import UnknownModel
 from ..llm.types import (Attachment, CallSettings, Capabilities, FeatureDropped, Finish, Message,
                          ProviderError, ProviderTimeout, ProviderUnavailable, ReasoningDelta,
                          TextDelta, ToolCall, ToolCallReady, Usage)
-from ..services import assistant_profile, chat_options, deployment_settings, inference_budget, model_settings
+from ..services import app_identity, chat_options, deployment_settings, inference_budget, model_settings
 from ..services import doc_pipeline
 from ..services.doc_outlines import Outline, load_outlines
 from ..services.doc_search import ReadableDoc, readable_doc
 from ..services.inference_limits import get_limits
-from . import store
+from . import profile_text, store, titles
 from .config import ChatConfig
-from .context import TurnInput, build_context, history_real_values
+from .context import TurnInput, build_context, history_real_values, today_text
 from .project_map import ProjectMap, build_map
 from .project_scope import ProjectScope, load_project_scope
 from .prompt import document_tools_offered
@@ -122,6 +122,8 @@ class TurnRequest:
     real_values: bool = False
     # The reply will be read aloud in the speech window.
     spoken: bool = False
+    # The profile the person picked for this turn (chat/profile_text.py); None: the chat's own, else the default.
+    profile_id: str | None = None
 
 
 @dataclass
@@ -254,18 +256,20 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
     beat = asyncio.create_task(_heartbeat(claim))
     logger.info("chat turn start user=%s session=%s model=%s", req.user_id, req.session_id, req.model_id)
     try:
+        # One small read per turn: right across several workers, and an admin's edit applies from the next
+        # message, with no cache to clear. Before `start`, which tells the browser which profile the turn uses.
+        async with get_pool().connection() as conn:
+            profile = await profile_text.resolve(conn, session_id=claim.session_id, asked_id=req.profile_id)
+        await store.set_session_profile(claim.session_id, profile.id, profile.name)
         yield ev("start", runId=claim.turn_id, sessionId=claim.session_id,
-                 userMessageId=claim.user_message_id, messageId=claim.assistant_message_id)
+                 userMessageId=claim.user_message_id, messageId=claim.assistant_message_id,
+                 profileId=profile.id, profileName=profile.name)
         await _log_sent(claim, req)
         caps = await _capabilities(router, req.model_id)
         project = await _project_scope(req) if req.project_id else None
         doc = None if req.project_id else await _open_doc(req)
         pins, history = await store.load_turn_context(
             claim.session_id, exclude=(claim.user_message_id, claim.assistant_message_id))
-        # One primary-key read per turn: right across several workers, and an
-        # admin's edit applies from the next message, with no cache to clear.
-        async with get_pool().connection() as conn:
-            profile = await assistant_profile.load_profile(conn)
         options = await _chat_options()
         # One context size per self-hosted Ollama model, for every call of the turn and for the trimming window:
         # Ollama loads a model at 4,096 tokens unless the request names a size (services/model_settings.py).
@@ -319,12 +323,15 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             app_exchange = app_web_exchange(web_run)
         elif web_query:
             logger.info("An approved web search was not run: the model has no tools this turn, or no search engine is set up")
+        now = datetime.now(timezone.utc)
+        lead = profile_text.fill(profile.combined, date=today_text(now, req.timezone, default_timezone),
+                                 app=app_identity.current().name, profile=profile.name)
         built = await build_context(TurnInput(
             user_id=req.user_id, text=req.text, attachments=req.attachments, doc=doc,
             timezone=req.timezone, pins=pins, history=history,
-            window=_window(provider.config, model_key, settings, caps, models_cfg), now=datetime.now(timezone.utc),
+            window=_window(provider.config, model_key, settings, caps, models_cfg), now=now,
             tools=tuple(offered if max_rounds > 0 else ()), tool_ctx=tool_ctx,
-            profile=profile.text, scope=tuple(scope_docs(tool_ctx)),
+            profile=lead.text, placed=lead.used, persona=bool(profile.text), scope=tuple(scope_docs(tool_ctx)),
             project_map=project_map.text if project_map else "", app_exchange=app_exchange,
             default_timezone=default_timezone,
             model=req.model_id, spoken=req.spoken), cfg)
@@ -624,6 +631,10 @@ async def _finalize(claim: TurnClaim, state: _State, outcome: str, req: TurnRequ
         await store.finish_turn(claim, status=outcome, finish_reason=finish_reason, content=state.content,
                                 thinking=state.thinking, tool_calls=state.tool_calls or None,
                                 doc_context=state.doc_context, stats=state.stats(req.model_id, started))
+        if outcome == "complete":
+            # The chat's first complete reply: the helper may title it (helper spec §6). The pending mark is written
+            # here, before the stream's [DONE], so the browser's refresh after the reply already sees it.
+            await titles.after_reply(claim.session_id, req.user_id, claim.assistant_message_id, req.model_id)
 
     def _on_done(t: asyncio.Task) -> None:
         # Once this coroutine stops awaiting `task` below (a second

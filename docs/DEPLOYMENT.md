@@ -67,8 +67,8 @@ migration commits on its own, and a worker only serves once they have all run.
 
 | Command | Effect |
 | --- | --- |
-| `./startup.sh start` | builds the image if needed, then runs Postgres, SearXNG, Keycloak (see below) and the backend, all detached |
-| `./startup.sh rebuild` | ship new code: rebuild the image, recreate only the backend; Postgres and Keycloak keep running |
+| `./startup.sh start` | builds the image if needed, then runs Postgres, SearXNG, Keycloak (see below) and the backend, all detached; a backend still on an older image is recreated on the new one |
+| `./startup.sh rebuild` | ship new code: rebuild the image, recreate only the backend; Postgres and Keycloak keep running (after a `stop`, they are started first) |
 | `./startup.sh logs` | follow the backend's output (the rotating `server.log` is still written under `LOG_DIR`) |
 | `./startup.sh stop` | stop and remove the containers; volumes and `data/` stay |
 
@@ -438,6 +438,32 @@ it works there, it's the cache. Kill it client-side (`chrome://flags/#enable-qui
 browsers to forget the stale h3 mapping. Do **not** touch `proxy_http_version
 1.1`; that governs nginx↔upstream, a different leg entirely.
 
+## What the app is called
+
+Three settings in `.env`, read once at start, so a change needs a restart:
+
+| Setting | Unset means | Limit |
+|---|---|---|
+| `APP_NAME` | Natural Reader | 40 characters |
+| `APP_TAGLINE` | an app for reading and listening to documents | 120 characters |
+| `APP_COPYRIGHT` | no copyright | 80 characters, shown as written |
+
+The name and tagline open every chat's rules ("You are the assistant in
+*name*, *tagline*."), so write the tagline to follow the name mid-sentence.
+The name is also the sign-in screen's title and the browser tab's. The sign-in
+screen and Settings end with one line: the name, the release number and the
+copyright.
+
+Choose `APP_NAME` at the first deployment. Three things do not follow it:
+
+- **The Keycloak sign-in page** shows the realm's display name. Set it in
+  Keycloak (Realm settings → Display name) to match.
+- **The read-aloud browser extension** is packaged on its own and keeps its
+  name.
+- **The favicon and icons** are files in the build.
+
+The browser reads these from `GET /v1/app`, which answers without sign-in.
+
 ## Model providers and chat streaming
 
 Chat turns run on the backend (`server/chat/`, `server/llm/`) and stream to
@@ -763,7 +789,114 @@ load included). Expect a GPU to be much faster; that wasn't measured.
 before an upgrade) are queued in the `doc_rebuilds` table and claimed by one
 worker at a time with `FOR UPDATE SKIP LOCKED`, so with `WORKERS > 1` a document
 is rebuilt once, a restart resumes the queue, and the Overview counts it. A
-rebuild that fails waits 15 minutes before it is tried again.
+rebuild that fails waits 15 minutes before it is tried again. A rebuild whose
+worker died while running it **3 times** is parked (not tried again until the
+embedding settings change) and the admins are told: its old index keeps answering.
+
+**Indexing and conversion run from a queue too** (`doc_index_jobs`, migration
+027). An upload, **Index**, **Retry index**, re-extracting, a new version and
+**Convert** each add a job; nothing runs inside the request. Each worker runs
+**one document's indexing at a time**, and **one Docling conversion at a time**
+beside it, so `WORKERS` is how many documents index at once. Rebuilds go first
+(someone is waiting on them in a chat), but after three in a row a waiting upload
+goes next.
+
+- **A restart loses nothing.** A clean stop hands the running job back, and the
+  next start takes it at once. After a crash, the dead worker's job is taken over
+  once its claim has been silent for 10 minutes. Every start also queues any
+  document left part-way with no job (from before this queue, for example).
+- **A file that kills its worker is given up after 3 tries.** The document is
+  marked failed ("The server stopped while reading this file, 3 times. The file
+  may be damaged.") and whoever asked is told, instead of the server crashing
+  every 10 minutes.
+- **What a person sees:** "Waiting to index (3 ahead)", "Reading", "Indexing",
+  "Indexed", "Failed" with the reason, and **Retry index** on a document nothing
+  is working on.
+
+Measured on the walk (CPU only, `nomic-embed-text`, `WORKERS=1`): six Markdown
+files of 31 to 117 KB queued at once were indexed one after another in **65 s**;
+an upload answered in 80 ms and the runner had taken it within a second. With
+`WORKERS=2`, two ran at a time. **A search answered in about 2 s while two
+documents were indexing**, against 0.02 to 0.05 s when idle: on a CPU-only Ollama
+a query's embedding waits behind indexing's.
+
+**Uploading many files into a project** (the Documents tab's **Upload files** /
+**Upload folder** / drop, or a script looping over `POST
+/v1/projects/{id}/uploads`; see [LIBRARY.md](LIBRARY.md)) uses the same queue,
+so a batch never runs more than `WORKERS` indexing jobs at once. Two settings:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `BULK_UPLOAD_MAX_FILES` | `200` | The most files one plan may name. More is refused whole (`413 too_many_files`), with the number in the message. |
+| `UPLOAD_MIN_FREE_MB` | `1024` | Free space, in MB, the storage folder (`DOC_STORAGE_DIR`) keeps. A plan that would send more than the free space minus this is refused whole (`507 not_enough_space`, naming both numbers), and the upload route refuses a file once the folder is down to it, so a script that skips the plan can't fill the disk either. |
+
+An unreadable value (not a whole number, or below 1 for the first, below 0 for
+the second) falls back to the default with one warning in the log. There are no
+quotas or rate limits: the reserve stops one batch from filling the disk, not
+many.
+
+Measured on the bulk upload walk (CPU only, `nomic-embed-text`, `WORKERS=1`):
+**50 documents (25 Markdown, 25 PDF; 815 KB, 1,150 passages) were sent in 1 s
+and indexed in about 95 s**, a backend crash in the middle included (the dead
+worker's one document was taken over 10 minutes later, as above). Searches made
+while they indexed answered in 0.02 to 0.8 s.
+
+**Tags and descriptions (the helper model).** Off until you name a model:
+**Admin console → Models → Helper model**, or in `.env`:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `HELPER_MODEL` | unset (off) | The model that writes each indexed document's tags and description: `provider:name`, or a bare name for the first Ollama provider. `chat` isn't a value here (the helper works with no conversation). The console's choice wins, **Off** included; it can only name a model the allow-lists let the chat use. Unset: nothing is written and no Generate button shows. |
+| `HELPER_TIMEOUT_S` | `120` | Seconds (5–900) one call may take before it counts as failed. A failed document is tried once more, then left without tags. |
+| `HELPER_INPUT_CHARS` | `6000` | Characters of document text (500–50000) the helper reads per document, whatever its size: the headings (at most a quarter), then the opening and passages at even steps through the rest. About 1,500 tokens at the default. |
+
+The helper works one document at a time across all workers, and only while no
+indexing or conversion job waits, so indexing is never slowed by it. What it
+writes is kept per project (and per person's library copy), so a file held by
+two projects costs two calls. Its calls
+are charged to the uploader (or whoever pressed Generate) against the daily
+budget, under a **Helper** column on the Usage page; someone over budget gets no
+tags until the next day. **A cloud model sends document text to its provider**
+(the sample above, the file name, headings and the project's tags); the Models
+page says so beside the setting. A local small model keeps it on your hardware.
+
+Measured on the helper walk (CPU only, `gemma4:e4b` on Ollama, context 16,384):
+**28 to 33 s per document**, the same for a 31 KB and a 121 KB Markdown file,
+since the model reads at most 6,000 characters of each. Five documents were
+indexed first (about 70 s), then described in about 2.5 minutes.
+
+**Upgrading to this release.** Migration 028 adds the columns and the queue;
+nothing is backfilled. Existing documents get tags when a project Contributor
+presses **Write tags for N documents** on the project's Documents tab.
+
+**Chat titles.** The same helper also names each new chat after its first
+reply: one short call per chat, made from the first message and the first
+reply (each cut to 2,000 characters) and charged to the chat's owner.
+- **A cloud helper never titles a chat that runs on a local model.** Such a
+  chat keeps its first message, cut to 60 characters, as its title.
+- **A person's own title is never replaced,** and nor is a chat's name from
+  before the upgrade.
+- **Cost on a CPU:** measured on the walk with `gemma4:e4b`, a title took
+  about 3 s after a reply.
+
+**Assistant profile drafts.** In **Admin → Chat → Assistant**, an admin can
+have the helper write a first draft of the profile from a description of at
+most 2,000 characters. One call per press, charged to that admin; nothing is
+saved until they press Save. With a cloud helper, the description is sent to
+that provider. On the same CPU a draft took about 5 s.
+
+**The profile library.** **Admin → Chat → Assistant** holds house rules
+(one text for every chat) and named profiles; people pick a profile per chat.
+Migration 030 adds the `assistant_profiles` table and two columns to
+`chat_sessions` (`profile_id`, `profile_name`). A profile saved in the console
+before the upgrade becomes one profile named "Assistant", the default, with the
+same text, so no chat changes. `CHAT_ASSISTANT_PROFILE_FILE` is now used only
+while the library is empty; once an admin adds a profile, the file is ignored.
+Its Down is in the file's header.
+
+Migration 029 adds two columns to `chat_sessions` (`title_source`,
+`title_pending_at`). Chats already named at the upgrade are marked as named
+by a person. Its Down is in the file's header.
 
 **The Overview never loads a model.** On Ollama it reads two lists: `/api/tags`
 (is the model pulled?) and `/api/ps` (is it in memory now?). Whether it gives 768
@@ -1400,6 +1533,15 @@ connection". With the production topology above that is already true; it bites o
 LAN address over http.
 
 ### Upgrading
+
+**Migration 027** (the indexing queue) runs at startup: a new table
+`doc_index_jobs`, and a column `stops` on `doc_rebuilds`. Back up the database
+first, as for any migration. It has a Down in its header; jobs still queued when
+you roll back are lost, and their documents wait for someone to press **Index**,
+as before. The first start after the upgrade queues every document left part-way
+(state `stored` with a file, `extracting`, `extracted` or `indexing`), so
+documents that were stuck before the upgrade are indexed by themselves; the log
+says how many ("Queued N documents that were left unindexed").
 
 **Migration 024** runs at startup. It only widens a check on `chat_attachments` so
 a message can carry a text file; it has a Down (in the file's header) for a

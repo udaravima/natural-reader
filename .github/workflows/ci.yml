@@ -43,8 +43,8 @@ jobs:
       TEST_DATABASE_URL: postgresql://natural_reader:natural_reader@127.0.0.1:5434/natural_reader_test
       MODEL_BASE_URL: https://github.com/nazdridoy/kokoro-tts/releases/download/v1.0.0
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
           cache: pip
@@ -56,7 +56,7 @@ jobs:
       # so it is cached; the key changes only if the release it comes from does.
       - name: Voice model (cached)
         id: kokoro
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             kokoro-v1.0.onnx
@@ -77,8 +77,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm

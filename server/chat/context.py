@@ -83,8 +83,9 @@ def _zone(name: str | None) -> ZoneInfo | None:
         return None
 
 
-def today_line(now: datetime, tz_name: str | None, default_tz: str = "UTC") -> str:
-    """Today's date in the browser's timezone (else the deployment's `default_tz`, else UTC), for
+def today_text(now: datetime, tz_name: str | None, default_tz: str = "UTC") -> str:
+    """The date alone ("Sunday, 15 November 2026 (UTC)"): what a profile's {{date}} becomes, and what
+    today_line says. Today's date in the browser's timezone (else the deployment's `default_tz`, else UTC), for
     the system rules. v2.4: to the day, not the minute — it used to lead the
     user's message as "Current time: …", where a follow-up like "say that
     more simply" was read as being about the clock (eval, 2026-10-05); in the
@@ -95,7 +96,12 @@ def today_line(now: datetime, tz_name: str | None, default_tz: str = "UTC") -> s
             tz, label = zone, name
             break
     day = now.astimezone(tz)
-    return f"Today is {day:%A}, {day.day} {day:%B %Y} ({label})."
+    return f"{day:%A}, {day.day} {day:%B %Y} ({label})"
+
+
+def today_line(now: datetime, tz_name: str | None, default_tz: str = "UTC") -> str:
+    """"Today is <today_text>." for the system rules."""
+    return f"Today is {today_text(now, tz_name, default_tz)}."
 
 
 @dataclass
@@ -242,7 +248,7 @@ class _Item:
     reply_held: bool = False   # a reply from a model that was given real values, in a turn for another model
 
 
-def _held_replies(history: list[StoredMessage], model: str) -> set[str]:
+def held_replies(history: list[StoredMessage], model: str) -> set[str]:
     """Ids of the assistant replies this model must not see: replies from a model that was given real values.
     Walk in order: a user message with a real-values text file exposes that message's model; an assistant message
     after that, from another model that was exposed (or with no model recorded), is held. Replies from before the
@@ -264,10 +270,10 @@ def _fit_history(history: list[StoredMessage], fixed_chars: int, fixed_attachmen
     part of a long chat), then the oldest turns. Pins, the volatile block and
     the new message are never trimmed."""
     items = []
-    held_replies = _held_replies(history, model)
+    held_ids = held_replies(history, model)
     for m in history:
         held = [a for a in m.attachments if _is_held(m, a, model)]
-        items.append(_Item(m, [a for a in m.attachments if a not in held], held=held, reply_held=m.id in held_replies))
+        items.append(_Item(m, [a for a in m.attachments if a not in held], held=held, reply_held=m.id in held_ids))
     if window is None:
         return items, 0, 0
     budget = window - cfg.reply_reserve_tokens
@@ -316,7 +322,9 @@ class TurnInput:
     now: datetime
     tools: tuple[Any, ...] = ()   # offered on the turn's first step: the rules describe exactly these
     tool_ctx: Any = None
-    profile: str = ""             # the deployment's assistant profile: leads the system message
+    profile: str = ""             # house rules + this chat's profile, placeholders filled: leads the system message
+    placed: frozenset = frozenset()   # the placeholders that text used (chat/profile_text.py): the app's line omits them
+    persona: bool = True          # the text holds a profile, not house rules alone
     scope: tuple[ScopeDoc, ...] = ()   # the documents the tools read (tools.scope.scope_docs); prefetch searches them
     project_map: str = ""              # a project chat's map of its documents (chat/project_map.py): after the rules
     app_exchange: tuple[Message, ...] = ()   # a tool exchange the app ran (the approved web search), after the prefetch's
@@ -363,6 +371,7 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     rules = system_rules(turn.doc, turn.tools, has_pins=bool(turn.pins),
                          prefetch=cfg.prefetch == "on" and cfg.prefetch_min_score < 1.0,
                          today=today_line(turn.now, turn.timezone, turn.default_timezone), profile=turn.profile,
+                         placed=turn.placed, persona=turn.persona,
                          has_map=bool(turn.project_map), project=getattr(turn.tool_ctx, "project", None),
                          spoken=turn.spoken)
     system = Message("system", "\n\n".join(c for c in (rules, turn.project_map, pin_text(turn.pins)) if c))

@@ -23,6 +23,10 @@ export function noticeFor(status, detail, { notFound, tooLarge, serverNotFound }
     if (status === 409 && d?.error === 'content_shared') {
         return CONTENT_SHARED[d.reason] || CONTENT_SHARED.other_holders;
     }
+    // A bulk upload's whole-plan refusals carry a sentence with their numbers in it.
+    if ((status === 413 && d?.error === 'too_many_files') || (status === 507 && d?.error === 'not_enough_space')) {
+        return d.message;
+    }
     // Documents and chat both refuse with 413 too_large; the caller names what was too big.
     if (status === 413) return `${tooLarge || 'File'} too large (limit ${d?.limit_mb ?? '?'} MB).`;
     if (status === 415) return 'Unsupported file type.';

@@ -83,7 +83,7 @@ describe('registerDocument', () => {
   it('returns {docId, dedup, state} from the server response', async () => {
     apiFetch.mockResolvedValue(json(200, { doc_id: 'server-id', dedup: true, state: 'indexed' }));
     const result = await registerDocument({ ...baseArgs, tags: [] });
-    expect(result).toEqual({ docId: 'server-id', dedup: true, state: 'indexed' });
+    expect(result).toEqual({ docId: 'server-id', dedup: true, state: 'indexed', queued: false });
   });
 
   it('logs but does not throw when the project link fails', async () => {

@@ -45,7 +45,7 @@ export const textAttachmentWire = (att) => {
     const size = utf8Bytes(text);
     return {
         wire: { id: att.id, kind: 'text', mime: 'text/plain', name: att.name || '', size, masked, real_values, base64: textToBase64(text) },
-        meta: { id: att.id, kind: 'text', name: att.name, mimeType: 'text/plain', size, masked },
+        meta: { id: att.id, kind: 'text', name: att.name, mimeType: 'text/plain', size, masked, real_values },
     };
 };
 
@@ -119,6 +119,7 @@ export const stripAttachmentData = (att) => ({
     mimeType: att.mimeType,
     size: att.size,
     ...(typeof att.masked === 'boolean' ? { masked: att.masked } : {}),
+    ...(att.real_values === true ? { real_values: true } : {}),
 });
 
 // True when the attachment still carries its full binary payload (in-memory).

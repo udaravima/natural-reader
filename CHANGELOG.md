@@ -4,6 +4,131 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.13.0] - 2026-11-16
+
+### Added
+
+- **Several assistant profiles, picked per chat.** In **Admin → Chat →
+  Assistant**, admins write house rules that apply to every chat and named
+  profiles on top, one of them the default. People pick a profile in the chat
+  sidebar, under Model; each chat keeps the profile it used. Profiles can be
+  turned off, reordered and deleted; a deleted profile's chats move to the
+  default and say so.
+  - Profile text may use `{{date}}`, `{{app}}` and `{{profile}}`.
+  - Migration 030 turns a profile saved before into one named "Assistant", the
+    default, so every chat reads what it read before.
+  - `CHAT_ASSISTANT_PROFILE_FILE` now applies only while there are no profiles.
+  - `GET/PUT /v1/admin/assistant` are replaced by `/v1/admin/assistant/profiles`,
+    `/house-rules` and `/preview`; people read `/v1/chat/profiles` (names and
+    descriptions only).
+- **Name the app.** `APP_NAME`, `APP_TAGLINE` and `APP_COPYRIGHT` in `.env` set
+  what the app is called in chat, on the sign-in screen and on the browser
+  tab. The sign-in screen and Settings now end with one line: the name, the
+  release number and the copyright, if set. Unset, everything reads as before.
+  The read-aloud extension and the Keycloak sign-in page keep their own names.
+- **A first draft of the assistant profile.** In **Admin → Chat → Assistant**,
+  describe the assistant you want and press **Generate**: the helper model
+  writes a draft into the editor. Nothing is saved until you press Save, and
+  unsaved text is replaced only after a confirm. Without a helper model the
+  screen says where to choose one.
+- **Chats named from their first exchange.** With a helper model set up, a new
+  chat gets a short title a few seconds after its first reply. It replaces the
+  first message cut to 60 characters, and the sidebar updates without a reload.
+  - A title you typed is never replaced, nor are chats named before this
+    version.
+  - **✦ Generate title**, beside Rename, asks again from the conversation so
+    far.
+  - A cloud helper never reads a chat that runs on a local model.
+  - A reply that saw a file's real values is never sent to the helper.
+  - A chat that starts with a file and no words is titled from the file's
+    name and the reply.
+  - Migration 029 records who wrote each title.
+
+- **PDF and Markdown side by side.** A converted PDF's toolbar switch is now
+  **PDF | Both | MD**. **Both** shows the PDF page on the left and its Markdown
+  on the right, each scrolling on its own, and keeps them on the same page:
+  turning the PDF page scrolls the Markdown to that page, and scrolling the
+  Markdown turns the PDF page. A phone has no room for two columns, so it keeps
+  **PDF** and **MD**.
+- **Tags and descriptions written by a helper model.** An admin names one
+  small model in **Admin → Models → Helper model** (or `HELPER_MODEL`; off by
+  default). Each indexed document then gets up to five tags and a one-line
+  description, written after indexing, one document at a time and only while
+  nothing waits to be indexed. The model reads a sample of at most 6,000
+  characters, whatever the document's size, and is shown the tags already used
+  in the project. What it writes belongs to that project (or to that person's
+  library copy): a file held by two projects is described for each, and
+  neither project's tags reach the other. On a project's Documents tab they show under each name: a tag
+  filters the list, a filter box matches names, tags and descriptions,
+  Contributors type the project's own words with the pencil, and **Generate** /
+  **Write tags for N documents** ask the helper. The bulk upload plan has a
+  **Write tags and descriptions** tick, on by default. The Library shows the
+  description and the helper's other tags as suggestions to keep. The project
+  chat's document list carries the descriptions. Helper calls are counted on the
+  Usage page under **Helper**. Measured on a CPU: about 30 s per document with
+  `gemma4:e4b`.
+- **Upload many files into a project at once.** A project's Documents tab has
+  **Upload files** and **Upload folder**, and takes files or a whole folder
+  dropped anywhere on it. Before anything is sent, you see what each file will
+  become: a new document, the next version of the document with its name,
+  unchanged (not sent), the same as an older version (left alone, or restored if
+  you choose), or why it can't be sent. **Upload** with nothing touched does the
+  usual thing; a name two documents share is never guessed. Uploading the same
+  folder again sends only what changed. Files go into the project only, two at a
+  time, with progress, **Stop** and **Try again**, and the upload carries on
+  while you look at another tab. Scripts get the same rules from one route,
+  `POST /v1/projects/{id}/uploads`, one request per file, safe to run again; a
+  plan route says what would happen first. New settings: `BULK_UPLOAD_MAX_FILES`
+  (200) and `UPLOAD_MIN_FREE_MB` (1024). Before, each file took two screens: open
+  it in the reader, then file it from the project.
+- **Indexing and conversion wait in a queue, and survive a restart.** Each
+  server worker indexes one document at a time and runs one Docling conversion
+  at a time, from a queue in the database. Before, every upload, Index, Convert
+  and new version started its own job at once in the worker that took the
+  request: thirty uploads meant thirty extractions together, a restart forgot
+  whatever was waiting, and with several workers two could work on one
+  document. A clean stop hands the running job back; after a crash, the job is
+  taken over after 10 minutes; a file that stops the server 3 times is marked
+  failed and its uploader told; every start queues documents left part-way.
+- **"Waiting to index (3 ahead)"** in the reader, the Library and a project's
+  Documents tab, with the other states in plain words, the reason on a failed
+  one, and **Retry index** on a project's document that nothing is working on.
+  The project tab keeps following the queue past 10 minutes.
+
+- **A warning before a model switch hides replies.** A text file sent with its
+  real values stays with the model it was agreed for, and so do that model's
+  replies. Until now you learned that only after sending, from a note under the
+  new model's reply. Picking another model now shows a line above the message
+  box that names the file, the model it was agreed for, and how many replies
+  the new model won't be sent, and says to switch back to keep them. Nothing
+  about what is held back has changed.
+
+### Fixed
+
+- **Chat buttons on touch screens.** A chat's **Rename** and **Delete**
+  buttons in the sidebar only ever showed on mouse hover, so on a phone or
+  tablet they were invisible but still took taps. They now always show on a
+  screen with no hover, at a size a finger can hit, and on keyboard focus.
+- **Scrolling long Markdown pages turns the page.** In **MD** view, scrolling through a converted page taller
+  than the window never updated the page number. It does now.
+- **A project Contributor couldn't resume a document's indexing** unless the
+  file was in their own library: Retry index answered "not found". Resuming
+  changes no content, so a Contributor or above of a project holding the
+  document may now. Re-indexing an indexed document is still its owner's.
+- **A new version's failed indexing told nobody.** Its uploader now gets the
+  notice, as for any upload.
+
+- **`./startup.sh start` after a code change ran the old code.** On podman it
+  built the new image, then restarted the old backend container on the old one:
+  podman-compose recreates a container when the compose file changes, not when
+  its image does. `start` now compares the two and recreates a stale backend.
+- **`./startup.sh rebuild` after a `stop` hung.** `stop` removes every
+  container; `rebuild` recreated the backend alone, which waited for a Postgres
+  nothing started. It now starts Postgres, SearXNG and Keycloak first when
+  Postgres isn't running.
+- **CI failed six speech tests** that assumed torch was installed. The tests now
+  say so themselves; no product change.
+
 ## [2.12.0] - 2026-11-14
 
 **Security: rotate the Keycloak secrets if your realm was created by v2.11.0 or

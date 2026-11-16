@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('../utils/apiFetch', () => ({ apiFetch: vi.fn() }));
-import { apiFetch } from '../utils/apiFetch';
+vi.mock('../utils/apiFetch', () => ({ apiFetch: vi.fn(), apiUpload: vi.fn() }));
+import { apiFetch, apiUpload } from '../utils/apiFetch';
 import { projectsApi } from './projectsApi';
 
 const json = (status, body) => ({ ok: status < 400, status, json: async () => body });
@@ -68,5 +68,99 @@ describe('projectsApi — documents and versions (V1)', () => {
     ]);
     expect(JSON.parse(apiFetch.mock.calls[2][3].body)).toEqual({ doc_id: 'h', note: null });
     expect(JSON.parse(apiFetch.mock.calls[4][3].body)).toEqual({ from: 'y' });
+  });
+});
+
+describe('projectsApi — bulk upload', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('uploadPlan posts the files as JSON', async () => {
+    apiFetch.mockResolvedValue(json(200, { files: [] }));
+    const files = [{ name: 'a.md', size: 3, sha256: null, head: 'YWI=' }];
+    expect(await api.uploadPlan('p1', files)).toEqual({ files: [] });
+    const [, , path, opts] = apiFetch.mock.calls[0];
+    expect(`${opts.method} ${path}`).toBe('POST /v1/projects/p1/uploads/plan');
+    expect(JSON.parse(opts.body)).toEqual({ files });
+  });
+
+  it('uploadPlan throws the server sentence for too many files and for a full disk', async () => {
+    const message = 'At most 200 files can be uploaded at once. Upload them in smaller groups.';
+    apiFetch.mockResolvedValue({ ok: false, status: 413, json: async () => ({ detail: { error: 'too_many_files', message } }) });
+    await expect(api.uploadPlan('p1', [])).rejects.toThrow(message);
+    const full = 'This upload needs 3 MB, and the server has 100 MB free, of which it keeps 1024 MB in reserve.';
+    apiFetch.mockResolvedValue({ ok: false, status: 507, json: async () => ({ detail: { error: 'not_enough_space', message: full } }) });
+    await expect(api.uploadPlan('p1', [])).rejects.toThrow(full);
+  });
+
+  it('uploadFile sends on_match, on_older and document_id, and passes progress through', async () => {
+    apiUpload.mockResolvedValue({ ok: true, status: 201, body: { result: 'version' } });
+    const file = new File(['x'], 'a.md');
+    const onProgress = vi.fn();
+    const out = await api.uploadFile('p1', file, { on_match: 'version', on_older: 'leave', document_id: 'd9' }, { onProgress });
+    expect(out).toEqual({ result: 'version' });
+    const [, , path, form, opts] = apiUpload.mock.calls[0];
+    expect(path).toBe('/v1/projects/p1/uploads');
+    expect(form.get('file').name).toBe('a.md');
+    expect([form.get('on_match'), form.get('on_older'), form.get('document_id')]).toEqual(['version', 'leave', 'd9']);
+    expect(opts.onProgress).toBe(onProgress);
+  });
+
+  it('uploadFile leaves document_id out when there is none', async () => {
+    apiUpload.mockResolvedValue({ ok: true, status: 201, body: {} });
+    await api.uploadFile('p1', new File(['x'], 'a.md'), { on_match: 'separate', on_older: 'leave' });
+    expect(apiUpload.mock.calls[0][3].has('document_id')).toBe(false);
+  });
+
+  it('uploadFile throws the server sentence with status and code', async () => {
+    apiUpload.mockResolvedValue({ ok: false, status: 403, body: { detail: { error: 'insufficient_role', required: 'contributor' } } });
+    const err = await api.uploadFile('p1', new File(['x'], 'a.md'), {}).catch((e) => e);
+    expect(err.message).toBe('Only Contributors, Maintainers or Owners can do that.');
+    expect([err.status, err.code]).toEqual([403, 'insufficient_role']);
+  });
+
+  it('uploadFile reports a network failure plainly', async () => {
+    apiUpload.mockResolvedValue({ ok: false, status: 0, body: null });
+    const err = await api.uploadFile('p1', new File(['x'], 'a.md'), {}).catch((e) => e);
+    expect(err.message).toBe('The upload was cut off. Check the connection and try again.');
+    expect(err.status).toBe(0);
+  });
+});
+
+describe('projectsApi — tags and descriptions (helper spec §5.8)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('uploadFile sends describe=false only when the tick is cleared', async () => {
+    apiUpload.mockResolvedValue({ ok: true, status: 201, body: {} });
+    await api.uploadFile('p1', new File(['x'], 'a.md'), { on_match: 'version', on_older: 'leave', describe: false });
+    expect(apiUpload.mock.calls[0][3].get('describe')).toBe('false');
+    await api.uploadFile('p1', new File(['x'], 'a.md'), { on_match: 'version', on_older: 'leave', describe: true });
+    expect(apiUpload.mock.calls[1][3].has('describe')).toBe(false);
+  });
+
+  it('setDescribed PATCHes the document with only the fields given', async () => {
+    apiFetch.mockResolvedValue(json(200, { id: 'x', tags: ['a'] }));
+    expect(await api.setDescribed('p1', 'x', { tags: ['a'] })).toEqual({ id: 'x', tags: ['a'] });
+    const [, , path, opts] = apiFetch.mock.calls[0];
+    expect([path, opts.method, JSON.parse(opts.body)]).toEqual(['/v1/projects/p1/documents/x', 'PATCH', { tags: ['a'] }]);
+  });
+
+  it('describe, describeMissing and describeMine POST to their routes', async () => {
+    apiFetch.mockResolvedValue(json(202, {}));
+    await api.describe('p1', 'x');
+    await api.describeMissing('p1');
+    await api.describeMine('d1');
+    expect(apiFetch.mock.calls.map(([, , path, opts]) => [path, opts.method])).toEqual([
+      ['/v1/projects/p1/documents/x/describe', 'POST'],
+      ['/v1/projects/p1/documents/describe-missing', 'POST'],
+      ['/v1/docs/d1/describe', 'POST'],
+    ]);
+  });
+
+  it('helperOn reads the deployment setting, and a failure counts as off', async () => {
+    apiFetch.mockResolvedValueOnce(json(200, { on: true }));
+    expect(await api.helperOn()).toBe(true);
+    expect(apiFetch.mock.calls[0][2]).toBe('/v1/settings/helper');
+    apiFetch.mockResolvedValueOnce(json(500, {}));
+    expect(await api.helperOn()).toBe(false);
   });
 });

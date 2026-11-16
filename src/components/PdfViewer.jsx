@@ -1,6 +1,6 @@
 import {
     ChevronLeft, ChevronRight, ZoomIn, ZoomOut,
-    RotateCcw, Maximize, Minimize, MessageSquare, FileText, FileType,
+    RotateCcw, Maximize, Minimize, MessageSquare, FileText, FileType, Columns2,
     Download, Trash2
 } from 'lucide-react';
 import WelcomeScreen from './WelcomeScreen';
@@ -54,7 +54,7 @@ export default function PdfViewer({
     onOpenConvertDialog,
     onExportMarkdown,
     onDeleteMarkdown,
-    viewMode, // 'pdf' | 'md'
+    viewMode, // 'pdf' | 'md' | 'both' (side by side; the PDF alone on a phone)
     setViewMode,
     distractionFree = false,
     openFolder,
@@ -67,6 +67,10 @@ export default function PdfViewer({
     const canShowConvert = isPdf && !!onOpenConvertDialog;
     const isConverted = convertState === 'converted';
     const showingMdView = viewMode === 'md' && isConverted;
+    // Side by side needs room for two columns: a phone shows the PDF alone and isn't offered the choice.
+    const canShowBoth = isConverted && !effectiveIsMobile;
+    const showingBoth = viewMode === 'both' && canShowBoth;
+    const pdfLit = viewMode !== 'md' && !showingBoth;
     // Secondary toolbar actions, surfaced in the mobile "⋯" dropdown so the bar
     // doesn't overflow on phones. The same actions stay as inline buttons at
     // md+ (below). Falsy entries are skipped by PdfToolbarMenu.
@@ -74,11 +78,42 @@ export default function PdfViewer({
         { key: 'fit', label: 'Fit page', Icon: Minimize, active: Math.abs(scale - 0.8) < 0.001, onClick: () => setScale(0.8) },
         { key: 'width', label: 'Fit width', Icon: Maximize, active: Math.abs(scale - 1.2) < 0.001, onClick: () => setScale(1.2) },
         onAskAboutPage && { key: 'ask', label: 'Ask about this page', Icon: MessageSquare, onClick: () => onAskAboutPage(currentPage) },
-        isConverted && setViewMode && { key: 'view-pdf', label: 'Show PDF', Icon: FileType, active: viewMode !== 'md', onClick: () => setViewMode('pdf') },
+        isConverted && setViewMode && { key: 'view-pdf', label: 'Show PDF', Icon: FileType, active: pdfLit, onClick: () => setViewMode('pdf') },
+        canShowBoth && setViewMode && { key: 'view-both', label: 'Show both side by side', Icon: Columns2, active: showingBoth, onClick: () => setViewMode('both') },
         isConverted && setViewMode && { key: 'view-md', label: 'Show Markdown', Icon: FileText, active: viewMode === 'md', onClick: () => setViewMode('md') },
         isConverted && onExportMarkdown && { key: 'export-md', label: 'Download Markdown', Icon: Download, onClick: onExportMarkdown },
         isConverted && onDeleteMarkdown && { key: 'delete-md', label: 'Delete Markdown', Icon: Trash2, tone: 'danger', onClick: onDeleteMarkdown },
     ];
+    const pdfPage = (
+                            <>
+                                <canvas
+                                    ref={canvasRef}
+                                    className="block"
+                                    style={{
+                                        maxWidth: effectiveIsMobile ? '100%' : undefined,
+                                        height: effectiveIsMobile ? 'auto' : undefined,
+                                    }}
+                                />
+                                <div
+                                    ref={textLayerRef}
+                                    className="textLayer absolute top-0 left-0 overflow-hidden opacity-25 leading-none"
+                                    style={{ pointerEvents: 'auto' }}
+                                />
+                            </>
+    );
+    const mdReader = (
+                            <MarkdownReader
+                                theme={theme}
+                                darkMode={darkMode}
+                                apiHost={apiHost}
+                                apiPort={apiPort}
+                                docId={docId}
+                                currentPage={currentPage}
+                                setCurrentPage={setCurrentPage}
+                                scale={scale}
+                                effectiveIsMobile={effectiveIsMobile}
+                            />
+    );
     return (
         <section className={`flex-1 flex flex-col overflow-hidden ${theme.viewportBg} transition-colors duration-300`}>
 
@@ -217,6 +252,8 @@ export default function PdfViewer({
                                 state={indexEntry?.state || 'idle'}
                                 chunkCount={indexEntry?.chunkCount}
                                 embeddedCount={indexEntry?.embeddedCount}
+                                queued={indexEntry?.queued}
+                                queueAhead={indexEntry?.queueAhead}
                                 onIndex={onIndexDocument}
                             />
                         )}
@@ -237,7 +274,7 @@ export default function PdfViewer({
                                 <button
                                     onClick={() => setViewMode('pdf')}
                                     className={`px-2 py-1.5 text-xs font-bold flex items-center transition-all ${
-                                        viewMode !== 'md'
+                                        pdfLit
                                             ? 'bg-blue-600 text-white'
                                             : `${theme.bgTertiary} ${theme.textSecondary} ${theme.hover}`
                                     }`}
@@ -246,6 +283,20 @@ export default function PdfViewer({
                                     <FileType size={12} className="inline mr-1" />
                                     PDF
                                 </button>
+                                {canShowBoth && (
+                                    <button
+                                        onClick={() => setViewMode('both')}
+                                        className={`px-2 py-1.5 text-xs font-bold flex items-center transition-all ${
+                                            showingBoth
+                                                ? 'bg-blue-600 text-white'
+                                                : `${theme.bgTertiary} ${theme.textSecondary} ${theme.hover}`
+                                        }`}
+                                        title="Show the PDF and the Markdown side by side"
+                                    >
+                                        <Columns2 size={12} className="inline mr-1" />
+                                        Both
+                                    </button>
+                                )}
                                 <button
                                     onClick={() => setViewMode('md')}
                                     className={`px-2 py-1.5 text-xs font-bold flex items-center transition-all ${
@@ -284,11 +335,32 @@ export default function PdfViewer({
                 </div>
             )}
 
+            {/* SIDE BY SIDE: the PDF page and its Markdown, one column each. Each column scrolls on its own; the
+                reader's one current page keeps them together (the Markdown scrolls to the page the PDF shows, and
+                scrolling the Markdown turns the PDF page). */}
+            {showingBoth && (
+                <div className={`flex-1 flex min-h-0 ${darkMode ? 'bg-slate-900/50' : 'bg-slate-300/30'}`}>
+                    <div ref={pdfContainerRef} data-pane="pdf"
+                        className="flex-1 min-w-0 overflow-auto p-2 md:p-4 flex justify-center-safe custom-scrollbar">
+                        <div className={`relative ${theme.canvasBg} shadow-2xl rounded-sm border ${theme.border}`} style={{ height: 'fit-content' }}>
+                            {pdfPage}
+                        </div>
+                    </div>
+                    <div data-pane="md"
+                        className={`@container flex-1 min-w-0 overflow-auto p-2 md:p-4 border-l ${theme.border} custom-scrollbar`}>
+                        <div className={`${theme.canvasBg} shadow-2xl rounded-sm border ${theme.border}`}>
+                            {mdReader}
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* DOCUMENT CONTAINER (PDF canvas or text page). A query container,
                 so a text page sizes to this column (100cqw), not the window:
                 the chat beside the page narrows it. Safe centering: a page
                 wider than the column starts at its left edge, scrollable,
                 instead of being cut off on the left. */}
+            {!showingBoth && (
             <div
                 ref={pdfContainerRef}
                 className={`@container flex-1 overflow-auto p-2 md:p-6 flex justify-center-safe custom-scrollbar ${darkMode ? 'bg-slate-900/50' : 'bg-slate-300/30'} ${effectiveIsMobile && hasDoc ? 'pb-28' : ''}`}
@@ -302,17 +374,7 @@ export default function PdfViewer({
                 >
                     {hasDoc ? (
                         showingMdView ? (
-                            <MarkdownReader
-                                theme={theme}
-                                darkMode={darkMode}
-                                apiHost={apiHost}
-                                apiPort={apiPort}
-                                docId={docId}
-                                currentPage={currentPage}
-                                setCurrentPage={setCurrentPage}
-                                scale={scale}
-                                effectiveIsMobile={effectiveIsMobile}
-                            />
+                            mdReader
                         ) : isMarkdown ? (
                             <MarkdownPageRenderer
                                 theme={theme}
@@ -332,21 +394,7 @@ export default function PdfViewer({
                                 effectiveIsMobile={effectiveIsMobile}
                             />
                         ) : (
-                            <>
-                                <canvas
-                                    ref={canvasRef}
-                                    className="block"
-                                    style={{
-                                        maxWidth: effectiveIsMobile ? '100%' : undefined,
-                                        height: effectiveIsMobile ? 'auto' : undefined,
-                                    }}
-                                />
-                                <div
-                                    ref={textLayerRef}
-                                    className="textLayer absolute top-0 left-0 overflow-hidden opacity-25 leading-none"
-                                    style={{ pointerEvents: 'auto' }}
-                                />
-                            </>
+                            pdfPage
                         )
                     ) : (
                         <WelcomeScreen
@@ -360,6 +408,7 @@ export default function PdfViewer({
                     )}
                 </div>
             </div>
+            )}
         </section>
     );
 }

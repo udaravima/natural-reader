@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within, act, cleanup } from '@testing-library/react';
 import ProjectDocsTab from './ProjectDocsTab';
+import { forgetBatches } from '../../lib/bulkUploadStore';
 
 const theme = { bg: '', bgSecondary: '', bgTertiary: '', border: '', text: '', textSecondary: '', textMuted: '' };
 const can = (over = {}) => ({ edit: false, manage_members: false, manage_owners: false, file_docs: false,
@@ -27,6 +28,7 @@ function api(over = {}) {
     deleteVersion: vi.fn(async () => null),
     mergeDocuments: vi.fn(async () => report),
     removeDocument: vi.fn(async () => null),
+    reindex: vi.fn(async () => ({ ok: true, queued: true })),
     ...over,
   };
 }
@@ -248,20 +250,20 @@ describe('ProjectDocsTab while content is indexing', () => {
 
   it('re-reads the list every 3 s until every row has settled, then stops', async () => {
     const documents = vi.fn()
-      .mockResolvedValueOnce([{ ...report, state: 'stored' }, final])
-      .mockResolvedValueOnce([{ ...report, state: 'indexing' }, final])
+      .mockResolvedValueOnce([{ ...report, state: 'stored', queued: true, queue_ahead: 1 }, final])
+      .mockResolvedValueOnce([{ ...report, state: 'indexing', queued: true, queue_ahead: 0 }, final])
       .mockResolvedValue([report, final]);
     mount(project(), api({ documents }));
     await flush();
-    expect(badge()).toBe('stored');
+    expect(badge()).toBe('Waiting to index (1 ahead)');
     await advance(2999);
     expect(documents).toHaveBeenCalledTimes(1);
     await advance(1);
     expect(documents).toHaveBeenCalledTimes(2);
-    expect(badge()).toBe('indexing');
+    expect(badge()).toBe('Indexing');
     await advance(3000);
     expect(documents).toHaveBeenCalledTimes(3);
-    expect(badge()).toBe('indexed');
+    expect(badge()).toBe('Indexed');
     await advance(30000);
     expect(documents).toHaveBeenCalledTimes(3);
   });
@@ -281,7 +283,34 @@ describe('ProjectDocsTab while content is indexing', () => {
     await act(async () => finish([{ ...report, state: 'indexing' }]));
     await advance(3000);
     expect(documents).toHaveBeenCalledTimes(3);
-    expect(badge()).toBe('indexed');
+    expect(badge()).toBe('Indexed');
+  });
+
+  it('keeps watching past ten minutes while documents still wait, every 15 s after the first 200 reads', async () => {
+    let settled = false;
+    const documents = vi.fn(async () => [settled ? report : { ...report, state: 'stored', queued: true, queue_ahead: 9 }]);
+    mount(project(), api({ documents }));
+    await flush();
+    for (let i = 0; i < 200; i++) await advance(3000);
+    expect(documents).toHaveBeenCalledTimes(201);
+    await advance(14999);
+    expect(documents).toHaveBeenCalledTimes(201);
+    await advance(1);
+    expect(documents).toHaveBeenCalledTimes(202);
+    settled = true;
+    await advance(15000);
+    expect(documents).toHaveBeenCalledTimes(203);
+    await advance(60000);
+    expect(documents).toHaveBeenCalledTimes(203);
+  });
+
+  it('does not watch a document nothing will index', async () => {
+    const documents = vi.fn(async () => [{ ...report, state: 'stored', queued: false }]);
+    mount(project(), api({ documents }));
+    await flush();
+    await advance(30000);
+    expect(documents).toHaveBeenCalledTimes(1);
+    expect(badge()).toBe('Not indexed');
   });
 
   it('stops when the tab unmounts', async () => {
@@ -293,5 +322,181 @@ describe('ProjectDocsTab while content is indexing', () => {
     cleanup();
     await advance(30000);
     expect(documents).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('ProjectDocsTab: a document that is not indexing', () => {
+  beforeEach(() => vi.clearAllMocks());
+  const failed = { ...report, state: 'failed', error_message: 'No text found — try Convert (OCR).' };
+
+  it('says Failed with the reason, and Retry index queues it again and re-reads the list', async () => {
+    const a = api({ documents: vi.fn().mockResolvedValueOnce([failed]).mockResolvedValue([{ ...report, state: 'stored', queued: true }]) });
+    const props = mount(project(), a);
+    const label = await screen.findByText('Failed');
+    expect(label.title).toBe('No text found — try Convert (OCR).');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry indexing report.pdf' }));
+    await waitFor(() => expect(a.reindex).toHaveBeenCalledWith('h2'));
+    await waitFor(() => expect(props.showToast).toHaveBeenCalledWith('report.pdf is queued for indexing.', 3000));
+    expect(await screen.findByText('Waiting to index')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Retry indexing report.pdf' })).toBeNull();
+  });
+
+  it('offers Retry index for a document with no job, and none to a Reader or for a queued one', async () => {
+    mount(project(), api({ documents: vi.fn(async () => [{ ...report, state: 'stored', queued: false }, { ...final, state: 'stored', queued: true }]) }));
+    expect(await screen.findByRole('button', { name: 'Retry indexing report.pdf' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Retry indexing report-final.pdf' })).toBeNull();
+    cleanup();
+    mount(project({ my_role: 'reader', can: can() }), api({ documents: vi.fn(async () => [failed]) }));
+    await screen.findByText('Failed');
+    expect(screen.queryByRole('button', { name: /Retry indexing/ })).toBeNull();
+  });
+
+});
+
+describe('ProjectDocsTab: bulk upload', () => {
+  beforeEach(() => forgetBatches());
+  const drop = (files) => ({ dataTransfer: { files, items: [], types: ['Files'] } });
+  const bulkApi = (over = {}) => api({
+    uploadPlan: vi.fn(async (_p, files) => ({ files: files.map((f) => ({ name: f.name, action: 'new', document: null,
+      version: null, candidates: [], code: null, message: null })) })),
+    uploadFile: vi.fn(async () => ({ result: 'created', document: { id: 'n', name: 'a.md', version: 1 } })),
+    ...over,
+  });
+
+  it('shows Upload files, Upload folder and a drop target only to someone who can file', async () => {
+    const a = bulkApi();
+    mount(project({ my_role: 'reader', can: can() }), a);
+    await screen.findByText('report.pdf');
+    expect(screen.queryByRole('button', { name: 'Upload files' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Upload folder' })).toBeNull();
+    fireEvent.drop(screen.getByRole('region', { name: 'Documents in Q3' }), drop([new File(['x'], 'a.md')]));
+    await act(async () => {});
+    expect(a.uploadPlan).not.toHaveBeenCalled();
+  });
+
+  it('offers both pickers to a Contributor; the folder one picks folders', async () => {
+    mount(project(), bulkApi());
+    expect(await screen.findByRole('button', { name: 'Upload files' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Upload folder' })).toBeTruthy();
+    expect(screen.getByLabelText('Folder to upload').hasAttribute('webkitdirectory')).toBe(true);
+    expect(screen.getByLabelText('Files to upload').multiple).toBe(true);
+  });
+
+  it('dropping files shows the plan, and Upload with nothing touched sends the defaults', async () => {
+    const a = bulkApi();
+    mount(project(), a);
+    await screen.findByText('report.pdf');
+    fireEvent.drop(screen.getByRole('region', { name: 'Documents in Q3' }), drop([new File(['# A'], 'a.md')]));
+    expect(await screen.findByText('Upload to "Q3"')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Upload 1' }));
+    await waitFor(() => expect(a.uploadFile).toHaveBeenCalled());
+    expect(a.uploadFile.mock.calls[0][2]).toEqual({ on_match: 'version', on_older: 'leave' });
+    expect(await screen.findByText('1 sent: 1 new.')).toBeTruthy();
+  });
+
+  it('picking files with the button plans them too', async () => {
+    const a = bulkApi();
+    mount(project(), a);
+    await screen.findByText('report.pdf');
+    fireEvent.change(screen.getByLabelText('Files to upload'), { target: { files: [new File(['# A'], 'a.md')] } });
+    expect(await screen.findByText('Upload to "Q3"')).toBeTruthy();
+    expect(a.uploadPlan.mock.calls[0][1][0].name).toBe('a.md');
+  });
+
+  it('re-reads the documents as files land', async () => {
+    const a = bulkApi();
+    const props = mount(project(), a);
+    await screen.findByText('report.pdf');
+    const before = a.documents.mock.calls.length;
+    fireEvent.drop(screen.getByRole('region', { name: 'Documents in Q3' }), drop([new File(['# A'], 'a.md')]));
+    fireEvent.click(await screen.findByRole('button', { name: 'Upload 1' }));
+    await waitFor(() => expect(a.documents.mock.calls.length).toBeGreaterThan(before));
+    expect(props.onChanged).toHaveBeenCalled();
+  });
+
+  describe('tags and descriptions (helper spec §5.4, §5.6)', () => {
+    const tagged = { ...report, tags: ['finance', 'risk'], description: 'Yearly results.', generated: true, edited: false, describing: false };
+    const plain = { ...final, tags: ['legal'], description: 'The signed contract.', generated: true, edited: false, describing: false };
+    const untagged = { id: 'z', name: 'notes.md', version: 1, versions_count: 1, doc_id: 'h4', state: 'indexed', tags: [],
+      description: null, generated: false, edited: false, describing: false };
+
+    it('a tag chip filters the list to it, and again shows all', async () => {
+      mount(project(), api({ documents: vi.fn(async () => [tagged, plain]) }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Show documents tagged finance' }));
+      expect(screen.queryByText('report-final.pdf')).toBeNull();
+      expect(screen.getByText('report.pdf')).toBeTruthy();
+      fireEvent.click(screen.getByRole('button', { name: 'Show documents tagged finance' }));
+      expect(screen.getByText('report-final.pdf')).toBeTruthy();
+    });
+
+    it('the filter box matches names, tags and descriptions', async () => {
+      mount(project(), api({ documents: vi.fn(async () => [tagged, plain]) }));
+      const box = await screen.findByLabelText('Filter documents');
+      fireEvent.change(box, { target: { value: 'contract' } });
+      expect(screen.queryByText('report.pdf')).toBeNull();
+      expect(screen.getByText('report-final.pdf')).toBeTruthy();
+      fireEvent.change(box, { target: { value: 'RISK' } });
+      expect(screen.getByText('report.pdf')).toBeTruthy();
+      expect(screen.queryByText('report-final.pdf')).toBeNull();
+      fireEvent.change(box, { target: { value: 'final' } });
+      expect(screen.getByText('report-final.pdf')).toBeTruthy();
+      fireEvent.change(box, { target: { value: 'nothing like it' } });
+      expect(screen.getByText('No documents match.')).toBeTruthy();
+    });
+
+    it('"Write tags for N documents" shows only with the helper on and untagged indexed documents', async () => {
+      const a = api({ documents: vi.fn(async () => [tagged, untagged]), helperOn: vi.fn(async () => true),
+        describeMissing: vi.fn(async () => ({ queued: 1 })) });
+      const props = mount(project(), a);
+      fireEvent.click(await screen.findByRole('button', { name: 'Write tags for 1 document' }));
+      await waitFor(() => expect(a.describeMissing).toHaveBeenCalledWith('p1'));
+      await waitFor(() => expect(props.showToast).toHaveBeenCalledWith('Writing tags for 1 document.', 3000));
+    });
+
+    it('offers no "Write tags" when the helper is off, or to a Reader', async () => {
+      mount(project(), api({ documents: vi.fn(async () => [untagged]), helperOn: vi.fn(async () => false) }));
+      await screen.findByText('notes.md');
+      expect(screen.queryByRole('button', { name: /Write tags for/ })).toBeNull();
+      cleanup();
+      mount(project({ my_role: 'reader', can: can() }), api({ documents: vi.fn(async () => [untagged]), helperOn: vi.fn(async () => true) }));
+      await screen.findByText('notes.md');
+      expect(screen.queryByRole('button', { name: /Write tags for/ })).toBeNull();
+    });
+
+    it("a Contributor's edit is saved for the project and the list read again", async () => {
+      const a = api({ documents: vi.fn(async () => [tagged]), setDescribed: vi.fn(async () => tagged) });
+      mount(project(), a);
+      fireEvent.click(await screen.findByRole('button', { name: 'Edit tags and description of report.pdf' }));
+      fireEvent.change(screen.getByLabelText('Tags for report.pdf'), { target: { value: 'audit' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+      await waitFor(() => expect(a.setDescribed).toHaveBeenCalledWith('p1', 'x', { tags: ['audit'], description: 'Yearly results.' }));
+      await waitFor(() => expect(a.documents).toHaveBeenCalledTimes(2));
+    });
+
+    it('Generate asks the helper for that document', async () => {
+      const a = api({ documents: vi.fn(async () => [tagged]), helperOn: vi.fn(async () => true),
+        describe: vi.fn(async () => ({ ...tagged, describing: true })) });
+      mount(project(), a);
+      fireEvent.click(await screen.findByRole('button', { name: 'Generate tags for report.pdf' }));
+      await waitFor(() => expect(a.describe).toHaveBeenCalledWith('p1', 'x'));
+    });
+
+    it('keeps reading the list while a row is being described, and stops once it is done', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const documents = vi.fn()
+          .mockResolvedValueOnce([{ ...untagged, describing: true }])
+          .mockResolvedValue([{ ...untagged, describing: false, generated: true, tags: ['notes'] }]);
+        mount(project(), api({ documents }));
+        expect(await screen.findByText('Writing tags…')).toBeTruthy();
+        await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
+        expect(await screen.findByRole('button', { name: 'Show documents tagged notes' })).toBeTruthy();
+        const reads = documents.mock.calls.length;
+        await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+        expect(documents.mock.calls.length).toBe(reads);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });

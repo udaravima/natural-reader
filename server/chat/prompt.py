@@ -39,6 +39,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any, Iterable, Protocol
 
+from ..services import app_identity
 from ..services.doc_search import ReadableDoc
 
 if TYPE_CHECKING:   # project_scope imports display_name from here
@@ -67,14 +68,16 @@ def fence(text: str) -> str:
     return _TAG_RE.sub(lambda m: f"‹{m.group(1)}{m.group(2)}", text)
 
 
-def display_name(name: Any) -> str:
+def display_name(name: Any, cap: int = NAME_CAP) -> str:
     """A name someone else may have chosen (a shared document's file name, a
     pin's fields) as ONE inert line: whitespace and control characters
-    collapsed, no quotes or angle brackets, capped. Used inside the rules and
-    in tag attributes, where a newline or a quote would let it speak as us."""
+    collapsed, no quotes or angle brackets, cut after `cap` characters and
+    marked "…" (a document's description gets a longer cap than a name). Used inside the
+    rules and in tag attributes, where a newline or a quote would let it
+    speak as us."""
     text = " ".join(_CONTROL_RE.sub(" ", str(name)).split())
     text = text.replace('"', "'").replace("<", "‹").replace(">", "›")
-    return text if len(text) <= NAME_CAP else text[:NAME_CAP].rstrip() + "…"
+    return text if len(text) <= cap else text[:cap].rstrip() + "…"
 
 
 def version_note_text(note: dict) -> str:
@@ -89,9 +92,11 @@ DOC_SEARCH, DOC_READ, WEB = "search_documents", "read_document_pages", "web_sear
 EXTRACT, OUTLINE = "extract_from_documents", "document_outline"
 WEB_READ, WEB_OFFER = "read_web_pages", "offer_web_search"
 
-FIRST_LINE = "You are the assistant in Natural Reader, an app for reading and listening to documents."
-# After a deployment profile, which gives the assistant its own identity ("You are Ada…").
-FIRST_LINE_WITH_PROFILE = "You are working in Natural Reader, an app for reading and listening to documents."
+def first_line(has_profile: bool, identity: app_identity.Identity) -> str:
+    """Where the assistant is working. After a deployment profile, which gives the assistant its own identity
+    ("You are Ada…"), the line only places it. The name and tagline are the deployment's (services/app_identity.py)."""
+    lead = "You are working in" if has_profile else "You are the assistant in"
+    return f"{lead} {identity.name}, {identity.tagline}."
 
 
 def document_tools_offered(offered: Iterable[str]) -> bool:
@@ -313,7 +318,8 @@ SPOKEN_RULE = (
 
 def system_rules(doc: ReadableDoc | None, tools: Iterable[_Offered], *, has_pins: bool,
                  prefetch: bool = False, today: str = "", profile: str = "", has_map: bool = False,
-                 project: ProjectScope | None = None, spoken: bool = False) -> str:
+                 project: ProjectScope | None = None, spoken: bool = False,
+                 placed: frozenset[str] = frozenset(), persona: bool = True) -> str:
     """The rules for this turn. `tools` are the ones offered on its first
     step; the orchestrator's last-round note covers the final tools-off step.
     `today`: "Today is …" to the day (context.today_line), or "" for none.
@@ -325,10 +331,12 @@ def system_rules(doc: ReadableDoc | None, tools: Iterable[_Offered], *, has_pins
     names the project and the open document, and the steps send the model to the project's documents."""
     tools = list(tools)
     offered = {t.name for t in tools}
-    first = FIRST_LINE_WITH_PROFILE if profile else FIRST_LINE
-    if today:
-        first = f"{first} {today}"
-    parts = [profile, first] if profile else [first]
+    # The app's own line leaves out what the profile already placed with {{app}} or {{date}} (chat/profile_text.py).
+    # `persona`: False when `profile` is house rules alone, which give the assistant no identity of its own.
+    first = " ".join(p for p in (
+        "" if "app" in placed else first_line(bool(profile) and persona, app_identity.current()),
+        "" if "date" in placed else today) if p)
+    parts = [p for p in (profile, first) if p]
     line = _project_line(project) if project is not None else _document_line(doc)
     if line:
         parts.append(line)

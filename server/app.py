@@ -27,7 +27,10 @@ from .routers.chat_voice import router as chat_voice_router
 from .routers.docs import router as docs_router
 from .routers.inference import router as inference_router
 from .routers.notifications import router as notifications_router
+from .routers.app_info import router as app_info_router
+from .routers.chat_profiles import router as chat_profiles_router
 from .routers.project_documents import router as project_documents_router
+from .routers.project_uploads import router as project_uploads_router
 from .routers.projects import router as projects_router
 from .routers.people import router as people_router
 from .routers.settings import router as settings_router
@@ -96,12 +99,15 @@ def create_app() -> FastAPI:
     app.include_router(admin_router)
     app.include_router(projects_router)
     app.include_router(project_documents_router)
+    app.include_router(project_uploads_router)
     app.include_router(people_router)
     app.include_router(settings_router)
     app.include_router(profile_router)
     app.include_router(inference_router)
     app.include_router(speech_router)
     app.include_router(notifications_router)
+    app.include_router(app_info_router)
+    app.include_router(chat_profiles_router)
 
     @app.on_event("startup")
     async def _startup() -> None:
@@ -131,8 +137,12 @@ def create_app() -> FastAPI:
                     await embedding_state.init(conn)
             except Exception:
                 logger.warning("Embedding state not recorded; queries use the environment's model", exc_info=True)
-            # One rebuild runner per worker process: it drains the database's queue (doc_rebuilds).
+            # Two runners per worker process, draining the database's queues: one for rebuilds and indexing
+            # (doc_rebuilds, doc_index_jobs), one document at a time; one for Docling conversions.
             _background.append(asyncio.get_running_loop().create_task(doc_pipeline.run_queue_forever()))
+            _background.append(asyncio.get_running_loop().create_task(doc_pipeline.run_convert_forever()))
+            # And the helper's lane (tags and descriptions), which works only while the other two are idle.
+            _background.append(asyncio.get_running_loop().create_task(doc_pipeline.run_describe_forever()))
             # And one migration loop: it re-embeds the library when the embedding model changes, then switches.
             _background.append(asyncio.get_running_loop().create_task(
                 embedding_migration.run_forever(rebuild_queue.WORKER_ID)))
@@ -168,9 +178,13 @@ def create_app() -> FastAPI:
 
     @app.on_event("shutdown")
     async def _shutdown() -> None:
-        for task in _background:
+        stopping = list(_background)
+        for task in stopping:
             task.cancel()
         _background.clear()
+        if stopping:
+            # A runner hands its claimed job back to the queue as it stops: let it, before the pool closes.
+            await asyncio.wait(stopping, timeout=5)
         await project_events.stop_retention()
         await notifications.stop_retention()
         await stop_llm_router()

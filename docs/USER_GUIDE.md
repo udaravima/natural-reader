@@ -336,21 +336,57 @@ Notes:
   button to add or change a provider: that's a `.env` + restart task for
   whoever runs the server. The [full list](#deployment-the-timezone-and-the-servers-own-values)
   is below.
-- The **Assistant profile** (in **Chat**) sets the assistant's profile: its name,
-  personality, tone and house rules (for example "You are Ada, the
-  reading-room assistant. Answer warmly and briefly, in British English.").
-  - It goes first in every chat, from the next message on; the app's own
-    rules about documents and tools follow it and win where they conflict.
-    So a profile can't, for example, stop the assistant citing pages.
-  - The badge says where it comes from: **Set here**, **From the deployment
-    file** (the server's `CHAT_ASSISTANT_PROFILE_FILE`), or **None**.
-    **Reset to deployment default** removes what you set here.
-  - **What the model receives** shows the whole instruction text a chat
-    gets, your profile included.
-  - Keep it short: every character is read before every reply (the counter
-    shows about how many tokens), and up to 8,000 characters are allowed.
+- **Assistant** (in **Chat**) sets who the assistant is. Every chat starts
+  with the **house rules**, then the **profile** that chat uses; the app's own
+  rules about documents and tools follow and win where they conflict, so a
+  profile can't, for example, stop the assistant citing pages. Edits apply from
+  each chat's next message.
+  - **House rules** (up to 2,000 characters) apply to every chat, whatever its
+    profile: what the assistant may and may not do, and how it treats people.
+    Empty means none.
+  - **Profiles** are named assistants: a name (up to 60 characters), a
+    one-line description that people see under it in the chat sidebar, and the
+    text the assistant reads (up to 8,000 characters), for example "You are
+    Ada, the reading-room assistant. Answer warmly and briefly, in British
+    English." **Add profile** starts one; each row has **Edit**, **Make
+    default**, **Turn off** / **Turn on**, **Up** / **Down** (the order people
+    see) and **Delete**.
+  - One profile is the **Default**: a chat nobody picked a profile for gets it.
+    The default can't be turned off or deleted; make another the default
+    first (the only profile left can be deleted). A chat keeps the profile it used when the default changes later.
+  - **Turn off** hides a profile from the picker; chats already using it keep
+    it. **Delete** asks first and says how many chats use it; those chats use
+    the default from their next message, and say so until then.
+  - With two or more profiles and no house rules, the section reminds you that
+    each profile is sent on its own: rules every profile needs belong in
+    **House rules**.
+  - **Placeholders** in house rules or a profile are filled in on every
+    message: `{{date}}` (today's date in the person's timezone), `{{app}}`
+    (the app's name) and `{{profile}}` (this profile's name). Where you use
+    `{{date}}` or `{{app}}`, the app doesn't add its own "Today is…" or "You
+    are working in…" sentence. Anything else in double braces is sent as
+    written, and the editor warns you.
+  - **Generate** writes a first draft for you. With a helper model chosen in
+    **Models**, type what kind of assistant you want in **Describe the
+    assistant** (up to 2,000 characters) and press **Generate**. The draft
+    lands in the profile's text a few seconds later, in the language you
+    described it in. Nothing is saved until you press **Save profile**, and
+    text you haven't saved is replaced only after you agree. Read the draft
+    before saving: a small model can change what a rule means. The call
+    counts towards your own daily budget.
+  - **What the model receives** shows the whole instruction text a chat would
+    get with the text you're editing, unsaved, after the saved house rules,
+    placeholders filled in.
+  - Keep both short: every character is read before every reply (the counter
+    shows the profile with the house rules, and about how many tokens).
   - Don't name the app's tools (`web_search` and so on): describe the
     behaviour you want. The section warns you if you do.
+  - While there are no profiles, the server's `CHAT_ASSISTANT_PROFILE_FILE`
+    (if set) is the profile, and **Add profile** starts from its text. Once you
+    add a profile, the file is no longer used.
+  - Upgrading turns a profile saved here before into one profile named
+    **Assistant**, the default, with the same text: chats read exactly what
+    they read before.
 - **Chat options** (also in **Chat**) has two settings. **Voice input** (On or Off, **off** by
   default) is described under [Speaking a message](#speaking-a-message). The other is
   **Web search**: **Ask first** (the
@@ -374,7 +410,7 @@ Every setting in **Chat options**, **Models**, **Documents** and **Deployment**
 says where its value comes from and can go back to the server's, the same way.
 **Models**, **Documents** and **Deployment** also share one Save; **Chat options** saves each choice as you
 pick it (see above), so it has no Save, no draft and no unsaved-changes question.
-The **Assistant profile** and **Defaults for users** keep their own Save buttons.
+The **Assistant** section and **Defaults for users** keep their own Save buttons.
 
 **Long lists.** The Save at the bottom of a section stays on screen as you scroll, so
 you never have to go to the end of the page to reach it. Past 12 entries, a dropdown
@@ -396,7 +432,7 @@ a box with a mistake in it stays visible.
   **Back to reader**, or the header's Reader / Chat / Library buttons and Log
   out) asks first: **Keep editing** stays and keeps your changes, **Discard
   changes** leaves without them. **Esc** is the same as Keep editing. The same
-  question covers an unsaved Assistant profile or Defaults change. Reloading or
+  question covers unsaved house rules, an unsaved profile or a Defaults change. Reloading or
   closing the browser tab is not guarded.
 - A change applies at once, on every worker: the next request, message or
   conversion reads it. There is no restart.
@@ -710,7 +746,12 @@ server has no copy of the file (it was indexed before server-side uploads,
 and nobody has uploaded it since), Open tells you to upload the file again.
 
 **Converting a PDF.** **Convert** in the PDF toolbar turns a PDF into Markdown with
-Docling, and the toolbar's **PDF | MD** switch shows the result. **Images** in its
+Docling, and the toolbar's **PDF | Both | MD** switch shows the result. **Both** puts
+the PDF page on the left and its Markdown on the right, to check one against the
+other: each side scrolls on its own, and they stay on the same page (turn the PDF
+page and the Markdown follows; scroll the Markdown and the PDF page turns). If the
+PDF page is wider than its half, zoom out or scroll that half sideways. On a phone
+the switch is **PDF | MD**. **Images** in its
 dialog decides what happens to the document's pictures:
 
 - **Drop** (the default): no pictures, the smallest result.
@@ -759,6 +800,85 @@ project already has a document with that name (letter case and spaces ignored),
 or the exact same file as an older version, you're asked: **Add as new version**
 (or **Restore vN as current**), **Keep both**, or **Cancel**.
 
+**Uploading many files.** On the **Documents** tab, Contributors and above have
+**Upload files** and **Upload folder**, or can drop files or a whole folder
+anywhere on the tab. Before anything is sent you see what each file will
+become, and pressing **Upload** without touching anything does the usual thing:
+
+| The file | Becomes | Its other choices |
+|---|---|---|
+| A name the project doesn't have | a new document | |
+| The name of one document here | its next version: "New version (v3) of setup.pdf" | Separate document, Skip |
+| Exactly the current version of a document | "Unchanged: not sent" | |
+| Exactly an older version | "Same as v2 of setup.pdf: left alone" | Restore as current |
+| A name two documents here share | skipped, since the app won't guess which one | each of the two, by version and who added it; Separate document |
+| A second file with the same name in what you picked | skipped | Separate document |
+| Empty, too large (by default 50 MB for a PDF, 10 MB for text and Markdown), or not really a PDF | "can't be sent", with the reason | |
+
+Only PDF, Markdown (`.md`, `.markdown`) and text (`.txt`) files take part;
+anything else is counted in one line ("3 files aren't PDF, Markdown or text:
+left out"). Files inside hidden folders such as `.git`, and `node_modules`, are
+skipped silently. Folders only help you pick: a project stays one flat list,
+named by file name.
+
+Files are sent two at a time, each with its progress. **Stop** finishes the two
+in flight and sends no more; a file that fails keeps the server's reason and a
+**Try again**. Afterwards one line sums it up ("12 sent: 9 new, 3 new
+versions. 1 failed.") until you **Dismiss** it. You can switch tabs or open a
+document meanwhile: the upload carries on, and the tab shows it when you come
+back. Closing or reloading the page stops it (the browser asks first); what was
+sent is safe, and picking the same folder again sends only the rest.
+
+Uploading the same folder again is how you bring a project up to date: only
+changed files are sent, and they become new versions. Files you upload here
+go into the project only, not into your own library. On a server reached over
+plain `http://`, the browser can't fingerprint files, so it can't tell an
+unchanged file before sending it: every matching file is sent, and the server
+answers "Unchanged" and stores nothing.
+
+**Tags and descriptions.** When an admin has set up a helper model (**Admin →
+Models → Helper model**), each document gets up to five tags and a one-line
+description of what it is, written by that model once the document is indexed.
+They show under the document's name on the **Documents** tab:
+
+- A tag filters the list to the documents carrying it; press it again, or the
+  tag beside the filter box, to show all. The filter box above the list matches
+  names, tags and descriptions.
+- Contributors and above have the pencil, to type the project's own tags and
+  description in place (at most ten tags, a description of at most 300
+  characters). The project's own words replace the helper's, stay across new
+  versions, and show only in this project; **Use the helper's** brings the
+  generated ones back. The pencil works without a helper model too.
+- **Generate** asks the helper again for the current version. If the project
+  has its own words, you're asked first, since they are replaced.
+- **Write tags for N documents** asks for every indexed document here that has
+  none, such as documents uploaded before the helper was set up.
+- An upload's plan has a **Write tags and descriptions** tick, on by default.
+  Clear it and that batch is indexed without tags; you can still write them
+  later.
+
+The helper writes after indexing, one document at a time, and only while
+nothing is waiting to be indexed, so it never slows indexing down. A row says
+"Writing tags…" until its tags arrive (about half a minute per document on a
+machine without a GPU). It reads the file name, the headings and a sample of
+the text of at most 6,000 characters, whatever the document's size, and is
+shown the tags already used in the project so it reuses them. The project
+chat's list of documents carries the descriptions too, which helps the
+assistant pick where to look.
+
+What the helper writes belongs to this project. If another project holds the
+same file, it gets its own tags, written with its own tags in use, and never
+sees yours: a code name you typed here can't turn up there. Filing a file from
+your library into a project, or adding a version, asks the helper too.
+Restoring an old version brings back the tags it had here.
+
+In **Library → Documents**, a file you uploaded shows the description written
+for your copy, and its tags you don't have yet as dashed chips: **+** keeps
+one as your own tag. A file you see through a project shows that project's
+description. Search matches those tags and descriptions as well, and the tag
+filter the suggested tags. **Generate tags** asks once for a file in your
+library that has none, such as one shared with you.
+
 **Versions.** Each document keeps its history. **v3 · 3 versions** opens it:
 every version can be opened; Contributors can **Restore** an old one (it comes
 back as a new version on top, nothing is lost) and use **⋯ → Upload new
@@ -775,6 +895,14 @@ Library row says so and offers **Open current**.
 
 A Maintainer removes a document with × (with all its versions; a file nobody
 else has in their library is deleted with it, so you're asked first).
+
+**Indexing.** Each document shows where its indexing is: **Waiting to index (3
+ahead)** while other documents go first (the server indexes one at a time per
+worker), **Reading**, **Indexing**, **Indexed**, or **Failed**: point at it to
+see why. The list follows along by itself while anything is moving. A document
+that failed, or that nothing is working on (**Not indexed**), has **Retry index**
+for Contributors and above. A file the server stopped on 3 times says "The file
+may be damaged": try **Convert**, or upload a fresh copy.
 
 **Activity** lists who changed what, newest first. If the history can't be loaded, the tab says so instead of showing an empty list.
 
@@ -809,6 +937,15 @@ still being written somewhere else (another tab or device), you'll see
 **Still generating…** until it settles. Only one reply can be in flight per
 chat at a time — sending again while one is still streaming is blocked until
 it finishes or you stop it.
+
+**Who the assistant is.** When an admin has set up more than one profile, the
+chat sidebar shows a **Profile** picker under **Model**, with the default
+marked and the picked profile's description under it. A pick applies from your
+next message in the open chat, and new chats start with it in this browser.
+Each chat keeps its own profile: opening an older chat shows the one it used.
+If an admin removed it, the sidebar says *The profile this chat used, Tutor,
+was removed.* and the chat uses the default from your next message. You see a
+profile's name and description, never its text.
 
 **What the chat is about.** A chip above the chat box says what the assistant
 may look at. Click it for the menu:
@@ -847,6 +984,23 @@ you have open. If you can no longer read the document, a notice says so
 and you stay in chat. A reply still streaming when you click a citation
 keeps going, and is there when you come back to Chat. In a project chat a
 citation names its document, "(Guide.md, page 7)", and opens that document.
+
+**Chat titles.** A new chat is named after your first message, cut to 60
+characters. If your deployment has a helper model (an admin chooses one in
+**Admin → Models**), it gives the chat a short title from your first message
+and the first reply, a few seconds after the reply ends. The sidebar updates
+by itself.
+- A title you typed with **Rename** is never replaced by the helper.
+- **✦ Generate title**, beside Rename, asks the helper again from the
+  conversation so far, and replaces any title.
+- A chat on a local model isn't sent to a helper running in the cloud. It
+  keeps the first message as its title, and Generate title says why.
+- When you sent a file's real values to one model, the helper never reads
+  that model's reply. The title comes from your words alone.
+- A chat that starts with a file and no words is titled from the file's name
+  and the reply.
+- On a phone or tablet, **Rename**, **✦ Generate title** and **Delete** always
+  show beside each chat. With a mouse they show when you point at the chat.
 
 **Picking a model:** the model picker in the chat sidebar is grouped by
 **provider**, each group labelled with the provider's name as your deployment
@@ -948,7 +1102,11 @@ The agreement also stays with that model after you send, and so do its replies.
 If you pick another model later in the same chat and ask a follow-up, the real
 values are **not** sent to it, and neither is any reply from the model you agreed
 for (it may have quoted them): the assistant sees only a short note in their place.
-Under its reply you read "*name* wasn't sent to this model: its real values were
+**You are told before you send.** As soon as you pick the other model, a line above
+the message box says, for example, ".env was sent with its real values to
+*model A*. *model B* won't be sent it, or the 2 replies that read it. Switch back to
+*model A* to keep them in the conversation." It goes away when you switch back.
+After you send, under the reply you read "*name* wasn't sent to this model: its real values were
 agreed for another one. Earlier replies that read it weren't sent either." The note
 is saved with the reply, so it is still there after a reload. Switch back to the
 model you agreed for and the file and its replies are sent again. To use the file

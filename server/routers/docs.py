@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import (
-    APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Path as PathParam, Response,
+    APIRouter, Depends, File, Form, HTTPException, Path as PathParam, Response,
     UploadFile,
 )
 from fastapi.responses import FileResponse
@@ -48,8 +48,8 @@ from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
 from ..http_errors import BUSY_MESSAGE, refusal
 from ..services import (
-    doc_content, doc_notices, doc_pipeline, doc_storage, doc_versions, docling_convert, docling_limits, embedding_state,
-    extract, people,
+    doc_content, doc_describe, doc_pipeline, doc_storage, doc_versions, docling_convert, docling_limits,
+    describe_queue, embedding_state, extract, helper, index_queue, people,
 )
 from ..services.doc_search import ReadableDoc, search_chunks
 from ..services.embeddings import embed_query
@@ -93,17 +93,6 @@ class ConvertOptionsIn(BaseModel):
         if value is not None and not (len(value) == 2 and 1 <= value[0] <= value[1]):
             raise ValueError("page_range must be [start, end], counted from 1, with start <= end")
         return value
-
-
-# Background jobs live in services/doc_pipeline.py. The old private names are
-# kept as aliases so the convert job below and existing call sites resolve.
-_doc_job_locks = doc_pipeline._doc_job_locks
-_get_doc_lock = doc_pipeline.doc_lock
-_run_index_job = doc_pipeline.run_embed
-_chunks_from_pages = doc_pipeline.chunks_from_pages
-# Back-compat aliases for the original PR 4 names.
-_index_locks = _doc_job_locks
-_get_index_lock = _get_doc_lock
 
 
 # ---------- helpers ----------
@@ -164,6 +153,21 @@ _ENTRY_COLS = (
     "COALESCE(_me.tags, '{}') AS tags, _me.added_via AS added_via, "
     "_me.shared_by AS shared_by_id, COALESCE(_sb.display_name, _sb.email) AS shared_by_name"
 )
+
+
+# What the helper wrote for MY entry (helper spec §5.1, §5.4): its description, else what a project I'm a member of
+# shows for the file; and the tags it suggests that aren't among my own (in the helper's order). Never what was
+# written for another person's entry. Needs `_ENTRY_JOIN`; bind `_description_params(user_id)`.
+_DESCRIPTION = f"COALESCE(_me.gen_description, {doc_versions.project_description_sql('d')})"
+_GENERATED_COLS = (
+    f"{_DESCRIPTION} AS description, _me.gen_at IS NOT NULL AS generated, "
+    "ARRAY(SELECT _g.t FROM unnest(COALESCE(_me.gen_tags, '{}')) WITH ORDINALITY AS _g(t, n) "
+    "      WHERE NOT (_g.t = ANY(COALESCE(_me.tags, '{}'))) ORDER BY _g.n) AS suggested_tags"
+)
+
+
+def _description_params(user_id: str) -> list[str]:
+    return doc_versions.project_description_params(user_id)
 
 
 def _entry_fields(rec: dict[str, Any]) -> dict[str, Any]:
@@ -287,8 +291,10 @@ async def list_documents(
     where_params: list[Any] = listed_docs_params(uid)
     if q:
         # Match the name the caller is shown, never a name they can't see.
-        where.append(f"({_DISPLAY_NAME} ILIKE %s OR %s = ANY(_me.tags))")
-        where_params += [*_display_name_params(uid), f"%{q}%", q]
+        # ...and the helper's words as the row shows them (helper spec §5.4: search matches both).
+        where.append(f"({_DISPLAY_NAME} ILIKE %s OR %s = ANY(_me.tags) "
+                     f"OR {_DESCRIPTION} ILIKE %s OR %s = ANY(_me.gen_tags))")
+        where_params += [*_display_name_params(uid), f"%{q}%", q, *_description_params(uid), f"%{q}%", q.lower()]
     if project_id:
         # Only a project the caller can see: filtering a shared doc by a
         # guessed project id must not reveal whether someone placed it there.
@@ -300,22 +306,26 @@ async def list_documents(
         )
         where_params += [project_id, *visible_projects_params(uid)]
     if tag:
-        where.append("%s = ANY(_me.tags)")
-        where_params.append(tag)
+        where.append("(%s = ANY(_me.tags) OR %s = ANY(_me.gen_tags))")
+        where_params += [tag, tag]
     sql = (
-        f"SELECT d.doc_id, d.state, {_ENTRY_COLS}, {_doc_projects_sql('d')} AS projects, "
+        f"SELECT d.doc_id, d.state, {_ENTRY_COLS}, {_GENERATED_COLS}, {_doc_projects_sql('d')} AS projects, "
         f"{doc_versions.versions_in_sql('d', only_old=True)} AS newer_in "
         f"FROM documents d {_ENTRY_JOIN} "
         f"WHERE {' AND '.join(where)} ORDER BY d.updated_at DESC"
     )
     # psycopg binds by position: SELECT-list params, then the join, then WHERE.
-    params = [*_display_name_params(uid), *_doc_projects_params(uid),
+    params = [*_display_name_params(uid), *_description_params(uid), *_doc_projects_params(uid),
               *doc_versions.versions_in_params(uid), uid, *where_params]
     pool = get_pool()
     async with pool.connection() as conn:
         cur = await conn.execute(sql, params)
         cols = [c.name for c in cur.description]
         rows = [dict(zip(cols, r)) for r in await cur.fetchall()]
+        await index_queue.mark_queued(conn, rows)
+        busy = await describe_queue.waiting_entries(conn, uid, [r["doc_id"] for r in rows])
+    for r in rows:
+        r["describing"] = r["doc_id"] in busy
     return [_entry_fields(r) for r in rows]
 
 
@@ -331,7 +341,6 @@ async def _lock_existing(conn, doc_id: str):
 
 @router.post("")
 async def register_document(
-    background: BackgroundTasks,
     response: Response,
     file: UploadFile = File(...),
     file_name: str | None = Form(None),
@@ -341,8 +350,8 @@ async def register_document(
 ) -> dict[str, Any]:
     """Add a file to my library (A1 spec §4). The server hashes the uploaded
     bytes — that hash IS the doc id; `client_doc_id` is only a hint. Existing
-    content → 200 dedupe, no rework. New content → 202 and a background
-    extract + embed job. Proof of possession: nobody gets an entry without
+    content → 200 dedupe, no rework. New content → 202 and an extract + embed
+    job in the queue (`queued`). Proof of possession: nobody gets an entry without
     sending the bytes."""
     _ensure_ready()
     name = (file_name or file.filename or "").strip()[:255] or "document"
@@ -359,16 +368,28 @@ async def register_document(
         job = await _after_upload(doc_id, staged, created, existing)
     finally:
         doc_storage.discard(staged)  # no-op once placed
-    if job is doc_pipeline.run_pipeline:   # new work: the uploader hears how it ended (a legacy swap is no news)
-        background.add_task(doc_notices.run_and_notify, job, doc_id, requested_by=principal.user_id, via="index")
-    elif job is not None:
-        background.add_task(job, doc_id)
-    async with get_pool().connection() as conn:
-        cur = await conn.execute("SELECT state FROM documents WHERE doc_id = %s", (doc_id,))
-        state = (await cur.fetchone())[0]
-    scheduled_new_work = job is doc_pipeline.run_pipeline
-    response.status_code = 202 if scheduled_new_work else 200
-    return {"doc_id": doc_id, "dedup": not created, "state": state}
+    await _queue_after_upload(doc_id, job, principal.user_id)
+    await _queue_helper_for_entry(principal.user_id, doc_id)
+    state, queued = await _state_and_queued(doc_id)
+    response.status_code = 202 if job == "pipeline" else 200
+    return {"doc_id": doc_id, "dedup": not created, "state": state, "queued": queued}
+
+
+async def _queue_helper_for_entry(user_id: str, doc_id: str) -> None:
+    """After a Library upload (helper spec §5.3): queue the helper for the uploader's entry, which waits for indexing.
+    Never fails an upload whose file is already safe: the row's Generate still works."""
+    try:
+        async with get_pool().connection() as conn:
+            queued = await doc_describe.queue_entry(conn, user_id, doc_id)
+    except Exception:  # noqa: BLE001 — see above
+        logger.warning("Could not queue the helper for %s", doc_id, exc_info=True)
+        return
+    if queued:
+        doc_pipeline.wake()
+
+
+# What a `prelock` returns when it decided nothing is to be stored (bulk upload: unchanged, skipped, left alone).
+STORE_NOTHING = object()
 
 
 async def _store_and_hold(staged, name: str, hold, *, prelock=None):
@@ -380,15 +401,18 @@ async def _store_and_hold(staged, name: str, hold, *, prelock=None):
     same transaction: a version upload locks its document there, so the lock
     order is project_docs → documents everywhere (V1 spec §4.4). Retries ONCE
     if a GC removed the row between our conflicting INSERT and our lock — the
-    caller never sees a 5xx. Returns (created, existing, outcome)."""
+    caller never sees a 5xx. Returns (created, existing, outcome). A `prelock` that returns STORE_NOTHING ends
+    there: its own writes commit, no content is written, and the answer is (False, None, STORE_NOTHING)."""
     for attempt in (1, 2):
         async with get_pool().connection() as conn:
             async with conn.transaction():
-                if prelock is not None:
-                    await prelock(conn)
+                if prelock is not None and await prelock(conn) is STORE_NOTHING:
+                    return False, None, STORE_NOTHING
                 cur = await conn.execute(
+                    # 'stored' until a runner takes its job: a second upload of the same bytes meanwhile
+                    # queues nothing more, because a document has one job at most (doc_index_jobs).
                     "INSERT INTO documents (doc_id, file_name, file_type, size_bytes, state, "
-                    "extracted_by) VALUES (%s,%s,%s,%s,'extracting','server') "
+                    "extracted_by) VALUES (%s,%s,%s,%s,'stored','server') "
                     "ON CONFLICT (doc_id) DO NOTHING RETURNING doc_id",
                     (staged.sha256, name, staged.file_type, staged.size))
                 created = await cur.fetchone() is not None
@@ -421,9 +445,32 @@ async def _add_upload_entry(user_id: str, staged, name: str, tags: list[str]):
     return created, existing
 
 
-async def _after_upload(doc_id: str, staged, created: bool, existing):
+async def _queue_after_upload(doc_id: str, job: str | None, user_id: str) -> None:
+    """Queue what _after_upload decided. The uploader hears how a new document's indexing ended; a legacy swap is no
+    news. A full pool doesn't fail an upload whose file is already safe: the answer says `queued: false`, the screen
+    offers Retry index, and the next start queues every stuck document anyway."""
+    if job is None:
+        return
+    try:
+        await doc_pipeline.enqueue_index(doc_id, job=job, requested_by=user_id if job == "pipeline" else None)
+    except Exception:  # noqa: BLE001 — see above
+        logger.warning("Indexing of %s not queued: no database connection free", doc_id, exc_info=True)
+
+
+async def _state_and_queued(doc_id: str) -> tuple[str, bool]:
+    async with get_pool().connection() as conn:
+        cur = await conn.execute("SELECT state, EXISTS (SELECT 1 FROM doc_index_jobs j WHERE j.doc_id = d.doc_id) "
+                                 "FROM documents d WHERE d.doc_id = %s", (doc_id,))
+        return await cur.fetchone()
+
+
+BUSY_DOCUMENT = "This document is being indexed. Try again when it has finished."
+
+
+async def _after_upload(doc_id: str, staged, created: bool, existing) -> str | None:
     """Put verified bytes in place (after the INSERT committed) and decide
-    what, if anything, runs next. Returns the job to schedule, or None."""
+    what, if anything, runs next. Returns the job to queue ('pipeline',
+    'legacy_swap'; see _queue_after_upload), or None."""
     if created:
         try:
             await _set_bytes_path(doc_id, doc_storage.place(staged, doc_id))
@@ -438,7 +485,7 @@ async def _after_upload(doc_id: str, staged, created: bool, existing):
             except Exception:
                 logger.exception("Could not record failure state for %s", doc_id)
             raise
-        return doc_pipeline.run_pipeline
+        return "pipeline"
     state, extracted_by, bytes_path, conversion_state = existing
     bytes_path = doc_storage.resolve_stored(bytes_path)
     old_file_ok = bool(bytes_path) and (
@@ -463,14 +510,14 @@ async def _after_upload(doc_id: str, staged, created: bool, existing):
                         "UPDATE documents SET extracted_by = 'server', updated_at = now() "
                         "WHERE doc_id = %s", (doc_id,))
                 return None
-            return doc_pipeline.run_legacy_swap
+            return "legacy_swap"
         await _set_state(doc_id, "stored")
-        return doc_pipeline.run_pipeline
+        return "pipeline"
     if state in ("stored", "failed", "registered"):
         await _set_state(doc_id, "stored")
-        return doc_pipeline.run_pipeline
+        return "pipeline"
     if state == "extracted":
-        return doc_pipeline.run_pipeline
+        return "pipeline"
     return None  # extracting / indexing / indexed: dedupe, nothing to redo
 
 
@@ -507,6 +554,8 @@ async def get_document(
     pool = get_pool()
     async with pool.connection() as conn:
         status = await _fetch_doc_status(conn, doc_id, reader.user_id)
+        if status:
+            await index_queue.mark_queued(conn, [status])
     if not status:
         raise HTTPException(status_code=404, detail="Document not found")
     return status
@@ -625,7 +674,7 @@ async def delete_document(
             raise refusal(404, "not_found", "Document not found")
         audit("entry.removed", user=principal.user_id, doc=doc_id)
         if await doc_content.gc_content_if_orphaned(conn, doc_id, trigger="entry_removed"):
-            _doc_job_locks.pop(doc_id, None)
+            doc_pipeline._doc_job_locks.pop(doc_id, None)
     return Response(status_code=204)
 
 
@@ -711,11 +760,11 @@ def _content_shared(reason: str, doc_id: str, user_id: str) -> HTTPException:
 
 
 @router.post("/{doc_id}/index", status_code=202)
-async def start_index_job(doc_id: DocId, background: BackgroundTasks,
+async def start_index_job(doc_id: DocId,
                           principal: Principal = Depends(_require_doc_reader)) -> dict[str, Any]:
     """Resume or re-index (spec §4). On content that isn't `indexed`, any entry
-    holder who can read it — or an admin, even without one — may RESUME it (a crash, a
-    failure). On `indexed` content this is a RE-INDEX from the stored bytes —
+    holder who can read it, a Contributor or above of a project holding it, or
+    an admin may RESUME it (a crash, a failure). On `indexed` content this is a RE-INDEX from the stored bytes —
     a content-changing op, so only the sole holder or an admin (else 409
     content_shared), and only when there's something to rebuild from: no
     stored bytes and no conversion means re-indexing would destroy a working
@@ -739,17 +788,49 @@ async def start_index_job(doc_id: DocId, background: BackgroundTasks,
             has_bytes = bool(bytes_path) and Path(bytes_path).is_file()
             if not has_bytes and conversion_state != "converted":
                 raise refusal(409, "bytes_missing", "Upload the file again first.")
-        elif not is_admin and not await doc_content.holds_entry(conn, principal.user_id, doc_id):
+        elif not is_admin and not (await doc_content.holds_entry(conn, principal.user_id, doc_id)
+                                   or await doc_content.contributes_to_a_project_with(conn, principal.user_id, doc_id)):
             raise refusal(404, "not_found", "Document not found")
-        if state in ("extracting", "indexing"):
-            return {"ok": True, "doc_id": doc_id, "state": state}  # already running
-        if state in ("indexed", "failed", "registered"):
-            await conn.execute(
-                "UPDATE documents SET state = 'stored', error_message = NULL, updated_at = now() "
-                "WHERE doc_id = %s", (doc_id,))
-    background.add_task(doc_notices.run_and_notify, doc_pipeline.run_pipeline, doc_id,
-                        requested_by=principal.user_id, via="index")
-    return {"ok": True, "doc_id": doc_id, "state": "extracting"}
+        if state in ("extracting", "indexing") or await index_queue.live_claim(conn, doc_id):
+            # Being worked on. A job lost before the queue existed (a crash) is queued again; a live one is left.
+            await index_queue.enqueue(conn, doc_id, requested_by=principal.user_id)
+        else:
+            if state in ("indexed", "failed", "registered"):
+                await conn.execute(
+                    "UPDATE documents SET state = 'stored', error_message = NULL, updated_at = now() "
+                    "WHERE doc_id = %s", (doc_id,))
+                state = "stored"
+            await index_queue.enqueue(conn, doc_id, requested_by=principal.user_id)
+    doc_pipeline.wake()
+    return {"ok": True, "doc_id": doc_id, "state": state, "queued": True}
+
+
+@router.post("/{doc_id}/describe", status_code=202)
+async def describe_document(
+    doc_id: DocId,
+    principal: Principal = Depends(require_capability("reader")),
+) -> dict[str, Any]:
+    """Library Generate (helper spec §5.4): ask the helper for tags and a description of my entry for a document, when
+    none were ever written for it (409 otherwise: the row offers no Generate then). Written for my entry alone."""
+    _ensure_ready()
+    async with get_pool().connection() as conn:
+        if not await doc_content.holds_entry(conn, principal.user_id, doc_id):
+            raise refusal(404, "not_found", "Document not found")
+        cur = await conn.execute("SELECT d.state, e.gen_at FROM documents d JOIN library_entries e "
+                                 "ON e.doc_id = d.doc_id AND e.user_id = %s WHERE d.doc_id = %s",
+                                 (principal.user_id, doc_id))
+        state, gen_at = await cur.fetchone()
+        if state != "indexed":
+            raise refusal(409, "not_indexed", "Tags can be written once the document is indexed.")
+        if gen_at is not None:
+            raise refusal(409, "already_described", "This document already has tags and a description.")
+        if not (await helper.load_config(conn)).on:
+            raise refusal(409, "helper_off", "No helper model is set up. An admin can choose one in Models.")
+        if await helper.over_budget(conn, principal.user_id):
+            raise refusal(429, "budget_exhausted", "Daily inference budget exhausted.")
+        await describe_queue.enqueue(conn, doc_id, user_id=principal.user_id, requested_by=principal.user_id)
+    doc_pipeline.wake()
+    return {"doc_id": doc_id, "describing": True}
 
 
 @router.post("/{doc_id}/search")
@@ -798,149 +879,10 @@ async def search_document(
 
 # ---------- Docling conversion (PDF → Markdown) ----------
 
-class _ConversionProgress:
-    """Stores docling's latest progress report for the Convert button
-    (documents.conversion_progress), which polls GET /v1/docs/{id}: in the
-    database, not in memory, because with WORKERS > 1 the poll can reach
-    another process. Docling reports from its worker thread, so each report
-    is handed to the event loop; only the latest is kept, and one write is in
-    flight at a time, so a fast run of pages never queues up writes. A write
-    lands only while the document is still converting: one that loses the
-    race with the job's final UPDATE changes nothing."""
-
-    def __init__(self, loop: asyncio.AbstractEventLoop, doc_id: str):
-        self._loop = loop
-        self._doc_id = doc_id
-        self._latest: dict[str, Any] | None = None
-        self._writer: asyncio.Task | None = None
-
-    def __call__(self, progress: dict[str, Any]) -> None:   # docling's thread
-        self._loop.call_soon_threadsafe(self._set, progress)
-
-    def _set(self, progress: dict[str, Any]) -> None:
-        self._latest = progress
-        if self._writer is None or self._writer.done():
-            self._writer = asyncio.create_task(self._drain())
-
-    async def _drain(self) -> None:
-        while self._latest is not None:
-            progress, self._latest = self._latest, None
-            try:
-                async with get_pool().connection() as conn:
-                    await conn.execute(
-                        "UPDATE documents SET conversion_progress = %s "
-                        "WHERE doc_id = %s AND conversion_state = 'converting'",
-                        (Jsonb(progress), self._doc_id))
-            except Exception:   # the button just shows less; the conversion goes on
-                logger.debug("Could not store conversion progress for %s", self._doc_id, exc_info=True)
-
-    async def close(self) -> None:
-        """The conversion is over: drop what hasn't been written, and wait out a write in flight."""
-        self._latest = None
-        if self._writer is not None:
-            await asyncio.gather(self._writer, return_exceptions=True)
-
-
-async def _run_convert_job(doc_id: str, options: dict[str, Any]) -> None:
-    """
-    Background task: convert the retained PDF for `doc_id` to per-page Markdown,
-    store in `doc_pages`, then chain into the existing embedding pipeline so the
-    doc lands at `state='indexed'` when finished.
-    """
-    lock = _get_doc_lock(doc_id)
-    async with lock:
-        if not is_ready():
-            logger.warning("Skipping convert job for %s — DB not ready", doc_id)
-            return
-        pool = get_pool()
-        progress = _ConversionProgress(asyncio.get_running_loop(), doc_id)
-        try:
-            async with pool.connection() as conn, conn.cursor() as cur:
-                await cur.execute(
-                    "SELECT bytes_path FROM documents WHERE doc_id = %s",
-                    (doc_id,),
-                )
-                row = await cur.fetchone()
-            if not row or not row[0]:
-                raise RuntimeError("No retained PDF for this document")
-
-            try:
-                converted = await docling_convert.convert_pdf_to_markdown_pages(
-                    doc_storage.resolve_stored(row[0]), options, on_progress=progress)
-            finally:
-                await progress.close()
-            pages = converted.pages
-            if not pages:
-                raise RuntimeError("Conversion produced no pages")
-
-            # Persist pages (delete-then-insert; reconversion replaces).
-            async with pool.connection() as conn:
-                async with conn.transaction():
-                    async with conn.cursor() as cur:
-                        await cur.execute("DELETE FROM doc_pages WHERE doc_id = %s", (doc_id,))
-                        for page_no, md in pages:
-                            await cur.execute(
-                                "INSERT INTO doc_pages (doc_id, page, markdown) VALUES (%s, %s, %s)",
-                                (doc_id, page_no, md),
-                            )
-            await asyncio.to_thread(doc_storage.replace_figures, doc_id, converted.pictures)
-
-            # 'converted' and 'indexing' land together: a poller that sees
-            # the conversion done must not also see the OLD 'indexed' state
-            # and report success before the converted chunks are embedded.
-            async with pool.connection() as conn:
-                await conn.execute(
-                    """
-                    UPDATE documents
-                    SET conversion_state = 'converted',
-                        conversion_error = NULL,
-                        conversion_progress = NULL,
-                        converted_at = now(),
-                        state = 'indexing',
-                        error_message = NULL,
-                        updated_at = now()
-                    WHERE doc_id = %s
-                    """,
-                    (doc_id,),
-                )
-
-            # Auto-chain into indexing: seed chunks from MD, then embed.
-            inserted = await _chunks_from_pages(doc_id)
-            logger.info("Convert job: seeded %d chunks for %s", inserted, doc_id)
-        except Exception as e:
-            logger.exception("Convert job failed for %s", doc_id)
-            try:
-                async with get_pool().connection() as conn:
-                    await conn.execute(
-                        """
-                        UPDATE documents
-                        SET conversion_state = 'conversion_failed',
-                            conversion_error = %s,
-                            conversion_progress = NULL,
-                            -- set to 'indexing' with 'converted' above; don't
-                            -- leave it claiming an embed job that never runs
-                            state = CASE WHEN state = 'indexing' THEN 'failed' ELSE state END,
-                            error_message = CASE WHEN state = 'indexing' THEN %s
-                                                 ELSE error_message END,
-                            updated_at = now()
-                        WHERE doc_id = %s
-                        """,
-                        (str(e)[:500], f"Conversion failed: {e}"[:500], doc_id),
-                    )
-            except Exception:
-                logger.exception("Could not record conversion failure for %s", doc_id)
-            return
-
-    # Run the embedding job outside the conversion lock — _run_index_job
-    # acquires the same lock itself.
-    await _run_index_job(doc_id)
-
-
 @router.post("/{doc_id}/convert", status_code=202)
 async def start_convert_job(
     doc_id: DocId,
     options: ConvertOptionsIn,
-    background: BackgroundTasks,
     principal: Principal = Depends(_require_content_op),
 ) -> dict[str, Any]:
     """
@@ -986,14 +928,18 @@ async def start_convert_job(
                                        capabilities=principal.capabilities, pages=pages)
         if refused:
             raise refusal(403, "convert_not_allowed", refused.message, option=refused.option)
+        # One job per document: a waiting indexing job becomes this conversion (it ends by indexing); a running one
+        # can't be joined, so the conversion is refused before anything is marked as converting.
+        if not await index_queue.enqueue_convert(conn, doc_id, requested_by=principal.user_id,
+                                                 options=options.model_dump()):
+            raise refusal(409, "busy_document", BUSY_DOCUMENT)
         await conn.execute(
             """
             UPDATE documents
             SET conversion_state = 'converting',
                 conversion_options = %s,
                 conversion_error = NULL,
-                -- until docling's first report: the job waits for the document's
-                -- lock, which a new upload's own indexing holds first
+                -- until docling's first report: the job waits in the queue
                 conversion_progress = '{"phase": "queued"}',
                 updated_at = now()
             WHERE doc_id = %s
@@ -1001,9 +947,8 @@ async def start_convert_job(
             (Jsonb(options.model_dump()), doc_id),
         )
 
-    background.add_task(doc_notices.run_and_notify, _run_convert_job, doc_id, options.model_dump(),
-                        requested_by=principal.user_id, via="convert")
-    return {"ok": True, "doc_id": doc_id, "conversion_state": "converting"}
+    doc_pipeline.wake()
+    return {"ok": True, "doc_id": doc_id, "conversion_state": "converting", "queued": True}
 
 
 @router.get("/{doc_id}/markdown")
@@ -1046,7 +991,7 @@ async def get_document_markdown(
 
 @router.delete("/{doc_id}/markdown")
 async def delete_document_markdown(
-    doc_id: DocId, background: BackgroundTasks,
+    doc_id: DocId,
     principal: Principal = Depends(_require_content_op),
 ) -> dict[str, Any]:
     """
@@ -1058,7 +1003,7 @@ async def delete_document_markdown(
 
     Sets `conversion_state=NULL` so the toolbar shows the inviting "Convert"
     label again, and falls back to the server's native extraction from the
-    stored bytes: `state` flips to `stored` and a background job re-extracts
+    stored bytes: `state` flips to `stored` and a queued job re-extracts
     and re-embeds, landing the doc at `indexed` (or `failed` if the stored
     bytes are missing or don't verify against this doc_id).
     """
@@ -1068,6 +1013,8 @@ async def delete_document_markdown(
         await cur.execute("SELECT 1 FROM documents WHERE doc_id = %s", (doc_id,))
         if not await cur.fetchone():
             raise HTTPException(status_code=404, detail="Document not found")
+        if await index_queue.live_claim(conn, doc_id):   # a conversion or indexing would write its passages back
+            raise refusal(409, "busy_document", BUSY_DOCUMENT)
         async with conn.transaction():
             await conn.execute("DELETE FROM doc_pages WHERE doc_id = %s", (doc_id,))
             # The chunks were seeded from doc_pages, so they're stale now.
@@ -1088,7 +1035,7 @@ async def delete_document_markdown(
                 """,
                 (doc_id,),
             )
+            await index_queue.enqueue(conn, doc_id, requested_by=principal.user_id)
     await asyncio.to_thread(doc_storage.remove_figures, doc_id)
-    background.add_task(doc_notices.run_and_notify, doc_pipeline.run_pipeline, doc_id,
-                        requested_by=principal.user_id, via="index")
-    return {"ok": True, "doc_id": doc_id, "state": "extracting"}
+    doc_pipeline.wake()
+    return {"ok": True, "doc_id": doc_id, "state": "stored", "queued": True}

@@ -43,6 +43,7 @@ function ModelTable({ rows, theme }) {
             <th className="py-1 pr-2">Where</th>
             <th className="py-1 pr-2 text-right">Chat</th>
             <th className="py-1 pr-2 text-right">Reader</th>
+            <th className="py-1 pr-2 text-right">Helper</th>
             <th className="py-1 pr-2 text-right">Requests</th>
             <th className="py-1 pr-2 text-right">Total</th>
             <th className="py-1 text-right">Estimated</th>
@@ -55,6 +56,7 @@ function ModelTable({ rows, theme }) {
               <td className="py-1 pr-2">{TAGS[r.tag] ?? 'Unknown'}</td>
               <td className="py-1 pr-2 text-right">{num(r.chat_tokens)}</td>
               <td className="py-1 pr-2 text-right">{num(r.reader_tokens)}</td>
+              <td className="py-1 pr-2 text-right">{num(r.helper_tokens)}</td>
               <td className="py-1 pr-2 text-right">{num(r.requests)}</td>
               <td className="py-1 pr-2 text-right">{num(r.tokens)}</td>
               <td className="py-1 text-right">{estimatedShare(r)}</td>
@@ -204,6 +206,7 @@ export function UsageSection({ theme, apiHost, apiPort, showToast }) {
                   <th className="py-1 pr-2">{view === 'user' ? 'Person' : 'Day'}</th>
                   <th className="py-1 pr-2 text-right">Chat</th>
                   <th className="py-1 pr-2 text-right">Reader</th>
+                  <th className="py-1 pr-2 text-right">Helper</th>
                   <th className="py-1 pr-2 text-right">Requests</th>
                   <th className="py-1 pr-2 text-right">Total</th>
                   <th className="py-1 pr-2 text-right">Estimated</th>
@@ -224,6 +227,7 @@ export function UsageSection({ theme, apiHost, apiPort, showToast }) {
                       <td className="py-1 pr-2 break-all">{view === 'user' ? r.email : String(r.day)}</td>
                       <td className="py-1 pr-2 text-right">{num(r.chat_tokens)}</td>
                       <td className="py-1 pr-2 text-right">{num(r.reader_tokens)}</td>
+                      <td className="py-1 pr-2 text-right">{num(r.helper_tokens)}</td>
                       <td className="py-1 pr-2 text-right">{num(r.requests)}</td>
                       <td className="py-1 pr-2 text-right">{num(r.tokens)}</td>
                       <td className="py-1 pr-2 text-right">{estimatedShare(r)}</td>
@@ -242,7 +246,7 @@ export function UsageSection({ theme, apiHost, apiPort, showToast }) {
                     </tr>,
                     detail && (
                       <tr key={`${id}-models`}>
-                        <td colSpan={7} className="pl-4 pb-2">
+                        <td colSpan={8} className="pl-4 pb-2">
                           {shown ? (
                             shown.length === 0
                               ? <p className={`text-[10px] ${theme.textMuted}`}>No usage recorded yet.</p>

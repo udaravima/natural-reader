@@ -1,4 +1,5 @@
 import { Database, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { docStateLabel } from '../lib/docStateLabel';
 
 /**
  * Toolbar button that drives the "Index this document" flow.
@@ -7,7 +8,7 @@ import { Database, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
  * component just renders the right label/icon for the current state and fires
  * `onIndex` on click.
  */
-export default function IndexButton({ theme, state, embeddedCount, chunkCount, onIndex }) {
+export default function IndexButton({ theme, state, embeddedCount, chunkCount, onIndex, queued, queueAhead }) {
     // states: 'idle' | 'uploading' | 'stored' | 'extracting' | 'extracted' | 'indexing' | 'indexed' | 'failed'
     if (state === 'uploading') {
         return (
@@ -60,9 +61,22 @@ export default function IndexButton({ theme, state, embeddedCount, chunkCount, o
             </button>
         );
     }
+    // A job in the server's queue: it will run by itself, in turn.
+    if ((state === 'stored' || state === 'extracted') && queued) {
+        return (
+            <button
+                disabled
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${theme.bgTertiary} ${theme.textSecondary} opacity-80 cursor-wait flex items-center`}
+                title="The server indexes one document at a time; this one is in the queue"
+            >
+                <Loader2 size={14} className="inline mr-1 animate-spin" />
+                {docStateLabel({ state: 'stored', queued: true, queue_ahead: queueAhead })}
+            </button>
+        );
+    }
     // 'stored' (interrupted before extraction started) and 'extracted'
-    // (chunks exist, embeddings don't) both need a click to move forward —
-    // nothing runs on its own, so both get the clickable "Resume" button.
+    // (chunks exist, embeddings don't) with no job: nothing runs on its own,
+    // so both get the clickable "Resume" button.
     if (state === 'stored' || state === 'extracted') {
         return (
             <button

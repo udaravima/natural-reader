@@ -4,7 +4,43 @@
 
 ---
 
-## 2026-11-14 — v2.12.0: the review's fixes, notifications, a Gemini adapter (START HERE)
+## 2026-11-16 — v2.13.0: profile library, helper model, bulk upload (START HERE)
+
+**State.** Release v2.13.0 prepared on `development` (CHANGELOG `[2.13.0]`, `package.json`, `docs/Release_notes/RELEASE_NOTES_v2.13.0.md`). In it since v2.12.0: the indexing queue (027), bulk upload, the helper model (028: tags and descriptions; 029: chat titles; the profile generator), PDF | Both | MD, the app name from `.env`, the model-switch warning, and the profile library (030: house rules, named profiles, a picker per chat, `{{date}}` `{{app}}` `{{profile}}`). Gates: pytest 3559 passed / 16 skipped (scratch :5434), vitest 2081 in 174 files, eslint 0 errors, build OK, CI green on `development`. **Not deployed:** the live server still runs older code; deploying needs a backup, migrations 027–030, both halves rebuilt.
+
+**Owner's direction.** Profiles later get a backstory and become the base for agents, perhaps over A2A; a profile per project after that.
+
+**Still owed.** Profiles with a cloud model and in Talk (Ollama cloud answered 402); rotate the two published Keycloak client secrets in the live `.env`; the 360 px "Delete project" clipping; GPU work parked. The final reviews of helper, titles, generator and library were self-reviews.
+
+---
+
+## 2026-11-14, afternoon — after the release: GPU design, a model-switch warning, owed checks
+
+**State.** On `development`, pushed, CI green on `2f18572` (the first run on the bumped actions: checkout, setup-node and setup-python v7, cache v6). Not released, not deployed. `master` CI stays red until the next release merge.
+
+- **GPU design, revision 3** (`docs/superpowers/specs/2026-11-14-gpu-acceleration-design.md`, `08ed3d3`). Read-aloud and PDF import on an NVIDIA RTX card behind `ACCELERATOR=nvidia`; **speech-to-text stays on the CPU** (the owner's choice: CTranslate2 4.8.4 and 4.9.0 are CUDA 12, `onnxruntime-gpu` 1.30 and `torch` 2.15 are CUDA 13). `PDF_IMPORT_DEVICE`, not `DOCLING_DEVICE`: Docling reads that name itself, and a bad value crashes its import. Nothing is built. The owner hasn't placed it against figures yet (recommended: after, since its proof needs the RTX machine).
+- **A warning before a model switch hides replies** (`2f18572`): a line above the message box, from `src/utils/heldBySwitch.js`, which applies the server's rule (`server/chat/context.py`). Walked in Chromium, live and after a reload, at 1366 and 360 px.
+- **The CPU anti-goal is reworded** in the message-box design (§2), with the measurements and the owner's acceptance.
+- **The 32 merged local branches are deleted** (the copies on GitHub are kept).
+
+**Owed checks run today** (scratch database and backend, headless Chromium):
+
+- **A blocked microphone:** the message "Microphone blocked: allow it in the browser's site settings" shows, the button stays pressable with that reason as its title, and pressing again says it again.
+- **The 2-minute stop** (a fake microphone, `base.en`): the timer reaches 2:00, the recording stops by itself, the microphone track ends, 120.0 s is transcribed and the text lands in the message box. Not captured: whether a notice says the limit was reached.
+- **Documents indexed with no `embedding_model`** on the live database: none (49 indexed, all `nomic-embed-text`, 5,792 passages).
+
+**Found.**
+
+- The live `.env` still has the **published** `OIDC_CLIENT_SECRET` and `KC_ADMIN_CLIENT_SECRET` (compared without printing them). Rotating them is the owner's.
+- **Ollama cloud answered HTTP 402** (out of credits) for `gemma4:31b-cloud`: the cloud evals can't run until that is topped up.
+- The live cache volume still holds **3.7 GB** under `huggingface/hub` beside 725 MB of converted speech models: the old checkpoints the owner agreed to clear are still there.
+- The disk is at 94%: about 27 GB in 10 untagged podman images, 40 GB of Ollama models, 10 GB of pip and uv caches. The owner is handling it.
+
+**Still owed (never run).** A person without chat access; the speech choices as a non-admin; a real OpenAI-compatible speech server; several workers swapping speech models; `compose.speech.yml` on a running stack; Docling's Describe and Accurate presets; the "yes" path when Auto becomes Ask; the document-versions checks; two users on one browser; a share recipient; `startup.cmd` on Windows; embeddings on vLLM, OpenAI and OpenRouter; a backup restore on a real deployment.
+
+---
+
+## 2026-11-14 — v2.12.0: the review's fixes, notifications, a Gemini adapter
 
 **State.** Released as **v2.12.0** on the owner's "merge branch and do the release": `feat/gemini-adapter` (`ccb22fc`) fast-forwarded into `development`, the release commit on top, `development` merged into `master`, annotated tag `v2.12.0`, GitHub release. **Not deployed.** Gates on the release tree: pytest 3275 passed / 16 skipped, vitest 1906 in 157 files, eslint 0 errors, build OK. The push is CI's first run.
 

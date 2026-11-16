@@ -196,3 +196,55 @@ async def test_a_late_fail_from_a_lapsed_worker_sends_nothing(db_conn):
     await db_conn.execute("UPDATE doc_rebuilds SET claimed_by = 'w2'")   # w1's claim was taken over
     await rebuild_queue.fail(db_conn, A, "w1", "late")
     assert await _rebuild_notices(db_conn) == []
+
+
+# ---- a rebuild that kills its worker (bulk upload spec, phase 1): given up after its worker stopped 3 times ----
+
+async def _stopped(conn, doc_id, stops):
+    """The worker running it died: its claim lapsed, after `stops` earlier deaths."""
+    await conn.execute("UPDATE doc_rebuilds SET state = 'running', claimed_by = 'dead', stops = %s, "
+                       "claimed_at = now() - interval '11 minutes' WHERE doc_id = %s", (stops, doc_id))
+
+
+async def test_a_rebuild_whose_worker_stopped_three_times_is_parked_and_the_admins_told(db_conn):
+    from server.services import notifications
+    admins = await notifications.admin_ids(db_conn)
+    await seed.seed_doc(db_conn, A, None, state="indexed", file_name="Scan.pdf")
+    await rebuild_queue.enqueue(db_conn, A, "p1")
+    await _stopped(db_conn, A, stops=rebuild_queue.MAX_STOPS - 1)
+    assert await rebuild_queue.claim_next(db_conn, "w2") is None
+    cur = await db_conn.execute("SELECT state, retry_after = 'infinity', error, claimed_by FROM doc_rebuilds")
+    assert await cur.fetchone() == ("failed", True, rebuild_queue.STOPPED, None)
+    rows = await _rebuild_notices(db_conn)
+    assert len(rows) == len(admins) >= 1
+    assert rows[0][2] == ("Scan.pdf stopped the server 3 times while rebuilding; it won't be tried again until the "
+                          "embedding settings change. Its old index is still answering.")
+
+
+async def test_a_rebuild_whose_worker_stopped_once_is_taken_over_and_counted(db_conn):
+    await seed.seed_doc(db_conn, A, None, state="indexed")
+    await rebuild_queue.enqueue(db_conn, A, "p1")
+    await _stopped(db_conn, A, stops=0)
+    assert await rebuild_queue.claim_next(db_conn, "w2") == A
+    cur = await db_conn.execute("SELECT stops, claimed_by FROM doc_rebuilds")
+    assert await cur.fetchone() == (1, "w2")
+
+
+async def test_ordinary_failures_never_park_a_rebuild(db_conn):
+    await seed.seed_doc(db_conn, A, None, state="indexed")
+    await rebuild_queue.enqueue(db_conn, A, "p1")
+    for _ in range(6):                                   # e.g. the embedding server down for an hour and a half
+        await _fail_again(db_conn, "w")
+    await db_conn.execute("UPDATE doc_rebuilds SET retry_after = now() - interval '1 second'")
+    assert await rebuild_queue.claim_next(db_conn, "w") == A
+
+
+async def test_a_newer_profile_revives_a_parked_rebuild_and_the_same_one_does_not(db_conn):
+    await seed.seed_doc(db_conn, A, None, state="indexed")
+    await rebuild_queue.enqueue(db_conn, A, "p1")
+    await _stopped(db_conn, A, stops=rebuild_queue.MAX_STOPS - 1)
+    await rebuild_queue.claim_next(db_conn, "w2")                 # parks it
+    assert await rebuild_queue.enqueue(db_conn, A, "p1") is False
+    assert await rebuild_queue.enqueue(db_conn, A, "p2") is True
+    cur = await db_conn.execute("SELECT profile, state, attempts, stops FROM doc_rebuilds")
+    assert await cur.fetchone() == ("p2", "queued", 0, 0)

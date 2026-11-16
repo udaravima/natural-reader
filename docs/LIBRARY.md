@@ -71,9 +71,12 @@ else already has — pick it, and the server takes it from there.
   get an entry **instantly**. Nothing is re-extracted, re-embedded, or
   re-indexed — you have the file open, and searching and chatting with it
   work at once because it's already indexed.
-- **New bytes**: the server stores them, then extracts and indexes the text
-  in the background (the same "Extracting…" → "Indexing n/m" → "Indexed"
-  progression as before). Extraction happens **on the server**, from the
+- **New bytes**: the server stores them and queues their indexing, then
+  extracts and indexes the text in turn ("Waiting to index (n ahead)" →
+  "Reading" → "Indexing" → "Indexed"). Each server worker indexes one document
+  at a time, from a queue in the database, so many uploads at once wait in line
+  instead of all running together, and a restart picks up where it was
+  ([DEPLOYMENT.md](DEPLOYMENT.md), "Indexing and conversion run from a queue"). Extraction happens **on the server**, from the
   verified bytes, replicating the reader's own page/section rules exactly —
   so the page numbers in chat citations match the reader's pages. Clicking a
   "(page N)" citation in a reply about a document opens that document at
@@ -406,6 +409,16 @@ The whole file runs in one transaction. No data is dropped.
   them (checked in `extension/`, `scripts/`, `deploy/`), but custom scripts
   would break.
 
+### Migration 028 (the helper model)
+
+Adds `gen_tags`, `gen_description` (≤ 300 characters), `gen_model`, `gen_at`
+to `project_documents` and to `library_entries` (never to `documents`: see
+"Where they live" below); `project_docs.tags`, `description` (≤ 300
+characters); the `doc_describe_jobs` queue; and `helper` to
+`inference_usage.kind`. Nothing is backfilled: existing documents get tags when
+a Contributor presses **Write tags for N documents**. The Down steps are in the
+migration's header.
+
 ## API surface
 
 ### Documents (`server/routers/docs.py`)
@@ -463,9 +476,120 @@ The codes: `already_current`, `current_elsewhere`, `older_version`,
 `name_exists`, `is_current`, `merge_self`. Changes are recorded in the
 project's Activity feed.
 
+### Uploading many files into a project (`server/routers/project_uploads.py`)
+
+The Documents tab's **Upload files** / **Upload folder** / drop, and scripts,
+use two routes. Both need a Contributor role in the project (admins only
+through a member role) and accept a session or a personal access token with
+the `documents` scope. Both decide through one function
+(`server/services/bulk_upload.decide`), so the plan never promises what the
+upload won't do. The match is made **only inside this project**: neither route
+says whether the server holds a file somewhere else.
+
+| Route | Notes |
+|-------|-------|
+| `POST /v1/projects/{id}/uploads/plan` | JSON `{"files": [{name, size, sha256?, head?}]}` → `200 {"files": [{name, action, document, version, candidates, code, message}]}` in the order given. Stores nothing. `head` is the file's first 5 bytes in base64: a name that isn't `.md`, `.markdown` or `.txt` is a PDF and is accepted only if it starts with `%PDF-`. Without `sha256`, only names are matched. More than `BULK_UPLOAD_MAX_FILES` files → `413 too_many_files`; less free disk than what would be sent plus `UPLOAD_MIN_FREE_MB` → `507 not_enough_space`; both refuse the whole plan. |
+| `POST /v1/projects/{id}/uploads` | Multipart `file`, `on_match` (`version` \| `separate` \| `skip`, default `version`), `on_older` (`leave` \| `restore`, default `leave`), optional `document_id`, optional `note`, optional `describe` (default `true`: once indexed, the helper model writes its tags and description; see below) → `201` when something was filed, `200` when nothing was: `{result, document: {id, name, version}, doc_id, state, queued, candidates}`. Refusals as for `POST /v1/docs` (`413 too_large`, `415 unsupported_type`, `422 empty_file`), plus `507 not_enough_space` when the storage folder is down to its reserve. |
+
+What the plan's `action` means, and what the upload does with it:
+
+| `action` | Meaning | Upload `result` with the defaults | Other choices |
+|---|---|---|---|
+| `new` | No document here has this name or content | `created` | |
+| `version` | Exactly one document here has this name (`document`; `version` is the number it would become) | `version` | `on_match=separate` → `created`; `skip` → `skipped` |
+| `ambiguous` | Several documents here have this name (`candidates`: id, current version, who added it, when) | `ambiguous`, nothing filed | `document_id` → `version` of that one; `separate` → `created`; `skip` → `skipped` |
+| `unchanged` | This content is a document's current version here | `unchanged`, nothing stored | |
+| `older_version` | This content is an older version here (`version`) | `left_older`, nothing stored | `on_older=restore` → `restored`: a new version on top, under the old version's name |
+| `refused` | Can't be sent (`code`: `empty_file`, `too_large`, `unsupported_type`; `message` says why) | the same refusal | |
+
+- **The upload decides again** from the project as it is when the file
+  arrives; its `result` is what happened, whatever the plan said. Uploads into
+  one project decide one at a time (a transaction-level advisory lock), so two
+  identical files sent together give one new version and one `unchanged`, and
+  two files with one new name give a document and its version 2.
+- **`document_id`** says which document the file is a version of; it overrides
+  the name match (and makes `on_match` moot). A document of another project is
+  `404 not_found`.
+- **No library entry** is added: the file is held by the project, as with
+  **Upload new version**. The uploader is recorded on the indexing job and hears
+  how it ended. Each filing writes the project's Activity entry.
+- **A repeated name inside one batch** is the caller's to handle: each request
+  is judged against the project only. The screen skips the later files by
+  default; a script asks for the plan first, or passes `document_id`.
+
+**From a script**, the whole feature is one loop, and running it again is
+safe (a second run answers `unchanged` for every file):
+
+```bash
+shopt -s nullglob              # a pattern that matches nothing is dropped, not sent as a file name
+for f in ./handbook/*.pdf ./handbook/*.md; do
+  curl -sS --fail-with-body -H "Authorization: Bearer $NR_TOKEN" -F "file=@$f" \
+    "https://reader.example.com/v1/projects/$PROJECT_ID/uploads" || echo "refused: $f" >&2
+done
+```
+
+`--fail-with-body` makes a refusal a non-zero exit with the server's reason
+printed; without it a cron job never notices. The loop is right for a folder
+whose file names are all different. Where two files share a name, say which
+document each belongs to with `-F document_id=…` (the plan's `candidates` list
+them), exactly as the screen asks the person.
+
 Every refusal in the tables above carries `{"error": <code>, "message": …}`
 in the response body (and, for `content_shared`, a `reason` of
 `other_holders` or `in_project`).
+
+### Tags and descriptions (the helper model)
+
+Spec: `docs/superpowers/specs/2026-11-15-helper-model-design.md`. With a helper
+model set (**Admin → Models → Helper model**, else `HELPER_MODEL`; unset = off),
+each indexed document gets up to 5 tags and a one-line description.
+
+- **Where they live.** On each holding, never on the content: a project's
+  version of a document (`project_documents.gen_*`) or a person's library entry
+  (`library_entries.gen_*`). The model is shown the holding's tags in use, typed
+  ones included, and may copy some into its answer; stored on the content, that
+  answer would show in every other project and library holding the same file.
+  So a file in two projects is described twice, once for each, and neither sees
+  the other's. A project's own words for one of its documents live on
+  `project_docs.tags` / `description` (Contributors and above): they replace the
+  helper's in that project only, and stay across versions. NULL means "show the
+  helper's words for the current version"; an empty tag list is a choice ("no
+  tags"). People's personal library tags (`library_entries.tags`) are unchanged.
+- **When.** When a file is filed into a project (upload, bulk upload unless it
+  sent `describe=false`, filing from the Library, a new version) or uploaded to
+  the Library, and the helper is on, the new holding waits in
+  `doc_describe_jobs` (`doc_describe.queue_version` / `queue_entry`). Restoring
+  an older version brings back what was written for that content in the same
+  document, with no call. A third lane per worker
+  (`doc_pipeline.run_describe_forever`) claims a job only once its content is
+  indexed, only while `doc_index_jobs` is empty, and only one at a time across
+  all workers. A project job whose version is no longer current is dropped; a
+  merge moves a waiting job with its version. A failed try goes back to the
+  queue once; a skip (helper off, the requester over their daily budget, the
+  holding gone) drops the job. A failure never touches the document's own state.
+- **What the model reads** (`services/doc_describe.py`): the file name as the
+  holding shows it (never the content's own name, which is its first uploader's),
+  the headings (at most a quarter of the allowance), the tags already in use in
+  the project (for a library entry, the person's own library tags), and a
+  sample of the indexed passages: the opening, then whole passages at even steps through the rest.
+  At most `HELPER_INPUT_CHARS` (default 6000) characters of document text in
+  all, whatever the document's size. The reply is data: the app keeps at most 5
+  tags (lower case, 1–32 characters, no control characters) and one line of at
+  most 300 characters.
+- **Cost.** One call per document (`services/helper.py`): no thinking, a low
+  temperature, a capped reply; usage is charged to the uploader or the person
+  who pressed Generate, as kind `helper` (a **Helper** column on the Usage page).
+
+| Route | Notes |
+|-------|-------|
+| `GET /v1/projects/{id}/documents` | Rows gain `tags`, `description` (the project's own, else the helper's for the current version here), `generated` (the helper has written for this version here), `edited` (the project's own words replace some of it), `describing` (a job for the current version waits or runs, its content indexed). |
+| `PATCH /v1/projects/{id}/documents/{document_id}` | JSON `{tags?, description?}`; a field left out stays, `null` goes back to the helper's. Contributor. Tags are cleaned like the helper's; more than 10 → `422 too_many_tags`; a description over 300 characters → `422 description_too_long` (never cut). Returns the row. |
+| `POST /v1/projects/{id}/documents/{document_id}/describe` | Generate: clears the project's own words and queues the helper for the current version → `202` with the row. Contributor. `409 not_indexed`, `409 helper_off`, `429 budget_exhausted`. |
+| `POST /v1/projects/{id}/documents/describe-missing` | Queues every current, indexed document here never described → `202 {"queued": n}`. Contributor. `409 helper_off`, `429 budget_exhausted`. |
+| `GET /v1/docs` | Rows gain `description` (written for your entry, else what a project you're a member of shows for the file, the first by name), `generated` (written for your entry), `suggested_tags` (the tags written for your entry that aren't among your own, in the helper's order) and `describing`. `q` matches the description shown and the suggested tags too; `tag` matches the suggested tags. |
+| `POST /v1/docs/{doc_id}/describe` | Library Generate, for your entry when nothing was written for it → `202 {"doc_id", "describing": true}`. `404` unless you hold it; `409 already_described`, `409 not_indexed`, `409 helper_off`, `429 budget_exhausted`. |
+| `POST /v1/docs` (upload) | Also queues the helper for your entry (it waits for indexing) when the helper is on. |
+| `GET /v1/settings/helper` | `{"on": bool}` for any signed-in person; the model's name is not given. |
 
 ## Frontend
 
@@ -526,7 +650,9 @@ sweep then removes any orphaned content (see "Garbage collection," above).
 `DOC_STORAGE_DIR` (falling back to the pre-A1 `PDF_STORAGE_DIR`, then
 `./data/pdfs`) is where uploaded bytes live on disk, one file per document
 id, with a conversion's pictures under `figures/<doc_id>/`. `PDF_UPLOAD_MAX_MB` (50) and `TEXT_UPLOAD_MAX_MB` (10) cap upload size
-by type. All three are documented with their defaults in `.env.example`.
+by type. A bulk upload's plan names at most `BULK_UPLOAD_MAX_FILES` (200)
+files, and the two bulk upload routes keep `UPLOAD_MIN_FREE_MB` (1024) free in
+the storage folder. All are documented with their defaults in `.env.example`.
 
 ## Audit log
 

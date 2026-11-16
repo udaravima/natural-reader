@@ -214,13 +214,65 @@ def test_start_skips_keycloak_for_an_external_idp(proj, tmp_path):
     assert "up -d keycloak" not in calls.read_text()
 
 
+def _podman_says(tmp_path, calls, runs="", built="", postgres=""):
+    """A podman that answers the questions start and rebuild ask: the image the backend container runs, the image
+    the backend tag names now, and whether Postgres is running. An empty answer is podman's when nothing exists."""
+    (tmp_path / "bin" / "podman").write_text(
+        f'#!/bin/sh\necho "podman $*" >> "{calls}"\n'
+        'case "$*" in\n'
+        f'  *"container inspect"*".Image"*) echo "{runs}" ;;\n'
+        f'  *"image inspect"*) echo "{built}" ;;\n'
+        f'  *"container inspect"*natural-reader-postgres*) echo "{postgres}" ;;\n'
+        'esac\n')
+
+
+def _compose_lines(calls):
+    return [line for line in calls.read_text().splitlines() if line.startswith("podman-compose")]
+
+
 def test_rebuild_touches_only_the_backend(proj, tmp_path):
     calls, path = _stubbed(tmp_path)
+    _podman_says(tmp_path, calls, postgres="true")
     assert run(proj, "cmd_rebuild", path, ENGINE).returncode == 0
-    log = calls.read_text()
-    assert re.search(r"build backend", log)
-    assert re.search(r"up -d --force-recreate --no-deps backend", log)
-    assert "postgres" not in log and "keycloak" not in log
+    lines = _compose_lines(calls)
+    assert any(re.search(r"build backend$", line) for line in lines)
+    assert any(re.search(r"up -d --force-recreate --no-deps backend$", line) for line in lines)
+    assert not any("postgres" in line or "keycloak" in line for line in lines)
+
+
+def test_rebuild_after_a_stop_starts_the_services_before_the_backend(proj, tmp_path):
+    # `stop` removes every container. A rebuild that recreated the backend alone left it waiting for a Postgres
+    # nothing would start (2026-11-14).
+    calls, path = _stubbed(tmp_path)
+    run(proj, "ensure_env_file dev", path)
+    _podman_says(tmp_path, calls, postgres="")
+    out = run(proj, "cmd_rebuild", path, ENGINE)
+    assert out.returncode == 0, out.stderr
+    lines = _compose_lines(calls)
+    up_services = next(i for i, line in enumerate(lines) if line.endswith("up -d postgres searxng"))
+    up_keycloak = next(i for i, line in enumerate(lines) if line.endswith("up -d keycloak"))
+    recreate = next(i for i, line in enumerate(lines) if line.endswith("up -d --force-recreate --no-deps backend"))
+    assert up_services < up_keycloak < recreate
+
+
+def test_start_recreates_a_backend_left_on_an_older_image(proj, tmp_path):
+    # podman-compose recreates a container when the compose file changes, not when its image does: a start after
+    # a code change built the new image and restarted the old container on the old one (2026-11-14).
+    calls, path = _stubbed(tmp_path)
+    _podman_says(tmp_path, calls, runs="1111", built="2222")
+    out = run(proj, "cmd_start", path, ENGINE)
+    assert out.returncode == 0, out.stderr
+    assert any(line.endswith("up -d --force-recreate --no-deps backend") for line in _compose_lines(calls))
+    assert "older image" in out.stdout + out.stderr
+
+
+def test_start_leaves_a_backend_on_the_current_image_alone(proj, tmp_path):
+    calls, path = _stubbed(tmp_path)
+    _podman_says(tmp_path, calls, runs="2222", built="2222")
+    assert run(proj, "cmd_start", path, ENGINE).returncode == 0
+    lines = _compose_lines(calls)
+    assert any(line.endswith("up -d backend") for line in lines)
+    assert not any("--force-recreate" in line for line in lines)
 
 
 def test_logs_follows_the_backend(proj, tmp_path):

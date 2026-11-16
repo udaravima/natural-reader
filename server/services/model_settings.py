@@ -105,6 +105,23 @@ def parse_reader(value: Any, _fallback: Any = None) -> str:
     raise ValueError(_READER_ERROR)
 
 
+_HELPER_ERROR = "The helper model is a model id, or Off."
+
+
+def parse_helper(value: Any, _fallback: Any = None) -> str:
+    """A helper setting's value: "" (off: nothing generates), or a model id of a sane shape. Not "chat": the helper
+    works with no conversation, so the chat's own model means nothing for it (helper spec §4.1). Whether the
+    deployment allows the model is the PUT route's check, as for the reader."""
+    name = value.strip() if isinstance(value, str) else None
+    if name is None:
+        raise ValueError(_HELPER_ERROR)
+    if name == "" or name.lower() == "off":
+        return ""
+    if name.lower() != "chat" and len(name) <= _NAME_MAX and not any(ch.isspace() for ch in name):
+        return name
+    raise ValueError(_HELPER_ERROR)
+
+
 def _key(value: Any) -> str:
     key = value.strip() if isinstance(value, str) else ""
     if not 1 <= len(key) <= _NAME_MAX:
@@ -152,6 +169,7 @@ def _model_list(value: Any, _fallback: Any = None) -> list[str]:
 SECTION = Section("models", (
     # `env` is the first variable of the reader's chain; models_env() puts the chain's winner under this name
     Setting("reader", env="READER_MODEL", default="chat", parse=parse_reader, parse_env=parse_reader),
+    Setting("helper", env="HELPER_MODEL", default="", parse=parse_helper, parse_env=parse_helper),
     Setting("context_size", env="INFERENCE_LOCAL_NUM_CTX", default=None, parse=_size, parse_env=_size_env),
     Setting("context_sizes", env=None, default={}, parse=_number_map(_size), parse_env=_number_map(_size)),
     Setting("context_windows", env=None, default={}, parse=_number_map(_window), parse_env=_number_map(_window)),
@@ -167,6 +185,8 @@ class ModelsSettings:
     reader: str                       # "chat" (the conversation's own model) or a model id
     reader_source: str                # "admin" | "env" | "default"
     reader_env: str | None            # the variable the reader's server setting comes from; None when no usable one is set
+    helper: str                       # the helper model's id; "" = off (helper spec §4.1)
+    helper_source: str                # "admin" | "env" | "default"
     context_size: int | None          # tokens: the deployment's size for local Ollama models; None = unset
     context_size_source: str          # "admin" | "env" | "default"
     context_sizes: dict[str, int]     # model id -> tokens, one model's own size
@@ -190,9 +210,11 @@ def reader_env_name(env: Mapping[str, str]) -> str:
 def _build(values: dict[str, console_settings.Value], env: Mapping[str, str]) -> ModelsSettings:
     reader = values["reader"]
     size = values["context_size"]
+    helper = values["helper"]
     return ModelsSettings(
         reader=reader.value, reader_source=reader.source,
         reader_env=reader_model_source(env) if reader.fallback_source == "env" else None,
+        helper=helper.value, helper_source=helper.source,
         context_size=size.value, context_size_source=size.source,
         context_sizes=dict(values["context_sizes"].value), context_windows=dict(values["context_windows"].value),
         provider_locality=dict(values["provider_locality"].value),

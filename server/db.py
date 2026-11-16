@@ -67,17 +67,25 @@ async def _configure(conn) -> None:
         logger.debug("pgvector codec registration deferred: %s", e)
 
 
+async def reset_interrupted_conversions(conn) -> None:
+    """A document marked 'converting' with no conversion job will never finish: say it was interrupted. One whose
+    job waits, runs, or lapsed (the convert lane takes that over) is left as it is."""
+    await conn.execute(
+        "UPDATE documents d SET conversion_state = NULL, conversion_progress = NULL, "
+        "conversion_error = 'Interrupted by server restart', updated_at = now() "
+        "WHERE conversion_state = 'converting' "
+        "  AND NOT EXISTS (SELECT 1 FROM doc_index_jobs j WHERE j.doc_id = d.doc_id AND j.job = 'convert')")
+
+
 async def _after_migrations(pool: AsyncConnectionPool) -> None:
-    """A crash mid-job leaves docs mid-state: make them resumable, then GC any content nothing references
-    (A1 spec §3, §4). Same for 'converting' rows: their conversion job never got to finish."""
+    """A crash mid-job leaves docs mid-state: make them resumable, GC any content nothing references (A1 spec §3,
+    §4), and queue what was left unindexed. Every worker runs this when it starts, so none of it touches a document
+    another worker is working on now (bulk upload spec, phase 1)."""
     async with pool.connection() as conn:
         await doc_content.recover_states(conn)
         await doc_content.sweep_orphans(conn)
-        await conn.execute(
-            "UPDATE documents SET conversion_state = NULL, conversion_progress = NULL, "
-            "conversion_error = 'Interrupted by server restart', "
-            "updated_at = now() WHERE conversion_state = 'converting'"
-        )
+        await reset_interrupted_conversions(conn)
+        await doc_content.enqueue_stuck(conn)
 
 
 async def _open_once(url: str) -> None:

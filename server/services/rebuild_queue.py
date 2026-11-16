@@ -10,6 +10,9 @@ The rules a claim follows:
   taken over (its worker died). A worker's late finish or failure after that is ignored: it no longer owns it.
 - A failed row waits RETRY_AFTER before it may be claimed again, so a document that can't be rebuilt isn't
   re-embedded on every turn.
+- `stops` counts takeovers, the times the row's worker died while running it. At MAX_STOPS the row is parked
+  (failed, never retried) and the admins are told: a document that crashes the server would otherwise crash it
+  again every CLAIM_LAPSE, for ever. Ordinary failures don't count; they retry by themselves.
 - Enqueueing a newer profile resets the row to queued, even while it runs: the running worker's finish then
   leaves it, and it is built again for the newer profile.
 
@@ -26,6 +29,9 @@ from . import notifications
 CLAIM_LAPSE = "10 minutes"
 NOTIFY_AFTER = 3   # failures in a row before the admins hear (about 30 minutes of retries)
 RETRY_AFTER = "15 minutes"
+MAX_STOPS = 3      # the worker died while running it this many times: parked until a newer profile asks for it
+STOPPED = f"Stopped the server {MAX_STOPS} times while rebuilding; not tried again until the embedding settings change."
+_LAPSED = f"state = 'running' AND claimed_at < now() - interval '{CLAIM_LAPSE}'"
 
 # This process, as a claimer: unique across hosts and restarts.
 WORKER_ID = f"{socket.gethostname()}:{os.getpid()}:{secrets.token_hex(3)}"
@@ -39,17 +45,34 @@ async def enqueue(conn, doc_id: str, profile: str) -> bool:
         return False
     await conn.execute(
         "INSERT INTO doc_rebuilds (doc_id, profile) VALUES (%s, %s) "
-        "ON CONFLICT (doc_id) DO UPDATE SET profile = EXCLUDED.profile, state = 'queued', attempts = 0, "
+        "ON CONFLICT (doc_id) DO UPDATE SET profile = EXCLUDED.profile, state = 'queued', attempts = 0, stops = 0, "
         "error = NULL, claimed_by = NULL, claimed_at = NULL, retry_after = NULL, updated_at = now() "
         "WHERE doc_rebuilds.profile <> EXCLUDED.profile", (doc_id, profile))
     return True
 
 
-async def claim_next(conn, worker: str) -> str | None:
-    """Claim the oldest claimable row for `worker`: queued, running with a lapsed claim, or failed and past its
-    wait. Returns its doc_id, or None."""
+async def _park_stoppers(conn) -> None:
+    """Park every lapsed row whose worker has now died MAX_STOPS times, and tell the admins once per document."""
     cur = await conn.execute(
-        "UPDATE doc_rebuilds SET state = 'running', claimed_by = %s, claimed_at = now(), "
+        "UPDATE doc_rebuilds SET state = 'failed', error = %s, claimed_by = NULL, claimed_at = NULL, "
+        f"retry_after = 'infinity', updated_at = now() WHERE {_LAPSED} AND stops + 1 >= %s RETURNING doc_id",
+        (STOPPED, MAX_STOPS))
+    for (doc_id,) in await cur.fetchall():
+        cur = await conn.execute("SELECT file_name FROM documents WHERE doc_id = %s", (doc_id,))
+        name = ((await cur.fetchone()) or ("A document",))[0]
+        await notifications.send_admins(
+            conn, "rebuild.failed", title=f"{name} stopped the server {MAX_STOPS} times while rebuilding; it won't be "
+            "tried again until the embedding settings change. Its old index is still answering.",
+            doc_id=doc_id, target=notifications.ADMIN_OVERVIEW, key=f"rebuild:{doc_id}")
+
+
+async def claim_next(conn, worker: str) -> str | None:
+    """Claim the oldest claimable row for `worker`: queued, running with a lapsed claim (a takeover: its worker
+    died, counted in `stops`), or failed and past its wait. Returns its doc_id, or None."""
+    await _park_stoppers(conn)
+    cur = await conn.execute(
+        "UPDATE doc_rebuilds SET stops = stops + CASE WHEN state = 'running' THEN 1 ELSE 0 END, "
+        "state = 'running', claimed_by = %s, claimed_at = now(), "
         "attempts = attempts + 1, updated_at = now() "
         "WHERE doc_id = (SELECT doc_id FROM doc_rebuilds "
         f"  WHERE state = 'queued' OR (state = 'running' AND claimed_at < now() - interval '{CLAIM_LAPSE}') "

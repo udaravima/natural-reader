@@ -194,7 +194,7 @@ It checks for a container engine (podman with podman-compose 1.1+, or Docker wit
 |---|---|
 | `./startup.sh start` | live mode: the whole stack, detached, the backend running the code baked into its image |
 | `./startup.sh stop` | stop and remove the containers (data stays in volumes and `data/`) |
-| `./startup.sh rebuild` | rebuild the backend image after code changes; recreate only the backend |
+| `./startup.sh rebuild` | rebuild the backend image after code changes; recreate only the backend (after a `stop`, the services start first) |
 | `./startup.sh logs` | follow the backend's output |
 | `./startup.sh enable-autostart` | podman: come back after a reboot (enables lingering and `podman-restart.service`) |
 | `./startup.sh up` / `up-with-dev-auth` | dev: the backend container runs your working tree; Ctrl-C stops everything |

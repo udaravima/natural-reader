@@ -1,10 +1,19 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
     Trash2, RefreshCw, MessageSquare, Bot,
-    Plus, Pencil, ChevronDown, ChevronRight, ScrollText, Check, X, Folder,
+    Plus, Pencil, ChevronDown, ChevronRight, ScrollText, Check, X, Folder, Sparkles,
 } from 'lucide-react';
 import { modelOptions } from '../lib/modelIds';
 import { SearchableSelect } from './SearchableList';
+
+// A chat row's buttons (Rename, Generate title, Delete). With a mouse they show on hover; a screen with no hover
+// could never show them (Tailwind applies group-hover only where hover exists), so there they always show, and a
+// coarse pointer gets a 32 px target and a larger icon. Keyboard focus shows them too.
+const ROW_ACTION = 'p-1 rounded shrink-0 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 '
+    + '[@media(hover:none)]:opacity-100 pointer-coarse:p-[9px] transition-opacity';
+const ROW_ICON = 'pointer-coarse:size-3.5';
+// Always-shown buttons leave the title less room, and a touch screen has no tooltip to read the rest: two lines.
+const ROW_TITLE = '[@media(hover:none)]:whitespace-normal [@media(hover:none)]:line-clamp-2 [@media(hover:none)]:break-words';
 
 export default function ChatSidebar({
     theme,
@@ -27,12 +36,31 @@ export default function ChatSidebar({
     switchToSession,
     deleteSession,
     renameSession,
+    helperOn = false,
+    refreshHelper,
+    generateTitle,
+    // The assistant's profile for the open chat (profile library spec): the list, what the chat uses, a pick.
+    profiles = [],
+    profileId = '',
+    setProfile,
+    currentProfile = null,
+    removedProfile = null,
 }) {
     const modelChoices = useMemo(() => modelOptions(availableModels, selectedModel, { prompt: 'Select a model…' }),
         [availableModels, selectedModel]);
+    // The admin's profiles that are on, and the chat's own if it was turned off since (it still applies to this chat).
+    const profileChoices = useMemo(() => {
+        const listed = profiles.map((p) => ({ id: p.id, label: p.isDefault ? `${p.name} (default)` : p.name }));
+        return currentProfile?.id && !profiles.some((p) => p.id === currentProfile.id)
+            ? [...listed, { id: currentProfile.id, label: `${currentProfile.name} (turned off)` }]
+            : listed;
+    }, [profiles, currentProfile]);
+    const pickedDescription = profiles.find((p) => p.id === profileId)?.description || '';
     const [renamingId, setRenamingId] = useState(null);
     const [draftTitle, setDraftTitle] = useState('');
     const activeMeta = sessions.find(s => s.id === activeSessionId);
+    // The helper can be turned on or off while this page is open: ask again each time the chat sidebar opens.
+    useEffect(() => { refreshHelper?.(); }, [refreshHelper]);
     const userMessageCount = messages.filter(m => m.role === 'user').length;
     return (
         <aside className={`
@@ -97,6 +125,30 @@ export default function ChatSidebar({
                             </p>
                         )}
                     </div>
+
+                    {/* Profile picker: who the assistant is in this chat. Only when an admin offers a choice. */}
+                    {profileChoices.length > 1 && (
+                        <div className="space-y-1">
+                            <label htmlFor="chat-profile" className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>PROFILE</label>
+                            <select
+                                id="chat-profile"
+                                aria-label="Profile"
+                                value={profileId}
+                                onChange={(e) => setProfile?.(e.target.value)}
+                                className={`w-full text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none`}
+                            >
+                                {profileChoices.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                            </select>
+                            {pickedDescription && (
+                                <p className={`text-[9px] ${theme.textMuted} px-1`}>{pickedDescription}</p>
+                            )}
+                        </div>
+                    )}
+                    {removedProfile && (
+                        <p className={`text-[10px] ${theme.textMuted} px-1`}>
+                            The profile this chat used, {removedProfile}, was removed.
+                        </p>
+                    )}
 
                 </Section>
 
@@ -181,7 +233,7 @@ export default function ChatSidebar({
                                                         className="flex-1 min-w-0 text-left"
                                                         title={`${s.messageCount} message${s.messageCount === 1 ? '' : 's'} · ${new Date(s.updatedAt).toLocaleString()}`}
                                                     >
-                                                        <p className={`font-medium truncate ${isActive ? theme.text : theme.textSecondary}`}>
+                                                        <p className={`font-medium truncate ${ROW_TITLE} ${isActive ? theme.text : theme.textSecondary}`}>
                                                             {s.title || 'Untitled'}
                                                         </p>
                                                         <p className={`text-[9px] ${theme.textMuted}`}>
@@ -197,17 +249,31 @@ export default function ChatSidebar({
                                                     </button>
                                                     <button
                                                         onClick={(e) => { e.stopPropagation(); setRenamingId(s.id); setDraftTitle(s.title || ''); }}
-                                                        className={`p-1 rounded opacity-0 group-hover:opacity-100 ${theme.hover} ${theme.textMuted} hover:text-blue-500 transition-opacity`}
+                                                        aria-label={`Rename ${s.title || 'Untitled'}`}
+                                                        className={`${ROW_ACTION} ${theme.hover} ${theme.textMuted} hover:text-blue-500`}
                                                         title="Rename"
                                                     >
-                                                        <Pencil size={10} />
+                                                        <Pencil size={10} className={ROW_ICON} aria-hidden="true" />
                                                     </button>
+                                                    {helperOn && generateTitle && s.source === 'pg' && (
+                                                        // Generate title (helper spec §6): the helper writes it from the conversation so far.
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); generateTitle(s.id); }}
+                                                            disabled={Boolean(s.titlePending)}
+                                                            aria-label={`Generate title for ${s.title || 'Untitled'}`}
+                                                            className={`${ROW_ACTION} disabled:opacity-50! ${theme.hover} ${theme.textMuted} hover:text-blue-500`}
+                                                            title={s.titlePending ? 'Writing a title…' : 'Generate title'}
+                                                        >
+                                                            <Sparkles size={10} className={ROW_ICON} aria-hidden="true" />
+                                                        </button>
+                                                    )}
                                                     <button
                                                         onClick={(e) => { e.stopPropagation(); if (confirm(`Delete "${s.title || 'this session'}"?`)) deleteSession(s.id); }}
-                                                        className={`p-1 rounded opacity-0 group-hover:opacity-100 ${theme.hover} ${theme.textMuted} hover:text-red-500 transition-opacity`}
+                                                        aria-label={`Delete ${s.title || 'Untitled'}`}
+                                                        className={`${ROW_ACTION} ${theme.hover} ${theme.textMuted} hover:text-red-500`}
                                                         title="Delete session"
                                                     >
-                                                        <Trash2 size={10} />
+                                                        <Trash2 size={10} className={ROW_ICON} aria-hidden="true" />
                                                     </button>
                                                 </>
                                             )}

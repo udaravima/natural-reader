@@ -157,6 +157,18 @@ async def set_session_scope(session_id: str, user_id: str, project_id: str | Non
                            (project_id, session_id, user_id))
 
 
+async def set_session_profile(session_id: str, profile_id: str | None, profile_name: str) -> None:
+    """Record the profile the chat's turn used (chat/profile_text.py), so the chat keeps it when the default moves.
+    A turn with no library profile (none, or the file's) leaves the chat as it was."""
+    if profile_id is None:
+        return
+    async with get_pool().connection() as conn:
+        await conn.execute(
+            "UPDATE chat_sessions SET profile_id = %s, profile_name = %s "
+            "WHERE id = %s AND (profile_id IS DISTINCT FROM %s OR profile_name IS DISTINCT FROM %s)",
+            (profile_id, profile_name, session_id, profile_id, profile_name))
+
+
 @dataclass(frozen=True)
 class Heard:
     """How much of a reply the person heard before cutting in: its first `chars` characters."""
@@ -177,12 +189,15 @@ async def begin_turn(*, session_id: str, user_id: str, model_id: str, text: str,
     usually saved long before it finishes playing, so sooner than this races nothing,
     and what never played must not stay in what the model remembers saying."""
     user_mid, asst_mid = new_message_id("u"), new_message_id("a")
+    title = title_from_prompt(text)
     async with get_pool().connection() as conn:
         async with conn.transaction():
             cur = await conn.execute(
-                "INSERT INTO chat_sessions (id, title, model, pins, user_id) VALUES (%s, %s, %s, %s, %s) "
-                "ON CONFLICT (id) DO NOTHING RETURNING id",
-                (session_id, title_from_prompt(text), model_id, Jsonb(new_session_pins or []), user_id))
+                # The cut title is marked 'cut': the helper's title after the first reply may replace it (§6).
+                "INSERT INTO chat_sessions (id, title, title_source, model, pins, user_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (id) DO NOTHING RETURNING id",
+                (session_id, title, "default" if title == "New chat" else "cut", model_id,
+                 Jsonb(new_session_pins or []), user_id))
             created = await cur.fetchone() is not None
             cur = await conn.execute("SELECT user_id FROM chat_sessions WHERE id = %s FOR UPDATE", (session_id,))
             row = await cur.fetchone()

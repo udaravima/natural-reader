@@ -24,6 +24,19 @@ describe('IndexButton', () => {
     expect(onIndex).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['stored', 'extracted'])('%s with a job in the queue waits, saying how many are ahead, and offers no Resume', (state) => {
+    render(<IndexButton theme={theme} state={state} queued queueAhead={2} onIndex={vi.fn()} />);
+    const btn = screen.getByRole('button', { name: /Waiting to index \(2 ahead\)/ });
+    expect(btn).toBeDisabled();
+    expect(btn.title).not.toMatch(/interrupted/i);
+    expect(screen.queryByRole('button', { name: /Resume/ })).toBeNull();
+  });
+
+  it('a queued document next in line just waits', () => {
+    render(<IndexButton theme={theme} state="stored" queued queueAhead={0} onIndex={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /^Waiting to index$/ })).toBeDisabled();
+  });
+
   it('indexing shows the embedded/chunk progress', () => {
     render(<IndexButton theme={theme} state="indexing" embeddedCount={3} chunkCount={9} onIndex={vi.fn()} />);
     expect(screen.getByText(/3\/9/)).toBeInTheDocument();
