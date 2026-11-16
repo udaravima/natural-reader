@@ -281,6 +281,22 @@ def test_a_google_key_is_redacted_from_an_error_a_provider_echoes():
     assert KEY not in text and "AIza" in text
 
 
+# The newer Google AI Studio key: "AQ." and 50 letters, digits and hyphens (53 characters).
+AQ_KEY = "AQ.TEST-key-0123456789abcdefghijklmnopqrstuvwxyzABCDE"
+
+
+def test_a_newer_aq_google_key_is_redacted_from_an_error_a_provider_echoes():
+    assert len(AQ_KEY) == 53
+    text = safe_error_message(f"x-goog-api-key: {AQ_KEY} is invalid; see ?key={AQ_KEY}")
+    assert AQ_KEY not in text and AQ_KEY[3:] not in text
+    assert text == "x-goog-api-key: AQ.[REDACTED] is invalid; see ?key=AQ.[REDACTED]"
+
+
+def test_a_word_ending_in_aq_is_not_taken_for_a_key():
+    text = "see docs/FAQ.troubleshooting-provider-keys for help"
+    assert safe_error_message(text) == text
+
+
 # ---------- models ----------
 
 async def test_lists_the_models_that_chat_without_the_models_prefix():

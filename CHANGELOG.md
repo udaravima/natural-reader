@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A newer Google key (`AQ.…`) is now hidden in provider errors,** like the
+  older `AIza…` keys. A Gemini error that echoed one back showed it whole.
+- **A project's page on a phone.** Below about 420 px its buttons squeezed the
+  project's name and the **Projects** link to nothing, and **Delete project** ran
+  off the screen. The buttons now go below the name and wrap.
+- **Docs: after changing `.env`, run `./startup.sh rebuild`.** DEPLOYMENT.md said
+  a restart would do after changing the Keycloak secrets. It doesn't: the backend
+  container reads `.env` only when it is created, so `podman restart` and
+  `./startup.sh start` keep the old values.
+
 ## [2.13.0] - 2026-11-16
 
 ### Added

@@ -88,8 +88,9 @@ export default function ProjectPage({ theme, apiHost, apiPort, projectId, curren
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex flex-col gap-1 min-w-0 flex-1">
+      {/* The name keeps at least 15rem; where the buttons don't fit beside that, they go below it. */}
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="flex flex-col gap-1 min-w-0 flex-1 basis-60">
           <button onClick={onBack} className="self-start text-xs underline text-blue-500 flex items-center gap-1">
             <ArrowLeft size={12} /> Projects
           </button>
@@ -121,7 +122,7 @@ export default function ProjectPage({ theme, apiHost, apiPort, projectId, curren
             </>
           )}
         </div>
-        <div className="flex items-center gap-2 shrink-0 text-xs">
+        <div className="flex flex-wrap items-center gap-2 text-xs">
           {onAskProject && project.my_role && (
             <button onClick={() => onAskProject({ id: project.id, name: project.name })} aria-label="Ask about this project"
               className="flex items-center gap-1 px-2 py-1 rounded bg-blue-500 text-white hover:bg-blue-600">
