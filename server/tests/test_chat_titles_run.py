@@ -196,3 +196,8 @@ async def test_generate_title_route(db_conn, app, helper_cfg, started, monkeypat
         r = await c.post("/v1/chat/sessions/s-2/title")
     assert (r.status_code, r.json()["detail"]["error"]) == (409, "nothing_to_title")
     assert len(started) == 1
+    await _seed(db_conn, alice.user_id, [("user", "", "complete"), ("assistant", "A1", "complete")], sid="s-3")
+    await db_conn.execute("UPDATE chat_messages SET attachments = %s WHERE id = 's-3-m0'",
+                          (Jsonb([{"kind": "pdf", "ordinal": 0, "name": "Budget.pdf"}]),))
+    async with _client(app, alice) as c:
+        assert (await c.post("/v1/chat/sessions/s-3/title")).status_code == 202   # only a file: its name will do

@@ -5,10 +5,10 @@ characters), 'model' (written here) or 'person' (a rename). `title_pending_at` s
 counts for PENDING_LAPSE at most, so a restart mid-call can't leave a chat pending.
 
 What the helper reads: the first person message and the first complete reply (Generate title: the first person
-message, then the latest person message and the latest complete reply), each cut to INPUT_CHARS, fenced as data. A
-reply the chat would hold back from another model (it came from a model that was given a text file's real values:
-`context.held_replies`) is left out, since the helper is another model. A cloud helper never reads a chat whose own
-model is local (§4.3).
+message, then the latest person message and the latest complete reply it may read), each cut to INPUT_CHARS, fenced
+as data. A message that is only files is read as the files' names. A reply the chat would hold back from another
+model (it came from a model that was given a text file's real values: `context.held_replies`) is never read, since
+the helper is another model. A cloud helper never reads a chat whose own model is local (§4.3).
 
 What is kept: the model's reply is data. One line of at most TITLE_MAX characters, no double quotes, no wrapping
 quotes, no full stop at the end; anything else is a failure, and on any failure the title stays as it was. The title
@@ -27,6 +27,7 @@ from ..db import get_pool
 from ..llm.types import Message
 from ..services import helper
 from .context import held_replies
+from .prompt import display_name
 from .store import StoredMessage
 
 logger = logging.getLogger(__name__)
@@ -96,10 +97,22 @@ def messages(texts: list[tuple[str, str]]) -> tuple[Message, Message]:
     return Message(role="system", content=BRIEF), Message(role="user", content=f"<{TAG}>\n{body}\n</{TAG}>")
 
 
+def _said(m: StoredMessage) -> str:
+    """A person's message as the helper reads it: their words, or for a message that is only files, the files'
+    names (the chat shows a file's name to every model, a held file's too)."""
+    if m.content.strip():
+        return m.content
+    names = [display_name(a.get("name") or "attachment") for a in m.attachments]
+    if not names:
+        return ""
+    return f"(sent {'a file' if len(names) == 1 else 'files'}: {', '.join(names)})"
+
+
 async def conversation(conn, session_id: str, *, helper_model: str, on_request: bool) -> list[tuple[str, str]]:
     """What the helper reads of the chat: the first person message and the first complete reply; on request, the
-    first person message, then the latest person message and the latest complete reply. Each cut to INPUT_CHARS.
-    A reply held from `helper_model` is left out, and blank texts with it."""
+    first person message, then the latest person message and the latest complete reply the helper may read. Each
+    cut to INPUT_CHARS. A reply held from `helper_model` is never read; a message with no words and no files, and
+    a blank reply, count for nothing."""
     cur = await conn.execute(
         "SELECT id, role, content, attachments, model, status FROM chat_messages "
         "WHERE session_id = %s AND role IN ('user', 'assistant') AND status <> 'streaming' "
@@ -108,21 +121,27 @@ async def conversation(conn, session_id: str, *, helper_model: str, on_request: 
     history = [StoredMessage(mid, role, content or "", [a for a in (atts or []) if isinstance(a, dict) and "ordinal" in a],
                              model) for mid, role, content, atts, model, _status in rows]
     held = held_replies(history, helper_model)
-    people = [m for m in history if m.role == "user" and m.content.strip()]
+    people = [(m, _said(m)) for m in history if m.role == "user"]
+    people = [(m, text) for m, text in people if text]
     complete = {r[0] for r in rows if r[1] == "assistant" and r[5] == "complete"}
     replies = [m for m in history if m.id in complete and m.content.strip()]
     if not people:
         return []
-    picked = [("Person", people[0])]
+    picked = [("Person", people[0][1])]
     if on_request:
-        if people[-1] is not people[0]:
-            picked.append(("Person", people[-1]))
-        reply = replies[-1] if replies else None
+        if people[-1][0] is not people[0][0]:
+            picked.append(("Person", people[-1][1]))
+        reply = next((m for m in reversed(replies) if m.id not in held), None)
     else:
-        reply = replies[0] if replies else None
-    if reply is not None and reply.id not in held:
-        picked.append(("Assistant", reply))
-    return [(who, m.content[:INPUT_CHARS]) for who, m in picked]
+        reply = replies[0] if replies and replies[0].id not in held else None
+    if reply is not None:
+        picked.append(("Assistant", reply.content))
+    return [(who, text[:INPUT_CHARS]) for who, text in picked]
+
+
+async def anything_to_title(conn, session_id: str) -> bool:
+    """Has a person said or sent anything in this chat? (Generate title refuses an empty one.)"""
+    return bool(await conversation(conn, session_id, helper_model="", on_request=True))
 
 
 async def refusal(conn, owner_id: str, chat_model: str | None) -> str | None:

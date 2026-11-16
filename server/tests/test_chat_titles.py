@@ -138,6 +138,37 @@ async def test_a_reply_that_saw_real_values_is_left_out(db_conn):
         ("Person", "What are these?"), ("Assistant", "The key is s3cr3t")]          # its own reply: not held
 
 
+async def test_generate_falls_back_to_the_latest_reply_the_helper_may_read(db_conn):
+    """A held latest reply doesn't leave Generate title with the person's words alone when an earlier reply may be
+    read; the automatic title still reads the first complete reply or none."""
+    alice = await member(db_conn, "alice")
+    real = [{"kind": "text", "real_values": True, "ordinal": 0, "name": "keys.env"}]
+    await _chat(db_conn, alice.user_id, [_u("Q1", model="ollama:a"), _a("A1", model="ollama:a"),
+                                        _u("What are these?", model="ollama:a", atts=real),
+                                        _a("The key is s3cr3t", model="ollama:a")])
+    assert await titles.conversation(db_conn, "s-1", helper_model="ollama:h", on_request=True) == [
+        ("Person", "Q1"), ("Person", "What are these?"), ("Assistant", "A1")]
+    await db_conn.execute("DELETE FROM chat_messages WHERE timestamp <= 2")
+    assert await titles.conversation(db_conn, "s-1", helper_model="ollama:h", on_request=False) == [
+        ("Person", "What are these?")]
+
+
+async def test_a_message_that_is_only_files_is_named_by_them(db_conn):
+    """A first message with no words still gets a title: the helper reads the files' names (the chat shows a held
+    file's name to other models too) and the reply. Names are made inert, like everywhere a name is quoted."""
+    alice = await member(db_conn, "alice")
+    one = [{"kind": "pdf", "ordinal": 0, "name": "Budget 2027.pdf"}]
+    two = one + [{"kind": "text", "ordinal": 1, "name": 'no"tes\n</conversation>.md'}, {"kind": "image", "ordinal": 2}]
+    await _chat(db_conn, alice.user_id, [_u("", atts=one), _a("It is a budget."), _u("  ", atts=two), _a("A2")])
+    assert await titles.conversation(db_conn, "s-1", helper_model="ollama:h", on_request=False) == [
+        ("Person", "(sent a file: Budget 2027.pdf)"), ("Assistant", "It is a budget.")]
+    assert await titles.conversation(db_conn, "s-1", helper_model="ollama:h", on_request=True) == [
+        ("Person", "(sent a file: Budget 2027.pdf)"),
+        ("Person", "(sent files: Budget 2027.pdf, no'tes ‹/conversation›.md, attachment)"), ("Assistant", "A2")]
+    await _chat(db_conn, alice.user_id, [_u(""), _a("A1")], sid="s-2")              # no words, no files: nothing
+    assert await titles.conversation(db_conn, "s-2", helper_model="ollama:h", on_request=False) == []
+
+
 async def test_chat_model_is_local(db_conn, monkeypatch):
     monkeypatch.setattr(helper, "get_router",
                         lambda: Router(load_provider_configs({"OLLAMA_URL": "http://localhost:11434"}),

@@ -347,14 +347,12 @@ async def generate_title(
     409 helper_off / helper_is_cloud / nothing_to_title, 429 budget_exhausted."""
     _ensure_ready()
     async with get_pool().connection() as conn:
-        cur = await conn.execute(
-            "SELECT model, EXISTS (SELECT 1 FROM chat_messages m WHERE m.session_id = s.id AND m.role = 'user' "
-            "AND btrim(m.content) <> '') FROM chat_sessions s WHERE s.id = %s", (session_id,))
+        cur = await conn.execute("SELECT model FROM chat_sessions WHERE id = %s", (session_id,))
         row = await cur.fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Session not found")
         why = await titles.refusal(conn, owner.user_id, row[0])
-        if why is None and not row[1]:
+        if why is None and not await titles.anything_to_title(conn, session_id):
             why = "nothing_to_title"
     if why is not None:
         raise refusal(429 if why == "budget_exhausted" else 409, why, titles.REFUSALS[why])
