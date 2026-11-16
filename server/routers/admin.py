@@ -22,7 +22,7 @@ from ..auth import deps, users
 from ..auth.capabilities import KNOWN_CAPABILITIES
 from ..auth.config import load_auth_config
 from ..auth.kc_admin import KCAdminError, KCRoleMissing
-from ..llm.router import get_router
+from ..llm.router import UnknownModel, get_router
 from ..http_errors import refusal
 from ..speech import catalogue as speech_catalogue, convert as speech_convert, disk as speech_disk, service as speech_service
 from ..speech import google_names
@@ -722,6 +722,7 @@ async def preview_assistant_profile(
 class ProfileDraftIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     description: str = Field(min_length=1, max_length=profile_draft.DESCRIPTION_MAX_CHARS)
+    model: str | None = Field(default=None, max_length=300)   # a chat model to write it; None: the helper
 
     @field_validator("description")
     @classmethod
@@ -737,19 +738,24 @@ async def draft_assistant_profile(
     principal: deps.Principal = Depends(deps.require_admin),
     conn=Depends(deps.get_conn, scope="function"),
 ):
-    """A draft profile from the admin's description, written by the helper model (helper spec §7). Nothing is
-    saved: the console puts the text in its editor. 409 helper_off, 429 budget_exhausted, 502 draft_failed."""
+    """A whole character from the admin's notes (character profiles spec): name, description, backstory and rules,
+    written by the chosen chat model or else the helper. Nothing is saved: the console puts the parts in its editor.
+    409 helper_off, 422 unknown_model, 429 budget_exhausted, 502 draft_failed."""
     try:
-        text = await profile_draft.draft(conn, body.description, user_id=str(principal.user_id))
+        got = await profile_draft.draft(conn, body.description, user_id=str(principal.user_id), model=body.model)
+    except UnknownModel:
+        raise refusal(422, "unknown_model", "That model isn't available any more. Choose another.") from None
     except helper.HelperError as e:
         if e.kind == "off":
-            raise refusal(409, "helper_off", "No helper model is set up. Choose one in Models.") from None
+            raise refusal(409, "helper_off", "No helper model is set up. Choose one in Models, or pick a model "
+                                             "to write it.") from None
         if e.kind == "over_budget":
             raise refusal(429, "budget_exhausted", "Daily inference budget exhausted.") from None
-        text = None
-    if text is None:
-        raise refusal(502, "draft_failed", "The helper model couldn't write a draft. Try again.")
-    return {"text": text, "warnings": _text_warnings(text)}
+        got = None
+    if got is None:
+        raise refusal(502, "draft_failed", "The model couldn't write a draft. Try again.")
+    return {"name": got.name, "description": got.description, "backstory": got.backstory, "text": got.text,
+            "warnings": _text_warnings("\n".join((got.backstory, got.text)))}
 
 
 # ---------- chat options (C2.1 Task 13) ----------
