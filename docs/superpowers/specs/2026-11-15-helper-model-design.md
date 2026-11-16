@@ -231,6 +231,13 @@ Built as planned in `docs/superpowers/plans/2026-11-16-chat-titles.md`, whose to
   the admin presses Save, and the existing checks on a saved profile apply unchanged.
 - With the helper off, the button is replaced by one line: "Choose a helper model in Models to generate this."
 
+Built 2026-11-16 with these departures: the route is `POST /v1/admin/assistant/draft` (beside the existing
+`/v1/admin/assistant`), and the screen is Admin → Chat → Assistant; the model replies with plain text, not JSON (a
+long text inside JSON breaks small models); the brief asks for under 1,500 characters, not 8,000, since every
+character of a profile is read before every reply, and a longer reply is cut at 3,000; the reply carries
+`warnings` (the saved profile's own tool-name check); a brief line keeps each rule's meaning (the first walk turned
+"never guesses a page number" into "never provide a page number"). `server/services/profile_draft.py`.
+
 ## 8. Order of work
 
 Each phase ships on its own.

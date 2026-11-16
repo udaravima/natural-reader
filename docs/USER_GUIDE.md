@@ -342,6 +342,14 @@ Notes:
   - It goes first in every chat, from the next message on; the app's own
     rules about documents and tools follow it and win where they conflict.
     So a profile can't, for example, stop the assistant citing pages.
+  - **Generate** writes a first draft for you. With a helper model chosen in
+    **Models**, type what kind of assistant you want in **Describe the
+    assistant** (up to 2,000 characters) and press **Generate**. The draft
+    lands in the editor a few seconds later, in the language you described
+    it in. Nothing is saved until you press **Save**, and text you haven't
+    saved is replaced only after you agree. Read the draft before saving:
+    a small model can change what a rule means. The call counts towards
+    your own daily budget.
   - The badge says where it comes from: **Set here**, **From the deployment
     file** (the server's `CHAT_ASSISTANT_PROFILE_FILE`), or **None**.
     **Reset to deployment default** removes what you set here.

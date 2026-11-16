@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **A first draft of the assistant profile.** In **Admin → Chat → Assistant**,
+  describe the assistant you want and press **Generate**: the helper model
+  writes a draft into the editor. Nothing is saved until you press Save, and
+  unsaved text is replaced only after a confirm. Without a helper model the
+  screen says where to choose one.
 - **Chats named from their first exchange.** With a helper model set up, a new
   chat gets a short title a few seconds after its first reply. It replaces the
   first message cut to 60 characters, and the sidebar updates without a reload.

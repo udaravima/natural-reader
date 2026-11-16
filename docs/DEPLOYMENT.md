@@ -853,6 +853,12 @@ reply (each cut to 2,000 characters) and charged to the chat's owner.
 - **Cost on a CPU:** measured on the walk with `gemma4:e4b`, a title took
   about 3 s after a reply.
 
+**Assistant profile drafts.** In **Admin → Chat → Assistant**, an admin can
+have the helper write a first draft of the profile from a description of at
+most 2,000 characters. One call per press, charged to that admin; nothing is
+saved until they press Save. With a cloud helper, the description is sent to
+that provider. On the same CPU a draft took about 5 s.
+
 Migration 029 adds two columns to `chat_sessions` (`title_source`,
 `title_pending_at`). Chats already named at the upgrade are marked as named
 by a person. Its Down is in the file's header.

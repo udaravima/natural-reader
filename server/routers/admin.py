@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from .. import chat_voice
 from ..auth import deps, users
@@ -28,8 +28,9 @@ from ..speech import catalogue as speech_catalogue, convert as speech_convert, d
 from ..speech import google_names
 from ..speech.languages import WHISPER_LANGUAGES
 from ..services import (assistant_profile, chat_options, console_overview, console_settings, deployment_info, deployment_settings,
-                        doc_content, docling_limits, embedding_console, embedding_migration, inference_budget,
-                        inference_limits, model_router, model_settings, people, user_defaults,
+                        doc_content, docling_limits, embedding_console, embedding_migration, helper,
+                        inference_budget, inference_limits, model_router, model_settings, people, profile_draft,
+                        user_defaults,
                         web_search as web_search_service)
 from ..services.console_settings import Section, SettingError
 
@@ -570,6 +571,39 @@ async def put_assistant_profile(
     """Save the profile; empty text clears it (the file, or none, applies)."""
     await assistant_profile.save_profile(conn, body.text, updated_by=str(principal.user_id))
     return await _assistant_view(conn)
+
+
+class ProfileDraftIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    description: str = Field(min_length=1, max_length=profile_draft.DESCRIPTION_MAX_CHARS)
+
+    @field_validator("description")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Describe the assistant first.")
+        return v
+
+
+@router.post("/assistant/draft")
+async def draft_assistant_profile(
+    body: ProfileDraftIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """A draft profile from the admin's description, written by the helper model (helper spec §7). Nothing is
+    saved: the console puts the text in its editor. 409 helper_off, 429 budget_exhausted, 502 draft_failed."""
+    try:
+        text = await profile_draft.draft(conn, body.description, user_id=str(principal.user_id))
+    except helper.HelperError as e:
+        if e.kind == "off":
+            raise refusal(409, "helper_off", "No helper model is set up. Choose one in Models.") from None
+        if e.kind == "over_budget":
+            raise refusal(429, "budget_exhausted", "Daily inference budget exhausted.") from None
+        text = None
+    if text is None:
+        raise refusal(502, "draft_failed", "The helper model couldn't write a draft. Try again.")
+    return {"text": text, "warnings": assistant_profile.profile_warnings(text)}
 
 
 # ---------- chat options (C2.1 Task 13) ----------
