@@ -31,6 +31,13 @@ def test_start_up_says_which_variable_to_rotate_and_never_the_value(caplog):
     assert OLD_ADMIN not in caplog.text
 
 
+def test_the_warning_says_rebuild_since_a_restarted_container_keeps_its_old_env(caplog):
+    cfg = load_auth_config({"KC_ADMIN_CLIENT_SECRET": OLD_ADMIN})
+    with caplog.at_level(logging.ERROR, logger="server.auth.config"):
+        warn_published_secrets(cfg)
+    assert "./startup.sh rebuild" in caplog.text and "docs/MAINTENANCE.md" in caplog.text
+
+
 def test_the_console_marks_a_published_secret():
     rows = {r["id"]: r for r in readonly_rows({"OIDC_CLIENT_SECRET": OLD_OIDC, "KC_ADMIN_CLIENT_SECRET": "y" * 40})}
     assert rows["oidc_client_secret"]["value"] == "set, but to a published default: rotate it"

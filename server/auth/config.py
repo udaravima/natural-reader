@@ -89,7 +89,8 @@ def warn_published_secrets(cfg: AuthConfig) -> list[str]:
         logging.getLogger(__name__).error(
             "%s is a default that was published in this project's repository. Anyone who can reach Keycloak "
             "can use it. Rotate it: regenerate the client's secret in Keycloak, put the new value in .env, "
-            "restart (docs/DEPLOYMENT.md, \"Rotating the Keycloak secrets\").", name)
+            "then ./startup.sh rebuild; a restarted container keeps its old .env "
+            "(docs/MAINTENANCE.md, \"Rotating the Keycloak secrets\").", name)
     return names
 
 
