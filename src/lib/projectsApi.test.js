@@ -125,3 +125,42 @@ describe('projectsApi — bulk upload', () => {
     expect(err.status).toBe(0);
   });
 });
+
+describe('projectsApi — tags and descriptions (helper spec §5.8)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('uploadFile sends describe=false only when the tick is cleared', async () => {
+    apiUpload.mockResolvedValue({ ok: true, status: 201, body: {} });
+    await api.uploadFile('p1', new File(['x'], 'a.md'), { on_match: 'version', on_older: 'leave', describe: false });
+    expect(apiUpload.mock.calls[0][3].get('describe')).toBe('false');
+    await api.uploadFile('p1', new File(['x'], 'a.md'), { on_match: 'version', on_older: 'leave', describe: true });
+    expect(apiUpload.mock.calls[1][3].has('describe')).toBe(false);
+  });
+
+  it('setDescribed PATCHes the document with only the fields given', async () => {
+    apiFetch.mockResolvedValue(json(200, { id: 'x', tags: ['a'] }));
+    expect(await api.setDescribed('p1', 'x', { tags: ['a'] })).toEqual({ id: 'x', tags: ['a'] });
+    const [, , path, opts] = apiFetch.mock.calls[0];
+    expect([path, opts.method, JSON.parse(opts.body)]).toEqual(['/v1/projects/p1/documents/x', 'PATCH', { tags: ['a'] }]);
+  });
+
+  it('describe, describeMissing and describeMine POST to their routes', async () => {
+    apiFetch.mockResolvedValue(json(202, {}));
+    await api.describe('p1', 'x');
+    await api.describeMissing('p1');
+    await api.describeMine('d1');
+    expect(apiFetch.mock.calls.map(([, , path, opts]) => [path, opts.method])).toEqual([
+      ['/v1/projects/p1/documents/x/describe', 'POST'],
+      ['/v1/projects/p1/documents/describe-missing', 'POST'],
+      ['/v1/docs/d1/describe', 'POST'],
+    ]);
+  });
+
+  it('helperOn reads the deployment setting, and a failure counts as off', async () => {
+    apiFetch.mockResolvedValueOnce(json(200, { on: true }));
+    expect(await api.helperOn()).toBe(true);
+    expect(apiFetch.mock.calls[0][2]).toBe('/v1/settings/helper');
+    apiFetch.mockResolvedValueOnce(json(500, {}));
+    expect(await api.helperOn()).toBe(false);
+  });
+});

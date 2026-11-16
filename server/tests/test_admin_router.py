@@ -183,20 +183,22 @@ async def test_usage_group_day(db_conn, monkeypatch):
     assert [(x["day"], x["tokens"], x["requests"]) for x in rows] == [
         (today.isoformat(), 17, 2), ((today - timedelta(days=1)).isoformat(), 100, 1)]
     assert set(rows[0]) == {"day", "prompt_tokens", "eval_tokens", "tokens", "requests", "chat_tokens",
-                            "reader_tokens", "estimated_tokens"}
+                            "reader_tokens", "helper_tokens", "estimated_tokens"}
 
 
 async def test_usage_chat_reader_split(db_conn, monkeypatch):
     admin, p = await _usage_world(db_conn, monkeypatch)
     await _use(db_conn, admin, "ollama:a", "chat", 10, 5, estimated=True)
     await _use(db_conn, admin, "ollama:a", "reader", 3, 2)
+    await _use(db_conn, admin, "ollama:a", "helper", 4, 1)
     await db_conn.execute(
         "INSERT INTO inference_usage (user_id, day, model, kind, prompt_tokens, eval_tokens, requests) "
         "VALUES (%s, (SELECT max(day) FROM inference_usage), 'ollama:a', '', 100, 0, 1)", (admin["id"],))
     (row,) = (await _usage(db_conn, p, "group=model")).json()
-    assert (row["tokens"], row["chat_tokens"], row["reader_tokens"]) == (120, 15, 5)   # '' counts in tokens only
-    assert (row["prompt_tokens"], row["eval_tokens"], row["requests"], row["estimated_tokens"]) == (113, 7, 3, 15)
-    assert all(type(row[k]) is int for k in ("tokens", "chat_tokens", "reader_tokens", "estimated_tokens"))
+    assert (row["tokens"], row["chat_tokens"], row["reader_tokens"], row["helper_tokens"]) == (125, 15, 5, 5)
+    assert (row["prompt_tokens"], row["eval_tokens"], row["requests"], row["estimated_tokens"]) == (117, 8, 4, 15)
+    assert all(type(row[k]) is int for k in ("tokens", "chat_tokens", "reader_tokens", "helper_tokens",
+                                             "estimated_tokens"))
 
 
 async def test_usage_bad_group_422(db_conn, monkeypatch):

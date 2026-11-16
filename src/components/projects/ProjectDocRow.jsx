@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { BookOpen, ChevronDown, ChevronRight, MoreHorizontal, X } from 'lucide-react';
 import VersionHistory from './VersionHistory';
+import DocTags from './DocTags';
 import { useMenuDismiss } from '../../hooks/useMenuDismiss';
 import { docStateLabel } from '../../lib/docStateLabel';
 
@@ -14,7 +15,8 @@ const count = (n) => (n === 1 ? '1 version' : `${n} versions`);
  * closes on Escape (the focus goes back to ⋯), on a click anywhere outside
  * ⋯ and the menu, and on ⋯ again; ⋯ reports aria-expanded.
  */
-export default function ProjectDocRow({ theme, api, project, doc, others, mine, busy, run, onOpenDoc }) {
+export default function ProjectDocRow({ theme, api, project, doc, others, mine, busy, run, onOpenDoc,
+  helperOn = false, activeTag = null, onTag = () => {} }) {
   const { can } = project;
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -98,6 +100,11 @@ export default function ProjectDocRow({ theme, api, project, doc, others, mine, 
           )}
         </span>
       </div>
+
+      <DocTags theme={theme} doc={doc} canEdit={can.file_docs} helperOn={helperOn} busy={busy} activeTag={activeTag}
+        onTag={onTag}
+        onSave={(body) => run(() => api.setDescribed(project.id, doc.id, body), `Saved the tags of ${doc.name}.`)}
+        onGenerate={() => run(() => api.describe(project.id, doc.id), `Writing tags for ${doc.name}.`)} />
 
       {panel === 'upload' && (
         <div className="flex flex-col gap-1 text-[10px]">

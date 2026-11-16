@@ -66,6 +66,23 @@ describe('useBulkUpload', () => {
     expect(pending[0].fields).toEqual({ on_match: 'separate', on_older: 'leave' });
   });
 
+  it('writes tags by default; a cleared tick sends describe=false with every file, and a new pick ticks it again', async () => {
+    const { api, pending } = fakeApi();
+    const { result } = await planned(api, [item('a.md'), item('b.md')]);
+    expect(result.current.describe).toBe(true);
+    act(() => result.current.setDescribe(false));
+    expect(result.current.describe).toBe(false);
+    act(() => result.current.start());
+    expect(pending.map((p) => p.fields.describe)).toEqual([false, false]);
+    pending.forEach((p) => p.resolve({ result: 'created' }));
+    await flush();
+    act(() => result.current.reset());
+    await act(async () => { await result.current.pick([item('c.md')]); });
+    expect(result.current.describe).toBe(true);
+    act(() => result.current.start());
+    expect(pending[2].fields).toEqual({ on_match: 'version', on_older: 'leave' });     // the server's default: on
+  });
+
   it('has at most two files in flight', async () => {
     const { api, pending } = fakeApi();
     const { result } = await planned(api, ['a', 'b', 'c', 'd', 'e'].map((n) => item(`${n}.md`)));
