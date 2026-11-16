@@ -8,6 +8,10 @@ a length.
 
 While any profile exists exactly one is the default, and the default is always on. Changes take a table lock:
 the table is a handful of rows that only admins write, and a turn's reads don't wait for it.
+
+The Librarian (character profiles spec) is the one `builtin` row: the app's own document assistant, added at
+start-up by ensure_librarian. It can be renamed, described, reordered and made the default; it can't be deleted,
+turned off or given text, so a plain, careful assistant is always one pick away.
 """
 from __future__ import annotations
 
@@ -26,8 +30,11 @@ HOUSE_RULES_KEY = "assistant_house_rules"
 HOUSE_RULES_MAX_CHARS = 2000   # characters; read before every reply, as the profile is
 NAME_MAX_CHARS = 60
 DESCRIPTION_MAX_CHARS = 200
-_COLUMNS = "id::text, name, description, text, enabled, is_default, position"
+_COLUMNS = "id::text, name, description, text, enabled, is_default, position, builtin"
 _LOCK = "LOCK TABLE assistant_profiles IN SHARE ROW EXCLUSIVE MODE"
+LIBRARIAN_NAME = "The Librarian"
+LIBRARIAN_DESCRIPTION = "Careful answers from your documents, with page numbers."
+_BUILTIN_REFUSED = "The Librarian is always here: it can be renamed, not deleted, turned off or given text."
 
 
 @dataclass(frozen=True)
@@ -39,10 +46,11 @@ class ProfileRow:
     enabled: bool
     is_default: bool
     position: int
+    builtin: bool = False
 
 
 class LibraryError(ValueError):
-    """code: not_found | name_taken | default_required | invalid."""
+    """code: not_found | name_taken | default_required | builtin | invalid."""
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -147,6 +155,8 @@ async def update_profile(conn, profile_id: str, *, name: str | None = None, desc
             now = await get_profile(conn, profile_id)
             if now is None:
                 raise LibraryError("not_found", "That profile no longer exists.")
+            if now.builtin and (enabled is False or text is not None):
+                raise LibraryError("builtin", _BUILTIN_REFUSED)
             will_be_on = now.enabled if enabled is None else enabled
             if now.is_default and (enabled is False or is_default is False):
                 raise LibraryError("default_required", "Make another profile the default first.")
@@ -178,6 +188,8 @@ async def delete_profile(conn, profile_id: str) -> int:
         now = await get_profile(conn, profile_id)
         if now is None:
             raise LibraryError("not_found", "That profile no longer exists.")
+        if now.builtin:
+            raise LibraryError("builtin", _BUILTIN_REFUSED)
         if now.is_default:
             cur = await conn.execute("SELECT count(*) FROM assistant_profiles")
             if (await cur.fetchone())[0] > 1:
@@ -186,6 +198,34 @@ async def delete_profile(conn, profile_id: str) -> int:
         await conn.execute("DELETE FROM assistant_profiles WHERE id = %s", (now.id,))
     logger.info("assistant profile %s deleted (%d chats used it)", now.id, used)
     return used
+
+
+async def ensure_librarian(conn) -> ProfileRow:
+    """The built-in profile, added when missing: last in the list, and the default only where there is none (an
+    empty library). A profile already holding the name keeps it; this one takes the first free of "The Librarian",
+    "The Librarian (built in)", "The Librarian (built in) 2", and so on. Every worker calls it at start; the table
+    lock makes the second one find the row."""
+    async with conn.transaction():
+        await conn.execute(_LOCK)
+        cur = await conn.execute(f"SELECT {_COLUMNS} FROM assistant_profiles WHERE builtin")
+        row = await cur.fetchone()
+        if row:
+            return ProfileRow(*row)
+        cur = await conn.execute("SELECT lower(name) FROM assistant_profiles")
+        taken = {r[0] for r in await cur.fetchall()}
+        name = LIBRARIAN_NAME
+        n = 1
+        while name.lower() in taken:
+            name = f"{LIBRARIAN_NAME} (built in)" + (f" {n}" if n > 1 else "")
+            n += 1
+        cur = await conn.execute(
+            f"INSERT INTO assistant_profiles (name, description, text, builtin, is_default, position) "
+            f"SELECT %s, %s, '', TRUE, NOT EXISTS (SELECT 1 FROM assistant_profiles WHERE is_default), "
+            f"coalesce((SELECT max(position) + 1 FROM assistant_profiles), 0) RETURNING {_COLUMNS}",
+            (name, LIBRARIAN_DESCRIPTION))
+        row = ProfileRow(*await cur.fetchone())
+    logger.info("assistant profile %s added: the built-in one%s", row.id, " (the default)" if row.is_default else "")
+    return row
 
 
 async def reorder(conn, ids: list[str]) -> None:
