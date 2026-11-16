@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../../utils/apiFetch';
 
 /**
@@ -6,19 +6,27 @@ import { apiFetch } from '../../utils/apiFetch';
  * name, personality, tone and house rules. It leads every chat's system
  * message; the app's own rules about documents and tools follow it and win
  * where they conflict. The server cleans, caps and warns; this only edits.
+ *
+ * Generate (helper spec §7): with a helper model set up, the admin describes the assistant and the helper writes a
+ * draft into the editor. Nothing is saved until Save, and unsaved text is replaced only after a confirm.
  */
 
 const SOURCE_LABEL = { admin: 'Set here', file: 'From the deployment file', none: 'None' };
 
 const fmt = (n) => n.toLocaleString('en-US');
+const DESCRIPTION_MAX = 2000;
 
 export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, refreshKey = 0, onDirtyChange }) {
   const [data, setData] = useState(null);       // the server's view; null while loading
   const [draft, setDraft] = useState('');
   const [failed, setFailed] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [helperOn, setHelperOn] = useState(null);   // null until the server says
+  const [description, setDescription] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [draftWarnings, setDraftWarnings] = useState([]);   // about a generated draft, until it is saved or reloaded
 
-  const apply = (view) => { setData(view); setDraft(view.text || ''); };
+  const apply = (view) => { setData(view); setDraft(view.text || ''); setDraftWarnings([]); };
 
   const load = useCallback(async () => {
     try {
@@ -32,6 +40,20 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
   }, [apiHost, apiPort]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Whether a helper model is set up. `refreshKey` changes when a setting was saved elsewhere in the console.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await apiFetch(apiHost, apiPort, '/v1/settings/helper');
+        if (!cancelled) setHelperOn(res.ok ? (await res.json()).on === true : false);
+      } catch {
+        if (!cancelled) setHelperOn(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [apiHost, apiPort, refreshKey]);
 
   // `refreshKey` is bumped when something the preview depends on changed elsewhere in the console (the web
   // search mode, chat options): fetch again, take only the preview, so what is being typed stays. A failed
@@ -70,7 +92,35 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
 
   // The console asks before a tab switch drops an unsaved draft.
   const dirty = data !== null && draft !== (data.text || '');
+
+  const generate = async () => {
+    if (generating || !description.trim()) return;
+    setGenerating(true);
+    try {
+      const res = await apiFetch(apiHost, apiPort, '/v1/admin/assistant/draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        showToast?.(body?.detail?.message || `Writing a draft failed (HTTP ${res.status}).`, 5000);
+        return;
+      }
+      // The editor may have changed while the model wrote: judge "unsaved" now, not when Generate was pressed.
+      if (editorRef.current.dirty && !window.confirm('Replace the unsaved text in the editor with the draft?')) return;
+      setDraft(body.text || '');
+      setDraftWarnings(body.warnings || []);
+      showToast?.('Draft placed in the editor. Nothing is saved until you press Save.', 5000);
+    } catch {
+      showToast?.('The server could not be reached.', 5000);
+    } finally {
+      setGenerating(false);
+    }
+  };
   useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
+  const editorRef = useRef({ dirty });
+  useEffect(() => { editorRef.current = { dirty }; }, [dirty]);
 
   const sectionTitle = 'text-xs font-bold uppercase tracking-wider text-blue-500';
   const max = data?.maxChars ?? 8000;
@@ -96,6 +146,37 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
             the app&apos;s own rules about documents and tools follow it and take precedence. Every
             character is read before every reply, so shorter is faster.
           </p>
+          {helperOn === false && (
+            <p className={`text-xs ${theme.textMuted}`}>Choose a helper model in Models to generate this.</p>
+          )}
+          {helperOn && (
+            <div className={`flex flex-col gap-2 p-2 rounded border ${theme.border}`}>
+              <label htmlFor="assistant-describe" className={`text-xs font-bold ${theme.textSecondary}`}>
+                Describe the assistant
+              </label>
+              <textarea
+                id="assistant-describe"
+                rows={3}
+                maxLength={DESCRIPTION_MAX}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="A calm tutor called Ada who explains in plain words and says when she isn't sure."
+                className={`min-h-11 md:min-h-0 w-full text-xs p-2 rounded border ${theme.border} ${theme.bg} ${theme.text}`}
+              />
+              <div className="flex items-center justify-between gap-3 text-xs">
+                <span className={theme.textMuted}>
+                  The helper model writes a draft into the editor below. Nothing is saved until you press Save.
+                </span>
+                <button
+                  onClick={generate}
+                  disabled={generating || !description.trim()}
+                  className="min-h-11 md:min-h-0 shrink-0 underline text-blue-500 font-bold disabled:opacity-40 disabled:no-underline"
+                >
+                  {generating ? 'Writing a draft…' : 'Generate'}
+                </button>
+              </div>
+            </div>
+          )}
           <textarea
             aria-label="Assistant profile"
             rows={12}
@@ -126,7 +207,7 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
               </button>
             </div>
           </div>
-          {data.warnings?.map((w) => (
+          {[...new Set([...draftWarnings, ...(dirty ? [] : data.warnings || [])])].map((w) => (
             <p key={w} className="text-xs text-amber-600">{w}</p>
           ))}
           <details className="text-xs">
