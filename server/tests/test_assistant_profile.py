@@ -167,6 +167,48 @@ async def test_people_see_names_and_descriptions_never_text(db_conn):
     app.include_router(chat_profiles.router)
     async with _client(app) as c:
         r = await c.get("/v1/chat/profiles")
-    assert r.json() == {"profiles": [{"id": a.id, "name": "Plain", "description": "Short answers", "isDefault": True},
-                                     {"id": b.id, "name": "Tutor", "description": "", "isDefault": False}]}
+    assert r.json() == {"profiles": [
+        {"id": a.id, "name": "Plain", "description": "Short answers", "isDefault": True, "builtin": False},
+        {"id": b.id, "name": "Tutor", "description": "", "isDefault": False, "builtin": False}]}
     assert "TEXT" not in r.text
+
+
+# ---------- The Librarian (character profiles spec) ----------
+
+async def test_the_librarian_is_marked_and_can_be_renamed_but_not_deleted_or_turned_off(db_conn):
+    librarian = await lib.ensure_librarian(db_conn)
+    admin = await _principal(db_conn, "s1", "a@x.io", "admin")
+    async with _client(_app(db_conn, admin)) as client:
+        r = await client.delete(f"/v1/admin/assistant/profiles/{librarian.id}")
+        assert (r.status_code, r.json()["detail"]["error"]) == (409, "builtin")
+        r = await client.put(f"/v1/admin/assistant/profiles/{librarian.id}", json={"enabled": False})
+        assert (r.status_code, r.json()["detail"]["error"]) == (409, "builtin")
+        r = await client.put(f"/v1/admin/assistant/profiles/{librarian.id}", json={"name": "Ada"})
+        assert r.status_code == 200
+    row = r.json()["profiles"][0]
+    assert (row["name"], row["builtin"], row["text"], row["isDefault"]) == ("Ada", True, "", True)
+
+
+async def test_the_file_shows_while_the_librarian_is_the_only_profile(db_conn, tmp_path, monkeypatch):
+    f = tmp_path / "assistant.md"
+    f.write_text("From the file.", encoding="utf-8")
+    monkeypatch.setenv("CHAT_ASSISTANT_PROFILE_FILE", str(f))
+    await lib.ensure_librarian(db_conn)
+    admin = await _principal(db_conn, "s1", "a@x.io", "admin")
+    async with _client(_app(db_conn, admin)) as client:
+        body = (await client.get("/v1/admin/assistant/profiles")).json()
+    assert body["file"] == {"configured": True, "inUse": True, "text": "From the file."}
+
+
+async def test_people_see_the_librarian_marked_built_in(db_conn):
+    from server.routers import chat_profiles
+    u = await resolve_or_provision_user(db_conn, iss="i", sub="s2", email="b@x.io")
+    member = deps.Principal(user_id=u["id"], email=u["email"], role="member", capabilities=frozenset({"chat"}))
+    librarian = await lib.ensure_librarian(db_conn)
+    app = _app(db_conn, member)
+    app.include_router(chat_profiles.router)
+    async with _client(app) as c:
+        r = await c.get("/v1/chat/profiles")
+    assert r.json()["profiles"] == [{"id": librarian.id, "name": "The Librarian",
+                                     "description": "Careful answers from your documents, with page numbers.",
+                                     "isDefault": True, "builtin": True}]

@@ -6,6 +6,20 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **The Librarian, a profile that is always there.** The app's own careful
+  document assistant is now a built-in profile beside the admin's: it can be
+  renamed, described, moved and made the default, never deleted or turned off.
+  Migration 031 adds the column; the server adds the row at start, last in the
+  list, without moving the default (on an empty library it is the default).
+- **Choose who answers where you chat.** A chip beside the message box,
+  "Talking to: …", names the profile in the chat, the chat beside the page and
+  Talk, and opens the list; a new chat offers the profiles as cards. The
+  sidebar's Profile picker is gone. The list is read again when a chat opens.
+- **A character can't override the document steps.** A profile with text of
+  its own is followed, in a chat that can read documents, by "Whatever your
+  role, an answer from the documents follows the steps below and cites its
+  pages."
+
 - **`docs/MAINTENANCE.md`, the jobs on a running server:** is it healthy,
   surviving reboots, applying a `.env` change, backup and restore with a
   nightly job, upgrading, rolling back, rotating secrets and freeing disk

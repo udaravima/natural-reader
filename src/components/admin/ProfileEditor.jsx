@@ -17,7 +17,7 @@ const PREVIEW_DELAY_MS = 300;   // after the last keystroke, while the preview i
  * elsewhere in the console) fetches it again.
  */
 export function ProfileEditor({ theme, apiHost, apiPort, showToast, initial, limits, houseText, helperOn, busy,
-  refreshKey = 0, onSave, onCancel, onDirtyChange }) {
+  refreshKey = 0, onSave, onCancel, onDirtyChange, builtin = false }) {
   const [name, setName] = useState(initial.name);
   const [description, setDescription] = useState(initial.description);
   const [text, setText] = useState(initial.text);
@@ -99,10 +99,10 @@ export function ProfileEditor({ theme, apiHost, apiPort, showToast, initial, lim
           onChange={(e) => setDescription(e.target.value)}
           placeholder="Explains step by step (people see this under the name)" className={field} />
       </div>
-      {helperOn === false && (
+      {!builtin && helperOn === false && (
         <p className={`text-xs ${theme.textMuted}`}>Choose a helper model in Models to generate this.</p>
       )}
-      {helperOn && (
+      {!builtin && helperOn && (
         <div className={`flex flex-col gap-2 p-2 rounded border ${theme.border}`}>
           <label htmlFor="assistant-describe" className={`text-xs font-bold ${theme.textSecondary}`}>
             Describe the assistant
@@ -121,6 +121,12 @@ export function ProfileEditor({ theme, apiHost, apiPort, showToast, initial, lim
           </div>
         </div>
       )}
+      {builtin ? (
+        <p className={`text-xs ${theme.textMuted}`}>
+          The Librarian has no text of its own: it answers with the app&apos;s rules about documents, after the house
+          rules. You can rename it and change the line people see under its name.
+        </p>
+      ) : (<>
       <textarea aria-label="Profile text" rows={12} maxLength={limits.text} value={text}
         onChange={(e) => { setText(e.target.value); setWarnings([]); }}
         placeholder="You are Ada, the reading-room assistant. Answer warmly and briefly."
@@ -136,13 +142,15 @@ export function ProfileEditor({ theme, apiHost, apiPort, showToast, initial, lim
         use one, the app doesn&apos;t say it again.
       </p>
       {shown.map((w) => <p key={w} className="text-xs text-amber-600">{w}</p>)}
+      </>)}
       <div className="flex items-center justify-end gap-3 text-xs">
         <button onClick={cancel} className={link}>Cancel</button>
-        <button onClick={() => onSave({ name, description, text })}
-          disabled={busy || !dirty || !name.trim() || !text.trim()} className={`font-bold ${link}`}>
+        <button onClick={() => onSave(builtin ? { name, description } : { name, description, text })}
+          disabled={busy || !dirty || !name.trim() || (!builtin && !text.trim())} className={`font-bold ${link}`}>
           Save profile
         </button>
       </div>
+      {!builtin && (<>
       <button onClick={() => setPreviewOpen((o) => !o)} aria-expanded={previewOpen}
         className={`min-h-11 md:min-h-0 self-start text-xs ${theme.textMuted}`}>
         <span aria-hidden="true">{previewOpen ? '▾' : '▸'}</span> <span>What the model receives</span>
@@ -152,6 +160,7 @@ export function ProfileEditor({ theme, apiHost, apiPort, showToast, initial, lim
           {preview ?? 'Loading…'}
         </pre>
       )}
+      </>)}
     </div>
   );
 }

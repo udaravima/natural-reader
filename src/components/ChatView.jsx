@@ -26,6 +26,8 @@ import remarkGfm from "remark-gfm";
 import AttachmentPreview from "./AttachmentPreview";
 import TextFileViewer from "./TextFileViewer";
 import ScopeChip from "./chat/ScopeChip";
+import ProfileChip from "./chat/ProfileChip";
+import ProfileCards from "./chat/ProfileCards";
 import WebOfferCard from "./chat/WebOfferCard";
 import { citationDocs, remarkCitations } from "../lib/citations";
 import { estimateTokens } from "../hooks/inference";
@@ -115,7 +117,19 @@ export default function ChatView({
   // Talk, the spoken conversation in this chat, for someone who may use it (App's canTalk), else null:
   // { status, synthesizeText, voice, speed, volume, requestTimeout, onStarted, sessionId }.
   talk = null,
+  // Who answers (character profiles spec, "Choosing in the chat"), from useChatEngine: the profiles an admin left
+  // on, what the next message uses, a pick, a fresh read of the list, the chat's own and a deleted one's name.
+  profiles = [],
+  profileId = '',
+  setProfile = null,
+  refreshProfiles = null,
+  currentProfile = null,
+  removedProfile = null,
 }) {
+  // The list is read again whenever the chat opens (Chat view, the chat beside the page): a profile an admin just
+  // added shows without a reload.
+  const refreshProfilesRef = useRef(refreshProfiles);
+  useEffect(() => { refreshProfilesRef.current?.(); }, []);
   const copyMessage = async (text) => {
     if (!text) return;
     try {
@@ -152,9 +166,10 @@ export default function ChatView({
     stickToBottomRef.current = dist < STICK_THRESHOLD;
   };
 
-  // Follow-along auto-scroll: only fires when the user is already near the bottom.
+  // Follow-along auto-scroll: only fires when the user is already near the bottom. An empty chat has nothing to
+  // follow: it starts at its top, where it asks who to talk to.
   useEffect(() => {
-    if (!stickToBottomRef.current) return;
+    if (!stickToBottomRef.current || messages.length === 0) return;
     const el = listRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
@@ -531,6 +546,9 @@ export default function ChatView({
             darkMode={darkMode}
             reachable={reachable}
             selectedModel={selectedModel}
+            profiles={profiles}
+            profileId={profileId}
+            onPickProfile={setProfile}
           />
         ) : (
           <div className="max-w-3xl mx-auto space-y-4">
@@ -587,8 +605,18 @@ export default function ChatView({
               ~{fmtTotal(ctxTokens)}{numCtx ? ` / ${fmtWindow(numCtx)}` : ''} ctx
             </div>
           )}
-          {((scope && setScope) || (speakingSwitch && narrowComposer)) && (
+          {((scope && setScope) || (speakingSwitch && narrowComposer) || profiles.length > 0) && (
             <div data-testid="composer-chips" className="flex flex-wrap items-center gap-2">
+              {profiles.length > 0 && (
+                <ProfileChip
+                  theme={theme}
+                  profiles={profiles}
+                  profileId={profileId}
+                  currentProfile={currentProfile}
+                  removedProfile={removedProfile}
+                  onChange={setProfile}
+                />
+              )}
               {scope && setScope && (
                 <ScopeChip
                   theme={theme}
@@ -1517,11 +1545,13 @@ export function DocContextChip({
   );
 }
 
-function EmptyState({ theme, darkMode, reachable, selectedModel }) {
+function EmptyState({ theme, darkMode, reachable, selectedModel, profiles = [], profileId = '', onPickProfile = null }) {
   return (
-    <div className="h-full flex flex-col items-center justify-center text-center gap-4 px-6">
+    // "Safe" centring: centred while it fits, top-aligned once the profile cards make it taller than the list, so
+    // its top stays within scroll's reach on a phone.
+    <div className="min-h-full flex flex-col items-center justify-center-safe text-center gap-4 px-6">
       <div
-        className={`w-20 h-20 ${theme.bgTertiary} rounded-2xl flex items-center justify-center ${theme.textMuted} border-2 border-dashed ${theme.border}`}
+        className={`w-20 h-20 shrink-0 ${theme.bgTertiary} rounded-2xl flex items-center justify-center ${theme.textMuted} border-2 border-dashed ${theme.border}`}
       >
         <MessageSquare size={36} />
       </div>
@@ -1533,6 +1563,7 @@ function EmptyState({ theme, darkMode, reachable, selectedModel }) {
           Talk to a model and have its replies read aloud through Kokoro.
         </p>
       </div>
+      {onPickProfile && <ProfileCards theme={theme} profiles={profiles} profileId={profileId} onPick={onPickProfile} />}
       <div
         className={`text-xs px-3 py-2 rounded-lg ${darkMode ? "bg-slate-800/50" : "bg-slate-100"} ${theme.textSecondary}`}
       >

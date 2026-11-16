@@ -523,7 +523,7 @@ async def apply_user_default_to_everyone(
 
 # ---------- the assistant: house rules and the profile library (profile library spec, 2026-11-16) ----------
 
-_LIBRARY_STATUS = {"not_found": 404, "name_taken": 409, "default_required": 409, "invalid": 422}
+_LIBRARY_STATUS = {"not_found": 404, "name_taken": 409, "default_required": 409, "builtin": 409, "invalid": 422}
 
 
 def _library_refusal(e: profile_library.LibraryError):
@@ -585,11 +585,12 @@ async def _library_view(conn) -> dict:
                              "GROUP BY profile_id")
     chats = dict(await cur.fetchall())
     file_on = assistant_profile.file_path() is not None
-    file_text = assistant_profile._from_file() if file_on and not rows else ""
+    # The Librarian has no text; while it is the only profile, the file is its text.
+    file_text = assistant_profile._from_file() if file_on and all(r.builtin for r in rows) else ""
     return {
         "houseRules": {"text": house, "maxChars": profile_library.HOUSE_RULES_MAX_CHARS, "warnings": _text_warnings(house)},
         "profiles": [{"id": r.id, "name": r.name, "description": r.description, "text": r.text, "enabled": r.enabled,
-                      "isDefault": r.is_default, "chats": chats.get(r.id, 0), "warnings": _text_warnings(r.text),
+                      "isDefault": r.is_default, "builtin": r.builtin, "chats": chats.get(r.id, 0), "warnings": _text_warnings(r.text),
                       "combinedChars": len(_combined(house, r.text))} for r in rows],
         # While the library is empty the file at CHAT_ASSISTANT_PROFILE_FILE is the profile; its text is offered so
         # an admin can start the first profile from it.
@@ -641,7 +642,8 @@ async def change_assistant_profile(
     principal: deps.Principal = Depends(deps.require_admin),
     conn=Depends(deps.get_conn, scope="function"),
 ):
-    """Change what is sent. 404 not_found, 409 name_taken, 409 default_required (turning the default off)."""
+    """Change what is sent. 404 not_found, 409 name_taken, 409 default_required (turning the default off), 409
+    builtin (turning The Librarian off or giving it text)."""
     try:
         await profile_library.update_profile(
             conn, profile_id, name=body.name, description=body.description, text=body.text, enabled=body.enabled,
@@ -657,7 +659,8 @@ async def delete_assistant_profile(
     _: deps.Principal = Depends(deps.require_admin),
     conn=Depends(deps.get_conn, scope="function"),
 ):
-    """Delete a profile. The chats that used it use the default from their next message; `chats` is how many."""
+    """Delete a profile. The chats that used it use the default from their next message; `chats` is how many.
+    409 builtin: The Librarian can't be deleted."""
     try:
         used = await profile_library.delete_profile(conn, profile_id)
     except profile_library.LibraryError as e:

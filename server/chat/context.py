@@ -325,6 +325,7 @@ class TurnInput:
     profile: str = ""             # house rules + this chat's profile, placeholders filled: leads the system message
     placed: frozenset = frozenset()   # the placeholders that text used (chat/profile_text.py): the app's line omits them
     persona: bool = True          # the text holds a profile, not house rules alone
+    assistant_name: str = ""      # the built-in profile's name when the turn uses it (The Librarian)
     scope: tuple[ScopeDoc, ...] = ()   # the documents the tools read (tools.scope.scope_docs); prefetch searches them
     project_map: str = ""              # a project chat's map of its documents (chat/project_map.py): after the rules
     app_exchange: tuple[Message, ...] = ()   # a tool exchange the app ran (the approved web search), after the prefetch's
@@ -371,7 +372,7 @@ async def build_context(turn: TurnInput, cfg: ChatConfig) -> BuiltContext:
     rules = system_rules(turn.doc, turn.tools, has_pins=bool(turn.pins),
                          prefetch=cfg.prefetch == "on" and cfg.prefetch_min_score < 1.0,
                          today=today_line(turn.now, turn.timezone, turn.default_timezone), profile=turn.profile,
-                         placed=turn.placed, persona=turn.persona,
+                         placed=turn.placed, persona=turn.persona, assistant_name=turn.assistant_name,
                          has_map=bool(turn.project_map), project=getattr(turn.tool_ctx, "project", None),
                          spoken=turn.spoken)
     system = Message("system", "\n\n".join(c for c in (rules, turn.project_map, pin_text(turn.pins)) if c))

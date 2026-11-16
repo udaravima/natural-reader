@@ -351,6 +351,7 @@ export function useChatEngine({
         setSpeaking(null);
         sentenceBufferRef.current = '';
 
+        refreshProfiles();   // an admin may have changed the list since: the chat shows who answers it
         const record = await sessionStore.getSession(id);
         setPickedProfile(null);
         setChatProfile(chatProfileFrom(record));
@@ -370,7 +371,7 @@ export function useChatEngine({
         if (record.scopeProject !== undefined) holdScope(id, record.scopeProject);
         setActive(id);
         setIsStreaming(false);
-    }, [stopChatPlayback, sessionStore, holdScope]);
+    }, [stopChatPlayback, sessionStore, holdScope, refreshProfiles]);
 
     // Reset the chat view without deleting any saved sessions.
     const newSession = useCallback(() => {
@@ -389,8 +390,9 @@ export function useChatEngine({
         setIsStreaming(false);
         setPickedProfile(null);
         setChatProfile(null);
+        refreshProfiles();       // a new chat offers the profiles as they are now
         holdScope(null, null);   // a new chat starts without the last one's project
-    }, [stopChatPlayback, holdScope]);
+    }, [stopChatPlayback, holdScope, refreshProfiles]);
 
     // "Ask about this project": a new chat about {id, name}, held until its
     // first message (the chat has no session before then).

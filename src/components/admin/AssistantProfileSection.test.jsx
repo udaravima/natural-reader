@@ -329,3 +329,47 @@ describe('AssistantProfileSection: the library', () => {
     });
   });
 });
+
+// The Librarian, the built-in profile (character profiles spec).
+const WITH_LIBRARIAN = [{ name: 'The Story Teller', text: 'You are an old storyteller.' },
+  { name: 'The Librarian', text: '', builtin: true, description: 'Careful answers from your documents, with page numbers.' }];
+
+describe('AssistantProfileSection: The Librarian', () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it('marks it built in and offers no Delete or Turn off, but can make it the default and move it', async () => {
+    fakeServer({ profiles: WITH_LIBRARIAN });
+    mount();
+    const lib = await screen.findByRole('listitem', { name: 'The Librarian' });
+    expect(within(lib).getByText('Built in')).toBeTruthy();
+    expect(within(lib).getByText("The app's own document assistant, always here: it can be renamed, not deleted or "
+      + 'turned off.')).toBeTruthy();
+    expect(within(lib).queryByRole('button', { name: 'Delete The Librarian' })).toBeNull();
+    expect(within(lib).queryByRole('button', { name: 'Turn off The Librarian' })).toBeNull();
+    expect(within(lib).getByRole('button', { name: 'Move The Librarian up' })).toBeTruthy();
+    fireEvent.click(within(lib).getByRole('button', { name: 'Make The Librarian the default' }));
+    await waitFor(() => expect(calls('PUT', `${BASE}/profiles/p2`)).toHaveLength(1));
+    expect(sent('PUT', `${BASE}/profiles/p2`)).toEqual({ isDefault: true });
+  });
+
+  it('edits only its name and description', async () => {
+    fakeServer({ profiles: WITH_LIBRARIAN });
+    mount();
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit The Librarian' }));
+    expect(screen.queryByLabelText('Profile text')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Generate' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /What the model receives/ })).toBeNull();
+    fireEvent.change(screen.getByLabelText('Profile name'), { target: { value: 'Ada' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save profile' }));
+    await waitFor(() => expect(calls('PUT', `${BASE}/profiles/p2`)).toHaveLength(1));
+    expect(sent('PUT', `${BASE}/profiles/p2`)).toEqual({
+      name: 'Ada', description: 'Careful answers from your documents, with page numbers.' });
+  });
+
+  it('counts only profiles an admin wrote as "no profiles yet"', async () => {
+    fakeServer({ profiles: [WITH_LIBRARIAN[1]], file: { configured: true, inUse: true, text: 'From the file.' } });
+    mount();
+    expect(await screen.findByText(/The deployment file is the profile until you add one/)).toBeTruthy();
+  });
+});

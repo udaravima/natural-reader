@@ -132,4 +132,15 @@ describe('useChatEngine — profiles', () => {
         act(() => { result.current.newSession(); });
         expect(result.current.removedProfile).toBeNull();
     });
+
+    it('reads the profiles again when a chat is started or opened', async () => {
+        const reads = () => apiFetch.mock.calls.filter((c) => c[2] === '/v1/chat/profiles').length;
+        const { result } = renderHook(() => useChatEngine(props()));
+        await waitFor(() => expect(result.current.profiles).toEqual([PLAIN, TUTOR]));
+        const before = reads();
+        await act(async () => { result.current.newSession(); });
+        await waitFor(() => expect(reads()).toBe(before + 1));
+        await act(async () => { await result.current.switchToSession('s-1'); });
+        await waitFor(() => expect(reads()).toBe(before + 2));
+    });
 });
