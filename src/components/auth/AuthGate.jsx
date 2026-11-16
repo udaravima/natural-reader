@@ -2,6 +2,7 @@
 // `active` state mounts the app. Screens are intentionally minimal; they inherit
 // the page's default styling and can be skinned later if needed.
 import { hasAccess } from '../../lib/access';
+import { DEFAULT_IDENTITY, footLine } from '../../lib/appIdentity';
 
 function Screen({ title, children }) {
   return (
@@ -22,11 +23,15 @@ const btn = {
 };
 const btnGhost = { ...btn, background: 'transparent', color: '#3b82f6' };
 
-function LoginScreen({ onLogin }) {
+function LoginScreen({ onLogin, identity }) {
+  // The tagline is written to follow the name mid-sentence ("…, an app for…"), so it starts in lower case.
+  const tagline = identity.tagline.charAt(0).toUpperCase() + identity.tagline.slice(1);
   return (
-    <Screen title="Natural Reader">
+    <Screen title={identity.name}>
+      <p style={{ margin: 0, opacity: 0.75 }}>{tagline}</p>
       <p>Sign in to continue.</p>
       <button style={btn} onClick={onLogin}>Sign in</button>
+      <p style={{ fontSize: '0.75rem', opacity: 0.6, marginTop: '1.5rem' }}>{footLine(identity)}</p>
     </Screen>
   );
 }
@@ -73,14 +78,14 @@ function NoAccessScreen({ onLogout, onRetry }) {
   );
 }
 
-export function AuthGate({ state, user, onLogin, onLogout, onRetry, children }) {
+export function AuthGate({ state, user, onLogin, onLogout, onRetry, identity = DEFAULT_IDENTITY, children }) {
   switch (state) {
     case 'active':
       if (!hasAccess(user)) {
         return <NoAccessScreen onLogout={onLogout} onRetry={onRetry} />;
       }
       return <>{children}</>;
-    case 'anonymous': return <LoginScreen onLogin={onLogin} />;
+    case 'anonymous': return <LoginScreen onLogin={onLogin} identity={identity} />;
     case 'pending': return <PendingScreen onLogout={onLogout} />;
     case 'disabled': return <DisabledScreen onLogout={onLogout} />;
     case 'error': return <AuthErrorScreen onRetry={onRetry} />;

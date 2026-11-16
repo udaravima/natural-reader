@@ -105,6 +105,9 @@ class ContextIn(BaseModel):
     timezone: str | None = Field(default=None, max_length=64)
     web: WebIn | None = None
     spoken: bool = False   # the reply will be read aloud in the speech window
+    # The profile picked for this chat (profile library spec): one that is gone or off is not an error, the turn
+    # uses the chat's own or the default, and its `start` event says which.
+    profile_id: str | None = Field(default=None, max_length=64)
 
     def requested_scope(self) -> Any:
         """The scope this turn asks for: a project id, None, or store.KEEP."""
@@ -402,7 +405,8 @@ async def post_turn(session_id: SessionId, request: Request,
         real_values=any(a.real_values for a in attachments),
         settings=call_settings(body.settings),
         doc_id=body.context.doc_id, timezone=body.context.timezone, project_id=project_id,
-        web_query=body.context.web.query if body.context.web else None, spoken=body.context.spoken)
+        web_query=body.context.web.query if body.context.web else None, spoken=body.context.spoken,
+        profile_id=body.context.profile_id)
     events = run_turn(req, claim, router=llm, cfg=cfg, deployment_budget=budget)
     return _EagerCloseStreamingResponse(_sse(events), turn=events, abandon=lambda: abandon_turn(req, claim),
                                         media_type="text/event-stream",

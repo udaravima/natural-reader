@@ -12,6 +12,7 @@ import { supportedKnobs } from '../lib/modelIds';
 import { textAttachmentWire } from '../utils/attachment';
 import { useDocUse } from './useDocUse';
 import { useChatScope } from './useChatScope';
+import { usePersistedState } from './usePersistedState';
 
 const SENTENCE_TERMINATOR = /(?<=[.!?])\s+/;
 const MIN_TTS_LENGTH = 5;
@@ -269,6 +270,49 @@ export function useChatEngine({
         return () => window.removeEventListener('focus', refreshHelper);
     }, [refreshHelper]);
 
+    // The assistant's profiles (profile library spec, "For a person"): the ones an admin left on, by name. A chat
+    // keeps the profile its turns used; a pick made here goes with the next message and is remembered for new chats.
+    // The server decides: a pick that is gone or off falls back to the chat's own or the default, and the turn's
+    // `start` event says which it used. Read again when the window is looked at again; no answer keeps the list.
+    const [profiles, setProfiles] = useState([]);
+    const [rememberedProfile, setRememberedProfile] = usePersistedState('chatProfile', '');
+    const [pickedProfile, setPickedProfile] = useState(null);   // picked in the open chat, not yet sent
+    const [chatProfile, setChatProfile] = useState(null);       // the open chat's own: {id, name, removed}
+    const profilesRead = useRef(null);
+    const refreshProfiles = useCallback(() => {
+        profilesRead.current ??= (async () => {
+            try {
+                const res = await apiFetch(apiHost, apiPort, '/v1/chat/profiles');
+                const body = res?.ok ? await res.json() : null;
+                if (Array.isArray(body?.profiles)) setProfiles(body.profiles);
+            } catch {
+                // the list stays as it was
+            } finally {
+                profilesRead.current = null;
+            }
+        })();
+        return profilesRead.current;
+    }, [apiHost, apiPort]);
+    useEffect(() => {
+        refreshProfiles();
+        window.addEventListener('focus', refreshProfiles);
+        return () => window.removeEventListener('focus', refreshProfiles);
+    }, [refreshProfiles]);
+    const remembered = activeSessionId === null && chatProfile === null
+        && profiles.some((p) => p.id === rememberedProfile) ? rememberedProfile : null;
+    // What the next message asks for; null lets the server choose (the chat's own, else the default).
+    const askedProfile = pickedProfile ?? remembered;
+    const askedProfileRef = useRef(askedProfile);   // read by sendMessage without re-creating it
+    useEffect(() => { askedProfileRef.current = askedProfile; }, [askedProfile]);
+    const profileId = askedProfile ?? chatProfile?.id ?? profiles.find((p) => p.isDefault)?.id ?? '';
+    const setProfile = useCallback((id) => {
+        setPickedProfile(id || null);
+        setRememberedProfile(id || '');
+    }, [setRememberedProfile]);
+    const chatProfileFrom = (record) => (record && (record.profileId || record.profileName)
+        ? { id: record.profileId ?? null, name: record.profileName ?? '', removed: Boolean(record.profileRemoved) }
+        : null);
+
     useEffect(() => {
         if (!sessions.some((s) => s.titlePending)) return undefined;
         const t = setTimeout(() => { refreshSessions(); }, TITLE_POLL_MS);
@@ -308,6 +352,8 @@ export function useChatEngine({
         sentenceBufferRef.current = '';
 
         const record = await sessionStore.getSession(id);
+        setPickedProfile(null);
+        setChatProfile(chatProfileFrom(record));
         if (!record) {
             // Stale id — drop it.
             setActive(null);
@@ -341,6 +387,8 @@ export function useChatEngine({
         setEvents([]);
         setActive(null);
         setIsStreaming(false);
+        setPickedProfile(null);
+        setChatProfile(null);
         holdScope(null, null);   // a new chat starts without the last one's project
     }, [stopChatPlayback, holdScope]);
 
@@ -570,6 +618,7 @@ export function useChatEngine({
                 doc_id: (from.project || from.docEnabled) ? (currentDocId || null) : null,
                 project_id: from.project ? from.project.id : null,
                 timezone: browserTimezone(),
+                profile_id: askedProfileRef.current,
                 ...(webQuery ? { web: { query: webQuery } } : {}),
                 ...(spoken ? { spoken: true } : {}),
             },
@@ -616,6 +665,11 @@ export function useChatEngine({
                         userId = ev.userMessageId;
                         assistantId = ev.messageId;
                         spoken?.onStart(ev.messageId);
+                        // The profile the server used is now the chat's own; a pick made here has been sent.
+                        if ('profileId' in ev && activeSessionIdRef.current === sessionId) {
+                            setChatProfile(chatProfileFrom({ profileId: ev.profileId, profileName: ev.profileName }));
+                            setPickedProfile(null);
+                        }
                         continue;
                     }
                     updateAssistant((m) => applyEvent(m, ev));
@@ -751,6 +805,13 @@ export function useChatEngine({
         helperOn,
         refreshHelper,
         generateTitle,
+        // The assistant's profile for the open chat (profile library spec)
+        profiles,
+        profileId,
+        setProfile,
+        refreshProfiles,
+        currentProfile: chatProfile,
+        removedProfile: chatProfile?.removed ? chatProfile.name : null,
         // "Use this document" for the active chat (v2.4 Task E)
         docUse,
         // What the chat is about: {kind: 'none'|'document'|'project', project?}

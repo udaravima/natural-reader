@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { DEFAULT_IDENTITY, footLine } from '../../lib/appIdentity';
 import { KOKORO_VOICES } from '../../constants';
 import { PlayCircle, Square, Clock, Gauge, VolumeX, Volume1, Volume2, Moon, Sun, Zap, X } from 'lucide-react';
 import { InferenceRow } from '../chat/InferenceRow';
@@ -46,7 +47,7 @@ const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), selec
  * closes the dialog. Escape, the backdrop and the close button all close it,
  * and focus goes back to whatever opened it.
  */
-export default function SettingsDialog({ theme, tab, onTab, onClose, profile = null, voiceSettings, chatSettings, talkSettings = null, connectionSettings, appearanceSettings, accountProps }) {
+export default function SettingsDialog({ theme, tab, onTab, onClose, profile = null, voiceSettings, chatSettings, talkSettings = null, connectionSettings, appearanceSettings, accountProps, appIdentity = DEFAULT_IDENTITY }) {
     const open = tab != null;
     const tabs = SETTINGS_TABS.filter((t) => (t.id !== 'profile' || profile) && (t.id !== 'talk' || talkSettings));
     const active = tabs.some((t) => t.id === tab) ? tab : tabs[0].id;
@@ -149,6 +150,7 @@ export default function SettingsDialog({ theme, tab, onTab, onClose, profile = n
                             )}
                         </div>
                     </div>
+                    <p className={`shrink-0 px-4 md:px-6 py-2 text-[10px] border-t ${theme.border} ${theme.textMuted}`}>{footLine(appIdentity)}</p>
                 </div>
             </div>
         </div>

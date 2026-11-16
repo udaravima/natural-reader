@@ -449,7 +449,7 @@ async def test_the_assistant_preview_names_the_web_tools_of_the_mode(db_conn, mo
     admin = await _principal(db_conn, "s1", "a@x.io", "admin")
     async with _client(_app(db_conn, admin)) as client:
         await client.put("/v1/admin/chat-options", json={"web_search": mode})
-        preview = (await client.get("/v1/admin/assistant")).json()["preview"]
+        preview = (await client.post("/v1/admin/assistant/preview", json={})).json()["preview"]
         assert _names(preview) == _DOCUMENT_TOOLS | web_tools
 
 
@@ -459,7 +459,7 @@ async def test_the_assistant_preview_has_no_web_tool_without_searxng(db_conn, mo
     monkeypatch.setattr(web_search_service, "SEARXNG_URL", "")
     async with _client(_app(db_conn, admin)) as client:
         await client.put("/v1/admin/chat-options", json={"web_search": mode})
-        preview = (await client.get("/v1/admin/assistant")).json()["preview"]
+        preview = (await client.post("/v1/admin/assistant/preview", json={})).json()["preview"]
     assert _names(preview) == _DOCUMENT_TOOLS
 
 
@@ -467,9 +467,9 @@ async def test_the_assistant_preview_follows_the_environment_when_the_admin_has_
     admin = await _principal(db_conn, "s1", "a@x.io", "admin")
     monkeypatch.setenv("CHAT_WEB_SEARCH", "auto")
     async with _client(_app(db_conn, admin)) as client:
-        assert "web_search" in _names((await client.get("/v1/admin/assistant")).json()["preview"])
+        assert "web_search" in _names((await client.post("/v1/admin/assistant/preview", json={})).json()["preview"])
         monkeypatch.delenv("CHAT_WEB_SEARCH")
-        assert _names((await client.get("/v1/admin/assistant")).json()["preview"]) \
+        assert _names((await client.post("/v1/admin/assistant/preview", json={})).json()["preview"]) \
             == _DOCUMENT_TOOLS | {"offer_web_search"}
 
 

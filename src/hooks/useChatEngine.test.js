@@ -4,6 +4,7 @@ import { useChatEngine } from './useChatEngine';
 import { INFERENCE_DEFAULTS } from './inference';
 import { postTurn } from '../lib/chatStream';
 import { apiFetch } from '../utils/apiFetch';
+import { MODELS_PATH } from '../lib/chatTransport';
 import { bodyOf, loadFixture, sseText } from '../lib/chatFixtures.testutil';
 
 vi.mock('../lib/chatStream', async (importOriginal) => ({ ...(await importOriginal()), postTurn: vi.fn() }));
@@ -301,10 +302,12 @@ describe('useChatEngine — turns', () => {
         postTurn.mockResolvedValue(ok(events));
         const props = baseProps();
         const { result } = renderHook(() => useChatEngine(props));
-        await waitFor(() => expect(apiFetch).toHaveBeenCalledTimes(1));   // the debounced first model read
+        // Reads of the models and budget only (the hook also asks about the helper and the profiles).
+        const modelReads = () => apiFetch.mock.calls.filter(([, , path]) => path === MODELS_PATH).length;
+        await waitFor(() => expect(modelReads()).toBe(1));   // the debounced first model read
         await act(async () => { await result.current.sendMessage('Hi'); });
         expect(props.showToast).toHaveBeenCalledWith('Daily inference budget exhausted.', 6000);
-        expect(apiFetch).toHaveBeenCalledTimes(2);
+        expect(modelReads()).toBe(2);
         expect(result.current.messages[1]).toMatchObject({ status: 'error', content: 'Partial' });
     });
 });

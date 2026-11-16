@@ -438,6 +438,32 @@ it works there, it's the cache. Kill it client-side (`chrome://flags/#enable-qui
 browsers to forget the stale h3 mapping. Do **not** touch `proxy_http_version
 1.1`; that governs nginx↔upstream, a different leg entirely.
 
+## What the app is called
+
+Three settings in `.env`, read once at start, so a change needs a restart:
+
+| Setting | Unset means | Limit |
+|---|---|---|
+| `APP_NAME` | Natural Reader | 40 characters |
+| `APP_TAGLINE` | an app for reading and listening to documents | 120 characters |
+| `APP_COPYRIGHT` | no copyright | 80 characters, shown as written |
+
+The name and tagline open every chat's rules ("You are the assistant in
+*name*, *tagline*."), so write the tagline to follow the name mid-sentence.
+The name is also the sign-in screen's title and the browser tab's. The sign-in
+screen and Settings end with one line: the name, the release number and the
+copyright.
+
+Choose `APP_NAME` at the first deployment. Three things do not follow it:
+
+- **The Keycloak sign-in page** shows the realm's display name. Set it in
+  Keycloak (Realm settings → Display name) to match.
+- **The read-aloud browser extension** is packaged on its own and keeps its
+  name.
+- **The favicon and icons** are files in the build.
+
+The browser reads these from `GET /v1/app`, which answers without sign-in.
+
 ## Model providers and chat streaming
 
 Chat turns run on the backend (`server/chat/`, `server/llm/`) and stream to
@@ -858,6 +884,15 @@ have the helper write a first draft of the profile from a description of at
 most 2,000 characters. One call per press, charged to that admin; nothing is
 saved until they press Save. With a cloud helper, the description is sent to
 that provider. On the same CPU a draft took about 5 s.
+
+**The profile library.** **Admin → Chat → Assistant** holds house rules
+(one text for every chat) and named profiles; people pick a profile per chat.
+Migration 030 adds the `assistant_profiles` table and two columns to
+`chat_sessions` (`profile_id`, `profile_name`). A profile saved in the console
+before the upgrade becomes one profile named "Assistant", the default, with the
+same text, so no chat changes. `CHAT_ASSISTANT_PROFILE_FILE` is now used only
+while the library is empty; once an admin adds a profile, the file is ignored.
+Its Down is in the file's header.
 
 Migration 029 adds two columns to `chat_sessions` (`title_source`,
 `title_pending_at`). Chats already named at the upgrade are marked as named

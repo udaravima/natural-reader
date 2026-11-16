@@ -72,6 +72,7 @@ def _row_to_session_meta(row: dict[str, Any]) -> dict[str, Any]:
         "titleSource": row["title_source"],     # who wrote the title (helper spec §6)
         "titlePending": row["title_pending"],   # a title is being written: the list is re-read until it lands
         "scopeProject": _scope_project(row["scope_project_id"], row["scope_project_name"]),
+        **_profile(row["profile_id"], row["profile_name"]),
         "source": "pg",
     }
 
@@ -81,6 +82,13 @@ def _row_to_session_meta(row: dict[str, Any]) -> dict[str, Any]:
 # projects sp ON sp.id = s.scope_project_id`; bind visible_projects_params first.
 _SCOPE_COLS = (f"s.scope_project_id, CASE WHEN {visible_projects_where('sp')} THEN sp.name END "
                "AS scope_project_name")
+
+
+def _profile(profile_id, name) -> dict[str, Any]:
+    """The profile the chat's last turn used (profile library spec). `profileRemoved`: it was deleted since, so the
+    next turn uses the default."""
+    return {"profileId": str(profile_id) if profile_id is not None else None, "profileName": name,
+            "profileRemoved": profile_id is None and bool(name)}
 
 
 def _scope_project(project_id, name) -> dict[str, Any] | None:
@@ -129,6 +137,7 @@ async def list_sessions(
             f"""
             SELECT s.id, s.title, s.model, s.created_at, s.updated_at,
                    COALESCE(m.cnt, 0) AS message_count, s.title_source, {titles.PENDING_SQL} AS title_pending,
+                   s.profile_id, s.profile_name,
                    {_SCOPE_COLS}
             FROM chat_sessions s
             LEFT JOIN (
@@ -215,7 +224,7 @@ async def get_session(
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
             f"SELECT s.id, s.title, s.model, s.created_at, s.updated_at, s.pins, {_SCOPE_COLS}, "
-            f"s.title_source, {titles.PENDING_SQL} "
+            f"s.title_source, {titles.PENDING_SQL}, s.profile_id, s.profile_name "
             "FROM chat_sessions s LEFT JOIN projects sp ON sp.id = s.scope_project_id WHERE s.id = %s",
             [*visible_projects_params(owner.user_id), session_id],
         )
@@ -295,6 +304,7 @@ async def get_session(
         "scopeProject": _scope_project(srow[6], srow[7]),
         "titleSource": srow[8],
         "titlePending": srow[9],
+        **_profile(srow[10], srow[11]),
         "source": "pg",
     }
 

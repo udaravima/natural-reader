@@ -336,29 +336,57 @@ Notes:
   button to add or change a provider: that's a `.env` + restart task for
   whoever runs the server. The [full list](#deployment-the-timezone-and-the-servers-own-values)
   is below.
-- The **Assistant profile** (in **Chat**) sets the assistant's profile: its name,
-  personality, tone and house rules (for example "You are Ada, the
-  reading-room assistant. Answer warmly and briefly, in British English.").
-  - It goes first in every chat, from the next message on; the app's own
-    rules about documents and tools follow it and win where they conflict.
-    So a profile can't, for example, stop the assistant citing pages.
+- **Assistant** (in **Chat**) sets who the assistant is. Every chat starts
+  with the **house rules**, then the **profile** that chat uses; the app's own
+  rules about documents and tools follow and win where they conflict, so a
+  profile can't, for example, stop the assistant citing pages. Edits apply from
+  each chat's next message.
+  - **House rules** (up to 2,000 characters) apply to every chat, whatever its
+    profile: what the assistant may and may not do, and how it treats people.
+    Empty means none.
+  - **Profiles** are named assistants: a name (up to 60 characters), a
+    one-line description that people see under it in the chat sidebar, and the
+    text the assistant reads (up to 8,000 characters), for example "You are
+    Ada, the reading-room assistant. Answer warmly and briefly, in British
+    English." **Add profile** starts one; each row has **Edit**, **Make
+    default**, **Turn off** / **Turn on**, **Up** / **Down** (the order people
+    see) and **Delete**.
+  - One profile is the **Default**: a chat nobody picked a profile for gets it.
+    The default can't be turned off or deleted; make another the default
+    first (the only profile left can be deleted). A chat keeps the profile it used when the default changes later.
+  - **Turn off** hides a profile from the picker; chats already using it keep
+    it. **Delete** asks first and says how many chats use it; those chats use
+    the default from their next message, and say so until then.
+  - With two or more profiles and no house rules, the section reminds you that
+    each profile is sent on its own: rules every profile needs belong in
+    **House rules**.
+  - **Placeholders** in house rules or a profile are filled in on every
+    message: `{{date}}` (today's date in the person's timezone), `{{app}}`
+    (the app's name) and `{{profile}}` (this profile's name). Where you use
+    `{{date}}` or `{{app}}`, the app doesn't add its own "Today is…" or "You
+    are working in…" sentence. Anything else in double braces is sent as
+    written, and the editor warns you.
   - **Generate** writes a first draft for you. With a helper model chosen in
     **Models**, type what kind of assistant you want in **Describe the
     assistant** (up to 2,000 characters) and press **Generate**. The draft
-    lands in the editor a few seconds later, in the language you described
-    it in. Nothing is saved until you press **Save**, and text you haven't
-    saved is replaced only after you agree. Read the draft before saving:
-    a small model can change what a rule means. The call counts towards
-    your own daily budget.
-  - The badge says where it comes from: **Set here**, **From the deployment
-    file** (the server's `CHAT_ASSISTANT_PROFILE_FILE`), or **None**.
-    **Reset to deployment default** removes what you set here.
-  - **What the model receives** shows the whole instruction text a chat
-    gets, your profile included.
-  - Keep it short: every character is read before every reply (the counter
-    shows about how many tokens), and up to 8,000 characters are allowed.
+    lands in the profile's text a few seconds later, in the language you
+    described it in. Nothing is saved until you press **Save profile**, and
+    text you haven't saved is replaced only after you agree. Read the draft
+    before saving: a small model can change what a rule means. The call
+    counts towards your own daily budget.
+  - **What the model receives** shows the whole instruction text a chat would
+    get with the text you're editing, unsaved, after the saved house rules,
+    placeholders filled in.
+  - Keep both short: every character is read before every reply (the counter
+    shows the profile with the house rules, and about how many tokens).
   - Don't name the app's tools (`web_search` and so on): describe the
     behaviour you want. The section warns you if you do.
+  - While there are no profiles, the server's `CHAT_ASSISTANT_PROFILE_FILE`
+    (if set) is the profile, and **Add profile** starts from its text. Once you
+    add a profile, the file is no longer used.
+  - Upgrading turns a profile saved here before into one profile named
+    **Assistant**, the default, with the same text: chats read exactly what
+    they read before.
 - **Chat options** (also in **Chat**) has two settings. **Voice input** (On or Off, **off** by
   default) is described under [Speaking a message](#speaking-a-message). The other is
   **Web search**: **Ask first** (the
@@ -382,7 +410,7 @@ Every setting in **Chat options**, **Models**, **Documents** and **Deployment**
 says where its value comes from and can go back to the server's, the same way.
 **Models**, **Documents** and **Deployment** also share one Save; **Chat options** saves each choice as you
 pick it (see above), so it has no Save, no draft and no unsaved-changes question.
-The **Assistant profile** and **Defaults for users** keep their own Save buttons.
+The **Assistant** section and **Defaults for users** keep their own Save buttons.
 
 **Long lists.** The Save at the bottom of a section stays on screen as you scroll, so
 you never have to go to the end of the page to reach it. Past 12 entries, a dropdown
@@ -404,7 +432,7 @@ a box with a mistake in it stays visible.
   **Back to reader**, or the header's Reader / Chat / Library buttons and Log
   out) asks first: **Keep editing** stays and keeps your changes, **Discard
   changes** leaves without them. **Esc** is the same as Keep editing. The same
-  question covers an unsaved Assistant profile or Defaults change. Reloading or
+  question covers unsaved house rules, an unsaved profile or a Defaults change. Reloading or
   closing the browser tab is not guarded.
 - A change applies at once, on every worker: the next request, message or
   conversion reads it. There is no restart.
@@ -909,6 +937,15 @@ still being written somewhere else (another tab or device), you'll see
 **Still generating…** until it settles. Only one reply can be in flight per
 chat at a time — sending again while one is still streaming is blocked until
 it finishes or you stop it.
+
+**Who the assistant is.** When an admin has set up more than one profile, the
+chat sidebar shows a **Profile** picker under **Model**, with the default
+marked and the picked profile's description under it. A pick applies from your
+next message in the open chat, and new chats start with it in this browser.
+Each chat keeps its own profile: opening an older chat shows the one it used.
+If an admin removed it, the sidebar says *The profile this chat used, Tutor,
+was removed.* and the chat uses the default from your next message. You see a
+profile's name and description, never its text.
 
 **What the chat is about.** A chip above the chat box says what the assistant
 may look at. Click it for the menu:

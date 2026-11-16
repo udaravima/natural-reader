@@ -14,7 +14,7 @@ from server.auth import deps
 from server.auth.users import resolve_or_provision_user, set_status
 from server.llm.types import Usage
 from server.routers import admin as admin_router
-from server.services import assistant_profile, helper, inference_budget, profile_draft
+from server.services import helper, inference_budget, profile_draft, profile_library
 from server.tests.chat_harness import shim_pool
 from server.tests.test_chat_reader import FakeRouter
 
@@ -118,12 +118,12 @@ async def test_the_route_returns_a_draft_and_saves_nothing(db_conn, helper_as, c
             body = r.json()
             assert body["text"] == "Use web_search often. " + DRAFT
             assert body["warnings"] and "web_search" in body["warnings"][0]     # the saved profile's own check
-            assert (await c.get("/v1/admin/assistant")).json()["source"] == "none"   # nothing was saved
+            assert (await c.get("/v1/admin/assistant/profiles")).json()["profiles"] == []   # nothing was saved
             assert (await c.post("/v1/admin/assistant/draft", json={"description": "  "})).status_code == 422
             assert (await c.post("/v1/admin/assistant/draft", json={"description": "x" * 2001})).status_code == 422
             assert (await c.post("/v1/admin/assistant/draft", json={})).status_code == 422
     assert SECRET not in caplog.text and "Ada" not in caplog.text
-    assert (await assistant_profile.load_profile(db_conn)).source == "none"
+    assert await profile_library.list_profiles(db_conn) == []
 
 
 async def test_the_route_says_why_it_cannot(db_conn, helper_as, monkeypatch):
