@@ -125,6 +125,20 @@ describe('ProjectPage', () => {
     expect(screen.queryByRole('button', { name: 'Ask about this project' })).toBeNull();
   });
 
+  // jsdom has no layout, so this pins the rules that make it fit (measured in Chromium at 320-412 px:
+  // without them the name shrank to 0 px and "Delete project" ran off the screen).
+  it('on a narrow screen the buttons go below the name, and wrap among themselves, rather than squeezing it', async () => {
+    render_(proj({ my_role: 'owner', can: can({ edit: true, delete: true }) }), { onAskProject: vi.fn() });
+    const del = await screen.findByRole('button', { name: 'Delete project' });
+    const buttons = del.parentElement;
+    const header = buttons.parentElement;
+    const nameColumn = screen.getByRole('heading', { name: /Q3 Audit/ }).parentElement;
+    expect(header.className).toContain('flex-wrap');
+    expect(buttons.className).toContain('flex-wrap');
+    expect(buttons.className).not.toContain('shrink-0');
+    expect(nameColumn.className).toMatch(/\bbasis-/);
+  });
+
   it('a member without the chat capability does not see the Ask button', async () => {
     render_(proj({ my_role: 'owner', can: can({ delete: true }) }), {});
     expect(await screen.findByRole('button', { name: 'Delete project' })).toBeTruthy();

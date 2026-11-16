@@ -68,7 +68,7 @@ migration commits on its own, and a worker only serves once they have all run.
 | Command | Effect |
 | --- | --- |
 | `./startup.sh start` | builds the image if needed, then runs Postgres, SearXNG, Keycloak (see below) and the backend, all detached; a backend still on an older image is recreated on the new one |
-| `./startup.sh rebuild` | ship new code: rebuild the image, recreate only the backend; Postgres and Keycloak keep running (after a `stop`, they are started first) |
+| `./startup.sh rebuild` | ship new code: rebuild the image, recreate only the backend; Postgres and Keycloak keep running (after a `stop`, they are started first). **Also run it after changing `.env`:** the backend container reads `.env` only when it is created, so `start` (which reuses a container whose image hasn't changed) and `podman restart` keep the old values |
 | `./startup.sh logs` | follow the backend's output (the rotating `server.log` is still written under `LOG_DIR`) |
 | `./startup.sh stop` | stop and remove the containers; volumes and `data/` stay |
 
@@ -323,15 +323,17 @@ published default: rotate it".
 1. **The two client secrets.** In the Keycloak admin console: realm
    `natural-reader` → Clients → `natural-reader` → Credentials → **Regenerate**;
    the same for `natural-reader-admin`. Put the new values in `.env` as
-   `OIDC_CLIENT_SECRET` and `KC_ADMIN_CLIENT_SECRET`, then `./startup.sh rebuild`
-   (or restart the backend). Sign-in fails between the two steps, so do them
-   together.
+   `OIDC_CLIENT_SECRET` and `KC_ADMIN_CLIENT_SECRET`, then `./startup.sh rebuild`.
+   A restart is not enough: the backend container reads `.env` only when it is
+   created, so `podman restart` and `./startup.sh start` both keep the old
+   secret. Sign-in fails between the two steps, so do them together.
 2. **`admin-user`.** Once your own account is an admin, delete it (Users →
    `admin-user` → Delete), or give it a new password under Credentials.
 3. **The master admin.** Sign in to the admin console as `admin`, then change the
    password (top right → Manage account), or create a new admin in the `master`
    realm and delete `admin`.
-4. Check: restart the backend and look for the error line; it should be gone.
+4. Check: after the rebuild, `./startup.sh logs` should show no error naming a
+   published secret, and **Admin → People** should load (it uses the second one).
 
 A fresh install needs none of this: `./startup.sh` generates all four values into
 `.env`, and the realm file only holds `${PLACEHOLDERS}` that Keycloak fills from
