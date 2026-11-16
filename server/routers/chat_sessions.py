@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, ValidationError
 from ..auth.authz import assert_owns_session, visible_projects_params, visible_projects_where
 from ..auth.deps import Principal, require_capability
 from ..chat import store as chat_store
+from ..chat import titles
 from ..chat.config import get_chat_config
 from ..db import get_pool, is_ready
 from ..http_body import read_capped_body
@@ -68,6 +69,8 @@ def _row_to_session_meta(row: dict[str, Any]) -> dict[str, Any]:
         "createdAt": _epoch_ms(row["created_at"]),
         "updatedAt": _epoch_ms(row["updated_at"]),
         "messageCount": row["message_count"],
+        "titleSource": row["title_source"],     # who wrote the title (helper spec §6)
+        "titlePending": row["title_pending"],   # a title is being written: the list is re-read until it lands
         "scopeProject": _scope_project(row["scope_project_id"], row["scope_project_name"]),
         "source": "pg",
     }
@@ -125,7 +128,8 @@ async def list_sessions(
         await cur.execute(
             f"""
             SELECT s.id, s.title, s.model, s.created_at, s.updated_at,
-                   COALESCE(m.cnt, 0) AS message_count, {_SCOPE_COLS}
+                   COALESCE(m.cnt, 0) AS message_count, s.title_source, {titles.PENDING_SQL} AS title_pending,
+                   {_SCOPE_COLS}
             FROM chat_sessions s
             LEFT JOIN (
                 SELECT session_id, COUNT(*) AS cnt FROM chat_messages GROUP BY session_id
@@ -175,10 +179,11 @@ async def import_session(
     async with pool.connection() as conn:
         async with conn.transaction():
             await conn.execute(
-                "INSERT INTO chat_sessions (id, title, model, created_at, updated_at, pins, user_id) "
-                "VALUES (%s, %s, %s, COALESCE(to_timestamp(%s::double precision / 1000.0), now()), now(), %s, %s)",
-                (session_id, payload.title, payload.model, payload.createdAt, Jsonb(payload.pins),
-                 principal.user_id))
+                # A legacy chat is past its first exchange: a title it carries counts as a person's (§6).
+                "INSERT INTO chat_sessions (id, title, title_source, model, created_at, updated_at, pins, user_id) "
+                "VALUES (%s, %s, %s, %s, COALESCE(to_timestamp(%s::double precision / 1000.0), now()), now(), %s, %s)",
+                (session_id, payload.title, "default" if payload.title == "New chat" else "person", payload.model,
+                 payload.createdAt, Jsonb(payload.pins), principal.user_id))
             for m in payload.messages:
                 meta = [{k: a[k] for k in _META_KEYS if k in a}
                         for a in m.attachments if isinstance(a, dict)]
@@ -209,7 +214,8 @@ async def get_session(
     pool = get_pool()
     async with pool.connection() as conn, conn.cursor() as cur:
         await cur.execute(
-            f"SELECT s.id, s.title, s.model, s.created_at, s.updated_at, s.pins, {_SCOPE_COLS} "
+            f"SELECT s.id, s.title, s.model, s.created_at, s.updated_at, s.pins, {_SCOPE_COLS}, "
+            f"s.title_source, {titles.PENDING_SQL} "
             "FROM chat_sessions s LEFT JOIN projects sp ON sp.id = s.scope_project_id WHERE s.id = %s",
             [*visible_projects_params(owner.user_id), session_id],
         )
@@ -287,6 +293,8 @@ async def get_session(
         "events": events,
         "pins": srow[5] or [],
         "scopeProject": _scope_project(srow[6], srow[7]),
+        "titleSource": srow[8],
+        "titlePending": srow[9],
         "source": "pg",
     }
 
@@ -315,13 +323,14 @@ async def patch_session(
             """
             UPDATE chat_sessions
             SET title = COALESCE(%s, title),
+                title_source = CASE WHEN %s THEN 'person' ELSE title_source END,
                 model = COALESCE(%s, model),
                 pins  = COALESCE(%s, pins),
                 updated_at = now()
             WHERE id = %s
             RETURNING id
             """,
-            (title, model, Jsonb(pins) if pins is not None else None, session_id),
+            (title, title is not None, model, Jsonb(pins) if pins is not None else None, session_id),
         )
         row = await cur.fetchone()
     if not row:
