@@ -710,7 +710,12 @@ server has no copy of the file (it was indexed before server-side uploads,
 and nobody has uploaded it since), Open tells you to upload the file again.
 
 **Converting a PDF.** **Convert** in the PDF toolbar turns a PDF into Markdown with
-Docling, and the toolbar's **PDF | MD** switch shows the result. **Images** in its
+Docling, and the toolbar's **PDF | Both | MD** switch shows the result. **Both** puts
+the PDF page on the left and its Markdown on the right, to check one against the
+other: each side scrolls on its own, and they stay on the same page (turn the PDF
+page and the Markdown follows; scroll the Markdown and the PDF page turns). If the
+PDF page is wider than its half, zoom out or scroll that half sideways. On a phone
+the switch is **PDF | MD**. **Images** in its
 dialog decides what happens to the document's pictures:
 
 - **Drop** (the default): no pictures, the smallest result.

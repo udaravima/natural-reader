@@ -90,7 +90,9 @@ export default function MarkdownReader({
                     if (p && p !== currentPage) setCurrentPage(p);
                 }
             },
-            { root: null, threshold: 0.1, rootMargin: '-30% 0px -60% 0px' },
+            // Any overlap with the band counts (threshold 0): the band is a tenth of the window high, so a page taller
+            // than ten bands never has a tenth of itself inside it, and at 0.1 scrolling a long page never turned it.
+            { root: null, threshold: 0, rootMargin: '-30% 0px -60% 0px' },
         );
         container.querySelectorAll('[data-md-page]').forEach((el) => observer.observe(el));
         return () => observer.disconnect();

@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **PDF and Markdown side by side.** A converted PDF's toolbar switch is now
+  **PDF | Both | MD**. **Both** shows the PDF page on the left and its Markdown
+  on the right, each scrolling on its own, and keeps them on the same page:
+  turning the PDF page scrolls the Markdown to that page, and scrolling the
+  Markdown turns the PDF page. A phone has no room for two columns, so it keeps
+  **PDF** and **MD**.
 - **Tags and descriptions written by a helper model.** An admin names one
   small model in **Admin → Models → Helper model** (or `HELPER_MODEL`; off by
   default). Each indexed document then gets up to five tags and a one-line
@@ -61,6 +67,8 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Scrolling long Markdown pages turns the page.** In **MD** view, scrolling through a converted page taller
+  than the window never updated the page number. It does now.
 - **A project Contributor couldn't resume a document's indexing** unless the
   file was in their own library: Retry index answered "not found". Resuming
   changes no content, so a Contributor or above of a project holding the
