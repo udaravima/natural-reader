@@ -843,6 +843,20 @@ indexed first (about 70 s), then described in about 2.5 minutes.
 nothing is backfilled. Existing documents get tags when a project Contributor
 presses **Write tags for N documents** on the project's Documents tab.
 
+**Chat titles.** The same helper also names each new chat after its first
+reply: one short call per chat, made from the first message and the first
+reply (each cut to 2,000 characters) and charged to the chat's owner.
+- **A cloud helper never titles a chat that runs on a local model.** Such a
+  chat keeps its first message, cut to 60 characters, as its title.
+- **A person's own title is never replaced,** and nor is a chat's name from
+  before the upgrade.
+- **Cost on a CPU:** measured on the walk with `gemma4:e4b`, a title took
+  about 3 s after a reply.
+
+Migration 029 adds two columns to `chat_sessions` (`title_source`,
+`title_pending_at`). Chats already named at the upgrade are marked as named
+by a person. Its Down is in the file's header.
+
 **The Overview never loads a model.** On Ollama it reads two lists: `/api/tags`
 (is the model pulled?) and `/api/ps` (is it in memory now?). Whether it gives 768
 numbers was measured once, when it was chosen; a model made current from `.env`

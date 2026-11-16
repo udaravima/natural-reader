@@ -935,6 +935,19 @@ and you stay in chat. A reply still streaming when you click a citation
 keeps going, and is there when you come back to Chat. In a project chat a
 citation names its document, "(Guide.md, page 7)", and opens that document.
 
+**Chat titles.** A new chat is named after your first message, cut to 60
+characters. If your deployment has a helper model (an admin chooses one in
+**Admin → Models**), it gives the chat a short title from your first message
+and the first reply, a few seconds after the reply ends. The sidebar updates
+by itself.
+- A title you typed with **Rename** is never replaced by the helper.
+- **✦ Generate title**, beside Rename, asks the helper again from the
+  conversation so far, and replaces any title.
+- A chat on a local model isn't sent to a helper running in the cloud. It
+  keeps the first message as its title, and Generate title says why.
+- When you sent a file's real values to one model, the helper never reads
+  that model's reply. The title comes from your words alone.
+
 **Picking a model:** the model picker in the chat sidebar is grouped by
 **provider**, each group labelled with the provider's name as your deployment
 configured it (for example `ollama` or `local`, plus any other server your

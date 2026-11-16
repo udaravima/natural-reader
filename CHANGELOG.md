@@ -6,6 +6,16 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Chats named from their first exchange.** With a helper model set up, a new
+  chat gets a short title a few seconds after its first reply. It replaces the
+  first message cut to 60 characters, and the sidebar updates without a reload.
+  - A title you typed is never replaced, nor are chats named before this
+    version.
+  - **✦ Generate title**, beside Rename, asks again from the conversation so
+    far.
+  - A cloud helper never reads a chat that runs on a local model.
+  - A reply that saw a file's real values is never sent to the helper.
+  - Migration 029 records who wrote each title.
 - **Tags and descriptions written by a helper model.** An admin names one
   small model in **Admin → Models → Helper model** (or `HELPER_MODEL`; off by
   default). Each indexed document then gets up to five tags and a one-line

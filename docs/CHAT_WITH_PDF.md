@@ -497,6 +497,29 @@ restored into the pin-chip row when you reopen the session. (The old full-record
 `PUT /v1/chat/sessions/{id}` upsert this used to also go through is gone —
 the server writes messages itself now, C1.)
 
+**Titles** (helper spec 2026-11-15 §6, migration 029). A new chat is named
+after its first message, cut to 60 characters. With a helper model set up
+(Admin → Models), the server then asks it for a short title from the first
+message and the first complete reply, each cut to 2,000 characters, off the
+reply's path (`server/chat/titles.py`). `chat_sessions.title_source` says who
+wrote the title: `default`, `cut`, `model` or `person`. The helper's title
+replaces only a `default` or `cut` one, and only if nobody renamed the chat
+while it was being written. A rename marks `person`, and chats already named
+before migration 029 count as `person`.
+- **Without a reload:** the chat is marked `titlePending` before the reply's
+  stream closes, and the sidebar re-reads the list every 4 s until the title
+  lands (3 minutes at most).
+- **Generate title** (the ✦ button beside Rename) asks again, from the first
+  message and the latest exchange, and replaces any title.
+- **When no title is asked for:** if the helper is a cloud model and the
+  chat's own model is local, the conversation stays on this deployment's
+  hardware.
+- **A reply that saw a file's real values** is held back from every other
+  model, the helper included: the title is then written from the person's
+  words alone.
+- **On any failure** the title stays as it was, and nothing is shown. Calls
+  are charged to the chat's owner as kind `helper`.
+
 ---
 
 ## 8. Troubleshooting
@@ -523,11 +546,12 @@ All under `http://localhost:8000` by default. Same FastAPI app as the existing K
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/v1/chat/sessions` | List session metadata (newest first). Each carries `scopeProject` (`{id, name}` or `null`; `name` is `null` when the caller can no longer see the project). |
-| `GET` | `/v1/chat/sessions/{id}` | Full record: messages + events. |
+| `GET` | `/v1/chat/sessions` | List session metadata (newest first). Each carries `scopeProject` (`{id, name}` or `null`; `name` is `null` when the caller can no longer see the project), `titleSource` (`default`, `cut`, `model` or `person`) and `titlePending` (a title is being written). |
+| `GET` | `/v1/chat/sessions/{id}` | Full record: messages + events, and `titleSource` / `titlePending` as in the list. |
 | `POST` | `/v1/chat/sessions/{id}/turns` | **Run one turn** (C1). Server-sent events; the server writes the reply itself as it streams. This replaces the old whole-record `PUT` upsert, which is gone. `context.project_id` (C2.1) scopes the chat to a project (`null` clears it, absent keeps it; a project the caller isn't a member of is 404 and clears the scope); `context.web` is `{query}`, the user's approval of one web search for this turn. |
 | `POST` | `/v1/chat/sessions/import` | Create-only: copies a legacy IndexedDB-only session onto Postgres (C1, replaces the fork-on-`PUT` behavior). |
-| `PATCH` | `/v1/chat/sessions/{id}` | Partial update — any of `title`, `model`, `pins` (the last powers instant pin save on an existing session). |
+| `PATCH` | `/v1/chat/sessions/{id}` | Partial update — any of `title`, `model`, `pins` (the last powers instant pin save on an existing session). A `title` marks it `person`: the helper never replaces it on its own. |
+| `POST` | `/v1/chat/sessions/{id}/title` | Generate title: the helper writes the title from the conversation so far, whoever wrote the current one → `202 {"titlePending": true}`. `409 helper_off`, `409 helper_is_cloud` (a cloud helper, a chat on a local model), `409 nothing_to_title`, `429 budget_exhausted`. |
 | `DELETE` | `/v1/chat/sessions/{id}` | Cascade-deletes messages + events. |
 
 ### Documents + retrieval

@@ -218,6 +218,8 @@ block is data.
   marks it `model`.
 - On any failure the cut title stays. Nothing is shown.
 
+Built as planned in `docs/superpowers/plans/2026-11-16-chat-titles.md`, whose top lists the departures: migration 029 (not 028); the server writes the cut title; Generate title sits beside Rename (there is no chat menu); a `title_pending_at` mark and a 4-second re-read show the new title without a reload; a reply held from other models (real values) is left out of what the helper reads.
+
 ## 7. The profile generator
 
 - Admin → Assistant profile gains a box, "Describe the assistant", and **Generate**.
