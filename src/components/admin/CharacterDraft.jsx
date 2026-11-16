@@ -70,8 +70,8 @@ export function CharacterDraft({ theme, apiHost, apiPort, showToast, models, hel
         </button>
       </div>
       <p className={`text-xs ${theme.textMuted}`}>
-        It writes the name, the description, the backstory and the rules. A whole character can take a few minutes on
-        a small model. Nothing is saved until you press Save profile.
+        It writes the name, the description, the backstory and the rules: half a minute on a small model, longer on a
+        big one. Nothing is saved until you press Save profile.
       </p>
     </div>
   );
