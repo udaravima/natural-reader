@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
     Trash2, RefreshCw, MessageSquare, Bot,
-    Plus, Pencil, ChevronDown, ChevronRight, ScrollText, Check, X, Folder,
+    Plus, Pencil, ChevronDown, ChevronRight, ScrollText, Check, X, Folder, Sparkles,
 } from 'lucide-react';
 import { modelOptions } from '../lib/modelIds';
 import { SearchableSelect } from './SearchableList';
@@ -27,6 +27,8 @@ export default function ChatSidebar({
     switchToSession,
     deleteSession,
     renameSession,
+    helperOn = false,
+    generateTitle,
 }) {
     const modelChoices = useMemo(() => modelOptions(availableModels, selectedModel, { prompt: 'Select a model…' }),
         [availableModels, selectedModel]);
@@ -202,6 +204,18 @@ export default function ChatSidebar({
                                                     >
                                                         <Pencil size={10} />
                                                     </button>
+                                                    {helperOn && generateTitle && s.source === 'pg' && (
+                                                        // Generate title (helper spec §6): the helper writes it from the conversation so far.
+                                                        <button
+                                                            onClick={(e) => { e.stopPropagation(); generateTitle(s.id); }}
+                                                            disabled={Boolean(s.titlePending)}
+                                                            aria-label={`Generate title for ${s.title || 'Untitled'}`}
+                                                            className={`p-1 rounded opacity-0 group-hover:opacity-100 disabled:opacity-50 ${theme.hover} ${theme.textMuted} hover:text-blue-500 transition-opacity`}
+                                                            title={s.titlePending ? 'Writing a title…' : 'Generate title'}
+                                                        >
+                                                            <Sparkles size={10} />
+                                                        </button>
+                                                    )}
                                                     <button
                                                         onClick={(e) => { e.stopPropagation(); if (confirm(`Delete "${s.title || 'this session'}"?`)) deleteSession(s.id); }}
                                                         className={`p-1 rounded opacity-0 group-hover:opacity-100 ${theme.hover} ${theme.textMuted} hover:text-red-500 transition-opacity`}

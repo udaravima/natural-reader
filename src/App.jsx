@@ -430,6 +430,8 @@ export default function App() {
     switchToSession: chatSwitchToSession,
     deleteSession: chatDeleteSession,
     renameSession: chatRenameSession,
+    helperOn: chatHelperOn,
+    generateTitle: chatGenerateTitle,
     pins: chatPins,
     addPin: chatAddPin,
     removePin: chatRemovePin,
@@ -1334,6 +1336,8 @@ export default function App() {
             switchToSession={chatSwitchToSession}
             deleteSession={chatDeleteSession}
             renameSession={chatRenameSession}
+            helperOn={chatHelperOn}
+            generateTitle={chatGenerateTitle}
           />
         ) : inAdmin || inLibrary ? null : (
         canReader && <Sidebar
