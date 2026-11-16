@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.13.0] - 2026-11-16
+
 ### Added
 
 - **Several assistant profiles, picked per chat.** In **Admin → Chat →
