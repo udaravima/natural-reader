@@ -332,6 +332,7 @@ async def run_turn(req: TurnRequest, claim: TurnClaim, *, router: Any, cfg: Chat
             window=_window(provider.config, model_key, settings, caps, models_cfg), now=now,
             tools=tuple(offered if max_rounds > 0 else ()), tool_ctx=tool_ctx,
             profile=lead.text, placed=lead.used, persona=bool(profile.text), scope=tuple(scope_docs(tool_ctx)),
+            assistant_name=profile.name if profile.builtin else "",
             project_map=project_map.text if project_map else "", app_exchange=app_exchange,
             default_timezone=default_timezone,
             model=req.model_id, spoken=req.spoken), cfg)

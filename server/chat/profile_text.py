@@ -7,6 +7,10 @@ Which profile, first match wins (profile library spec, "What a turn sends"):
 3. the default;
 4. while the library is empty, the file at CHAT_ASSISTANT_PROFILE_FILE; else none.
 
+The Librarian (the built-in profile, character profiles spec) has no text: a turn that uses it gets the app's own
+rules with its name in the first line. While it is the only profile, the file's text is its text, as the file was
+the profile while the library was empty.
+
 Placeholders are `{{date}}`, `{{app}}` and `{{profile}}`, and only these: each is a value no person chatting can
 write, because the text they land in is trusted and unfenced. Anything else in double braces is left as written.
 """
@@ -35,6 +39,7 @@ class Resolved:
     text: str                      # the profile alone
     house_rules: str
     source: Literal["library", "file", "none"]
+    builtin: bool = False          # The Librarian with no file text: the app's first line carries its name
 
     @property
     def combined(self) -> str:
@@ -77,6 +82,9 @@ async def resolve(conn, *, session_id: str | None, asked_id: str | None) -> Reso
         row = await profile_library.get_profile(conn, await _chat_profile_id(conn, session_id))
     if row is None:
         row = await profile_library.default_profile(conn)
+    if row is not None and row.builtin:
+        text = "" if await _has_own_profiles(conn) else assistant_profile._from_file()
+        return Resolved(row.id, row.name, text, house, "file" if text else "library", builtin=not text)
     if row is not None:
         return Resolved(row.id, row.name, row.text, house, "library")
     cur = await conn.execute("SELECT EXISTS (SELECT 1 FROM assistant_profiles)")
@@ -84,9 +92,15 @@ async def resolve(conn, *, session_id: str | None, asked_id: str | None) -> Reso
     return Resolved(None, "", text, house, "file" if text else "none")
 
 
+async def _has_own_profiles(conn) -> bool:
+    """A profile an admin wrote (not The Librarian) exists."""
+    cur = await conn.execute("SELECT EXISTS (SELECT 1 FROM assistant_profiles WHERE NOT builtin)")
+    return (await cur.fetchone())[0]
+
+
 async def largest(conn) -> str:
     """The longest house rules + profile any chat can be sent: what a context-size check must allow for."""
     house = await profile_library.house_rules(conn)
-    rows = await profile_library.list_profiles(conn)
-    text = max((r.text for r in rows), key=len, default="") if rows else assistant_profile._from_file()
+    own = [r.text for r in await profile_library.list_profiles(conn) if not r.builtin]
+    text = max(own, key=len) if own else assistant_profile._from_file()
     return "\n\n".join(t for t in (house, text) if t)
