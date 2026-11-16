@@ -67,14 +67,16 @@ def fence(text: str) -> str:
     return _TAG_RE.sub(lambda m: f"‹{m.group(1)}{m.group(2)}", text)
 
 
-def display_name(name: Any) -> str:
+def display_name(name: Any, cap: int = NAME_CAP) -> str:
     """A name someone else may have chosen (a shared document's file name, a
     pin's fields) as ONE inert line: whitespace and control characters
-    collapsed, no quotes or angle brackets, capped. Used inside the rules and
-    in tag attributes, where a newline or a quote would let it speak as us."""
+    collapsed, no quotes or angle brackets, cut after `cap` characters and
+    marked "…" (a document's description gets a longer cap than a name). Used inside the
+    rules and in tag attributes, where a newline or a quote would let it
+    speak as us."""
     text = " ".join(_CONTROL_RE.sub(" ", str(name)).split())
     text = text.replace('"', "'").replace("<", "‹").replace(">", "›")
-    return text if len(text) <= NAME_CAP else text[:NAME_CAP].rstrip() + "…"
+    return text if len(text) <= cap else text[:cap].rstrip() + "…"
 
 
 def version_note_text(note: dict) -> str:

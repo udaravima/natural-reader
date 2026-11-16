@@ -79,7 +79,7 @@ async def over_budget(conn, user_id: str, deployment_budget: int | None) -> bool
     return remaining is not None and remaining <= 0
 
 
-KINDS = ("chat", "reader")
+KINDS = ("chat", "reader", "helper")   # helper: services/helper.py (migration 028)
 
 
 async def record_usage(conn, user_id: str, prompt_tokens: int, eval_tokens: int, *,
@@ -120,8 +120,8 @@ async def admin_usage_grouped(conn, *, days: int, group: str, user_id: str | Non
     - `day`: one row per day (YYYY-MM-DD), newest first.
 
     `user_id` and `model` filter before grouping and combine with any group; `model=""` matches the rows written
-    before migration 023 (model unknown). The `model`, `user` and `day` rows also carry `chat_tokens` and
-    `reader_tokens` (the per-kind split; rows of kind `''` count in `tokens` only) and `estimated_tokens` (tokens
+    before migration 023 (model unknown). The `model`, `user` and `day` rows also carry `chat_tokens`,
+    `reader_tokens` and `helper_tokens` (the per-kind split; rows of kind `''` count in `tokens` only) and `estimated_tokens` (tokens
     counted by the chars/4 estimate rather than reported by the provider). `tokens` is prompt plus eval. The local
     or cloud tag is not stored: the route adds it at read time from the provider's current mark."""
     if group not in _GROUPS:
@@ -150,6 +150,7 @@ async def admin_usage_grouped(conn, *, days: int, group: str, user_id: str | Non
         sums += [
             ("chat_tokens", "COALESCE(SUM(s.prompt_tokens + s.eval_tokens) FILTER (WHERE s.kind = 'chat'), 0)::bigint"),
             ("reader_tokens", "COALESCE(SUM(s.prompt_tokens + s.eval_tokens) FILTER (WHERE s.kind = 'reader'), 0)::bigint"),
+            ("helper_tokens", "COALESCE(SUM(s.prompt_tokens + s.eval_tokens) FILTER (WHERE s.kind = 'helper'), 0)::bigint"),
             ("estimated_tokens", "SUM(s.estimated_tokens)::bigint"),
         ]
     join = "JOIN users u ON u.id = s.user_id " if any(c.startswith("u.") for c in cols) else ""

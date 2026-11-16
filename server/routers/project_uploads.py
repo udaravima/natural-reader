@@ -17,8 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from ..auth import deps
 from ..auth.authz import require_project_role
 from ..http_errors import refusal
-from ..services import bulk_upload, doc_storage, doc_versions, people
+from ..services import bulk_upload, doc_pipeline, doc_storage, doc_versions, people
 from . import docs as docs_router
+from .project_documents import queue_helper
 
 router = APIRouter(prefix="/v1/projects/{project_id}/uploads", tags=["projects"])
 _reader = deps.require_capability("reader")
@@ -99,10 +100,12 @@ async def upload(project_id: uuid.UUID, response: Response, file: UploadFile = F
                  on_match: Literal["version", "separate", "skip"] = Form("version"),
                  on_older: Literal["leave", "restore"] = Form("leave"),
                  document_id: uuid.UUID | None = Form(None), note: str | None = Form(None),
+                 describe: bool = Form(True),
                  principal: deps.Principal = Depends(_reader)):
     """Store one file and file it here, in one step: the steps of Upload new version, deciding after the bytes are
-    hashed and before content is written. 201 when something was filed (created, version, restored); 200 when
-    nothing was (unchanged, skipped, left_older, ambiguous), and then nothing is stored. No library entry is added.
+    hashed and before content is written. `describe=false` files it without asking the helper for tags. 201 when
+    something was filed (created, version, restored); 200 when nothing was (unchanged, skipped, left_older,
+    ambiguous), and then nothing is stored. No library entry is added.
     New content is queued for indexing, and the uploader hears how it ended."""
     docs_router._ensure_ready()
     async with docs_router.get_pool().connection() as conn:
@@ -119,8 +122,11 @@ async def upload(project_id: uuid.UUID, response: Response, file: UploadFile = F
         return None if o.stores else docs_router.STORE_NOTHING
 
     async def hold(conn, _created):
-        return await bulk_upload.file_it(conn, principal.user_id, project_id, decided["outcome"],
-                                         doc_id=staged.sha256, name=name, note=note)
+        document = await bulk_upload.file_it(conn, principal.user_id, project_id, decided["outcome"],
+                                             doc_id=staged.sha256, name=name, note=note)
+        if describe:   # the panel's "Write tags and descriptions" tick (helper spec §5.3)
+            decided["helper"] = await queue_helper(conn, document["id"], principal.user_id)
+        return document
 
     try:
         free, reserve = bulk_upload.free_mb(), bulk_upload.reserve_mb()
@@ -139,6 +145,8 @@ async def upload(project_id: uuid.UUID, response: Response, file: UploadFile = F
               "queued": False, "candidates": list(d.candidates)}
     if outcome.stores:
         await docs_router._queue_after_upload(staged.sha256, job, principal.user_id)
+        if decided.get("helper"):
+            doc_pipeline.wake()
         answer["document"] = document
     else:
         response.status_code = 200

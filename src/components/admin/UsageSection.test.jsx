@@ -10,7 +10,7 @@ const json = (status, body) => ({ ok: status < 400, status, json: async () => bo
 
 const sums = (over = {}) => ({
   prompt_tokens: 600, eval_tokens: 400, tokens: 1000, requests: 5,
-  chat_tokens: 700, reader_tokens: 300, estimated_tokens: 0, ...over,
+  chat_tokens: 700, reader_tokens: 300, helper_tokens: 0, estimated_tokens: 0, ...over,
 });
 const MODELS = [
   { model: 'ollama:gemma4:e4b', tag: 'local', ...sums({ tokens: 1500, chat_tokens: 1000, reader_tokens: 500, requests: 12 }) },
@@ -61,11 +61,11 @@ describe('UsageSection', () => {
     expect(paths()).toEqual(['/v1/admin/inference/usage?days=7&group=model']);
     expect(toggle('By model').getAttribute('aria-pressed')).toBe('true');
     const rows = screen.getAllByRole('row');
-    expect(cellsOf(rows[1])).toEqual(['ollama:gemma4:e4b', 'Local', '1,000', '500', '12', '1,500', '—']);
+    expect(cellsOf(rows[1])).toEqual(['ollama:gemma4:e4b', 'Local', '1,000', '500', '0', '12', '1,500', '—']);
     expect(cellsOf(rows[2])[1]).toBe('Cloud');
     expect(cellsOf(rows[3])[1]).toBe('Unknown');
     expect([...rows[0].querySelectorAll('th')].map((h) => h.textContent))
-      .toEqual(['Model', 'Where', 'Chat', 'Reader', 'Requests', 'Total', 'Estimated']);
+      .toEqual(['Model', 'Where', 'Chat', 'Reader', 'Helper', 'Requests', 'Total', 'Estimated']);
     // No model filter in the By model view.
     expect(screen.queryByLabelText('Model')).toBeNull();
   });
@@ -74,7 +74,7 @@ describe('UsageSection', () => {
     mount({ models: MODELS_WITH_UNKNOWN });
     await screen.findByText('ollama:gemma4:e4b');
     const unknown = screen.getAllByRole('row')[4];
-    expect(cellsOf(unknown)).toEqual(['Unknown', 'Unknown', '0', '0', '5', '50', '—']);
+    expect(cellsOf(unknown)).toEqual(['Unknown', 'Unknown', '0', '0', '0', '5', '50', '—']);
   });
 
   it('wraps tables in overflow-x-auto', async () => {
@@ -93,7 +93,7 @@ describe('UsageSection', () => {
     expect(toggle('By model').getAttribute('aria-pressed')).toBe('false');
     expect(toggle('By day').getAttribute('aria-pressed')).toBe('false');
     const head = [...screen.getAllByRole('row')[0].querySelectorAll('th')].map((h) => h.textContent);
-    expect(head.slice(0, 6)).toEqual(['Person', 'Chat', 'Reader', 'Requests', 'Total', 'Estimated']);
+    expect(head.slice(0, 7)).toEqual(['Person', 'Chat', 'Reader', 'Helper', 'Requests', 'Total', 'Estimated']);
   });
 
   it('By day requests group=day and renders the day as given', async () => {
@@ -102,7 +102,7 @@ describe('UsageSection', () => {
     fireEvent.click(toggle('By day'));
     await screen.findByText('2026-10-25');
     expect(paths()).toContain('/v1/admin/inference/usage?days=7&group=day');
-    expect(cellsOf(screen.getAllByRole('row')[1])).toEqual(['2026-10-25', '700', '300', '5', '800', '—']);
+    expect(cellsOf(screen.getAllByRole('row')[1])).toEqual(['2026-10-25', '700', '300', '0', '5', '800', '—']);
   });
 
   it('expanding a person fetches group=model&user_id once and sets aria-expanded', async () => {

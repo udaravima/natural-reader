@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..db import get_pool, is_ready
-from . import doc_notices, doc_storage, docling_convert, extract, index_queue, rebuild_queue
+from . import describe_queue, doc_describe, doc_notices, doc_storage, docling_convert, extract, index_queue, rebuild_queue
 from .doc_outlines import BOOKMARKS, HEADINGS, NO_OUTLINE, Outline, save_outline
 from .doc_search import ReadableDoc
 from . import embedding_state
@@ -422,12 +422,14 @@ GAVE_UP = (f"The server stopped while reading this file, {index_queue.MAX_ATTEMP
            "The file may be damaged.")
 _rebuilds_in_a_row: dict[str, int] = {}   # per runner (worker id)
 _convert_wake = asyncio.Event()
+_describe_wake = asyncio.Event()
 
 
 def wake() -> None:
-    """Something was queued in this process: both runners look now, not after QUEUE_POLL_S."""
+    """Something was queued in this process: the runners look now, not after QUEUE_POLL_S."""
     _wake.set()
     _convert_wake.set()
+    _describe_wake.set()
 
 
 async def enqueue_index(doc_id: str, *, job: str = "pipeline", requested_by: str | None = None) -> bool:
@@ -559,6 +561,7 @@ async def _run_one_job(worker: str, jobs: tuple[str, ...],
         logger.exception("%s job for %s failed", claim.job, claim.doc_id)
     async with get_pool().connection() as conn:
         await index_queue.finish(conn, claim.doc_id, worker)
+    _describe_wake.set()   # with its job gone, describe jobs may be claimable now (helper spec §5.3)
     return claim.doc_id
 
 
@@ -611,6 +614,51 @@ async def run_queue_forever(worker: str = rebuild_queue.WORKER_ID) -> None:
 async def run_convert_forever(worker: str = rebuild_queue.WORKER_ID) -> None:
     """One per worker process, started with the app: the convert lane."""
     await _drain_forever(run_convert_once, _convert_wake, worker, "Conversion queue")
+
+
+async def run_describe_once(worker: str = rebuild_queue.WORKER_ID) -> str | None:
+    """The describe lane's one step (helper spec §5.3): with the helper on, claim one holding's job (only while no
+    indexing or conversion job exists, once its content is indexed, one at a time across workers) and write its tags
+    and description. A failed try goes back to the queue once; a skip (gone, over budget) or a second failure drops
+    it. With the helper off, every waiting job is dropped. Returns the doc_id worked on, or None."""
+    from . import helper
+    async with get_pool().connection() as conn:
+        if not (await helper.load_config(conn)).on:
+            dropped = await describe_queue.drop_waiting(conn)
+            if dropped:
+                logger.info("The helper is off: dropped %d waiting describe jobs", dropped)
+            return None
+        claim = await describe_queue.claim_next(conn, worker)
+    if claim is None:
+        return None
+    outcome = doc_describe.SKIPPED
+    try:
+        if claim.attempts <= describe_queue.MAX_ATTEMPTS:
+            async with _claim_kept(describe_queue.heartbeat, claim.id, worker):
+                outcome = await doc_describe.describe(claim)
+        else:
+            logger.warning("Gave up describing %s: its worker stopped while describing it", claim.doc_id[:12])
+    except asyncio.CancelledError:
+        try:
+            async with get_pool().connection() as conn:
+                await asyncio.shield(describe_queue.release(conn, claim.id, worker))
+        except Exception:  # noqa: BLE001 — the claim then lapses as a crash would
+            logger.info("Could not hand %s back at shutdown", claim.doc_id[:12])
+        raise
+    except Exception:  # noqa: BLE001 — a bug must not leave the row claimed until it lapses
+        logger.exception("describe job for %s failed", claim.doc_id[:12])
+        outcome = doc_describe.FAILED
+    async with get_pool().connection() as conn:
+        if outcome == doc_describe.FAILED and claim.attempts < describe_queue.MAX_ATTEMPTS:
+            await describe_queue.retry(conn, claim.id, worker)
+        else:
+            await describe_queue.finish(conn, claim.id, worker)
+    return claim.doc_id
+
+
+async def run_describe_forever(worker: str = rebuild_queue.WORKER_ID) -> None:
+    """One per worker process, started with the app: the describe lane, behind the other two."""
+    await _drain_forever(run_describe_once, _describe_wake, worker, "Describe queue")
 
 
 def _embedding_part(profile: str | None) -> str | None:

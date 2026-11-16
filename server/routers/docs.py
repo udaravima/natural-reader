@@ -48,8 +48,8 @@ from ..auth.deps import Principal, require_capability
 from ..db import get_pool, is_ready
 from ..http_errors import BUSY_MESSAGE, refusal
 from ..services import (
-    doc_content, doc_pipeline, doc_storage, doc_versions, docling_convert, docling_limits,
-    embedding_state, extract, index_queue, people,
+    doc_content, doc_describe, doc_pipeline, doc_storage, doc_versions, docling_convert, docling_limits,
+    describe_queue, embedding_state, extract, helper, index_queue, people,
 )
 from ..services.doc_search import ReadableDoc, search_chunks
 from ..services.embeddings import embed_query
@@ -153,6 +153,21 @@ _ENTRY_COLS = (
     "COALESCE(_me.tags, '{}') AS tags, _me.added_via AS added_via, "
     "_me.shared_by AS shared_by_id, COALESCE(_sb.display_name, _sb.email) AS shared_by_name"
 )
+
+
+# What the helper wrote for MY entry (helper spec §5.1, §5.4): its description, else what a project I'm a member of
+# shows for the file; and the tags it suggests that aren't among my own (in the helper's order). Never what was
+# written for another person's entry. Needs `_ENTRY_JOIN`; bind `_description_params(user_id)`.
+_DESCRIPTION = f"COALESCE(_me.gen_description, {doc_versions.project_description_sql('d')})"
+_GENERATED_COLS = (
+    f"{_DESCRIPTION} AS description, _me.gen_at IS NOT NULL AS generated, "
+    "ARRAY(SELECT _g.t FROM unnest(COALESCE(_me.gen_tags, '{}')) WITH ORDINALITY AS _g(t, n) "
+    "      WHERE NOT (_g.t = ANY(COALESCE(_me.tags, '{}'))) ORDER BY _g.n) AS suggested_tags"
+)
+
+
+def _description_params(user_id: str) -> list[str]:
+    return doc_versions.project_description_params(user_id)
 
 
 def _entry_fields(rec: dict[str, Any]) -> dict[str, Any]:
@@ -276,8 +291,10 @@ async def list_documents(
     where_params: list[Any] = listed_docs_params(uid)
     if q:
         # Match the name the caller is shown, never a name they can't see.
-        where.append(f"({_DISPLAY_NAME} ILIKE %s OR %s = ANY(_me.tags))")
-        where_params += [*_display_name_params(uid), f"%{q}%", q]
+        # ...and the helper's words as the row shows them (helper spec §5.4: search matches both).
+        where.append(f"({_DISPLAY_NAME} ILIKE %s OR %s = ANY(_me.tags) "
+                     f"OR {_DESCRIPTION} ILIKE %s OR %s = ANY(_me.gen_tags))")
+        where_params += [*_display_name_params(uid), f"%{q}%", q, *_description_params(uid), f"%{q}%", q.lower()]
     if project_id:
         # Only a project the caller can see: filtering a shared doc by a
         # guessed project id must not reveal whether someone placed it there.
@@ -289,16 +306,16 @@ async def list_documents(
         )
         where_params += [project_id, *visible_projects_params(uid)]
     if tag:
-        where.append("%s = ANY(_me.tags)")
-        where_params.append(tag)
+        where.append("(%s = ANY(_me.tags) OR %s = ANY(_me.gen_tags))")
+        where_params += [tag, tag]
     sql = (
-        f"SELECT d.doc_id, d.state, {_ENTRY_COLS}, {_doc_projects_sql('d')} AS projects, "
+        f"SELECT d.doc_id, d.state, {_ENTRY_COLS}, {_GENERATED_COLS}, {_doc_projects_sql('d')} AS projects, "
         f"{doc_versions.versions_in_sql('d', only_old=True)} AS newer_in "
         f"FROM documents d {_ENTRY_JOIN} "
         f"WHERE {' AND '.join(where)} ORDER BY d.updated_at DESC"
     )
     # psycopg binds by position: SELECT-list params, then the join, then WHERE.
-    params = [*_display_name_params(uid), *_doc_projects_params(uid),
+    params = [*_display_name_params(uid), *_description_params(uid), *_doc_projects_params(uid),
               *doc_versions.versions_in_params(uid), uid, *where_params]
     pool = get_pool()
     async with pool.connection() as conn:
@@ -306,6 +323,9 @@ async def list_documents(
         cols = [c.name for c in cur.description]
         rows = [dict(zip(cols, r)) for r in await cur.fetchall()]
         await index_queue.mark_queued(conn, rows)
+        busy = await describe_queue.waiting_entries(conn, uid, [r["doc_id"] for r in rows])
+    for r in rows:
+        r["describing"] = r["doc_id"] in busy
     return [_entry_fields(r) for r in rows]
 
 
@@ -349,9 +369,23 @@ async def register_document(
     finally:
         doc_storage.discard(staged)  # no-op once placed
     await _queue_after_upload(doc_id, job, principal.user_id)
+    await _queue_helper_for_entry(principal.user_id, doc_id)
     state, queued = await _state_and_queued(doc_id)
     response.status_code = 202 if job == "pipeline" else 200
     return {"doc_id": doc_id, "dedup": not created, "state": state, "queued": queued}
+
+
+async def _queue_helper_for_entry(user_id: str, doc_id: str) -> None:
+    """After a Library upload (helper spec §5.3): queue the helper for the uploader's entry, which waits for indexing.
+    Never fails an upload whose file is already safe: the row's Generate still works."""
+    try:
+        async with get_pool().connection() as conn:
+            queued = await doc_describe.queue_entry(conn, user_id, doc_id)
+    except Exception:  # noqa: BLE001 — see above
+        logger.warning("Could not queue the helper for %s", doc_id, exc_info=True)
+        return
+    if queued:
+        doc_pipeline.wake()
 
 
 # What a `prelock` returns when it decided nothing is to be stored (bulk upload: unchanged, skipped, left alone).
@@ -769,6 +803,34 @@ async def start_index_job(doc_id: DocId,
             await index_queue.enqueue(conn, doc_id, requested_by=principal.user_id)
     doc_pipeline.wake()
     return {"ok": True, "doc_id": doc_id, "state": state, "queued": True}
+
+
+@router.post("/{doc_id}/describe", status_code=202)
+async def describe_document(
+    doc_id: DocId,
+    principal: Principal = Depends(require_capability("reader")),
+) -> dict[str, Any]:
+    """Library Generate (helper spec §5.4): ask the helper for tags and a description of my entry for a document, when
+    none were ever written for it (409 otherwise: the row offers no Generate then). Written for my entry alone."""
+    _ensure_ready()
+    async with get_pool().connection() as conn:
+        if not await doc_content.holds_entry(conn, principal.user_id, doc_id):
+            raise refusal(404, "not_found", "Document not found")
+        cur = await conn.execute("SELECT d.state, e.gen_at FROM documents d JOIN library_entries e "
+                                 "ON e.doc_id = d.doc_id AND e.user_id = %s WHERE d.doc_id = %s",
+                                 (principal.user_id, doc_id))
+        state, gen_at = await cur.fetchone()
+        if state != "indexed":
+            raise refusal(409, "not_indexed", "Tags can be written once the document is indexed.")
+        if gen_at is not None:
+            raise refusal(409, "already_described", "This document already has tags and a description.")
+        if not (await helper.load_config(conn)).on:
+            raise refusal(409, "helper_off", "No helper model is set up. An admin can choose one in Models.")
+        if await helper.over_budget(conn, principal.user_id):
+            raise refusal(429, "budget_exhausted", "Daily inference budget exhausted.")
+        await describe_queue.enqueue(conn, doc_id, user_id=principal.user_id, requested_by=principal.user_id)
+    doc_pipeline.wake()
+    return {"doc_id": doc_id, "describing": True}
 
 
 @router.post("/{doc_id}/search")

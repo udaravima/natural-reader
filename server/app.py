@@ -137,6 +137,8 @@ def create_app() -> FastAPI:
             # (doc_rebuilds, doc_index_jobs), one document at a time; one for Docling conversions.
             _background.append(asyncio.get_running_loop().create_task(doc_pipeline.run_queue_forever()))
             _background.append(asyncio.get_running_loop().create_task(doc_pipeline.run_convert_forever()))
+            # And the helper's lane (tags and descriptions), which works only while the other two are idle.
+            _background.append(asyncio.get_running_loop().create_task(doc_pipeline.run_describe_forever()))
             # And one migration loop: it re-embeds the library when the embedding model changes, then switches.
             _background.append(asyncio.get_running_loop().create_task(
                 embedding_migration.run_forever(rebuild_queue.WORKER_ID)))

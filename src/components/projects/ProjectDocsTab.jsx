@@ -51,6 +51,16 @@ export default function ProjectDocsTab({ theme, api, project, showToast, onOpenD
 
   useEffect(() => { load(); }, [load]);
 
+  // Whether a helper model is set up: Generate, "Write tags" and the upload's tick are offered only then.
+  const [helperOn, setHelperOn] = useState(false);
+  useEffect(() => {
+    let live = true;
+    if (member && api.helperOn) api.helperOn().then((on) => { if (live) setHelperOn(on); });
+    return () => { live = false; };
+  }, [api, member]);
+  const [filterText, setFilterText] = useState('');
+  const [activeTag, setActiveTag] = useState(null);
+
   const onLanded = useCallback(() => { load(); onChanged?.(); }, [load, onChanged]);
   const batch = useBulkUpload({ api, projectId: project.id, onLanded });
   const canPick = can.file_docs && batch.phase !== 'reading' && batch.phase !== 'sending';
@@ -75,7 +85,8 @@ export default function ProjectDocsTab({ theme, api, project, showToast, onOpenD
     },
   } : {};
 
-  const settling = (docs || []).some(isMoving);
+  // A row the helper is writing tags for is moving too: its tags arrive on a later read (helper spec §5.4).
+  const settling = (docs || []).some((d) => isMoving(d) || d.describing);
   const [pollTick, setPollTick] = useState(0);
   const polls = useRef(0);
   useEffect(() => {
@@ -120,6 +131,12 @@ export default function ProjectDocsTab({ theme, api, project, showToast, onOpenD
     return <p className={`text-xs ${theme.textMuted}`}>Only members can see this project&apos;s documents.</p>;
   }
   const unfiled = mine.filter((d) => !(d.projects || []).some((p) => p.id === project.id));
+  const needle = filterText.trim().toLowerCase();
+  const shown = (docs || []).filter((d) => (!activeTag || (d.tags || []).includes(activeTag))
+    && (!needle || [d.name, d.description || '', ...(d.tags || [])].some((x) => x.toLowerCase().includes(needle))));
+  const untagged = (docs || []).filter((d) => d.state === 'indexed' && !d.generated && !d.describing).length;
+  const docsWord = (n) => (n === 1 ? '1 document' : `${n} documents`);
+  const writeTags = () => run(() => api.describeMissing(project.id), (out) => `Writing tags for ${docsWord(out.queued)}.`);
   const pickButton = `px-2 py-1 text-xs rounded border disabled:opacity-50 ${theme.border} ${theme.bg}`;
   return (
     <div role="region" aria-label={`Documents in ${project.name}`} {...dropTarget}
@@ -156,7 +173,7 @@ export default function ProjectDocsTab({ theme, api, project, showToast, onOpenD
           <span className={`text-[10px] ${theme.textMuted}`}>…or drop files or a folder anywhere on this tab</span>
         </div>
       )}
-      <BulkUploadPanel theme={theme} project={project} batch={batch} />
+      <BulkUploadPanel theme={theme} project={project} batch={batch} helperOn={helperOn} />
       {error && (
         <div role="alert" className="flex items-center gap-2 text-xs text-red-500">
           <span>{error}</span>
@@ -167,10 +184,28 @@ export default function ProjectDocsTab({ theme, api, project, showToast, onOpenD
         error ? null : <p className={`text-xs ${theme.textMuted}`}>Loading…</p>
       ) : docs.length === 0 ? (
         <p className={`text-xs ${theme.textMuted}`}>No documents in this project yet.</p>
-      ) : docs.map((d) => (
-        <ProjectDocRow key={d.id} theme={theme} api={api} project={project} doc={d}
-          others={docs.filter((o) => o.id !== d.id)} mine={mine} busy={busy} run={run} onOpenDoc={onOpenDoc} />
-      ))}
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <input type="search" value={filterText} onChange={(e) => setFilterText(e.target.value)}
+              placeholder="Filter by name, tag or description" aria-label="Filter documents"
+              className={`min-w-0 flex-1 px-2 py-1 text-xs rounded border ${theme.border} ${theme.bg}`} />
+            {activeTag && (
+              <button onClick={() => setActiveTag(null)} aria-label={`Stop showing only ${activeTag}`}
+                className="px-1.5 py-0.5 text-[10px] rounded bg-blue-500 text-white">{activeTag} ×</button>
+            )}
+            {can.file_docs && helperOn && untagged > 0 && (
+              <button onClick={writeTags} disabled={busy} className={pickButton}>Write tags for {docsWord(untagged)}</button>
+            )}
+          </div>
+          {shown.length === 0 && <p className={`text-xs ${theme.textMuted}`}>No documents match.</p>}
+          {shown.map((d) => (
+            <ProjectDocRow key={d.id} theme={theme} api={api} project={project} doc={d}
+              others={docs.filter((o) => o.id !== d.id)} mine={mine} busy={busy} run={run} onOpenDoc={onOpenDoc}
+              helperOn={helperOn} activeTag={activeTag} onTag={(t) => setActiveTag(activeTag === t ? null : t)} />
+          ))}
+        </>
+      )}
       {filing.dialog && <NameMatchDialog theme={theme} {...filing.dialog} />}
     </div>
   );
