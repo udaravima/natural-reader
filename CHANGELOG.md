@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **`docs/MAINTENANCE.md`, the jobs on a running server:** is it healthy,
+  surviving reboots, applying a `.env` change, backup and restore with a
+  nightly job, upgrading, rolling back, rotating secrets and freeing disk
+  space. Backup and restore and rotating the Keycloak secrets moved there
+  from DEPLOYMENT.md, whose old headings point to them.
+
 ### Fixed
 
 - **A newer Google key (`AQ.…`) is now hidden in provider errors,** like the
@@ -14,7 +22,8 @@ All notable changes to this project will be documented in this file.
 - **Docs: after changing `.env`, run `./startup.sh rebuild`.** DEPLOYMENT.md said
   a restart would do after changing the Keycloak secrets. It doesn't: the backend
   container reads `.env` only when it is created, so `podman restart` and
-  `./startup.sh start` keep the old values.
+  `./startup.sh start` keep the old values. The backend's own warning about a published
+  secret said "restart" too; it now says `./startup.sh rebuild`.
 
 ## [2.13.0] - 2026-11-16
 
