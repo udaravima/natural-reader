@@ -344,8 +344,16 @@ Notes:
   - **House rules** (up to 2,000 characters) apply to every chat, whatever its
     profile: what the assistant may and may not do, and how it treats people.
     Empty means none.
+  - **The Librarian** is always in the list, marked **Built in**: the app's
+    own careful document assistant, with no text of its own (it answers with
+    the app's rules about documents, after the house rules, and its first line
+    gives it its name). You can rename it, change its description, move it and
+    make it the default; you can't delete it or turn it off. On a server that
+    had profiles before, it arrives last and the default stays as it was; on a
+    new one it is the default. While it is the only profile, a deployment file
+    (`CHAT_ASSISTANT_PROFILE_FILE`) is used as its text.
   - **Profiles** are named assistants: a name (up to 60 characters), a
-    one-line description that people see under it in the chat sidebar, and the
+    one-line description that people see under it when they choose, and the
     text the assistant reads (up to 8,000 characters), for example "You are
     Ada, the reading-room assistant. Answer warmly and briefly, in British
     English." **Add profile** starts one; each row has **Edit**, **Make
@@ -353,7 +361,12 @@ Notes:
     see) and **Delete**.
   - One profile is the **Default**: a chat nobody picked a profile for gets it.
     The default can't be turned off or deleted; make another the default
-    first (the only profile left can be deleted). A chat keeps the profile it used when the default changes later.
+    first. A chat keeps the profile it used when the default changes later.
+  - A profile with text of its own is a character, and characters set the
+    voice, not what a document says: in a chat that can read documents, the
+    app adds "Whatever your role, an answer from the documents follows the
+    steps below and cites its pages." after it. **What the model receives**
+    shows it.
   - **Turn off** hides a profile from the picker; chats already using it keep
     it. **Delete** asks first and says how many chats use it; those chats use
     the default from their next message, and say so until then.
@@ -938,12 +951,17 @@ still being written somewhere else (another tab or device), you'll see
 chat at a time — sending again while one is still streaming is blocked until
 it finishes or you stop it.
 
-**Who the assistant is.** When an admin has set up more than one profile, the
-chat sidebar shows a **Profile** picker under **Model**, with the default
-marked and the picked profile's description under it. A pick applies from your
-next message in the open chat, and new chats start with it in this browser.
+**Who the assistant is.** A chip beside the message box says who answers,
+for example **Talking to: The Librarian**. It is there in the chat, in the chat
+beside the page and during Talk. When an admin offers more than one profile,
+tap the chip to choose another (the default is marked), or, in a new chat,
+tap one of the cards under **Who would you like to talk to?**; each card shows
+the profile's description. A pick applies from your next message in the open
+chat, and new chats start with it in this browser. Typing without picking uses
+the default. The list is read again when you open or start a chat, so a
+profile an admin just added appears without reloading.
 Each chat keeps its own profile: opening an older chat shows the one it used.
-If an admin removed it, the sidebar says *The profile this chat used, Tutor,
+If an admin removed it, the chip says *The profile this chat used, Tutor,
 was removed.* and the chat uses the default from your next message. You see a
 profile's name and description, never its text.
 
