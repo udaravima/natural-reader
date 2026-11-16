@@ -338,6 +338,30 @@ async def patch_session(
     return {"ok": True, "id": session_id}
 
 
+@router.post("/{session_id}/title", status_code=202)
+async def generate_title(
+    session_id: str, owner: Principal = Depends(_require_session_owner)
+) -> dict[str, Any]:
+    """Generate title (helper spec §6): the helper writes this chat's title from the conversation so far, whoever
+    wrote the current one, marked 'model'. It runs in the background: the chat says `titlePending` until it lands.
+    409 helper_off / helper_is_cloud / nothing_to_title, 429 budget_exhausted."""
+    _ensure_ready()
+    async with get_pool().connection() as conn:
+        cur = await conn.execute(
+            "SELECT model, EXISTS (SELECT 1 FROM chat_messages m WHERE m.session_id = s.id AND m.role = 'user' "
+            "AND btrim(m.content) <> '') FROM chat_sessions s WHERE s.id = %s", (session_id,))
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        why = await titles.refusal(conn, owner.user_id, row[0])
+        if why is None and not row[1]:
+            why = "nothing_to_title"
+    if why is not None:
+        raise refusal(429 if why == "budget_exhausted" else 409, why, titles.REFUSALS[why])
+    await titles.start(session_id, owner.user_id, on_request=True)
+    return {"titlePending": True}
+
+
 @router.delete("/{session_id}")
 async def delete_session(
     session_id: str, _owner: Principal = Depends(_require_session_owner)

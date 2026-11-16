@@ -53,6 +53,15 @@ _TAG_RE = re.compile(r"<\s*(/?)\s*(" + TAG + r")", re.IGNORECASE)
 _DOUBLE_QUOTES = "\"“”„‟«»「」『』〝〞＂"
 _WRAPPING = "'‘’‚‛`"
 _SLOTS = asyncio.Semaphore(1)   # one title call at a time in this worker: a burst of first replies waits its turn
+_BACKGROUND: set[asyncio.Task] = set()   # running title jobs, kept referenced until they end
+
+# What Generate title answers when it can't (POST /v1/chat/sessions/{id}/title); "budget_exhausted" is a 429.
+REFUSALS = {
+    "helper_off": "No helper model is set up. An admin can choose one in Models.",
+    "helper_is_cloud": "The helper model runs in the cloud, and this chat runs on a local model, so its words stay here.",
+    "budget_exhausted": "Daily inference budget exhausted.",
+    "nothing_to_title": "This chat has nothing to title yet.",
+}
 
 
 def _fence(text: str) -> str:
@@ -183,3 +192,39 @@ async def write_title(session_id: str, owner_id: str, *, on_request: bool) -> st
         return None
     finally:
         await _clear_pending(session_id)
+
+
+async def start(session_id: str, owner_id: str, *, on_request: bool) -> None:
+    """Mark the chat's title pending (committed now: the browser re-reads the list while it is) and write it in the
+    background, off the reply's path."""
+    async with get_pool().connection() as conn:
+        await conn.execute("UPDATE chat_sessions SET title_pending_at = now() WHERE id = %s", (session_id,))
+    task = asyncio.create_task(write_title(session_id, owner_id, on_request=on_request))
+    _BACKGROUND.add(task)
+    task.add_done_callback(_BACKGROUND.discard)
+
+
+async def after_reply(session_id: str, owner_id: str, reply_id: str, chat_model: str) -> None:
+    """A reply just ended complete (orchestrator._finalize, before the stream closes). When it is the chat's first
+    complete reply, nobody named the chat, no title is pending and nothing refuses one, start the automatic title.
+    Never raises: a title is never worth a turn's end."""
+    try:
+        async with get_pool().connection() as conn:
+            cur = await conn.execute(
+                f"SELECT s.title_source, {PENDING_SQL}, "
+                "EXISTS (SELECT 1 FROM chat_messages m WHERE m.session_id = s.id AND m.role = 'assistant' "
+                "        AND m.status = 'complete' AND btrim(m.content) <> '' AND m.id <> %s), "
+                "EXISTS (SELECT 1 FROM chat_messages m WHERE m.session_id = s.id AND m.id = %s "
+                "        AND m.status = 'complete' AND btrim(m.content) <> '') "
+                "FROM chat_sessions s WHERE s.id = %s", (reply_id, reply_id, session_id))
+            row = await cur.fetchone()
+            if row is None:
+                return
+            source, pending, an_earlier_reply, this_reply = row
+            if source not in ("default", "cut") or pending or an_earlier_reply or not this_reply:
+                return
+            if await refusal(conn, owner_id, chat_model) is not None:
+                return
+        await start(session_id, owner_id, on_request=False)
+    except Exception as e:  # noqa: BLE001 — see above; the type only
+        logger.warning("Could not start the title of %s (%s)", session_id, type(e).__name__)
