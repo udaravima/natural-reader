@@ -438,6 +438,7 @@ export default function App() {
     profiles: chatProfiles,
     profileId: chatProfileId,
     setProfile: chatSetProfile,
+    refreshProfiles: chatRefreshProfiles,
     currentProfile: chatCurrentProfile,
     removedProfile: chatRemovedProfile,
     pins: chatPins,
@@ -1155,6 +1156,13 @@ export default function App() {
   // --- RENDER ---
   // The chat, as the Chat view and as the column beside the page.
   const chatViewProps = {
+    // Who answers: the chip beside the message box and the cards in an empty chat (character profiles spec).
+    profiles: chatProfiles,
+    profileId: chatProfileId,
+    setProfile: chatSetProfile,
+    refreshProfiles: chatRefreshProfiles,
+    currentProfile: chatCurrentProfile,
+    removedProfile: chatRemovedProfile,
     theme,
     darkMode,
     effectiveIsMobile,
@@ -1349,11 +1357,6 @@ export default function App() {
             helperOn={chatHelperOn}
             refreshHelper={chatRefreshHelper}
             generateTitle={chatGenerateTitle}
-            profiles={chatProfiles}
-            profileId={chatProfileId}
-            setProfile={chatSetProfile}
-            currentProfile={chatCurrentProfile}
-            removedProfile={chatRemovedProfile}
           />
         ) : inAdmin || inLibrary ? null : (
         canReader && <Sidebar

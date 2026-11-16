@@ -39,23 +39,9 @@ export default function ChatSidebar({
     helperOn = false,
     refreshHelper,
     generateTitle,
-    // The assistant's profile for the open chat (profile library spec): the list, what the chat uses, a pick.
-    profiles = [],
-    profileId = '',
-    setProfile,
-    currentProfile = null,
-    removedProfile = null,
 }) {
     const modelChoices = useMemo(() => modelOptions(availableModels, selectedModel, { prompt: 'Select a model…' }),
         [availableModels, selectedModel]);
-    // The admin's profiles that are on, and the chat's own if it was turned off since (it still applies to this chat).
-    const profileChoices = useMemo(() => {
-        const listed = profiles.map((p) => ({ id: p.id, label: p.isDefault ? `${p.name} (default)` : p.name }));
-        return currentProfile?.id && !profiles.some((p) => p.id === currentProfile.id)
-            ? [...listed, { id: currentProfile.id, label: `${currentProfile.name} (turned off)` }]
-            : listed;
-    }, [profiles, currentProfile]);
-    const pickedDescription = profiles.find((p) => p.id === profileId)?.description || '';
     const [renamingId, setRenamingId] = useState(null);
     const [draftTitle, setDraftTitle] = useState('');
     const activeMeta = sessions.find(s => s.id === activeSessionId);
@@ -126,29 +112,6 @@ export default function ChatSidebar({
                         )}
                     </div>
 
-                    {/* Profile picker: who the assistant is in this chat. Only when an admin offers a choice. */}
-                    {profileChoices.length > 1 && (
-                        <div className="space-y-1">
-                            <label htmlFor="chat-profile" className={`text-[10px] font-bold ${theme.textSecondary} ml-1`}>PROFILE</label>
-                            <select
-                                id="chat-profile"
-                                aria-label="Profile"
-                                value={profileId}
-                                onChange={(e) => setProfile?.(e.target.value)}
-                                className={`w-full text-xs font-bold p-2.5 rounded-lg border ${theme.border} ${theme.bgSecondary} ${theme.text} focus:ring-2 focus:ring-blue-500 outline-none`}
-                            >
-                                {profileChoices.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-                            </select>
-                            {pickedDescription && (
-                                <p className={`text-[9px] ${theme.textMuted} px-1`}>{pickedDescription}</p>
-                            )}
-                        </div>
-                    )}
-                    {removedProfile && (
-                        <p className={`text-[10px] ${theme.textMuted} px-1`}>
-                            The profile this chat used, {removedProfile}, was removed.
-                        </p>
-                    )}
 
                 </Section>
 
