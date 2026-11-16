@@ -30,7 +30,8 @@ HOUSE_RULES_KEY = "assistant_house_rules"
 HOUSE_RULES_MAX_CHARS = 2000   # characters; read before every reply, as the profile is
 NAME_MAX_CHARS = 60
 DESCRIPTION_MAX_CHARS = 200
-_COLUMNS = "id::text, name, description, text, enabled, is_default, position, builtin"
+BACKSTORY_MAX_CHARS = 6000   # characters; read before every reply, as the rules are
+_COLUMNS = "id::text, name, description, text, enabled, is_default, position, builtin, backstory"
 _LOCK = "LOCK TABLE assistant_profiles IN SHARE ROW EXCLUSIVE MODE"
 LIBRARIAN_NAME = "The Librarian"
 LIBRARIAN_DESCRIPTION = "Careful answers from your documents, with page numbers."
@@ -47,6 +48,7 @@ class ProfileRow:
     is_default: bool
     position: int
     builtin: bool = False
+    backstory: str = ""
 
 
 class LibraryError(ValueError):
@@ -81,6 +83,13 @@ def _text(value: str) -> str:
     if not text:
         raise LibraryError("invalid", "Write the profile first.")
     return text
+
+
+def _backstory(value: str) -> str:
+    backstory = clean_profile(value or "").strip()
+    if len(backstory) > BACKSTORY_MAX_CHARS:
+        raise LibraryError("invalid", f"A backstory is at most {BACKSTORY_MAX_CHARS:,} characters.")
+    return backstory
 
 
 def _uuid(profile_id: str) -> str | None:
@@ -119,27 +128,29 @@ async def chats_using(conn, profile_id: str) -> int:
     return (await cur.fetchone())[0]
 
 
-async def create_profile(conn, *, name: str, description: str, text: str, updated_by: str | None) -> ProfileRow:
+async def create_profile(conn, *, name: str, description: str, text: str, updated_by: str | None,
+                         backstory: str = "") -> ProfileRow:
     """Add a profile at the end of the list. The first one is the default."""
-    name, description, text = _name(name), _description(description), _text(text)
+    name, description, text, backstory = _name(name), _description(description), _text(text), _backstory(backstory)
     try:
         async with conn.transaction():
             await conn.execute(_LOCK)
             cur = await conn.execute(
-                f"INSERT INTO assistant_profiles (name, description, text, updated_by, is_default, position) "
-                f"SELECT %s, %s, %s, %s, NOT EXISTS (SELECT 1 FROM assistant_profiles), "
+                f"INSERT INTO assistant_profiles (name, description, text, backstory, updated_by, is_default, position) "
+                f"SELECT %s, %s, %s, %s, %s, NOT EXISTS (SELECT 1 FROM assistant_profiles), "
                 f"coalesce((SELECT max(position) + 1 FROM assistant_profiles), 0) RETURNING {_COLUMNS}",
-                (name, description, text, updated_by))
+                (name, description, text, backstory, updated_by))
             row = ProfileRow(*await cur.fetchone())
     except errors.UniqueViolation:
         raise LibraryError("name_taken", "Another profile has that name.") from None
-    logger.info("assistant profile %s added by %s (%d chars)", row.id, updated_by or "-", len(text))
+    logger.info("assistant profile %s added by %s (%d chars, backstory %d)", row.id, updated_by or "-", len(text),
+                len(backstory))
     return row
 
 
 async def update_profile(conn, profile_id: str, *, name: str | None = None, description: str | None = None,
                          text: str | None = None, enabled: bool | None = None, is_default: bool | None = None,
-                         updated_by: str | None) -> ProfileRow:
+                         updated_by: str | None, backstory: str | None = None) -> ProfileRow:
     """Change what is given. `is_default=True` moves the default here; the default can't be turned off, and its
     mark can't be taken away without giving it to another."""
     sets: dict[str, object] = {}
@@ -149,13 +160,15 @@ async def update_profile(conn, profile_id: str, *, name: str | None = None, desc
         sets["description"] = _description(description)
     if text is not None:
         sets["text"] = _text(text)
+    if backstory is not None:
+        sets["backstory"] = _backstory(backstory)
     try:
         async with conn.transaction():
             await conn.execute(_LOCK)
             now = await get_profile(conn, profile_id)
             if now is None:
                 raise LibraryError("not_found", "That profile no longer exists.")
-            if now.builtin and (enabled is False or text is not None):
+            if now.builtin and (enabled is False or text is not None or backstory is not None):
                 raise LibraryError("builtin", _BUILTIN_REFUSED)
             will_be_on = now.enabled if enabled is None else enabled
             if now.is_default and (enabled is False or is_default is False):
@@ -175,8 +188,8 @@ async def update_profile(conn, profile_id: str, *, name: str | None = None, desc
             row = await get_profile(conn, now.id)
     except errors.UniqueViolation:
         raise LibraryError("name_taken", "Another profile has that name.") from None
-    logger.info("assistant profile %s changed by %s (%s; %d chars)", row.id, updated_by or "-",
-                ", ".join(sorted(sets)) or "nothing", len(row.text))
+    logger.info("assistant profile %s changed by %s (%s; %d chars, backstory %d)", row.id, updated_by or "-",
+                ", ".join(sorted(sets)) or "nothing", len(row.text), len(row.backstory))
     return row
 
 

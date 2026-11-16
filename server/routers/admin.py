@@ -535,6 +535,7 @@ class ProfileNewIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=1000)
     text: str = Field(min_length=1, max_length=assistant_profile.PROFILE_MAX_CHARS)
+    backstory: str = Field(default="", max_length=2 * profile_library.BACKSTORY_MAX_CHARS)
 
 
 class ProfileChangeIn(BaseModel):
@@ -542,6 +543,7 @@ class ProfileChangeIn(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=1000)
     text: str | None = Field(default=None, min_length=1, max_length=assistant_profile.PROFILE_MAX_CHARS)
+    backstory: str | None = Field(default=None, max_length=2 * profile_library.BACKSTORY_MAX_CHARS)
     enabled: bool | None = None
     isDefault: bool | None = None
 
@@ -560,6 +562,7 @@ class ProfilePreviewIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(default="", max_length=200)
     text: str = Field(default="", max_length=assistant_profile.PROFILE_MAX_CHARS)
+    backstory: str = Field(default="", max_length=2 * profile_library.BACKSTORY_MAX_CHARS)
 
 
 def _text_warnings(text: str) -> list[str]:
@@ -572,8 +575,8 @@ def _text_warnings(text: str) -> list[str]:
     return warnings
 
 
-def _combined(house: str, text: str) -> str:
-    return "\n\n".join(t for t in (house, text) if t)
+def _combined(house: str, text: str, backstory: str = "") -> str:
+    return profile_text.compose(house, backstory, text)
 
 
 async def _library_view(conn) -> dict:
@@ -589,13 +592,15 @@ async def _library_view(conn) -> dict:
     file_text = assistant_profile._from_file() if file_on and all(r.builtin for r in rows) else ""
     return {
         "houseRules": {"text": house, "maxChars": profile_library.HOUSE_RULES_MAX_CHARS, "warnings": _text_warnings(house)},
-        "profiles": [{"id": r.id, "name": r.name, "description": r.description, "text": r.text, "enabled": r.enabled,
+        "profiles": [{"id": r.id, "name": r.name, "description": r.description, "text": r.text,
+                      "backstory": r.backstory, "enabled": r.enabled,
                       "isDefault": r.is_default, "builtin": r.builtin, "chats": chats.get(r.id, 0), "warnings": _text_warnings(r.text),
-                      "combinedChars": len(_combined(house, r.text))} for r in rows],
+                      "combinedChars": len(_combined(house, r.text, r.backstory))} for r in rows],
         # While the library is empty the file at CHAT_ASSISTANT_PROFILE_FILE is the profile; its text is offered so
         # an admin can start the first profile from it.
         "file": {"configured": file_on, "inUse": bool(file_text), "text": file_text},
         "maxChars": assistant_profile.PROFILE_MAX_CHARS,
+        "backstoryMaxChars": profile_library.BACKSTORY_MAX_CHARS,
         "nameMaxChars": profile_library.NAME_MAX_CHARS, "descriptionMaxChars": profile_library.DESCRIPTION_MAX_CHARS,
         "placeholders": list(profile_text.PLACEHOLDERS),
     }
@@ -618,7 +623,7 @@ async def add_assistant_profile(
     """Add a profile; the first one becomes the default. 409 name_taken, 422 invalid."""
     try:
         await profile_library.create_profile(conn, name=body.name, description=body.description, text=body.text,
-                                             updated_by=str(principal.user_id))
+                                             backstory=body.backstory, updated_by=str(principal.user_id))
     except profile_library.LibraryError as e:
         raise _library_refusal(e) from None
     return await _library_view(conn)
@@ -647,7 +652,7 @@ async def change_assistant_profile(
     try:
         await profile_library.update_profile(
             conn, profile_id, name=body.name, description=body.description, text=body.text, enabled=body.enabled,
-            is_default=body.isDefault, updated_by=str(principal.user_id))
+            is_default=body.isDefault, backstory=body.backstory, updated_by=str(principal.user_id))
     except profile_library.LibraryError as e:
         raise _library_refusal(e) from None
     return await _library_view(conn)
@@ -699,7 +704,8 @@ async def preview_assistant_profile(
 
     house = await profile_library.house_rules(conn)
     text = assistant_profile.clean_profile(body.text).strip()
-    combined = _combined(house, text)
+    backstory = assistant_profile.clean_profile(body.backstory).strip()[:profile_library.BACKSTORY_MAX_CHARS]
+    combined = _combined(house, text, backstory)
     now = datetime.now(timezone.utc)
     lead = profile_text.fill(combined, date=today_text(now, "UTC"), app=app_identity.current().name,
                              profile=" ".join(body.name.split()))

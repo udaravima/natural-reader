@@ -23,6 +23,15 @@ from typing import Literal
 from ..services import assistant_profile, profile_library
 
 PLACEHOLDERS = ("date", "app", "profile")
+# Before a profile's backstory (character profiles spec): the character's life sets its voice, never a fact.
+BACKSTORY_LABEL = ("Who you are (your own life and voice, never a source of facts about documents or the world):")
+
+
+def compose(house: str, backstory: str, text: str) -> str:
+    """House rules, the labelled backstory, the rules: what leads the system message, before filling. Empty parts
+    are left out."""
+    story = f"{BACKSTORY_LABEL}\n{backstory}" if backstory else ""
+    return "\n\n".join(t for t in (house, story, text) if t)
 _ANY = re.compile(r"\{\{\s*([^{}\n]{0,40}?)\s*\}\}")
 
 
@@ -40,11 +49,12 @@ class Resolved:
     house_rules: str
     source: Literal["library", "file", "none"]
     builtin: bool = False          # The Librarian with no file text: the app's first line carries its name
+    backstory: str = ""
 
     @property
     def combined(self) -> str:
-        """House rules, a blank line, the profile: what leads the system message, before filling."""
-        return "\n\n".join(t for t in (self.house_rules, self.text) if t)
+        """House rules, the labelled backstory, the rules: what leads the system message, before filling."""
+        return compose(self.house_rules, self.backstory, self.text)
 
 
 def fill(text: str, *, date: str, app: str, profile: str) -> Filled:
@@ -86,7 +96,7 @@ async def resolve(conn, *, session_id: str | None, asked_id: str | None) -> Reso
         text = "" if await _has_own_profiles(conn) else assistant_profile._from_file()
         return Resolved(row.id, row.name, text, house, "file" if text else "library", builtin=not text)
     if row is not None:
-        return Resolved(row.id, row.name, row.text, house, "library")
+        return Resolved(row.id, row.name, row.text, house, "library", backstory=row.backstory)
     cur = await conn.execute("SELECT EXISTS (SELECT 1 FROM assistant_profiles)")
     text = "" if (await cur.fetchone())[0] else assistant_profile._from_file()
     return Resolved(None, "", text, house, "file" if text else "none")
@@ -101,6 +111,6 @@ async def _has_own_profiles(conn) -> bool:
 async def largest(conn) -> str:
     """The longest house rules + profile any chat can be sent: what a context-size check must allow for."""
     house = await profile_library.house_rules(conn)
-    own = [r.text for r in await profile_library.list_profiles(conn) if not r.builtin]
+    own = [compose("", r.backstory, r.text) for r in await profile_library.list_profiles(conn) if not r.builtin]
     text = max(own, key=len) if own else assistant_profile._from_file()
     return "\n\n".join(t for t in (house, text) if t)
