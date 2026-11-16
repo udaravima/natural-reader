@@ -45,6 +45,11 @@ describe('SettingsDialog — a dialog over the current view', () => {
     expect(container.innerHTML).toBe('');
   });
 
+  it('shows which release is running at its foot, with the copyright the deployment set', () => {
+    render(<SettingsDialog {...bags()} appIdentity={{ name: 'Acme Docs', tagline: 't', copyright: '© 2026 Example Org' }} />);
+    expect(screen.getByText(/^Acme Docs \d+\.\d+\.\d+ · © 2026 Example Org$/)).toBeInTheDocument();
+  });
+
   it('is a modal dialog with one tab per section, and no Profile tab without a profile', () => {
     render(<SettingsDialog {...bags()} />);
     expect(screen.getByRole('dialog', { name: 'Settings' })).toHaveAttribute('aria-modal', 'true');

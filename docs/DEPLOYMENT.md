@@ -438,6 +438,32 @@ it works there, it's the cache. Kill it client-side (`chrome://flags/#enable-qui
 browsers to forget the stale h3 mapping. Do **not** touch `proxy_http_version
 1.1`; that governs nginx↔upstream, a different leg entirely.
 
+## What the app is called
+
+Three settings in `.env`, read once at start, so a change needs a restart:
+
+| Setting | Unset means | Limit |
+|---|---|---|
+| `APP_NAME` | Natural Reader | 40 characters |
+| `APP_TAGLINE` | an app for reading and listening to documents | 120 characters |
+| `APP_COPYRIGHT` | no copyright | 80 characters, shown as written |
+
+The name and tagline open every chat's rules ("You are the assistant in
+*name*, *tagline*."), so write the tagline to follow the name mid-sentence.
+The name is also the sign-in screen's title and the browser tab's. The sign-in
+screen and Settings end with one line: the name, the release number and the
+copyright.
+
+Choose `APP_NAME` at the first deployment. Three things do not follow it:
+
+- **The Keycloak sign-in page** shows the realm's display name. Set it in
+  Keycloak (Realm settings → Display name) to match.
+- **The read-aloud browser extension** is packaged on its own and keeps its
+  name.
+- **The favicon and icons** are files in the build.
+
+The browser reads these from `GET /v1/app`, which answers without sign-in.
+
 ## Model providers and chat streaming
 
 Chat turns run on the backend (`server/chat/`, `server/llm/`) and stream to

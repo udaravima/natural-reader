@@ -39,6 +39,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any, Iterable, Protocol
 
+from ..services import app_identity
 from ..services.doc_search import ReadableDoc
 
 if TYPE_CHECKING:   # project_scope imports display_name from here
@@ -91,9 +92,11 @@ DOC_SEARCH, DOC_READ, WEB = "search_documents", "read_document_pages", "web_sear
 EXTRACT, OUTLINE = "extract_from_documents", "document_outline"
 WEB_READ, WEB_OFFER = "read_web_pages", "offer_web_search"
 
-FIRST_LINE = "You are the assistant in Natural Reader, an app for reading and listening to documents."
-# After a deployment profile, which gives the assistant its own identity ("You are Ada…").
-FIRST_LINE_WITH_PROFILE = "You are working in Natural Reader, an app for reading and listening to documents."
+def first_line(has_profile: bool, identity: app_identity.Identity) -> str:
+    """Where the assistant is working. After a deployment profile, which gives the assistant its own identity
+    ("You are Ada…"), the line only places it. The name and tagline are the deployment's (services/app_identity.py)."""
+    lead = "You are working in" if has_profile else "You are the assistant in"
+    return f"{lead} {identity.name}, {identity.tagline}."
 
 
 def document_tools_offered(offered: Iterable[str]) -> bool:
@@ -327,7 +330,7 @@ def system_rules(doc: ReadableDoc | None, tools: Iterable[_Offered], *, has_pins
     names the project and the open document, and the steps send the model to the project's documents."""
     tools = list(tools)
     offered = {t.name for t in tools}
-    first = FIRST_LINE_WITH_PROFILE if profile else FIRST_LINE
+    first = first_line(bool(profile), app_identity.current())
     if today:
         first = f"{first} {today}"
     parts = [profile, first] if profile else [first]

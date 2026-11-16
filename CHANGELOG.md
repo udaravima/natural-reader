@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Name the app.** `APP_NAME`, `APP_TAGLINE` and `APP_COPYRIGHT` in `.env` set
+  what the app is called in chat, on the sign-in screen and on the browser
+  tab. The sign-in screen and Settings now end with one line: the name, the
+  release number and the copyright, if set. Unset, everything reads as before.
+  The read-aloud extension and the Keycloak sign-in page keep their own names.
 - **A first draft of the assistant profile.** In **Admin → Chat → Assistant**,
   describe the assistant you want and press **Generate**: the helper model
   writes a draft into the editor. Nothing is saved until you press Save, and

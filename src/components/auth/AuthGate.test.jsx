@@ -65,4 +65,17 @@ describe('AuthGate', () => {
       </AuthGate>);
     expect(screen.getByText('APP')).toBeInTheDocument();
   });
+
+  it("shows the deployment's name, tagline, version and copyright on the sign-in screen", () => {
+    render(<AuthGate state="anonymous" onLogin={() => {}} onLogout={() => {}} onRetry={() => {}}
+                     identity={{ name: 'Acme Docs', tagline: 'a library for contracts', copyright: '© 2026 Example Org' }} />);
+    expect(screen.getByRole('heading', { name: 'Acme Docs' })).toBeInTheDocument();
+    expect(screen.getByText('A library for contracts')).toBeInTheDocument();
+    expect(screen.getByText(/^Acme Docs \d+\.\d+\.\d+ · © 2026 Example Org$/)).toBeInTheDocument();
+  });
+
+  it('keeps the built-in name when no identity is given', () => {
+    render(<AuthGate state="anonymous" onLogin={() => {}} onLogout={() => {}} onRetry={() => {}} />);
+    expect(screen.getByRole('heading', { name: 'Natural Reader' })).toBeInTheDocument();
+  });
 });
