@@ -166,9 +166,10 @@ export default function ChatView({
     stickToBottomRef.current = dist < STICK_THRESHOLD;
   };
 
-  // Follow-along auto-scroll: only fires when the user is already near the bottom.
+  // Follow-along auto-scroll: only fires when the user is already near the bottom. An empty chat has nothing to
+  // follow: it starts at its top, where it asks who to talk to.
   useEffect(() => {
-    if (!stickToBottomRef.current) return;
+    if (!stickToBottomRef.current || messages.length === 0) return;
     const el = listRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
@@ -1546,9 +1547,11 @@ export function DocContextChip({
 
 function EmptyState({ theme, darkMode, reachable, selectedModel, profiles = [], profileId = '', onPickProfile = null }) {
   return (
-    <div className="h-full flex flex-col items-center justify-center text-center gap-4 px-6">
+    // "Safe" centring: centred while it fits, top-aligned once the profile cards make it taller than the list, so
+    // its top stays within scroll's reach on a phone.
+    <div className="min-h-full flex flex-col items-center justify-center-safe text-center gap-4 px-6">
       <div
-        className={`w-20 h-20 ${theme.bgTertiary} rounded-2xl flex items-center justify-center ${theme.textMuted} border-2 border-dashed ${theme.border}`}
+        className={`w-20 h-20 shrink-0 ${theme.bgTertiary} rounded-2xl flex items-center justify-center ${theme.textMuted} border-2 border-dashed ${theme.border}`}
       >
         <MessageSquare size={36} />
       </div>

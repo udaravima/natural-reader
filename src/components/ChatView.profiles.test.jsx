@@ -40,4 +40,30 @@ describe('ChatView — who answers', () => {
         render(<ChatView {...p} />);
         expect(p.refreshProfiles).toHaveBeenCalledTimes(1);
     });
+
+    // Found in the walk at 360 px: centred content taller than the list was cut off at the top, out of scroll's reach.
+    // jsdom has no layout, so this pins the rule: centre only while it fits ("safe" centring).
+    it('keeps the top of an empty chat reachable when the cards make it taller than the screen', () => {
+        render(<ChatView {...baseProps()} />);
+        const empty = screen.getByText('Who would you like to talk to?').closest('div.h-full, div.min-h-full');
+        expect(empty.className).toContain('justify-center-safe');
+    });
+
+    // Also from the walk: the list followed the bottom even when empty, so a phone opened on the last cards with the
+    // question above it out of sight. An empty chat starts at its top; a chat with messages still follows the bottom.
+    it('does not scroll an empty chat to its bottom', () => {
+        const set = vi.fn();
+        const desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+        Object.defineProperty(Element.prototype, 'scrollTop', { configurable: true, get: () => 0, set });
+        try {
+            const { unmount } = render(<ChatView {...baseProps()} />);
+            expect(set).not.toHaveBeenCalled();
+            unmount();
+            render(<ChatView {...baseProps({ messages: [{ id: 'u1', role: 'user', content: 'Hi' }] })} />);
+            expect(set).toHaveBeenCalled();
+        } finally {
+            if (desc) Object.defineProperty(Element.prototype, 'scrollTop', desc);
+            else delete Element.prototype.scrollTop;
+        }
+    });
 });
