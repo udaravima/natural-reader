@@ -952,6 +952,10 @@ by itself.
   keeps the first message as its title, and Generate title says why.
 - When you sent a file's real values to one model, the helper never reads
   that model's reply. The title comes from your words alone.
+- A chat that starts with a file and no words is titled from the file's name
+  and the reply.
+- On a phone or tablet, **Rename**, **✦ Generate title** and **Delete** always
+  show beside each chat. With a mouse they show when you point at the chat.
 
 **Picking a model:** the model picker in the chat sidebar is grouped by
 **provider**, each group labelled with the provider's name as your deployment

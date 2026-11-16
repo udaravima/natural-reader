@@ -35,10 +35,30 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe('useChatEngine — chat titles', () => {
-    it('reads whether the helper is on once', async () => {
+    it('reads whether the helper is on at the start, when asked, and when the window is looked at again', async () => {
+        const reads = () => apiFetch.mock.calls.filter((c) => c[2] === '/v1/settings/helper').length;
         const { result } = renderHook(() => useChatEngine(props()));
         await waitFor(() => expect(result.current.helperOn).toBe(true));
-        expect(apiFetch.mock.calls.filter((c) => c[2] === '/v1/settings/helper')).toHaveLength(1);
+        expect(reads()).toBe(1);
+        apiFetch.mockImplementation(async () => ({ ok: true, status: 200, json: async () => ({ on: false }) }));
+        await act(async () => { await result.current.refreshHelper(); });     // an admin turned it off meanwhile
+        expect(result.current.helperOn).toBe(false);
+        apiFetch.mockImplementation(async () => ({ ok: true, status: 200, json: async () => ({ on: true }) }));
+        await act(async () => { window.dispatchEvent(new Event('focus')); });
+        await waitFor(() => expect(result.current.helperOn).toBe(true));
+        expect(reads()).toBe(3);
+        apiFetch.mockRejectedValue(new Error('offline'));                     // no answer: what was known stays
+        await act(async () => { await result.current.refreshHelper(); });
+        expect(result.current.helperOn).toBe(true);
+    });
+
+    it('re-reads the helper setting when Generate title is refused', async () => {
+        const { result } = renderHook(() => useChatEngine(props()));
+        await waitFor(() => expect(result.current.helperOn).toBe(true));
+        apiFetch.mockImplementation(async () => ({ ok: true, status: 200, json: async () => ({ on: false }) }));
+        store.generateTitle.mockResolvedValueOnce({ ok: false, message: 'No helper model is set up.' });
+        await act(async () => { await result.current.generateTitle('s-1'); });
+        await waitFor(() => expect(result.current.helperOn).toBe(false));
     });
 
     it('re-reads the sessions every 4 s while a row says titlePending, and stops when none does', async () => {

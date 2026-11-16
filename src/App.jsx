@@ -431,6 +431,7 @@ export default function App() {
     deleteSession: chatDeleteSession,
     renameSession: chatRenameSession,
     helperOn: chatHelperOn,
+    refreshHelper: chatRefreshHelper,
     generateTitle: chatGenerateTitle,
     pins: chatPins,
     addPin: chatAddPin,
@@ -1337,6 +1338,7 @@ export default function App() {
             deleteSession={chatDeleteSession}
             renameSession={chatRenameSession}
             helperOn={chatHelperOn}
+            refreshHelper={chatRefreshHelper}
             generateTitle={chatGenerateTitle}
           />
         ) : inAdmin || inLibrary ? null : (

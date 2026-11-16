@@ -37,4 +37,21 @@ describe('ChatSidebar — Generate title', () => {
         expect(btn).toBeDisabled();
         expect(btn).toHaveAttribute('title', 'Writing a title…');
     });
+
+    it('asks afresh whether the helper is on each time the chat sidebar opens', () => {
+        const refreshHelper = vi.fn();
+        render(<ChatSidebar {...props({ refreshHelper })} />);
+        expect(refreshHelper).toHaveBeenCalledTimes(1);
+    });
+
+    // A phone has no hover: the row's buttons must show there (and to the keyboard), at a size a finger can hit.
+    it("shows a chat row's buttons without hover on touch screens and on keyboard focus", () => {
+        render(<ChatSidebar {...props()} />);
+        for (const name of ['Rename Budget questions', 'Generate title for Budget questions', 'Delete Budget questions']) {
+            const cls = screen.getByRole('button', { name }).className;
+            expect(cls).toContain('[@media(hover:none)]:opacity-100');
+            expect(cls).toContain('focus-visible:opacity-100');
+            expect(cls).toContain('pointer-coarse:p-[9px]');
+        }
+    });
 });

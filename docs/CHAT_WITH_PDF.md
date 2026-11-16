@@ -511,12 +511,20 @@ before migration 029 count as `person`.
   lands (3 minutes at most).
 - **Generate title** (the ✦ button beside Rename) asks again, from the first
   message and the latest exchange, and replaces any title.
+- **A message that is only files** is read as the files' names, "(sent a
+  file: budget.md)", so a chat that starts with a file still gets a title.
 - **When no title is asked for:** if the helper is a cloud model and the
   chat's own model is local, the conversation stays on this deployment's
   hardware.
 - **A reply that saw a file's real values** is held back from every other
-  model, the helper included: the title is then written from the person's
-  words alone.
+  model, the helper included: the automatic title is then written from the
+  person's words alone, and Generate title reads the latest reply that isn't
+  held.
+- **The row's buttons** (Rename, Generate title, Delete) show on hover with a
+  mouse. On a screen with no hover they always show, at a size a finger can
+  hit, and the title wraps to two lines. The sidebar asks again whether a
+  helper is set up each time it opens and when the window gets focus, so
+  Generate title appears or goes without a reload.
 - **On any failure** the title stays as it was, and nothing is shown. Calls
   are charged to the chat's owner as kind `helper`.
 

@@ -245,20 +245,29 @@ export function useChatEngine({
     }, [sessionStore]);
 
     // Chat titles (helper spec §6): whether a helper model is set up (it offers Generate title), and a re-read of the
-    // list while any chat says a title is being written, so the new title shows without a reload.
+    // list while any chat says a title is being written, so the new title shows without a reload. An admin can turn
+    // the helper on or off at any time, so the answer is read again when the chat sidebar opens (ChatSidebar), when
+    // the window is looked at again, and when Generate title is refused. No answer: what was known stays.
     const [helperOn, setHelperOn] = useState(false);
-    useEffect(() => {
-        let gone = false;
-        (async () => {
+    const helperRead = useRef(null);
+    const refreshHelper = useCallback(() => {
+        helperRead.current ??= (async () => {
             try {
                 const res = await apiFetch(apiHost, apiPort, '/v1/settings/helper');
-                if (!gone && res?.ok) setHelperOn(Boolean((await res.json())?.on));
+                if (res?.ok) setHelperOn(Boolean((await res.json())?.on));
             } catch {
-                // no answer: Generate title stays hidden; automatic titles don't depend on it
+                // Generate title stays as it was; automatic titles don't depend on it
+            } finally {
+                helperRead.current = null;
             }
         })();
-        return () => { gone = true; };
+        return helperRead.current;
     }, [apiHost, apiPort]);
+    useEffect(() => {
+        refreshHelper();
+        window.addEventListener('focus', refreshHelper);
+        return () => window.removeEventListener('focus', refreshHelper);
+    }, [refreshHelper]);
 
     useEffect(() => {
         if (!sessions.some((s) => s.titlePending)) return undefined;
@@ -270,11 +279,12 @@ export function useChatEngine({
         const out = await sessionStore.generateTitle(id);
         if (!out?.ok) {
             if (out?.message) showToast?.(out.message, 5000);
+            refreshHelper();   // refused: the helper may have been turned off since this page read it
             return false;
         }
         await refreshSessions();
         return true;
-    }, [sessionStore, refreshSessions, showToast]);
+    }, [sessionStore, refreshSessions, refreshHelper, showToast]);
 
     // The server writes the chat's log (sent, tool calls, errors…). Re-read it
     // after a turn so the sidebar's Log is current.
@@ -739,6 +749,7 @@ export function useChatEngine({
         renameSession,
         // Chat titles (helper spec §6)
         helperOn,
+        refreshHelper,
         generateTitle,
         // "Use this document" for the active chat (v2.4 Task E)
         docUse,
