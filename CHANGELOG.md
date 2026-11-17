@@ -35,6 +35,11 @@ All notable changes to this project will be documented in this file.
   file in Generate's four-part format and asks every question as that profile, so a character can be
   checked against the document before it goes live; `server/evals/fixtures/characters/seeya.md` is a
   storyteller with a full-length backstory. Each answer now shows the delay before its first word too.
+- **Talk shows where each round's wait went.** Under **What it heard**, every round now has a line a stage:
+  **Heard** (the speech engine's own seconds, where it runs, and the upload and wait around it), **Model** (first
+  word, whole reply, words a second) and **Voice** (who spoke, the engine's own seconds, the network, how many
+  sentences and the slowest), with the slowest stage marked. **Copy numbers** carries all of it. The transcription
+  and chat-voice replies gain `engine_seconds` and `where`; the voice reply also says `engine`.
 
 - **`docs/MAINTENANCE.md`, the jobs on a running server:** is it healthy,
   surviving reboots, applying a `.env` change, backup and restore with a

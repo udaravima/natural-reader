@@ -176,8 +176,23 @@ describe('TalkPanel', () => {
     expect(row).toHaveTextContent('Hello there');
     expect(row).toHaveTextContent('Speech');
     expect(row).toHaveTextContent('0.04');
-    expect(row).toHaveTextContent('Whisper 1.00 s');
+    expect(row).toHaveTextContent('Heard 1.00 s');
     expect(row).toHaveTextContent('First sound 2.90 s');
+  });
+
+  it('shows each stage on its own line with where it ran, and marks the slowest', () => {
+    const clip = {
+      ...CLIP, heardStartedAt: 1100, heardEngineSeconds: 0.7, heardWhere: 'Google Cloud', heardBy: 'chirp_2',
+      replyDoneAt: 6000, replyWords: 35,
+      sentences: [{ startedAt: 2800, doneAt: 3200, engine: 'kokoro', where: 'this server', engineSeconds: 0.3 }],
+    };
+    draw({ speech: speech({ clips: [clip] }) });
+    fireEvent.click(screen.getByText(/what it heard/i));
+    const row = screen.getByTestId('clip-1');
+    expect(row).toHaveTextContent('Heard 1.00 s · chirp_2 (Google Cloud) 0.70 s · upload and wait 0.30 s');
+    expect(row).toHaveTextContent('Model 0.80 s · first word 0.50 s · whole reply 4.00 s · 10 words/s');
+    expect(row).toHaveTextContent('Voice 0.40 s · kokoro (this server) 0.30 s · network 0.10 s · 1 sentence');
+    expect(screen.getByTestId('clip-1-slowest')).toHaveTextContent('Heard');
   });
 });
 
@@ -209,13 +224,51 @@ describe('TalkButton', () => {
 
 describe('clipTimes', () => {
   it('counts from when the person stopped talking, silence included, in seconds', () => {
-    expect(clipTimes(CLIP, 700)).toEqual({
+    expect(clipTimes(CLIP, 700)).toMatchObject({
       whisper: 1, model: 0.8, voice: 0.4, firstSound: 2.9,
     });
   });
 
   it('a clip that never reached the reply has no first sound', () => {
     expect(clipTimes({ endedAt: 1000, transcribedAt: 1800 }, 700)).toMatchObject({ whisper: 0.8, firstSound: null });
+  });
+});
+
+describe('clipTimes, stage by stage', () => {
+  const FULL = {
+    ...CLIP, heardStartedAt: 1100, heardEngineSeconds: 0.7, heardWhere: 'Google Cloud',
+    replyDoneAt: 6000, replyWords: 35,
+    sentences: [
+      { startedAt: 2800, doneAt: 3200, engine: 'kokoro', where: 'this server', engineSeconds: 0.3 },
+      { startedAt: 3000, doneAt: 4200, engine: 'kokoro', where: 'this server', engineSeconds: 1.0 },
+    ],
+  };
+
+  it('splits hearing into the engine\'s time and the rest (queue, upload, network)', () => {
+    expect(clipTimes(FULL, 700)).toMatchObject({ heardEngine: 0.7, heardRest: 0.3, heardWhere: 'Google Cloud' });
+  });
+
+  it('gives the model\'s first word, whole reply and words a second', () => {
+    // First word 0.5 s after the text went; the reply ran 3.5 s from its first word: 35 words, 10 a second.
+    expect(clipTimes(FULL, 700)).toMatchObject({ firstWord: 0.5, reply: 4, wordsPerSecond: 10 });
+  });
+
+  it('gives the first sentence\'s voice time split the same way, and the slowest sentence', () => {
+    expect(clipTimes(FULL, 700)).toMatchObject({
+      voiceEngine: 0.3, voiceRest: 0.1, voiceBy: 'kokoro', voiceWhere: 'this server', sentences: 2,
+      slowestSentence: 1.2,
+    });
+  });
+
+  it('names the slowest of the three stages before the first sound', () => {
+    expect(clipTimes(FULL, 700).slowest).toBe('heard');                       // 1.0, 0.8, 0.4
+    expect(clipTimes({ ...FULL, firstSentenceAt: 4500, firstAudioAt: 4900 }, 700).slowest).toBe('model');
+  });
+
+  it('leaves out what an older server or an unfinished round doesn\'t say', () => {
+    expect(clipTimes(CLIP, 700)).toMatchObject({
+      heardEngine: null, heardRest: null, reply: null, wordsPerSecond: null, voiceEngine: null, sentences: 0,
+    });
   });
 });
 

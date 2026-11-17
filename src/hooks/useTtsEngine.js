@@ -90,7 +90,7 @@ export function useTtsEngine({
     // selection read and voice preview. `synthesizeChat` is the chat's voice, for its replies and Talk: the server
     // answers it with Kokoro, in this person's voice, or with Google, when an admin chose that.
     const voiceToastAtRef = useRef(0);
-    const synthesizeAt = useCallback(async (path, text, { voice, speed, signal } = {}) => {
+    const synthesizeAt = useCallback(async (path, text, { voice, speed, signal, onMeta } = {}) => {
         try {
             const response = await apiFetch(apiHost, apiPort, path, {
                 method: 'POST',
@@ -114,6 +114,10 @@ export function useTtsEngine({
                 throw new Error('TTS Fail');
             }
             const data = await response.json();
+            // Who spoke it and the server's own seconds, for Talk's timings (an older server says neither).
+            if (data.engine_seconds != null) {
+                onMeta?.({ engine: data.engine, where: data.where, engineSeconds: data.engine_seconds });
+            }
             const b64 = data.audio_base64 || data.audio;
             const blob = await (await fetch(`data:audio/wav;base64,${b64}`)).blob();
             return URL.createObjectURL(blob);

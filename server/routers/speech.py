@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Callable
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/speech", tags=["speech"])
 
+_clock = time.monotonic   # a seam for the tests
 STATUS_TIMEOUT_S = 5.0   # bounds the engine's probe (a live GET for a remote engine); Overview's budget too
 # The largest body the POST route reads: the recording plus room for the multipart framing and the language field.
 MAX_BODY_BYTES = MAX_AUDIO_BYTES + 64 * 1024
@@ -270,6 +272,7 @@ async def transcribe(request: Request, access: SpeechAccess = Depends(speech_acc
             service.heal(engine, await asyncio.wait_for(engine.status(), STATUS_TIMEOUT_S))
         except Exception as e:  # noqa: BLE001 - the transcription below reports a broken engine in its own words
             logger.debug("The speech engine's status check before transcribing failed: %s", type(e).__name__)
+    started = _clock()   # the engine's own time (a wait for its turn included), for What it heard
     try:
         try:
             result = await service.transcribe_for(str(access.principal.user_id), audio, mime, code, engine=engine)
@@ -298,4 +301,7 @@ async def transcribe(request: Request, access: SpeechAccess = Depends(speech_acc
     except EngineFailed as e:
         raise refusal(503, "engine_failed", str(e) or "Voice input failed.") from None
     return {"text": result.text, "language": result.language, "duration_s": result.duration_s,
-            "no_speech": result.no_speech, "avg_logprob": result.avg_logprob, "model": _model_of(engine)}
+            "no_speech": result.no_speech, "avg_logprob": result.avg_logprob, "model": _model_of(engine),
+            # Seconds this server spent on the clip, and where the engine runs: the browser's own round trip minus
+            # this is the upload and the network. For a remote engine it is that service's latency.
+            "engine_seconds": round(_clock() - started, 3), "where": getattr(engine, "where", None)}

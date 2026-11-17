@@ -6,6 +6,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import time
 
 from fastapi import APIRouter, Depends, Request
 
@@ -35,11 +36,24 @@ async def voice_access(request: Request, open_conn=Depends(speech_conn)):
     return principal, options
 
 
+_clock = time.monotonic   # a seam for the tests
+
+
+def _where(engine: str) -> str:
+    return "Google Cloud" if engine == "google" else "this server"
+
+
+def _timing(engine: str, started: float) -> dict:
+    """Who spoke a sentence, where, and the seconds this server spent on it (Talk's What it heard): the browser's
+    round trip minus this is the network. For Google it is Google's latency."""
+    return {"engine": engine, "where": _where(engine), "engine_seconds": round(_clock() - started, 3)}
+
+
 @router.get("/voice")
 async def who_speaks(access=Depends(voice_access)):
     voice = chat_voice.current(access[1])
     out = {"engine": voice.engine, "voice": voice.voice,
-           "where": "Google Cloud" if voice.engine == "google" else "this server"}
+           "where": _where(voice.engine)}
     if voice.engine == "google":
         out["voices"] = list(chat_voice.GOOGLE_VOICES)   # each person picks one in Settings → Chat
     return out
@@ -51,8 +65,10 @@ async def speak(body: ChatVoiceRequest, http_request: Request, access=Depends(vo
     if not principal.can_read_aloud:
         raise refusal(403, "missing_capability", "Reading aloud needs read-aloud access.", capability="reader")
     voice = chat_voice.current(options)
+    started = _clock()
     if voice.engine == "kokoro":
-        return await endpoints.synthesize(body, http_request, principal)
+        out = await endpoints.synthesize(body, http_request, principal)   # its wait for the one voice included
+        return {**out, **_timing("kokoro", started)}
     if len(body.text.encode("utf-8")) > chat_voice.MAX_TEXT_BYTES:
         raise refusal(413, "too_long", "That's more than Google's voice reads at once.")
     try:
@@ -61,4 +77,5 @@ async def speak(body: ChatVoiceRequest, http_request: Request, access=Depends(vo
         wav, seconds = await chat_voice.google_speak(body.text, chosen, body.speed, os.environ)
     except chat_voice.GoogleVoiceError as e:
         raise refusal(e.status, "voice_failed", str(e)) from None
-    return {"audio_base64": base64.b64encode(wav).decode("ascii"), "duration_seconds": seconds}
+    return {"audio_base64": base64.b64encode(wav).decode("ascii"), "duration_seconds": seconds,
+            **_timing("google", started)}

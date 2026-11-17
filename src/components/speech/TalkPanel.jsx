@@ -22,6 +22,32 @@ const LEVEL_GROWTH = 0.45;   // how far the halo grows at full voice, as a share
 
 const secs = (value) => (value == null ? '–' : `${value.toFixed(2)} s`);
 
+const where = (name, place) => [name, place && `(${place})`].filter(Boolean).join(' ');
+
+/** A clip's three stages as text: the browser's time first, then what the server and the reply say about it. */
+function stageLines(clip, t) {
+  const heard = [secs(t.whisper)];
+  if (t.heardEngine != null) {
+    heard.push(`${where(clip.heardBy, t.heardWhere) || 'engine'} ${secs(t.heardEngine)}`,
+      `upload and wait ${secs(t.heardRest)}`);
+  }
+  const model = [secs(t.model)];
+  if (t.firstWord != null) model.push(`first word ${secs(t.firstWord)}`);
+  if (t.reply != null) model.push(`whole reply ${secs(t.reply)}`);
+  if (t.wordsPerSecond != null) model.push(`${Math.round(t.wordsPerSecond)} words/s`);
+  const voice = [secs(t.voice)];
+  if (t.voiceEngine != null) {
+    voice.push(`${where(t.voiceBy, t.voiceWhere) || 'engine'} ${secs(t.voiceEngine)}`, `network ${secs(t.voiceRest)}`);
+  }
+  if (t.sentences > 0) voice.push(`${t.sentences} sentence${t.sentences === 1 ? '' : 's'}`);
+  if (t.sentences > 1) voice.push(`slowest ${secs(t.slowestSentence)}`);
+  return [
+    { key: 'heard', label: 'Heard', text: heard.join(' · ') },
+    { key: 'model', label: 'Model', text: model.join(' · ') },
+    { key: 'voice', label: 'Voice', text: voice.join(' · ') },
+  ];
+}
+
 function ClipRow({ clip, silenceMs, theme }) {
   const times = clipTimes(clip, silenceMs);
   return (
@@ -39,10 +65,18 @@ function ClipRow({ clip, silenceMs, theme }) {
           {['Heard', clip.heardIn && `in ${clip.heardIn}`, clip.heardBy && `by ${clip.heardBy}`].filter(Boolean).join(' ')}
         </p>
       )}
-      <p className={`tabular-nums ${theme.textSecondary}`}>
-        {`Whisper ${secs(times.whisper)} · Model ${secs(times.model)} · Voice ${secs(times.voice)}`}
-        {` · First sound ${secs(times.firstSound)}`}
-      </p>
+      {/* One line a stage, the slowest marked: where the wait before the first sound went. */}
+      {stageLines(clip, times).map(({ key, label, text }) => (
+        <p key={key} className={`tabular-nums ${theme.textSecondary}`}>
+          <span data-testid={times.slowest === key ? `clip-${clip.id}-slowest` : undefined}
+            className={times.slowest === key ? 'font-bold text-amber-600' : 'font-bold'}>
+            {label}
+          </span>
+          {` ${text}`}
+          {times.slowest === key && ' · slowest'}
+        </p>
+      ))}
+      <p className={`tabular-nums ${theme.textSecondary}`}>{`First sound ${secs(times.firstSound)} after you stopped`}</p>
     </li>
   );
 }
