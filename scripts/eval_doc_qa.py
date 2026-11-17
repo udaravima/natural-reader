@@ -94,6 +94,10 @@ def main() -> int:
                         help="ask every case N times (1-10) and print a per-case tally")
     parser.add_argument("--prefetch", choices=("default", "auto", "on", "off"), default="default",
                         help="search the document before the model runs (CHAT_PREFETCH) for this run")
+    parser.add_argument("--character", metavar="FILE",
+                        help="answer as this character: a file in Generate's format (### NAME, ### DESCRIPTION, "
+                             "### BACKSTORY, ### RULES), saved as a profile in the scratch database. Default: The "
+                             "Librarian. server/evals/fixtures/characters/seeya.md has a full-length backstory")
     parser.add_argument("--storage-dir", metavar="PATH",
                         help="keep the document's file in PATH (default: a temporary folder, removed afterwards)")
     args = parser.parse_args()
@@ -107,15 +111,16 @@ def main() -> int:
         os.environ["CHAT_PREFETCH"] = args.prefetch   # after .env: the flag wins for this run
     # Only now: server modules read settings (chunk size, embedding input
     # limit) when they're imported, so .env has to be loaded first.
-    from server.evals.doc_qa import EvalSetupError, format_report, run_eval
+    from server.evals.doc_qa import EvalSetupError, format_report, load_character, run_eval
     try:
+        character = load_character(args.character) if args.character else None
         with eval_storage(args.storage_dir):
             runs = asyncio.run(run_eval(args.model, show_answers=args.show_answers, think=args.think,
-                                        repeat=args.repeat))
+                                        repeat=args.repeat, character=character))
     except EvalSetupError as e:
         print(f"Could not run the eval: {e}", file=sys.stderr)
         return 2
-    print(format_report(runs, model=args.model))
+    print(format_report(runs, model=args.model, character=character.name if character else None))
     every = [r for results in runs for r in results]
     if any(r.error for r in every):
         return 2

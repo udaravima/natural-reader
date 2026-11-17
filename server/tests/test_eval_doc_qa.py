@@ -298,7 +298,7 @@ async def test_run_eval_uses_auto_mode_unless_the_environment_says_otherwise_and
     import os
     seen = []
 
-    async def fake_inner(model, *, show_answers, think, repeat):
+    async def fake_inner(model, *, show_answers, think, repeat, character):
         seen.append(os.environ.get("CHAT_WEB_SEARCH"))
         if model == "boom":
             raise doc_qa.EvalSetupError("no database")
@@ -550,3 +550,108 @@ def test_an_exported_scratch_url_wins_over_a_real_one_in_dotenv(tmp_path):
     send an eval with an exported scratch URL to the real database."""
     out = _run_doc_main(tmp_path, "postgresql://u:p@localhost:5434/natural_reader_eval", dotenv_url=REAL_URL)
     assert out.returncode == 0, out.stderr
+
+
+# ---- character profiles step 3: the evaluation as a character, and the first word's delay ----
+
+def _seeya_path():
+    from pathlib import Path
+    return Path(__file__).resolve().parents[1] / "evals" / "fixtures" / "characters" / "seeya.md"
+
+
+def test_a_character_file_is_read_in_generates_four_part_format(tmp_path):
+    f = tmp_path / "ada.md"
+    f.write_text("### NAME\nAda\n### DESCRIPTION\nA patient tutor.\n### BACKSTORY\nYou taught at sea.\n"
+                 "### RULES\n- Be brief.\n", encoding="utf-8")
+    ch = doc_qa.load_character(f)
+    assert (ch.name, ch.description, ch.backstory, ch.text) == ("Ada", "A patient tutor.", "You taught at sea.",
+                                                               "- Be brief.")
+
+
+@pytest.mark.parametrize("body", ["", "### NAME\nAda\n### BACKSTORY\nYou taught.\n",   # no rules
+                                  "### BACKSTORY\nYou taught.\n### RULES\n- Be brief.\n"])  # no name
+def test_a_character_file_without_a_name_or_rules_is_refused(tmp_path, body):
+    f = tmp_path / "bad.md"
+    f.write_text(body, encoding="utf-8")
+    with pytest.raises(doc_qa.EvalSetupError):
+        doc_qa.load_character(f)
+
+
+def test_the_seeya_fixture_is_a_storyteller_near_the_backstory_cap():
+    from server.services.profile_library import BACKSTORY_MAX_CHARS
+    ch = doc_qa.load_character(_seeya_path())
+    assert ch.name == "Seeya" and ch.text.startswith("- ")
+    assert 5600 <= len(ch.backstory) <= BACKSTORY_MAX_CHARS
+    assert "document" not in ch.text.lower()     # its rules say nothing about documents: the app's steps must
+    # The trap for the absent case: a budget and a year in its life, never in the document.
+    assert "2030" in ch.backstory and "rupees" in ch.backstory
+
+
+async def test_the_character_is_added_once_and_updated_by_name_without_taking_the_default(db_conn):
+    from server.services import profile_library as lib
+    await lib.ensure_librarian(db_conn)
+    ch = doc_qa.Character("Ada", "A tutor.", "You taught at sea.", "- Be brief.")
+    first = await doc_qa.eval_profile(db_conn, ch)
+    again = await doc_qa.eval_profile(db_conn, ch._replace(backstory="You taught in a lighthouse."))
+    assert again.id == first.id and again.backstory == "You taught in a lighthouse." and not again.is_default
+    assert (await lib.default_profile(db_conn)).builtin
+
+
+async def test_a_turn_asks_as_the_character_and_times_the_first_word(monkeypatch):
+    import asyncio
+    from server.chat import orchestrator, store
+    seen = {}
+
+    async def fake_begin_turn(**kw):
+        return object()
+
+    async def fake_run_turn(req, claim, **kw):
+        seen["profile_id"] = req.profile_id
+        await asyncio.sleep(0.05)
+        yield {"type": "text-delta", "delta": "BLUE "}
+        await asyncio.sleep(0.05)
+        yield {"type": "text-delta", "delta": "HERON (page 2)."}
+
+    monkeypatch.setattr(store, "begin_turn", fake_begin_turn)
+    monkeypatch.setattr(orchestrator, "run_turn", fake_run_turn)
+    answer, _, error, _, _, first_word = await doc_qa._turn(
+        "What is the codename?", session_id="s", user_id="u", model="m", doc_id="d", think="off",
+        router=None, cfg=None, budget=None, profile_id="p-1")
+    assert seen["profile_id"] == "p-1" and answer == "BLUE HERON (page 2)." and error is None
+    assert 0.04 <= first_word < 0.09                 # the first delta, not the whole turn
+
+
+def test_the_report_names_the_character_and_gives_the_first_word_delays():
+    case = _kind("single-hop")
+    calls = [{"toolName": "search_documents", "round": 1}]
+    a = doc_qa.score(case, "BLUE HERON (page 2).", calls)
+    b = doc_qa.score(case, "BLUE HERON (page 2).", calls)
+    a.seconds, a.first_word, b.seconds, b.first_word = 9.0, 2.0, 12.0, 6.0
+    report = doc_qa.format_report([[a, b]], model="m", character="Seeya")
+    assert report.splitlines()[0] == "Document QA eval: m, as Seeya"
+    assert "9.0s (first word 2.0s)" in report
+    assert "first word: median 4.0s, slowest 6.0s over 2 answers" in report
+    assert doc_qa.format_report([[a]], model="m").splitlines()[0] == "Document QA eval: m"
+
+
+async def test_run_eval_passes_the_character_through(monkeypatch):
+    seen = []
+
+    async def fake_inner(model, *, show_answers, think, repeat, character):
+        seen.append(character)
+        return []
+
+    monkeypatch.setattr(doc_qa, "_run_eval", fake_inner)
+    ch = doc_qa.Character("Ada", "", "", "- Be brief.")
+    await doc_qa.run_eval("m", character=ch)
+    await doc_qa.run_eval("m")
+    assert seen == [ch, None]
+
+
+def test_the_script_has_a_character_flag():
+    import subprocess
+    import sys
+    from pathlib import Path
+    script = Path(__file__).resolve().parents[2] / "scripts" / "eval_doc_qa.py"
+    out = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True).stdout
+    assert "--character" in out
