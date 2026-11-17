@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.14.0] - 2026-11-17
+
 ### Added
 
 - **The Librarian, a profile that is always there.** The app's own careful
@@ -30,7 +32,6 @@ All notable changes to this project will be documented in this file.
   its own is followed, in a chat that can read documents, by "Whatever your
   role, an answer from the documents follows the steps below and cites its
   pages."
-
 - **The document evaluation can answer as a character.** `scripts/eval_doc_qa.py --character FILE` takes a
   file in Generate's four-part format and asks every question as that profile, so a character can be
   checked against the document before it goes live; `server/evals/fixtures/characters/seeya.md` is a
@@ -40,7 +41,6 @@ All notable changes to this project will be documented in this file.
   word, whole reply, words a second) and **Voice** (who spoke, the engine's own seconds, the network, how many
   sentences and the slowest), with the slowest stage marked. **Copy numbers** carries all of it. The transcription
   and chat-voice replies gain `engine_seconds` and `where`; the voice reply also says `engine`.
-
 - **`docs/MAINTENANCE.md`, the jobs on a running server:** is it healthy,
   surviving reboots, applying a `.env` change, backup and restore with a
   nightly job, upgrading, rolling back, rotating secrets and freeing disk
