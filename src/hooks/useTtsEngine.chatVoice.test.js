@@ -30,6 +30,19 @@ describe('the chat voice', () => {
         expect(JSON.parse(request.body)).toEqual({ text: 'Hello.', voice: 'bf_emma', speed: 1.2 });
     });
 
+    // Voice timings: the server says who spoke a sentence and how long it took; Talk asks to be told.
+    it('hands the server\'s own timing to whoever asked for it, and nothing from an older server', async () => {
+        const { result } = renderHook(() => useTtsEngine(props));
+        const onMeta = vi.fn();
+        await result.current.synthesizeChat('Hello.', { onMeta });
+        expect(onMeta).not.toHaveBeenCalled();
+        apiFetch.mockImplementation(async () => ({ ok: true, json: async () => ({
+            audio_base64: 'UklGRg==', engine: 'google', where: 'Google Cloud', engine_seconds: 0.8,
+        }) }));
+        await result.current.synthesizeChat('Hello.', { onMeta });
+        expect(onMeta).toHaveBeenCalledWith({ engine: 'google', where: 'Google Cloud', engineSeconds: 0.8 });
+    });
+
     // Spec 2026-11-04-speech-choices: the person's own Google voice, for when Google reads the replies.
     it('a chosen Google voice goes with the reply speech, and not with a document\'s', async () => {
         const { result } = renderHook(() => useTtsEngine({ ...props, googleVoice: 'Puck' }));

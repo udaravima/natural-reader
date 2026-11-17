@@ -4,6 +4,62 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [2.14.0] - 2026-11-17
+
+### Added
+
+- **The Librarian, a profile that is always there.** The app's own careful
+  document assistant is now a built-in profile beside the admin's: it can be
+  renamed, described, moved and made the default, never deleted or turned off.
+  Migration 031 adds the column; the server adds the row at start, last in the
+  list, without moving the default (on an empty library it is the default).
+- **Choose who answers where you chat.** A chip beside the message box,
+  "Talking to: …", names the profile in the chat, the chat beside the page and
+  Talk, and opens the list; a new chat offers the profiles as cards. The
+  sidebar's Profile picker is gone. The list is read again when a chat opens.
+- **Characters with a backstory.** A profile has a **Backstory** (up to 6,000
+  characters) beside its **Rules**; the model gets it after the house rules,
+  labelled as the character's own life and never a source of facts. Migration
+  032 adds the column.
+- **Generate writes a whole character** from up to 6,000 characters of notes:
+  name, description, backstory and rules, by the helper or any chat model you
+  pick (a cloud one is marked: the notes leave the machine). **✦ Generate**
+  writes the description from the profile, and **Try it** asks the unsaved
+  profile one question with a model you pick. New routes:
+  `POST /v1/admin/assistant/describe` and `/sample`; `/draft` takes `model` and
+  returns `name`, `description`, `backstory` and `text`.
+- **A character can't override the document steps.** A profile with text of
+  its own is followed, in a chat that can read documents, by "Whatever your
+  role, an answer from the documents follows the steps below and cites its
+  pages."
+- **The document evaluation can answer as a character.** `scripts/eval_doc_qa.py --character FILE` takes a
+  file in Generate's four-part format and asks every question as that profile, so a character can be
+  checked against the document before it goes live; `server/evals/fixtures/characters/seeya.md` is a
+  storyteller with a full-length backstory. Each answer now shows the delay before its first word too.
+- **Talk shows where each round's wait went.** Under **What it heard**, every round now has a line a stage:
+  **Heard** (the speech engine's own seconds, where it runs, and the upload and wait around it), **Model** (first
+  word, whole reply, words a second) and **Voice** (who spoke, the engine's own seconds, the network, how many
+  sentences and the slowest), with the slowest stage marked. **Copy numbers** carries all of it. The transcription
+  and chat-voice replies gain `engine_seconds` and `where`; the voice reply also says `engine`.
+- **`docs/MAINTENANCE.md`, the jobs on a running server:** is it healthy,
+  surviving reboots, applying a `.env` change, backup and restore with a
+  nightly job, upgrading, rolling back, rotating secrets and freeing disk
+  space. Backup and restore and rotating the Keycloak secrets moved there
+  from DEPLOYMENT.md, whose old headings point to them.
+
+### Fixed
+
+- **A newer Google key (`AQ.…`) is now hidden in provider errors,** like the
+  older `AIza…` keys. A Gemini error that echoed one back showed it whole.
+- **A project's page on a phone.** Below about 420 px its buttons squeezed the
+  project's name and the **Projects** link to nothing, and **Delete project** ran
+  off the screen. The buttons now go below the name and wrap.
+- **Docs: after changing `.env`, run `./startup.sh rebuild`.** DEPLOYMENT.md said
+  a restart would do after changing the Keycloak secrets. It doesn't: the backend
+  container reads `.env` only when it is created, so `podman restart` and
+  `./startup.sh start` keep the old values. The backend's own warning about a published
+  secret said "restart" too; it now says `./startup.sh rebuild`.
+
 ## [2.13.0] - 2026-11-16
 
 ### Added

@@ -69,10 +69,10 @@ export function useSpeechWindow(props) {
     return res.json();
   }, [latest]);
 
-  const synthesize = useCallback((text, signal) => {
+  const synthesize = useCallback((text, signal, onMeta) => {
     const { synthesizeText, voice, speed, requestTimeout } = latest.current;
     return synthesizeText(text, {
-      voice, speed, signal: AbortSignal.any([signal, AbortSignal.timeout(requestTimeout * 1000)]),
+      voice, speed, onMeta, signal: AbortSignal.any([signal, AbortSignal.timeout(requestTimeout * 1000)]),
     });
   }, [latest]);
 

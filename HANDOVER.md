@@ -4,7 +4,17 @@
 
 ---
 
-## 2026-11-16 — v2.13.0: profile library, helper model, bulk upload (START HERE)
+## 2026-11-17 — v2.14.0: The Librarian, characters with a backstory, choosing who answers (START HERE)
+
+**State.** Release v2.14.0 prepared on `development` (CHANGELOG `[2.14.0]`, `package.json`, `docs/Release_notes/RELEASE_NOTES_v2.14.0.md`). In it since v2.13.0: the fixes after 2.13.0 (the `AQ.` key, a project's page on a phone, `./startup.sh rebuild` after `.env`), `docs/MAINTENANCE.md`, The Librarian (031) and the **Talking to** chip with cards in a new chat, characters with a backstory (032) and Generate for a whole character, the document-steps line after a profile's own text, the evaluation as a character (`--character`, first-word timing), and Talk's per-stage timings. The live server ran an untagged build of `feat/voice-timings` before this. Walked on the merged tree (scratch backend, `gemma4:e4b`): fresh install, Generate, cards and chip, the side panel as a character with the prompt order checked on the wire, 360 px, and Talk.
+
+**Decided.** No reminder near the end of the prompt for small models (built, measured, dropped: a bigger model or a GPU fixes late-chat drift, and the reminder once leaked into a rewrite); the patch is in the scratchpad only.
+
+**Still owed.** Ollama cloud is out of credit (HTTP 402), so profiles on a cloud model are unwalked again; the helper's one-line description can come out in the character's own voice; rotate the two published Keycloak client secrets in the live `.env`; GPU work parked. The final reviews of steps 1 to 3 and voice timings were self-reviews.
+
+---
+
+## 2026-11-16 — v2.13.0: profile library, helper model, bulk upload
 
 **State.** Release v2.13.0 prepared on `development` (CHANGELOG `[2.13.0]`, `package.json`, `docs/Release_notes/RELEASE_NOTES_v2.13.0.md`). In it since v2.12.0: the indexing queue (027), bulk upload, the helper model (028: tags and descriptions; 029: chat titles; the profile generator), PDF | Both | MD, the app name from `.env`, the model-switch warning, and the profile library (030: house rules, named profiles, a picker per chat, `{{date}}` `{{app}}` `{{profile}}`). Gates: pytest 3559 passed / 16 skipped (scratch :5434), vitest 2081 in 174 files, eslint 0 errors, build OK, CI green on `development`. **Not deployed:** the live server still runs older code; deploying needs a backup, migrations 027–030, both halves rebuilt.
 

@@ -1,6 +1,6 @@
 # Docs index — read in this order
 
-Everything about the project, organized by audience, current as of `v2.13.0` plus `[Unreleased]` on `development`.
+Everything about the project, organized by audience, current as of `v2.14.0` plus `[Unreleased]` on `development`.
 If you're touching a feature, its "owner" doc below is the first thing to read.
 
 | # | Doc | Audience | What it owns |
@@ -9,6 +9,7 @@ If you're touching a feature, its "owner" doc below is the first thing to read.
 | 2 | [../README.md](../README.md) | **Users + operators** | Feature tour, tech stack, getting started (all `startup.sh` modes), the API tables, threat model, reverse-proxy/nginx + hardening recipes |
 | 3 | [../deploy/README.md](../deploy/README.md) | **Operators (dev rig)** | The local Keycloak OIDC rig end-to-end: containers, env vars, the two-user walkthrough, prod-like nginx variant |
 | 4 | [DEPLOYMENT.md](DEPLOYMENT.md) | **Operators (production)** | Serving on real hostnames behind nginx + TLS: the same-origin topology, the two vhost samples, the five config values that must agree, the traps (KC proxy headers, live-realm ≠ export, COOKIE_SECURE, upload body size, stale QUIC), voice input (settings, cost, models, the proxy), the speech window behind Talk, and optional Google Cloud speech (setup, the two recognizers that work, measured speed) |
+| 4a | [MAINTENANCE.md](MAINTENANCE.md) | **Operators (running it)** | The routine jobs on a running server: is it healthy, surviving reboots, applying a `.env` change (`rebuild`, not a restart), backup and restore with a nightly job, upgrading, rolling back, rotating secrets, freeing disk space |
 | 5 | [ARCHITECTURE.md](ARCHITECTURE.md) | **Developers** | The whole system map: same-origin rule, frontend hooks/components, backend wiring/auth/routers/services, migrations, end-to-end flows, invariants & traps |
 | 6 | [IDENTITY_AND_ROLES.md](IDENTITY_AND_ROLES.md) | **Developers** | How Keycloak users map to app users: the two stores, the `(iss, sub)` join key, JIT provisioning branches, capabilities (Keycloak realm roles, mirrored into `users.capabilities`, enforced by `require_capability`), the `natural-reader-admin` service account, credentials, create/delete propagation rules (live-verified) |
 | 7 | [LIBRARY.md](LIBRARY.md) | **Developers** | The document library: content, entries and placements, the `can_read` access model (404-indistinguishable), sharing, projects, versions, the schema migrations, the docs + projects API surface and the Library view |
@@ -26,6 +27,7 @@ Quick routing:
   if it's a *deployment* symptom (redirect_uri error, mixed content, cookie never
   sticks) → DEPLOYMENT.md § traps.
 - "How do I deploy to real hostnames with TLS?" → DEPLOYMENT.md.
+- "How do I back up, upgrade, or rotate a secret?" → MAINTENANCE.md.
 - "What env vars does the server take?" → `../.env.example` (annotated) then
   DEPLOYMENT.md § Model providers.
 - "How do I let Google hear and speak?" → DEPLOYMENT.md § Google Cloud speech;

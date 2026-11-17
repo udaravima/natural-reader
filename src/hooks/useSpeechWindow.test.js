@@ -52,6 +52,25 @@ describe('useSpeechWindow', () => {
     expect(result.current.clips[0]).toMatchObject({ verdict: 'speech', text: 'Hello there' });
   });
 
+  // Voice timings: a round keeps the engine's own seconds for hearing and for each spoken sentence.
+  it('a round keeps what the server says each stage took', async () => {
+    listen.mockResolvedValue(mic());
+    apiFetch.mockResolvedValue(transcribed({
+      text: 'Hello there', no_speech: 0.02, avg_logprob: -0.2, engine_seconds: 1.1, where: 'Google Cloud',
+    }));
+    const synthesizeText = vi.fn(async (text, { onMeta }) => {
+      onMeta({ engine: 'kokoro', where: 'this server', engineSeconds: 0.4 });
+      return null;
+    });
+    const sendMessage = vi.fn(async (text, files, { spoken }) => { spoken.onText('Hi there. '); return { sent: true }; });
+    const { result } = renderHook(() => useSpeechWindow(baseProps({ synthesizeText, sendMessage })));
+    await act(async () => { await result.current.start(); });
+    await act(async () => { listen.mock.calls[0][0].onSpeechEnded(new Float32Array(1600)); });
+    await waitFor(() => expect(result.current.clips[0]?.sentences?.[0]?.doneAt).toBeDefined());
+    expect(result.current.clips[0]).toMatchObject({ heardEngineSeconds: 1.1, heardWhere: 'Google Cloud', replyWords: 2 });
+    expect(result.current.clips[0].sentences[0]).toMatchObject({ engine: 'kokoro', engineSeconds: 0.4 });
+  });
+
   it('the person\'s own Speech language wins over the window\'s', async () => {
     listen.mockResolvedValue(mic());
     apiFetch.mockResolvedValue(transcribed({ text: '', no_speech: null, avg_logprob: null }));

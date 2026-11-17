@@ -16,9 +16,11 @@ import hashlib
 import os
 import random
 import re
+import statistics
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import Any, NamedTuple
 
 from ..services.extract import SENTENCES_PER_PAGE   # a text file's reader page
 
@@ -155,6 +157,7 @@ class Result:
     seconds: float = 0.0              # the case question's turn, wall clock
     trail: bool | None = None         # fact cases: a document tool ran, or prefetch supplied passages
     skipped: str | None = None        # why the case couldn't be asked on this deployment
+    first_word: float | None = None   # seconds from sending the question to its first text; None: no text
     offered: bool = False             # the model called offer_web_search (the turn ends with the offer)
     mode: str = "auto"                # the deployment's web search mode for the run (ask | auto | off)
 
@@ -259,16 +262,18 @@ def _verdict(r: Result) -> str:
     return "PASS (no trail)" if r.trail is False else "PASS"
 
 
-def format_report(runs: list[list[Result]], *, model: str) -> str:
-    """One line per case per run; with several runs, a per-case tally."""
-    lines = [f"Document QA eval: {model}"]
+def format_report(runs: list[list[Result]], *, model: str, character: str | None = None) -> str:
+    """One line per case per run; with several runs, a per-case tally. `character`: the profile the run
+    answered as (None: the deployment's default, The Librarian on a scratch database)."""
+    lines = [f"Document QA eval: {model}" + (f", as {character}" if character else "")]
     for i, results in enumerate(runs, start=1):
         if len(runs) > 1:
             lines.append(f"-- run {i}")
         for r in results:
             tools = ",".join(r.tools) or "-"
-            lines.append(f"{_verdict(r):<5} {r.case.kind:<12} {r.seconds:.1f}s rounds={r.rounds} tools={tools}  "
-                         f"{_detail(r)}")
+            first = f" (first word {r.first_word:.1f}s)" if r.first_word is not None else ""
+            lines.append(f"{_verdict(r):<5} {r.case.kind:<12} {r.seconds:.1f}s{first} rounds={r.rounds} "
+                         f"tools={tools}  {_detail(r)}")
     every = [r for results in runs for r in results]
     asked = [r for r in every if not r.skipped]
     if len(runs) > 1:
@@ -281,6 +286,10 @@ def format_report(runs: list[list[Result]], *, model: str) -> str:
     if facts:
         lines.append(f"inline citations {sum(r.cited_inline for r in facts)}/{len(facts)} "
                      "(the model's own \"(page N)\"; chips count for a pass)")
+    firsts = [r.first_word for r in asked if r.first_word is not None]
+    if firsts:
+        lines.append(f"first word: median {statistics.median(firsts):.1f}s, slowest {max(firsts):.1f}s "
+                     f"over {len(firsts)} answers")
     skipped = len(every) - len(asked)
     lines.append(f"{sum(r.passed for r in asked)}/{len(asked)} passed" + (f" ({skipped} skipped)" if skipped else ""))
     return "\n".join(lines)
@@ -289,6 +298,44 @@ def format_report(runs: list[list[Result]], *, model: str) -> str:
 # ---------- the live run ----------
 
 EVAL_ISS, EVAL_SUB = "natural-reader-eval", "doc-qa"
+
+
+class Character(NamedTuple):
+    """A profile to answer as (character profiles spec, "Proof before it's called done"): Generate's four parts."""
+    name: str
+    description: str
+    backstory: str
+    text: str           # the rules
+
+
+def load_character(path: str | Path) -> Character:
+    """A character from a file in the format Generate writes ("### NAME", "### DESCRIPTION", "### BACKSTORY",
+    "### RULES"), so a draft can be saved as a file and evaluated. Cleaned and cut like a draft. Raises
+    EvalSetupError without a name or rules: the profile library would refuse it."""
+    from ..services.profile_draft import parse_draft
+    try:
+        body = Path(path).read_text(encoding="utf-8")
+    except OSError as e:
+        raise EvalSetupError(f"The character file can't be read ({type(e).__name__}).") from e
+    draft = parse_draft(body)
+    if draft is None or not draft.name or not draft.text:
+        raise EvalSetupError("The character file needs a \"### NAME\" and \"### RULES\" part.")
+    return Character(draft.name, draft.description, draft.backstory, draft.text)
+
+
+async def eval_profile(conn, character: Character):
+    """The character as a profile in the scratch database: added the first time, brought up to date by name after
+    (an earlier run's edits are overwritten). Never the default: a run without a character stays The Librarian."""
+    from ..services import profile_library as lib
+    same = next((p for p in await lib.list_profiles(conn) if p.name == character.name), None)
+    try:
+        if same is None:
+            return await lib.create_profile(conn, name=character.name, description=character.description,
+                                            text=character.text, backstory=character.backstory, updated_by=None)
+        return await lib.update_profile(conn, same.id, description=character.description, text=character.text,
+                                        backstory=character.backstory, enabled=True, updated_by=None)
+    except lib.LibraryError as e:
+        raise EvalSetupError(f"The character can't be saved as a profile: {e.message}") from e
 
 
 class EvalSetupError(RuntimeError):
@@ -319,22 +366,29 @@ async def eval_user(conn, *, sub: str = EVAL_SUB, email: str = "doc-qa-eval@exam
 
 
 async def _turn(text: str, *, session_id: str, user_id: str, model: str, doc_id: str, think: str,
-                router, cfg, budget) -> tuple[str, list[dict[str, Any]], str | None, bool, list[int]]:
-    """One chat turn through the real path: (answer, tool calls, error, prefetched, chip pages)."""
+                router, cfg, budget, profile_id: str | None = None
+                ) -> tuple[str, list[dict[str, Any]], str | None, bool, list[int], float | None]:
+    """One chat turn through the real path, as `profile_id` (None: the chat's own, else the default):
+    (answer, tool calls, error, prefetched, chip pages, seconds to the first text or None)."""
+    import time
     from contextlib import aclosing
 
     from ..chat import store
     from ..chat.orchestrator import TurnRequest, run_turn
     from ..llm.types import CallSettings
 
-    answer, calls, error, prefetched, chips = "", [], None, False, []
+    answer, calls, error, prefetched, chips, first_word = "", [], None, False, [], None
+    started = time.monotonic()
     claim = await store.begin_turn(session_id=session_id, user_id=user_id, model_id=model,
                                    text=text, attachments=[], new_session_pins=None)
     req = TurnRequest(user_id=user_id, session_id=session_id, model_id=model, text=text,
-                      attachments=(), settings=CallSettings(think=think), doc_id=doc_id, timezone="UTC")
+                      attachments=(), settings=CallSettings(think=think), doc_id=doc_id, timezone="UTC",
+                      profile_id=profile_id)
     async with aclosing(run_turn(req, claim, router=router, cfg=cfg, deployment_budget=budget)) as events:
         async for ev in events:
             if ev["type"] == "text-delta":
+                if first_word is None and ev["delta"].strip():
+                    first_word = time.monotonic() - started
                 answer += ev["delta"]
             elif ev["type"] == "tool-input-available":
                 calls.append(ev)
@@ -344,7 +398,7 @@ async def _turn(text: str, *, session_id: str, user_id: str, model: str, doc_id:
                 prefetched = prefetched or any(i.get("kind") == "prefetch" for i in ev.get("items") or [])
             elif ev["type"] == "error":
                 error = ev.get("code") or "error"
-    return answer, calls, error, prefetched, chips
+    return answer, calls, error, prefetched, chips, first_word
 
 
 async def _ask(case: Case, *, web_offered: bool, mode: str, **turn) -> Result:
@@ -360,11 +414,12 @@ async def _ask(case: Case, *, web_offered: bool, mode: str, **turn) -> Result:
     session_id = f"eval-{uuid.uuid4()}"
     try:
         for text in case.setup:
-            _, _, error, _, _ = await _turn(text, session_id=session_id, **turn)
+            _, _, error, _, _, _ = await _turn(text, session_id=session_id, **turn)
             if error:
                 return score(case, "", [], error=error)
         started = time.monotonic()
-        answer, calls, error, prefetched, chips = await _turn(case.question, session_id=session_id, **turn)
+        answer, calls, error, prefetched, chips, first_word = await _turn(case.question, session_id=session_id,
+                                                                          **turn)
         seconds = time.monotonic() - started
     finally:
         # Even on an error or Ctrl-C: the eval leaves no chats behind.
@@ -373,6 +428,7 @@ async def _ask(case: Case, *, web_offered: bool, mode: str, **turn) -> Result:
     result = score(case, answer, calls, error=error, prefetched=prefetched, web_offered=web_offered,
                    chip_pages=chips, mode=mode)
     result.seconds = seconds
+    result.first_word = first_word
     return result
 
 
@@ -398,22 +454,21 @@ def web_mode(mode: str):
 
 
 async def run_eval(model: str, *, show_answers: bool = False, think: str = "off",
-                   repeat: int = 1) -> list[list[Result]]:
+                   repeat: int = 1, character: Character | None = None) -> list[list[Result]]:
     """This evaluation measures the web tools: its "live" question is answered by a search the model runs in
     "auto" mode, and by the offer to search in "ask" mode (the app's default since C2.1 Task 13; the case is
     scored for the mode of the run). The run is in "auto" mode unless CHAT_WEB_SEARCH says otherwise
     (CHAT_WEB_SEARCH=ask measures the default); the environment is put back afterwards."""
     with web_mode(os.environ.get("CHAT_WEB_SEARCH") or "auto"):
-        return await _run_eval(model, show_answers=show_answers, think=think, repeat=repeat)
+        return await _run_eval(model, show_answers=show_answers, think=think, repeat=repeat, character=character)
 
 
-async def _run_eval(model: str, *, show_answers: bool, think: str, repeat: int) -> list[list[Result]]:
+async def _run_eval(model: str, *, show_answers: bool, think: str, repeat: int,
+                    character: Character | None) -> list[list[Result]]:
     """Index the fixture for the eval user and ask every question through
     run_turn, started and stopped as the app does. Needs DATABASE_URL, the
     embedding model and `model` reachable; raises EvalSetupError otherwise.
     The document stays indexed, so a second run doesn't re-embed it."""
-    from pathlib import Path
-
     from ..chat import orchestrator
     from ..chat.config import get_chat_config
     from ..db import close_db, get_pool, init_db
@@ -436,6 +491,7 @@ async def _run_eval(model: str, *, show_answers: bool, think: str, repeat: int) 
             raise EvalSetupError(f"No provider serves {model!r}: {e}") from e
         async with get_pool().connection() as conn:
             user_id = await eval_user(conn)
+            profile_id = (await eval_profile(conn, character)).id if character else None
             path = Path(doc_storage.storage_dir()) / f"{fixture.doc_id}.txt"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(fixture.text, encoding="utf-8")
@@ -467,7 +523,7 @@ async def _run_eval(model: str, *, show_answers: bool, think: str, repeat: int) 
             for case in fixture.cases:
                 result = await _ask(case, web_offered=web_offered, mode=mode, user_id=user_id, model=canonical,
                                     doc_id=fixture.doc_id, think=think, router=router, cfg=get_chat_config(),
-                                    budget=model_router.get_config().daily_token_budget)
+                                    budget=model_router.get_config().daily_token_budget, profile_id=profile_id)
                 results.append(result)
                 if show_answers:
                     print(f"--- {case.kind}: {case.question}\n{result.answer}\n")

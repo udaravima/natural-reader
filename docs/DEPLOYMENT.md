@@ -68,7 +68,7 @@ migration commits on its own, and a worker only serves once they have all run.
 | Command | Effect |
 | --- | --- |
 | `./startup.sh start` | builds the image if needed, then runs Postgres, SearXNG, Keycloak (see below) and the backend, all detached; a backend still on an older image is recreated on the new one |
-| `./startup.sh rebuild` | ship new code: rebuild the image, recreate only the backend; Postgres and Keycloak keep running (after a `stop`, they are started first) |
+| `./startup.sh rebuild` | ship new code: rebuild the image, recreate only the backend; Postgres and Keycloak keep running (after a `stop`, they are started first). **Also run it after changing `.env`:** the backend container reads `.env` only when it is created, so `start` (which reuses a container whose image hasn't changed) and `podman restart` keep the old values |
 | `./startup.sh logs` | follow the backend's output (the rotating `server.log` is still written under `LOG_DIR`) |
 | `./startup.sh stop` | stop and remove the containers; volumes and `data/` stay |
 
@@ -77,12 +77,9 @@ migration commits on its own, and a worker only serves once they have all run.
 
 ### Surviving reboots
 
-Every service uses `restart: always`. On **podman**, run `./startup.sh
-enable-autostart` once: it enables lingering for your user (user services run
-without a login session) and `podman-restart.service`, which restarts only
-containers whose restart policy is `always`. On **Docker**, the daemon restarts
-them itself once it starts at boot (`systemctl enable docker`). `stop` removes
-the containers, so a deliberate stop stays stopped.
+On podman, run `./startup.sh enable-autostart` once; Docker restarts the
+containers when its daemon starts. Details and the check:
+[MAINTENANCE.md, Surviving reboots](MAINTENANCE.md#surviving-reboots).
 
 ### Host networking
 
@@ -308,35 +305,8 @@ your network (a phone at `192.168.x.x:5173`). Turn sign-in on for that.
 
 ### Rotating the Keycloak secrets
 
-**Do this if your realm was created by v2.11.0 or earlier.** Until then
-`deploy/keycloak/realm-export.json` contained working values: the secret of the
-sign-in client, the secret of `natural-reader-admin` (a service account that can
-create users and reset anyone's password), the password of the seeded
-`admin-user` (an app admin), and compose set Keycloak's master admin to
-`admin`/`admin`. They are public. Keycloak's token endpoint has to be reachable
-for sign-in to work, so anyone who can reach it can use them.
-
-The backend tells you: at start it logs an error naming each variable that
-still holds a published value, and Admin → Deployment shows "set, but to a
-published default: rotate it".
-
-1. **The two client secrets.** In the Keycloak admin console: realm
-   `natural-reader` → Clients → `natural-reader` → Credentials → **Regenerate**;
-   the same for `natural-reader-admin`. Put the new values in `.env` as
-   `OIDC_CLIENT_SECRET` and `KC_ADMIN_CLIENT_SECRET`, then `./startup.sh rebuild`
-   (or restart the backend). Sign-in fails between the two steps, so do them
-   together.
-2. **`admin-user`.** Once your own account is an admin, delete it (Users →
-   `admin-user` → Delete), or give it a new password under Credentials.
-3. **The master admin.** Sign in to the admin console as `admin`, then change the
-   password (top right → Manage account), or create a new admin in the `master`
-   realm and delete `admin`.
-4. Check: restart the backend and look for the error line; it should be gone.
-
-A fresh install needs none of this: `./startup.sh` generates all four values into
-`.env`, and the realm file only holds `${PLACEHOLDERS}` that Keycloak fills from
-them when it first creates the realm. They are read once. Changing them in `.env`
-later does not change an existing realm; use the steps above.
+Moved to [MAINTENANCE.md, Rotating the Keycloak secrets](MAINTENANCE.md#rotating-the-keycloak-secrets).
+Do it if your realm was created by v2.11.0 or earlier.
 
 ### Trap 3 — the session cookie silently vanishes (COOKIE_SECURE / same origin)
 
@@ -1940,69 +1910,9 @@ an admin added later doesn't get older ones.
 
 ## Backup and restore
 
-**The trap: Keycloak lives in the app's database.** Its realm (accounts,
-passwords, clients) is the `keycloak` schema of the `natural_reader` database,
-so one dump holds both, and restoring an older dump rolls Keycloak back too.
-Losing that schema without a backup is worse than it looks: a new realm gives
-every person a new identity id, and the app then refuses each existing person
-at sign-in with HTTP 409 "email already linked to another identity" until
-their old link is cleared by hand.
-
-What to keep, and what losing it costs:
-
-| What | Where | Without it |
-|---|---|---|
-| The database `natural_reader` | volume `pgdata`, container `natural-reader-postgres` | Everything: people, chats, projects, settings, documents' text and passages, and Keycloak's realm |
-| Uploaded files and their pictures | `DOC_STORAGE_DIR` on the host (default `./data/pdfs`; pictures in `figures/`) | A document can't be opened in the reader, re-indexed or converted ("Upload the file again first"); its passages still answer chat questions |
-| `.env` | the checkout | The secrets. A new `SESSION_SECRET` only signs everyone out; a new `OIDC_CLIENT_SECRET` must then match the one the restored realm holds, or sign-in fails |
-| `CHAT_ASSISTANT_PROFILE_FILE`, `SPEECH_MODELS_FILE` | wherever `.env` points, if set | Those settings |
-| Volume `cache` | models (Hugging Face, converted speech models) | Nothing: downloaded again, slowly |
-
-The database and the files belong together: a document uploaded or deleted
-between the dump and the copy leaves a row without its file, or a file nothing
-points to. Stopping the backend for the minute it takes gives a matching pair.
-The dump alone is consistent either way (`pg_dump` reads one snapshot).
-
-**Backing up** (with docker, write `docker` for `podman`):
-
-```bash
-B=~/nr-backup/$(date +%F); mkdir -p "$B"
-podman stop natural-reader-backend          # a quiet minute: files and rows match
-podman exec natural-reader-postgres pg_dump -U natural_reader -Fc natural_reader > "$B/natural_reader.dump"
-rsync -a data/pdfs/ "$B/pdfs/"              # your DOC_STORAGE_DIR
-install -m 600 .env "$B/env"                # secrets: keep this copy private
-podman start natural-reader-backend
-```
-
-Keep a copy off the machine; a backup on the same disk goes with it.
-
-**Restoring** (the containers exist and Postgres is running; on a new machine,
-start the stack once first so they do):
-
-```bash
-podman stop natural-reader-backend natural-reader-keycloak
-podman exec natural-reader-postgres dropdb -U natural_reader --force natural_reader
-podman exec natural-reader-postgres createdb -U natural_reader natural_reader
-podman exec -i natural-reader-postgres pg_restore -U natural_reader -d natural_reader --no-owner < "$B/natural_reader.dump"
-rsync -a --delete "$B/pdfs/" data/pdfs/
-podman start natural-reader-keycloak natural-reader-backend
-```
-
-- **`-i` on the `pg_restore` line is not optional.** Without it podman passes no
-  input, and `pg_restore` stops with "input file is too short".
-- `dropdb` deletes the current database. Make a fresh dump of it first if there
-  is any chance you want it back.
-- A dump from an older version restores fine: the backend applies the newer
-  migrations when it starts. A dump from a **newer** version doesn't belong
-  under older code; going back a version is the migrations' Down blocks.
-
-**What has been checked** (2026-11-14, on a scratch `pgvector/pgvector:pg16`
-container): a fully migrated database with a `keycloak` schema, dumped and
-restored with these commands, came back with the same tables in both schemas,
-all 26 migrations recorded, the `vector` extension and its 56 indexes, and
-vector ordering unchanged; the backend's database layer then started on it
-without applying a migration. **Not checked:** a restore on a real deployment,
-in particular Keycloak signing people in against a restored realm.
+Moved to [MAINTENANCE.md, Backup and restore](MAINTENANCE.md#backup-and-restore),
+with a nightly job, upgrading and rolling back. The trap to know before you
+start: Keycloak's realm is in the app's database, so one dump holds both.
 
 ## Bring-up checklist
 

@@ -14,5 +14,5 @@ async def chat_profiles(
     conn=Depends(deps.get_conn, scope="function"),
 ):
     rows = await profile_library.list_profiles(conn, enabled_only=True)
-    return {"profiles": [{"id": r.id, "name": r.name, "description": r.description, "isDefault": r.is_default}
-                         for r in rows]}
+    return {"profiles": [{"id": r.id, "name": r.name, "description": r.description, "isDefault": r.is_default,
+                          "builtin": r.builtin} for r in rows]}

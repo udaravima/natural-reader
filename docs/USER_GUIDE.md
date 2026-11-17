@@ -344,16 +344,32 @@ Notes:
   - **House rules** (up to 2,000 characters) apply to every chat, whatever its
     profile: what the assistant may and may not do, and how it treats people.
     Empty means none.
-  - **Profiles** are named assistants: a name (up to 60 characters), a
-    one-line description that people see under it in the chat sidebar, and the
-    text the assistant reads (up to 8,000 characters), for example "You are
-    Ada, the reading-room assistant. Answer warmly and briefly, in British
-    English." **Add profile** starts one; each row has **Edit**, **Make
+  - **The Librarian** is always in the list, marked **Built in**: the app's
+    own careful document assistant, with no text of its own (it answers with
+    the app's rules about documents, after the house rules, and its first line
+    gives it its name). You can rename it, change its description, move it and
+    make it the default; you can't delete it or turn it off. On a server that
+    had profiles before, it arrives last and the default stays as it was; on a
+    new one it is the default. While it is the only profile, a deployment file
+    (`CHAT_ASSISTANT_PROFILE_FILE`) is used as its text.
+  - **Profiles** are named assistants, or characters: a name (up to 60
+    characters), a one-line description that people see under it when they
+    choose, a **Backstory** (optional, up to 6,000 characters: who they are,
+    their past, their voice) and the **Rules** they keep (up to 8,000
+    characters), for example "- Answer warmly and briefly, in British
+    English." The backstory goes to the model after the house rules, under a
+    line that says it is the character's own life and never a source of facts
+    about documents or the world; the rules follow it. **Add profile** starts one; each row has **Edit**, **Make
     default**, **Turn off** / **Turn on**, **Up** / **Down** (the order people
     see) and **Delete**.
   - One profile is the **Default**: a chat nobody picked a profile for gets it.
     The default can't be turned off or deleted; make another the default
-    first (the only profile left can be deleted). A chat keeps the profile it used when the default changes later.
+    first. A chat keeps the profile it used when the default changes later.
+  - A profile with text of its own is a character, and characters set the
+    voice, not what a document says: in a chat that can read documents, the
+    app adds "Whatever your role, an answer from the documents follows the
+    steps below and cites its pages." after it. **What the model receives**
+    shows it.
   - **Turn off** hides a profile from the picker; chats already using it keep
     it. **Delete** asks first and says how many chats use it; those chats use
     the default from their next message, and say so until then.
@@ -366,19 +382,35 @@ Notes:
     `{{date}}` or `{{app}}`, the app doesn't add its own "Today is…" or "You
     are working in…" sentence. Anything else in double braces is sent as
     written, and the editor warns you.
-  - **Generate** writes a first draft for you. With a helper model chosen in
-    **Models**, type what kind of assistant you want in **Describe the
-    assistant** (up to 2,000 characters) and press **Generate**. The draft
-    lands in the profile's text a few seconds later, in the language you
-    described it in. Nothing is saved until you press **Save profile**, and
-    text you haven't saved is replaced only after you agree. Read the draft
-    before saving: a small model can change what a rule means. The call
-    counts towards your own daily budget.
+  - **Generate** writes a whole character for you. Put your notes in
+    **Describe the character** (up to 6,000 characters: who they are, where
+    they come from, how they speak, the rules they must keep; a biography
+    pasted in works too), choose who writes it under **Written by**, and press
+    **Generate**. **Written by** offers the helper model from **Models** and
+    every chat model; a cloud one is marked, because your notes leave the
+    machine. The draft fills the backstory and the rules, and the name and
+    description only where they are empty. It may invent a past, a voice and
+    habits that fit your notes, but it is told to copy each rule you gave
+    without changing its meaning. On this project's CPU-only test machine a
+    whole character took 14 to 23 seconds with `gemma4:e4b` and about 9 with
+    `llama3.2:3b`; a bigger model takes longer (the server waits up to 10
+    minutes). Nothing is saved until you press **Save
+    profile**, and text you haven't saved is replaced only after you agree.
+    Read the draft before saving: a model can still change what a rule means.
+  - **✦ Generate** beside the description asks the helper model for the one
+    line people see, written from the name, backstory and rules (it never
+    quotes a rule). It is there when a helper model is set.
+  - **Try it** asks the profile as it is in the editor, unsaved, one question
+    ("Introduce yourself." to start with) with the chat model you pick under
+    **Answered by**, the way a chat with no document would. The answer shows
+    under it and is kept nowhere. Generate, ✦ Generate and Try it all count
+    towards your own daily budget.
   - **What the model receives** shows the whole instruction text a chat would
     get with the text you're editing, unsaved, after the saved house rules,
     placeholders filled in.
-  - Keep both short: every character is read before every reply (the counter
-    shows the profile with the house rules, and about how many tokens).
+  - Keep them short: every character is read before every reply (the counter
+    shows the rules with the house rules and the backstory, and about how many
+    tokens that is per message).
   - Don't name the app's tools (`web_search` and so on): describe the
     behaviour you want. The section warns you if you do.
   - While there are no profiles, the server's `CHAT_ASSISTANT_PROFILE_FILE`
@@ -938,12 +970,17 @@ still being written somewhere else (another tab or device), you'll see
 chat at a time — sending again while one is still streaming is blocked until
 it finishes or you stop it.
 
-**Who the assistant is.** When an admin has set up more than one profile, the
-chat sidebar shows a **Profile** picker under **Model**, with the default
-marked and the picked profile's description under it. A pick applies from your
-next message in the open chat, and new chats start with it in this browser.
+**Who the assistant is.** A chip beside the message box says who answers,
+for example **Talking to: The Librarian**. It is there in the chat, in the chat
+beside the page and during Talk. When an admin offers more than one profile,
+tap the chip to choose another (the default is marked), or, in a new chat,
+tap one of the cards under **Who would you like to talk to?**; each card shows
+the profile's description. A pick applies from your next message in the open
+chat, and new chats start with it in this browser. Typing without picking uses
+the default. The list is read again when you open or start a chat, so a
+profile an admin just added appears without reloading.
 Each chat keeps its own profile: opening an older chat shows the one it used.
-If an admin removed it, the sidebar says *The profile this chat used, Tutor,
+If an admin removed it, the chip says *The profile this chat used, Tutor,
 was removed.* and the chat uses the default from your next message. You see a
 profile's name and description, never its text.
 

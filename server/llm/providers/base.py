@@ -52,6 +52,9 @@ _SECRET_PATTERNS = [
     (re.compile(r"sk-[A-Za-z0-9_-]{8,}"), "sk-[REDACTED]"),
     # Google API keys (AIza...), wherever they appear, a ?key= query among them.
     (re.compile(r"AIza[0-9A-Za-z_-]{16,}"), "AIza[REDACTED]"),
+    # The newer Google AI Studio keys: "AQ." and 50 letters, digits and hyphens. The \b keeps
+    # a word such as "FAQ.something" out.
+    (re.compile(r"\bAQ\.[0-9A-Za-z_-]{20,}"), "AQ.[REDACTED]"),
     # An Authorization header value, if a provider ever echoes the request it received.
     (re.compile(r"Bearer\s+\S+"), "Bearer [REDACTED]"),
     # URL userinfo (scheme://user:pass@host) — a base URL that embeds credentials.

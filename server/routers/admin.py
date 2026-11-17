@@ -22,7 +22,7 @@ from ..auth import deps, users
 from ..auth.capabilities import KNOWN_CAPABILITIES
 from ..auth.config import load_auth_config
 from ..auth.kc_admin import KCAdminError, KCRoleMissing
-from ..llm.router import get_router
+from ..llm.router import UnknownModel, get_router
 from ..http_errors import refusal
 from ..speech import catalogue as speech_catalogue, convert as speech_convert, disk as speech_disk, service as speech_service
 from ..speech import google_names
@@ -30,7 +30,7 @@ from ..speech.languages import WHISPER_LANGUAGES
 from ..chat import profile_text
 from ..services import (app_identity, assistant_profile, chat_options, console_overview, console_settings, deployment_info, deployment_settings,
                         doc_content, docling_limits, embedding_console, embedding_migration, helper,
-                        inference_budget, inference_limits, model_router, model_settings, people, profile_draft, profile_library,
+                        inference_budget, inference_limits, model_router, model_settings, people, profile_draft, profile_library, profile_sample,
                         user_defaults,
                         web_search as web_search_service)
 from ..services.console_settings import Section, SettingError
@@ -523,7 +523,7 @@ async def apply_user_default_to_everyone(
 
 # ---------- the assistant: house rules and the profile library (profile library spec, 2026-11-16) ----------
 
-_LIBRARY_STATUS = {"not_found": 404, "name_taken": 409, "default_required": 409, "invalid": 422}
+_LIBRARY_STATUS = {"not_found": 404, "name_taken": 409, "default_required": 409, "builtin": 409, "invalid": 422}
 
 
 def _library_refusal(e: profile_library.LibraryError):
@@ -535,6 +535,7 @@ class ProfileNewIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=1000)
     text: str = Field(min_length=1, max_length=assistant_profile.PROFILE_MAX_CHARS)
+    backstory: str = Field(default="", max_length=2 * profile_library.BACKSTORY_MAX_CHARS)
 
 
 class ProfileChangeIn(BaseModel):
@@ -542,6 +543,7 @@ class ProfileChangeIn(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=1000)
     text: str | None = Field(default=None, min_length=1, max_length=assistant_profile.PROFILE_MAX_CHARS)
+    backstory: str | None = Field(default=None, max_length=2 * profile_library.BACKSTORY_MAX_CHARS)
     enabled: bool | None = None
     isDefault: bool | None = None
 
@@ -560,6 +562,7 @@ class ProfilePreviewIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(default="", max_length=200)
     text: str = Field(default="", max_length=assistant_profile.PROFILE_MAX_CHARS)
+    backstory: str = Field(default="", max_length=2 * profile_library.BACKSTORY_MAX_CHARS)
 
 
 def _text_warnings(text: str) -> list[str]:
@@ -572,8 +575,8 @@ def _text_warnings(text: str) -> list[str]:
     return warnings
 
 
-def _combined(house: str, text: str) -> str:
-    return "\n\n".join(t for t in (house, text) if t)
+def _combined(house: str, text: str, backstory: str = "") -> str:
+    return profile_text.compose(house, backstory, text)
 
 
 async def _library_view(conn) -> dict:
@@ -585,16 +588,19 @@ async def _library_view(conn) -> dict:
                              "GROUP BY profile_id")
     chats = dict(await cur.fetchall())
     file_on = assistant_profile.file_path() is not None
-    file_text = assistant_profile._from_file() if file_on and not rows else ""
+    # The Librarian has no text; while it is the only profile, the file is its text.
+    file_text = assistant_profile._from_file() if file_on and all(r.builtin for r in rows) else ""
     return {
         "houseRules": {"text": house, "maxChars": profile_library.HOUSE_RULES_MAX_CHARS, "warnings": _text_warnings(house)},
-        "profiles": [{"id": r.id, "name": r.name, "description": r.description, "text": r.text, "enabled": r.enabled,
-                      "isDefault": r.is_default, "chats": chats.get(r.id, 0), "warnings": _text_warnings(r.text),
-                      "combinedChars": len(_combined(house, r.text))} for r in rows],
+        "profiles": [{"id": r.id, "name": r.name, "description": r.description, "text": r.text,
+                      "backstory": r.backstory, "enabled": r.enabled,
+                      "isDefault": r.is_default, "builtin": r.builtin, "chats": chats.get(r.id, 0), "warnings": _text_warnings(r.text),
+                      "combinedChars": len(_combined(house, r.text, r.backstory))} for r in rows],
         # While the library is empty the file at CHAT_ASSISTANT_PROFILE_FILE is the profile; its text is offered so
         # an admin can start the first profile from it.
         "file": {"configured": file_on, "inUse": bool(file_text), "text": file_text},
         "maxChars": assistant_profile.PROFILE_MAX_CHARS,
+        "backstoryMaxChars": profile_library.BACKSTORY_MAX_CHARS,
         "nameMaxChars": profile_library.NAME_MAX_CHARS, "descriptionMaxChars": profile_library.DESCRIPTION_MAX_CHARS,
         "placeholders": list(profile_text.PLACEHOLDERS),
     }
@@ -617,7 +623,7 @@ async def add_assistant_profile(
     """Add a profile; the first one becomes the default. 409 name_taken, 422 invalid."""
     try:
         await profile_library.create_profile(conn, name=body.name, description=body.description, text=body.text,
-                                             updated_by=str(principal.user_id))
+                                             backstory=body.backstory, updated_by=str(principal.user_id))
     except profile_library.LibraryError as e:
         raise _library_refusal(e) from None
     return await _library_view(conn)
@@ -641,11 +647,12 @@ async def change_assistant_profile(
     principal: deps.Principal = Depends(deps.require_admin),
     conn=Depends(deps.get_conn, scope="function"),
 ):
-    """Change what is sent. 404 not_found, 409 name_taken, 409 default_required (turning the default off)."""
+    """Change what is sent. 404 not_found, 409 name_taken, 409 default_required (turning the default off), 409
+    builtin (turning The Librarian off or giving it text)."""
     try:
         await profile_library.update_profile(
             conn, profile_id, name=body.name, description=body.description, text=body.text, enabled=body.enabled,
-            is_default=body.isDefault, updated_by=str(principal.user_id))
+            is_default=body.isDefault, backstory=body.backstory, updated_by=str(principal.user_id))
     except profile_library.LibraryError as e:
         raise _library_refusal(e) from None
     return await _library_view(conn)
@@ -657,7 +664,8 @@ async def delete_assistant_profile(
     _: deps.Principal = Depends(deps.require_admin),
     conn=Depends(deps.get_conn, scope="function"),
 ):
-    """Delete a profile. The chats that used it use the default from their next message; `chats` is how many."""
+    """Delete a profile. The chats that used it use the default from their next message; `chats` is how many.
+    409 builtin: The Librarian can't be deleted."""
     try:
         used = await profile_library.delete_profile(conn, profile_id)
     except profile_library.LibraryError as e:
@@ -696,7 +704,8 @@ async def preview_assistant_profile(
 
     house = await profile_library.house_rules(conn)
     text = assistant_profile.clean_profile(body.text).strip()
-    combined = _combined(house, text)
+    backstory = assistant_profile.clean_profile(body.backstory).strip()[:profile_library.BACKSTORY_MAX_CHARS]
+    combined = _combined(house, text, backstory)
     now = datetime.now(timezone.utc)
     lead = profile_text.fill(combined, date=today_text(now, "UTC"), app=app_identity.current().name,
                              profile=" ".join(body.name.split()))
@@ -713,6 +722,7 @@ async def preview_assistant_profile(
 class ProfileDraftIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     description: str = Field(min_length=1, max_length=profile_draft.DESCRIPTION_MAX_CHARS)
+    model: str | None = Field(default=None, max_length=300)   # a chat model to write it; None: the helper
 
     @field_validator("description")
     @classmethod
@@ -728,20 +738,100 @@ async def draft_assistant_profile(
     principal: deps.Principal = Depends(deps.require_admin),
     conn=Depends(deps.get_conn, scope="function"),
 ):
-    """A draft profile from the admin's description, written by the helper model (helper spec §7). Nothing is
-    saved: the console puts the text in its editor. 409 helper_off, 429 budget_exhausted, 502 draft_failed."""
+    """A whole character from the admin's notes (character profiles spec): name, description, backstory and rules,
+    written by the chosen chat model or else the helper. Nothing is saved: the console puts the parts in its editor.
+    409 helper_off, 422 unknown_model, 429 budget_exhausted, 502 draft_failed."""
     try:
-        text = await profile_draft.draft(conn, body.description, user_id=str(principal.user_id))
+        got = await profile_draft.draft(conn, body.description, user_id=str(principal.user_id), model=body.model)
+    except UnknownModel:
+        raise refusal(422, "unknown_model", "That model isn't available any more. Choose another.") from None
+    except helper.HelperError as e:
+        if e.kind == "off":
+            raise refusal(409, "helper_off", "No helper model is set up. Choose one in Models, or pick a model "
+                                             "to write it.") from None
+        if e.kind == "over_budget":
+            raise refusal(429, "budget_exhausted", "Daily inference budget exhausted.") from None
+        got = None
+    if got is None:
+        raise refusal(502, "draft_failed", "The model couldn't write a draft. Try again.")
+    return {"name": got.name, "description": got.description, "backstory": got.backstory, "text": got.text,
+            "warnings": _text_warnings("\n".join((got.backstory, got.text)))}
+
+
+
+class ProfileDescribeIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(default="", max_length=200)
+    backstory: str = Field(default="", max_length=2 * profile_library.BACKSTORY_MAX_CHARS)
+    text: str = Field(default="", max_length=assistant_profile.PROFILE_MAX_CHARS)
+
+    @model_validator(mode="after")
+    def _something_to_describe(self):
+        if not (self.backstory.strip() or self.text.strip()):
+            raise ValueError("Write the backstory or the rules first.")
+        return self
+
+
+@router.post("/assistant/describe")
+async def describe_assistant_profile(
+    body: ProfileDescribeIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """The one line people see under the profile's name, written by the helper from the profile being edited
+    (character profiles spec). Saves nothing. 409 helper_off, 429 budget_exhausted, 502 describe_failed."""
+    try:
+        line = await profile_draft.describe(conn, name=body.name, backstory=body.backstory, text=body.text,
+                                            user_id=str(principal.user_id))
     except helper.HelperError as e:
         if e.kind == "off":
             raise refusal(409, "helper_off", "No helper model is set up. Choose one in Models.") from None
         if e.kind == "over_budget":
             raise refusal(429, "budget_exhausted", "Daily inference budget exhausted.") from None
-        text = None
-    if text is None:
-        raise refusal(502, "draft_failed", "The helper model couldn't write a draft. Try again.")
-    return {"text": text, "warnings": _text_warnings(text)}
+        line = None
+    if line is None:
+        raise refusal(502, "describe_failed", "The helper model couldn't write a description. Try again.")
+    return {"description": line}
 
+
+class ProfileSampleIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(default="", max_length=200)
+    backstory: str = Field(default="", max_length=2 * profile_library.BACKSTORY_MAX_CHARS)
+    text: str = Field(default="", max_length=assistant_profile.PROFILE_MAX_CHARS)
+    question: str = Field(min_length=1, max_length=profile_sample.QUESTION_MAX_CHARS)
+    model: str = Field(min_length=1, max_length=300)
+
+    @field_validator("question")
+    @classmethod
+    def _asked(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Ask it something first.")
+        return v
+
+
+@router.post("/assistant/sample")
+async def sample_assistant_profile(
+    body: ProfileSampleIn,
+    principal: deps.Principal = Depends(deps.require_admin),
+    conn=Depends(deps.get_conn, scope="function"),
+):
+    """Try it: the profile being edited, unsaved, answers one question with the chosen chat model, as a chat with no
+    document would ask it (character profiles spec). The reply is stored nowhere. 422 unknown_model, 429
+    budget_exhausted, 502 sample_failed."""
+    try:
+        reply = await profile_sample.sample(conn, name=body.name, backstory=body.backstory, text=body.text,
+                                            question=body.question, model=body.model,
+                                            user_id=str(principal.user_id))
+    except UnknownModel:
+        raise refusal(422, "unknown_model", "That model isn't available any more. Choose another.") from None
+    except helper.HelperError as e:
+        if e.kind == "over_budget":
+            raise refusal(429, "budget_exhausted", "Daily inference budget exhausted.") from None
+        reply = None
+    if reply is None:
+        raise refusal(502, "sample_failed", "The model didn't answer. Try again, or pick another model.")
+    return {"reply": reply}
 
 # ---------- chat options (C2.1 Task 13) ----------
 

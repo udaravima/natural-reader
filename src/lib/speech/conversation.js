@@ -62,8 +62,17 @@ export function createConversation({
   const startReply = (text, clip, heard) => {
     const turn = { messageId: null, playing: false, spoken: null, sending: null, said: [], finishedAt: null };
     const noteClip = () => onClip?.(clip);
+    // Each sentence's fetch is timed for What it heard; the engine adds who spoke it and its own seconds.
+    clip.sentences = [];
+    const timedSynthesize = (sentenceText, signal) => {
+      const entry = { startedAt: now() };
+      clip.sentences.push(entry);
+      return Promise.resolve(synthesize(sentenceText, signal, (meta) => Object.assign(entry, meta)))
+        .finally(() => { entry.doneAt = now(); noteClip(); });
+    };
+    let replyText = '';
     turn.spoken = createSpokenReply({
-      synthesize,
+      synthesize: timedSynthesize,
       audio,
       revoke,
       onSentence: (sentence) => {
@@ -88,6 +97,7 @@ export function createConversation({
       onStart: (id) => { turn.messageId = id; },
       onText: (delta) => {
         clip.firstTextAt ??= now();
+        replyText += delta;
         splitter.feed(delta);
       },
     })).then((outcome) => {
@@ -95,6 +105,8 @@ export function createConversation({
     }, () => {
       clip.verdict = 'failed';
     }).finally(() => {
+      clip.replyDoneAt = now();
+      clip.replyWords = replyText.split(/\s+/).filter(Boolean).length;
       splitter.flush();
       turn.spoken.finish();
       noteClip();
@@ -149,6 +161,7 @@ export function createConversation({
       checking = true;
       emit();
       let result = null;
+      clip.heardStartedAt = now();   // after any wait behind an earlier clip
       try {
         result = await transcribe(samples);
       } catch (e) {
@@ -162,6 +175,8 @@ export function createConversation({
         clip.scores = { noSpeech: result.no_speech, avgLogprob: result.avg_logprob };
         clip.heardIn = result.language ?? null;   // the language and model that heard it (What it heard)
         clip.heardBy = result.model ?? null;
+        clip.heardEngineSeconds = result.engine_seconds ?? null;   // the server's own time on it
+        clip.heardWhere = result.where ?? null;
         clip.verdict = verdictOf(result, clip);
       } else {
         clip.verdict = 'failed';

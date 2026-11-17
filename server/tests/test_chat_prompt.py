@@ -516,9 +516,13 @@ def test_the_rules_stay_short_enough_for_a_small_model():
 # ---- v2.4 Task A2: the deployment's assistant profile ----
 
 def test_a_profile_goes_first_and_the_app_rules_still_follow():
+    from server.chat.prompt import STEPS_WIN
     rules = system_rules(FIELD(), SETS["all"], has_pins=False, profile="You are Ada.")
     assert rules.startswith("You are Ada.\n\nYou are working in Natural Reader")
-    assert rules.endswith(system_rules(FIELD(), SETS["all"], has_pins=False).split("\n\n", 1)[1])
+    # The app's rules follow whole; a character also hears that the document steps win (character profiles spec).
+    assert STEPS_WIN in rules
+    assert rules.replace(STEPS_WIN + "\n\n", "").endswith(
+        system_rules(FIELD(), SETS["all"], has_pins=False).split("\n\n", 1)[1])
 
 
 def test_the_profile_and_the_date_both_fit():
@@ -823,3 +827,27 @@ def test_the_clock_line_comes_before_the_live_line_and_only_with_the_tool():
     clock = with_clock.index("call current_time")
     assert clock < with_clock.index("Live information")
     assert "current_time" not in system_rules(FIELD(), [*DOC_TOOLS, *AUTO_WEB], has_pins=False)
+
+
+# ---- Character profiles: The Librarian, and the document steps winning over a character ----
+
+def test_the_librarian_is_named_in_the_first_line():
+    from server.chat.prompt import system_rules
+    from server.services import app_identity
+    rules = system_rules(None, [], has_pins=False, assistant_name="The Librarian")
+    assert rules.startswith(f"You are The Librarian, the assistant in {app_identity.current().name}, ")
+
+
+def test_a_profile_with_text_is_told_the_document_steps_win():
+    from server.chat.prompt import STEPS_WIN, system_rules
+    rules = system_rules(FIELD(), SETS["doc"], has_pins=False, profile="You are an old storyteller.")
+    assert STEPS_WIN == ("Whatever your role, an answer from the documents follows the steps below and cites "
+                         "its pages.")
+    assert STEPS_WIN in rules and rules.index(STEPS_WIN) < rules.index("How to handle each message:")
+
+
+def test_no_steps_win_line_for_the_librarian_house_rules_or_a_chat_without_documents():
+    from server.chat.prompt import STEPS_WIN, system_rules
+    assert STEPS_WIN not in system_rules(FIELD(), SETS["doc"], has_pins=False, assistant_name="The Librarian")
+    assert STEPS_WIN not in system_rules(FIELD(), SETS["doc"], has_pins=False, profile="Be kind.", persona=False)
+    assert STEPS_WIN not in system_rules(None, [], has_pins=False, profile="You are an old storyteller.")

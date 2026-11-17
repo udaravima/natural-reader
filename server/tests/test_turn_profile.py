@@ -107,3 +107,29 @@ async def test_a_profile_read_that_fails_ends_the_turn_as_an_error(conn, monkeyp
     assert router.calls == []                                                    # the model never ran
     cur = await conn.execute("SELECT status FROM chat_messages WHERE id = %s", (claim.assistant_message_id,))
     assert (await cur.fetchone())[0] == "error"
+
+
+# ---- The Librarian (character profiles spec) ----
+
+async def test_a_chat_with_the_librarian_is_named_by_its_current_name(conn):
+    alice = await member(conn, "alice")
+    librarian = await lib.ensure_librarian(conn)
+    await lib.update_profile(conn, librarian.id, name="Ada", updated_by=None)
+    start, system = await _turn(conn, alice)
+    assert (start["profileId"], start["profileName"]) == (librarian.id, "Ada")
+    assert system.startswith("You are Ada, the assistant in Natural Reader, an app for reading and listening to "
+                             "documents. Today is ")
+
+
+async def test_the_file_is_the_profile_while_the_librarian_is_alone(conn, tmp_path, monkeypatch):
+    alice = await member(conn, "alice")
+    librarian = await lib.ensure_librarian(conn)
+    path = tmp_path / "assistant.md"
+    path.write_text("You are Ada, from the file.")
+    monkeypatch.setenv("CHAT_ASSISTANT_PROFILE_FILE", str(path))
+    start, system = await _turn(conn, alice)
+    assert start["profileId"] == librarian.id
+    assert system.startswith("You are Ada, from the file.\n\nYou are working in Natural Reader")
+    await lib.create_profile(conn, name="Tutor", description="", text="You are a tutor.", updated_by=None)
+    start, system = await _turn(conn, alice, sid="s-2")                  # a profile with text: the file is not read
+    assert "from the file" not in system and system.startswith("You are The Librarian, the assistant in ")

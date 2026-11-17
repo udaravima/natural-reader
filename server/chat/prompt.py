@@ -92,11 +92,20 @@ DOC_SEARCH, DOC_READ, WEB = "search_documents", "read_document_pages", "web_sear
 EXTRACT, OUTLINE = "extract_from_documents", "document_outline"
 WEB_READ, WEB_OFFER = "read_web_pages", "offer_web_search"
 
-def first_line(has_profile: bool, identity: app_identity.Identity) -> str:
+def first_line(has_profile: bool, identity: app_identity.Identity, name: str = "") -> str:
     """Where the assistant is working. After a deployment profile, which gives the assistant its own identity
-    ("You are Ada…"), the line only places it. The name and tagline are the deployment's (services/app_identity.py)."""
+    ("You are Ada…"), the line only places it. `name`: the built-in profile's (The Librarian), which has no text of
+    its own, so the line gives it its name. The app's name and tagline are the deployment's
+    (services/app_identity.py)."""
+    if name:
+        return f"You are {name}, the assistant in {identity.name}, {identity.tagline}."
     lead = "You are working in" if has_profile else "You are the assistant in"
     return f"{lead} {identity.name}, {identity.tagline}."
+
+
+# After a profile with a character of its own, on a turn that can read documents (character profiles spec): the
+# character sets the voice, never what a document answer says.
+STEPS_WIN = "Whatever your role, an answer from the documents follows the steps below and cites its pages."
 
 
 def document_tools_offered(offered: Iterable[str]) -> bool:
@@ -319,7 +328,7 @@ SPOKEN_RULE = (
 def system_rules(doc: ReadableDoc | None, tools: Iterable[_Offered], *, has_pins: bool,
                  prefetch: bool = False, today: str = "", profile: str = "", has_map: bool = False,
                  project: ProjectScope | None = None, spoken: bool = False,
-                 placed: frozenset[str] = frozenset(), persona: bool = True) -> str:
+                 placed: frozenset[str] = frozenset(), persona: bool = True, assistant_name: str = "") -> str:
     """The rules for this turn. `tools` are the ones offered on its first
     step; the orchestrator's last-round note covers the final tools-off step.
     `today`: "Today is …" to the day (context.today_line), or "" for none.
@@ -328,22 +337,26 @@ def system_rules(doc: ReadableDoc | None, tools: Iterable[_Offered], *, has_pins
     deployment's assistant profile (services/assistant_profile.py), first. `has_map`: the system message
     carries a project map after these rules (names, headings and openings are document text, so the data
     rule is needed even when no tool or pin brings it). `project`: a project chat's scope (C2.1): the first line
-    names the project and the open document, and the steps send the model to the project's documents."""
+    names the project and the open document, and the steps send the model to the project's documents.
+    `assistant_name`: the built-in profile's name, when the turn uses it (chat/profile_text.py)."""
     tools = list(tools)
     offered = {t.name for t in tools}
     # The app's own line leaves out what the profile already placed with {{app}} or {{date}} (chat/profile_text.py).
     # `persona`: False when `profile` is house rules alone, which give the assistant no identity of its own.
     first = " ".join(p for p in (
-        "" if "app" in placed else first_line(bool(profile) and persona, app_identity.current()),
+        "" if "app" in placed else first_line(bool(profile) and persona, app_identity.current(), assistant_name),
         "" if "date" in placed else today) if p)
     parts = [p for p in (profile, first) if p]
     line = _project_line(project) if project is not None else _document_line(doc)
     if line:
         parts.append(line)
+    reads_docs = any(getattr(t, "reads_documents", False) for t in tools)
+    documents = (doc is not None and doc.state == "indexed") or has_pins or reads_docs or has_map
+    if documents and profile and persona:
+        parts.append(STEPS_WIN)
     procedure = _procedure(doc, offered, prefetch, project)
     parts.append(procedure)
-    reads_docs = any(getattr(t, "reads_documents", False) for t in tools)
-    if (doc is not None and doc.state == "indexed") or has_pins or reads_docs or has_map:
+    if documents:
         # The pin sentence is also the only citation format a document-reading tool gets without an open
         # document; a map alone (names, headings) brings the data rule but has no pins to cite.
         # "page 7)" is in both citation formats: "(page 7)" and a project's "(Guide.md, page 7)".

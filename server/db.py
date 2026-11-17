@@ -18,7 +18,7 @@ from pathlib import Path
 from pgvector.psycopg import register_vector_async
 from psycopg_pool import AsyncConnectionPool
 
-from .services import doc_content
+from .services import doc_content, profile_library
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,12 @@ async def _after_migrations(pool: AsyncConnectionPool) -> None:
         await doc_content.sweep_orphans(conn)
         await reset_interrupted_conversions(conn)
         await doc_content.enqueue_stuck(conn)
+        # The Librarian, the built-in profile (character profiles spec): added when missing. A failure here costs
+        # only that profile until the next start, so it is logged and the server still starts.
+        try:
+            await profile_library.ensure_librarian(conn)
+        except Exception:
+            logger.exception("Couldn't add the built-in assistant profile")
 
 
 async def _open_once(url: str) -> None:

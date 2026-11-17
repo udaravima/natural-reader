@@ -125,6 +125,7 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
   const link = 'min-h-11 md:min-h-0 underline text-blue-500 disabled:opacity-40 disabled:no-underline';
   const badge = `text-[10px] px-1.5 py-0.5 rounded border ${theme.border} ${theme.textMuted}`;
   const profiles = data?.profiles ?? [];
+  const own = profiles.filter((p) => !p.builtin);   // the ones an admin wrote; The Librarian is always there
   const house = data?.houseRules?.text ?? '';
 
   return (
@@ -148,19 +149,19 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-xs font-bold">Profiles</h3>
               <button onClick={() => openEditor({ id: null, name: '', description: '', warnings: [],
-                text: !profiles.length && data.file.inUse ? data.file.text : '' })}
+                text: !own.length && data.file.inUse ? data.file.text : '' })}
                 disabled={busy} className={`text-xs font-bold ${link}`}>
                 Add profile
               </button>
             </div>
-            {!profiles.length && (
+            {!own.length && (
               <p className={`text-xs ${theme.textMuted}`}>
                 {data.file.inUse
                   ? 'The deployment file is the profile until you add one. Add profile starts from its text.'
                   : "No profiles yet: chats get the house rules and the app's own rules. Add one to give the assistant a name, a voice and its own rules."}
               </p>
             )}
-            {profiles.length > 1 && !house.trim() && (
+            {own.length > 1 && !house.trim() && (
               <p className="text-xs text-amber-600">
                 House rules are empty, and each profile is sent on its own: rules every profile needs belong in House
                 rules.
@@ -172,6 +173,7 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
                   <li key={p.id} aria-label={p.name} className={`flex flex-col gap-1 p-2 rounded border ${theme.border}`}>
                     <div className="flex flex-wrap items-center gap-2 text-xs">
                       <span className="font-bold">{p.name}</span>
+                      {p.builtin && <span className={badge}>Built in</span>}
                       {p.isDefault && <span className={badge}>Default</span>}
                       {!p.enabled && <span className={badge}>Off</span>}
                       {p.chats > 0 && (
@@ -179,6 +181,11 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
                       )}
                     </div>
                     {p.description && <p className={`text-xs ${theme.textSecondary}`}>{p.description}</p>}
+                    {p.builtin && (
+                      <p className={`text-xs ${theme.textMuted}`}>
+                        The app&apos;s own document assistant, always here: it can be renamed, not deleted or turned off.
+                      </p>
+                    )}
                     {(p.warnings || []).map((w) => <p key={w} className="text-xs text-amber-600">{w}</p>)}
                     <div className="flex flex-wrap items-center gap-x-3 text-xs">
                       <button onClick={() => openEditor(p)} disabled={busy} aria-label={`Edit ${p.name}`} className={link}>
@@ -190,7 +197,7 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
                           Make default
                         </button>
                       )}
-                      {!p.isDefault && (
+                      {!p.isDefault && !p.builtin && (
                         <button onClick={() => change(p, { enabled: !p.enabled })} disabled={busy}
                           aria-label={`${p.enabled ? 'Turn off' : 'Turn on'} ${p.name}`} className={link}>
                           {p.enabled ? 'Turn off' : 'Turn on'}
@@ -204,7 +211,7 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
                         aria-label={`Move ${p.name} down`} className={link}>
                         Down
                       </button>
-                      {(!p.isDefault || profiles.length === 1) && (
+                      {!p.builtin && (!p.isDefault || profiles.length === 1) && (
                         <button onClick={() => remove(p)} disabled={busy} aria-label={`Delete ${p.name}`}
                           className={`${link} text-red-500`}>
                           Delete
@@ -221,7 +228,9 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
             <ProfileEditor key={editing.id ?? 'new'} theme={theme} apiHost={apiHost} apiPort={apiPort}
               showToast={showToast} initial={editing} houseText={house} helperOn={helperOn} busy={busy}
               refreshKey={refreshKey} onSave={saveProfile} onCancel={closeEditor} onDirtyChange={setEditorDirty}
-              limits={{ name: data.nameMaxChars, description: data.descriptionMaxChars, text: data.maxChars }} />
+              builtin={Boolean(editing.builtin)}
+              limits={{ name: data.nameMaxChars, description: data.descriptionMaxChars, text: data.maxChars,
+                backstory: data.backstoryMaxChars }} />
           )}
         </>
       )}

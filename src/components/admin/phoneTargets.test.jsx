@@ -147,7 +147,7 @@ describe('Admin console: 44 px tap targets below md', () => {
   it('Assistant: the profile editor too (name, description, Generate, preview)', async () => {
     const { container } = render(SECTIONS.Assistant.ui);
     fireEvent.click(await screen.findByRole('button', { name: 'Edit Tutor' }));
-    await screen.findByLabelText('Describe the assistant');
+    await screen.findByLabelText('Describe the character');
     fireEvent.click(screen.getByText('What the model receives'));
     await screen.findByText('Preview');
     expect(screen.getByLabelText('Profile name')).toBeTruthy();
