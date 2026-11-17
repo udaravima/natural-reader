@@ -31,6 +31,12 @@ All notable changes to this project will be documented in this file.
   role, an answer from the documents follows the steps below and cites its
   pages."
 
+- **Talk shows where each round's wait went.** Under **What it heard**, every round now has a line a stage:
+  **Heard** (the speech engine's own seconds, where it runs, and the upload and wait around it), **Model** (first
+  word, whole reply, words a second) and **Voice** (who spoke, the engine's own seconds, the network, how many
+  sentences and the slowest), with the slowest stage marked. **Copy numbers** carries all of it. The transcription
+  and chat-voice replies gain `engine_seconds` and `where`; the voice reply also says `engine`.
+
 - **`docs/MAINTENANCE.md`, the jobs on a running server:** is it healthy,
   surviving reboots, applying a `.env` change, backup and restore with a
   nightly job, upgrading, rolling back, rotating secrets and freeing disk

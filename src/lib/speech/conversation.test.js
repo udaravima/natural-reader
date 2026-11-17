@@ -7,7 +7,7 @@ const SPEECH = { text: 'Hello there', no_speech: 0.05, avg_logprob: -0.3 };
 const NOISE = { text: 'Thank you.', no_speech: 0.6, avg_logprob: -1.1 };
 const tick = async () => { for (let i = 0; i < 6; i += 1) await new Promise((r) => { setTimeout(r, 0); }); };
 
-function harness() {
+function harness(over = {}) {
   const h = { audio: new FakeAudio(), results: [], sends: [], phases: [], clips: new Map(), time: 0 };
   h.send = vi.fn((text, options) => {
     const turn = { text, options };
@@ -23,7 +23,8 @@ function harness() {
   });
   h.conversation = createConversation({
     settings: SETTINGS, transcribe: h.transcribe, send: h.send, abort: h.abort, audio: h.audio,
-    synthesize: async (text) => `blob:${text}`, revoke: () => {}, now: () => { h.time += 10; return h.time; },
+    synthesize: over.synthesize ?? (async (text) => `blob:${text}`), revoke: () => {},
+    now: () => { h.time += 10; return h.time; },
     onChange: (phase) => h.phases.push(phase), onClip: (clip) => h.clips.set(clip.id, { ...clip }),
   });
   h.phase = () => h.phases.at(-1);
@@ -324,6 +325,43 @@ describe('createConversation', () => {
     expect(clip.firstTextAt).toBeLessThan(clip.firstSentenceAt);
     expect(clip.firstSentenceAt).toBeLessThan(clip.firstAudioAt);
     expect(clip.scores).toEqual({ noSpeech: 0.05, avgLogprob: -0.3 });
+  });
+
+  // Voice timings: each round keeps what every stage cost, the engine's own seconds beside the browser's.
+  it('a clip keeps the engine\'s own time for hearing it, and when the engine was asked', async () => {
+    const h = harness();
+    await h.speak({ ...SPEECH, engine_seconds: 1.1, where: 'Google Cloud' });
+    const clip = [...h.clips.values()][0];
+    expect(clip.heardEngineSeconds).toBe(1.1);
+    expect(clip.heardWhere).toBe('Google Cloud');
+    expect(clip.endedAt).toBeLessThanOrEqual(clip.heardStartedAt);
+    expect(clip.heardStartedAt).toBeLessThan(clip.transcribedAt);
+  });
+
+  it('a clip keeps when the reply ended and how many words it had', async () => {
+    const h = harness();
+    await h.speak(SPEECH);
+    await h.reply('Hi there. How are ');
+    await h.reply('you today? ');
+    await h.finishReply();
+    const clip = [...h.clips.values()][0];
+    expect(clip.replyWords).toBe(6);
+    expect(clip.firstTextAt).toBeLessThan(clip.replyDoneAt);
+  });
+
+  it('a clip keeps each spoken sentence\'s time, with who spoke it and the engine\'s own seconds', async () => {
+    const synthesize = async (text, signal, note) => {
+      note?.({ engine: 'google', where: 'Google Cloud', engineSeconds: 0.6 });
+      return `blob:${text}`;
+    };
+    const h = harness({ synthesize });
+    await h.speak(SPEECH);
+    await h.reply('Hi there. Second one. ');
+    await h.finishReply();
+    const clip = [...h.clips.values()][0];
+    expect(clip.sentences).toHaveLength(2);
+    expect(clip.sentences[0]).toMatchObject({ engine: 'google', where: 'Google Cloud', engineSeconds: 0.6 });
+    expect(clip.sentences[0].startedAt).toBeLessThan(clip.sentences[0].doneAt);
   });
 
   // Spec 2026-11-04-speech-choices: What it heard says which language and model heard each clip.

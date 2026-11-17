@@ -183,8 +183,10 @@ async def test_voice_on_returns_the_transcript(db_conn, engine):
     async with _client(db_conn) as c:
         r = await _post(c, language="si")
     assert r.status_code == 200
-    assert r.json() == {"text": "hello there", "language": "si", "duration_s": 3.5,
-                        "no_speech": None, "avg_logprob": None, "model": "small"}
+    body = r.json()
+    assert body.pop("engine_seconds") >= 0 and body.pop("where") == "this server"
+    assert body == {"text": "hello there", "language": "si", "duration_s": 3.5,
+                    "no_speech": None, "avg_logprob": None, "model": "small"}
     assert engine.seen == [(3, "audio/webm", "si")]
 
 
@@ -963,3 +965,15 @@ async def test_a_parser_error_the_framework_does_not_translate_is_still_400(db_c
     async with _client(db_conn) as c:
         r = await c.post(URL, content=b"garbage", headers=_multipart_headers())
     assert r.status_code == 400 and _msg(r) == "That recording couldn't be read."
+
+
+# ---- voice timings: the engine's own seconds, so a slow answer can be told from a slow network ----
+
+async def test_a_transcription_says_how_long_the_engine_took_and_where_it_ran(db_conn, engine, monkeypatch):
+    await _voice(db_conn)
+    ticks = iter([100.0, 101.25])
+    monkeypatch.setattr(speech_router, "_clock", lambda: next(ticks))
+    async with _client(db_conn) as c:
+        r = await _post(c)
+    assert r.status_code == 200
+    assert r.json()["engine_seconds"] == 1.25 and r.json()["where"] == engine.where

@@ -372,3 +372,29 @@ async def test_the_voice_switch_leaves_the_other_settings_alone(admin_client, db
     await admin_client.put("/v1/admin/chat-voice", json={"engine": "google"})
     got = await load_chat_options(db_conn)
     assert (got.voice_input, got.chat_voice) == (True, {"engine": "google", "voice": "Kore"})
+
+
+# ---- voice timings: each spoken sentence says who spoke it, where, and how long that took ----
+
+async def test_kokoros_reply_says_who_spoke_where_and_for_how_long(voice_client, monkeypatch):
+    from server.routers import chat_voice as route
+    monkeypatch.setattr(endpoints, "_speak", lambda *a: (np.zeros(2400, dtype=np.float32), 24000))
+    ticks = iter([10.0, 10.5])
+    monkeypatch.setattr(route, "_clock", lambda: next(ticks))
+    body = (await voice_client.post("/v1/chat/voice", json={"text": "Hello."})).json()
+    assert (body["engine"], body["where"], body["engine_seconds"]) == ("kokoro", "this server", 0.5)
+    assert body["audio_base64"]
+
+
+async def test_googles_reply_says_who_spoke_where_and_for_how_long(voice_client, db_conn, monkeypatch):
+    from server.routers import chat_voice as route
+    monkeypatch.setenv("GOOGLE_TTS_MODEL", MODEL)
+    await _choose(db_conn, {"engine": "google", "voice": "Charon"})
+
+    async def speak(text, voice, speed, env, **_):
+        return _wav(), 0.5
+    monkeypatch.setattr(chat_voice, "google_speak", speak)
+    ticks = iter([10.0, 12.0])
+    monkeypatch.setattr(route, "_clock", lambda: next(ticks))
+    body = (await voice_client.post("/v1/chat/voice", json={"text": "Hello."})).json()
+    assert (body["engine"], body["where"], body["engine_seconds"]) == ("google", "Google Cloud", 2.0)
