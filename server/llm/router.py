@@ -21,6 +21,7 @@ from typing import AsyncIterator, Mapping
 
 import httpx
 
+from .. import keepalive
 from ..services import model_router
 from .providers.base import Provider, ProviderConfig
 from .providers.gemini import DEFAULT_URL as GEMINI_URL, GeminiProvider
@@ -225,7 +226,8 @@ async def start_router(transport: httpx.AsyncBaseTransport | None = None) -> Non
     timeout_s = model_router.get_config().timeout_s
     # read= is httpx's IDLE timeout (time between chunks): a slow but
     # streaming reply is never cut off; a silent provider is (spec §4.4).
-    client = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(
+    # Idle connections are kept for keepalive.KEEPALIVE_S, not httpx's 5 s: a turn's next request finds one open.
+    client = keepalive.new_client(transport=transport, timeout=httpx.Timeout(
         connect=5.0, read=timeout_s, write=30.0, pool=5.0))
     _router = Router(load_provider_configs(os.environ), client)
     names = ", ".join(f"{p.config.name} ({p.config.kind})" for p in _router.providers.values())

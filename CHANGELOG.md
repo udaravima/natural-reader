@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Cloud requests reuse their connections.** Every request to Google's
+  speech-to-text and Gemini-TTS opened a new connection, and so did nearly
+  every chat model request: TCP and TLS set-up (about 0.1 s from Colombo to
+  Google) and a slow start on each, about 0.65 s of every all-Google Talk
+  round (72 of 73 requests in the call benchmark). Three causes: Google's
+  speech and voice made a client per request (they now share one), each chat
+  provider stopped reading a stream at its end marker so the connection was
+  closed unfinished (it now reads the end of the body, for at most 0.5 s),
+  and httpx closed idle connections after 5 s, shorter than a caller's turn
+  (now 60 s, for every cloud client). The OpenAI-compatible speech engine
+  shares one kept-open client too.
+
 ## [2.14.0] - 2026-11-17
 
 ### Added
