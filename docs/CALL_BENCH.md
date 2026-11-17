@@ -47,6 +47,54 @@ No database and no running backend are needed.
 Output goes to `bench-out/<scenario>-<time>/`: `report.md`, `results.json`, and every clip, so you can listen to
 what the caller said and how the agent sounded. Exit status 0 means every call passed.
 
+## Compare hearing engines and voices: the matrix
+
+`scripts/bench_matrix.py` answers "which hearing and which voice?" for one chat model. It measures each stage once
+and composes every pair, because Talk runs the stages one after another:
+
+1. every caller clip through every hearing engine (text, word errors, seconds, network);
+2. each engine's transcripts through the model as whole calls (timings; which calls each engine let succeed);
+3. the replies of the best-heard conversation through every voice (seconds to make each piece, its length,
+   network, the recording);
+4. each pair's wait: end-of-turn silence + hearing + the model's first piece + voicing it, rated against the
+   reference bands below.
+
+```bash
+.venv/bin/python scripts/bench_matrix.py --model gemini:gemini-3.1-flash-lite --model-rpm 14 --voice-rpm 9 \
+    --hear whisper:small,whisper:small.en,google:projects/<p>/locations/<l>/recognizers/<id>,openai:whisper-1,openai:gpt-4o-mini-transcribe \
+    --voice kokoro:af_heart,google:gemini-2.5-flash-tts:Kore,google:gemini-2.5-flash-lite-preview-tts:Kore,chirp:en-US-Chirp3-HD-Kore,chirp:en-IN-Chirp3-HD-Kore
+```
+
+| Engine | Means |
+|---|---|
+| `whisper:<id>` | a local model from the speech catalogue (`small`, `small.en`, the Sinhala and Tamil fine-tunes) |
+| `google:<recognizer>` | Google Speech-to-Text v2 through a recognizer, as the app uses it |
+| `openai:<model>[@<url>]` | the app's OpenAI-compatible engine. OpenAI's own API has `whisper-1` (Whisper large-v2), `gpt-4o-mini-transcribe` and `gpt-4o-transcribe`, but no `whisper-small`; a `whisper-small` you host behind the same API goes after the `@`. Key: `SPEECH_API_KEY`, else `INFERENCE_OPENAI_API_KEY` for OpenAI's API |
+| `kokoro[:<voice>]`, `google[:<model>[:<voice>]]` | the app's two voices (Gemini-TTS models: `gemini-2.5-flash-tts`, `gemini-2.5-flash-lite-preview-tts`) |
+| `chirp:<voice name>` | Google's Chirp 3 HD voices, such as `en-US-Chirp3-HD-Kore` or `en-IN-Chirp3-HD-Kore`: **not in the app yet**, benchmarked to see whether they should be |
+
+Output, in `bench-out/matrix-<scenario>-<time>/`:
+
+- `report.md`: the pairs, quickest first, with their band; each stage's own table; the calls; the references.
+- `results.xlsx` (sheets Summary, Pairs by turn, Hearing, Model, Voice, Calls, References) and one CSV per sheet.
+- `recordings/caller/`: the caller's clips. `recordings/<voice>/`: every piece each voice said, and its greeting.
+  `recordings/calls/<voice>/<call>.wav`: **each call as it would sound**, with the measured waits as silence,
+  so you hear the pauses as a caller would.
+
+### Reference points for the wait
+
+| Band | Up to | Basis |
+|---|---|---|
+| human-like | 0.5 s | People leave about 0.2 s between turns, most turn changes within -0.1 to 0.5 s ([Levinson & Torreira 2015](https://www.frontiersin.org/articles/10.3389/fpsyg.2015.00731/full); [Stivers et al. 2009](https://pubmed.ncbi.nlm.nih.gov/19553212/)) |
+| natural | 0.8 s | The usual voice-agent target at the median: an industry rule of thumb ([example](https://www.twig.so/blog/voice-ai-agents-latency-budget-800ms)) |
+| acceptable | 1.2 s | Rule of thumb; about 1 s is where a person's flow of thought breaks ([Nielsen](https://www.nngroup.com/articles/response-times-3-important-limits/)) |
+| noticeable | 2 s | Rule of thumb: callers start talking over the agent |
+| slow | above | Rule of thumb: callers wonder whether the line dropped |
+
+[ITU-T G.114](https://www.itu.int/rec/T-REC-G.114) (0.15 s one-way, 0.4 s at most) is about the phone network's
+own delay, not the agent's thinking, and applies only to a real phone line. Talk's end-of-turn silence (700 ms by
+default) is part of the wait, so it uses most of the 0.8 s target before any engine starts.
+
 ## Read the report
 
 **First sound after the caller stopped** is the number a caller feels. It is the chain Talk runs:

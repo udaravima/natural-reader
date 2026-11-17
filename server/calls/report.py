@@ -7,7 +7,7 @@ import statistics
 from collections import Counter
 from typing import Any
 
-from .scoring import normalize
+from .scoring import misheard_words
 
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "host.containers.internal", "ollama"})
 
@@ -74,13 +74,7 @@ def network_share(turns: list[dict]) -> dict[str, Any]:
 
 def misheard(turns: list[dict], limit: int = 12) -> list[tuple[str, int]]:
     """Words of the script the hearing didn't return, most often first."""
-    missed: Counter = Counter()
-    for t in turns:
-        if t.get("heard") is None or t.get("heard") == t.get("said"):
-            continue
-        heard = set(normalize(t["heard"]).split())
-        missed.update(w for w in normalize(t["said"]).split() if w not in heard)
-    return missed.most_common(limit)
+    return misheard_words([(t["said"], t["heard"]) for t in turns if t.get("heard") is not None], limit)
 
 
 def notes(turns: list[dict], calls: list[dict]) -> list[str]:

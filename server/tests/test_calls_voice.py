@@ -40,3 +40,21 @@ async def test_no_voice_takes_a_sentence_to_last_0_4_s_a_word():
 async def test_text_ears_pass_the_script_through():
     heard = await TextEars().hear(None, "Book a room", "en")
     assert heard.text == "Book a room" and heard.seconds == 0
+
+
+def test_openai_ears_default_to_openais_api_with_the_deployments_key():
+    from server.calls.voice import OpenAIEars
+    ears = make_ears("openai:whisper-1", {"INFERENCE_OPENAI_API_KEY": "k"})
+    assert isinstance(ears, OpenAIEars) and ears.label == "openai whisper-1"
+    assert ears.engine.where == "api.openai.com"
+    other = make_ears("openai:whisper-small@https://asr.example.com/v1", {"SPEECH_API_KEY": "s"})
+    assert other.engine.where == "asr.example.com" and other.label == "openai whisper-small"
+
+
+def test_chirp_voices_take_their_language_from_the_voice_name():
+    from server.calls.voice import ChirpVoice
+    v = make_voice("chirp:en-IN-Chirp3-HD-Kore", {})
+    assert isinstance(v, ChirpVoice) and v.language == "en-IN" and v.parallel == 2
+    assert "not in the app" in v.label
+    with pytest.raises(SetupError, match="chirp"):
+        make_voice("chirp:", {})

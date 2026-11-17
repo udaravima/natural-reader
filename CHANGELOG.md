@@ -18,6 +18,13 @@ All notable changes to this project will be documented in this file.
   `scripts/voice_network.py` measures how far each cloud service is and what a
   kept-open connection saves. Not in Talk yet: the agent can only be
   benchmarked, not called from the browser. See docs/CALL_BENCH.md.
+- **Which hearing and which voice: `scripts/bench_matrix.py`.** Every caller
+  clip through every hearing engine (local Whisper, Google, any OpenAI-compatible
+  server), each engine's transcripts through the chat model as whole calls, and
+  the replies through every voice (Kokoro, Gemini-TTS, and Google's Chirp 3 HD
+  voices, which aren't in the app yet); each pair's wait is composed and rated
+  against reference points for conversation timing. Exports Excel and CSV, and
+  saves every clip plus each call as it would sound, the measured waits included.
 
 ### Fixed
 

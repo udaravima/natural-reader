@@ -48,6 +48,7 @@ def _ordinal(n: int) -> str:
 def normalize(text: str) -> str:
     t = _THOUSANDS_COMMA.sub("", (text or "").lower())
     t = re.sub(r"['\u2019]", "", t)               # that's is thats, so its s can't join a spelled name
+    t = re.sub(r"\b(\d{1,2}):00\b", r"\1", t)    # 2:00 pm is 2 pm (else its digits would join into 200)
     t = re.sub(r"[^\w\s]|_", " ", t)
     t = re.sub(r"(?<=[a-z])(?=\d)", " ", t)       # lb10421 is lb 10421
     out: list[str] = []
@@ -94,6 +95,17 @@ def wer(reference: str, heard: str) -> float:
         for j, h in enumerate(hyp, 1):
             prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (r != h))
     return row[-1] / len(ref)
+
+
+def misheard_words(pairs: list[tuple[str, str]], limit: int = 12) -> list[tuple[str, int]]:
+    """The script's words missing from what was heard, most often first (then alphabetically): each (said, heard)
+    pair counts a word once."""
+    from collections import Counter
+    missed: Counter = Counter()
+    for said, heard in pairs:
+        got = set(normalize(heard).split())
+        missed.update({w for w in normalize(said).split() if w not in got})
+    return sorted(missed.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
 
 
 def money(text: str) -> set[int]:

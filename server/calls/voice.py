@@ -146,6 +146,53 @@ class GoogleEars:
         return Heard(text, ended - started, net, new, error)
 
 
+OPENAI_SINK: list[RequestTrace] = []
+OPENAI_URL = "https://api.openai.com/v1"
+
+
+def _trace_openai() -> None:
+    from .. import keepalive
+    from ..speech import openai_engine
+    client = openai_engine._http.get()
+    if not isinstance(client._transport, TracingTransport):
+        openai_engine.use_http(keepalive.new_client(transport=TracingTransport(OPENAI_SINK, limits=keepalive.LIMITS),
+                                                    timeout=openai_engine.TIMEOUT))
+
+
+class OpenAIEars:
+    """The app's `openai` engine: OpenAI's own API by default (whisper-1, gpt-4o-mini-transcribe; it has no
+    whisper-small), or any server that speaks the same API, named after an @. The key is SPEECH_API_KEY, else, for
+    OpenAI's API, the chat provider's INFERENCE_OPENAI_API_KEY."""
+    needs_audio = True
+
+    def __init__(self, model: str, url: str, env: Mapping[str, str]) -> None:
+        from ..speech.openai_engine import OpenAICompatible
+        key = (env.get("SPEECH_API_KEY") or "").strip()
+        if not key and url == OPENAI_URL:
+            key = (env.get("INFERENCE_OPENAI_API_KEY") or "").strip()
+        self.engine = OpenAICompatible(url, key, model)
+        self.label = f"openai {model}"
+        self.where = self.engine.where
+
+    async def ready(self) -> None:
+        _trace_openai()
+        status = await self.engine.status()
+        if not status.ready:
+            raise SetupError(f"{self.label} isn't usable: {status.detail}")
+
+    async def hear(self, wav: bytes | None, said: str, language: str | None) -> Heard:
+        _trace_openai()
+        mark, started = len(OPENAI_SINK), time.perf_counter()
+        try:
+            got = await self.engine.transcribe(wav or b"", "audio/wav", language)
+            error, text = None, got.text.strip()
+        except Exception as e:
+            error, text = f"{type(e).__name__}: {e}", ""
+        ended = time.perf_counter()
+        net, new = _net(OPENAI_SINK, mark, ended)
+        return Heard(text, ended - started, net, new, error)
+
+
 def make_ears(spec: str, env: Mapping[str, str] = os.environ):
     kind, _, rest = spec.partition(":")
     if kind == "text":
@@ -154,7 +201,11 @@ def make_ears(spec: str, env: Mapping[str, str] = os.environ):
         return WhisperEars(rest, env)
     if kind == "google" and rest:
         return GoogleEars(rest, env)
-    raise SetupError(f"--hear {spec!r}: use text, whisper:<model id> or google:<recognizer name>")
+    if kind == "openai" and rest:
+        model, _, url = rest.partition("@")
+        return OpenAIEars(model, url or OPENAI_URL, env)
+    raise SetupError(f"--hear {spec!r}: use text, whisper:<model id>, google:<recognizer name> or "
+                     "openai:<model>[@<url>]")
 
 
 # ---- voices ----
@@ -223,6 +274,40 @@ class GoogleVoice:
         return Spoken(wav, audio_s, ended - started, net, new, error)
 
 
+class ChirpVoice:
+    """Google's Chirp 3 HD voices (Cloud Text-to-Speech, a voice name and no model): much quicker than Gemini-TTS
+    (0.55 s for a short sentence against 2.2 s or more, 2026-11-17). Not in the app yet: the benchmark only."""
+    where, parallel = "Google Cloud", 2
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.language = name[:5]
+        self.label = f"google {name} (not in the app yet)"
+
+    async def speak(self, text: str) -> Spoken:
+        from .. import chat_voice, google_cloud
+        _trace_google()
+        mark, started = len(GOOGLE_SINK), time.perf_counter()
+        wav, audio_s, error = None, len(text.split()) * WORD_SECONDS, None
+        try:
+            bearer, project = await google_cloud.access_token()
+            headers = {"Authorization": f"Bearer {bearer}", **({"x-goog-user-project": project} if project else {})}
+            r = await google_cloud.http().post(chat_voice.ENDPOINT, headers=headers, timeout=30.0, json={
+                "input": {"text": text}, "voice": {"languageCode": self.language, "name": self.name},
+                "audioConfig": {"audioEncoding": "LINEAR16"}})
+            if r.status_code == 200:
+                import base64
+                wav = base64.b64decode(r.json()["audioContent"])
+                audio_s = sf.info(io.BytesIO(wav)).duration
+            else:
+                error = f"Google answered {r.status_code}: {r.text[:200]}"
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"
+        ended = time.perf_counter()
+        net, new = _net(GOOGLE_SINK, mark, ended)
+        return Spoken(wav, audio_s, ended - started, net, new, error)
+
+
 def make_voice(spec: str, env: Mapping[str, str] = os.environ):
     kind, _, rest = spec.partition(":")
     if kind == "none":
@@ -234,4 +319,9 @@ def make_voice(spec: str, env: Mapping[str, str] = os.environ):
         from ..chat_voice import default_voice
         return GoogleVoice(model or (env.get("GOOGLE_TTS_MODEL") or "gemini-2.5-flash-tts").strip(),
                            voice or default_voice(env), env)
-    raise SetupError(f"--voice {spec!r}: use none, kokoro[:<voice>] or google[:<model>[:<voice>]]")
+    if kind == "chirp":
+        if not rest.strip():
+            raise SetupError("--voice chirp needs a voice name, such as chirp:en-US-Chirp3-HD-Kore")
+        return ChirpVoice(rest.strip())
+    raise SetupError(f"--voice {spec!r}: use none, kokoro[:<voice>], google[:<model>[:<voice>]] or "
+                     "chirp:<voice name>")

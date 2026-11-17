@@ -52,6 +52,7 @@ def test_a_sentence_end_before_the_limit_wins_over_a_comma():
     ("from the twenty-fourth to the thirty-first", "from the 24th to the 31st"),
     ("The reference is lb10421.", "the reference is lb 10421"),
     ("That's T-H-I-L-I-N-I", "thats thilini"),
+    ("Check-in is from 2:00 pm, or 10:00 AM", "check in is from 2 pm or 10 am"),
     ("You won't be charged", "you wont be charged"),
     ("077-123-4567", "0771234567"),
 ])
@@ -88,6 +89,7 @@ def test_a_voice_slower_than_speech_leaves_silences_between_sentences():
     # one at a time: done at 2.7, 5.2, 7.7; playing 2.7-3.7, 5.2-6.2, 7.7-8.7
     assert p["stalls_s"] == pytest.approx(3.0)
     assert p["longest_stall_s"] == pytest.approx(1.5)
+    assert p["gaps_s"] == [pytest.approx(1.5), pytest.approx(1.5)]
     p2 = playback(ready_s=[0.2, 0.4, 0.6], synth_s=[2.5, 2.5, 2.5], audio_s=[1.0, 1.0, 1.0], parallel=2)
     # two at a time: done at 2.7, 2.9, 5.2: playing 2.7-3.7, 3.7-4.7, 5.2-6.2
     assert p2["stalls_s"] == pytest.approx(0.5)
@@ -95,7 +97,7 @@ def test_a_voice_slower_than_speech_leaves_silences_between_sentences():
 
 def test_playback_of_nothing():
     assert playback([], [], [], parallel=1) == {"first_audio_s": None, "stalls_s": 0.0, "longest_stall_s": 0.0,
-                                                 "finished_s": None, "audio_s": 0.0}
+                                                 "finished_s": None, "audio_s": 0.0, "gaps_s": []}
 
 
 # ---- scoring a call ----
@@ -163,3 +165,10 @@ def test_turns_left_without_an_answer_fail_the_call():
     score = score_call(script, ["Let me check.", ""], [], {"bookings": []}, {"bookings": []}, unanswered=1)
     assert not score.passed
     assert [c.name for c in score.checks if not c.ok] == ["answered"]
+
+
+def test_misheard_words_are_the_scripts_words_missing_from_what_was_heard():
+    from server.calls.scoring import misheard_words
+    pairs = [("My name is Kasun Perera", "My name is Kasan Perera"), ("Nimal Perera", "Nimble Parer"),
+             ("Okay, thanks", "Okay, thanks")]
+    assert misheard_words(pairs) == [("kasun", 1), ("nimal", 1), ("perera", 1)]
