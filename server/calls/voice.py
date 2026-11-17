@@ -3,9 +3,9 @@ change to an engine shows up in the numbers:
 
 - ears: `text` (no hearing: the script's words go straight to the model), `whisper:<model id>` (the speech
   catalogue's local models, built the way server/speech/service.py builds them), `google:<recognizer>` (the app's
-  GoogleSpeech, a new connection per clip as in the app);
+  GoogleSpeech, on the app's kept-open Google client);
 - voices: `none` (no audio; a sentence is taken to last 0.4 s a word), `kokoro[:<voice>]` (the read-aloud model,
-  as /v1/synthesize runs it), `google[:<model>[:<voice>]]` (the app's google_speak, a new connection per sentence).
+  as /v1/synthesize runs it), `google[:<model>[:<voice>]]` (the app's google_speak, on the same client).
 
 Cloud stages carry a network split (nettrace.py). `seconds` is what the stage cost in this process; in Talk the
 browser also uploads the clip and downloads each sentence, which Talk's own timings show."""
@@ -104,37 +104,45 @@ class WhisperEars:
         return Heard(got.text.strip(), time.perf_counter() - started)
 
 
+# Google's hearing and voice share the app's one kept-open client (google_cloud.http()). The benchmark installs a
+# traced client of the same kind, once per event loop, so every Google request lands in GOOGLE_SINK.
+GOOGLE_SINK: list[RequestTrace] = []
+
+
+def _trace_google() -> None:
+    from .. import google_cloud, keepalive
+    client = google_cloud.http()
+    if not isinstance(client._transport, TracingTransport):
+        google_cloud.use_http(keepalive.new_client(transport=TracingTransport(GOOGLE_SINK, limits=keepalive.LIMITS),
+                                                   timeout=httpx.Timeout(30.0, connect=10.0)))
+
+
 class GoogleEars:
     needs_audio = True
     where = "Google Cloud"
 
     def __init__(self, recognizer: str, env: Mapping[str, str]) -> None:
         from ..speech.google_engine import GoogleSpeech, timeout_from
-        sink: list[RequestTrace] = []
-
-        class Traced(GoogleSpeech):
-            def _client(self) -> httpx.AsyncClient:   # the app's new client per request, traced
-                return httpx.AsyncClient(timeout=self._timeout, transport=TracingTransport(sink))
-
-        self.sink = sink
-        self.engine = Traced(recognizer, timeout_s=timeout_from(env))
+        self.engine = GoogleSpeech(recognizer, timeout_s=timeout_from(env))
         self.label = f"google {self.engine.id or recognizer}"
 
     async def ready(self) -> None:
+        _trace_google()
         status = await self.engine.status()
         if not status.ready:
             raise SetupError(f"{self.label} isn't usable: {status.detail}")
         self.label = f"google {self.engine.label}"
 
     async def hear(self, wav: bytes | None, said: str, language: str | None) -> Heard:
-        mark, started = len(self.sink), time.perf_counter()
+        _trace_google()
+        mark, started = len(GOOGLE_SINK), time.perf_counter()
         try:
             got = await self.engine.transcribe(wav or b"", "audio/wav", language)
             error, text = None, got.text.strip()
         except Exception as e:
             error, text = f"{type(e).__name__}: {e}", ""
         ended = time.perf_counter()
-        net, new = _net(self.sink, mark, ended)
+        net, new = _net(GOOGLE_SINK, mark, ended)
         return Heard(text, ended - started, net, new, error)
 
 
@@ -200,19 +208,18 @@ class GoogleVoice:
         self.model, self.voice = model, voice
         self.env = {**env, "GOOGLE_TTS_MODEL": model}
         self.label = f"google {model} {voice}"
-        self.sink: list[RequestTrace] = []
 
     async def speak(self, text: str) -> Spoken:
         from .. import chat_voice
-        mark, started = len(self.sink), time.perf_counter()
+        _trace_google()
+        mark, started = len(GOOGLE_SINK), time.perf_counter()
         try:
-            wav, audio_s = await chat_voice.google_speak(text, self.voice, 1.0, self.env,
-                                                         transport=TracingTransport(self.sink))
+            wav, audio_s = await chat_voice.google_speak(text, self.voice, 1.0, self.env)
             error = None
         except chat_voice.GoogleVoiceError as e:
             wav, audio_s, error = None, len(text.split()) * WORD_SECONDS, e.detail
         ended = time.perf_counter()
-        net, new = _net(self.sink, mark, ended)
+        net, new = _net(GOOGLE_SINK, mark, ended)
         return Spoken(wav, audio_s, ended - started, net, new, error)
 
 

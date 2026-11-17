@@ -10,6 +10,10 @@ from __future__ import annotations
 import asyncio
 import os
 
+import httpx
+
+from . import keepalive
+
 SCOPES = ("https://www.googleapis.com/auth/cloud-platform",)
 
 _NOT_A_KEY = ("The Google key file isn't a service-account key. In Google Cloud, open IAM & Admin → Service "
@@ -83,6 +87,25 @@ def service_off(response) -> str | None:
     return None
 
 
+# One kept-open client for every Google API call (speech-to-text, Gemini-TTS): a new client per request paid TCP and
+# TLS set-up and a slow start on every clip and every sentence (keepalive.py). Each request sets its own timeout.
+_http = keepalive.PerLoopClient(lambda: keepalive.new_client(timeout=httpx.Timeout(30.0, connect=10.0)))
+
+
+def http() -> httpx.AsyncClient:
+    return _http.get()
+
+
+def use_http(client: httpx.AsyncClient) -> None:
+    """Send Google requests through this client on the running loop (the call benchmark's traced client; tests)."""
+    _http.install(client)
+
+
+async def close_http() -> None:
+    await _http.aclose()
+
+
 def reset_for_tests() -> None:
     global _credentials, _project, _lock
     _credentials, _project, _lock = None, None, None
+    _http.forget()

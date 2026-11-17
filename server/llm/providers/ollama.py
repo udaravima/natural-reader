@@ -11,7 +11,7 @@ import httpx
 from ..types import (Capabilities, CallSettings, Chunk, Finish, Message,
                      ProviderError, ProviderUnavailable, ReasoningDelta, TextDelta, ToolCall,
                      ToolCallReady, ToolSpec, Usage)
-from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, is_feature_rejection, is_overflow,
+from .base import (FeatureMemory, ProviderConfig, TTLCache, auth_headers, drain, is_feature_rejection, is_overflow,
                    iter_lines, json_object, open_stream, parse_arguments, provider_error,
                    safe_error_message, settle_dropped)
 
@@ -181,7 +181,8 @@ class OllamaProvider:
     async def _read(resp: httpx.Response) -> AsyncIterator[Chunk]:
         n_calls = 0
         try:
-            async for line in iter_lines(resp):
+            lines = iter_lines(resp)
+            async for line in lines:
                 line = line.strip()
                 if not line:
                     continue
@@ -205,6 +206,7 @@ class OllamaProvider:
                                                  name=str(fn.get("name") or ""),
                                                  arguments=parse_arguments(fn.get("arguments"))))
                 if payload.get("done"):
+                    await drain(lines)
                     if "eval_count" in payload:
                         yield Usage(int(payload.get("prompt_eval_count") or 0),
                                     int(payload["eval_count"] or 0),

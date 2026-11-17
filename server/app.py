@@ -18,6 +18,7 @@ from .logging_config import configure_logging
 from .chat import orchestrator as chat_orchestrator
 from .chat import store as chat_store
 from .endpoints import router as tts_router
+from . import google_cloud
 from .llm.router import start_router as start_llm_router, stop_router as stop_llm_router
 from .routers.admin import router as admin_router
 from .routers.auth import router as auth_router
@@ -188,6 +189,7 @@ def create_app() -> FastAPI:
         await project_events.stop_retention()
         await notifications.stop_retention()
         await stop_llm_router()
+        await google_cloud.close_http()
         await stop_embeddings()
         await stop_web_search()
         # Controller ruling: a turn's final 'aborted'/'complete' write runs as

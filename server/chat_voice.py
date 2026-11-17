@@ -135,8 +135,11 @@ async def google_speak(text: str, voice: str, speed: float, env: Mapping[str, st
                       "modelName": (env.get("GOOGLE_TTS_MODEL") or "").strip()},
             "audioConfig": audio_config}
     try:
-        async with httpx.AsyncClient(timeout=_timeout(env), transport=transport) as c:
-            r = await c.post(ENDPOINT, headers=headers, json=body)
+        if transport is not None:   # tests: a client of its own
+            async with httpx.AsyncClient(timeout=_timeout(env), transport=transport) as c:
+                r = await c.post(ENDPOINT, headers=headers, json=body)
+        else:                       # Google's kept-open client: no new connection per sentence
+            r = await google_cloud.http().post(ENDPOINT, headers=headers, json=body, timeout=_timeout(env))
     except httpx.HTTPError as e:
         logger.warning("Gemini-TTS request failed: %s", type(e).__name__)
         raise GoogleVoiceError(504, _DIDNT_ANSWER) from None

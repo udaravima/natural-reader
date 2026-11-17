@@ -2,6 +2,7 @@
 tool-argument parsing, and the per-model memory of rejected features (spec §4.2)."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -245,6 +246,22 @@ async def open_stream(client: httpx.AsyncClient, request: httpx.Request) -> http
         logger.warning("Provider answered HTTP %s: %s", resp.status_code, safe_error_message(raw))
         raise provider_error(resp.status_code, raw)
     return resp
+
+
+DRAIN_S = 0.5   # the end of a body follows its last event at once; never wait long on one that doesn't come
+
+
+async def drain(lines: AsyncIterator[str]) -> None:
+    """Read what follows a stream's end marker ([DONE], or Ollama's done line): normally only the end of the body.
+    Closing a response before that drops its connection, so the next request pays TCP and TLS again (every Gemini
+    request in the 2026-11-17 call benchmark did); read to the end, it goes back to the pool. Bounded by DRAIN_S,
+    and any error here is moot: the reply is already complete."""
+    try:
+        async with asyncio.timeout(DRAIN_S):
+            async for _ in lines:
+                pass
+    except (TimeoutError, ProviderTimeout, ProviderUnavailable):
+        pass
 
 
 async def iter_lines(resp: httpx.Response) -> AsyncIterator[str]:

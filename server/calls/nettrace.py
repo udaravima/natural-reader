@@ -17,6 +17,7 @@ import httpx
 @dataclass
 class RequestTrace:
     host: str
+    path: str = ""
     connect_s: float | None = None
     sent_s: float | None = None
     first_byte_s: float | None = None
@@ -44,7 +45,7 @@ class TracingTransport(httpx.AsyncHTTPTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         started = time.perf_counter()
-        trace = RequestTrace(request.url.host, started_at=started)
+        trace = RequestTrace(request.url.host, request.url.path, started_at=started)
         self.sink.append(trace)
 
         async def hook(name: str, info: dict) -> None:

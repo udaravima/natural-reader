@@ -80,6 +80,7 @@ async def run(args: argparse.Namespace) -> int:
 
     import httpx
 
+    from server import keepalive
     from server.calls.agent import CallAgent
     from server.calls.nettrace import RequestTrace, TracingTransport
     from server.calls.pacing import PacedRouter, PausableClock, Throttle
@@ -98,9 +99,10 @@ async def run(args: argparse.Namespace) -> int:
         ears = make_ears(args.hear)
         voice = make_voice(args.voice)
         caller = make_voice(args.caller_voice) if ears.needs_audio else None
-        router = Router(load_provider_configs(os.environ), httpx.AsyncClient(
-            transport=TracingTransport(llm_sink),
-            timeout=httpx.Timeout(connect=10.0, read=_env_number("INFERENCE_TIMEOUT_S", 120), write=30.0, pool=10.0)))
+        # Built like the app's router client (server/llm/router.py), with a traced pool of the same limits.
+        router = Router(load_provider_configs(os.environ), keepalive.new_client(
+            transport=TracingTransport(llm_sink, limits=keepalive.LIMITS),
+            timeout=httpx.Timeout(connect=5.0, read=_env_number("INFERENCE_TIMEOUT_S", 120), write=30.0, pool=5.0)))
         router.resolve(args.model)
         clock = PausableClock()
         router = PacedRouter(router, Throttle(args.model_rpm), clock)
