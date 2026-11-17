@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from .. import keepalive
+
 from .languages import WHISPER_LANGUAGES
 from .audio import SAMPLE_RATE, decode_capped
 from .base import EngineFailed, EngineStatus, EngineUnavailable, Transcript
@@ -47,6 +49,24 @@ def _filename(mime: str) -> str:
     return f"audio.{_EXT.get(sub, 'webm')}"
 
 
+# One kept-open client for every transcription server (keepalive.py): a client per clip paid TCP and TLS set-up
+# and a slow start on every upload.
+_http = keepalive.PerLoopClient(lambda: keepalive.new_client(timeout=TIMEOUT))
+
+
+def use_http(client: httpx.AsyncClient) -> None:
+    """Send transcription requests through this client on the running loop (the call benchmark; tests)."""
+    _http.install(client)
+
+
+async def close_http() -> None:
+    await _http.aclose()
+
+
+def reset_for_tests() -> None:
+    _http.forget()
+
+
 class OpenAICompatible:
     name = "openai"
 
@@ -74,15 +94,19 @@ class OpenAICompatible:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._key}"} if self._key else {}
 
-    def _client(self, timeout: httpx.Timeout) -> httpx.AsyncClient:
-        return httpx.AsyncClient(timeout=timeout, transport=self._transport)
+    async def _send(self, method: str, url: str, timeout: httpx.Timeout, **kwargs) -> httpx.Response:
+        """On the kept-open client (no TCP and TLS set-up per clip); on a client of its own when a transport was
+        given (tests)."""
+        if self._transport is not None:
+            async with httpx.AsyncClient(timeout=timeout, transport=self._transport) as c:
+                return await c.request(method, url, **kwargs)
+        return await _http.get().request(method, url, timeout=timeout, **kwargs)
 
     async def status(self) -> EngineStatus:
         if self._problem:
             return EngineStatus(False, "error", self._problem)
         try:
-            async with self._client(PROBE_TIMEOUT) as c:
-                r = await c.get(f"{self._url}/models", headers=self._headers())
+            r = await self._send("GET", f"{self._url}/models", PROBE_TIMEOUT, headers=self._headers())
         except httpx.HTTPError:
             return EngineStatus(False, "error", _DIDNT_ANSWER)
         if r.status_code in (401, 403):
@@ -91,13 +115,12 @@ class OpenAICompatible:
             return EngineStatus(False, "error", f"The transcription server answered {r.status_code}")
         return EngineStatus(True, "ready", "")
 
-    async def _post(self, c: httpx.AsyncClient, audio: bytes, mime: str, language: str | None,
-                    response_format: str) -> httpx.Response:
+    async def _post(self, audio: bytes, mime: str, language: str | None, response_format: str) -> httpx.Response:
         data = {"model": self.model, "response_format": response_format}
         if language:
             data["language"] = language
-        return await c.post(f"{self._url}/audio/transcriptions", headers=self._headers(), data=data,
-                            files={"file": (_filename(mime), io.BytesIO(audio), _base_mime(mime))})
+        return await self._send("POST", f"{self._url}/audio/transcriptions", TIMEOUT, headers=self._headers(),
+                                data=data, files={"file": (_filename(mime), io.BytesIO(audio), _base_mime(mime))})
 
     async def transcribe(self, audio: bytes, mime: str, language: str | None) -> Transcript:
         if self._problem:
@@ -106,11 +129,10 @@ class OpenAICompatible:
         samples = await asyncio.to_thread(decode_capped, audio)
         decoded_s = len(samples) / SAMPLE_RATE
         try:
-            async with self._client(TIMEOUT) as c:
-                r = await self._post(c, audio, mime, language, "verbose_json")
-                if r.status_code == 400 and "response_format" in r.text:
-                    r = await self._post(c, audio, mime, language, "json")
-                    return self._parse(r, None, decoded_s, force_duration=True)
+            r = await self._post(audio, mime, language, "verbose_json")
+            if r.status_code == 400 and "response_format" in r.text:
+                r = await self._post(audio, mime, language, "json")
+                return self._parse(r, None, decoded_s, force_duration=True)
         except httpx.HTTPError as e:
             logger.warning("transcription request failed: %s", type(e).__name__)
             raise EngineFailed(_DIDNT_ANSWER) from None

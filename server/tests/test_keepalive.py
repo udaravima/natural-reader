@@ -189,3 +189,24 @@ def test_the_model_router_is_built_on_a_kept_open_client(monkeypatch):
 
     asyncio.run(start_and_stop())
     assert len(made) == 1
+
+
+async def test_openai_compatible_speech_goes_through_one_kept_open_client():
+    from server.speech import openai_engine
+    seen = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"text": "hello", "language": "english", "duration": 0.1})
+
+    shared = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+    openai_engine.use_http(shared)
+    try:
+        engine = openai_engine.OpenAICompatible("https://speech.example.com/v1", "k", "whisper-1")
+        for _ in range(2):
+            assert (await engine.transcribe(_wav(), "audio/wav", None)).text == "hello"
+        assert seen == ["/v1/audio/transcriptions"] * 2
+        assert not shared.is_closed
+    finally:
+        openai_engine.reset_for_tests()
+        await shared.aclose()

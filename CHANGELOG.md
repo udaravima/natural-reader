@@ -30,7 +30,8 @@ All notable changes to this project will be documented in this file.
   provider stopped reading a stream at its end marker so the connection was
   closed unfinished (it now reads the end of the body, for at most 0.5 s),
   and httpx closed idle connections after 5 s, shorter than a caller's turn
-  (now 60 s, for every cloud client).
+  (now 60 s, for every cloud client). The OpenAI-compatible speech engine
+  shares one kept-open client too.
 
 ## [2.14.0] - 2026-11-17
 
