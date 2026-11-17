@@ -229,7 +229,8 @@ export function AssistantProfileSection({ theme, apiHost, apiPort, showToast, re
               showToast={showToast} initial={editing} houseText={house} helperOn={helperOn} busy={busy}
               refreshKey={refreshKey} onSave={saveProfile} onCancel={closeEditor} onDirtyChange={setEditorDirty}
               builtin={Boolean(editing.builtin)}
-              limits={{ name: data.nameMaxChars, description: data.descriptionMaxChars, text: data.maxChars }} />
+              limits={{ name: data.nameMaxChars, description: data.descriptionMaxChars, text: data.maxChars,
+                backstory: data.backstoryMaxChars }} />
           )}
         </>
       )}

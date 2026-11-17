@@ -15,6 +15,17 @@ All notable changes to this project will be documented in this file.
   "Talking to: …", names the profile in the chat, the chat beside the page and
   Talk, and opens the list; a new chat offers the profiles as cards. The
   sidebar's Profile picker is gone. The list is read again when a chat opens.
+- **Characters with a backstory.** A profile has a **Backstory** (up to 6,000
+  characters) beside its **Rules**; the model gets it after the house rules,
+  labelled as the character's own life and never a source of facts. Migration
+  032 adds the column.
+- **Generate writes a whole character** from up to 6,000 characters of notes:
+  name, description, backstory and rules, by the helper or any chat model you
+  pick (a cloud one is marked: the notes leave the machine). **✦ Generate**
+  writes the description from the profile, and **Try it** asks the unsaved
+  profile one question with a model you pick. New routes:
+  `POST /v1/admin/assistant/describe` and `/sample`; `/draft` takes `model` and
+  returns `name`, `description`, `backstory` and `text`.
 - **A character can't override the document steps.** A profile with text of
   its own is followed, in a chat that can read documents, by "Whatever your
   role, an answer from the documents follows the steps below and cites its

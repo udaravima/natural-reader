@@ -71,26 +71,43 @@ def _number(env: Mapping[str, str], key: str, cast, lo, hi, default):
     return value
 
 
-async def load_config(conn, env: Mapping[str, str] = os.environ) -> HelperConfig:
-    """The helper as it applies now: the model from the Models settings (the admin's, else HELPER_MODEL), named by
-    its canonical id, with the context size it is loaded with (the same rule as the reader's, so a helper that is
-    also someone's chat model isn't reloaded at another size) and whether it is local."""
-    timeout_s = float(_number(env, "HELPER_TIMEOUT_S", float, 5, 900, TIMEOUT_S))
-    input_chars = _number(env, "HELPER_INPUT_CHARS", int, 500, 50_000, INPUT_CHARS)
-    ms = await model_settings.load_models_settings(conn, env)
-    if not ms.helper:
-        return HelperConfig("", timeout_s, input_chars, None, False)
-    try:
-        provider, name = get_router().resolve(ms.helper)
-    except UnknownModel:
-        # Kept by name: its calls fail as provider_error. Counted as cloud, the careful answer for the title rule.
-        return HelperConfig(ms.helper, timeout_s, input_chars, None, False)
+def _placed(ms, model_id: str, timeout_s: float, input_chars: int) -> HelperConfig:
+    """`model_id` named by its canonical id, with the context size it is loaded with (the same rule as the
+    reader's, so a model that is also someone's chat model isn't reloaded at another size) and whether it is
+    local. Raises UnknownModel when the router can't place it."""
+    provider, name = get_router().resolve(model_id)
     key = f"{provider.config.name}:{name}"
     local = model_settings.is_local(provider.config, name, ms.provider_locality)
     num_ctx = None
     if model_settings.sizes_context(provider.config, name):
         num_ctx = model_settings.num_ctx_for(ms, key, local=True, user_value=None, limits=get_limits())
     return HelperConfig(key, timeout_s, input_chars, num_ctx, local)
+
+
+def _limits(env: Mapping[str, str]) -> tuple[float, int]:
+    return (float(_number(env, "HELPER_TIMEOUT_S", float, 5, 900, TIMEOUT_S)),
+            _number(env, "HELPER_INPUT_CHARS", int, 500, 50_000, INPUT_CHARS))
+
+
+async def load_config(conn, env: Mapping[str, str] = os.environ) -> HelperConfig:
+    """The helper as it applies now: the model from the Models settings (the admin's, else HELPER_MODEL)."""
+    timeout_s, input_chars = _limits(env)
+    ms = await model_settings.load_models_settings(conn, env)
+    if not ms.helper:
+        return HelperConfig("", timeout_s, input_chars, None, False)
+    try:
+        return _placed(ms, ms.helper, timeout_s, input_chars)
+    except UnknownModel:
+        # Kept by name: its calls fail as provider_error. Counted as cloud, the careful answer for the title rule.
+        return HelperConfig(ms.helper, timeout_s, input_chars, None, False)
+
+
+async def config_for(conn, model_id: str, env: Mapping[str, str] = os.environ) -> HelperConfig:
+    """The same call path for a model the admin picked (character profiles spec: Generate and Try it), whether or not
+    a helper is set. Raises UnknownModel for a model the router can't place, so the route can say so."""
+    timeout_s, input_chars = _limits(env)
+    ms = await model_settings.load_models_settings(conn, env)
+    return _placed(ms, model_id, timeout_s, input_chars)
 
 
 async def chat_model_is_local(conn, model_id: str | None) -> bool:
@@ -134,25 +151,28 @@ async def _charge(user_id: str, model: str, messages: list[Message], received: R
         logger.warning("Helper usage accounting failed (fail-open)", exc_info=True)
 
 
-async def ask(cfg: HelperConfig, system: str, user: str, *, max_output_chars: int, user_id: str | None) -> str:
+async def ask(cfg: HelperConfig, system: str, user: str, *, max_output_chars: int, user_id: str | None,
+              temperature: float = TEMPERATURE, timeout_s: float | None = None) -> str:
     """One helper call. `user_id` is charged for it and held to their daily budget; None (a job nobody asked for)
-    is neither."""
+    is neither. `temperature` and `timeout_s` (seconds; None: the helper's own) are for a job that writes at
+    length, such as a whole character."""
     if not cfg.on:
         raise HelperError("off")
     if user_id and await _over_budget(user_id):
         raise HelperError("over_budget")
     messages = [Message(role="system", content=system), Message(role="user", content=user)]
-    settings = CallSettings(think="off", num_ctx=cfg.num_ctx, temperature=TEMPERATURE,
+    settings = CallSettings(think="off", num_ctx=cfg.num_ctx, temperature=temperature,
                             num_predict=math.ceil(max_output_chars / CHARS_PER_OUTPUT_TOKEN))
     received = Received()
     finished = False
+    limit = timeout_s or cfg.timeout_s
     try:
         reply = await asyncio.wait_for(get_router().complete(cfg.model, messages, settings, received=received),
-                                       cfg.timeout_s)
+                                       limit)
         finished = True
         return reply
     except TimeoutError:
-        logger.warning("helper call timed out after %.0f s (%d characters in)", cfg.timeout_s, len(user))
+        logger.warning("helper call timed out after %.0f s (%d characters in)", limit, len(user))
         raise HelperError("timeout") from None
     except Exception as e:  # noqa: BLE001 — type and status only: a provider's text could echo the prompt
         logger.warning("helper call failed (%s, status %s)", type(e).__name__, getattr(e, "status", None))

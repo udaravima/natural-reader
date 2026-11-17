@@ -352,11 +352,14 @@ Notes:
     had profiles before, it arrives last and the default stays as it was; on a
     new one it is the default. While it is the only profile, a deployment file
     (`CHAT_ASSISTANT_PROFILE_FILE`) is used as its text.
-  - **Profiles** are named assistants: a name (up to 60 characters), a
-    one-line description that people see under it when they choose, and the
-    text the assistant reads (up to 8,000 characters), for example "You are
-    Ada, the reading-room assistant. Answer warmly and briefly, in British
-    English." **Add profile** starts one; each row has **Edit**, **Make
+  - **Profiles** are named assistants, or characters: a name (up to 60
+    characters), a one-line description that people see under it when they
+    choose, a **Backstory** (optional, up to 6,000 characters: who they are,
+    their past, their voice) and the **Rules** they keep (up to 8,000
+    characters), for example "- Answer warmly and briefly, in British
+    English." The backstory goes to the model after the house rules, under a
+    line that says it is the character's own life and never a source of facts
+    about documents or the world; the rules follow it. **Add profile** starts one; each row has **Edit**, **Make
     default**, **Turn off** / **Turn on**, **Up** / **Down** (the order people
     see) and **Delete**.
   - One profile is the **Default**: a chat nobody picked a profile for gets it.
@@ -379,19 +382,35 @@ Notes:
     `{{date}}` or `{{app}}`, the app doesn't add its own "Today is…" or "You
     are working in…" sentence. Anything else in double braces is sent as
     written, and the editor warns you.
-  - **Generate** writes a first draft for you. With a helper model chosen in
-    **Models**, type what kind of assistant you want in **Describe the
-    assistant** (up to 2,000 characters) and press **Generate**. The draft
-    lands in the profile's text a few seconds later, in the language you
-    described it in. Nothing is saved until you press **Save profile**, and
-    text you haven't saved is replaced only after you agree. Read the draft
-    before saving: a small model can change what a rule means. The call
-    counts towards your own daily budget.
+  - **Generate** writes a whole character for you. Put your notes in
+    **Describe the character** (up to 6,000 characters: who they are, where
+    they come from, how they speak, the rules they must keep; a biography
+    pasted in works too), choose who writes it under **Written by**, and press
+    **Generate**. **Written by** offers the helper model from **Models** and
+    every chat model; a cloud one is marked, because your notes leave the
+    machine. The draft fills the backstory and the rules, and the name and
+    description only where they are empty. It may invent a past, a voice and
+    habits that fit your notes, but it is told to copy each rule you gave
+    without changing its meaning. On this project's CPU-only test machine a
+    whole character took 14 to 23 seconds with `gemma4:e4b` and about 9 with
+    `llama3.2:3b`; a bigger model takes longer (the server waits up to 10
+    minutes). Nothing is saved until you press **Save
+    profile**, and text you haven't saved is replaced only after you agree.
+    Read the draft before saving: a model can still change what a rule means.
+  - **✦ Generate** beside the description asks the helper model for the one
+    line people see, written from the name, backstory and rules (it never
+    quotes a rule). It is there when a helper model is set.
+  - **Try it** asks the profile as it is in the editor, unsaved, one question
+    ("Introduce yourself." to start with) with the chat model you pick under
+    **Answered by**, the way a chat with no document would. The answer shows
+    under it and is kept nowhere. Generate, ✦ Generate and Try it all count
+    towards your own daily budget.
   - **What the model receives** shows the whole instruction text a chat would
     get with the text you're editing, unsaved, after the saved house rules,
     placeholders filled in.
-  - Keep both short: every character is read before every reply (the counter
-    shows the profile with the house rules, and about how many tokens).
+  - Keep them short: every character is read before every reply (the counter
+    shows the rules with the house rules and the backstory, and about how many
+    tokens that is per message).
   - Don't name the app's tools (`web_search` and so on): describe the
     behaviour you want. The section warns you if you do.
   - While there are no profiles, the server's `CHAT_ASSISTANT_PROFILE_FILE`
