@@ -31,6 +31,11 @@ All notable changes to this project will be documented in this file.
   role, an answer from the documents follows the steps below and cites its
   pages."
 
+- **The document evaluation can answer as a character.** `scripts/eval_doc_qa.py --character FILE` takes a
+  file in Generate's four-part format and asks every question as that profile, so a character can be
+  checked against the document before it goes live; `server/evals/fixtures/characters/seeya.md` is a
+  storyteller with a full-length backstory. Each answer now shows the delay before its first word too.
+
 - **`docs/MAINTENANCE.md`, the jobs on a running server:** is it healthy,
   surviving reboots, applying a `.env` change, backup and restore with a
   nightly job, upgrading, rolling back, rotating secrets and freeing disk

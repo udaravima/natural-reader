@@ -259,6 +259,7 @@ class Result:
     seconds: float = 0.0              # the case question's turn, wall clock
     trail: bool | None = None         # a document tool ran, or prefetch supplied passages
     skipped: str | None = None        # why the case couldn't be asked on this deployment
+    first_word: float | None = None   # doc_qa's first-word delay; a project chat isn't timed (None)
     pages_ok: bool | None = None      # every (document, page) the case lists is cited
     cited_docs: set[str] = field(default_factory=set)
     wrong_docs: set[str] = field(default_factory=set)   # cited, and not the right one (see score)
